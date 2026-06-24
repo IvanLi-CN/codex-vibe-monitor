@@ -23,6 +23,7 @@ import {
   getFastIndicatorState,
   isPriorityServiceTier,
   resolveInvocationEndpointDisplay,
+  resolveInvocationImageIntentDisplay,
 } from "../lib/invocation";
 import { InvocationTable } from "./InvocationTable";
 import { getReasoningEffortTone } from "./invocation-table-reasoning";
@@ -397,6 +398,58 @@ describe("resolveInvocationEndpointDisplay", () => {
       endpointValue: "—",
       badgeVariant: null,
       labelKey: null,
+    });
+  });
+});
+
+describe("resolveInvocationImageIntentDisplay", () => {
+  it("shows the image badge only for yes and direct_image", () => {
+    expect(
+      resolveInvocationImageIntentDisplay({
+        imageIntent: "yes",
+      }),
+    ).toMatchObject({
+      kind: "yes",
+      showsBadge: true,
+      badgeLabelKey: "table.imageTool.badge",
+      detailLabelKey: "table.imageTool.detail.yes",
+    });
+
+    expect(
+      resolveInvocationImageIntentDisplay({
+        imageIntent: "direct_image",
+      }),
+    ).toMatchObject({
+      kind: "direct_image",
+      showsBadge: true,
+      badgeLabelKey: "table.imageTool.badge",
+      detailLabelKey: "table.imageTool.detail.directImage",
+    });
+
+    expect(
+      resolveInvocationImageIntentDisplay({
+        imageIntent: "no",
+      }),
+    ).toMatchObject({
+      kind: "no",
+      showsBadge: false,
+      detailLabelKey: "table.imageTool.detail.no",
+    });
+
+    expect(
+      resolveInvocationImageIntentDisplay({
+        imageIntent: "unknown",
+      }),
+    ).toMatchObject({
+      kind: "unknown",
+      showsBadge: false,
+      detailLabelKey: "table.imageTool.detail.unknown",
+    });
+
+    expect(resolveInvocationImageIntentDisplay(undefined)).toMatchObject({
+      kind: "missing",
+      showsBadge: false,
+      detailLabelKey: null,
     });
   });
 });
@@ -935,6 +988,70 @@ describe("InvocationTable", () => {
     expect(html).toMatch(/压缩请求|Compaction request/);
     expect(html).toMatch(/压缩响应|Compaction response/);
     expect(html).toMatch(/远程压缩V2|Remote compaction V2/);
+  });
+
+  it("shows image tool detail semantics independently from endpoint badges", () => {
+    const record: ApiInvocation = {
+      id: 38,
+      invokeId: "invocation-image-tool-detail",
+      occurredAt: "2026-03-24T06:52:52Z",
+      createdAt: "2026-03-24T06:52:52Z",
+      source: "proxy",
+      routeMode: "pool",
+      upstreamAccountId: 17,
+      upstreamAccountName: "API Keys Pool",
+      proxyDisplayName: "api-keys-gateway",
+      endpoint: "/v1/responses",
+      compactionRequestKind: "remote_v2",
+      compactionResponseKind: "remote_v2",
+      imageIntent: "direct_image",
+      model: "gpt-image-1",
+      status: "success",
+      totalTokens: 4096,
+      cost: 0.1024,
+    };
+
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <InvocationDetailProbe record={record} />
+      </I18nProvider>,
+    );
+
+    expect(html).toMatch(/图片工具|Image tool/);
+    expect(html).toContain("direct_image");
+    expect(html).toMatch(/远程压缩V2|Remote compaction V2/);
+  });
+
+  it("keeps the image tool badge out of the model column", async () => {
+    await renderInteractiveTable([
+      {
+        id: 39,
+        invokeId: "invocation-model-column-image-badge",
+        occurredAt: "2026-03-24T06:53:52Z",
+        createdAt: "2026-03-24T06:53:52Z",
+        source: "proxy",
+        proxyDisplayName: "codex-image-edge",
+        endpoint: "/v1/responses",
+        imageIntent: "yes",
+        model: "gpt-image-1",
+        status: "success",
+        totalTokens: 1024,
+        cost: 0.0102,
+      },
+    ]);
+
+    const modelCell = host?.querySelector(
+      'td:nth-child(4) [title="gpt-image-1"]',
+    )?.parentElement;
+    const endpointCell = host?.querySelector(
+      '[data-testid="invocation-image-tool-badge"]',
+    )?.parentElement;
+
+    expect(modelCell?.textContent).toContain("gpt-image-1");
+    expect(
+      modelCell?.querySelector('[data-testid="invocation-image-tool-badge"]'),
+    ).toBeNull();
+    expect(endpointCell?.textContent).toMatch(/图片工具|Image tool/);
   });
 
   it("keeps latency summary fields out of request details while preserving stage timings", async () => {
@@ -2123,21 +2240,73 @@ describe("InvocationTable", () => {
         totalTokens: 256,
         cost: 0.0006,
       },
+      {
+        id: 25,
+        invokeId: "invocation-image-badge",
+        occurredAt: "2026-03-07T03:13:49Z",
+        createdAt: "2026-03-07T03:13:49Z",
+        source: "proxy",
+        proxyDisplayName: "codex-image-edge",
+        endpoint: "/v1/responses",
+        imageIntent: "yes",
+        model: "gpt-5.3-codex",
+        status: "success",
+        totalTokens: 384,
+        cost: 0.0014,
+      },
+      {
+        id: 26,
+        invokeId: "invocation-mixed-signal",
+        occurredAt: "2026-03-07T03:13:48Z",
+        createdAt: "2026-03-07T03:13:48Z",
+        source: "proxy",
+        proxyDisplayName: "codex-mixed-edge",
+        endpoint: "/v1/responses",
+        compactionRequestKind: "remote_v2",
+        compactionResponseKind: "remote_v2",
+        imageIntent: "direct_image",
+        model: "gpt-image-1",
+        status: "success",
+        totalTokens: 640,
+        cost: 0.0023,
+      },
+      {
+        id: 27,
+        invokeId: "invocation-missing-image-intent",
+        occurredAt: "2026-03-07T03:13:47Z",
+        createdAt: "2026-03-07T03:13:47Z",
+        source: "proxy",
+        proxyDisplayName: "codex-legacy-edge",
+        endpoint: "/v1/responses",
+        model: "gpt-5.3-codex",
+        status: "success",
+        totalTokens: 320,
+        cost: 0.0009,
+      },
     ]);
 
     expect(
       html.match(/data-testid="invocation-endpoint-badge"/g)?.length ?? 0,
-    ).toBe(3);
+    ).toBe(6);
     expect(
       html.match(/data-testid="invocation-endpoint-path"/g)?.length ?? 0,
     ).toBe(1);
-    expect(html.match(/data-endpoint-kind="responses"/g)?.length ?? 0).toBe(1);
+    expect(
+      html.match(/data-testid="invocation-image-tool-badge"/g)?.length ?? 0,
+    ).toBe(2);
+    expect(html.match(/data-endpoint-kind="responses"/g)?.length ?? 0).toBe(3);
     expect(html.match(/data-endpoint-kind="chat"/g)?.length ?? 0).toBe(1);
     expect(html.match(/data-endpoint-kind="compact"/g)?.length ?? 0).toBe(1);
+    expect(html.match(/data-endpoint-kind="remote_v2"/g)?.length ?? 0).toBe(1);
     expect(html.match(/data-endpoint-kind="raw"/g)?.length ?? 0).toBe(1);
+    expect(html.match(/data-image-intent-kind="yes"/g)?.length ?? 0).toBe(1);
+    expect(
+      html.match(/data-image-intent-kind="direct_image"/g)?.length ?? 0,
+    ).toBe(1);
     expect(html).toContain("Responses");
     expect(html).toContain("Chat");
-    expect(html).toContain("远程压缩");
+    expect(html).toMatch(/图片工具|Image tool/);
+    expect(html).toMatch(/远程压缩V2|Remote compaction V2/);
     expect(html).toContain("/v1/responses/compact");
     expect(html).toContain("/v1/responses/very-long-segment-");
   });

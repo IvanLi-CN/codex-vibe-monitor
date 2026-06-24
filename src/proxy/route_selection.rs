@@ -1739,6 +1739,19 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                         POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS.saturating_sub(1),
                     )
                 };
+            let replay_request_value = snapshot
+                .to_prefix_bytes(usize::MAX)
+                .await
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(bytes.as_ref()).ok());
+            let replay_request_image_intent = infer_request_image_intent(
+                Some(ProxyCaptureTarget::Responses),
+                replay_request_value.as_ref(),
+            );
+            let replay_request_compaction_kind = infer_request_compaction_kind(
+                Some(ProxyCaptureTarget::Responses),
+                replay_request_value.as_ref(),
+            );
             send_pool_request_with_failover_and_binding_constraint(
                 state,
                 proxy_request_id,
@@ -1757,6 +1770,8 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                     request_info: RequestCaptureInfo {
                         model: replay_requested_model,
                         contains_encrypted_content: replay_contains_encrypted_content,
+                        image_intent: Some(replay_request_image_intent.as_str().to_string()),
+                        compaction_request_kind: replay_request_compaction_kind,
                         ..RequestCaptureInfo::default()
                     },
                     prompt_cache_key: replay_prompt_cache_key,
@@ -1866,6 +1881,19 @@ fn infer_request_image_intent(
     }
 }
 
+fn infer_request_compaction_kind(
+    capture_target: Option<ProxyCaptureTarget>,
+    parsed_request_body: Option<&Value>,
+) -> Option<CompactionKind> {
+    match capture_target {
+        Some(ProxyCaptureTarget::ResponsesCompact) => Some(CompactionKind::Compact),
+        Some(ProxyCaptureTarget::Responses) => parsed_request_body
+            .filter(|value| request_declares_remote_v2_compaction(value))
+            .map(|_| CompactionKind::RemoteV2),
+        _ => None,
+    }
+}
+
 fn live_first_image_intent_known(
     capture_target: Option<ProxyCaptureTarget>,
     image_intent: crate::ImageIntent,
@@ -1911,6 +1939,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         )
     };
     let mut request_image_intent = infer_request_image_intent(capture_target, None);
+    let mut request_compaction_kind = infer_request_compaction_kind(capture_target, None);
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
     let proxy_request_permit = take_or_acquire_proxy_request_concurrency_permit(
@@ -1956,7 +1985,10 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             let requested_model = parsed_request_body
                 .as_ref()
                 .and_then(extract_model_from_payload);
-            request_image_intent = infer_request_image_intent(capture_target, parsed_request_body.as_ref());
+            request_image_intent =
+                infer_request_image_intent(capture_target, parsed_request_body.as_ref());
+            request_compaction_kind =
+                infer_request_compaction_kind(capture_target, parsed_request_body.as_ref());
             let body_sticky_key = parsed_request_body
                 .as_ref()
                 .and_then(extract_sticky_key_from_request_body);
@@ -1996,6 +2028,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             model: requested_model,
                             contains_encrypted_content: request_contains_encrypted_content,
                             image_intent: Some(request_image_intent.as_str().to_string()),
+                            compaction_request_kind: request_compaction_kind,
                             ..RequestCaptureInfo::default()
                         },
                         prompt_cache_key: effective_prompt_cache_key.clone(),
@@ -2524,6 +2557,14 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         .map(|value| infer_request_image_intent(capture_target, Some(&value)))
                         .unwrap_or_else(|| infer_request_image_intent(capture_target, None)),
                     Err(_) => infer_request_image_intent(capture_target, None),
+                };
+                let _request_compaction_kind = match request_body_snapshot.to_bytes().await {
+                    Ok(request_body_bytes) => serde_json::from_slice::<Value>(&request_body_bytes)
+                        .ok()
+                        .and_then(|value| {
+                            infer_request_compaction_kind(capture_target, Some(&value))
+                        }),
+                    Err(_) => infer_request_compaction_kind(capture_target, None),
                 };
                 let (prompt_cache_binding_constraint, owner_auto_guard_active) =
                     load_via_pool_effective_routing_constraint(
@@ -3320,6 +3361,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             model: request_body_model,
                             contains_encrypted_content: request_contains_encrypted_content,
                             image_intent: Some(request_image_intent.as_str().to_string()),
+                            compaction_request_kind: request_compaction_kind,
                             ..RequestCaptureInfo::default()
                         },
                         prompt_cache_key: body_prompt_cache_key.clone(),

@@ -352,6 +352,7 @@ export interface ApiInvocation {
   endpoint?: string;
   compactionRequestKind?: "compact" | "remote_v2" | null;
   compactionResponseKind?: "compact" | "remote_v2" | null;
+  imageIntent?: "yes" | "direct_image" | "no" | "unknown" | null;
   requesterIp?: string;
   promptCacheKey?: string;
   stickyKey?: string | null;
@@ -1107,6 +1108,7 @@ export interface PromptCacheConversationInvocationPreview {
   endpoint: string | null;
   compactionRequestKind?: ApiInvocation["compactionRequestKind"];
   compactionResponseKind?: ApiInvocation["compactionResponseKind"];
+  imageIntent?: ApiInvocation["imageIntent"];
   source?: ApiInvocation["source"];
   inputTokens?: ApiInvocation["inputTokens"];
   outputTokens?: ApiInvocation["outputTokens"];
@@ -2022,6 +2024,13 @@ function normalizePromptCacheConversationInvocationPreview(
       payload.compactionResponseKind === "compact" ||
       payload.compactionResponseKind === "remote_v2"
         ? payload.compactionResponseKind
+        : null,
+    imageIntent:
+      payload.imageIntent === "yes" ||
+      payload.imageIntent === "direct_image" ||
+      payload.imageIntent === "no" ||
+      payload.imageIntent === "unknown"
+        ? payload.imageIntent
         : null,
     source:
       typeof payload.source === "string" && payload.source.trim()

@@ -743,6 +743,7 @@ pub(crate) struct AccountStickyKeyInvocationPreviewRow {
     endpoint: Option<String>,
     compaction_request_kind: Option<String>,
     compaction_response_kind: Option<String>,
+    image_intent: Option<String>,
 }
 
 #[allow(dead_code)]

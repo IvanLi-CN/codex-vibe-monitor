@@ -89,6 +89,7 @@ function createPreview(
     endpoint: overrides.endpoint ?? "/v1/responses",
     compactionRequestKind: overrides.compactionRequestKind ?? null,
     compactionResponseKind: overrides.compactionResponseKind ?? null,
+    imageIntent: overrides.imageIntent ?? null,
     inputTokens: overrides.inputTokens ?? 120,
     outputTokens: overrides.outputTokens ?? 80,
     cacheInputTokens: overrides.cacheInputTokens ?? 30,
@@ -591,6 +592,71 @@ describe("DashboardWorkingConversationsSection", () => {
     }
 
     expect(badge.textContent).toMatch(/远程压缩V2|Remote compaction V2/);
+  });
+
+  it("shows the image-tool badge only for image-capable previews", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-image-yes", [
+          createPreview({
+            id: 12,
+            invokeId: "invoke-image-yes",
+            occurredAt: "2026-04-04T10:05:30Z",
+            status: "running",
+            endpoint: "/v1/responses",
+            imageIntent: "yes",
+          }),
+        ]),
+        createConversation("pck-image-no", [
+          createPreview({
+            id: 13,
+            invokeId: "invoke-image-no",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "completed",
+            endpoint: "/v1/responses",
+            imageIntent: "no",
+          }),
+        ]),
+      ]),
+    );
+
+    const badges = host?.querySelectorAll(
+      '[data-testid="invocation-image-tool-badge"]',
+    );
+    expect(badges?.length ?? 0).toBe(1);
+    expect(host?.textContent).toMatch(/图片工具|Image tool/);
+  });
+
+  it("keeps image and remote_v2 badges visible together for mixed-signal previews", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-mixed-signal", [
+          createPreview({
+            id: 14,
+            invokeId: "invoke-mixed-signal",
+            occurredAt: "2026-04-04T10:06:30Z",
+            status: "running",
+            endpoint: "/v1/responses",
+            compactionRequestKind: "remote_v2",
+            imageIntent: "direct_image",
+          }),
+        ]),
+      ]),
+    );
+
+    const remoteBadge = host?.querySelector(
+      '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="remote_v2"]',
+    );
+    const imageBadge = host?.querySelector(
+      '[data-testid="invocation-image-tool-badge"][data-image-intent-kind="direct_image"]',
+    );
+
+    if (!(remoteBadge instanceof HTMLElement) || !(imageBadge instanceof HTMLElement)) {
+      throw new Error("missing mixed-signal badges");
+    }
+
+    expect(remoteBadge.textContent).toMatch(/远程压缩V2|Remote compaction V2/);
+    expect(imageBadge.textContent).toMatch(/图片工具|Image tool/);
   });
 
   it("renders compact account plan badges and hides local or missing plans", () => {

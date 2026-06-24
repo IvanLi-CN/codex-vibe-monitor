@@ -26,3 +26,5 @@
 - 2026-06-22: Settings 页面新增请求/响应 body 记录开关，并补充前后端回归测试与 Storybook 视觉证据。
 - 2026-06-23: 新增 `compactionRequestKind` / `compactionResponseKind` 语义层，稳定识别 `/v1/responses` 内的 remote compaction V2，并保持旧 `/v1/responses/compact` 继续显示为 `Compact`。
 - 2026-06-23: 调整 invocation 列表与详情展示规则：列表按运行态请求信号与终态响应信号区分 `Responses` / `远程压缩V2`，详情始终保留原始 endpoint 并单列展示“压缩请求 / 压缩响应”。
+- 2026-06-24: 修复 pool `/v1/responses` 请求侧 `compactionRequestKind` 在 prebuffer/replay 路径丢失的问题，确保 `requestBodyLoggingEnabled=false` 时仍可稳定落库 `remote_v2`。
+- 2026-06-24: 将 `imageIntent` 升级为公开 invocation 可观测合同，打通 `/api/invocations`、SSE `records`、Prompt Cache preview、Records 与 Dashboard，并新增独立“图片工具”徽标。

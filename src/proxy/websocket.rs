@@ -1580,6 +1580,7 @@ async fn persist_ws_usage_event(
         response_contains_encrypted_content: event.contains_encrypted_content,
         compaction_request_kind: None,
         compaction_response_kind: None,
+        image_intent: None,
         request_model: None,
         requested_service_tier: None,
         billing_service_tier: billing_service_tier.as_deref(),

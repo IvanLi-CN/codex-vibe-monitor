@@ -4,7 +4,7 @@
 
 Account-pool routing policy moved from isolated group/tag behavior to a layered effective policy model. The resolver now computes one effective policy per account and downstream routing code reads that policy instead of separate group or tag fragments.
 
-2026-06-23: Split image-tool request rewrite from image capability discovery, added tri-state image intent routing for Responses and direct image endpoints, and exposed the new group/account image-tool controls in Storybook.
+2026-06-23: Split image-tool request rewrite from image capability discovery, added four-state image intent routing (`yes|direct_image|no|unknown`) for Responses and direct image endpoints, and exposed the new group/account image-tool controls in Storybook.
 
 2026-05-27: Clarified and enforced sticky transfer boundaries: `allow_cut_out=false` blocks automatic timeout/failover migration even when the current route key is excluded, while explicit Prompt Cache bindings remain the only manual cut-out override. HTTP 4xx responses no longer count as sticky route successes.
 

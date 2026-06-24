@@ -44,6 +44,7 @@ type PromptCacheConversationPreviewExtras = Partial<
     | "isActionable"
     | "compactionRequestKind"
     | "compactionResponseKind"
+    | "imageIntent"
     | "responseContentEncoding"
     | "transport"
     | "requestedServiceTier"
@@ -280,6 +281,7 @@ export function buildInvocationFromPromptCachePreview(
     endpoint: preview.endpoint ?? undefined,
     compactionRequestKind: extras.compactionRequestKind,
     compactionResponseKind: extras.compactionResponseKind,
+    imageIntent: extras.imageIntent,
     upstreamAccountId: preview.upstreamAccountId,
     upstreamAccountName: preview.upstreamAccountName ?? undefined,
     upstreamAccountPlanType: preview.upstreamAccountPlanType ?? undefined,
@@ -331,6 +333,7 @@ export function buildPromptCachePreviewFromInvocation(
     endpoint: record.endpoint?.trim() || null,
     compactionRequestKind: record.compactionRequestKind ?? null,
     compactionResponseKind: record.compactionResponseKind ?? null,
+    imageIntent: record.imageIntent ?? null,
     source: record.source,
     inputTokens: record.inputTokens,
     outputTokens: record.outputTokens,

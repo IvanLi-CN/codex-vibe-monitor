@@ -23,14 +23,14 @@ System unsupported-model tags are folded into the same effective model constrain
 Image routing is split from capability discovery:
 
 - `imageToolRewriteMode` is resolved on the group/account policy path, with `keep_original` consulting the account's observed `image_tool_capability`
-- image compatibility for `image intent=yes` is derived from both rewrite mode and observed capability:
+- image compatibility for `image intent=yes|direct_image` is derived from both rewrite mode and observed capability:
   - `fill_missing` and `force_add` are always image-compatible
   - `force_remove` is never image-compatible
   - `keep_original` allows `supported` and `unknown`, but excludes `unsupported`
 - `fill_missing` only injects image tools when image intent is confirmed
 - `force_add` always injects image tools
 - `force_remove` always strips image tools
-- direct image endpoints only filter by capability and do not rewrite request bodies
+- direct image endpoints classify as `direct_image`, only filter by capability, and do not rewrite request bodies
 - Responses family rewrites are applied only when the request body can be parsed safely
 - successful image-intent requests write back `image_tool_capability=supported`
 - explicit unsupported image responses write back `image_tool_capability=unsupported`

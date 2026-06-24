@@ -1,26 +1,5 @@
 pub(crate) const HEADER_STICKY_EARLY_STICKY_SCAN_BYTES: usize = 64 * 1024;
 
-fn json_value_declares_remote_v2_compaction(value: &Value) -> bool {
-    fn entry_declares_remote_v2_compaction(entry: &Value) -> bool {
-        let Some(object) = entry.as_object() else {
-            return false;
-        };
-        object
-            .get("type")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value == "compaction")
-            && object.contains_key("compact_threshold")
-    }
-
-    let Some(context_management) = value.get("context_management") else {
-        return false;
-    };
-    if let Some(entries) = context_management.as_array() {
-        return entries.iter().any(entry_declares_remote_v2_compaction);
-    }
-    entry_declares_remote_v2_compaction(context_management)
-}
-
 fn value_contains_compaction_output_item(value: &Value) -> bool {
     value
         .get("output")
@@ -368,7 +347,7 @@ pub(crate) fn prepare_target_request_body(
     info.contains_encrypted_content = value_contains_encrypted_content(&value);
     info.compaction_request_kind = match target {
         ProxyCaptureTarget::ResponsesCompact => Some(CompactionKind::Compact),
-        ProxyCaptureTarget::Responses if json_value_declares_remote_v2_compaction(&value) => {
+        ProxyCaptureTarget::Responses if request_declares_remote_v2_compaction(&value) => {
             Some(CompactionKind::RemoteV2)
         }
         _ => None,
