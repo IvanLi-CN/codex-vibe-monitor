@@ -6,7 +6,8 @@ use crate::{
     add_approx_histogram_sample, align_bucket_epoch, empty_approx_histogram,
     invocation_counts_toward_non_success_usage,
     invocation_status_counts_toward_terminal_totals, invocation_status_is_success_like,
-    parse_to_utc_datetime, parse_utc_naive, resolve_failure_classification,
+    normalize_non_negative_timing_value, parse_to_utc_datetime, parse_utc_naive,
+    resolve_failure_classification,
     resolve_first_response_byte_total_ms,
 };
 
@@ -19,6 +20,8 @@ pub(crate) struct InvocationHourlyRollupDelta {
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
+    pub(crate) total_latency_sample_count: i64,
+    pub(crate) total_latency_sum_ms: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_sum_ms: f64,
     pub(crate) first_byte_max_ms: f64,
@@ -75,6 +78,8 @@ pub(crate) struct UpstreamAccountStatsDelta {
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
+    pub(crate) total_latency_sample_count: i64,
+    pub(crate) total_latency_sum_ms: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_sum_ms: f64,
     pub(crate) first_byte_max_ms: f64,
@@ -214,6 +219,12 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
         ) {
             overall_entry.non_success_cost += cost;
         }
+        if has_terminal_status
+            && let Some(total_ms) = normalize_non_negative_timing_value(row.t_total_ms)
+        {
+            overall_entry.total_latency_sample_count += 1;
+            overall_entry.total_latency_sum_ms += total_ms;
+        }
         if is_success_like
             && let Some(ttfb_ms) = row.t_upstream_ttfb_ms
             && ttfb_ms.is_finite()
@@ -304,6 +315,12 @@ pub(crate) fn accumulate_upstream_account_stats_delta(
         row.is_actionable,
     ) {
         entry.non_success_cost += cost;
+    }
+    if has_terminal_status
+        && let Some(total_ms) = normalize_non_negative_timing_value(row.t_total_ms)
+    {
+        entry.total_latency_sample_count += 1;
+        entry.total_latency_sum_ms += total_ms;
     }
 
     if is_success_like

@@ -936,6 +936,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL,
             non_success_cost REAL NOT NULL DEFAULT 0,
+            total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
+            total_latency_sum_ms REAL NOT NULL DEFAULT 0,
             first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
             first_byte_sum_ms REAL NOT NULL DEFAULT 0,
             first_byte_max_ms REAL NOT NULL DEFAULT 0,
@@ -959,6 +961,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     for (column, ty) in [
         ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
+        ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
         (
             "first_response_byte_total_sample_count",
             "INTEGER NOT NULL DEFAULT 0",
@@ -1201,6 +1205,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL DEFAULT 0,
             non_success_cost REAL NOT NULL DEFAULT 0,
+            total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
+            total_latency_sum_ms REAL NOT NULL DEFAULT 0,
             first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
             first_byte_sum_ms REAL NOT NULL DEFAULT 0,
             first_byte_max_ms REAL NOT NULL DEFAULT 0,
@@ -1220,7 +1226,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let upstream_account_stats_hourly_columns =
         load_sqlite_table_columns(pool, "upstream_account_stats_hourly").await?;
     let mut added_upstream_account_stats_columns = false;
-    for (column, ty) in [("non_success_cost", "REAL NOT NULL DEFAULT 0")] {
+    for (column, ty) in [
+        ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
+        ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
+    ] {
         if !upstream_account_stats_hourly_columns.contains(column) {
             added_upstream_account_stats_columns = true;
             let statement =
@@ -1275,6 +1285,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL DEFAULT 0,
             non_success_cost REAL NOT NULL DEFAULT 0,
+            total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
+            total_latency_sum_ms REAL NOT NULL DEFAULT 0,
             first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
             first_byte_sum_ms REAL NOT NULL DEFAULT 0,
             first_byte_max_ms REAL NOT NULL DEFAULT 0,
@@ -1293,7 +1305,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .context("failed to ensure upstream_account_stats_minute table existence")?;
     let upstream_account_stats_minute_columns =
         load_sqlite_table_columns(pool, "upstream_account_stats_minute").await?;
-    for (column, ty) in [("non_success_cost", "REAL NOT NULL DEFAULT 0")] {
+    for (column, ty) in [
+        ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
+        ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
+    ] {
         if !upstream_account_stats_minute_columns.contains(column) {
             added_upstream_account_stats_columns = true;
             let statement =

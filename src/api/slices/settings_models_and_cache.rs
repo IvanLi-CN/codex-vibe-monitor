@@ -335,6 +335,8 @@ pub(crate) struct UpstreamAccountStatsRollupRecord {
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
+    pub(crate) total_latency_sample_count: i64,
+    pub(crate) total_latency_sum_ms: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_sum_ms: f64,
     pub(crate) first_byte_max_ms: f64,
