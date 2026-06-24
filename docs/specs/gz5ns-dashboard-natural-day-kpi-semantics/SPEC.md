@@ -51,7 +51,7 @@
 - `消费速率` 右下为 `每对话`，公式是 `当前 spendRate / strict inProgressConversationCount`；分母为 `0` 或缺失时显示 `—`。
 - `成功` 右上为 `较昨日`，语义是 `当前成功数 / 昨日同进度成功数` 的比例，不是 delta；底部仍保留 `失败` 与 `失败率`。
 - `进行中对话` 右下为 `重试`，定义为当前 strict in-progress 对话里，上一条调用 display status 为 `failed` 且不含 `interrupted` 的唯一对话数。
-- `首字用时` 右下为最近 5 分钟完整调用结束的 `t_total_ms` 均值，定义为当前自然日窗口内最近 5 分钟相交 bucket 中最新可用的 `avgTotalMs`；缺样本显示 `—`，不回退到整日均值。
+- `首字用时` 右下为最近 5 分钟完整调用结束的 `t_total_ms` 均值，定义为当前自然日窗口内最近 5 分钟相交 bucket 的 `avgTotalMs` 按 `totalLatencySampleCount` 与相交时长加权后的窗口均值；缺样本显示 `—`，不回退到整日均值。
 - `今日成本` / `今日 Tokens` 右下都为 `失败`，聚合 `failed + interrupted` 调用的 cost / tokens。
 - 增强后的 summary 字段必须同时在全局 Dashboard 与 `upstreamAccountId` 账号作用域下可用。
 - 自然日金额图保留“累计金额”语义，但在 `metric=totalCost` 时必须改为两层堆叠面积：`累计成功金额` + `累计 Non-success 金额`。

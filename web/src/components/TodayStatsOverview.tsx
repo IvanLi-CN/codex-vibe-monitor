@@ -266,7 +266,7 @@ function formatLatencyValue(value: number | null, localeTag: string) {
   })} s`
 }
 
-function latestRecentWindowAvgTotalMs(
+function recentWindowAvgTotalMs(
   response: TimeseriesResponse | null | undefined,
   options?: { now?: Date; targetWindowMinutes?: number; closedNaturalDay?: boolean },
 ) {
@@ -289,6 +289,8 @@ function latestRecentWindowAvgTotalMs(
   const startMs = start.getTime()
   const anchorMs = anchor.getTime()
   const windowStartMs = Math.max(startMs, anchorMs - targetWindowMinutes * 60_000)
+  let totalLatencyMs = 0
+  let totalLatencySampleWeight = 0
 
   for (let index = response.points.length - 1; index >= 0; index -= 1) {
     const point = response.points[index]
@@ -308,10 +310,24 @@ function latestRecentWindowAvgTotalMs(
     ) {
       continue
     }
-    return value
+    const bucketDurationMs = bucketEndMs - bucketStartMs
+    if (bucketDurationMs <= 0) continue
+    const overlapStartMs = Math.max(bucketStartMs, windowStartMs)
+    const overlapEndMs = Math.min(bucketEndMs, anchorMs)
+    const overlapDurationMs = overlapEndMs - overlapStartMs
+    if (overlapDurationMs <= 0) continue
+    const overlapRatio = overlapDurationMs / bucketDurationMs
+    if (!Number.isFinite(overlapRatio) || overlapRatio <= 0) continue
+    const weightedSampleCount = sampleCount * overlapRatio
+    totalLatencyMs += value * weightedSampleCount
+    totalLatencySampleWeight += weightedSampleCount
   }
 
-  return null
+  if (totalLatencySampleWeight <= 0) {
+    return null
+  }
+
+  return totalLatencyMs / totalLatencySampleWeight
 }
 
 function startOfLocalDay(date: Date) {
@@ -601,7 +617,7 @@ export function TodayStatsOverview({
               {
                 label: t('dashboard.today.responseTime'),
                 value: formatLatencyValue(
-                  latestRecentWindowAvgTotalMs(timeseries, {
+                  recentWindowAvgTotalMs(timeseries, {
                     closedNaturalDay: dayKind === 'yesterday',
                     now,
                   }),
