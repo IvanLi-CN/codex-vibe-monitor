@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.75.2",
+  "base_stable_version": "1.75.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-24T07:31:15Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.75.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "cd169f899b6e7dfe89758f8d417b352687085af4",
+  "pr_number": 473,
+  "pr_title": "fix(dashboard): show avg total response time in natural-day KPI",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.75.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.75.2",
+  "target_sha": "5983d9ccbc3b1b2c90d58e400c8d86c3a65cd839",
+  "type_label": "type:patch"
+}
