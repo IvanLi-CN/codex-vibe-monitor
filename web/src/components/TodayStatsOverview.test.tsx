@@ -75,6 +75,7 @@ function buildTimeseriesWithLatency(): TimeseriesResponse {
       cacheInputTokens: 18000 + index * 1200,
       totalCost: Number((1.1 + index * 0.08).toFixed(2)),
       avgTotalMs: sampleCount > 0 ? Number((1260 + index * 73.5).toFixed(1)) : null,
+      totalLatencySampleCount: sampleCount,
       firstResponseByteTotalSampleCount: sampleCount,
       firstResponseByteTotalAvgMs: sampleCount > 0 ? Number((820 + index * 41.5).toFixed(1)) : null,
       firstResponseByteTotalP95Ms: sampleCount > 0 ? Number((980 + index * 58.5).toFixed(1)) : null,

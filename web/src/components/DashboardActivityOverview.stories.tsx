@@ -117,6 +117,7 @@ function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
         firstResponseByteTotalAvgMs == null
           ? null
           : buildTotalLatencyMs(firstResponseByteTotalAvgMs, minute, 0),
+      totalLatencySampleCount: totalCount,
       firstResponseByteTotalAvgMs,
     })
   }
@@ -180,6 +181,7 @@ function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
         firstResponseByteTotalAvgMs == null
           ? null
           : buildTotalLatencyMs(firstResponseByteTotalAvgMs, minute, 36),
+      totalLatencySampleCount: totalCount,
       firstResponseByteTotalAvgMs,
     })
   }
@@ -223,6 +225,7 @@ function build24HourPoints() {
         firstResponseByteTotalAvgMs == null
           ? null
           : buildTotalLatencyMs(firstResponseByteTotalAvgMs, index, 9),
+      totalLatencySampleCount: totalCount,
       firstResponseByteTotalAvgMs,
     })
   }
@@ -265,6 +268,7 @@ function buildHourlyPoints() {
         firstResponseByteTotalAvgMs == null
           ? null
           : buildTotalLatencyMs(firstResponseByteTotalAvgMs, index, 21),
+      totalLatencySampleCount: density,
       firstResponseByteTotalAvgMs,
     })
   }
