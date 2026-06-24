@@ -537,6 +537,7 @@ describe('TodayStatsOverview', () => {
               totalTokens: 1000,
               totalCost: 0.5,
               avgTotalMs: 1390,
+              totalLatencySampleCount: 2,
               firstResponseByteTotalSampleCount: 2,
               firstResponseByteTotalAvgMs: 500,
             },
@@ -597,6 +598,79 @@ describe('TodayStatsOverview', () => {
     expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-failed"]')?.textContent).toContain(
       '420',
     )
+  })
+
+  it('aggregates the recent response-time window across all overlapping buckets', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 6,
+          successCount: 6,
+          failureCount: 0,
+          totalCost: 1.2,
+          totalTokens: 3000,
+        }}
+        rate={{
+          tokensPerMinute: 0,
+          spendRate: 0,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={{
+          rangeStart: '2026-04-10T00:00:00.000Z',
+          rangeEnd: '2026-04-10T00:06:00.000Z',
+          bucketSeconds: 60,
+          points: [
+            {
+              bucketStart: '2026-04-10T00:00:00.000Z',
+              bucketEnd: '2026-04-10T00:01:00.000Z',
+              totalCount: 1,
+              successCount: 1,
+              failureCount: 0,
+              totalTokens: 300,
+              totalCost: 0.1,
+              avgTotalMs: 100,
+              totalLatencySampleCount: 1,
+              firstResponseByteTotalSampleCount: 1,
+              firstResponseByteTotalAvgMs: 50,
+            },
+            {
+              bucketStart: '2026-04-10T00:04:00.000Z',
+              bucketEnd: '2026-04-10T00:05:00.000Z',
+              totalCount: 2,
+              successCount: 2,
+              failureCount: 0,
+              totalTokens: 900,
+              totalCost: 0.4,
+              avgTotalMs: 200,
+              totalLatencySampleCount: 2,
+              firstResponseByteTotalSampleCount: 2,
+              firstResponseByteTotalAvgMs: 90,
+            },
+            {
+              bucketStart: '2026-04-10T00:05:00.000Z',
+              bucketEnd: '2026-04-10T00:06:00.000Z',
+              totalCount: 3,
+              successCount: 3,
+              failureCount: 0,
+              totalTokens: 1800,
+              totalCost: 0.7,
+              avgTotalMs: 800,
+              totalLatencySampleCount: 1,
+              firstResponseByteTotalSampleCount: 1,
+              firstResponseByteTotalAvgMs: 140,
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+        now={new Date('2026-04-10T00:06:00.000Z')}
+      />,
+    )
+
+    expect(
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')?.textContent,
+    ).toContain('400 ms')
   })
 
   it('compares cost and token totals against yesterday at the same day progress', () => {
@@ -926,6 +1000,7 @@ describe('TodayStatsOverview', () => {
       points: baseTimeseries.points.map((point) => ({
         ...point,
         avgTotalMs: null,
+        totalLatencySampleCount: 0,
       })),
     }
 

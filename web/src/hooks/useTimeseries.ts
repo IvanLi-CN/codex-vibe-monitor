@@ -455,12 +455,12 @@ function createLiveRecordDelta(
   bucketEndEpoch: number,
 ): LiveRecordDelta {
   const outcome = normalizeLiveRecordOutcome(record);
-  const totalLatencyMs =
-    typeof record.tTotalMs === "number" &&
-    Number.isFinite(record.tTotalMs) &&
-    record.tTotalMs >= 0
-      ? record.tTotalMs
-      : 0;
+  const rawTotalLatencyMs = record.tTotalMs;
+  const hasTotalLatencySample =
+    typeof rawTotalLatencyMs === "number" &&
+    Number.isFinite(rawTotalLatencyMs) &&
+    rawTotalLatencyMs >= 0;
+  const totalLatencyMs = hasTotalLatencySample ? Number(rawTotalLatencyMs) : 0;
   return {
     recordId: record.id,
     bucketStart: formatEpochToIso(bucketStartEpoch),
@@ -474,7 +474,7 @@ function createLiveRecordDelta(
     totalTokens: record.totalTokens ?? 0,
     totalCost: record.cost ?? 0,
     totalLatencyMs,
-    totalLatencySampleCount: totalLatencyMs > 0 ? 1 : 0,
+    totalLatencySampleCount: hasTotalLatencySample ? 1 : 0,
   };
 }
 

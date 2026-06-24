@@ -289,6 +289,8 @@ function latestRecentWindowAvgTotalMs(
   const startMs = start.getTime()
   const anchorMs = anchor.getTime()
   const windowStartMs = Math.max(startMs, anchorMs - targetWindowMinutes * 60_000)
+  let totalLatencyMs = 0
+  let totalLatencySampleCount = 0
 
   for (let index = response.points.length - 1; index >= 0; index -= 1) {
     const point = response.points[index]
@@ -299,12 +301,24 @@ function latestRecentWindowAvgTotalMs(
     const bucketEndMs = bucketEnd.getTime()
     if (bucketStartMs >= anchorMs || bucketEndMs <= windowStartMs) continue
     const value = point?.avgTotalMs ?? null
-    if (value != null && Number.isFinite(value)) {
-      return value
+    const sampleCount = point?.totalLatencySampleCount ?? 0
+    if (
+      value == null ||
+      !Number.isFinite(value) ||
+      !Number.isFinite(sampleCount) ||
+      sampleCount <= 0
+    ) {
+      continue
     }
+    totalLatencyMs += value * sampleCount
+    totalLatencySampleCount += sampleCount
   }
 
-  return null
+  if (totalLatencySampleCount <= 0) {
+    return null
+  }
+
+  return totalLatencyMs / totalLatencySampleCount
 }
 
 function startOfLocalDay(date: Date) {

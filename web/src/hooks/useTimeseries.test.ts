@@ -1031,6 +1031,54 @@ describe("useTimeseries natural-day range patching", () => {
     });
   });
 
+  it("counts zero-ms total latency as a valid completed-call sample", () => {
+    const current: TimeseriesResponse = {
+      rangeStart: "2026-03-08T00:00:00Z",
+      rangeEnd: "2026-03-08T00:03:00Z",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-03-08T00:01:00Z",
+          bucketEnd: "2026-03-08T00:02:00Z",
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          inFlightCount: 0,
+          totalTokens: 50,
+          totalCost: 0.2,
+          avgTotalMs: 400,
+          totalLatencySampleCount: 1,
+        },
+      ],
+    };
+
+    const result = upsertTimeseriesLiveRecord(
+      current,
+      {
+        id: 80,
+        invokeId: "zero-total-ms-settle",
+        occurredAt: "2026-03-08T00:01:20Z",
+        status: "success",
+        totalTokens: 12,
+        cost: 0.08,
+        tTotalMs: 0,
+        createdAt: "2026-03-08T00:01:20Z",
+      },
+      null,
+      {
+        range: "today",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(result.next?.points[0]).toMatchObject({
+      totalCount: 2,
+      successCount: 2,
+      avgTotalMs: 200,
+      totalLatencySampleCount: 2,
+    });
+  });
+
   it("clears latency fields when live patching reduces a bucket to zero calls", () => {
     const current: TimeseriesResponse = {
       rangeStart: "2026-03-08T00:00:00Z",
