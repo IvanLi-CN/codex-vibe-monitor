@@ -56,20 +56,24 @@ const sampleTimeseries: TimeseriesResponse = {
   rangeStart: '2026-04-10T00:00:00.000Z',
   rangeEnd: '2026-04-10T00:08:00.000Z',
   bucketSeconds: 60,
-  points: Array.from({ length: 8 }, (_, index) => ({
-    bucketStart: new Date(Date.parse('2026-04-10T00:00:00.000Z') + index * 60_000).toISOString(),
-    bucketEnd: new Date(Date.parse('2026-04-10T00:01:00.000Z') + index * 60_000).toISOString(),
-    totalCount: index % 3 === 0 ? 0 : 2 + index,
-    successCount: index % 3 === 0 ? 0 : 2 + index,
-    failureCount: index === 5 ? 1 : 0,
-    totalTokens: 78000 + index * 6100,
-    cacheInputTokens: 18000 + index * 1200,
-    totalCost: Number((1.1 + index * 0.08).toFixed(2)),
-    avgTotalMs: index % 3 === 0 ? null : Number((1260 + index * 132.5).toFixed(1)),
-    firstResponseByteTotalSampleCount: index % 3 === 0 ? 0 : 2 + index,
-    firstResponseByteTotalAvgMs: index % 3 === 0 ? null : Number((780 + index * 96.5).toFixed(1)),
-    firstResponseByteTotalP95Ms: index % 3 === 0 ? null : Number((960 + index * 118.5).toFixed(1)),
-  })),
+  points: Array.from({ length: 8 }, (_, index) => {
+    const sampleCount = index % 3 === 0 ? 0 : 2 + index
+    return {
+      bucketStart: new Date(Date.parse('2026-04-10T00:00:00.000Z') + index * 60_000).toISOString(),
+      bucketEnd: new Date(Date.parse('2026-04-10T00:01:00.000Z') + index * 60_000).toISOString(),
+      totalCount: index % 3 === 0 ? 0 : 2 + index,
+      successCount: index % 3 === 0 ? 0 : 2 + index,
+      failureCount: index === 5 ? 1 : 0,
+      totalTokens: 78000 + index * 6100,
+      cacheInputTokens: 18000 + index * 1200,
+      totalCost: Number((1.1 + index * 0.08).toFixed(2)),
+      avgTotalMs: sampleCount > 0 ? Number((1260 + index * 132.5).toFixed(1)) : null,
+      totalLatencySampleCount: sampleCount,
+      firstResponseByteTotalSampleCount: sampleCount,
+      firstResponseByteTotalAvgMs: index % 3 === 0 ? null : Number((780 + index * 96.5).toFixed(1)),
+      firstResponseByteTotalP95Ms: index % 3 === 0 ? null : Number((960 + index * 118.5).toFixed(1)),
+    }
+  }),
 }
 
 const comparisonTimeseries: TimeseriesResponse = {
