@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.75.3",
+  "base_stable_version": "1.75.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-25T04:36:56Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.75.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a2fbd42c8a120a92783aedeb5fa0359e1fe673f3",
+  "pr_number": 474,
+  "pr_title": "fix(observability): persist remote v2 and image intent signals",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.75.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.75.3",
+  "target_sha": "2bc83464a8db7a172fbac41b2ce50256fb0936bb",
+  "type_label": "type:patch"
+}
