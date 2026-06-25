@@ -1,4 +1,5 @@
 import type { ApiInvocation } from "./api";
+import type { TranslationKey } from "../i18n";
 
 const DEFAULT_FALLBACK = "—";
 const PRIORITY_SERVICE_TIER = "priority";
@@ -17,6 +18,9 @@ export type InvocationEndpointKind =
   | "remote_v2"
   | "raw";
 export type InvocationCompactionKind = "compact" | "remote_v2";
+export type InvocationImageIntent = "yes" | "direct_image" | "no" | "unknown";
+export type InvocationImageBadgeVariant = "success" | "info";
+type InvocationImageBadgeLabelKey = "table.imageTool.badge";
 
 type InvocationEndpointBadgeVariant = "default" | "secondary" | "info";
 type InvocationEndpointBadgeLabelKey =
@@ -35,6 +39,28 @@ export interface InvocationEndpointDisplay {
   endpointValue: string;
   badgeVariant: InvocationEndpointBadgeVariant | null;
   labelKey: InvocationEndpointBadgeLabelKey | null;
+}
+
+export interface InvocationImageIntentDisplay {
+  kind: InvocationImageIntent | "missing";
+  showsBadge: boolean;
+  badgeVariant: InvocationImageBadgeVariant | null;
+  badgeLabelKey: InvocationImageBadgeLabelKey | null;
+  detailLabelKey: TranslationKey | null;
+}
+
+function normalizeImageIntent(
+  value: string | null | undefined,
+): InvocationImageIntent | null {
+  if (
+    value === "yes" ||
+    value === "direct_image" ||
+    value === "no" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+  return null;
 }
 
 function normalizeCompactionKind(
@@ -238,6 +264,62 @@ export function resolveInvocationEndpointDisplay(
         endpointValue: endpointValue || fallback,
         badgeVariant: null,
         labelKey: null,
+      };
+  }
+}
+
+export function resolveInvocationImageIntentDisplay(
+  record:
+    | Pick<ApiInvocation, "imageIntent">
+    | ApiInvocation["imageIntent"]
+    | null
+    | undefined,
+): InvocationImageIntentDisplay {
+  const imageIntent =
+    typeof record === "string" || record == null
+      ? normalizeImageIntent(record)
+      : normalizeImageIntent(record.imageIntent);
+
+  switch (imageIntent) {
+    case "yes":
+      return {
+        kind: "yes",
+        showsBadge: true,
+        badgeVariant: "success",
+        badgeLabelKey: "table.imageTool.badge",
+        detailLabelKey: "table.imageTool.detail.yes",
+      };
+    case "direct_image":
+      return {
+        kind: "direct_image",
+        showsBadge: true,
+        badgeVariant: "info",
+        badgeLabelKey: "table.imageTool.badge",
+        detailLabelKey: "table.imageTool.detail.directImage",
+      };
+    case "no":
+      return {
+        kind: "no",
+        showsBadge: false,
+        badgeVariant: null,
+        badgeLabelKey: null,
+        detailLabelKey: "table.imageTool.detail.no",
+      };
+    case "unknown":
+      return {
+        kind: "unknown",
+        showsBadge: false,
+        badgeVariant: null,
+        badgeLabelKey: null,
+        detailLabelKey: "table.imageTool.detail.unknown",
+      };
+    default:
+      return {
+        kind: "missing",
+        showsBadge: false,
+        badgeVariant: null,
+        badgeLabelKey: null,
+        detailLabelKey: null,
       };
   }
 }

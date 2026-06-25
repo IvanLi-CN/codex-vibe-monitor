@@ -223,6 +223,7 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
                 compaction_response_kind: normalize_trimmed_optional_string(
                     row.compaction_response_kind,
                 ),
+                image_intent: normalize_trimmed_optional_string(row.image_intent),
                 t_req_read_ms: row.t_req_read_ms,
                 t_req_parse_ms: row.t_req_parse_ms,
                 t_upstream_connect_ms: row.t_upstream_connect_ms,

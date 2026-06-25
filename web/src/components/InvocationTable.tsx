@@ -16,6 +16,7 @@ import {
   invocationStableDomKey,
   type FastIndicatorState,
   type InvocationEndpointDisplay,
+  type InvocationImageIntentDisplay,
 } from "../lib/invocation";
 import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
 import { useTranslation } from "../i18n";
@@ -30,6 +31,7 @@ import {
   buildInvocationDetailViewModel,
   renderEndpointSummary,
   renderFastIndicator,
+  renderImageIntentBadge,
   renderReasoningEffortBadge,
   useInvocationPoolAttempts,
 } from "./invocation-details-shared";
@@ -117,6 +119,7 @@ interface InvocationRowViewModel {
   totalTokensValue: string;
   endpointValue: string;
   endpointDisplay: InvocationEndpointDisplay;
+  imageIntentDisplay: InvocationImageIntentDisplay;
   errorMessage: string;
   collapsedErrorSummary: string;
   totalLatencyValue: string;
@@ -736,7 +739,14 @@ export function InvocationTable({
                 <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
                   {t("table.details.endpoint")}
                 </div>
-                {renderEndpointSummary(row.endpointDisplay, t, "text-xs")}
+                <div className="flex min-w-0 flex-wrap items-center gap-1">
+                  {renderEndpointSummary(row.endpointDisplay, t, "text-xs")}
+                  {renderImageIntentBadge(
+                    row.imageIntentDisplay,
+                    t,
+                    "h-5 border-transparent bg-base-100/70 px-2 text-[10px] shadow-none",
+                  )}
+                </div>
                 <div
                   className="truncate text-xs"
                   title={row.collapsedErrorSummary || undefined}
@@ -986,7 +996,14 @@ export function InvocationTable({
                       </td>
                       <td className="hidden min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:table-cell xl:px-3">
                         <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
-                          {renderEndpointSummary(row.endpointDisplay, t)}
+                          <div className="flex min-w-0 flex-wrap items-center gap-1">
+                            {renderEndpointSummary(row.endpointDisplay, t)}
+                            {renderImageIntentBadge(
+                              row.imageIntentDisplay,
+                              t,
+                              "h-5 border-transparent bg-base-100/70 px-2 text-[10px] shadow-none",
+                            )}
+                          </div>
                           <span
                             className="block truncate whitespace-nowrap"
                             title={row.collapsedErrorSummary || undefined}

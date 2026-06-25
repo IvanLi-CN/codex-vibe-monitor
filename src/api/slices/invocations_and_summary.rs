@@ -9,6 +9,8 @@ pub(crate) const INVOCATION_COMPACTION_REQUEST_KIND_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.compactionRequestKind') AS TEXT) END";
 pub(crate) const INVOCATION_COMPACTION_RESPONSE_KIND_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.compactionResponseKind') AS TEXT) END";
+pub(crate) const INVOCATION_IMAGE_INTENT_SQL: &str =
+    "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.imageIntent') AS TEXT) END";
 pub(crate) const INVOCATION_FAILURE_KIND_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind)";
 pub(crate) const INVOCATION_REQUESTER_IP_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END";
@@ -68,6 +70,11 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
         .push(INVOCATION_COMPACTION_RESPONSE_KIND_SQL)
         .push(
             " AS compaction_response_kind, \
+         ",
+        )
+        .push(INVOCATION_IMAGE_INTENT_SQL)
+        .push(
+            " AS image_intent, \
          ",
         )
         .push(INVOCATION_FAILURE_KIND_SQL)

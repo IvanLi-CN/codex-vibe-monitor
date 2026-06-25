@@ -40,6 +40,7 @@ import {
   buildInvocationDetailViewModel,
   renderEndpointSummary,
   renderFastIndicator,
+  renderImageIntentBadge,
 } from "./invocation-details-shared";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 
@@ -579,11 +580,18 @@ function InvocationSlot({
             "h-4.5 border-primary/45 bg-primary/10 px-1.5 text-[8.5px]",
           )}
           <div className="flex h-5 shrink-0 items-center">
-            {renderEndpointSummary(
-              viewModel.endpointDisplay,
-              t,
-              "h-4.5 rounded-full border-transparent bg-base-100/10 px-1.5 py-0 text-[8.5px] font-semibold leading-none text-base-content/72 shadow-none",
-            )}
+            <div className="flex items-center gap-1">
+              {renderEndpointSummary(
+                viewModel.endpointDisplay,
+                t,
+                "h-4.5 rounded-full border-transparent bg-base-100/10 px-1.5 py-0 text-[8.5px] font-semibold leading-none text-base-content/72 shadow-none",
+              )}
+              {renderImageIntentBadge(
+                viewModel.imageIntentDisplay,
+                t,
+                "h-4.5 border-transparent bg-base-100/10 px-1.5 py-0 text-[8.5px] font-semibold leading-none text-base-content/72 shadow-none",
+              )}
+            </div>
           </div>
           {viewModel.collapsedErrorSummary ? (
             <span

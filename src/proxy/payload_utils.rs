@@ -560,6 +560,27 @@ pub(crate) fn infer_image_intent_from_request_body(
     }
 }
 
+pub(crate) fn request_declares_remote_v2_compaction(value: &Value) -> bool {
+    fn entry_declares_remote_v2_compaction(entry: &Value) -> bool {
+        let Some(object) = entry.as_object() else {
+            return false;
+        };
+        object
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == "compaction")
+            && object.contains_key("compact_threshold")
+    }
+
+    let Some(context_management) = value.get("context_management") else {
+        return false;
+    };
+    if let Some(entries) = context_management.as_array() {
+        return entries.iter().any(entry_declares_remote_v2_compaction);
+    }
+    entry_declares_remote_v2_compaction(context_management)
+}
+
 fn is_openai_image_generation_model(model: &str) -> bool {
     model.trim().to_ascii_lowercase().starts_with("gpt-image-")
 }

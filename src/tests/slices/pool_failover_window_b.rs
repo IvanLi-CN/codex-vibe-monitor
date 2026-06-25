@@ -3920,6 +3920,455 @@ async fn proxy_openai_v1_responses_compact_live_first_waits_for_image_intent_bef
     .await;
 }
 
+#[tokio::test]
+async fn proxy_openai_v1_responses_pool_runtime_and_terminal_records_persist_remote_v2_compaction_request_kind(
+) {
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Remote V2 Account",
+        "upstream-remote-v2",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let mut rx = state.broadcaster.subscribe();
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6941,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"summarize this","context_management":[{"type":"compaction","compact_threshold":1234}]}"#,
+        ),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool remote v2 request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read remote v2 via-pool response");
+
+    let running_record = loop {
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for runtime records payload")
+            .expect("broadcast channel should stay open");
+        match payload {
+            BroadcastPayload::Records { records } => {
+                if let Some(record) = records.into_iter().find(|record| {
+                    record.endpoint.as_deref() == Some("/v1/responses")
+                        && record.compaction_request_kind.as_deref()
+                            == Some("remote_v2")
+                        && record.status.as_deref() == Some("running")
+                }) {
+                    break record;
+                }
+            }
+            _ => {}
+        }
+    };
+    assert_eq!(
+        running_record.compaction_request_kind.as_deref(),
+        Some("remote_v2")
+    );
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            request_id: Some(running_record.invoke_id.clone()),
+            page_size: Some(5),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list invocations should include remote v2 request kind");
+    let record = response
+        .records
+        .into_iter()
+        .find(|record| record.invoke_id == running_record.invoke_id)
+        .expect("persisted remote v2 invocation should exist");
+    assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
+    assert_eq!(record.compaction_request_kind.as_deref(), Some("remote_v2"));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_pool_remote_v2_request_kind_survives_disabled_request_body_logging(
+) {
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Remote V2 No Request Raw",
+        "upstream-remote-v2-no-request-raw",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let _ = put_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ProxyModelSettingsUpdateRequest {
+            hijack_enabled: true,
+            merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: None,
+            upstream_429_max_retries: None,
+            websocket_enabled: None,
+            upstream_websocket_default_enabled: None,
+            request_body_logging_enabled: Some(false),
+            response_body_logging_enabled: Some(true),
+            enabled_models: default_enabled_preset_models(),
+        }),
+    )
+    .await
+    .expect("disable request body logging");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6942,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"summarize this","context_management":[{"type":"compaction","compact_threshold":1234}]}"#,
+        ),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool remote v2 request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read remote v2 via-pool response");
+
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    let Json(response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            page_size: Some(10),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list invocations should succeed");
+    let record = response
+        .records
+        .into_iter()
+        .find(|record| record.endpoint.as_deref() == Some("/v1/responses"))
+        .expect("remote v2 invocation should exist");
+    assert_eq!(record.compaction_request_kind.as_deref(), Some("remote_v2"));
+    assert_eq!(record.request_raw_path, None);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_pool_persists_image_intent_for_image_model_requests() {
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Responses Image Intent",
+        "upstream-responses-image-intent",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6943,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-image-1","input":"draw a cat"}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool responses image request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read responses image response");
+
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            page_size: Some(5),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list invocations should include image intent");
+    let record = response
+        .records
+        .into_iter()
+        .find(|record| {
+            record.endpoint.as_deref() == Some("/v1/responses")
+                && record.image_intent.as_deref() == Some("yes")
+        })
+        .expect("persisted image-intent invocation should exist");
+    assert_eq!(record.image_intent.as_deref(), Some("yes"));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_direct_image_pool_persists_direct_image_intent() {
+    async fn direct_image_echo_upstream(headers: HeaderMap, body: Bytes) -> Response {
+        let authorization = headers
+            .get(http_header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let request_body: Value = serde_json::from_slice(&body).expect("decode upstream body");
+        (
+            StatusCode::OK,
+            Json(json!({
+                "authorization": authorization,
+                "requestBody": request_body,
+            })),
+        )
+            .into_response()
+    }
+
+    let app = Router::new().route(
+        "/v1/images/generations",
+        post(|headers, body| direct_image_echo_upstream(headers, body)),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind direct image upstream");
+    let upstream_base = format!("http://{}", listener.local_addr().expect("local addr"));
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("direct image upstream server should run");
+    });
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Direct Image Intent",
+        "upstream-direct-image-intent",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6944,
+        &"/v1/images/generations".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-image-1","prompt":"draw a cat"}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool direct image request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read direct image response");
+
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    let Json(response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            page_size: Some(10),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list invocations should succeed");
+    let record = response
+        .records
+        .into_iter()
+        .find(|record| record.endpoint.as_deref() == Some("/v1/images/generations"))
+        .expect("direct image invocation should exist");
+    assert_eq!(record.image_intent.as_deref(), Some("direct_image"));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_pool_image_intent_survives_disabled_request_body_logging() {
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Responses Image Intent No Request Raw",
+        "upstream-responses-image-no-request-raw",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let _ = put_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ProxyModelSettingsUpdateRequest {
+            hijack_enabled: true,
+            merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: None,
+            upstream_429_max_retries: None,
+            websocket_enabled: None,
+            upstream_websocket_default_enabled: None,
+            request_body_logging_enabled: Some(false),
+            response_body_logging_enabled: Some(true),
+            enabled_models: default_enabled_preset_models(),
+        }),
+    )
+    .await
+    .expect("disable request body logging");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6945,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-image-1","input":"draw a cat"}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool responses image request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read responses image response");
+
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    let Json(response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            page_size: Some(10),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list invocations should succeed");
+    let record = response
+        .records
+        .into_iter()
+        .find(|record| record.endpoint.as_deref() == Some("/v1/responses"))
+        .expect("responses image invocation should exist");
+    assert_eq!(record.image_intent.as_deref(), Some("yes"));
+    assert_eq!(record.request_raw_path, None);
+
+    upstream_handle.abort();
+}
+
 async fn assert_live_first_waits_for_image_intent_before_filtered_resolution(
     path: &str,
     proxy_request_id: u64,

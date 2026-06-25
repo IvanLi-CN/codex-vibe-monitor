@@ -674,6 +674,7 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) endpoint: Option<String>,
     pub(crate) compaction_request_kind: Option<String>,
     pub(crate) compaction_response_kind: Option<String>,
+    pub(crate) image_intent: Option<String>,
     pub(crate) source: Option<String>,
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
@@ -1194,6 +1195,7 @@ pub(crate) struct PromptCacheConversationInvocationPreviewRow {
     pub(crate) endpoint: Option<String>,
     pub(crate) compaction_request_kind: Option<String>,
     pub(crate) compaction_response_kind: Option<String>,
+    pub(crate) image_intent: Option<String>,
 }
 
 #[derive(Debug, FromRow)]

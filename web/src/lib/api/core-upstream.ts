@@ -78,7 +78,7 @@ export type ImageToolRewriteMode =
   | "force_add"
   | "force_remove";
 export type ImageToolCapability = "supported" | "unsupported" | "unknown";
-export type ImageIntent = "yes" | "no" | "unknown";
+export type ImageIntent = "yes" | "direct_image" | "no" | "unknown";
 
 export interface TagRoutingRule {
   blockNewConversations: boolean;

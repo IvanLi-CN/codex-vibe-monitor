@@ -21,9 +21,11 @@ import {
   resolveFirstResponseByteTotalMs,
   resolveInvocationAccountLabel,
   resolveInvocationEndpointDisplay,
+  resolveInvocationImageIntentDisplay,
   type FastIndicatorState,
   type InvocationCompactionKind,
   type InvocationEndpointDisplay,
+  type InvocationImageIntentDisplay,
 } from "../lib/invocation";
 import type { TranslationKey } from "../i18n";
 import { cn } from "../lib/utils";
@@ -63,6 +65,7 @@ export interface InvocationDetailViewModel {
   totalTokensValue: string;
   endpointValue: string;
   endpointDisplay: InvocationEndpointDisplay;
+  imageIntentDisplay: InvocationImageIntentDisplay;
   errorMessage: string;
   collapsedErrorSummary: string;
   totalLatencyValue: string;
@@ -487,6 +490,58 @@ function renderCompactionKindValue(
   return FALLBACK_CELL;
 }
 
+export function renderImageIntentBadge(
+  imageIntentDisplay: InvocationImageIntentDisplay,
+  t: Translator,
+  className?: string,
+) {
+  if (
+    !imageIntentDisplay.showsBadge ||
+    imageIntentDisplay.badgeVariant == null ||
+    imageIntentDisplay.badgeLabelKey == null
+  ) {
+    return null;
+  }
+
+  return (
+    <Badge
+      variant={imageIntentDisplay.badgeVariant}
+      className={cn(
+        "max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]",
+        className,
+      )}
+      data-testid="invocation-image-tool-badge"
+      data-image-intent-kind={imageIntentDisplay.kind}
+    >
+      <span className="block max-w-full truncate whitespace-nowrap">
+        {t(imageIntentDisplay.badgeLabelKey)}
+      </span>
+    </Badge>
+  );
+}
+
+function renderImageIntentValue(
+  imageIntentDisplay: InvocationImageIntentDisplay,
+  t: Translator,
+) {
+  if (imageIntentDisplay.detailLabelKey == null) {
+    return FALLBACK_CELL;
+  }
+
+  return imageIntentDisplay.showsBadge ? (
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      {renderImageIntentBadge(imageIntentDisplay, t)}
+      <span className="font-mono text-xs text-base-content/70">
+        {t(imageIntentDisplay.detailLabelKey)}
+      </span>
+    </div>
+  ) : (
+    <span className="font-mono text-xs text-base-content/70">
+      {t(imageIntentDisplay.detailLabelKey)}
+    </span>
+  );
+}
+
 export function buildInvocationDetailViewModel({
   record,
   normalizedStatus,
@@ -544,6 +599,7 @@ export function buildInvocationDetailViewModel({
     record.responseContentEncoding,
   );
   const endpointDisplay = resolveInvocationEndpointDisplay(record);
+  const imageIntentDisplay = resolveInvocationImageIntentDisplay(record);
   const endpointValue = endpointDisplay.endpointValue;
   const errorMessage = record.errorMessage?.trim() ?? "";
   const collapsedErrorSummary = resolveInvocationCollapsedErrorSummary(record);
@@ -644,6 +700,11 @@ export function buildInvocationDetailViewModel({
       key: "compactionResponse",
       label: t("table.details.compactionResponse"),
       value: renderCompactionKindValue(record.compactionResponseKind, t),
+    },
+    {
+      key: "imageIntent",
+      label: t("table.details.imageTool"),
+      value: renderImageIntentValue(imageIntentDisplay, t),
     },
     {
       key: "requesterIp",
@@ -853,6 +914,7 @@ export function buildInvocationDetailViewModel({
     totalTokensValue: formatOptionalNumber(record.totalTokens, numberFormatter),
     endpointValue,
     endpointDisplay,
+    imageIntentDisplay,
     errorMessage,
     collapsedErrorSummary,
     totalLatencyValue,
