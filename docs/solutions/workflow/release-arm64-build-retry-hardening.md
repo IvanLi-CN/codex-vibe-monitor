@@ -14,6 +14,7 @@ related_specs: []
 symptoms:
   - "Release fails in `Build + Smoke + Push Candidate (linux/arm64)` while amd64 succeeds."
   - "The failing build dies while resolving a base image or registry metadata, often with `DeadlineExceeded` or `context deadline exceeded`."
+  - "The failing build dies inside Cargo dependency resolution with `Error in the HTTP2 framing layer`, then succeeds on rerun."
 root_cause: "The arm64 release smoke build treated transient Docker Hub or registry metadata timeouts as terminal failures, so one flaky upstream fetch aborted the entire publish path."
 resolution_type: "retry-hardening"
 ---
@@ -29,6 +30,7 @@ The release workflow publishes both `linux/amd64` and `linux/arm64` images befor
 - `Release` fails even though the application code and the amd64 release lane are healthy.
 - The failing step is `Build smoke image (linux/arm64, load)`.
 - The error surface points at registry access rather than Dockerfile logic, for example `failed to authorize`, `DeadlineExceeded`, `context deadline exceeded`, or similar network timeouts.
+- Cargo dependency fetches inside the Docker build can show the same transient class via `Error in the HTTP2 framing layer` while resolving `crates.io`.
 - Rerunning the same workflow often succeeds without any code change.
 
 ## Root Cause
@@ -41,6 +43,7 @@ Move the arm64 smoke build behind a repo-owned retry helper and validate that co
 
 - Run the arm64 smoke build through `.github/scripts/build-smoke-image-with-retry.sh`.
 - Retry only known transient registry/network failures such as `DeadlineExceeded`, `context deadline exceeded`, TLS handshake timeouts, connection resets, unexpected EOF, and rate-limit style fetch failures.
+- Treat Cargo's transient registry fetch surfaces the same way when the build log shows `Error in the HTTP2 framing layer` for a dependency download.
 - Keep non-transient build failures fail-closed on the first attempt so real Dockerfile or packaging regressions stay loud.
 - When the release queue can backfill older pending commits, stage workflow-owned helpers into the target checkout before the arm64 build so historical targets do not fail just because the helper file was introduced later.
 - Add a dedicated script regression test that proves both paths:
@@ -54,6 +57,7 @@ Move the arm64 smoke build behind a repo-owned retry helper and validate that co
 - Put retry policy in a repo-owned script instead of duplicating shell loops inline in workflow YAML; this keeps release, tests, and contract fixtures aligned.
 - If the workflow needs to run against older release targets, keep any helper files outside the target checkout or source them from the workflow revision so the queued backfill stays compatible.
 - When a release job fails in only one architecture lane, inspect whether the error happens before the real Dockerfile steps begin. If yes, suspect registry flakiness before suspecting app code.
+- When the build fails during the Cargo warm-up layer, distinguish dependency-fetch transport errors from compile errors. Extend the retry classifier with transport-specific markers such as `Error in the HTTP2 framing layer`; deterministic compiler, auth, or configuration failures should still stop immediately.
 - For workflow-level resilience changes, update both live workflows and `quality-gates-contract` fixtures in the same patch. Otherwise CI may accept topology drift or reject the intended contract.
 
 ## References
