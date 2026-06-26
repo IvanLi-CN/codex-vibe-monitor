@@ -23,7 +23,8 @@ pub(crate) fn stats_success_failure_select_sql() -> String {
          COALESCE(SUM(CASE WHEN {success_like} AND {resolved_failure} = 'none' THEN 1 ELSE 0 END), 0) AS success_count, \
          COALESCE(SUM(CASE WHEN {terminal_status} AND {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
-         COALESCE(SUM(total_tokens), 0) AS total_tokens",
+         COALESCE(SUM(total_tokens), 0) AS total_tokens, \
+         COALESCE(SUM(CASE WHEN {terminal_status} AND {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN COALESCE(cost, 0.0) ELSE 0.0 END), 0.0) AS non_success_cost",
         success_like = STATS_SUCCESS_LIKE_SQL,
         terminal_status = STATS_TERMINAL_STATUS_SQL,
         resolved_failure = crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
@@ -2752,6 +2753,7 @@ pub(crate) async fn query_unmaterialized_invocation_archive_totals(
         totals.failure_count += row.failure_count;
         totals.total_tokens += row.total_tokens;
         totals.total_cost += row.total_cost;
+        totals.non_success_cost += row.non_success_cost;
     }
 
     Ok(totals)
@@ -3040,6 +3042,7 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals(
         totals.failure_count += row.failure_count;
         totals.total_tokens += row.total_tokens;
         totals.total_cost += row.total_cost;
+        totals.non_success_cost += row.non_success_cost;
     }
 
     Ok(totals)
@@ -3951,18 +3954,25 @@ async fn query_invocation_all_time_rollup_totals(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
 ) -> Result<AllTimeRollupTotals> {
-    let mut query = QueryBuilder::<Sqlite>::new(
+    let non_success_cost_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "non_success_cost").await? {
+            "COALESCE(SUM(non_success_cost), 0.0) AS non_success_cost"
+        } else {
+            "0.0 AS non_success_cost"
+        };
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
             COALESCE(SUM(total_count), 0) AS total_count,
             COALESCE(SUM(success_count), 0) AS success_count,
             COALESCE(SUM(failure_count), 0) AS failure_count,
             COALESCE(SUM(total_cost), 0.0) AS total_cost,
-            COALESCE(SUM(total_tokens), 0) AS total_tokens
+            COALESCE(SUM(total_tokens), 0) AS total_tokens,
+            {non_success_cost_expr}
         FROM invocation_rollup_hourly
         WHERE 1 = 1
         "#,
-    );
+    ));
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
@@ -4222,7 +4232,8 @@ pub(crate) async fn query_crs_totals(
             COALESCE(SUM(success_count), 0) AS success_count,
             COALESCE(SUM(failure_count), 0) AS failure_count,
             COALESCE(SUM(total_cost), 0.0) AS total_cost,
-            COALESCE(SUM(total_tokens), 0) AS total_tokens
+            COALESCE(SUM(total_tokens), 0) AS total_tokens,
+            0.0 AS non_success_cost
         FROM stats_source_deltas
         WHERE source = ?1 AND period = ?2
         "#,

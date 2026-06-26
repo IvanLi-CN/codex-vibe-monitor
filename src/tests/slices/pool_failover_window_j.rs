@@ -2397,7 +2397,8 @@ async fn recompute_invocation_hourly_rollups_ignores_archive_manifests_for_live_
             COALESCE(SUM(success_count), 0) AS success_count,
             COALESCE(SUM(failure_count), 0) AS failure_count,
             COALESCE(SUM(total_cost), 0.0) AS total_cost,
-            COALESCE(SUM(total_tokens), 0) AS total_tokens
+            COALESCE(SUM(total_tokens), 0) AS total_tokens,
+            COALESCE(SUM(non_success_cost), 0.0) AS non_success_cost
         FROM invocation_rollup_hourly
         WHERE bucket_start_epoch = ?1 AND source = ?2
         "#,

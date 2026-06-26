@@ -47,6 +47,8 @@ function recordCompletenessScore(record: ApiInvocation) {
   let score = 0;
   if (record.source?.trim()) score += 1;
   if (record.model?.trim()) score += 1;
+  if (record.requestModel?.trim()) score += 1;
+  if (record.responseModel?.trim()) score += 1;
   if (record.proxyDisplayName?.trim()) score += 1;
   if (record.endpoint?.trim()) score += 1;
   if (record.promptCacheKey?.trim()) score += 1;
@@ -199,6 +201,8 @@ export function mergeInvocationRecordDetails(
     "status",
     "routeMode",
     "model",
+    "requestModel",
+    "responseModel",
     "endpoint",
     "upstreamAccountName",
     "proxyDisplayName",

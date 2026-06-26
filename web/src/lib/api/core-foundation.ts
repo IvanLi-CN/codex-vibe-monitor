@@ -331,6 +331,8 @@ export interface ApiInvocation {
   source?: string;
   proxyDisplayName?: string;
   model?: string;
+  requestModel?: string;
+  responseModel?: string;
   inputTokens?: number;
   outputTokens?: number;
   cacheInputTokens?: number;
@@ -1099,6 +1101,8 @@ export interface PromptCacheConversationInvocationPreview {
   failureClass: Exclude<ApiInvocation["failureClass"], undefined> | null;
   routeMode: string | null;
   model: string | null;
+  requestModel?: string | null;
+  responseModel?: string | null;
   totalTokens: number;
   cost: number | null;
   proxyDisplayName: string | null;
@@ -1992,6 +1996,14 @@ function normalizePromptCacheConversationInvocationPreview(
     model:
       typeof payload.model === "string" && payload.model.trim()
         ? payload.model.trim()
+        : null,
+    requestModel:
+      typeof payload.requestModel === "string" && payload.requestModel.trim()
+        ? payload.requestModel.trim()
+        : null,
+    responseModel:
+      typeof payload.responseModel === "string" && payload.responseModel.trim()
+        ? payload.responseModel.trim()
         : null,
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     cost: normalizeFiniteNumber(payload.cost) ?? null,

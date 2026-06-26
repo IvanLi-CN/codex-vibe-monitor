@@ -109,6 +109,8 @@ function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
     source: "proxy",
     proxyDisplayName: "jp-relay-01",
     model: "gpt-5.4",
+    requestModel: "gpt-5.4",
+    responseModel: "gpt-5.4",
     endpoint: "/v1/responses",
     inputTokens: 2400,
     cacheInputTokens: 400,
@@ -257,6 +259,52 @@ describe("InvocationRecordsTable", () => {
     const text = host?.textContent ?? "";
     expect(text).toContain("table.status.interrupted");
     expect(text).not.toContain("table.status.failed");
+  });
+
+  it("shows the routing icon when request and response models differ", () => {
+    render(
+      <InvocationRecordsTable
+        focus="token"
+        isLoading={false}
+        records={[
+          createRecord({
+            requestModel: "gpt-5.4",
+            responseModel: "gpt-5.5",
+            model: "gpt-5.5",
+          }),
+        ]}
+      />,
+    );
+
+    expect(
+      host?.querySelector(
+        '[data-testid="invocation-records-model-routing-indicator"]',
+      ),
+    ).not.toBeNull();
+  });
+
+  it("keeps legacy detail fallback on response model only", async () => {
+    render(
+      <InvocationRecordsTable
+        focus="token"
+        isLoading={false}
+        records={[
+          createRecord({
+            requestModel: undefined,
+            responseModel: undefined,
+            model: "gpt-5-legacy",
+          }),
+        ]}
+      />,
+    );
+
+    clickFirstToggle();
+    await flushAsyncWork();
+
+    const text = host?.textContent ?? "";
+    expect(text).toContain("table.details.requestModel");
+    expect(text).toContain("table.details.responseModel");
+    expect(text).toContain("gpt-5-legacy");
   });
 
   it("renders a richer expanded panel with summary strip and structured-only notice", () => {

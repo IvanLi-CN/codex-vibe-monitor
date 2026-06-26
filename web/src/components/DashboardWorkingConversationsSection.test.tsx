@@ -68,6 +68,12 @@ function createPreview(
     failureClass: overrides.failureClass ?? "none",
     routeMode: overrides.routeMode ?? "pool",
     model: overrides.model ?? "gpt-5.4",
+    requestModel:
+      "requestModel" in overrides ? (overrides.requestModel ?? null) : "gpt-5.4",
+    responseModel:
+      "responseModel" in overrides
+        ? (overrides.responseModel ?? null)
+        : (overrides.model ?? "gpt-5.4"),
     totalTokens: overrides.totalTokens ?? 200,
     cost: overrides.cost ?? 0.02,
     proxyDisplayName:
@@ -258,6 +264,33 @@ function renderSectionWithCards(
   });
   return cards;
 }
+
+describe("DashboardWorkingConversationsSection model routing", () => {
+  it("shows response model as primary text and renders routing indicator on mismatch", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-mismatch", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-mismatch",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "success",
+            model: "gpt-5.5",
+            requestModel: "gpt-5.4",
+            responseModel: "gpt-5.5",
+          }),
+        ]),
+      ]),
+    );
+
+    expect(host?.textContent).toContain("gpt-5.5");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-working-conversation-model-routing-indicator"]',
+      ),
+    ).not.toBeNull();
+  });
+});
 
 function rerenderSection(
   response: PromptCacheConversationsResponse,

@@ -16,11 +16,13 @@
 - `/api/invocations` 向前端稳定返回分阶段耗时字段，支持“首字节 / 总耗时”与完整阶段详情展示。
 - Live 与 Dashboard 共用表格统一升级，主表保持简洁，详情区保留完整诊断信息。
 - 请求详情不再展示 `source`，也不把 `source` 当作代理名兜底；代理字段仅展示 payload 中已确认的 `proxyDisplayName`。
+- 调用记录相关模型展示统一采用“响应模型优先”语义，并在请求模型与响应模型不一致时显示低干扰的上游路由差异图标。
 - 号池尝试明细展示每次尝试实际落库的 `proxy_binding_key_snapshot`，用于失败链路诊断。
 - `GET /api/settings` 与 `PUT /api/settings/proxy` 暴露两个独立布尔开关：`requestBodyLoggingEnabled`、`responseBodyLoggingEnabled`，默认都为 `true`。
 - 关闭 body 记录时，仅停止新的 request/response 原文 body 落盘与响应 preview 持久化；结构化 payload、tokens、timing、routing/account、prompt cache key、reasoning/service tier 等字段继续写入。
 - `/api/invocations` 与 SSE `records` 在不改 schema 的前提下额外返回 `compactionRequestKind` / `compactionResponseKind`，把原始 endpoint 与压缩语义解耦。
 - `/api/invocations`、SSE `records` 与 Prompt Cache / Dashboard preview 在不改 schema 的前提下额外返回 `imageIntent`，使图片请求语义脱离 endpoint 和历史 raw body 存活状态而独立存在。
+- `/api/invocations`、SSE `records`、Prompt Cache preview 与 Dashboard working conversations 在不改 schema 的前提下额外返回 `requestModel` / `responseModel`，用于区分请求模型与实际响应模型。
 - Records 与 Dashboard 两个 owner-facing 列表同时显示独立“图片工具”徽标，避免同一条 invocation 在不同列表面出现语义漂移。
 
 ### Non-goals
@@ -69,6 +71,8 @@
 - `imageIntent` 对外合同固定为四态：`"yes" | "direct_image" | "no" | "unknown"`；缺字段历史记录继续返回 `null` / 前端显示 `—`，本次不做历史 backfill。
 - `/v1/responses` 请求若由 `gpt-image-*`、`image_generation` 或等价图片工具信号触发，必须持久化 `imageIntent="yes"`；`/v1/images/generations|edits` 必须持久化 `imageIntent="direct_image"`。
 - `requestBodyLoggingEnabled=false` 时，`compactionRequestKind` 与 `imageIntent` 仍必须稳定落库并对外可见，不能依赖 request raw body 后读。
+- 公开模型展示合同固定为：主显示值采用 `responseModel ?? model ?? requestModel`；只有在 `requestModel` 与 `responseModel` 同时存在、且忽略空白/大小写并按 dated alias/base-model 归并后仍不一致时，才显示“上游改路由”的差异图标。
+- 调用详情必须固定展示“请求模型 / 响应模型”两个字段；旧记录若只有历史 `model` 字段，则回填到“响应模型”，请求模型显示 `—`。
 
 ### SHOULD
 
@@ -124,6 +128,8 @@
 - `compactionRequestKind?: "compact" | "remote_v2" | null`
 - `compactionResponseKind?: "compact" | "remote_v2" | null`
 - `imageIntent?: "yes" | "direct_image" | "no" | "unknown" | null`
+- `requestModel?: string | null`
+- `responseModel?: string | null`
 
 ### `GET /api/invocations` 记录对象（已存在并沿用）
 
@@ -149,6 +155,10 @@
 - Given `/v1/responses` 请求命中图片工具意图，When Records 与 Dashboard 渲染该 invocation，Then 两个列表都显示独立的“图片工具”徽标，且不改写 endpoint badge。
 - Given `/v1/images/generations` 或 `/v1/images/edits` 请求完成，When 用户打开详情，Then `图片工具` 字段显示 `direct_image`，同时保留原始 endpoint。
 - Given 历史 invocation 缺少 `imageIntent`，When Records 或 Dashboard 渲染，Then 列表不显示图片徽标，详情字段显示 `—`。
+- Given 新记录同时携带 `requestModel=gpt-5.4` 与 `responseModel=gpt-5.5`，When Records、InvocationTable 或 Dashboard working conversations 渲染，Then 主模型文本显示 `gpt-5.5`，并在模型 badge 前显示上游路由差异图标。
+- Given `requestModel` 与 `responseModel` 仅大小写不同，或仅 dated alias/base-model 归并后等价，When 列表渲染，Then 不显示模型路由差异图标。
+- Given 调用详情打开，When 记录存在双模型字段，Then 页面始终分别展示“请求模型 / 响应模型”，且 mismatch 时仅响应模型带差异图标。
+- Given 历史记录仅存在 `model`，When 调用详情打开，Then 请求模型显示 `—`，响应模型显示该历史 `model` 值。
 
 ### Manual verification
 
@@ -211,6 +221,22 @@
   image:
   PR: include
   ![Dashboard image tool badge preview](./assets/dashboard-image-signals-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Monitoring/InvocationTable/ModelRoutingMismatch
+  state: request/response model mismatch
+  evidence_note: verifies the primary model badge follows the response model and adds the routed-model indicator only when normalized request/response models differ.
+  image:
+  PR: include
+  ![Invocation routed model mismatch](./assets/invocation-model-routing-mismatch.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Records/InvocationRecordsTable/LegacyModelOnly
+  state: legacy response-model fallback
+  evidence_note: verifies legacy records without `requestModel`/`responseModel` still render the historical `model` value as the response-model display while request model degrades to `—`.
+  image:
+  PR: include
+  ![Legacy response model fallback](./assets/invocation-model-routing-legacy.png)
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

@@ -106,9 +106,7 @@ import {
   type RoutingDraft,
   type UpstreamAccountsLocationState,
 } from "./UpstreamAccounts.shared-types";
-import {
-  UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
-} from "./UpstreamAccounts.shared-types";
+import { UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS } from "./UpstreamAccounts.shared-types";
 import {
   DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME,
   formatGroupFilterValue,
@@ -506,13 +504,7 @@ function AccountDetailSkeleton() {
   );
 }
 
-function DetailField({
-  label,
-  value,
-}: {
-  label: string;
-  value: ReactNode;
-}) {
+function DetailField({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="metric-cell">
       <p className="metric-label">{label}</p>
@@ -846,7 +838,9 @@ function SharedUpstreamAccountDetailDrawerInner({
     detail,
     isDetailLoading,
     detailError = null,
+    isDetailRecentActionsHydrated,
     selectAccount,
+    loadDetail,
     saveAccount,
     runSync,
     removeAccount,
@@ -870,8 +864,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     accountActions: new Set(),
   }));
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
-  const [accountPolicyEditorOpen, setAccountPolicyEditorOpen] =
-    useState(false);
+  const [accountPolicyEditorOpen, setAccountPolicyEditorOpen] = useState(false);
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([]);
   const [
     stickyConversationSelectionValue,
@@ -954,19 +947,13 @@ function SharedUpstreamAccountDetailDrawerInner({
     draftSessionSnapshotRef.current.open !== open ||
     draftSessionSnapshotRef.current.accountId !== accountId
   ) {
-    const closedActiveSession =
-      draftSessionSnapshotRef.current.open && !open;
-    const openedVisibleSession =
-      !draftSessionSnapshotRef.current.open && open;
+    const closedActiveSession = draftSessionSnapshotRef.current.open && !open;
+    const openedVisibleSession = !draftSessionSnapshotRef.current.open && open;
     const switchedVisibleAccount =
       draftSessionSnapshotRef.current.open &&
       open &&
       draftSessionSnapshotRef.current.accountId !== accountId;
-    if (
-      closedActiveSession ||
-      openedVisibleSession ||
-      switchedVisibleAccount
-    ) {
+    if (closedActiveSession || openedVisibleSession || switchedVisibleAccount) {
       draftSessionVersion += 1;
     }
     draftSessionSnapshotRef.current = {
@@ -1123,11 +1110,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         current,
         previousLatestServerDraft,
       );
-      if (
-        shouldSeedDraft ||
-        matchesSeedBaseline ||
-        matchesLatestServerDraft
-      ) {
+      if (shouldSeedDraft || matchesSeedBaseline || matchesLatestServerDraft) {
         draftBaselineRef.current = nextBaseline;
         return nextBaseline;
       }
@@ -1376,7 +1359,9 @@ function SharedUpstreamAccountDetailDrawerInner({
       if (existingGroup) {
         return existingGroup.singleAccountRotationEnabled === true;
       }
-      return groupDraftSingleAccountRotationEnabled[normalizedGroupName] === true;
+      return (
+        groupDraftSingleAccountRotationEnabled[normalizedGroupName] === true
+      );
     },
     [groupDraftSingleAccountRotationEnabled, resolveGroupSummaryForName],
   );
@@ -1483,104 +1468,103 @@ function SharedUpstreamAccountDetailDrawerInner({
     });
   }, []);
 
-  const {
-    openEditor: openGroupNoteEditor,
-    dialog: groupNoteDialog,
-  } = useUpstreamAccountGroupSettingsDialog({
-    writesEnabled,
-    container: detailDrawerPortalContainer,
-    resolveGroupState: useCallback(
-      (groupName) => {
-        const normalized = normalizeGroupName(groupName);
-        if (!normalized) return null;
-        const existingGroup = resolveGroupSummaryForName(normalized);
-        return {
-          groupName: normalized,
-          note: resolveGroupNoteForName(normalized),
-          existing: existingGroup != null,
-          accountCount: existingGroup?.accountCount ?? 0,
-          concurrencyLimit: resolveGroupConcurrencyLimitForName(normalized),
-          boundProxyKeys: resolveGroupBoundProxyKeysForName(normalized),
-          nodeShuntEnabled: resolveGroupNodeShuntEnabledForName(normalized),
-          singleAccountRotationEnabled:
-            resolveGroupSingleAccountRotationEnabledForName(normalized),
-          upstream429RetryEnabled:
-            resolveGroupUpstream429RetryEnabledForName(normalized),
-          upstream429MaxRetries:
-            resolveGroupUpstream429MaxRetriesForName(normalized),
-          routingRule: existingGroup?.routingRule,
-        };
-      },
-      [
-        resolveGroupBoundProxyKeysForName,
-        resolveGroupConcurrencyLimitForName,
-        resolveGroupNodeShuntEnabledForName,
-        resolveGroupSingleAccountRotationEnabledForName,
-        resolveGroupNoteForName,
-        resolveGroupSummaryForName,
-        resolveGroupUpstream429MaxRetriesForName,
-        resolveGroupUpstream429RetryEnabledForName,
-      ],
-    ),
-    saveGroupSettings: useCallback(
-      async (groupName, payload) => {
-        const normalizedGroupName = normalizeGroupName(groupName);
-        if (!normalizedGroupName) return;
+  const { openEditor: openGroupNoteEditor, dialog: groupNoteDialog } =
+    useUpstreamAccountGroupSettingsDialog({
+      writesEnabled,
+      container: detailDrawerPortalContainer,
+      resolveGroupState: useCallback(
+        (groupName) => {
+          const normalized = normalizeGroupName(groupName);
+          if (!normalized) return null;
+          const existingGroup = resolveGroupSummaryForName(normalized);
+          return {
+            groupName: normalized,
+            note: resolveGroupNoteForName(normalized),
+            existing: existingGroup != null,
+            accountCount: existingGroup?.accountCount ?? 0,
+            concurrencyLimit: resolveGroupConcurrencyLimitForName(normalized),
+            boundProxyKeys: resolveGroupBoundProxyKeysForName(normalized),
+            nodeShuntEnabled: resolveGroupNodeShuntEnabledForName(normalized),
+            singleAccountRotationEnabled:
+              resolveGroupSingleAccountRotationEnabledForName(normalized),
+            upstream429RetryEnabled:
+              resolveGroupUpstream429RetryEnabledForName(normalized),
+            upstream429MaxRetries:
+              resolveGroupUpstream429MaxRetriesForName(normalized),
+            routingRule: existingGroup?.routingRule,
+          };
+        },
+        [
+          resolveGroupBoundProxyKeysForName,
+          resolveGroupConcurrencyLimitForName,
+          resolveGroupNodeShuntEnabledForName,
+          resolveGroupSingleAccountRotationEnabledForName,
+          resolveGroupNoteForName,
+          resolveGroupSummaryForName,
+          resolveGroupUpstream429MaxRetriesForName,
+          resolveGroupUpstream429RetryEnabledForName,
+        ],
+      ),
+      saveGroupSettings: useCallback(
+        async (groupName, payload) => {
+          const normalizedGroupName = normalizeGroupName(groupName);
+          if (!normalizedGroupName) return;
 
-        const normalizedNote = payload.note?.trim() ?? "";
-        const normalizedBoundProxyKeys = Array.from(
-          new Set(
-            (payload.boundProxyKeys ?? [])
-              .map((value) => value.trim())
-              .filter((value) => value.length > 0),
-          ),
-        );
-        const normalizedConcurrencyLimit = payload.concurrencyLimit ?? 0;
-        const normalizedNodeShuntEnabled = payload.nodeShuntEnabled === true;
-        const normalizedSingleAccountRotationEnabled =
-          payload.singleAccountRotationEnabled === true;
-        const normalizedUpstream429RetryEnabled =
-          payload.upstream429RetryEnabled === true;
-        const normalizedUpstream429MaxRetries =
-          normalizedUpstream429RetryEnabled
-            ? normalizeEnabledGroupUpstream429MaxRetries(
-                payload.upstream429MaxRetries,
-              )
-            : normalizeGroupUpstream429MaxRetries(
-                payload.upstream429MaxRetries,
-              );
+          const normalizedNote = payload.note?.trim() ?? "";
+          const normalizedBoundProxyKeys = Array.from(
+            new Set(
+              (payload.boundProxyKeys ?? [])
+                .map((value) => value.trim())
+                .filter((value) => value.length > 0),
+            ),
+          );
+          const normalizedConcurrencyLimit = payload.concurrencyLimit ?? 0;
+          const normalizedNodeShuntEnabled = payload.nodeShuntEnabled === true;
+          const normalizedSingleAccountRotationEnabled =
+            payload.singleAccountRotationEnabled === true;
+          const normalizedUpstream429RetryEnabled =
+            payload.upstream429RetryEnabled === true;
+          const normalizedUpstream429MaxRetries =
+            normalizedUpstream429RetryEnabled
+              ? normalizeEnabledGroupUpstream429MaxRetries(
+                  payload.upstream429MaxRetries,
+                )
+              : normalizeGroupUpstream429MaxRetries(
+                  payload.upstream429MaxRetries,
+                );
 
-        await saveGroupNote(normalizedGroupName, {
-          note: normalizedNote || undefined,
-          boundProxyKeys: normalizedBoundProxyKeys,
-          concurrencyLimit: normalizedConcurrencyLimit,
-          nodeShuntEnabled: normalizedNodeShuntEnabled,
-          singleAccountRotationEnabled: normalizedSingleAccountRotationEnabled,
-          upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
-          upstream429MaxRetries: normalizedUpstream429MaxRetries,
-          routingRule: payload.routingRule,
-        });
-        clearDraftGroupSettings(normalizedGroupName);
-      },
-      [clearDraftGroupSettings, saveGroupNote],
-    ),
-    deleteGroupSettings: useCallback(
-      async (groupName: string) => {
-        await deleteGroupNote(groupName);
-        clearDraftGroupSettings(groupName);
-        setDraft((current) =>
-          normalizeGroupName(current.groupName) ===
-          normalizeGroupName(groupName)
-            ? {
-                ...current,
-                groupName: "",
-              }
-            : current,
-        );
-      },
-      [clearDraftGroupSettings, deleteGroupNote],
-    ),
-  });
+          await saveGroupNote(normalizedGroupName, {
+            note: normalizedNote || undefined,
+            boundProxyKeys: normalizedBoundProxyKeys,
+            concurrencyLimit: normalizedConcurrencyLimit,
+            nodeShuntEnabled: normalizedNodeShuntEnabled,
+            singleAccountRotationEnabled:
+              normalizedSingleAccountRotationEnabled,
+            upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
+            upstream429MaxRetries: normalizedUpstream429MaxRetries,
+            routingRule: payload.routingRule,
+          });
+          clearDraftGroupSettings(normalizedGroupName);
+        },
+        [clearDraftGroupSettings, saveGroupNote],
+      ),
+      deleteGroupSettings: useCallback(
+        async (groupName: string) => {
+          await deleteGroupNote(groupName);
+          clearDraftGroupSettings(groupName);
+          setDraft((current) =>
+            normalizeGroupName(current.groupName) ===
+            normalizeGroupName(groupName)
+              ? {
+                  ...current,
+                  groupName: "",
+                }
+              : current,
+          );
+        },
+        [clearDraftGroupSettings, deleteGroupNote],
+      ),
+    });
   const handleDetailGroupCreateRequest = useCallback(
     (groupName: string) => {
       openGroupNoteEditor(groupName, {
@@ -1815,6 +1799,17 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   const selectedDetail = detail?.id === selectedId ? detail : null;
   const selected = selectedDetail ?? selectedSummary;
+  useEffect(() => {
+    if (
+      !open ||
+      accountId == null ||
+      detailTab !== "healthEvents" ||
+      isDetailRecentActionsHydrated
+    ) {
+      return;
+    }
+    void loadDetail(accountId, { silent: true, includeRecentActions: true });
+  }, [accountId, detailTab, isDetailRecentActionsHydrated, loadDetail, open]);
   const handleDetailDrawerClose = useCallback(() => {
     onClose();
   }, [onClose]);
@@ -1916,13 +1911,19 @@ function SharedUpstreamAccountDetailDrawerInner({
     unlimited: t("accountPool.tags.dialog.unlimited"),
     availableModels: t("accountPool.tags.dialog.availableModels"),
     availableModelsHint: t("accountPool.tags.dialog.availableModelsHint"),
-    availableModelsSearchPlaceholder: t("accountPool.tags.dialog.availableModelsSearchPlaceholder"),
+    availableModelsSearchPlaceholder: t(
+      "accountPool.tags.dialog.availableModelsSearchPlaceholder",
+    ),
     availableModelsEmpty: t("accountPool.tags.dialog.availableModelsEmpty"),
     availableModelsAll: t("accountPool.tags.dialog.availableModelsAll"),
     availableModelsCustomLabel: (value: string) =>
       t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
-    availableModelsAddCustom: t("accountPool.tags.dialog.availableModelsAddCustom"),
-    availableModelsInherited: t("accountPool.tags.dialog.availableModelsInherited"),
+    availableModelsAddCustom: t(
+      "accountPool.tags.dialog.availableModelsAddCustom",
+    ),
+    availableModelsInherited: t(
+      "accountPool.tags.dialog.availableModelsInherited",
+    ),
     availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
     cancel: t("accountPool.tags.dialog.cancel"),
     save: t("accountPool.tags.dialog.save"),
@@ -2087,11 +2088,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         draftBaselineRef.current = responseDraft;
         latestServerDraftRef.current = responseDraft;
         setDraft((current) =>
-          mergeDraftAfterAccountSave(
-            current,
-            saveStartedDraft,
-            responseDraft,
-          ),
+          mergeDraftAfterAccountSave(current, saveStartedDraft, responseDraft),
         );
       }
       return responseDraft;
@@ -2236,12 +2233,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         });
       }
     },
-    [
-      busyAction,
-      handleNotFoundClose,
-      notifyMotherChange,
-      saveAccount,
-    ],
+    [busyAction, handleNotFoundClose, notifyMotherChange, saveAccount],
   );
 
   const handleSync = useCallback(
@@ -2794,11 +2786,11 @@ function SharedUpstreamAccountDetailDrawerInner({
                         <div className="flex flex-col gap-1">
                           <Badge
                             variant={
-                              (selectedDetail.imageToolCapability ?? "unknown") ===
-                              "supported"
+                              (selectedDetail.imageToolCapability ??
+                                "unknown") === "supported"
                                 ? "success"
-                                : (selectedDetail.imageToolCapability ?? "unknown") ===
-                                    "unsupported"
+                                : (selectedDetail.imageToolCapability ??
+                                      "unknown") === "unsupported"
                                   ? "warning"
                                   : "secondary"
                             }
@@ -3837,7 +3829,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         }
         error={
           selectedDetail
-            ? actionError.accountMessages[selectedDetail.id] ?? null
+            ? (actionError.accountMessages[selectedDetail.id] ?? null)
             : null
         }
         onClose={() => setAccountPolicyEditorOpen(false)}
@@ -3846,8 +3838,12 @@ function SharedUpstreamAccountDetailDrawerInner({
           void handleSaveAccountPolicy(selectedDetail, payload);
         }}
         labels={{
-          blockNewConversations: t("accountPool.tags.dialog.blockNewConversations"),
-          forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
+          blockNewConversations: t(
+            "accountPool.tags.dialog.blockNewConversations",
+          ),
+          forbidNewConversation: t(
+            "accountPool.tags.dialog.forbidNewConversation",
+          ),
           allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
           allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
           forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
@@ -3857,7 +3853,9 @@ function SharedUpstreamAccountDetailDrawerInner({
           priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
           priorityFallback: t("accountPool.tags.dialog.priorityFallback"),
           fastModeRewriteMode: t("accountPool.tags.dialog.fastModeRewriteMode"),
-          fastModeKeepOriginal: t("accountPool.tags.dialog.fastModeKeepOriginal"),
+          fastModeKeepOriginal: t(
+            "accountPool.tags.dialog.fastModeKeepOriginal",
+          ),
           fastModeFillMissing: t("accountPool.tags.dialog.fastModeFillMissing"),
           fastModeForceAdd: t("accountPool.tags.dialog.fastModeForceAdd"),
           fastModeForceRemove: t("accountPool.tags.dialog.fastModeForceRemove"),
@@ -3904,14 +3902,24 @@ function SharedUpstreamAccountDetailDrawerInner({
           unlimited: t("accountPool.tags.dialog.unlimited"),
           availableModels: t("accountPool.tags.dialog.availableModels"),
           availableModelsHint: t("accountPool.tags.dialog.availableModelsHint"),
-          availableModelsSearchPlaceholder: t("accountPool.tags.dialog.availableModelsSearchPlaceholder"),
-          availableModelsEmpty: t("accountPool.tags.dialog.availableModelsEmpty"),
+          availableModelsSearchPlaceholder: t(
+            "accountPool.tags.dialog.availableModelsSearchPlaceholder",
+          ),
+          availableModelsEmpty: t(
+            "accountPool.tags.dialog.availableModelsEmpty",
+          ),
           availableModelsAll: t("accountPool.tags.dialog.availableModelsAll"),
           availableModelsCustomLabel: (value) =>
             t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
-          availableModelsAddCustom: t("accountPool.tags.dialog.availableModelsAddCustom"),
-          availableModelsInherited: t("accountPool.tags.dialog.availableModelsInherited"),
-          availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
+          availableModelsAddCustom: t(
+            "accountPool.tags.dialog.availableModelsAddCustom",
+          ),
+          availableModelsInherited: t(
+            "accountPool.tags.dialog.availableModelsInherited",
+          ),
+          availableModelsRemove: t(
+            "accountPool.tags.dialog.availableModelsRemove",
+          ),
           cancel: t("accountPool.tags.dialog.cancel"),
           validation: t("accountPool.tags.dialog.validation"),
         }}
