@@ -1916,6 +1916,10 @@ pub(crate) struct ApiInvocation {
     #[sqlx(default)]
     pub(crate) proxy_display_name: Option<String>,
     pub(crate) model: Option<String>,
+    #[sqlx(default)]
+    pub(crate) request_model: Option<String>,
+    #[sqlx(default)]
+    pub(crate) response_model: Option<String>,
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
     pub(crate) cache_input_tokens: Option<i64>,

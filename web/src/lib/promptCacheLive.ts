@@ -268,6 +268,8 @@ export function buildInvocationFromPromptCachePreview(
     isActionable: extras.isActionable,
     routeMode: preview.routeMode ?? undefined,
     model: preview.model ?? undefined,
+    requestModel: preview.requestModel ?? undefined,
+    responseModel: preview.responseModel ?? undefined,
     inputTokens: extras.inputTokens,
     outputTokens: extras.outputTokens,
     cacheInputTokens: extras.cacheInputTokens,
@@ -313,6 +315,8 @@ export function buildPromptCachePreviewFromInvocation(
     failureClass: normalizeFailureClass(record.failureClass),
     routeMode: record.routeMode?.trim() || null,
     model: record.model?.trim() || null,
+    requestModel: record.requestModel?.trim() || null,
+    responseModel: record.responseModel?.trim() || null,
     totalTokens:
       typeof record.totalTokens === "number" &&
       Number.isFinite(record.totalTokens)

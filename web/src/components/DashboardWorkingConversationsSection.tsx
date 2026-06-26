@@ -41,6 +41,7 @@ import {
   renderEndpointSummary,
   renderFastIndicator,
   renderImageIntentBadge,
+  renderInvocationModelBadge,
 } from "./invocation-details-shared";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 
@@ -666,9 +667,16 @@ function InvocationSlot({
               >
                 <span
                   data-testid="dashboard-working-conversation-model-name"
-                  className="min-w-0 truncate font-mono leading-none"
+                  className="min-w-0"
                 >
-                  {viewModel.modelValue}
+                  {renderInvocationModelBadge(viewModel.modelValue, {
+                    t,
+                    hasMismatch: viewModel.modelHasMismatch,
+                    className: "max-w-full",
+                    textClassName: "font-mono",
+                    iconClassName: "h-3 w-3",
+                    testId: "dashboard-working-conversation-model",
+                  })}
                 </span>
                 <span className="shrink-0 text-base-content/28">·</span>
                 <CompactReasoningEffortBadge

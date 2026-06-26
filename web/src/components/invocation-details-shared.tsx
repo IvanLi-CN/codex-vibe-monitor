@@ -18,6 +18,7 @@ import {
   formatServiceTier,
   getFastIndicatorState,
   isPoolRouteMode,
+  resolveInvocationModelDisplay,
   resolveFirstResponseByteTotalMs,
   resolveInvocationAccountLabel,
   resolveInvocationEndpointDisplay,
@@ -51,6 +52,9 @@ export interface InvocationDetailViewModel {
   accountPlanType: string | null;
   proxyDisplayName: string;
   modelValue: string;
+  modelHasMismatch: boolean;
+  requestModelValue: string;
+  responseModelValue: string;
   requestedServiceTierValue: string;
   serviceTierValue: string;
   billingServiceTierValue: string;
@@ -337,6 +341,68 @@ export function renderFastIndicator(state: FastIndicatorState, t: Translator) {
   );
 }
 
+export function renderInvocationModelBadge(
+  value: string,
+  options: {
+    t: Translator;
+    hasMismatch?: boolean;
+    className?: string;
+    textClassName?: string;
+    iconClassName?: string;
+    title?: string;
+    testId?: string;
+  },
+) {
+  const {
+    t,
+    hasMismatch = false,
+    className,
+    textClassName,
+    iconClassName,
+    title,
+    testId,
+  } = options;
+  const mismatchTitle = hasMismatch
+    ? t("table.model.routingMismatchTitle")
+    : null;
+  const resolvedTitle = title ?? value;
+
+  return (
+    <div
+      className={cn("flex min-w-0 items-center gap-1", className)}
+      title={resolvedTitle}
+      data-testid={testId}
+      data-model-routed={hasMismatch ? "true" : "false"}
+    >
+      {hasMismatch ? (
+        <span
+          className="inline-flex h-4 w-4 flex-none items-center justify-center text-base-content/55"
+          title={mismatchTitle ?? undefined}
+          aria-label={t("table.model.routingMismatchAria")}
+          data-testid={
+            testId ? `${testId}-routing-indicator` : "invocation-model-routing-indicator"
+          }
+          role="img"
+        >
+          <AppIcon
+            name="compare-horizontal"
+            className={cn("h-3.5 w-3.5", iconClassName)}
+            aria-hidden
+          />
+        </span>
+      ) : null}
+      <span
+        className={cn(
+          "min-w-0 max-w-full truncate leading-none",
+          textClassName,
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
 function renderEndpointRawPath(endpointValue: string, className?: string) {
   return (
     <span
@@ -554,6 +620,12 @@ export function buildInvocationDetailViewModel({
   renderAccountValue,
 }: BuildInvocationDetailViewModelOptions): InvocationDetailViewModel {
   const proxyDisplayName = resolveProxyDisplayName(record);
+  const modelDisplay = resolveInvocationModelDisplay(record);
+  const legacyModelValue =
+    record.model?.trim() || modelDisplay.primaryValue || FALLBACK_CELL;
+  const requestModelValue = modelDisplay.requestValue ?? FALLBACK_CELL;
+  const responseModelValue =
+    modelDisplay.responseValue ?? legacyModelValue ?? FALLBACK_CELL;
   const accountLabel = resolveInvocationAccountLabel(
     record.routeMode,
     normalizedStatus,
@@ -690,6 +762,21 @@ export function buildInvocationDetailViewModel({
       key: "endpoint",
       label: t("table.details.endpoint"),
       value: renderDetailEndpointValue(endpointDisplay, endpointValue, t),
+    },
+    {
+      key: "requestModel",
+      label: t("table.details.requestModel"),
+      value: requestModelValue,
+    },
+    {
+      key: "responseModel",
+      label: t("table.details.responseModel"),
+      value: renderInvocationModelBadge(responseModelValue, {
+        t,
+        hasMismatch: modelDisplay.hasMismatch,
+        title: responseModelValue,
+        textClassName: "font-mono text-xs text-base-content/70",
+      }),
     },
     {
       key: "compactionRequest",
@@ -890,7 +977,10 @@ export function buildInvocationDetailViewModel({
     accountClickable,
     accountPlanType: record.upstreamAccountPlanType?.trim() || null,
     proxyDisplayName,
-    modelValue: record.model ?? FALLBACK_CELL,
+    modelValue: modelDisplay.primaryValue,
+    modelHasMismatch: modelDisplay.hasMismatch,
+    requestModelValue,
+    responseModelValue,
     requestedServiceTierValue,
     serviceTierValue,
     billingServiceTierValue,

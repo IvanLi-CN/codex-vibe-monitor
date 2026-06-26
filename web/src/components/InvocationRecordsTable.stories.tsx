@@ -233,6 +233,41 @@ export const TransportBadgeMixed: Story = {
   },
 }
 
+export const ModelRoutingMismatch: Story = {
+  args: {
+    focus: 'token',
+    records: STORYBOOK_INVOCATION_RECORDS.map((record, index) =>
+      index === 0
+        ? {
+            ...record,
+            model: 'gpt-5.5',
+            requestModel: 'gpt-5.4',
+            responseModel: 'gpt-5.5',
+          }
+        : record,
+    ),
+    isLoading: false,
+    error: null,
+  },
+}
+
+export const LegacyModelOnly: Story = {
+  args: {
+    focus: 'token',
+    records: [
+      {
+        ...STORYBOOK_INVOCATION_RECORDS[0],
+        invokeId: 'inv_story_legacy_model_only',
+        model: 'gpt-5-legacy',
+        requestModel: undefined,
+        responseModel: undefined,
+      },
+    ],
+    isLoading: false,
+    error: null,
+  },
+}
+
 export const NetworkFocus: Story = {
   args: {
     focus: 'network',

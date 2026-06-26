@@ -10,6 +10,8 @@
 - invocation payload 现在额外携带 `compactionRequestKind` / `compactionResponseKind`，用于区分旧 `Compact` endpoint 与 `/v1/responses` 内的 remote compaction V2 语义。
 - invocation payload 现在额外携带 `imageIntent`，并通过 `/api/invocations`、SSE `records`、Prompt Cache / Dashboard preview 一路透出，公开合同为 `yes | direct_image | no | unknown | null`。
 - Records 与 Dashboard 列表共用图片信号 resolver：仅 `yes` / `direct_image` 渲染独立“图片工具”徽标；详情区保留四态文本区分，历史缺字段降级为 `—`。
+- invocation payload 现已对外打通 `requestModel` / `responseModel`；Records、InvocationTable、Dashboard working conversations 与详情抽屉统一采用“响应模型优先”显示，并在规范化后的请求/响应模型真正不一致时显示上游路由差异图标。
+- 调用详情现在固定展示“请求模型 / 响应模型”两个 badge；旧记录仅有历史 `model` 时，响应模型回填旧值，请求模型显示 `—`。
 - 本次修复是 future-only：不改 SQLite schema，不对历史 invocation 回填 `imageIntent` 或 `compactionRequestKind`。
 - 运行态 V2 识别来自 request body 的 `context_management[type=compaction][compact_threshold]`，终态识别来自响应内实际出现的 compaction item；两者独立写入 payload，不回填历史记录。
 
@@ -35,6 +37,7 @@
 - `cargo test proxy_openai_v1_direct_image_pool_persists_direct_image_intent`
 - `cd web && bun run test -- src/lib/api.test.ts src/hooks/useSettings.test.tsx src/pages/Settings.test.tsx src/hooks/useAvailableModelOptions.test.ts`
 - `cd web && bun run test InvocationTable.test.tsx DashboardWorkingConversationsSection.test.tsx`
+- `cd web && bun run test -- --run InvocationTable.test.tsx InvocationRecordsTable.test.tsx DashboardWorkingConversationsSection.test.tsx DashboardInvocationDetailDrawer.test.tsx promptCacheLive.test.ts invocationLiveMerge.test.ts`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
 
@@ -53,3 +56,5 @@
 - [x] M9: 为 invocation 记录新增 `compactionRequestKind` / `compactionResponseKind` 语义投影，列表与详情按 `Compact` / `远程压缩V2` 的双层合同收口。
 - [x] M10: 修复 pool `/v1/responses` 路径里 `compactionRequestKind=remote_v2` 的请求侧落库缺失，并保证在 `requestBodyLoggingEnabled=false` 下仍可观测。
 - [x] M11: 将 `imageIntent` 打通到 payload / `/api/invocations` / SSE / Prompt Cache preview / Records / Dashboard，并为 owner-facing 列表补齐独立“图片工具”徽标。
+- [x] M12: 将 `requestModel` / `responseModel` 打通到 `/api/invocations`、SSE、Prompt Cache preview 与 Dashboard working conversations，统一主模型显示优先级为 `responseModel ?? model ?? requestModel`。
+- [x] M13: 为 Records、InvocationTable、Dashboard working conversations 与详情抽屉补齐 routed-model 差异图标与双模型详情展示，并保留 legacy `model` 记录的降级显示。

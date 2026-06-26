@@ -148,6 +148,8 @@ pub(crate) async fn build_account_sticky_keys_response(
                     failure_class: row.failure_class,
                     route_mode: row.route_mode,
                     model: row.model,
+                    request_model: row.request_model,
+                    response_model: row.response_model,
                     total_tokens: row.total_tokens,
                     cost: row.cost,
                     proxy_display_name: row.proxy_display_name,
@@ -313,7 +315,11 @@ pub(crate) async fn query_account_sticky_key_recent_invocations(
         .push(crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(" AS failure_class, ")
         .push(crate::api::INVOCATION_ROUTE_MODE_SQL)
-        .push(" AS route_mode, model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
+        .push(" AS route_mode, model, ")
+        .push(crate::api::INVOCATION_REQUEST_MODEL_SQL)
+        .push(" AS request_model, ")
+        .push(crate::api::INVOCATION_RESPONSE_MODEL_SQL)
+        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
         .push(crate::api::INVOCATION_REASONING_EFFORT_SQL)
         .push(" AS reasoning_effort, error_message, ")
         .push(crate::api::INVOCATION_FAILURE_KIND_SQL)
