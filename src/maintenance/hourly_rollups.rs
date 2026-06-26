@@ -2275,6 +2275,7 @@ fn compute_crs_delta(
         failure_count: 0,
         total_tokens: delta_tokens,
         total_cost: delta_cost,
+        non_success_cost: 0.0,
     }
 }
 

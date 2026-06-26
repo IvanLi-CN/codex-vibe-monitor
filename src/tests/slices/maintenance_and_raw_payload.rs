@@ -2294,9 +2294,13 @@ async fn upstream_account_summary_and_detail_include_active_conversation_count()
         Some(2)
     );
 
-    let Json(detail_response) = get_upstream_account(State(state), axum::extract::Path(account_id))
-        .await
-        .expect("load upstream account detail");
+    let Json(detail_response) = get_upstream_account(
+        State(state),
+        axum::extract::Path(account_id),
+        axum::extract::Query(GetUpstreamAccountQuery::default()),
+    )
+    .await
+    .expect("load upstream account detail");
     let detail_json =
         serde_json::to_value(detail_response).expect("serialize upstream account detail");
     assert_eq!(
@@ -2361,6 +2365,94 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
         Some("normal")
     );
     assert_eq!(response_json["metrics"]["attention"].as_u64(), Some(1));
+}
+
+#[tokio::test]
+async fn get_upstream_account_omits_recent_actions_by_default_and_loads_them_on_demand() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Recent actions gated", "upstream-gated").await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_events (
+            account_id,
+            occurred_at,
+            action,
+            source,
+            account_display_name,
+            result,
+            result_description,
+            reason_code,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(account_id)
+    .bind("2026-06-25 11:30:00")
+    .bind("account_updated")
+    .bind("manual")
+    .bind("Recent actions gated")
+    .bind("success")
+    .bind("settings saved")
+    .bind("account_updated")
+    .bind("2026-06-25 11:30:00")
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account event");
+
+    let Json(default_detail) = get_upstream_account(
+        State(state.clone()),
+        axum::extract::Path(account_id),
+        axum::extract::Query(GetUpstreamAccountQuery::default()),
+    )
+    .await
+    .expect("load default upstream account detail");
+    let default_detail_json =
+        serde_json::to_value(default_detail).expect("serialize default upstream account detail");
+    assert!(
+        default_detail_json["recentActions"]
+            .as_array()
+            .is_some_and(|items| items.is_empty()),
+        "default detail fetch should skip recent actions for overview first paint"
+    );
+
+    let Json(detail_with_recent_actions) = get_upstream_account(
+        State(state),
+        axum::extract::Path(account_id),
+        axum::extract::Query(GetUpstreamAccountQuery {
+            include_recent_actions: Some(true),
+        }),
+    )
+    .await
+    .expect("load upstream account detail with recent actions");
+    let detail_with_recent_actions_json = serde_json::to_value(detail_with_recent_actions)
+        .expect("serialize upstream account detail with recent actions");
+    assert_eq!(
+        detail_with_recent_actions_json["recentActions"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default()
+            >= 1,
+        true
+    );
+    assert_eq!(
+        detail_with_recent_actions_json["recentActions"]
+            .as_array()
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("action").and_then(serde_json::Value::as_str)
+                        == Some("account_updated")
+                })
+            })
+            .and_then(|item| item.get("action"))
+            .and_then(serde_json::Value::as_str),
+        Some("account_updated")
+    );
 }
 
 #[tokio::test]

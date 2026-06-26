@@ -57,6 +57,7 @@ pub(crate) async fn query_hourly_backed_summary_range_with_config(
                 totals.failure_count += row.failure_count;
                 totals.total_tokens += row.total_tokens;
                 totals.total_cost += row.total_cost;
+                totals.non_success_cost += row.non_success_cost;
             }
             let mut exact_records = query_invocation_exact_records_tx(
                 tx.as_mut(),
@@ -157,6 +158,7 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
                 totals.failure_count += row.failure_count;
                 totals.total_tokens += row.total_tokens;
                 totals.total_cost += row.total_cost;
+                totals.non_success_cost += row.non_success_cost;
             }
             let mut exact_records = if !range_plan.live_exact_ranges.is_empty() && snapshot_id > 0 {
                 query_invocation_exact_records_for_account_tx(

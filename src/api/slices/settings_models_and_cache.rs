@@ -123,6 +123,7 @@ pub(crate) struct StatsRow {
     pub(crate) failure_count: Option<i64>,
     pub(crate) total_cost: f64,
     pub(crate) total_tokens: i64,
+    pub(crate) non_success_cost: f64,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -132,6 +133,7 @@ pub(crate) struct StatsTotals {
     pub(crate) failure_count: i64,
     pub(crate) total_cost: f64,
     pub(crate) total_tokens: i64,
+    pub(crate) non_success_cost: f64,
 }
 
 impl StatsTotals {
@@ -142,6 +144,7 @@ impl StatsTotals {
             failure_count: self.failure_count + other.failure_count,
             total_cost: self.total_cost + other.total_cost,
             total_tokens: self.total_tokens + other.total_tokens,
+            non_success_cost: self.non_success_cost + other.non_success_cost,
         }
     }
 
@@ -170,6 +173,7 @@ impl From<StatsRow> for StatsTotals {
             failure_count: value.failure_count.unwrap_or(0),
             total_cost: value.total_cost,
             total_tokens: value.total_tokens,
+            non_success_cost: value.non_success_cost,
         }
     }
 }

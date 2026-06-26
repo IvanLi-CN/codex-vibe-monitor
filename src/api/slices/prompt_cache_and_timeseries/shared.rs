@@ -937,6 +937,15 @@ pub(super) fn add_invocation_record_to_summary_totals(
     }
     totals.total_tokens += record.total_tokens.unwrap_or_default();
     totals.total_cost += record.cost.unwrap_or_default();
+    if invocation_counts_toward_non_success_usage(
+        record.status.as_deref(),
+        record.error_message.as_deref(),
+        record.failure_kind.as_deref(),
+        record.failure_class.as_deref(),
+        record.is_actionable,
+    ) {
+        totals.non_success_cost += record.cost.unwrap_or_default();
+    }
 }
 
 pub(crate) fn db_occurred_at_upper_bound(end_utc: DateTime<Utc>) -> String {
