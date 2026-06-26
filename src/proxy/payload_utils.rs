@@ -1868,15 +1868,7 @@ pub(crate) fn request_public_origin(
         return Some(origin.to_string());
     }
 
-    let has_forwarded_authority = header_value_as_str(headers, "x-forwarded-host").is_some()
-        || header_value_as_str(headers, "forwarded")
-            .and_then(|raw| forwarded_header_param(raw, "host"))
-            .is_some();
-    let scheme = match request_public_scheme(headers) {
-        Some(value) => value,
-        None if has_forwarded_authority => return None,
-        None => "http".to_string(),
-    };
+    let scheme = request_public_scheme(headers).unwrap_or_else(|| "http".to_string());
     let (host, port) = forwarded_or_host_authority(headers, &scheme)?;
     let host = if host.contains(':') {
         format!("[{host}]")
@@ -2099,7 +2091,7 @@ mod payload_utils_tests {
     }
 
     #[test]
-    fn request_public_origin_requires_explicit_origin_when_forwarded_scheme_is_missing() {
+    fn request_public_origin_defaults_to_http_when_forwarded_scheme_is_missing() {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8080"));
         headers.insert(
@@ -2107,7 +2099,10 @@ mod payload_utils_tests {
             HeaderValue::from_static("monitor.example.com"),
         );
 
-        assert_eq!(request_public_origin(&headers, None), None);
+        assert_eq!(
+            request_public_origin(&headers, None).as_deref(),
+            Some("http://monitor.example.com")
+        );
     }
 
     #[test]
