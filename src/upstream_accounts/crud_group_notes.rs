@@ -858,10 +858,23 @@ pub(crate) async fn delete_upstream_account_group(
 pub(crate) async fn get_upstream_account(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<i64>,
+    Query(params): Query<GetUpstreamAccountQuery>,
 ) -> Result<Json<UpstreamAccountDetail>, (StatusCode, String)> {
-    let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), id)
-        .await
-        .map_err(internal_error_tuple)?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let detail = load_upstream_account_detail_with_actual_usage_options(
+        state.as_ref(),
+        id,
+        LoadUpstreamAccountDetailOptions {
+            include_recent_actions: params.include_recent_actions.unwrap_or(false),
+        },
+    )
+    .await
+    .map_err(internal_error_tuple)?
+    .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
     Ok(Json(detail))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GetUpstreamAccountQuery {
+    pub(crate) include_recent_actions: Option<bool>,
 }

@@ -140,7 +140,9 @@ vi.mock("@tanstack/react-virtual", () => ({
     estimateSize: (index: number) => number;
     scrollMargin?: number;
   }) => {
-    const sizes = Array.from({ length: count }, (_, index) => estimateSize(index));
+    const sizes = Array.from({ length: count }, (_, index) =>
+      estimateSize(index),
+    );
     const indexes =
       virtualizerMocks.visibleIndexes ??
       Array.from({ length: Math.min(count, 4) }, (_, index) => index);
@@ -180,7 +182,9 @@ vi.mock("@tanstack/react-virtual", () => ({
     estimateSize: (index: number) => number;
     scrollMargin?: number;
   }) => {
-    const sizes = Array.from({ length: count }, (_, index) => estimateSize(index));
+    const sizes = Array.from({ length: count }, (_, index) =>
+      estimateSize(index),
+    );
     const indexes =
       virtualizerMocks.visibleIndexes ??
       Array.from({ length: Math.min(count, 4) }, (_, index) => index);
@@ -1022,6 +1026,7 @@ function mockAccountsPage(options?: {
   saveRouting?: ReturnType<typeof vi.fn>;
   saveGroupNote?: ReturnType<typeof vi.fn>;
   deleteGroupNote?: ReturnType<typeof vi.fn>;
+  loadDetail?: ReturnType<typeof vi.fn>;
   groups?: Array<Record<string, unknown>>;
   routing?: {
     writesEnabled: boolean;
@@ -1039,6 +1044,7 @@ function mockAccountsPage(options?: {
   detail?: Record<string, unknown>;
 }) {
   const saveRouting = options?.saveRouting ?? vi.fn();
+  const loadDetail = options?.loadDetail ?? vi.fn();
   const groups = (
     options?.groups ?? [
       {
@@ -1071,45 +1077,47 @@ function mockAccountsPage(options?: {
   }));
   const saveGroupNote: ReturnType<typeof vi.fn> =
     options?.saveGroupNote ??
-    vi.fn().mockImplementation(
-      async (groupName: string, payload: Record<string, unknown>) => {
-        const normalizedGroupName = groupName.trim();
-        const nextSummary = {
-          groupName: normalizedGroupName,
-          accountCount:
-            groups.find((group) => group.groupName === normalizedGroupName)
-              ?.accountCount ?? 0,
-          note:
-            typeof payload.note === "string" && payload.note.trim().length > 0
-              ? payload.note
-              : null,
-          boundProxyKeys: Array.isArray(payload.boundProxyKeys)
-            ? payload.boundProxyKeys.map((value) => String(value))
-            : [],
-          nodeShuntEnabled: payload.nodeShuntEnabled === true,
-          singleAccountRotationEnabled:
-            payload.singleAccountRotationEnabled === true,
-          upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
-          upstream429MaxRetries:
-            typeof payload.upstream429MaxRetries === "number"
-              ? payload.upstream429MaxRetries
-              : 0,
-          concurrencyLimit:
-            typeof payload.concurrencyLimit === "number"
-              ? payload.concurrencyLimit
-              : 0,
-        };
-        const existingIndex = groups.findIndex(
-          (group) => group.groupName === normalizedGroupName,
-        );
-        if (existingIndex >= 0) {
-          groups.splice(existingIndex, 1, nextSummary);
-        } else {
-          groups.push(nextSummary);
-        }
-        return nextSummary;
-      },
-    );
+    vi
+      .fn()
+      .mockImplementation(
+        async (groupName: string, payload: Record<string, unknown>) => {
+          const normalizedGroupName = groupName.trim();
+          const nextSummary = {
+            groupName: normalizedGroupName,
+            accountCount:
+              groups.find((group) => group.groupName === normalizedGroupName)
+                ?.accountCount ?? 0,
+            note:
+              typeof payload.note === "string" && payload.note.trim().length > 0
+                ? payload.note
+                : null,
+            boundProxyKeys: Array.isArray(payload.boundProxyKeys)
+              ? payload.boundProxyKeys.map((value) => String(value))
+              : [],
+            nodeShuntEnabled: payload.nodeShuntEnabled === true,
+            singleAccountRotationEnabled:
+              payload.singleAccountRotationEnabled === true,
+            upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
+            upstream429MaxRetries:
+              typeof payload.upstream429MaxRetries === "number"
+                ? payload.upstream429MaxRetries
+                : 0,
+            concurrencyLimit:
+              typeof payload.concurrencyLimit === "number"
+                ? payload.concurrencyLimit
+                : 0,
+          };
+          const existingIndex = groups.findIndex(
+            (group) => group.groupName === normalizedGroupName,
+          );
+          if (existingIndex >= 0) {
+            groups.splice(existingIndex, 1, nextSummary);
+          } else {
+            groups.push(nextSummary);
+          }
+          return nextSummary;
+        },
+      );
   const deleteGroupNote: ReturnType<typeof vi.fn> =
     options?.deleteGroupNote ??
     vi.fn().mockImplementation(async (groupName: string) => {
@@ -1251,12 +1259,13 @@ function mockAccountsPage(options?: {
     detail,
     isLoading: false,
     isDetailLoading: false,
+    isDetailRecentActionsHydrated: false,
     listError: null,
     detailError: null,
     error: null,
     selectAccount: vi.fn(),
     refresh: vi.fn(),
-    loadDetail: vi.fn(),
+    loadDetail,
     beginOauthLogin: vi.fn(),
     beginRelogin: vi.fn(),
     beginOauthMailboxSession: vi.fn(),
@@ -1293,6 +1302,7 @@ function mockAccountsPage(options?: {
     routingTimeouts,
     saveGroupNote,
     deleteGroupNote,
+    loadDetail,
   };
 }
 
@@ -1402,19 +1412,17 @@ function mockRosterFreshnessPage(options?: {
     stopBulkSyncJob: vi.fn(),
     runSync: vi.fn(),
     removeAccount: vi.fn(),
-    groups:
-      options?.groups ??
-      [
-        {
-          groupName: "prod",
-          accountCount: 2,
-          note: "prod note",
-          boundProxyKeys: ["jp-edge-01"],
-          nodeShuntEnabled: false,
-          upstream429RetryEnabled: false,
-          upstream429MaxRetries: 0,
-        },
-      ],
+    groups: options?.groups ?? [
+      {
+        groupName: "prod",
+        accountCount: 2,
+        note: "prod note",
+        boundProxyKeys: ["jp-edge-01"],
+        nodeShuntEnabled: false,
+        upstream429RetryEnabled: false,
+        upstream429MaxRetries: 0,
+      },
+    ],
     routing: {
       writesEnabled: true,
       apiKeyConfigured: false,
@@ -1487,8 +1495,18 @@ Object.assign(scope, {
   mockRosterFreshnessPage,
 });
 Object.defineProperties(scope, {
-  host: { get: () => host, set: (value) => { host = value as typeof host; } },
-  root: { get: () => root, set: (value) => { root = value as typeof root; } },
+  host: {
+    get: () => host,
+    set: (value) => {
+      host = value as typeof host;
+    },
+  },
+  root: {
+    get: () => root,
+    set: (value) => {
+      root = value as typeof root;
+    },
+  },
 });
 const evalChunk = (chunk: string) => {
   const { outputText } = ts.transpileModule(chunk, {
@@ -1510,215 +1528,225 @@ evalChunk(suite5);
 evalChunk(suite6);
 evalChunk(suite7);
 
-describe('UpstreamAccountsPage grouped roster toggle', () => {
-  it('defaults to grid view with grid, grouped, flat selector order', async () => {
-    mockRosterFreshnessPage()
-    render()
+describe("UpstreamAccountsPage grouped roster toggle", () => {
+  it("defaults to grid view with grid, grouped, flat selector order", async () => {
+    mockRosterFreshnessPage();
+    render();
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
-    const tabs = Array.from(host?.querySelectorAll('button[role="tab"]') ?? [])
-    expect(tabs[0]?.textContent ?? '').toMatch(/grid|网格/i)
-    expect(tabs[1]?.textContent ?? '').toMatch(/grouped|分组/i)
-    expect(tabs[2]?.textContent ?? '').toMatch(/flat|平铺/i)
-    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true')
-    expectRosterHookQuery({ includeAll: true })
+    const tabs = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []);
+    expect(tabs[0]?.textContent ?? "").toMatch(/grid|网格/i);
+    expect(tabs[1]?.textContent ?? "").toMatch(/grouped|分组/i);
+    expect(tabs[2]?.textContent ?? "").toMatch(/flat|平铺/i);
+    expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+    expectRosterHookQuery({ includeAll: true });
     expect(
       host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]'),
-    ).toBeTruthy()
+    ).toBeTruthy();
     expect(
-      host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]'),
-    ).toBeNull()
-  })
+      host?.querySelector(
+        '[data-testid="upstream-accounts-pagination-footer"]',
+      ),
+    ).toBeNull();
+  });
 
-  it('switches to grouped view and hides the pagination footer', async () => {
-    mockRosterFreshnessPage()
-    render()
+  it("switches to grouped view and hides the pagination footer", async () => {
+    mockRosterFreshnessPage();
+    render();
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
     const groupedToggle = Array.from(
       host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ''))
-    expect(groupedToggle).toBeTruthy()
+    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ""));
+    expect(groupedToggle).toBeTruthy();
 
     act(() => {
-      groupedToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      groupedToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
     const groupedRoster = host?.querySelector(
       '[data-testid="upstream-accounts-grouped-roster"]',
-    ) as HTMLElement | null
-    expect(groupedRoster).toBeTruthy()
-    expect(groupedRoster?.className ?? "").not.toContain("overflow-auto")
+    ) as HTMLElement | null;
+    expect(groupedRoster).toBeTruthy();
+    expect(groupedRoster?.className ?? "").not.toContain("overflow-auto");
     expect(
       Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
         (candidate) =>
           /select filtered accounts|选择筛选结果/i.test(
-            candidate.getAttribute('aria-label') ?? '',
+            candidate.getAttribute("aria-label") ?? "",
           ),
       ),
-    ).toBeTruthy()
+    ).toBeTruthy();
     expect(
-      host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]'),
-    ).toBeNull()
-  })
+      host?.querySelector(
+        '[data-testid="upstream-accounts-pagination-footer"]',
+      ),
+    ).toBeNull();
+  });
 
-  it('switches to grid view without bulk selection controls', async () => {
-    mockRosterFreshnessPage()
-    render()
+  it("switches to grid view without bulk selection controls", async () => {
+    mockRosterFreshnessPage();
+    render();
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
     const gridToggle = Array.from(
       host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grid|网格/i.test(candidate.textContent ?? ''))
-    expect(gridToggle).toBeTruthy()
+    ).find((candidate) => /grid|网格/i.test(candidate.textContent ?? ""));
+    expect(gridToggle).toBeTruthy();
 
     act(() => {
-      gridToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      gridToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
     const groupedRoster = host?.querySelector(
       '[data-testid="upstream-accounts-grouped-roster"]',
-    ) as HTMLElement | null
-    expect(groupedRoster).toBeTruthy()
-    expect(gridToggle?.getAttribute('aria-selected')).toBe('true')
-    expect(groupedRoster?.className ?? "").not.toContain("overflow-auto")
+    ) as HTMLElement | null;
+    expect(groupedRoster).toBeTruthy();
+    expect(gridToggle?.getAttribute("aria-selected")).toBe("true");
+    expect(groupedRoster?.className ?? "").not.toContain("overflow-auto");
     expect(
       Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
         (candidate) =>
           /select filtered accounts|选择筛选结果/i.test(
-            candidate.getAttribute('aria-label') ?? '',
+            candidate.getAttribute("aria-label") ?? "",
           ),
       ),
-    ).toBeFalsy()
-    expect(groupedRoster?.textContent ?? '').toMatch(/Working 2|工作中 2|工作 2/i)
+    ).toBeFalsy();
+    expect(groupedRoster?.textContent ?? "").toMatch(
+      /Working 2|工作中 2|工作 2/i,
+    );
     expect(
-      host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]'),
-    ).toBeNull()
-  })
+      host?.querySelector(
+        '[data-testid="upstream-accounts-pagination-footer"]',
+      ),
+    ).toBeNull();
+  });
 
-  it('blocks grouped roster interactions while the include-all query is still switching', async () => {
+  it("blocks grouped roster interactions while the include-all query is still switching", async () => {
     mockRosterFreshnessPage({
       listState: {
         queryKey: '{"includeAll":true}',
         dataQueryKey: '{"page":2,"pageSize":20}',
-        freshness: 'stale',
-        loadingState: 'switching',
-        status: 'ready',
+        freshness: "stale",
+        loadingState: "switching",
+        status: "ready",
         hasCurrentQueryData: true,
         isPending: true,
       },
-    })
-    render()
+    });
+    render();
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
     const groupedToggle = Array.from(
       host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ''))
-    expect(groupedToggle).toBeTruthy()
+    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ""));
+    expect(groupedToggle).toBeTruthy();
 
     act(() => {
-      groupedToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      groupedToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
     expect(
       host?.querySelector('[data-testid="upstream-accounts-grouped-loading"]'),
-    ).toBeTruthy()
+    ).toBeTruthy();
     expect(
       host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]'),
-    ).toBeNull()
+    ).toBeNull();
     expect(
       Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
         (candidate) =>
           /select filtered accounts|选择筛选结果/i.test(
-            candidate.getAttribute('aria-label') ?? '',
+            candidate.getAttribute("aria-label") ?? "",
           ),
       ),
-    ).toBeFalsy()
-  })
+    ).toBeFalsy();
+  });
 
-  it('blocks flat roster interactions while switching away from grouped include-all data', async () => {
+  it("blocks flat roster interactions while switching away from grouped include-all data", async () => {
     mockRosterFreshnessPage({
       listState: {
         queryKey: '{"page":2,"pageSize":20}',
         dataQueryKey: '{"includeAll":true}',
-        freshness: 'stale',
-        loadingState: 'switching',
-        status: 'ready',
+        freshness: "stale",
+        loadingState: "switching",
+        status: "ready",
         hasCurrentQueryData: true,
         isPending: true,
       },
-    })
-    render()
+    });
+    render();
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
     const flatToggle = Array.from(
       host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ''))
-    expect(flatToggle).toBeTruthy()
+    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ""));
+    expect(flatToggle).toBeTruthy();
     act(() => {
-      flatToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      flatToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
     expect(
       host?.querySelector('[data-testid="upstream-accounts-table-loading"]'),
-    ).toBeTruthy()
+    ).toBeTruthy();
     expect(
-      host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]'),
-    ).toBeTruthy()
-    expect(host?.textContent ?? '').not.toContain('Existing OAuth')
-    expect(host?.textContent ?? '').not.toContain('Another OAuth')
-  })
+      host?.querySelector(
+        '[data-testid="upstream-accounts-pagination-footer"]',
+      ),
+    ).toBeTruthy();
+    expect(host?.textContent ?? "").not.toContain("Existing OAuth");
+    expect(host?.textContent ?? "").not.toContain("Another OAuth");
+  });
 
-  it('preserves the flat page selection when toggling grouped view', async () => {
+  it("preserves the flat page selection when toggling grouped view", async () => {
     const items = [
       {
         id: 5,
-        kind: 'oauth_codex',
-        provider: 'codex',
-        displayName: 'Existing OAuth',
-        groupName: 'prod',
-        status: 'active',
-        displayStatus: 'active',
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        displayStatus: "active",
         enabled: true,
         isMother: false,
         tags: [],
         effectiveRoutingRule: defaultEffectiveRoutingRule,
       },
-    ]
+    ];
     const sharedCallbacks: Pick<
       UpstreamAccountsHookValue,
-      | 'selectAccount'
-      | 'refresh'
-      | 'loadDetail'
-      | 'beginOauthLogin'
-      | 'beginRelogin'
-      | 'beginOauthMailboxSession'
-      | 'beginOauthMailboxSessionForAddress'
-      | 'getOauthMailboxStatuses'
-      | 'removeOauthMailboxSession'
-      | 'getLoginSession'
-      | 'completeOauthLogin'
-      | 'createApiKeyAccount'
-      | 'saveAccount'
-      | 'saveRouting'
-      | 'saveGroupNote'
-      | 'deleteGroupNote'
-      | 'runBulkAction'
-      | 'startBulkSyncJob'
-      | 'getBulkSyncJob'
-      | 'stopBulkSyncJob'
-      | 'runSync'
-      | 'removeAccount'
+      | "selectAccount"
+      | "refresh"
+      | "loadDetail"
+      | "beginOauthLogin"
+      | "beginRelogin"
+      | "beginOauthMailboxSession"
+      | "beginOauthMailboxSessionForAddress"
+      | "getOauthMailboxStatuses"
+      | "removeOauthMailboxSession"
+      | "getLoginSession"
+      | "completeOauthLogin"
+      | "createApiKeyAccount"
+      | "saveAccount"
+      | "saveRouting"
+      | "saveGroupNote"
+      | "deleteGroupNote"
+      | "runBulkAction"
+      | "startBulkSyncJob"
+      | "getBulkSyncJob"
+      | "stopBulkSyncJob"
+      | "runSync"
+      | "removeAccount"
     > = {
       selectAccount: vi.fn(),
       refresh: vi.fn(),
@@ -1742,15 +1770,15 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       stopBulkSyncJob: vi.fn(),
       runSync: vi.fn(),
       removeAccount: vi.fn(),
-    }
-    const sharedRouting: UpstreamAccountsHookValue['routing'] = {
+    };
+    const sharedRouting: UpstreamAccountsHookValue["routing"] = {
       writesEnabled: true,
       apiKeyConfigured: false,
       maskedApiKey: null,
-    }
+    };
     const sharedBase: Omit<
       UpstreamAccountsHookValue,
-      'page' | 'pageSize' | 'listState'
+      "page" | "pageSize" | "listState"
     > = {
       items,
       hasUngroupedAccounts: true,
@@ -1774,15 +1802,15 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       routing: sharedRouting,
       forwardProxyNodes: [],
       forwardProxyCatalogState: {
-        kind: 'ready-empty',
-        freshness: 'fresh',
+        kind: "ready-empty",
+        freshness: "fresh",
         isPending: false,
         hasNodes: false,
       },
       missingDetailAccountId: null,
       isWindowUsagePending: false,
       ...sharedCallbacks,
-    }
+    };
     const flatPage1: UpstreamAccountsHookValue = {
       ...sharedBase,
       page: 1,
@@ -1790,13 +1818,13 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       listState: {
         queryKey: '{"page":1,"pageSize":20}',
         dataQueryKey: '{"page":1,"pageSize":20}',
-        freshness: 'fresh',
-        loadingState: 'idle',
-        status: 'ready',
+        freshness: "fresh",
+        loadingState: "idle",
+        status: "ready",
         hasCurrentQueryData: true,
         isPending: false,
       },
-    }
+    };
     const flatPage2: UpstreamAccountsHookValue = {
       ...sharedBase,
       page: 2,
@@ -1804,13 +1832,13 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       listState: {
         queryKey: '{"page":2,"pageSize":20}',
         dataQueryKey: '{"page":2,"pageSize":20}',
-        freshness: 'fresh',
-        loadingState: 'idle',
-        status: 'ready',
+        freshness: "fresh",
+        loadingState: "idle",
+        status: "ready",
         hasCurrentQueryData: true,
         isPending: false,
       },
-    }
+    };
     const groupedAll: UpstreamAccountsHookValue = {
       ...sharedBase,
       page: 1,
@@ -1818,291 +1846,297 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       listState: {
         queryKey: '{"includeAll":true}',
         dataQueryKey: '{"includeAll":true}',
-        freshness: 'fresh',
-        loadingState: 'idle',
-        status: 'ready',
+        freshness: "fresh",
+        loadingState: "idle",
+        status: "ready",
         hasCurrentQueryData: true,
         isPending: false,
       },
-    }
+    };
     hookMocks.useUpstreamAccounts.mockImplementation((query) => {
-      if (query?.includeAll) return groupedAll
-      if (query?.page === 2) return flatPage2
-      return flatPage1
-    })
+      if (query?.includeAll) return groupedAll;
+      if (query?.page === 2) return flatPage2;
+      return flatPage1;
+    });
 
-    render()
+    render();
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
     const initialFlatToggle = Array.from(
       host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ''))
-    expect(initialFlatToggle).toBeTruthy()
+    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ""));
+    expect(initialFlatToggle).toBeTruthy();
     act(() => {
-      initialFlatToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      initialFlatToggle?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
 
-    const nextButton = findButton(/next|下一页/i)
-    expect(nextButton).toBeTruthy()
+    const nextButton = findButton(/next|下一页/i);
+    expect(nextButton).toBeTruthy();
     act(() => {
-      nextButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      nextButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
-    expectRosterHookQuery({ page: 2, pageSize: 20 })
+    expectRosterHookQuery({ page: 2, pageSize: 20 });
 
     const groupedToggle = Array.from(
       host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ''))
+    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ""));
     const flatToggle = Array.from(
       host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ''))
-    expect(groupedToggle).toBeTruthy()
-    expect(flatToggle).toBeTruthy()
+    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ""));
+    expect(groupedToggle).toBeTruthy();
+    expect(flatToggle).toBeTruthy();
 
     act(() => {
-      groupedToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    expectRosterHookQuery({ includeAll: true })
+      groupedToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expectRosterHookQuery({ includeAll: true });
 
     act(() => {
-      flatToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      flatToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
-    expectRosterHookQuery({ page: 2, pageSize: 20 })
-  })
+    expectRosterHookQuery({ page: 2, pageSize: 20 });
+  });
 
-  it('opens the shared group settings dialog from the grouped summary action', async () => {
-    const saveGroupNote = vi.fn()
+  it("opens the shared group settings dialog from the grouped summary action", async () => {
+    const saveGroupNote = vi.fn();
     mockRosterFreshnessPage({
       saveGroupNote,
       groups: [
         {
-          groupName: '  prod  ',
-          note: 'Production routing group',
-          boundProxyKeys: ['jp-edge-01'],
+          groupName: "  prod  ",
+          note: "Production routing group",
+          boundProxyKeys: ["jp-edge-01"],
           concurrencyLimit: 3,
           nodeShuntEnabled: true,
           upstream429RetryEnabled: true,
           upstream429MaxRetries: 2,
         },
       ],
-    })
-    render()
+    });
+    render();
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
     const groupedToggle = Array.from(
       host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ''))
-    expect(groupedToggle).toBeTruthy()
+    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ""));
+    expect(groupedToggle).toBeTruthy();
 
     act(() => {
-      groupedToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      groupedToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
-    const settingsButton = Array.from(host?.querySelectorAll('button') ?? []).find(
-      (candidate) =>
-        /edit group settings|编辑分组设置/i.test(
-          candidate.getAttribute('aria-label') ?? candidate.textContent ?? '',
-        ),
-    )
-    expect(settingsButton).toBeTruthy()
+    const settingsButton = Array.from(
+      host?.querySelectorAll("button") ?? [],
+    ).find((candidate) =>
+      /edit group settings|编辑分组设置/i.test(
+        candidate.getAttribute("aria-label") ?? candidate.textContent ?? "",
+      ),
+    );
+    expect(settingsButton).toBeTruthy();
 
     act(() => {
-      settingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      settingsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
-    const dialogs = Array.from(host?.ownerDocument.querySelectorAll('[role="dialog"]') ?? [])
+    const dialogs = Array.from(
+      host?.ownerDocument.querySelectorAll('[role="dialog"]') ?? [],
+    );
     const groupSettingsDialog = dialogs.find((candidate) =>
-      /group settings|分组设置/i.test(candidate.textContent ?? ''),
-    )
-    expect(groupSettingsDialog).toBeTruthy()
-    expect(groupSettingsDialog?.textContent ?? '').toContain('prod')
-    expect(groupSettingsDialog?.textContent ?? '').toContain('JP Edge 01')
-    expect(saveGroupNote).not.toHaveBeenCalled()
-  })
+      /group settings|分组设置/i.test(candidate.textContent ?? ""),
+    );
+    expect(groupSettingsDialog).toBeTruthy();
+    expect(groupSettingsDialog?.textContent ?? "").toContain("prod");
+    expect(groupSettingsDialog?.textContent ?? "").toContain("JP Edge 01");
+    expect(saveGroupNote).not.toHaveBeenCalled();
+  });
 
-  it('treats grouped summary actions as existing groups when the catalog returns them', async () => {
-    const saveGroupNote = vi.fn()
+  it("treats grouped summary actions as existing groups when the catalog returns them", async () => {
+    const saveGroupNote = vi.fn();
     mockRosterFreshnessPage({
       saveGroupNote,
       groups: [
         {
-          groupName: 'prod',
+          groupName: "prod",
           accountCount: 2,
-          note: 'Production routing group',
-          boundProxyKeys: ['jp-edge-01'],
+          note: "Production routing group",
+          boundProxyKeys: ["jp-edge-01"],
           nodeShuntEnabled: false,
           upstream429RetryEnabled: false,
           upstream429MaxRetries: 0,
         },
       ],
-    })
-    render()
+    });
+    render();
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
     const groupedToggle = Array.from(
       host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ''))
-    expect(groupedToggle).toBeTruthy()
+    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ""));
+    expect(groupedToggle).toBeTruthy();
 
     act(() => {
-      groupedToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      groupedToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
-    const settingsButton = Array.from(host?.querySelectorAll('button') ?? []).find(
-      (candidate) =>
-        /edit group settings|编辑分组设置/i.test(
-          candidate.getAttribute('aria-label') ?? candidate.textContent ?? '',
-        ),
-    )
-    expect(settingsButton).toBeTruthy()
+    const settingsButton = Array.from(
+      host?.querySelectorAll("button") ?? [],
+    ).find((candidate) =>
+      /edit group settings|编辑分组设置/i.test(
+        candidate.getAttribute("aria-label") ?? candidate.textContent ?? "",
+      ),
+    );
+    expect(settingsButton).toBeTruthy();
 
     act(() => {
-      settingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      settingsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
-    const dialogs = Array.from(host?.ownerDocument.querySelectorAll('[role="dialog"]') ?? [])
+    const dialogs = Array.from(
+      host?.ownerDocument.querySelectorAll('[role="dialog"]') ?? [],
+    );
     const groupSettingsDialog = dialogs.find((candidate) =>
-      /group settings|分组设置/i.test(candidate.textContent ?? ''),
-    )
-    expect(groupSettingsDialog).toBeTruthy()
-    expect(groupSettingsDialog?.textContent ?? '').toContain(
-      'already exists',
-    )
-    expect(groupSettingsDialog?.textContent ?? '').not.toContain(
-      'creates its shared settings in advance',
-    )
+      /group settings|分组设置/i.test(candidate.textContent ?? ""),
+    );
+    expect(groupSettingsDialog).toBeTruthy();
+    expect(groupSettingsDialog?.textContent ?? "").toContain("already exists");
+    expect(groupSettingsDialog?.textContent ?? "").not.toContain(
+      "creates its shared settings in advance",
+    );
 
     const saveButton = Array.from(
-      groupSettingsDialog?.querySelectorAll('button') ?? [],
-    ).find((candidate) => /save|保存/i.test(candidate.textContent ?? ''))
-    expect(saveButton).toBeTruthy()
+      groupSettingsDialog?.querySelectorAll("button") ?? [],
+    ).find((candidate) => /save|保存/i.test(candidate.textContent ?? ""));
+    expect(saveButton).toBeTruthy();
 
     act(() => {
-      saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
-    expect(saveGroupNote).toHaveBeenCalledTimes(1)
-  })
+    expect(saveGroupNote).toHaveBeenCalledTimes(1);
+  });
 
-  it('consumes a named presetGroupFilter from location state and clears the one-shot navigation state', async () => {
-    mockRosterFreshnessPage()
+  it("consumes a named presetGroupFilter from location state and clears the one-shot navigation state", async () => {
+    mockRosterFreshnessPage();
     writeStoredUpstreamFilters({
       workStatus: [],
       enableStatus: [],
       healthStatus: [],
       tagIds: [],
       groupFilter: {
-        mode: 'search',
-        query: 'stale-group',
+        mode: "search",
+        query: "stale-group",
       },
-    })
+    });
     render({
-      pathname: '/account-pool/upstream-accounts',
+      pathname: "/account-pool/upstream-accounts",
       state: {
         presetGroupFilter: {
-          mode: 'exact',
-          query: '  prod  ',
+          mode: "exact",
+          query: "  prod  ",
         },
       },
-    })
+    });
 
-    await flushAsync()
-    await flushAsync()
+    await flushAsync();
+    await flushAsync();
 
     expect(hookMocks.useUpstreamAccounts.mock.calls[0]?.[0]).toEqual({
       includeAll: true,
-      groupExact: ['prod'],
-    })
+      groupExact: ["prod"],
+    });
     expectRosterHookQuery({
       includeAll: true,
-      groupExact: ['prod'],
-    })
+      groupExact: ["prod"],
+    });
     expect(hookMocks.useUpstreamAccounts.mock.calls).not.toContainEqual([
       {
         page: 1,
         pageSize: 20,
-        groupExact: ['stale-group'],
+        groupExact: ["stale-group"],
       },
-    ])
-    expect(readStoredUpstreamFilters()?.groupFilters).toEqual(['stale-group'])
+    ]);
+    expect(readStoredUpstreamFilters()?.groupFilters).toEqual(["stale-group"]);
     expect(navigateMock).toHaveBeenCalledWith(
       {
-        pathname: '/account-pool/upstream-accounts',
-        search: '',
+        pathname: "/account-pool/upstream-accounts",
+        search: "",
       },
       {
         replace: true,
         state: null,
       },
-    )
-  })
+    );
+  });
 
-  it('consumes an ungrouped presetGroupFilter from location state and resets the roster to page 1', async () => {
-    mockRosterFreshnessPage()
+  it("consumes an ungrouped presetGroupFilter from location state and resets the roster to page 1", async () => {
+    mockRosterFreshnessPage();
     writeStoredUpstreamFilters({
       workStatus: [],
       enableStatus: [],
       healthStatus: [],
       tagIds: [],
       groupFilter: {
-        mode: 'search',
-        query: 'stale-group',
+        mode: "search",
+        query: "stale-group",
       },
-    })
+    });
     render({
-      pathname: '/account-pool/upstream-accounts',
+      pathname: "/account-pool/upstream-accounts",
       state: {
         presetGroupFilter: {
-          mode: 'ungrouped',
-          query: '',
+          mode: "ungrouped",
+          query: "",
         },
       },
-    })
+    });
 
-    await flushAsync()
-    await flushAsync()
+    await flushAsync();
+    await flushAsync();
 
     expectRosterHookQuery({
       includeAll: true,
-      groupExact: ['未分组'],
-    })
-    expect(readStoredUpstreamFilters()?.groupFilters).toEqual(['stale-group'])
+      groupExact: ["未分组"],
+    });
+    expect(readStoredUpstreamFilters()?.groupFilters).toEqual(["stale-group"]);
     expect(navigateMock).toHaveBeenCalledWith(
       {
-        pathname: '/account-pool/upstream-accounts',
-        search: '',
+        pathname: "/account-pool/upstream-accounts",
+        search: "",
       },
       {
         replace: true,
         state: null,
       },
-    )
-  })
+    );
+  });
 
-  it('keeps detail-drawer roster hydration disabled until a roster-dependent tab opens', async () => {
-    mockRosterFreshnessPage()
-    host = document.createElement("div")
-    document.body.appendChild(host)
-    root = createRoot(host)
+  it("keeps detail-drawer roster hydration disabled until a roster-dependent tab opens", async () => {
+    mockRosterFreshnessPage();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
     act(() => {
       root?.render(
         <I18nProvider>
@@ -2116,18 +2150,22 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
             </MemoryRouter>
           </SystemNotificationProvider>
         </I18nProvider>,
-      )
-    })
+      );
+    });
 
-    await flushAsync()
-    await flushAsync()
+    await flushAsync();
+    await flushAsync();
 
-    expect(hookMocks.useUpstreamAccounts.mock.calls[0]?.[0]).toBeNull()
-    expect(hookMocks.useUpstreamStickyConversations.mock.calls.at(-1)?.[1]).toEqual({
-      mode: 'count',
+    expect(hookMocks.useUpstreamAccounts.mock.calls[0]?.[0]).toBeNull();
+    expect(
+      hookMocks.useUpstreamStickyConversations.mock.calls.at(-1)?.[1],
+    ).toEqual({
+      mode: "count",
       limit: 50,
-    })
-    expect(hookMocks.useUpstreamStickyConversations.mock.calls.at(-1)?.[2]).toBe(false)
+    });
+    expect(
+      hookMocks.useUpstreamStickyConversations.mock.calls.at(-1)?.[2],
+    ).toBe(false);
 
     act(() => {
       root?.render(
@@ -2143,11 +2181,11 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
             </MemoryRouter>
           </SystemNotificationProvider>
         </I18nProvider>,
-      )
-    })
-    await flushAsync()
-    hookMocks.useUpstreamAccounts.mockClear()
-    hookMocks.useUpstreamStickyConversations.mockClear()
+      );
+    });
+    await flushAsync();
+    hookMocks.useUpstreamAccounts.mockClear();
+    hookMocks.useUpstreamStickyConversations.mockClear();
     act(() => {
       root?.render(
         <I18nProvider>
@@ -2162,9 +2200,9 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
             </MemoryRouter>
           </SystemNotificationProvider>
         </I18nProvider>,
-      )
-    })
-    await flushAsync()
+      );
+    });
+    await flushAsync();
 
     expect(hookMocks.useUpstreamAccounts.mock.calls).toContainEqual([
       undefined,
@@ -2172,8 +2210,8 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
         allowSelectionOutsideList: true,
         fallbackToFirstItem: false,
       },
-    ])
-  })
+    ]);
+  });
 
   it("subscribes the records tab fetch lifecycle to the selected upstream account and reconciles on SSE open", async () => {
     mockAccountsPage();
@@ -2315,6 +2353,49 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     });
   });
 
+  it("hydrates recent actions only after switching to the health events tab", async () => {
+    const loadDetail = vi.fn();
+    mockAccountsPage({
+      detail: {
+        recentActions: [],
+      },
+      loadDetail,
+    });
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="overview"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    await flushAsync();
+    expect(loadDetail).not.toHaveBeenCalled();
+
+    clickTab(/健康与事件|health/i);
+    await flushAsync();
+
+    expect(loadDetail).toHaveBeenCalledWith(5, {
+      silent: true,
+      includeRecentActions: true,
+    });
+  });
+
   it("clears a stale records error after an SSE-open retry succeeds", async () => {
     mockAccountsPage();
     apiMocks.fetchInvocationRecords
@@ -2367,7 +2448,9 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
     });
     await waitForAssertion(() => {
-      expect(document.body.textContent).toContain("initial records fetch failed");
+      expect(document.body.textContent).toContain(
+        "initial records fetch failed",
+      );
     });
 
     act(() => {
@@ -2378,17 +2461,19 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
     });
-    expect(document.body.textContent).not.toContain("initial records fetch failed");
+    expect(document.body.textContent).not.toContain(
+      "initial records fetch failed",
+    );
 
     await waitForAssertion(() => {
       expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
     });
-    expect(document.body.textContent).not.toContain("initial records fetch failed");
+    expect(document.body.textContent).not.toContain(
+      "initial records fetch failed",
+    );
   });
 
-  it(
-    "clears stale rows before the records tab refetches for limit changes",
-    async () => {
+  it("clears stale rows before the records tab refetches for limit changes", async () => {
     const secondFetch = deferred<{
       snapshotId: number;
       total: number;
@@ -2491,9 +2576,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     await waitForAssertion(() => {
       expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
     });
-    },
-    30000,
-  );
+  }, 30000);
 
   it("clears stale rows when entering the records tab from another tab", async () => {
     const secondFetch = deferred<{
@@ -2601,4 +2684,4 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
     });
   });
-})
+});

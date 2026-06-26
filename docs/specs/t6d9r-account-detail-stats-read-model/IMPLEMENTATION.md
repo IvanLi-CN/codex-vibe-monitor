@@ -12,6 +12,8 @@
 - Note: 前端已收紧为“仅当前选中账号”的 `window-usage` hydrate，不再因 roster 刷新批量触发详情重型统计。
 - Note: `useUpstreamAccounts(...)` 不再消费 invocation `records` SSE 来静默刷新 roster/detail/window-usage；账号池重型统计只保留手动 refresh、显式业务变更和 SSE `open` 后的受控补齐。
 - Note: 账号详情抽屉默认不再额外预取 roster / sticky conversation 统计；只有 `edit` / `routing` 这类真正依赖上下文的 tab 才会触发对应重查询。
+- Note: 账号详情默认 `overview` 首屏已改为不再同步读取 `recentActions`；健康与事件 tab 才通过显式 follow-up detail hydrate 拉取事件流。
+- Note: records 顶部卡片新增的 `nonSuccessCost` 已重新回到 read-model-first 主路径；live augmentation 只保留 `nonSuccessTokens` 与 in-progress 字段，闭区间 summary / timeseries 默认不再回退到 live raw 重算。
 
 ## 落地内容
 
@@ -29,6 +31,11 @@
 - `DashboardActivityOverview` 在 account-scoped `yesterday` 视图不再额外请求 yesterday comparison summary / timeseries，消除一个重复请求源。
 - 共享账号详情抽屉桌面壳层从 `max-w-[60rem]` 放宽到 `max-w-[90rem]`；为了让新增横向空间真实转化为概览可读性，overview 下两张 usage card 提前到 `lg` 断点进入双列，而不是继续等到 `xl`。
 - records 视图总 token 指标标题改为 `Token` 单数文案，并在 `TodayStatsOverview` 中对该标签单独保留 mixed case + `whitespace-nowrap`，避免窄卡片里出现 `今日` / `TOKENS` 断成两行的问题。
+- 账号详情接口 `get_upstream_account` 默认改为 `includeRecentActions=false`，把 `pool_upstream_account_events` 读取从 overview 首屏热路径中移出；health events tab 再按需补一次 detail hydrate。
+- `useUpstreamAccounts(...)` 在 `selectedId` 为空时不再自动对 roster 可见行批量触发 `window-usage` hydrate；只有当前选中账号或显式手动 hydrate 才会发 `window-usage` 请求。
+- account-scoped summary 将 `nonSuccessCost` 固定纳入 rollup/read-model totals，并恢复带 `full_hour_range` 的 today live tail 精确补尾，避免新增字段后 today 卡片回退成 0 或强制 raw window 重扫。
+- `fetch_summary` / `fetch_stats` 按窗口类型区分 live augmentation：闭区间默认跳过 in-progress 与 non-success token live 补算；SQLite `database is locked` 时非成功 token live 增量允许受限降级，不再整排卡片长期 skeleton。
+- Storybook 现有详情抽屉 overlay stories 继续作为 page-fallback 证据面，新增 owner-facing 首屏概览态与 records 统计卡片完成态图片，覆盖这次性能回归修复后的默认打开路径。
 
 ## Verification
 
@@ -40,11 +47,14 @@
 - `cargo test account_summary_yesterday_ignores_materialized_archive_missing_account_usage_marker -- --nocapture`
 - `cargo test materialize_historical_rollups_marks_account_replay_targets_when_only_account_targets_are_pending -- --nocapture`
 - `cargo test bootstrap_hourly_rollups_repairs_missing_materialized_account_replay_markers -- --nocapture`
+- `cargo test get_upstream_account_omits_recent_actions_by_default_and_loads_them_on_demand -- --nocapture`
+- `cargo test natural_day_summary_reports_retry_wait_and_non_success_usage -- --nocapture`
+- `cargo test account_scoped_natural_day_summary_keeps_augmentation_fields_scoped -- --nocapture`
 - `cargo test latest_usage_sample_map_keeps_latest_non_empty_sample_plan_type -- --nocapture`
 - `cargo test ensure_schema_migrates_codex_invocations_off_raw_expires_at_and_adds_retention_tables -- --nocapture`
 - `cargo check`
-- `cd web && bun run test src/hooks/useUpstreamAccounts.test.tsx src/components/DashboardActivityOverview.test.tsx`
-- `cd web && bun run test -- UpstreamAccounts.test.tsx useUpstreamStickyConversations.test.tsx`
+- `cd web && bun x vitest run --project=unit src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/lib/api.test.ts`
+- `cd web && bun run test-storybook`
 - `cd web && bun run build-storybook`
 
 ## Visual Evidence
