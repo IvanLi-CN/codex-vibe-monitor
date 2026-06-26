@@ -2753,6 +2753,7 @@ pub(crate) async fn query_unmaterialized_invocation_archive_totals(
         totals.failure_count += row.failure_count;
         totals.total_tokens += row.total_tokens;
         totals.total_cost += row.total_cost;
+        totals.non_success_cost += row.non_success_cost;
     }
 
     Ok(totals)
@@ -3041,6 +3042,7 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals(
         totals.failure_count += row.failure_count;
         totals.total_tokens += row.total_tokens;
         totals.total_cost += row.total_cost;
+        totals.non_success_cost += row.non_success_cost;
     }
 
     Ok(totals)
@@ -3952,18 +3954,25 @@ async fn query_invocation_all_time_rollup_totals(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
 ) -> Result<AllTimeRollupTotals> {
-    let mut query = QueryBuilder::<Sqlite>::new(
+    let non_success_cost_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "non_success_cost").await? {
+            "COALESCE(SUM(non_success_cost), 0.0) AS non_success_cost"
+        } else {
+            "0.0 AS non_success_cost"
+        };
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
             COALESCE(SUM(total_count), 0) AS total_count,
             COALESCE(SUM(success_count), 0) AS success_count,
             COALESCE(SUM(failure_count), 0) AS failure_count,
             COALESCE(SUM(total_cost), 0.0) AS total_cost,
-            COALESCE(SUM(total_tokens), 0) AS total_tokens
+            COALESCE(SUM(total_tokens), 0) AS total_tokens,
+            {non_success_cost_expr}
         FROM invocation_rollup_hourly
         WHERE 1 = 1
         "#,
-    );
+    ));
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
