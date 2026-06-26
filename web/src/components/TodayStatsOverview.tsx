@@ -1,5 +1,5 @@
 import type { ParallelWorkStatsResponse, StatsResponse, TimeseriesResponse } from '../lib/api'
-import type { KeyboardEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useTranslation } from '../i18n'
 import { cn } from '../lib/utils'
 import { getBrowserTimeZone } from '../lib/timeZone'
@@ -36,6 +36,7 @@ import {
 
 const RATE_UNAVAILABLE_PLACEHOLDER = '—'
 const PREVIOUS_FULL_DAY_COUNT = 7
+const METRIC_TILE_STACK_META_BREAKPOINT_PX = 176
 
 export interface TodayStatsOverviewProps {
   stats: StatsResponse | null
@@ -84,7 +85,6 @@ interface MetricTileProps {
   displayText?: string
   displaySpec?: AdaptiveDisplayValueSpec
   subdued?: boolean
-  labelNoWrap?: boolean
   preserveLabelCase?: boolean
   labelTestId?: string
   topRightItem?: MetricTileMetaItem | null
@@ -103,7 +103,6 @@ function MetricTile({
   displayText,
   displaySpec,
   subdued = false,
-  labelNoWrap = false,
   preserveLabelCase = false,
   labelTestId,
   topRightItem,
@@ -115,13 +114,57 @@ function MetricTile({
     event.currentTarget.click()
   }
 
+  const tileRef = useRef<HTMLDivElement | null>(null)
+  const [stackMeta, setStackMeta] = useState(false)
+
+  useLayoutEffect(() => {
+    const tile = tileRef.current
+    if (!tile) return undefined
+
+    const updateStackMeta = () => {
+      const nextValue = tile.clientWidth > 0 && tile.clientWidth < METRIC_TILE_STACK_META_BREAKPOINT_PX
+      setStackMeta((current) => (current === nextValue ? current : nextValue))
+    }
+
+    updateStackMeta()
+    const frame = window.requestAnimationFrame(updateStackMeta)
+    window.addEventListener('resize', updateStackMeta)
+
+    if (typeof ResizeObserver === 'undefined') {
+      return () => {
+        window.cancelAnimationFrame(frame)
+        window.removeEventListener('resize', updateStackMeta)
+      }
+    }
+
+    const observer = new ResizeObserver(updateStackMeta)
+    observer.observe(tile)
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('resize', updateStackMeta)
+      observer.disconnect()
+    }
+  }, [])
+
+  const inlineSecondaryItems = stackMeta ? [] : secondaryItems
+  const stackedMetaItems = stackMeta
+    ? [
+        ...(topRightItem ? [topRightItem] : []),
+        ...secondaryItems,
+      ]
+    : []
+
   return (
     <div
+      ref={tileRef}
       data-testid="today-stats-metric-tile"
+      data-stack-meta={stackMeta ? 'true' : 'false'}
       className="min-w-0 rounded-xl border border-base-300/75 bg-base-200/60 p-4"
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
         <Tooltip
+          className="min-w-0 flex-1"
           content={description}
           clickToOpen
           side="bottom"
@@ -135,21 +178,20 @@ function MetricTile({
           <span
             data-testid={labelTestId}
             className={cn(
-              'inline-flex cursor-help text-left text-xs font-semibold tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-              labelNoWrap && 'whitespace-nowrap',
+              'block min-w-0 max-w-full cursor-help overflow-hidden text-ellipsis whitespace-nowrap text-left text-xs font-semibold tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
               preserveLabelCase ? 'normal-case' : 'uppercase',
             )}
           >
             {label}
           </span>
         </Tooltip>
-        {topRightItem ? (
-          <div className="flex min-w-0 shrink-0 items-baseline justify-end gap-1 text-right text-[11px] leading-5">
-            <span className="shrink-0 text-base-content/52">{topRightItem.label}</span>
+        {!stackMeta && topRightItem ? (
+          <div className="flex min-w-0 items-baseline justify-end gap-1 text-right text-[11px] leading-5">
+            <span className="shrink-0 whitespace-nowrap text-base-content/52">{topRightItem.label}</span>
             <AdaptiveDisplayValue
               spec={topRightItem.valueSpec}
               data-testid={topRightItem.valueTestId}
-              className={cn('font-semibold text-base-content/82', topRightItem.toneClass)}
+              className={cn('min-w-0 max-w-full font-semibold text-base-content/82', topRightItem.toneClass)}
             />
           </div>
         ) : null}
@@ -199,20 +241,39 @@ function MetricTile({
           />
         </div>
       )}
-      {secondaryItems.length > 0 ? (
+      {stackedMetaItems.length > 0 ? (
+        <div
+          data-testid={valueTestId ? `${valueTestId}-stacked-meta` : undefined}
+          className="mt-3 grid min-h-[4.75rem] grid-cols-1 gap-y-2 text-xs leading-5"
+        >
+          {stackedMetaItems.map((item, index) => (
+            <div key={`${item.label}-${index}`} className="min-w-0">
+              <div className="flex min-w-0 items-baseline gap-1">
+                <span className="shrink-0 whitespace-nowrap text-base-content/52">{item.label}</span>
+                <AdaptiveDisplayValue
+                  spec={item.valueSpec}
+                  data-testid={item.valueTestId}
+                  className={cn('min-w-0 flex-1 text-right font-semibold text-base-content/82', item.toneClass)}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {inlineSecondaryItems.length > 0 ? (
         <div className="mt-3 grid min-h-[2.75rem] grid-cols-2 gap-x-4 gap-y-2 text-xs leading-5">
-          {secondaryItems.map((item, index) => (
+          {inlineSecondaryItems.map((item, index) => (
             <div
               key={`${item.label}-${index}`}
               className={cn('min-w-0', index % 2 === 1 ? 'justify-self-end text-right' : undefined)}
             >
               <div className="flex min-w-0 items-baseline gap-1">
-                <span className="shrink-0 text-base-content/52">{item.label}</span>
+                <span className="shrink-0 whitespace-nowrap text-base-content/52">{item.label}</span>
                 <AdaptiveDisplayValue
                   spec={item.valueSpec}
                   data-testid={item.valueTestId}
                   className={cn(
-                    'font-semibold text-base-content/82',
+                    'min-w-0 flex-1 text-right font-semibold text-base-content/82',
                     item.toneClass,
                   )}
                 />
@@ -468,7 +529,7 @@ export function TodayStatsOverview({
           data-testid="today-stats-metrics-grid"
           className={cn(
             'grid grid-cols-1 gap-3 sm:grid-cols-2',
-            showInProgressConversations ? 'lg:grid-cols-7' : 'lg:grid-cols-6',
+            showInProgressConversations ? 'lg:grid-cols-4 xl:grid-cols-7' : 'lg:grid-cols-3 xl:grid-cols-6',
           )}
         >
           <MetricTile
@@ -667,7 +728,6 @@ export function TodayStatsOverview({
             value={totalTokens}
             localeTag={localeTag}
             loading={loading}
-            labelNoWrap
             preserveLabelCase
             labelTestId="today-stats-label-total-tokens"
             valueTestId="today-stats-value-total-tokens"

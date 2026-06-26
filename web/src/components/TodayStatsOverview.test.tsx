@@ -57,6 +57,7 @@ vi.mock('../i18n', () => ({
 let host: HTMLDivElement | null = null
 let root: Root | null = null
 let metricContainerWidth = 640
+let metricTileWidth = 280
 
 function buildTimeseriesWithLatency(): TimeseriesResponse {
   const points = Array.from({ length: 8 }, (_, index) => {
@@ -171,6 +172,9 @@ beforeAll(() => {
       if ((this as HTMLElement).dataset.adaptiveMetricContainer === 'true') {
         return metricContainerWidth
       }
+      if ((this as HTMLElement).dataset.testid === 'today-stats-metric-tile') {
+        return metricTileWidth
+      }
       return 0
     },
   })
@@ -194,6 +198,7 @@ afterEach(() => {
   host = null
   root = null
   metricContainerWidth = 640
+  metricTileWidth = 280
 })
 
 function render(ui: React.ReactNode) {
@@ -232,7 +237,8 @@ describe('TodayStatsOverview', () => {
     )
 
     const grid = host?.querySelector('[data-testid="today-stats-metrics-grid"]')
-    expect(grid?.className).toContain('lg:grid-cols-7')
+    expect(grid?.className).toContain('lg:grid-cols-4')
+    expect(grid?.className).toContain('xl:grid-cols-7')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(7)
     expect(host?.textContent).toContain('Today summary')
     expect(host?.textContent).toContain('TPM')
@@ -272,8 +278,9 @@ describe('TodayStatsOverview', () => {
     )
 
     const grid = host?.querySelector('[data-testid="today-stats-metrics-grid"]')
-    expect(grid?.className).toContain('lg:grid-cols-6')
-    expect(grid?.className).not.toContain('lg:grid-cols-7')
+    expect(grid?.className).toContain('lg:grid-cols-3')
+    expect(grid?.className).toContain('xl:grid-cols-6')
+    expect(grid?.className).not.toContain('xl:grid-cols-7')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6)
     expect(host?.textContent).not.toContain('In-progress conversations')
     expect(host?.textContent).toContain('Time to first byte')
@@ -307,7 +314,8 @@ describe('TodayStatsOverview', () => {
     )
 
     const grid = host?.querySelector('[data-testid="today-stats-metrics-grid"]')
-    expect(grid?.className).toContain('lg:grid-cols-7')
+    expect(grid?.className).toContain('lg:grid-cols-4')
+    expect(grid?.className).toContain('xl:grid-cols-7')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(7)
     expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('11')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('—')
@@ -974,7 +982,7 @@ describe('TodayStatsOverview', () => {
     expect(failedTokens?.textContent).toMatch(/88(\.8|\.83)?M/)
   })
 
-  it('keeps the total token label on one line and preserves mixed case', () => {
+  it('keeps all metric labels on one line while preserving mixed case for total tokens', () => {
     render(
       <TodayStatsOverview
         stats={{
@@ -996,9 +1004,136 @@ describe('TodayStatsOverview', () => {
     )
 
     const totalTokensLabel = host?.querySelector('[data-testid="today-stats-label-total-tokens"]')
+    const labels = Array.from(host?.querySelectorAll('[role="button"] span') ?? [])
     expect(totalTokensLabel?.textContent).toBe('Today Token')
     expect(totalTokensLabel?.className).toContain('whitespace-nowrap')
     expect(totalTokensLabel?.className).toContain('normal-case')
+    for (const label of labels) {
+      expect(label.className).toContain('whitespace-nowrap')
+    }
+  })
+
+  it('stacks top-right and secondary meta rows below the primary value when a tile is too narrow', () => {
+    metricTileWidth = 170
+    metricContainerWidth = 92
+
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12474,
+          successCount: 9949,
+          failureCount: 2525,
+          totalCost: 488.96,
+          totalTokens: 1_049_600_000,
+          inProgressConversationCount: 11,
+          inProgressRetryConversationCount: 4,
+          inProgressAvgWaitMs: 1850,
+          nonSuccessCost: 60.93,
+          nonSuccessTokens: 88_834_346,
+        }}
+        comparisonStats={{
+          totalCount: 11800,
+          successCount: 9100,
+          failureCount: 2700,
+          totalCost: 430.15,
+          totalTokens: 980_000_000,
+          inProgressConversationCount: 7,
+          inProgressRetryConversationCount: 3,
+          nonSuccessCost: 52.8,
+          nonSuccessTokens: 76_300_000,
+        }}
+        previous7dStats={{
+          totalCount: 56000,
+          successCount: 52000,
+          failureCount: 4000,
+          totalCost: 392.12,
+          totalTokens: 6_200_000_000,
+          inProgressConversationCount: 4,
+          inProgressRetryConversationCount: 1,
+          nonSuccessCost: 41.2,
+          nonSuccessTokens: 320_000_000,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        comparisonTimeseries={buildTimeseriesWithLatency()}
+        rate={{
+          tokensPerMinute: 1_049_600,
+          spendRate: 8.31,
+          windowMinutes: 5,
+          available: true,
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    const tokenTile = host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')?.[6] as HTMLElement | undefined
+    const stackedMeta = host?.querySelector('[data-testid="today-stats-value-total-tokens-stacked-meta"]')
+
+    expect(tokenTile?.dataset.stackMeta).toBe('true')
+    expect(stackedMeta).toBeInstanceOf(HTMLElement)
+    expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-delta"]')?.textContent).not.toContain('…')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-failed"]')?.textContent).not.toContain('…')
+  })
+
+  it('keeps the original split meta layout when the tile width is sufficient', () => {
+    metricTileWidth = 280
+    metricContainerWidth = 92
+
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12474,
+          successCount: 9949,
+          failureCount: 2525,
+          totalCost: 488.96,
+          totalTokens: 1_049_600_000,
+          inProgressConversationCount: 11,
+          inProgressRetryConversationCount: 4,
+          inProgressAvgWaitMs: 1850,
+          nonSuccessCost: 60.93,
+          nonSuccessTokens: 88_834_346,
+        }}
+        comparisonStats={{
+          totalCount: 11800,
+          successCount: 9100,
+          failureCount: 2700,
+          totalCost: 430.15,
+          totalTokens: 980_000_000,
+          inProgressConversationCount: 7,
+          inProgressRetryConversationCount: 3,
+          nonSuccessCost: 52.8,
+          nonSuccessTokens: 76_300_000,
+        }}
+        previous7dStats={{
+          totalCount: 56000,
+          successCount: 52000,
+          failureCount: 4000,
+          totalCost: 392.12,
+          totalTokens: 6_200_000_000,
+          inProgressConversationCount: 4,
+          inProgressRetryConversationCount: 1,
+          nonSuccessCost: 41.2,
+          nonSuccessTokens: 320_000_000,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        comparisonTimeseries={buildTimeseriesWithLatency()}
+        rate={{
+          tokensPerMinute: 1_049_600,
+          spendRate: 8.31,
+          windowMinutes: 5,
+          available: true,
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    const tokenTile = host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')?.[6] as HTMLElement | undefined
+    const stackedMeta = host?.querySelector('[data-testid="today-stats-value-total-tokens-stacked-meta"]')
+
+    expect(tokenTile?.dataset.stackMeta).toBe('false')
+    expect(stackedMeta).toBeNull()
+    expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-delta"]')?.textContent).not.toContain('…')
   })
 
   it('uses a width-capped loading placeholder instead of a fixed narrow-tile width', () => {

@@ -19,6 +19,32 @@ vi.mock('../../lib/api', async () => {
 
 let host: HTMLDivElement | null = null
 let root: Root | null = null
+let originalLocalStorageDescriptor: PropertyDescriptor | undefined
+
+function createMemoryStorage(): Storage {
+  const store = new Map<string, string>()
+
+  return {
+    get length() {
+      return store.size
+    },
+    clear() {
+      store.clear()
+    },
+    getItem(key: string) {
+      return store.get(key) ?? null
+    },
+    key(index: number) {
+      return Array.from(store.keys())[index] ?? null
+    },
+    removeItem(key: string) {
+      store.delete(key)
+    },
+    setItem(key: string, value: string) {
+      store.set(key, value)
+    },
+  }
+}
 
 function renderPage() {
   host = document.createElement('div')
@@ -37,6 +63,11 @@ function renderPage() {
 describe('SystemStatusPage', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    originalLocalStorageDescriptor ??= Object.getOwnPropertyDescriptor(window, 'localStorage')
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: createMemoryStorage(),
+    })
     window.localStorage.setItem('codex-vibe-monitor.locale', 'zh')
     apiMocks.fetchSystemStatus.mockResolvedValue({
       liveInvocationsCount: 6,
@@ -62,6 +93,9 @@ describe('SystemStatusPage', () => {
     root = null
     apiMocks.fetchSystemStatus.mockReset()
     window.localStorage.removeItem('codex-vibe-monitor.locale')
+    if (originalLocalStorageDescriptor) {
+      Object.defineProperty(window, 'localStorage', originalLocalStorageDescriptor)
+    }
     vi.useRealTimers()
   })
 

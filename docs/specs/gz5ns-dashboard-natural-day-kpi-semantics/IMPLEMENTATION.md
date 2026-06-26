@@ -20,7 +20,8 @@
 - 已完成 `AdaptiveMetricValue` 候选驱动重构：主值不再只在同一单位内裁小数，而是支持完整值、compact、多精度与邻近单位回退的有序候选集。
 - 已完成 `TodayStatsOverview` 内主值、右上 comparison/meta、底部 secondary 的结构化自适应数值渲染；红框同类位不再依赖整行 `truncate`。
 - 已补齐 `1.05B / 1.0B / 1B / 1,050M` 等 `B/M` 临界值规则，保证在真实窄宽度下优先保留 `1.0B` 等最低必要小数位，而不是视觉上塌成 `1B`。
-- 已刷新 `TodayStatsOverview` 窄桌面 worst-case 与 `DashboardActivityOverview` 集成桌面态 Storybook 视觉证据，并绑定当前 worktree 实现。
+- 已刷新 `TodayStatsOverview` 与 `DashboardActivityOverview` 的 Storybook 视觉证据，确保取证仅使用仓库支持的 desktop viewport，并去除 story 内部人为 `max-width` 制造的伪窄态。
+- 已补齐 tile 级自适应布局退化：当单卡真实宽度不足时，右上 comparison 与底部两个 secondary 会自动下沉到主值下方逐行展示；宽度恢复后回到原四区布局。
 
 ## Remaining Gaps
 

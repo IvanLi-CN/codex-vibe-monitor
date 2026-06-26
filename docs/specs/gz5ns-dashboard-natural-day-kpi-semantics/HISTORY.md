@@ -14,7 +14,8 @@
 - 2026-06-24：统一微调七卡主值字号，并追加活动总览桌面态与单卡裁切的视觉证据，确保这次 follow-up 的 UI 结果可直接复核。
 - 2026-06-26：将 `TodayStatsOverview` 的主值、右上 comparison/meta、底部 secondary 统一切到结构化自适应数值候选，不再把 secondary/top-right 数值当成整串文本做 `truncate`。
 - 2026-06-26：把 compact 规则从“同单位少量小数候选”升级为“跨单位 + 跨精度 + 邻近单位回退”的有序候选集，并补上最小必要小数位保留规则，避免 `1.0B` 视觉上塌成 `1B`。
-- 2026-06-26：追加窄桌面 worst-case 与集成桌面态的 Storybook 证据，冻结这次自适应精度修复的 owner-facing 结果。
+- 2026-06-26：追加支持 viewport 内的 Storybook 桌面证据，并收回基于 story 内部 `max-width` 人为缩窄容器的旧取证方式；label 在卡片内统一保持单行，不再允许换行破坏四区布局。
+- 2026-06-26：在数值自适应之外，补齐 tile 级布局退化规则：当单卡真实宽度不足时，comparison 与两个 secondary 下沉到主值下方逐行展示；当宽度恢复到阈值以上时，再自动回到原四区布局。
 
 ## Key Reasons / Replacements
 
