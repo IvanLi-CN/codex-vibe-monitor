@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.75.4",
+  "base_stable_version": "1.75.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-26T05:28:42Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.75.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "310f9c6af5362ff1bdb22e8802ab2c761e6ea7bf",
+  "pr_number": 475,
+  "pr_title": "fix(stats): restore account natural-day summary live rows",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.75.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.75.4",
+  "target_sha": "2021403ccc477f0f3f0ea2877e8a376ff341f4b7",
+  "type_label": "type:patch"
+}
