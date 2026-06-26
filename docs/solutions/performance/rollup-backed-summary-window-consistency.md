@@ -33,12 +33,18 @@ The summary path short-circuited to live-only aggregation whenever the requested
 - Keep natural-day summary reads on the same rollup-backed path as hourly timeseries.
 - Use hourly rollups, full-hour live tail replay, and uncovered archive fallback together.
 - Never treat `window.start >= retention_cutoff` as proof that live-only totals are complete.
+- Keep account-scoped summary variants aligned with the non-account summary path when they
+  split work between exact live reads and rollup-backed tails.
+- For windows that have no completed full hour yet, do not clamp exact live reads to the
+  rollup live cursor or add a second tail replay path just for account-scoped summaries.
 
 ## Guardrails / Reuse Notes
 
 - When a summary window is expected to match a bucketed timeseries sum, add a regression test that compares both totals on a mixed archive/live fixture.
 - Prefer the rollup-backed path for any window that can straddle archived and live days.
 - If retention settings can change over time, assume older days may already exist only in rollup/archive even when the current cutoff no longer suggests it.
+- When adding an account-scoped summary variant, compare its no-full-hour behavior against the
+  non-account path before introducing cursor-specific tail handling.
 
 ## References
 
