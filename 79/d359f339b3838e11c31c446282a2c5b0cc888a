@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-26T09:45:11Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "da19dc172f3e774da9edf741421dfc46f9fb5d7e",
+  "pr_number": 478,
+  "pr_title": "chore: align social preview and brand assets",
+  "registry": "ghcr.io",
+  "release_bump": "docs",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "",
+  "target_sha": "79d359f339b3838e11c31c446282a2c5b0cc888a",
+  "type_label": "type:docs"
+}
