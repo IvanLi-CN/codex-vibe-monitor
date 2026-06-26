@@ -140,7 +140,6 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
     let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
     let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
     let mut totals = StatsTotals::default();
-    let boundary_snapshot_id = rollup_live_cursor.min(snapshot_id);
     let archive_overlap_ids =
         if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
             let rows = query_upstream_account_stats_rollup_range_tx(
@@ -159,19 +158,18 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
                 totals.total_tokens += row.total_tokens;
                 totals.total_cost += row.total_cost;
             }
-            let mut exact_records =
-                if !range_plan.live_exact_ranges.is_empty() && boundary_snapshot_id > 0 {
-                    query_invocation_exact_records_for_account_tx(
-                        tx.as_mut(),
-                        &range_plan,
-                        source_scope,
-                        boundary_snapshot_id,
-                        upstream_account_id,
-                    )
-                    .await?
-                } else {
-                    Vec::new()
-                };
+            let mut exact_records = if !range_plan.live_exact_ranges.is_empty() && snapshot_id > 0 {
+                query_invocation_exact_records_for_account_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    snapshot_id,
+                    upstream_account_id,
+                )
+                .await?
+            } else {
+                Vec::new()
+            };
             let tail_records = query_invocation_full_hour_tail_records_tx_for_account(
                 tx.as_mut(),
                 &range_plan,
@@ -191,19 +189,18 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
             }
             archive_overlap_ids
         } else {
-            let exact_records =
-                if !range_plan.live_exact_ranges.is_empty() && boundary_snapshot_id > 0 {
-                    query_invocation_exact_records_for_account_tx(
-                        tx.as_mut(),
-                        &range_plan,
-                        source_scope,
-                        boundary_snapshot_id,
-                        upstream_account_id,
-                    )
-                    .await?
-                } else {
-                    Vec::new()
-                };
+            let exact_records = if !range_plan.live_exact_ranges.is_empty() && snapshot_id > 0 {
+                query_invocation_exact_records_for_account_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    snapshot_id,
+                    upstream_account_id,
+                )
+                .await?
+            } else {
+                Vec::new()
+            };
             for record in &exact_records {
                 add_invocation_record_to_summary_totals(&mut totals, record);
             }
@@ -236,24 +233,6 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
             )
             .await?,
         );
-    }
-    if range_plan.full_hour_range.is_none() && rollup_live_cursor < snapshot_id {
-        let tail_range_plan = HourlyRollupExactRangePlan {
-            full_hour_range: None,
-            live_exact_ranges: exact_utc_range(start, end)?.into_iter().collect(),
-        };
-        let tail_records = query_invocation_exact_records_tx_for_account(
-            tx.as_mut(),
-            &tail_range_plan,
-            source_scope,
-            snapshot_id,
-            upstream_account_id,
-            rollup_live_cursor,
-        )
-        .await?;
-        for record in &tail_records {
-            add_invocation_record_to_summary_totals(&mut totals, record);
-        }
     }
     Ok(totals)
 }
