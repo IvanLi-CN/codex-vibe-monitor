@@ -3313,6 +3313,7 @@
             list_limit_max: 100,
             user_agent: user_agent.to_string(),
             static_dir: None,
+            public_origin: None,
             retention_enabled: DEFAULT_RETENTION_ENABLED,
             retention_dry_run: DEFAULT_RETENTION_DRY_RUN,
             retention_interval: Duration::from_secs(DEFAULT_RETENTION_INTERVAL_SECS),

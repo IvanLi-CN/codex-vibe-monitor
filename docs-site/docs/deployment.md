@@ -13,7 +13,7 @@ description: 面向长期运行实例的 Codex Vibe Monitor 自部署指南。
 - 应用服务留在内网或容器网络里。
 - 浏览器、脚本或现有兼容客户端都从你的网关入口进入。
 
-如果你只是想先验证镜像能不能跑，用 [快速开始](/quick-start) 即可；  
+如果你只是想先验证镜像能不能跑，用 [快速开始](/quick-start) 即可；\
 这页更关心长期运行、持久化和上线口径。
 
 ## 生产基线 Compose
@@ -26,6 +26,7 @@ services:
     environment:
       HTTP_BIND: 0.0.0.0:8080
       DATABASE_PATH: /srv/app/data/codex_vibe_monitor.db
+      PUBLIC_ORIGIN: https://monitor.example.com
     volumes:
       - ./data:/srv/app/data
     healthcheck:
@@ -36,24 +37,26 @@ services:
       start_period: 60s
 ```
 
-这份基线示例的目标不是“最短”，而是让你一开始就带上持久化和 readiness。  
+这份基线示例的目标不是“最短”，而是让你一开始就带上持久化和 readiness。\
 如果你还需要 Account Pool 写能力，再补 `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`。
 
 ## 长期运行前，最先决定这些变量
 
-| 变量 | 作用 | 什么时候必须配 |
-| --- | --- | --- |
-| `HTTP_BIND` | 服务监听地址 | 容器部署或网关拓扑不同的时候 |
-| `DATABASE_PATH` | SQLite 主库路径 | 想把数据库放在持久化卷时 |
-| `OPENAI_UPSTREAM_BASE_URL` | OpenAI 兼容上游地址 | 不是转发到默认 OpenAI 上游时 |
-| `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET` | Account Pool 写入与 OAuth 绑定密钥 | 需要账号池写能力时 |
-| `RETENTION_ENABLED` / `ARCHIVE_DIR` | 后台归档与离线目录 | 想长期运行并控制主库体积时 |
+| 变量                                  | 作用                                     | 什么时候必须配                               |
+| ------------------------------------- | ---------------------------------------- | -------------------------------------------- |
+| `HTTP_BIND`                           | 服务监听地址                             | 容器部署或网关拓扑不同的时候                 |
+| `DATABASE_PATH`                       | SQLite 主库路径                          | 想把数据库放在持久化卷时                     |
+| `PUBLIC_ORIGIN`                       | 对外公开入口基址，用于社交预览等绝对 URL | 有稳定域名、要给 README / 分享卡片正确出图时 |
+| `OPENAI_UPSTREAM_BASE_URL`            | OpenAI 兼容上游地址                      | 不是转发到默认 OpenAI 上游时                 |
+| `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET` | Account Pool 写入与 OAuth 绑定密钥       | 需要账号池写能力时                           |
+| `RETENTION_ENABLED` / `ARCHIVE_DIR`   | 后台归档与离线目录                       | 想长期运行并控制主库体积时                   |
 
 ## 网关与暴露面
 
 - 推荐只对外暴露网关，不直接暴露应用监听端口。
 - 如果走容器部署，应用内通常用 `HTTP_BIND=0.0.0.0:8080`，但对外流量仍然应该由 Traefik、Nginx 或其他反向代理承接。
 - `X-Forwarded-*` 这类头只应该由受信任网关产生；不要把应用端口直接开放到公网后再指望这些头有安全意义。
+- 如果你希望 GitHub / Slack / 飞书这类分享卡片稳定拿到主视觉图，直接显式配置 `PUBLIC_ORIGIN`，不要只依赖代理头让爬虫猜协议和域名。
 
 ## Readiness 与健康检查
 

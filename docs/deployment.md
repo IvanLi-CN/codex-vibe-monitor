@@ -41,6 +41,19 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 3. Traefik 路由按固定 Host 转发到应用服务。
 4. 不允许旁路访问应用容器（安全组、防火墙、网络策略）。
 
+## Public Origin For Social Preview Metadata
+
+仓库首页图与应用的 `og:image` / `twitter:image` 会优先使用显式 `PUBLIC_ORIGIN` 生成绝对 URL。
+
+- 推荐在长期运行实例中显式配置 `PUBLIC_ORIGIN=https://<你的公开入口域名>`。
+- 如果部署在受信任反向代理后，也可以依赖代理提供的 `X-Forwarded-Proto` / `X-Forwarded-Host` 或标准 `Forwarded`。
+- 如果缺少 `PUBLIC_ORIGIN`，且代理又没有提供可信的 proto 信息，应用只能退回请求现场推断；这对社交平台爬虫并不总是稳定。
+
+建议：
+
+1. 公开域名稳定时，始终显式配置 `PUBLIC_ORIGIN`。
+2. staging / review / 自部署 HTTP 实例，也把 `PUBLIC_ORIGIN` 配成真实可访问入口，不要依赖爬虫替你猜协议。
+
 ## Readiness And Container Health
 
 `GET /health` 现在表示 readiness，而不是“进程活着”：
@@ -87,6 +100,7 @@ labels:
 
 - `DATABASE_PATH`：SQLite 主库路径；升级旧版本前请先同步新的公开 env 命名，legacy `XY_*` 公共键会在启动期直接被拒绝。
 - `PROXY_RAW_DIR`：原始请求/响应落盘目录；相对路径会锚定到 `DATABASE_PATH` 同级目录，避免跟随容器工作目录漂移。
+- `PUBLIC_ORIGIN`：用于生成 `og:image` / `twitter:image` 等对外绝对 URL 的公开入口基址；推荐显式配置为最终对外域名。
 - `PROXY_RAW_MAX_BYTES`：单次请求/响应原文采集上限；默认 `0=unlimited`（支持显式配置正整数上限）。
 - `PROXY_RAW_COMPRESSION`：raw 冷压缩 codec；默认 `gzip`，可设为 `none` 关闭冷压缩。
 - `PROXY_RAW_IMMEDIATE_GZIP_BYTES`：born-gzip 阈值；默认 `1048576`（1 MiB），仅在 `PROXY_RAW_COMPRESSION=gzip` 时生效，`0` 表示禁用“首次落盘直接 gzip”。

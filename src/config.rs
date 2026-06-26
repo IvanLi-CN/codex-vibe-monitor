@@ -312,6 +312,7 @@ struct AppConfig {
     list_limit_max: usize,
     user_agent: String,
     static_dir: Option<PathBuf>,
+    public_origin: Option<String>,
     retention_enabled: bool,
     retention_dry_run: bool,
     retention_interval: Duration,
@@ -599,6 +600,10 @@ impl AppConfig {
             .clone()
             .or_else(|| env::var(ENV_USER_AGENT).ok())
             .unwrap_or_else(|| "codex-vibe-monitor/0.2.0".to_string());
+        let public_origin = env::var(ENV_PUBLIC_ORIGIN)
+            .ok()
+            .map(|value| normalize_public_origin(&value))
+            .transpose()?;
         let static_dir = overrides
             .static_dir
             .clone()
@@ -808,6 +813,7 @@ impl AppConfig {
             list_limit_max,
             user_agent,
             static_dir,
+            public_origin,
             retention_enabled,
             retention_dry_run,
             retention_interval,
@@ -850,6 +856,10 @@ impl AppConfig {
             .then_some(self.proxy_raw_immediate_gzip_bytes)
             .flatten()
     }
+}
+
+fn normalize_public_origin(raw: &str) -> Result<String> {
+    normalize_cors_origin(raw).ok_or_else(|| anyhow!("invalid {ENV_PUBLIC_ORIGIN}: {raw}"))
 }
 
 fn parse_bool_env_var(name: &str, default_value: bool) -> Result<bool> {

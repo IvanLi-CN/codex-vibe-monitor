@@ -27,8 +27,8 @@ use axum::{
     body::{Body, Bytes, HttpBody},
     extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
     extract::{ConnectInfo, DefaultBodyLimit, OriginalUri, Path as AxumPath, Query, State},
-    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, uri::Authority},
-    response::{IntoResponse, Json, Response, Sse},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri, uri::Authority},
+    response::{Html, IntoResponse, Json, Response, Sse},
     routing::{any, delete, get, post, put},
 };
 use base64::Engine;
@@ -68,9 +68,10 @@ use tokio_rustls::TlsConnector;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async_tls_with_config};
 use tokio_util::sync::CancellationToken;
+use tower::service_fn;
 use tower_http::{
     cors::{AllowOrigin, Any, CorsLayer},
-    services::{ServeDir, ServeFile},
+    services::ServeDir,
     trace::TraceLayer,
 };
 use tracing::{debug, error, info, warn};
@@ -243,6 +244,7 @@ const ENV_USER_AGENT: &str = "USER_AGENT";
 const LEGACY_ENV_USER_AGENT: &str = "XY_USER_AGENT";
 const ENV_STATIC_DIR: &str = "STATIC_DIR";
 const LEGACY_ENV_STATIC_DIR: &str = "XY_STATIC_DIR";
+const ENV_PUBLIC_ORIGIN: &str = "PUBLIC_ORIGIN";
 const ENV_RETENTION_ENABLED: &str = "RETENTION_ENABLED";
 const LEGACY_ENV_RETENTION_ENABLED: &str = "XY_RETENTION_ENABLED";
 const ENV_RETENTION_DRY_RUN: &str = "RETENTION_DRY_RUN";
