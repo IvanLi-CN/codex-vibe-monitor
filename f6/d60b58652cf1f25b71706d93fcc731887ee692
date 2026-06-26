@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.75.6",
+  "base_stable_version": "1.75.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-26T07:39:17Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.75.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1a5a9964b3620e25bd616788599853ff7054238e",
+  "pr_number": 477,
+  "pr_title": "feat: show routed response model badges",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.75.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.75.6",
+  "target_sha": "f6d60b58652cf1f25b71706d93fcc731887ee692",
+  "type_label": "type:patch"
+}
