@@ -12,6 +12,9 @@
 - 2026-06-24：将第五张卡主语义固定为 `首字用时`，右下次指标固定为最近 5 分钟完整调用结束的 `t_total_ms` 均值 `响应时间`；不再把进行中等待均值留在 owner-facing 卡面中。
 - 2026-06-24：补齐 `avgTotalMs` 的后端 timeseries 聚合、前端归一化与本地 SSE patch，并同步修复 `DashboardActivityOverview` Storybook mock，让活动总览里的 `响应时间` 次指标始终有可验证样本。
 - 2026-06-24：统一微调七卡主值字号，并追加活动总览桌面态与单卡裁切的视觉证据，确保这次 follow-up 的 UI 结果可直接复核。
+- 2026-06-26：将 `TodayStatsOverview` 的主值、右上 comparison/meta、底部 secondary 统一切到结构化自适应数值候选，不再把 secondary/top-right 数值当成整串文本做 `truncate`。
+- 2026-06-26：把 compact 规则从“同单位少量小数候选”升级为“跨单位 + 跨精度 + 邻近单位回退”的有序候选集，并补上最小必要小数位保留规则，避免 `1.0B` 视觉上塌成 `1B`。
+- 2026-06-26：追加窄桌面 worst-case 与集成桌面态的 Storybook 证据，冻结这次自适应精度修复的 owner-facing 结果。
 
 ## Key Reasons / Replacements
 

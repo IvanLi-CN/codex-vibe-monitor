@@ -62,6 +62,8 @@
 - 尽量把新 KPI 语义收敛在 `TodayStatsOverview` 与 helper 层，不把布局条件散落到 Dashboard 和账号页调用端。
 - `成功` 右上 comparison 应复用与 cost/tokens 同类的 same-progress helper，而不是硬编码到组件 JSX。
 - 后端 augmentation 保持“主 summary totals + live augmentation”结构，避免重写已有 rollup-backed totals 路径。
+- `TodayStatsOverview` 内的主值、右上 comparison/meta、底部 secondary 数值应优先保留完整精度；仅在真实可用宽度不足时，才按“减少小数 -> compact -> compact 邻近单位回退”阶梯退化。
+- 对计数、Token、货币类 compact 候选，选择规则必须优先保留更多有效信息；允许 `B` 回退到 `M`，也允许在必要时保留 `1.0B` 这类最小小数位，禁止在仍可表达更多信息时直接塌成 `1B`。
 
 ### COULD
 
@@ -122,6 +124,8 @@
 - Given 自然日金额图切到 `金额` metric，When 某个 bucket 同时包含成功与 `failed/interrupted` 成本，Then tooltip 同时显示累计 `Success`、累计 `Non-success` 与累计总金额，且前两者之和等于总金额。
 - Given 自然日金额图切到 `金额` metric，When 查看图例与面积层，Then 固定展示 `Success` 与 `Non-success` 两层堆叠，不再是单条 `累计总金额` 面积图。
 - Given 账号详情页传入 `upstreamAccountId`，When 查看自然日金额图，Then 堆叠面积与 tooltip 语义与主 Dashboard 一致，且数据仍严格受账号作用域约束。
+- Given `TodayStatsOverview` 任一主值、右上 comparison 或底部 secondary 在窄桌面宽度下接近溢出，When 自适应格式化生效，Then 标签语义保留，数值只允许通过降小数、compact 或 compact 邻近单位回退来缩短，不允许出现省略号截断数值。
+- Given `Today Token` 等 `B/M` 临界值主值在紧张宽度下渲染，When `1.05B` 放不下但 `1.0B` 仍可放下，Then 应优先显示 `1.0B`；只有更高信息量候选都放不下时，才允许进一步退化到 `1B` 或邻近单位整数值。
 
 ## 验收清单（Acceptance checklist）
 
@@ -170,10 +174,23 @@
   ![Today activity overview with response-time secondary](./assets/dashboard-activity-overview-today-desktop.png)
 - SHA `worktree`
 - source_type: `storybook_canvas`
+  story_id_or_title: `dashboard-dashboardactivityoverview--today-view`
+  scenario: `activity overview desktop precision guard`
+  evidence_note: `验证集成态 Dashboard 活动总览仍复用同一 TodayStatsOverview 自适应精度链路；桌面态主值、右上 comparison 与底部 secondary 同时存在且未依赖字符串截断。`
+  PR: include
+  ![Today activity overview precision desktop](./assets/dashboard-activity-overview-today-precision-desktop.png)
+- SHA `worktree`
+- source_type: `storybook_canvas`
   story_id_or_title: `dashboard-todaystatsoverview--desktop-single-row`
   scenario: `first-byte main value with recent avg total secondary`
   evidence_note: `验证第五张卡主值仍为“首字用时”，右下标签为“响应时间”，其值为最近 5 分钟完整调用结束的 t_total_ms 均值；其余卡片语义不变。截图为中文 locale 的 Storybook 单卡裁切。`
   ![First-byte time tile with recent avg total secondary](./assets/response-time-avg-total-storybook.png)
+- SHA `worktree`
+- source_type: `storybook_canvas`
+  story_id_or_title: `dashboard-todaystatsoverview--narrow-desktop-secondary-overflow-guard`
+  scenario: `narrow desktop precision guard`
+  evidence_note: `验证窄桌面 worst-case 下，Today Token 主值保留为 1.0B 而不是塌成 1B，失败 Tokens 次指标也已退化为 89M；右上 comparison 与底部 secondary 仍保持 label + value 语义，没有用省略号截断数值。`
+  ![TodayStatsOverview narrow precision guard](./assets/today-stats-overview-narrow-precision-guard.png)
 
 ## Related PRs
 

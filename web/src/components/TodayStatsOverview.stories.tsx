@@ -434,8 +434,111 @@ export const NarrowDesktopOverflowFallback: Story = {
     await waitFor(() => {
       const totalTokensValue = canvas.getByTestId('today-stats-value-total-tokens')
       expect(totalTokensValue).toHaveAttribute('data-compact', 'true')
-      expect(totalTokensValue).toHaveAttribute('data-compact-precision', '0')
+      expect(totalTokensValue).toHaveAttribute('data-candidate-key', 'compact-M-0')
       expect(totalTokensValue.textContent ?? '').toContain('281M')
+    })
+  },
+}
+
+export const BillionPrecisionGuard: Story = {
+  args: {
+    stats: {
+      totalCount: 12474,
+      successCount: 9949,
+      failureCount: 2525,
+      totalCost: 488.96,
+      totalTokens: 1_049_600_000,
+      inProgressConversationCount: 11,
+      inProgressRetryConversationCount: 4,
+      inProgressAvgWaitMs: 1850,
+      nonSuccessCost: 60.93,
+      nonSuccessTokens: 88_834_346,
+    },
+    rate: {
+      tokensPerMinute: 1_049_600,
+      spendRate: 8.31,
+      windowMinutes: 5,
+      available: true,
+    },
+    ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
+    loading: false,
+    error: null,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1280',
+    },
+  },
+  decorators: [
+    (Story) => (
+      <div className="mx-auto w-full max-w-[1040px]">
+        <Story />
+      </div>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      const totalTokensValue = canvas.getByTestId('today-stats-value-total-tokens')
+      expect(totalTokensValue.textContent ?? '').toContain('1.05B')
+      expect(totalTokensValue.textContent ?? '').not.toBe('1B')
+    })
+  },
+}
+
+export const NarrowDesktopSecondaryOverflowGuard: Story = {
+  args: {
+    stats: {
+      totalCount: 12474,
+      successCount: 9949,
+      failureCount: 2525,
+      totalCost: 488.96,
+      totalTokens: 1_049_600_000,
+      inProgressConversationCount: 11,
+      inProgressRetryConversationCount: 4,
+      inProgressAvgWaitMs: 1850,
+      nonSuccessCost: 60.93,
+      nonSuccessTokens: 88_834_346,
+    },
+    rate: {
+      tokensPerMinute: 1_049_600,
+      spendRate: 8.31,
+      windowMinutes: 5,
+      available: true,
+    },
+    ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
+    loading: false,
+    error: null,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1280',
+    },
+  },
+  decorators: [
+    (Story) => (
+      <div className="mx-auto w-full max-w-[960px]">
+        <Story />
+      </div>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByTestId('today-stats-secondary-cost-failed').textContent ?? '').not.toContain('…')
+      expect(canvas.getByTestId('today-stats-secondary-tokens-failed').textContent ?? '').not.toContain('…')
+      expect(canvas.getByTestId('today-stats-secondary-tokens-failed').textContent ?? '').toMatch(/88(\.8|\.83)?M/i)
+      expect(canvas.getByTestId('today-stats-secondary-tokens-delta').textContent ?? '').not.toContain('…')
     })
   },
 }

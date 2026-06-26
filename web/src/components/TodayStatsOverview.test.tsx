@@ -498,7 +498,7 @@ describe('TodayStatsOverview', () => {
 
     expect(tpmText).toContain('1,001')
     expect(tpmText).not.toContain('.')
-    expect(spendRateText).toContain('$0.10')
+    expect(spendRateText).toContain('$0.1')
   })
 
   it('renders the new natural-day KPI helper semantics inline', () => {
@@ -904,11 +904,74 @@ describe('TodayStatsOverview', () => {
     )
 
     const totalTokensValue = host?.querySelector('[data-testid="today-stats-value-total-tokens"]')
-    const totalTokensVisible = totalTokensValue?.querySelector('[data-adaptive-metric-visible="true"]')
     expect(totalTokensValue?.getAttribute('data-compact')).toBe('true')
-    expect(totalTokensValue?.getAttribute('data-compact-precision')).toBe('0')
-    expect(totalTokensVisible?.textContent).toContain('281M')
-    expect(totalTokensVisible?.textContent).not.toContain('281.11M')
+    expect(totalTokensValue?.getAttribute('data-candidate-key')).toBe('compact-M-0')
+    expect(totalTokensValue?.textContent).toContain('281M')
+    expect(totalTokensValue?.textContent).not.toContain('281.11M')
+  })
+
+  it('keeps top-right and secondary values readable without string truncation in narrow tiles', () => {
+    metricContainerWidth = 92
+
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12474,
+          successCount: 9949,
+          failureCount: 2525,
+          totalCost: 488.96,
+          totalTokens: 1_049_600_000,
+          inProgressConversationCount: 11,
+          inProgressRetryConversationCount: 4,
+          nonSuccessCost: 60.93,
+          nonSuccessTokens: 88_834_346,
+        }}
+        comparisonStats={{
+          totalCount: 9000,
+          successCount: 8200,
+          failureCount: 800,
+          totalCost: 295.3,
+          totalTokens: 730_000_000,
+          inProgressConversationCount: 7,
+          inProgressRetryConversationCount: 2,
+          nonSuccessCost: 50.1,
+          nonSuccessTokens: 52_000_000,
+        }}
+        previous7dStats={{
+          totalCount: 56000,
+          successCount: 52000,
+          failureCount: 4000,
+          totalCost: 392.12,
+          totalTokens: 6_200_000_000,
+          inProgressConversationCount: 4,
+          inProgressRetryConversationCount: 1,
+          nonSuccessCost: 41.2,
+          nonSuccessTokens: 320_000_000,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        comparisonTimeseries={buildTimeseriesWithLatency()}
+        rate={{
+          tokensPerMinute: 1_049_600,
+          spendRate: 8.31,
+          windowMinutes: 5,
+          available: true,
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    const tokensValue = host?.querySelector('[data-testid="today-stats-value-total-tokens"]')
+    const topRightDelta = host?.querySelector('[data-testid="today-stats-secondary-tokens-delta"]')
+    const failedTokens = host?.querySelector('[data-testid="today-stats-secondary-tokens-failed"]')
+    const failedCost = host?.querySelector('[data-testid="today-stats-secondary-cost-failed"]')
+
+    expect(tokensValue?.textContent).toContain('1.05B')
+    expect(tokensValue?.textContent).not.toContain('1B')
+    expect(topRightDelta?.textContent).not.toContain('…')
+    expect(failedTokens?.textContent).not.toContain('…')
+    expect(failedCost?.textContent).not.toContain('…')
+    expect(failedTokens?.textContent).toMatch(/88(\.8|\.83)?M/)
   })
 
   it('keeps the total token label on one line and preserves mixed case', () => {
