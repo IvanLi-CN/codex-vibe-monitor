@@ -49,6 +49,13 @@ export interface InvocationImageIntentDisplay {
   detailLabelKey: TranslationKey | null;
 }
 
+export interface InvocationModelDisplay {
+  primaryValue: string;
+  requestValue: string | null;
+  responseValue: string | null;
+  hasMismatch: boolean;
+}
+
 function normalizeImageIntent(
   value: string | null | undefined,
 ): InvocationImageIntent | null {
@@ -82,6 +89,58 @@ function normalizeInvocationTimingStage(
     return null;
   }
   return value;
+}
+
+function normalizeModelValue(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function datedModelAliasBase(model: string): string | null {
+  const match = model.match(/^(.*)-\d{4}-\d{2}-\d{2}$/);
+  if (!match) return null;
+  const base = match[1]?.trim();
+  return base ? base : null;
+}
+
+export function normalizeModelComparisonKey(
+  value: string | null | undefined,
+): string | null {
+  const normalized = normalizeModelValue(value);
+  if (!normalized) return null;
+  const aliasBase = datedModelAliasBase(normalized) ?? normalized;
+  return aliasBase.toLowerCase();
+}
+
+export function areInvocationModelsEquivalent(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  const leftKey = normalizeModelComparisonKey(left);
+  const rightKey = normalizeModelComparisonKey(right);
+  if (leftKey == null || rightKey == null) return false;
+  return leftKey === rightKey;
+}
+
+export function resolveInvocationModelDisplay(
+  record: Pick<ApiInvocation, "model" | "requestModel" | "responseModel">,
+): InvocationModelDisplay {
+  const requestValue = normalizeModelValue(record.requestModel);
+  const responseValue = normalizeModelValue(record.responseModel);
+  const legacyValue = normalizeModelValue(record.model);
+  const primaryValue = responseValue ?? legacyValue ?? requestValue ?? DEFAULT_FALLBACK;
+  const hasMismatch =
+    requestValue != null &&
+    responseValue != null &&
+    !areInvocationModelsEquivalent(requestValue, responseValue);
+
+  return {
+    primaryValue,
+    requestValue,
+    responseValue,
+    hasMismatch,
+  };
 }
 
 export function normalizeServiceTier(

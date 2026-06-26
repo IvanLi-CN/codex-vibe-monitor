@@ -29,6 +29,7 @@ import {
   InvocationExpandedDetails,
   buildInvocationDetailViewModel,
   renderEndpointSummary,
+  renderInvocationModelBadge,
   useInvocationPoolAttempts,
 } from "./invocation-details-shared";
 import { Alert } from "./ui/alert";
@@ -501,9 +502,13 @@ export function DashboardInvocationDetailDrawer({
                 className="flex items-start gap-1 text-sm font-medium"
                 title={detailView.modelValue}
               >
-                <span className="min-w-0 flex-1 truncate">
-                  {detailView.modelValue}
-                </span>
+                {renderInvocationModelBadge(detailView.modelValue, {
+                  t,
+                  hasMismatch: detailView.modelHasMismatch,
+                  className: "flex-1",
+                  textClassName: "flex-1",
+                  testId: "dashboard-invocation-detail-model",
+                })}
               </div>
               <div className="mt-2 w-fit max-w-full">
                 {renderEndpointSummary(

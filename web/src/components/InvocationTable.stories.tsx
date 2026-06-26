@@ -127,6 +127,35 @@ const records: ApiInvocation[] = [
   },
 ]
 
+const modelRoutingMismatchRecords: ApiInvocation[] = [
+  {
+    ...records[0],
+    id: 1011,
+    invokeId: 'inv_01JSX0PQ3Z8CFQ7AJK8XEH2N4E',
+    model: 'gpt-5.5',
+    requestModel: 'gpt-5.4',
+    responseModel: 'gpt-5.5',
+  },
+  {
+    ...records[1],
+    id: 1012,
+    invokeId: 'inv_01JSX0Q6YHBFTDVMC3N5NF13R8',
+    requestModel: 'gpt-5',
+    responseModel: 'gpt-5',
+  },
+]
+
+const legacyModelOnlyRecords: ApiInvocation[] = [
+  {
+    ...records[2],
+    id: 1013,
+    invokeId: 'inv_01JSX0R9N0F2V8G54T5PG17WQI',
+    model: 'gpt-5.4',
+    requestModel: undefined,
+    responseModel: undefined,
+  },
+]
+
 const missingWindowDrawerRecords: ApiInvocation[] = [
   {
     id: 1023,
@@ -1559,6 +1588,38 @@ export const Default: Story = {
       description: {
         story:
           'Reference state with pool-routed and reverse-proxy invocations. Verify the `账号 / 代理` split, the dedicated elapsed/compression column, and the reasoning-token breakdown in the output summary.',
+      },
+    },
+  },
+}
+
+export const ModelRoutingMismatch: Story = {
+  args: {
+    records: modelRoutingMismatchRecords,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Shows the routed-model state: the primary badge text follows the actual response model, while a compare icon appears only when the normalized request and response models differ.',
+      },
+    },
+  },
+}
+
+export const LegacyModelOnly: Story = {
+  args: {
+    records: legacyModelOnlyRecords,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Legacy fallback state: rows with only the historical `model` field keep that value as the response-model display, while request model remains unavailable in the expanded detail view.',
       },
     },
   },

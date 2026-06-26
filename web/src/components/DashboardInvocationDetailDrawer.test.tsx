@@ -110,6 +110,12 @@ function createPreview(
     failureClass: overrides.failureClass ?? null,
     routeMode: overrides.routeMode ?? "forward_proxy",
     model: overrides.model ?? "gpt-5.4",
+    requestModel:
+      "requestModel" in overrides ? (overrides.requestModel ?? null) : "gpt-5.4",
+    responseModel:
+      "responseModel" in overrides
+        ? (overrides.responseModel ?? null)
+        : (overrides.model ?? "gpt-5.4"),
     totalTokens: overrides.totalTokens ?? 240,
     cost: overrides.cost ?? 0.0182,
     proxyDisplayName: overrides.proxyDisplayName ?? "tokyo-edge-01",
@@ -154,6 +160,8 @@ function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
     upstreamAccountName: "pool-alpha@example.com",
     endpoint: "/v1/responses",
     model: "gpt-5.4",
+    requestModel: "gpt-5.4",
+    responseModel: "gpt-5.4",
     inputTokens: 148,
     outputTokens: 92,
     cacheInputTokens: 36,
@@ -191,6 +199,8 @@ function createSelection(
     proxyDisplayName: record.proxyDisplayName ?? null,
     routeMode: record.routeMode ?? null,
     model: record.model ?? null,
+    requestModel: record.requestModel ?? null,
+    responseModel: record.responseModel ?? null,
     endpoint: record.endpoint ?? null,
     totalTokens: record.totalTokens ?? 0,
     cost: record.cost ?? null,
@@ -259,6 +269,41 @@ function createRecordsResponse(
     records,
   };
 }
+
+describe("DashboardInvocationDetailDrawer model details", () => {
+  it("shows separate request and response model labels for mismatched records", async () => {
+    const selection = createSelection({
+      model: "gpt-5.5",
+      requestModel: "gpt-5.4",
+      responseModel: "gpt-5.5",
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue(
+      createRecordsResponse([selection.invocation.record]),
+    );
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([]);
+
+    render(
+      <DashboardInvocationDetailDrawer
+        open
+        selection={selection}
+        onClose={() => {}}
+      />,
+    );
+
+    await waitFor(() =>
+      Boolean(
+        document.body.textContent?.includes("table.details.requestModel") &&
+          document.body.textContent?.includes("table.details.responseModel"),
+      ),
+    );
+
+    expect(
+      document.body.querySelector(
+        '[data-testid="dashboard-invocation-detail-model-routing-indicator"]',
+      ),
+    ).not.toBeNull();
+  });
+});
 
 describe("DashboardInvocationDetailDrawer", () => {
   it("loads the full record by invoke id and keeps the account action clickable", async () => {

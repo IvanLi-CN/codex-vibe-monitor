@@ -28,3 +28,5 @@
 - 2026-06-23: 调整 invocation 列表与详情展示规则：列表按运行态请求信号与终态响应信号区分 `Responses` / `远程压缩V2`，详情始终保留原始 endpoint 并单列展示“压缩请求 / 压缩响应”。
 - 2026-06-24: 修复 pool `/v1/responses` 请求侧 `compactionRequestKind` 在 prebuffer/replay 路径丢失的问题，确保 `requestBodyLoggingEnabled=false` 时仍可稳定落库 `remote_v2`。
 - 2026-06-24: 将 `imageIntent` 升级为公开 invocation 可观测合同，打通 `/api/invocations`、SSE `records`、Prompt Cache preview、Records 与 Dashboard，并新增独立“图片工具”徽标。
+- 2026-06-26: 将 `requestModel` / `responseModel` 扩展到 `/api/invocations`、SSE `records`、Prompt Cache preview 与 Dashboard working conversations，并统一主模型显示为 `responseModel ?? model ?? requestModel`。
+- 2026-06-26: 调用详情拆分为“请求模型 / 响应模型”双字段；当规范化后的请求/响应模型不一致时，仅响应模型 badge 显示上游路由差异图标，旧 `model` 记录继续作为响应模型回填。

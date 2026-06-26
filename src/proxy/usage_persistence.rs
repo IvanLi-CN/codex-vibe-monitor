@@ -1844,6 +1844,8 @@ pub(crate) async fn load_persisted_api_invocation_tx(
             source,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name,
             model,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requestModel') END AS request_model,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.responseModel') END AS response_model,
             input_tokens,
             output_tokens,
             cache_input_tokens,

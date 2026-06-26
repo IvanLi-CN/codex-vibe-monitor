@@ -186,6 +186,8 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
                 failure_class: normalize_trimmed_optional_string(row.failure_class),
                 route_mode: normalize_trimmed_optional_string(row.route_mode),
                 model: normalize_trimmed_optional_string(row.model),
+                request_model: normalize_trimmed_optional_string(row.request_model),
+                response_model: normalize_trimmed_optional_string(row.response_model),
                 total_tokens: row.total_tokens.max(0),
                 cost: row.cost,
                 proxy_display_name: normalize_trimmed_optional_string(row.proxy_display_name),

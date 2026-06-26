@@ -19,6 +19,10 @@ pub(crate) const INVOCATION_STICKY_KEY_SQL: &str = "CASE WHEN json_valid(payload
 const INVOCATION_UPSTREAM_SCOPE_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamScope') AS TEXT) END, 'external')";
 pub(crate) const INVOCATION_ROUTE_MODE_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.routeMode') AS TEXT) END";
+pub(crate) const INVOCATION_REQUEST_MODEL_SQL: &str =
+    "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requestModel') AS TEXT) END";
+pub(crate) const INVOCATION_RESPONSE_MODEL_SQL: &str =
+    "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseModel') AS TEXT) END";
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL: &str = "COALESCE((SELECT NULLIF(TRIM(sample.plan_type), '') FROM pool_upstream_account_limit_samples sample WHERE sample.account_id = CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AND sample.plan_type IS NOT NULL AND TRIM(sample.plan_type) <> '' ORDER BY sample.captured_at DESC, sample.id DESC LIMIT 1), (SELECT NULLIF(TRIM(account.plan_type), '') FROM pool_upstream_accounts account WHERE account.id = CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END))";
@@ -45,11 +49,22 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
     let mut query = QueryBuilder::new(
         "SELECT id, invoke_id, occurred_at, source, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name, \
-         model, input_tokens, output_tokens, \
-         cache_input_tokens, reasoning_tokens, \
+         model, \
          ",
     );
     query
+        .push(INVOCATION_REQUEST_MODEL_SQL)
+        .push(
+            " AS request_model, \
+         ",
+        )
+        .push(INVOCATION_RESPONSE_MODEL_SQL)
+        .push(
+            " AS response_model, \
+         input_tokens, output_tokens, \
+         cache_input_tokens, reasoning_tokens, \
+         ",
+        )
         .push(INVOCATION_REASONING_EFFORT_SQL)
         .push(
             " AS reasoning_effort, \
