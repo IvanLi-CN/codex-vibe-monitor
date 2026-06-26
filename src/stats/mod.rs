@@ -23,7 +23,8 @@ pub(crate) fn stats_success_failure_select_sql() -> String {
          COALESCE(SUM(CASE WHEN {success_like} AND {resolved_failure} = 'none' THEN 1 ELSE 0 END), 0) AS success_count, \
          COALESCE(SUM(CASE WHEN {terminal_status} AND {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
-         COALESCE(SUM(total_tokens), 0) AS total_tokens",
+         COALESCE(SUM(total_tokens), 0) AS total_tokens, \
+         COALESCE(SUM(CASE WHEN {terminal_status} AND {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN COALESCE(cost, 0.0) ELSE 0.0 END), 0.0) AS non_success_cost",
         success_like = STATS_SUCCESS_LIKE_SQL,
         terminal_status = STATS_TERMINAL_STATUS_SQL,
         resolved_failure = crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
@@ -4222,7 +4223,8 @@ pub(crate) async fn query_crs_totals(
             COALESCE(SUM(success_count), 0) AS success_count,
             COALESCE(SUM(failure_count), 0) AS failure_count,
             COALESCE(SUM(total_cost), 0.0) AS total_cost,
-            COALESCE(SUM(total_tokens), 0) AS total_tokens
+            COALESCE(SUM(total_tokens), 0) AS total_tokens,
+            0.0 AS non_success_cost
         FROM stats_source_deltas
         WHERE source = ?1 AND period = ?2
         "#,

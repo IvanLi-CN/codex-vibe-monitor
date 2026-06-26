@@ -41,6 +41,9 @@ related_specs:
 - archive materialization 会为账号 usage / stats read-model 一并补齐 replay markers；账号 summary / timeseries 在 materialized archive 缺 marker 的旧库上，也不会再把历史批次误判成“未物化，需要在线回补”。
 - startup proxy usage backfill 改为复用共享 invocation cursor + 全表 `MAX(id)`，删除“仅扫描缺 usage 的 proxy success rows”这条生产 10 秒级热点 SQL；stale attempt recovery 同时补齐 partial index，避免后台恢复任务反复争锁。
 - 账号维度昨天视图拆掉重复 comparison fetch，避免 account-scoped yesterday 面板额外再打一次 yesterday summary / timeseries。
+- 默认账号详情接口不再同步读取 `recentActions`；事件流读取改成 health/events tab 的显式 follow-up fetch，避免 `pool_upstream_account_events` 把 overview 首屏重新拖慢。
+- 新增的 `nonSuccessCost` 重新回到 summary read-model totals；today 等开区间仍只做 bounded live tail，`yesterday` / `previous7d` 等闭区间不再因为字段补算回退到 raw live augmentation。
+- `selectedId` 暂空时不再触发 roster 级 `window-usage` 自动 hydrate；只有当前选中账号或显式手动批量 hydrate 才会命中 `/api/pool/upstream-accounts/window-usage`。
 
 ## Guardrails / Reuse Notes
 
@@ -50,6 +53,7 @@ related_specs:
 - 如果 archive batch 已经 `historical_rollups_materialized_at`，账号 usage / stats target 的 replay marker 也必须视为同一事务事实；旧库升级时先修 marker，再允许详情读路径依据“缺 marker”做 archive fallback。
 - 任何 startup / maintenance backfill 只要要扫 `codex_invocations` 或 `pool_upstream_request_attempts` 大表，都必须先证明有 cursor 或 partial index；后台慢查询同样会把详情页 SLA 拖垮。
 - 前端详情页的重型统计 hydrate 必须绑定“当前选中账号 + 当前 query key”；列表刷新不能把整个当前页账号重新拉一遍。
+- 默认详情首屏如果只需要概览信息，接口必须把非首屏字段拆成显式 opt-in 参数或 follow-up fetch；不要把事件流、审计流或其他历史列表默默塞回默认 detail 响应。
 - 若某条 SSE 只携带 invocation records，它最多只能更新 records/live 表层；不能反向触发 roster、summary、timeseries 或 `window-usage` 这类重型面。
 - 若 roster 仍需展示最新 usage/plan 快照，优先复用主表或按账号索引直取最新样本；不要再回到 `pool_upstream_account_limit_samples` 的窗口函数全表排名路径。
 

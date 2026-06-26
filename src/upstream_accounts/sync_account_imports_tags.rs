@@ -2956,6 +2956,26 @@ async fn load_upstream_account_detail(
     pool: &Pool<Sqlite>,
     id: i64,
 ) -> Result<Option<UpstreamAccountDetail>> {
+    load_upstream_account_detail_with_options(
+        pool,
+        id,
+        LoadUpstreamAccountDetailOptions {
+            include_recent_actions: true,
+        },
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct LoadUpstreamAccountDetailOptions {
+    pub(crate) include_recent_actions: bool,
+}
+
+async fn load_upstream_account_detail_with_options(
+    pool: &Pool<Sqlite>,
+    id: i64,
+    options: LoadUpstreamAccountDetailOptions,
+) -> Result<Option<UpstreamAccountDetail>> {
     let Some(row) = load_upstream_account_row(pool, id).await? else {
         return Ok(None);
     };
@@ -2990,37 +3010,41 @@ async fn load_upstream_account_detail(
         })
         .collect::<Vec<_>>();
     history.reverse();
-    let recent_action_rows = sqlx::query_as::<_, UpstreamAccountActionEventRow>(
-        r#"
-        SELECT
-            event.id,
-            event.occurred_at,
-            event.action,
-            event.source,
-            COALESCE(event.account_display_name, account.display_name) AS account_display_name,
-            COALESCE(event.account_group_name, account.group_name) AS account_group_name,
-            event.forward_proxy_key,
-            event.forward_proxy_display_name,
-            event.forward_proxy_egress_ip,
-            event.result,
-            event.result_description,
-            event.reason_code,
-            event.reason_message,
-            event.http_status,
-            event.failure_kind,
-            event.invoke_id,
-            event.sticky_key,
-            event.created_at
-        FROM pool_upstream_account_events event
-        INNER JOIN pool_upstream_accounts account ON account.id = event.account_id
-        WHERE event.account_id = ?1
-        ORDER BY event.occurred_at DESC, event.id DESC
-        LIMIT 20
-        "#,
-    )
-    .bind(id)
-    .fetch_all(pool)
-    .await?;
+    let recent_action_rows = if options.include_recent_actions {
+        sqlx::query_as::<_, UpstreamAccountActionEventRow>(
+            r#"
+            SELECT
+                event.id,
+                event.occurred_at,
+                event.action,
+                event.source,
+                COALESCE(event.account_display_name, account.display_name) AS account_display_name,
+                COALESCE(event.account_group_name, account.group_name) AS account_group_name,
+                event.forward_proxy_key,
+                event.forward_proxy_display_name,
+                event.forward_proxy_egress_ip,
+                event.result,
+                event.result_description,
+                event.reason_code,
+                event.reason_message,
+                event.http_status,
+                event.failure_kind,
+                event.invoke_id,
+                event.sticky_key,
+                event.created_at
+            FROM pool_upstream_account_events event
+            INNER JOIN pool_upstream_accounts account ON account.id = event.account_id
+            WHERE event.account_id = ?1
+            ORDER BY event.occurred_at DESC, event.id DESC
+            LIMIT 20
+            "#,
+        )
+        .bind(id)
+        .fetch_all(pool)
+        .await?
+    } else {
+        Vec::new()
+    };
 
     let duplicate_info = load_duplicate_info_for_account(pool, row.id).await?;
     let now = Utc::now();
@@ -3058,7 +3082,23 @@ async fn load_upstream_account_detail_with_actual_usage(
     state: &AppState,
     id: i64,
 ) -> Result<Option<UpstreamAccountDetail>> {
-    let mut detail = match load_upstream_account_detail(&state.pool, id).await? {
+    load_upstream_account_detail_with_actual_usage_options(
+        state,
+        id,
+        LoadUpstreamAccountDetailOptions {
+            include_recent_actions: true,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
+    state: &AppState,
+    id: i64,
+    options: LoadUpstreamAccountDetailOptions,
+) -> Result<Option<UpstreamAccountDetail>> {
+    let mut detail = match load_upstream_account_detail_with_options(&state.pool, id, options).await?
+    {
         Some(detail) => detail,
         None => return Ok(None),
     };
