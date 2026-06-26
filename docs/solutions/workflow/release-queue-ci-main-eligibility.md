@@ -45,6 +45,7 @@ Keep the immutable snapshot queue, but add a second eligibility gate when select
 
 - Accept commits with a successful `CI Main` run on `main`.
 - Also accept the existing compatibility carve-out where `CI Main` failed only in the `Release Snapshot` job and all other jobs succeeded.
+- If the GitHub Actions API has not indexed the matching `CI Main` run yet, or eligibility lookup fails transiently, treat that state as `unknown` and keep the pending snapshot in queue order instead of dropping it.
 - Skip pending snapshots that fail both checks, and continue scanning newer pending snapshots on the first-parent path.
 - Apply the same eligibility filter both when choosing the initial pending target and when continuing the release queue after a publish.
 
@@ -52,10 +53,12 @@ Keep the immutable snapshot queue, but add a second eligibility gate when select
 
 - Do not delete or mutate immutable snapshots just because `CI Main` failed; snapshot history is still useful for audit and catch-up logic.
 - The eligibility filter belongs at selection time, not snapshot creation time. Merge-event snapshot freezing must remain independent from later CI outcomes.
+- Fail open on `unknown` visibility states. Missing workflow-run indexing and transient Actions API read failures are not proof that a pending snapshot became invalid, and treating them as hard failures can silently reorder the release queue.
 - Reuse the exact same success-or-snapshot-only-failure rule for automatic queue selection and manual backfill validation so the release contract stays coherent.
 - Add regression coverage for both cases:
   - an older pending snapshot is skipped because `Backend Tests` failed;
   - a snapshot-only `CI Main` failure remains releasable.
+  - a pending snapshot stays selectable while `CI Main` visibility is temporarily unknown.
 
 ## References
 

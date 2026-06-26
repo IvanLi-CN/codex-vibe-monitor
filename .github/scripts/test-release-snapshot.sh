@@ -180,19 +180,25 @@ try:
         "IvanLi-CN/codex-vibe-monitor",
         "token",
         "a" * 40,
-    ) is True
+    ) == "eligible"
     assert module.ci_main_run_is_release_eligible(
         "https://api.github.test",
         "IvanLi-CN/codex-vibe-monitor",
         "token",
         "b" * 40,
-    ) is True
+    ) == "eligible"
     assert module.ci_main_run_is_release_eligible(
         "https://api.github.test",
         "IvanLi-CN/codex-vibe-monitor",
         "token",
         "c" * 40,
-    ) is False
+    ) == "ineligible"
+    assert module.ci_main_run_is_release_eligible(
+        "https://api.github.test",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        "d" * 40,
+    ) == "unknown"
 finally:
     module.github_request_json = original_github_request_json
 
@@ -369,19 +375,19 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         filtered_pending = module.pending_release_targets(
             module.DEFAULT_NOTES_REF,
             sha3,
-            is_release_eligible=lambda commit: commit != sha2,
+            is_release_eligible=lambda commit: "ineligible" if commit == sha2 else "eligible",
         )
         assert filtered_pending == [sha3], filtered_pending
+        unknown_pending = module.pending_release_targets(
+            module.DEFAULT_NOTES_REF,
+            sha3,
+            is_release_eligible=lambda commit: "unknown" if commit == sha2 else "eligible",
+        )
+        assert unknown_pending == [sha2, sha3], unknown_pending
         assert module.release_tag_points_to_target(snapshot1) is True
         assert module.release_tag_points_to_target(snapshot2) is False
         assert module.publication_tags(snapshot1, notes_ref=module.DEFAULT_NOTES_REF, main_ref=sha3) == (
             "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest"
-        )
-
-        run("tag", "v0.2.0", sha2, cwd=repo)
-        assert module.release_tag_points_to_target(snapshot2) is True
-        assert module.publication_tags(snapshot1, notes_ref=module.DEFAULT_NOTES_REF, main_ref=sha3) == (
-            "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1"
         )
 
         original_ci_main_eligibility = module.ci_main_run_is_release_eligible
@@ -389,7 +395,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         original_fetch_tags = module.fetch_tags
         try:
             module.ci_main_run_is_release_eligible = (
-                lambda api_root, repository, token, target_sha: target_sha != sha2
+                lambda api_root, repository, token, target_sha: "ineligible" if target_sha == sha2 else "eligible"
             )
             module.fetch_notes_ref = lambda notes_ref: None
             module.fetch_tags = lambda: None
@@ -411,6 +417,40 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             module.ci_main_run_is_release_eligible = original_ci_main_eligibility
             module.fetch_notes_ref = original_fetch_notes_ref
             module.fetch_tags = original_fetch_tags
+
+        try:
+            def flaky_ci_main_eligibility(api_root, repository, token, target_sha):
+                if target_sha == sha2:
+                    raise module.SnapshotError("workflow run not indexed yet")
+                return "eligible"
+
+            module.ci_main_run_is_release_eligible = flaky_ci_main_eligibility
+            module.fetch_notes_ref = lambda notes_ref: None
+            module.fetch_tags = lambda: None
+            github_output = repo / "next-pending-unknown.txt"
+            exit_code = module.export_next_pending(
+                argparse.Namespace(
+                    notes_ref=module.DEFAULT_NOTES_REF,
+                    main_ref=sha3,
+                    upper_bound=sha3,
+                    github_repository="IvanLi-CN/codex-vibe-monitor",
+                    github_token="token",
+                    api_root="https://api.github.test",
+                    github_output=str(github_output),
+                )
+            )
+            assert exit_code == 0
+            assert github_output.read_text().strip() == f"target_sha={sha2}"
+        finally:
+            module.ci_main_run_is_release_eligible = original_ci_main_eligibility
+            module.fetch_notes_ref = original_fetch_notes_ref
+            module.fetch_tags = original_fetch_tags
+
+        run("tag", "v0.2.0", sha2, cwd=repo)
+        assert module.release_tag_points_to_target(snapshot2) is True
+        assert module.publication_tags(snapshot1, notes_ref=module.DEFAULT_NOTES_REF, main_ref=sha3) == (
+            "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1"
+        )
     finally:
         module.load_pr_for_commit = original_loader
         os.chdir(original_cwd)

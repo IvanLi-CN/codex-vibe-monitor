@@ -11,7 +11,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from urllib import error, parse, request
 
 SNAPSHOT_SCHEMA_VERSION = 1
@@ -483,7 +483,7 @@ def ci_main_run_is_release_eligible(
     repository: str,
     token: str,
     target_sha: str,
-) -> bool:
+) -> Literal["eligible", "ineligible", "unknown"]:
     owner, repo = repository.split("/", 1)
     runs_payload = github_request_json(
         api_root,
@@ -504,8 +504,11 @@ def ci_main_run_is_release_eligible(
     matching_runs = [
         run for run in workflow_runs if isinstance(run, dict) and run.get("head_sha") == target_sha
     ]
+    if not matching_runs:
+        return "unknown"
+
     if any(run.get("conclusion") == "success" for run in matching_runs):
-        return True
+        return "eligible"
 
     for run in matching_runs:
         if run.get("conclusion") != "failure":
@@ -535,16 +538,16 @@ def ci_main_run_is_release_eligible(
                 blocking_jobs += 1
 
         if snapshot_job and snapshot_job.get("conclusion") == "failure" and blocking_jobs == 0:
-            return True
+            return "eligible"
 
-    return False
+    return "ineligible"
 
 
 def pending_release_targets(
     notes_ref: str,
     upper_bound_sha: str,
     *,
-    is_release_eligible: Callable[[str], bool] | None = None,
+    is_release_eligible: Callable[[str], Literal["eligible", "ineligible", "unknown"]] | None = None,
 ) -> list[str]:
     pending: list[str] = []
     for commit in first_parent_commits(upper_bound_sha):
@@ -553,7 +556,7 @@ def pending_release_targets(
             continue
         if release_tag_points_to_target(snapshot):
             continue
-        if is_release_eligible is not None and not is_release_eligible(commit):
+        if is_release_eligible is not None and is_release_eligible(commit) == "ineligible":
             continue
         pending.append(commit)
     return pending
@@ -828,16 +831,23 @@ def export_next_pending(args: argparse.Namespace) -> int:
     fetch_tags()
     eligibility_check = None
     if getattr(args, "github_repository", "") and getattr(args, "github_token", ""):
-        cache: dict[str, bool] = {}
+        cache: dict[str, Literal["eligible", "ineligible", "unknown"]] = {}
 
-        def eligibility_check(commit: str) -> bool:
+        def eligibility_check(commit: str) -> Literal["eligible", "ineligible", "unknown"]:
             if commit not in cache:
-                cache[commit] = ci_main_run_is_release_eligible(
-                    args.api_root,
-                    args.github_repository,
-                    args.github_token,
-                    commit,
-                )
+                try:
+                    cache[commit] = ci_main_run_is_release_eligible(
+                        args.api_root,
+                        args.github_repository,
+                        args.github_token,
+                        commit,
+                    )
+                except SnapshotError as exc:
+                    print(
+                        f"release_snapshot.py: warning: failed to inspect CI Main eligibility for {commit}: {exc}",
+                        file=sys.stderr,
+                    )
+                    cache[commit] = "unknown"
             return cache[commit]
 
     pending = pending_release_targets(
