@@ -1925,6 +1925,42 @@ pub(crate) fn build_app_router(state: Arc<AppState>) -> Router {
     .with_state(state)
 }
 
+const SOCIAL_PREVIEW_RELATIVE_ATTR: &str = "content=\"/social-preview.png\"";
+const SOCIAL_PREVIEW_PATH: &str = "/social-preview.png";
+
+fn inject_absolute_social_preview_urls(
+    index_html: String,
+    headers: &HeaderMap,
+    configured_public_origin: Option<&str>,
+) -> String {
+    let Some(origin) = request_public_origin(headers, configured_public_origin) else {
+        return index_html;
+    };
+    let absolute_attr = format!("content=\"{origin}{SOCIAL_PREVIEW_PATH}\"");
+    index_html.replace(SOCIAL_PREVIEW_RELATIVE_ATTR, &absolute_attr)
+}
+
+async fn render_spa_index_response(state: Arc<AppState>, headers: &HeaderMap) -> Response {
+    let Some(static_dir) = state.config.static_dir.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let index_file = static_dir.join("index.html");
+    let index_html = match tokio::fs::read_to_string(&index_file).await {
+        Ok(contents) => contents,
+        Err(err) => {
+            error!(path = %index_file.display(), ?err, "failed to read static index.html");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    Html(inject_absolute_social_preview_urls(
+        index_html,
+        headers,
+        state.config.public_origin.as_deref(),
+    ))
+    .into_response()
+}
+
 async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHandle<()>)> {
     let cors_layer = build_cors_layer(&state.config);
     let mut router = build_app_router(state.clone())
@@ -1936,9 +1972,29 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
     if let Some(static_dir) = state.config.static_dir.clone() {
         let index_file = static_dir.join("index.html");
         if index_file.exists() {
-            let spa_service =
-                ServeDir::new(static_dir).not_found_service(ServeFile::new(index_file));
-            router = router.fallback_service(spa_service);
+            let index_state = state.clone();
+            let spa_index_service = service_fn(move |request: Request<Body>| {
+                let state = index_state.clone();
+                let headers = request.headers().clone();
+                async move { Ok::<_, Infallible>(render_spa_index_response(state, &headers).await) }
+            });
+            let index_html_state = state.clone();
+            let spa_index_html_service = service_fn(move |request: Request<Body>| {
+                let state = index_html_state.clone();
+                let headers = request.headers().clone();
+                async move { Ok::<_, Infallible>(render_spa_index_response(state, &headers).await) }
+            });
+            let fallback_state = state.clone();
+            let spa_fallback = service_fn(move |request: Request<Body>| {
+                let state = fallback_state.clone();
+                let headers = request.headers().clone();
+                async move { Ok::<_, Infallible>(render_spa_index_response(state, &headers).await) }
+            });
+            let spa_service = ServeDir::new(static_dir).not_found_service(spa_fallback);
+            router = router
+                .route_service("/", spa_index_service)
+                .route_service("/index.html", spa_index_html_service)
+                .fallback_service(spa_service);
         } else {
             warn!(
                 path = %index_file.display(),
@@ -1965,6 +2021,59 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
     });
 
     Ok((addr, handle))
+}
+
+#[cfg(test)]
+mod social_preview_tests {
+    use super::*;
+    use axum::http::{HeaderValue, header};
+
+    #[test]
+    fn inject_absolute_social_preview_urls_rewrites_both_meta_tags() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("monitor.example.com"));
+        headers.insert(
+            header::HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        let html = r#"
+            <meta property="og:image" content="/social-preview.png" />
+            <meta name="twitter:image" content="/social-preview.png" />
+        "#
+        .to_string();
+
+        let rewritten = inject_absolute_social_preview_urls(html, &headers, None);
+
+        assert!(rewritten.contains(
+            r#"content="https://monitor.example.com/social-preview.png""#
+        ));
+        assert_eq!(
+            rewritten.matches("https://monitor.example.com/social-preview.png").count(),
+            2
+        );
+    }
+
+    #[test]
+    fn inject_absolute_social_preview_urls_prefers_configured_public_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8080"));
+        headers.insert(
+            header::HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("monitor.example.com"),
+        );
+        let html = r#"
+            <meta property="og:image" content="/social-preview.png" />
+            <meta name="twitter:image" content="/social-preview.png" />
+        "#
+        .to_string();
+
+        let rewritten =
+            inject_absolute_social_preview_urls(html, &headers, Some("https://preview.example.com"));
+
+        assert!(rewritten.contains(
+            r#"content="https://preview.example.com/social-preview.png""#
+        ));
+    }
 }
 
 fn spawn_shutdown_signal_listener(cancel: CancellationToken) -> JoinHandle<()> {

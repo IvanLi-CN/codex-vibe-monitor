@@ -14,6 +14,8 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 
 它把 **`/v1/*` HTTP / WebSocket 流量接入、调用留证、实时 SSE、历史统计、请求排障、上游账号池、forward proxy 配置、价格目录维护、SQLite 持久化与归档** 收在同一个项目里。目标不是只做一个总览 dashboard，而是提供一套能 **看得到、查得到、调得动** 的运营与排障入口。
 
+![Codex Vibe Monitor social preview](docs/readme-assets/social-preview/codex-vibe-monitor-social-preview.png)
+
 ## 界面预览
 
 以下截图基于当前 Storybook 稳定 mock 场景生成，覆盖项目最核心的四个界面。

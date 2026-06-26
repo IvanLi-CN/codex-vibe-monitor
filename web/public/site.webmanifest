@@ -1,7 +1,7 @@
 {
   "name": "Codex Vibe Monitor",
   "short_name": "Vibe Monitor",
-  "description": "A Vite + React single-page app for the Codex Vibe Monitor backend.",
+  "description": "Self-hosted observability workspace for OpenAI-compatible proxy traffic, request records, routing, and upstream account pools.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0ea5e9",

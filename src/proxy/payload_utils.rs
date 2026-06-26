@@ -1860,6 +1860,47 @@ pub(crate) fn normalize_cors_origin(origin_raw: &str) -> Option<String> {
     }
 }
 
+pub(crate) fn request_public_origin(
+    headers: &HeaderMap,
+    configured_public_origin: Option<&str>,
+) -> Option<String> {
+    if let Some(origin) = configured_public_origin {
+        return Some(origin.to_string());
+    }
+
+    let scheme = request_public_scheme(headers).unwrap_or_else(|| "http".to_string());
+    let (host, port) = forwarded_or_host_authority(headers, &scheme)?;
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_ascii_lowercase()
+    };
+    let default_port = default_port_for_scheme(&scheme);
+
+    if port.is_none() || port == default_port {
+        Some(format!("{scheme}://{host}"))
+    } else {
+        Some(format!("{scheme}://{host}:{}", port?))
+    }
+}
+
+fn request_public_scheme(headers: &HeaderMap) -> Option<String> {
+    if let Some(raw) = header_value_as_str(headers, "x-forwarded-proto") {
+        let proto = single_forwarded_header_value(raw)?.to_ascii_lowercase();
+        return match proto.as_str() {
+            "http" | "https" => Some(proto),
+            _ => None,
+        };
+    }
+
+    let forwarded = header_value_as_str(headers, "forwarded")?;
+    let proto = forwarded_header_param(forwarded, "proto")?.to_ascii_lowercase();
+    match proto.as_str() {
+        "http" | "https" => Some(proto),
+        _ => None,
+    }
+}
+
 pub(crate) fn is_models_list_path(path: &str) -> bool {
     path == "/v1/models"
 }
@@ -1952,6 +1993,19 @@ pub(crate) fn forwarded_or_host_authority(
         return Some((authority.host().to_string(), port));
     }
 
+    if let Some(forwarded_raw) = header_value_as_str(headers, "forwarded")
+        && let Some(forwarded_host) = forwarded_header_param(forwarded_raw, "host")
+    {
+        let authority = Authority::from_str(&forwarded_host).ok()?;
+        let scheme = forwarded_header_param(forwarded_raw, "proto")
+            .map(|value| value.to_ascii_lowercase());
+        let scheme = scheme.as_deref().unwrap_or(origin_scheme);
+        let port = authority
+            .port_u16()
+            .or_else(|| default_port_for_scheme(scheme));
+        return Some((authority.host().to_string(), port));
+    }
+
     let host_raw = headers.get(header::HOST)?;
     let host_value = host_raw.to_str().ok()?;
     let authority = Authority::from_str(host_value).ok()?;
@@ -1975,11 +2029,121 @@ pub(crate) fn single_forwarded_header_value(raw: &str) -> Option<&str> {
     Some(first)
 }
 
+fn forwarded_header_param(raw: &str, key: &str) -> Option<String> {
+    let entry = single_forwarded_header_value(raw)?;
+    for segment in entry.split(';') {
+        let pair = segment.trim();
+        let Some((name, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(key) {
+            let normalized = value.trim().trim_matches('"');
+            if !normalized.is_empty() {
+                return Some(normalized.to_string());
+            }
+            return None;
+        }
+    }
+    None
+}
+
 pub(crate) fn default_port_for_scheme(scheme: &str) -> Option<u16> {
     match scheme {
         "http" => Some(80),
         "https" => Some(443),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod payload_utils_tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    #[test]
+    fn request_public_origin_defaults_to_http_host_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8080"));
+
+        assert_eq!(
+            request_public_origin(&headers, None).as_deref(),
+            Some("http://localhost:8080")
+        );
+    }
+
+    #[test]
+    fn request_public_origin_prefers_forwarded_https_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8080"));
+        headers.insert(
+            header::HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("monitor.example.com"),
+        );
+        headers.insert(
+            header::HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+
+        assert_eq!(
+            request_public_origin(&headers, None).as_deref(),
+            Some("https://monitor.example.com")
+        );
+    }
+
+    #[test]
+    fn request_public_origin_defaults_to_http_when_forwarded_scheme_is_missing() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8080"));
+        headers.insert(
+            header::HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("monitor.example.com"),
+        );
+
+        assert_eq!(
+            request_public_origin(&headers, None).as_deref(),
+            Some("http://monitor.example.com")
+        );
+    }
+
+    #[test]
+    fn request_public_origin_supports_standard_forwarded_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8080"));
+        headers.insert(
+            header::HeaderName::from_static("forwarded"),
+            HeaderValue::from_static("proto=https;host=monitor.example.com"),
+        );
+
+        assert_eq!(
+            request_public_origin(&headers, None).as_deref(),
+            Some("https://monitor.example.com")
+        );
+    }
+
+    #[test]
+    fn request_public_origin_defaults_to_http_for_public_host_without_proxy() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("monitor.example.com"));
+
+        assert_eq!(
+            request_public_origin(&headers, None).as_deref(),
+            Some("http://monitor.example.com")
+        );
+    }
+
+    #[test]
+    fn request_public_origin_prefers_explicit_configured_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8080"));
+        headers.insert(
+            header::HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("monitor.example.com"),
+        );
+
+        assert_eq!(
+            request_public_origin(&headers, Some("https://monitor.example.com")).as_deref(),
+            Some("https://monitor.example.com")
+        );
     }
 }
 
