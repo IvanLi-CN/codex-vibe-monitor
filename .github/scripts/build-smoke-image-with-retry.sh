@@ -22,6 +22,8 @@ is_transient_failure() {
     "context deadline exceeded"
     "DeadlineExceeded"
     "TLS handshake timeout"
+    "Error in the HTTP2 framing layer"
+    "curl failed"
     "i/o timeout"
     "connection reset by peer"
     "unexpected EOF"
