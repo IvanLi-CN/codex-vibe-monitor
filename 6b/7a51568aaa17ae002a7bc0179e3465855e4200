@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.75.8",
+  "base_stable_version": "1.75.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-26T13:36:20Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.75.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e22aba815436d6e7bbfde5deefa3cd24751a49c3",
+  "pr_number": 480,
+  "pr_title": "fix(web): improve dashboard adaptive metric precision",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.75.8",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.75.8",
+  "target_sha": "6b7a51568aaa17ae002a7bc0179e3465855e4200",
+  "type_label": "type:patch"
+}
