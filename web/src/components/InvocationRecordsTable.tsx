@@ -15,6 +15,7 @@ import {
   formatOptionalText,
   renderEndpointSummary,
   renderFastIndicator,
+  renderInvocationModelBadge,
   useInvocationPoolAttempts,
 } from "./invocation-details-shared";
 import {
@@ -59,6 +60,7 @@ interface InvocationRecordsRowViewModel {
   accountClickable: boolean;
   proxyDisplayName: string;
   modelValue: string;
+  modelHasMismatch: boolean;
   requestedServiceTierValue: string;
   serviceTierValue: string;
   billingServiceTierValue: string;
@@ -339,9 +341,11 @@ function renderDetailSummaryStrip(
           className="flex items-center gap-1 text-sm font-medium"
           title={row.modelValue}
         >
-          <span className="min-w-0 max-w-full truncate leading-none">
-            {row.modelValue}
-          </span>
+          {renderInvocationModelBadge(row.modelValue, {
+            t,
+            hasMismatch: row.modelHasMismatch,
+            testId: "invocation-records-model",
+          })}
           {renderInvocationTransportBadge(row.record)}
           {renderFastIndicator(row.fastIndicatorState, t)}
         </div>
@@ -954,9 +958,11 @@ export function InvocationRecordsTable({
                   className="flex items-center gap-1 text-sm font-medium"
                   title={row.modelValue}
                 >
-                  <span className="min-w-0 max-w-full truncate leading-none">
-                    {row.modelValue}
-                  </span>
+                  {renderInvocationModelBadge(row.modelValue, {
+                    t,
+                    hasMismatch: row.modelHasMismatch,
+                    testId: "invocation-records-model",
+                  })}
                   {renderInvocationTransportBadge(row.record)}
                   {renderFastIndicator(row.fastIndicatorState, t)}
                 </div>
@@ -1065,9 +1071,11 @@ export function InvocationRecordsTable({
                         className="flex items-center gap-1"
                         title={row.modelValue}
                       >
-                        <span className="min-w-0 max-w-full truncate leading-none">
-                          {row.modelValue}
-                        </span>
+                        {renderInvocationModelBadge(row.modelValue, {
+                          t,
+                          hasMismatch: row.modelHasMismatch,
+                          testId: "invocation-records-model",
+                        })}
                         {renderInvocationTransportBadge(row.record)}
                         {renderFastIndicator(row.fastIndicatorState, t)}
                       </div>

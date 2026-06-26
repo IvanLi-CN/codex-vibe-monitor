@@ -32,6 +32,7 @@ import {
   renderEndpointSummary,
   renderFastIndicator,
   renderImageIntentBadge,
+  renderInvocationModelBadge,
   renderReasoningEffortBadge,
   useInvocationPoolAttempts,
 } from "./invocation-details-shared";
@@ -105,6 +106,7 @@ interface InvocationRowViewModel {
   accountClickable: boolean;
   proxyDisplayName: string;
   modelValue: string;
+  modelHasMismatch: boolean;
   requestedServiceTierValue: string;
   serviceTierValue: string;
   billingServiceTierValue: string;
@@ -680,9 +682,12 @@ export function InvocationTable({
                     className="flex items-center justify-end gap-1 text-right"
                     title={row.modelValue}
                   >
-                    <span className="min-w-0 max-w-full truncate leading-none">
-                      {row.modelValue}
-                    </span>
+                    {renderInvocationModelBadge(row.modelValue, {
+                      t,
+                      hasMismatch: row.modelHasMismatch,
+                      textClassName: "text-right",
+                      testId: "invocation-table-model",
+                    })}
                     {renderInvocationTransportBadge(row.record)}
                     {renderFastIndicator(row.fastIndicatorState, t)}
                   </div>
@@ -945,12 +950,13 @@ export function InvocationTable({
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
                         <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
                           <div className="flex w-full items-center justify-end gap-1">
-                            <span
-                              className="min-w-0 max-w-full truncate whitespace-nowrap leading-none text-base-content/85"
-                              title={row.modelValue}
-                            >
-                              {row.modelValue}
-                            </span>
+                            {renderInvocationModelBadge(row.modelValue, {
+                              t,
+                              hasMismatch: row.modelHasMismatch,
+                              textClassName:
+                                "whitespace-nowrap text-base-content/85",
+                              testId: "invocation-table-model",
+                            })}
                             {renderInvocationTransportBadge(row.record)}
                             {renderFastIndicator(row.fastIndicatorState, t)}
                           </div>

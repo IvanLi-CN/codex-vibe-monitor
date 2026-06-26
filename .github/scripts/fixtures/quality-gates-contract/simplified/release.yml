@@ -186,6 +186,8 @@ jobs:
         shell: bash
         env:
           REQUESTED_SHA: ${{ steps.requested-target.outputs.target_sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -200,6 +202,8 @@ jobs:
             --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
             --main-ref "origin/main" \
             --upper-bound "${REQUESTED_SHA}" \
+            --github-repository "${GITHUB_REPOSITORY}" \
+            --github-token "${GITHUB_TOKEN}" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Load immutable release snapshot
@@ -647,6 +651,9 @@ jobs:
       - name: Resolve next pending release target
         if: github.event_name != 'workflow_dispatch'
         id: next-pending
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -657,6 +664,8 @@ jobs:
             --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
             --main-ref "origin/main" \
             --upper-bound "$(git rev-parse origin/main)" \
+            --github-repository "${GITHUB_REPOSITORY}" \
+            --github-token "${GITHUB_TOKEN}" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Continue release queue

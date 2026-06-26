@@ -146,6 +146,63 @@ finally:
     module.github_request_json = original_github_request_json
 
 
+original_github_request_json = module.github_request_json
+try:
+    def fake_github_request_json(api_root, token, path, query=None, *, max_attempts=4):
+        head_sha = (query or {}).get("head_sha")
+        if path.endswith("/actions/workflows/ci-main.yml/runs"):
+            runs = {
+                "a" * 40: [{"id": 10, "head_sha": "a" * 40, "conclusion": "success"}],
+                "b" * 40: [{"id": 20, "head_sha": "b" * 40, "conclusion": "failure"}],
+                "c" * 40: [{"id": 30, "head_sha": "c" * 40, "conclusion": "failure"}],
+            }
+            return {"workflow_runs": runs.get(head_sha, [])}
+        if path.endswith("/actions/runs/20/jobs"):
+            return {
+                "jobs": [
+                    {"name": "Release Snapshot", "conclusion": "failure"},
+                    {"name": "Lint & Format Check", "conclusion": "success"},
+                    {"name": "Backend Tests", "conclusion": "success"},
+                ]
+            }
+        if path.endswith("/actions/runs/30/jobs"):
+            return {
+                "jobs": [
+                    {"name": "Release Snapshot", "conclusion": "skipped"},
+                    {"name": "Backend Tests", "conclusion": "failure"},
+                ]
+            }
+        raise AssertionError(f"unexpected GitHub API path: {path}")
+
+    module.github_request_json = fake_github_request_json
+    assert module.ci_main_run_is_release_eligible(
+        "https://api.github.test",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        "a" * 40,
+    ) == "eligible"
+    assert module.ci_main_run_is_release_eligible(
+        "https://api.github.test",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        "b" * 40,
+    ) == "eligible"
+    assert module.ci_main_run_is_release_eligible(
+        "https://api.github.test",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        "c" * 40,
+    ) == "ineligible"
+    assert module.ci_main_run_is_release_eligible(
+        "https://api.github.test",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        "d" * 40,
+    ) == "unknown"
+finally:
+    module.github_request_json = original_github_request_json
+
+
 with tempfile.TemporaryDirectory(prefix="release-snapshot-merged-pr-") as tmp:
     repo = Path(tmp)
     run("init", cwd=repo)
@@ -315,11 +372,79 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         run("tag", "v0.1.1", sha1, cwd=repo)
         pending = module.pending_release_targets(module.DEFAULT_NOTES_REF, sha3)
         assert pending == [sha2, sha3], (pending, sha2, sha3)
+        filtered_pending = module.pending_release_targets(
+            module.DEFAULT_NOTES_REF,
+            sha3,
+            is_release_eligible=lambda commit: "ineligible" if commit == sha2 else "eligible",
+        )
+        assert filtered_pending == [sha3], filtered_pending
+        unknown_pending = module.pending_release_targets(
+            module.DEFAULT_NOTES_REF,
+            sha3,
+            is_release_eligible=lambda commit: "unknown" if commit == sha2 else "eligible",
+        )
+        assert unknown_pending == [sha2, sha3], unknown_pending
         assert module.release_tag_points_to_target(snapshot1) is True
         assert module.release_tag_points_to_target(snapshot2) is False
         assert module.publication_tags(snapshot1, notes_ref=module.DEFAULT_NOTES_REF, main_ref=sha3) == (
             "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest"
         )
+
+        original_ci_main_eligibility = module.ci_main_run_is_release_eligible
+        original_fetch_notes_ref = module.fetch_notes_ref
+        original_fetch_tags = module.fetch_tags
+        try:
+            module.ci_main_run_is_release_eligible = (
+                lambda api_root, repository, token, target_sha: "ineligible" if target_sha == sha2 else "eligible"
+            )
+            module.fetch_notes_ref = lambda notes_ref: None
+            module.fetch_tags = lambda: None
+            github_output = repo / "next-pending.txt"
+            exit_code = module.export_next_pending(
+                argparse.Namespace(
+                    notes_ref=module.DEFAULT_NOTES_REF,
+                    main_ref=sha3,
+                    upper_bound=sha3,
+                    github_repository="IvanLi-CN/codex-vibe-monitor",
+                    github_token="token",
+                    api_root="https://api.github.test",
+                    github_output=str(github_output),
+                )
+            )
+            assert exit_code == 0
+            assert github_output.read_text().strip() == f"target_sha={sha3}"
+        finally:
+            module.ci_main_run_is_release_eligible = original_ci_main_eligibility
+            module.fetch_notes_ref = original_fetch_notes_ref
+            module.fetch_tags = original_fetch_tags
+
+        try:
+            def flaky_ci_main_eligibility(api_root, repository, token, target_sha):
+                if target_sha == sha2:
+                    raise module.SnapshotError("workflow run not indexed yet")
+                return "eligible"
+
+            module.ci_main_run_is_release_eligible = flaky_ci_main_eligibility
+            module.fetch_notes_ref = lambda notes_ref: None
+            module.fetch_tags = lambda: None
+            github_output = repo / "next-pending-unknown.txt"
+            exit_code = module.export_next_pending(
+                argparse.Namespace(
+                    notes_ref=module.DEFAULT_NOTES_REF,
+                    main_ref=sha3,
+                    upper_bound=sha3,
+                    github_repository="IvanLi-CN/codex-vibe-monitor",
+                    github_token="token",
+                    api_root="https://api.github.test",
+                    github_output=str(github_output),
+                )
+            )
+            assert exit_code == 0
+            assert github_output.read_text().strip() == f"target_sha={sha2}"
+        finally:
+            module.ci_main_run_is_release_eligible = original_ci_main_eligibility
+            module.fetch_notes_ref = original_fetch_notes_ref
+            module.fetch_tags = original_fetch_tags
 
         run("tag", "v0.2.0", sha2, cwd=repo)
         assert module.release_tag_points_to_target(snapshot2) is True

@@ -85,6 +85,12 @@ function createPreview(
     failureClass: overrides.failureClass ?? "none",
     routeMode: overrides.routeMode ?? "pool",
     model: overrides.model ?? "gpt-5.4",
+    requestModel:
+      "requestModel" in overrides ? (overrides.requestModel ?? null) : "gpt-5.4",
+    responseModel:
+      "responseModel" in overrides
+        ? (overrides.responseModel ?? null)
+        : (overrides.model ?? "gpt-5.4"),
     totalTokens: overrides.totalTokens ?? 240,
     cost: overrides.cost ?? 0.0182,
     proxyDisplayName:
@@ -220,6 +226,8 @@ function buildRecordFromPreview(
     imageIntent: preview.imageIntent ?? null,
     transport: preview.transport,
     model: preview.model ?? undefined,
+    requestModel: preview.requestModel ?? undefined,
+    responseModel: preview.responseModel ?? undefined,
     status: preview.status,
     inputTokens: preview.inputTokens,
     outputTokens: preview.outputTokens,
@@ -2046,6 +2054,28 @@ export const TransportBadgeMixed: Story = {
   },
 };
 
+export const ModelRoutingMismatch: Story = {
+  args: {
+    cards: buildCards(
+      createResponse([
+        createConversation("pck-model-routing", [
+          createPreview({
+            id: 9701,
+            invokeId: "inv_dashboard_model_routing",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "success",
+            model: "gpt-5.5",
+            requestModel: "gpt-5.4",
+            responseModel: "gpt-5.5",
+          }),
+        ]),
+      ]),
+    ),
+    isLoading: false,
+    error: null,
+  },
+};
+
 export const InvocationDrawerOpen: Story = {
   args: {
     cards: [],
@@ -2069,6 +2099,35 @@ export const InvocationDrawerOpen: Story = {
       },
     },
   },
+};
+
+export const ModelRoutingDrawerOpen: Story = {
+  args: {
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation("pck-model-routing-drawer", [
+          createPreview({
+            id: 9801,
+            invokeId: "inv_dashboard_model_routing_drawer",
+            occurredAt: "2026-04-04T10:06:00Z",
+            status: "success",
+            model: "gpt-5.5",
+            requestModel: "gpt-5.4",
+            responseModel: "gpt-5.5",
+          }),
+        ]),
+      ])}
+      initialSelection={{
+        promptCacheKey: "pck-model-routing-drawer",
+        slotKind: "current",
+      }}
+    />
+  ),
 };
 
 export const InterruptedRecoveryDrawerOpen: Story = {

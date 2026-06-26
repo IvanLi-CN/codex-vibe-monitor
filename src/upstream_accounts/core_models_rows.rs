@@ -711,6 +711,8 @@ pub(crate) struct AccountStickyKeyInvocationPreviewRow {
     failure_class: Option<String>,
     route_mode: Option<String>,
     model: Option<String>,
+    request_model: Option<String>,
+    response_model: Option<String>,
     total_tokens: i64,
     cost: Option<f64>,
     source: Option<String>,

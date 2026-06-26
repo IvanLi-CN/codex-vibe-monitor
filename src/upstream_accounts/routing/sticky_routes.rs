@@ -148,6 +148,8 @@ pub(crate) async fn build_account_sticky_keys_response(
                     failure_class: row.failure_class,
                     route_mode: row.route_mode,
                     model: row.model,
+                    request_model: row.request_model,
+                    response_model: row.response_model,
                     total_tokens: row.total_tokens,
                     cost: row.cost,
                     proxy_display_name: row.proxy_display_name,
@@ -313,7 +315,11 @@ pub(crate) async fn query_account_sticky_key_recent_invocations(
         .push(crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(" AS failure_class, ")
         .push(crate::api::INVOCATION_ROUTE_MODE_SQL)
-        .push(" AS route_mode, model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
+        .push(" AS route_mode, model, ")
+        .push(crate::api::INVOCATION_REQUEST_MODEL_SQL)
+        .push(" AS request_model, ")
+        .push(crate::api::INVOCATION_RESPONSE_MODEL_SQL)
+        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
         .push(crate::api::INVOCATION_REASONING_EFFORT_SQL)
         .push(" AS reasoning_effort, error_message, ")
         .push(crate::api::INVOCATION_FAILURE_KIND_SQL)
@@ -391,7 +397,7 @@ pub(crate) async fn query_account_sticky_key_recent_invocations(
     }
 
     query
-        .push(")) SELECT sticky_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, downstream_status_code, downstream_error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, transport, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint, compaction_request_kind, compaction_response_kind, image_intent FROM ranked WHERE row_number <= ")
+        .push(")) SELECT sticky_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, request_model, response_model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, downstream_status_code, downstream_error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, transport, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint, compaction_request_kind, compaction_response_kind, image_intent FROM ranked WHERE row_number <= ")
         .push_bind(limit_per_key)
         .push(" ORDER BY sticky_key ASC, occurred_at DESC, id DESC");
 

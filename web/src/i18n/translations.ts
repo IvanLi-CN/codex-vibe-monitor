@@ -2190,6 +2190,10 @@ const baseTranslations = {
     "table.noRecords": "No records yet.",
     "table.column.time": "Time",
     "table.column.model": "Model",
+    "table.model.routingMismatchTitle":
+      "Response model differs from the requested model",
+    "table.model.routingMismatchAria":
+      "Upstream routed this request to a different response model",
     "table.model.fastPriorityTitle": "Fast (priority processing)",
     "table.model.fastPriorityAria": "Fast mode enabled via priority processing",
     "table.model.fastRequestedOnlyTitle":
@@ -2231,6 +2235,8 @@ const baseTranslations = {
     "table.details.source": "Source",
     "table.details.account": "Account",
     "table.details.proxy": "Proxy",
+    "table.details.requestModel": "Request model",
+    "table.details.responseModel": "Response model",
     "table.details.endpoint": "Endpoint",
     "table.endpoint.responsesBadge": "Responses",
     "table.endpoint.chatBadge": "Chat",
@@ -4436,6 +4442,8 @@ const baseTranslations = {
     "table.noRecords": "暂无记录。",
     "table.column.time": "时间",
     "table.column.model": "模型",
+    "table.model.routingMismatchTitle": "响应模型与请求模型不同",
+    "table.model.routingMismatchAria": "上游将这次请求路由到了不同的响应模型",
     "table.model.fastPriorityTitle": "Fast 模式（Priority processing）",
     "table.model.fastPriorityAria":
       "当前请求通过 Priority processing 启用 Fast 模式",
@@ -4477,6 +4485,8 @@ const baseTranslations = {
     "table.details.source": "来源",
     "table.details.account": "账号",
     "table.details.proxy": "代理",
+    "table.details.requestModel": "请求模型",
+    "table.details.responseModel": "响应模型",
     "table.details.endpoint": "端点",
     "table.endpoint.responsesBadge": "Responses",
     "table.endpoint.chatBadge": "Chat",

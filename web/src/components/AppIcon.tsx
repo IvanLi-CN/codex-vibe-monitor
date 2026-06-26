@@ -24,6 +24,7 @@ import closeIcon from '@iconify-icons/mdi/close'
 import contentCopyIcon from '@iconify-icons/mdi/content-copy'
 import contentSaveOutlineIcon from '@iconify-icons/mdi/content-save-outline'
 import contentSavePlusOutlineIcon from '@iconify-icons/mdi/content-save-plus-outline'
+import compareHorizontalIcon from '@iconify-icons/mdi/compare-horizontal'
 import crownIcon from '@iconify-icons/mdi/crown'
 import crownOutlineIcon from '@iconify-icons/mdi/crown-outline'
 import databaseOutlineIcon from '@iconify-icons/mdi/database-outline'
@@ -83,6 +84,7 @@ const appIconRegistry = {
   'content-copy': contentCopyIcon,
   'content-save-outline': contentSaveOutlineIcon,
   'content-save-plus-outline': contentSavePlusOutlineIcon,
+  'compare-horizontal': compareHorizontalIcon,
   'crown': crownIcon,
   'crown-outline': crownOutlineIcon,
   'database-outline': databaseOutlineIcon,
