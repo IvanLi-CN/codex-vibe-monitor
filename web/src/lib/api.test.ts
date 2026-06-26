@@ -340,7 +340,10 @@ describe("forward proxy manual latency API", () => {
       }
       close() {}
     }
-    vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
+    vi.stubGlobal(
+      "EventSource",
+      MockEventSource as unknown as typeof EventSource,
+    );
 
     createForwardProxyNodesLatencyTestEventSource(["node-a", "node-b"]);
     const url = new URL(MockEventSource.latestUrl, "http://localhost");
@@ -1344,14 +1347,12 @@ describe("settings normalization", () => {
     });
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
-    const response = await fetchForwardProxyBindingNodes([
-      "fpb_jp_edge_01",
-      " ",
-      "fpb_sg_edge_02",
-      "fpb_jp_edge_01",
-    ], {
-      includeCurrent: true,
-    });
+    const response = await fetchForwardProxyBindingNodes(
+      ["fpb_jp_edge_01", " ", "fpb_sg_edge_02", "fpb_jp_edge_01"],
+      {
+        includeCurrent: true,
+      },
+    );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(response).toHaveLength(1);
@@ -1640,9 +1641,11 @@ describe("account pool frontend API helpers", () => {
   });
 
   it("normalizes active conversation counts from upstream account detail payloads", async () => {
+    let requestedUrl = "";
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => {
+      vi.fn(async (input: RequestInfo | URL) => {
+        requestedUrl = String(input);
         return new Response(
           JSON.stringify({
             id: 9,
@@ -1663,6 +1666,38 @@ describe("account pool frontend API helpers", () => {
     const response = await fetchUpstreamAccountDetail(9);
 
     expect(response.activeConversationCount).toBe(2);
+    expect(requestedUrl).toContain("/api/pool/upstream-accounts/9");
+    expect(requestedUrl).not.toContain("includeRecentActions");
+  });
+
+  it("adds includeRecentActions when requested for upstream account detail", async () => {
+    let requestedUrl = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        requestedUrl = String(input);
+        return new Response(
+          JSON.stringify({
+            id: 9,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName: "Detail OAuth",
+            isMother: false,
+            status: "active",
+            enabled: true,
+            history: [],
+            recentActions: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    await fetchUpstreamAccountDetail(9, { includeRecentActions: true });
+
+    expect(requestedUrl).toContain(
+      "/api/pool/upstream-accounts/9?includeRecentActions=1",
+    );
   });
 
   it("normalizes tag fast mode values from upstream account roster payloads", async () => {
@@ -1861,42 +1896,46 @@ describe("account pool frontend API helpers", () => {
   });
 
   it("serializes window-usage batch requests and normalizes the response", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(input)).toContain("/api/pool/upstream-accounts/window-usage");
-      expect(init?.method).toBe("POST");
-      expect(init?.body).toBe(JSON.stringify({ accountIds: [3, 7] }));
-      return new Response(
-        JSON.stringify({
-          items: [
-            {
-              accountId: 3,
-              primaryActualUsage: {
-                requestCount: 11,
-                totalTokens: 64120,
-                totalCost: 0.6123,
-                inputTokens: 38200,
-                outputTokens: 21120,
-                cacheInputTokens: 4800,
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(input)).toContain(
+          "/api/pool/upstream-accounts/window-usage",
+        );
+        expect(init?.method).toBe("POST");
+        expect(init?.body).toBe(JSON.stringify({ accountIds: [3, 7] }));
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                accountId: 3,
+                primaryActualUsage: {
+                  requestCount: 11,
+                  totalTokens: 64120,
+                  totalCost: 0.6123,
+                  inputTokens: 38200,
+                  outputTokens: 21120,
+                  cacheInputTokens: 4800,
+                },
+                secondaryActualUsage: null,
               },
-              secondaryActualUsage: null,
-            },
-            {
-              accountId: 7,
-              primaryActualUsage: null,
-              secondaryActualUsage: {
-                requestCount: 52,
-                totalTokens: 201440,
-                totalCost: 1.8821,
-                inputTokens: 110200,
-                outputTokens: 78240,
-                cacheInputTokens: 13000,
+              {
+                accountId: 7,
+                primaryActualUsage: null,
+                secondaryActualUsage: {
+                  requestCount: 52,
+                  totalTokens: 201440,
+                  totalCost: 1.8821,
+                  inputTokens: 110200,
+                  outputTokens: 78240,
+                  cacheInputTokens: 13000,
+                },
               },
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    });
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+    );
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
     const response = await fetchUpstreamAccountWindowUsage([3, 7]);
@@ -2431,8 +2470,7 @@ describe("account pool frontend API helpers", () => {
       "/v1/responses",
     );
     expect(
-      response.conversations[0]?.recentInvocations[0]
-        ?.upstreamAccountPlanType,
+      response.conversations[0]?.recentInvocations[0]?.upstreamAccountPlanType,
     ).toBe("enterprise");
     expect(response.conversations[0]?.recentInvocations[0]?.source).toBe(
       "proxy",
@@ -2534,55 +2572,60 @@ describe("account pool frontend API helpers", () => {
   });
 
   it("reads and updates prompt-cache conversation bindings by encoded key", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      expect(url).toContain(
-        "/api/stats/prompt-cache-conversation-bindings/pck%2Fwith%20space",
-      );
-      if (init?.method === "PATCH") {
-        expect(JSON.parse(String(init.body))).toEqual({
-          bindingKind: "upstreamAccount",
-          upstreamAccountId: 42,
-        });
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        expect(url).toContain(
+          "/api/stats/prompt-cache-conversation-bindings/pck%2Fwith%20space",
+        );
+        if (init?.method === "PATCH") {
+          expect(JSON.parse(String(init.body))).toEqual({
+            bindingKind: "upstreamAccount",
+            upstreamAccountId: 42,
+          });
+          return new Response(
+            JSON.stringify({
+              promptCacheKey: "pck/with space",
+              bindingKind: "upstreamAccount",
+              groupName: null,
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+              hasEncryptedSessionOwner: true,
+              encryptedOwnerAccountId: 17,
+              encryptedOwnerAccountName: "Owner One",
+              encryptedOwnerGroupName: "prod",
+              updatedAt: "2026-03-10T23:59:00Z",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
         return new Response(
           JSON.stringify({
             promptCacheKey: "pck/with space",
-            bindingKind: "upstreamAccount",
+            bindingKind: "none",
             groupName: null,
-            upstreamAccountId: 42,
-            upstreamAccountName: "Pool Alpha",
-            hasEncryptedSessionOwner: true,
-            encryptedOwnerAccountId: 17,
-            encryptedOwnerAccountName: "Owner One",
-            encryptedOwnerGroupName: "prod",
-            updatedAt: "2026-03-10T23:59:00Z",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+            hasEncryptedSessionOwner: false,
+            encryptedOwnerAccountId: null,
+            encryptedOwnerAccountName: null,
+            encryptedOwnerGroupName: null,
+            updatedAt: null,
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
-      }
-      return new Response(
-        JSON.stringify({
-          promptCacheKey: "pck/with space",
-          bindingKind: "none",
-          groupName: null,
-          upstreamAccountId: null,
-          upstreamAccountName: null,
-          hasEncryptedSessionOwner: false,
-          encryptedOwnerAccountId: null,
-          encryptedOwnerAccountName: null,
-          encryptedOwnerGroupName: null,
-          updatedAt: null,
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    });
+      },
+    );
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
     const initial = await fetchPromptCacheConversationBinding("pck/with space");
-    const updated = await updatePromptCacheConversationBinding("pck/with space", {
-      bindingKind: "upstreamAccount",
-      upstreamAccountId: 42,
-    });
+    const updated = await updatePromptCacheConversationBinding(
+      "pck/with space",
+      {
+        bindingKind: "upstreamAccount",
+        upstreamAccountId: 42,
+      },
+    );
 
     expect(initial.bindingKind).toBe("none");
     expect(initial.hasEncryptedSessionOwner).toBe(false);

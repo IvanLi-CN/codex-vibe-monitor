@@ -15,3 +15,6 @@
 - 2026-06-21: account-scoped `yesterday` 活动总览拆掉重复 comparison fetch，避免详情抽屉在昨天视图额外触发一轮同账号 summary / timeseries。
 - 2026-06-21: 账号详情抽屉 records tab 不再停留在一次性快照；它改为与 `Live` / `/records` 共用活动记录实时合并层，保证同账号的新记录自动出现、终态字段自动收敛，并在 SSE 重连后静默回源补齐。
 - 2026-06-23: 线上 CPU 复盘确认账号池通用 hook 仍会把 invocation `records` SSE 升级成 roster/detail/window-usage 刷新；现已切断这条链，只保留业务写入、手动 refresh 与 SSE `open` 受控补齐。
+- 2026-06-25: 线上回归确认默认 overview 首屏又被 `recentActions` 同步读取拖慢；详情接口默认改回不带 `recentActions`，仅在健康与事件 tab 按需 hydrate。
+- 2026-06-25: records 顶部卡片字段调整后，account-scoped today summary 把 `nonSuccessCost` 拖回了 live augmentation 路径并丢失 live tail；现已恢复为 read-model totals + bounded tail，闭区间默认不做 live raw 重算。
+- 2026-06-25: `selectedId` 暂空时的 roster 级 `window-usage` 自动 hydrate 被彻底移除；详情首屏只允许当前账号发 `window-usage`，手动 hydrate 才能批量取数。

@@ -92,7 +92,12 @@ export interface TagRoutingRule {
   availableModels?: string[];
 }
 
-export type EffectiveRoutingRuleSource = "root" | "group" | "tag" | "account" | string;
+export type EffectiveRoutingRuleSource =
+  | "root"
+  | "group"
+  | "tag"
+  | "account"
+  | string;
 
 export interface GroupAccountRoutingRule extends TagRoutingRule {
   imageToolRewriteMode?: ImageToolRewriteMode;
@@ -436,7 +441,13 @@ export interface BulkUpstreamAccountSyncFailedEventPayload {
 
 export interface LoginSessionStatusResponse {
   loginId: string;
-  status: "pending" | "completed" | "failed" | "expired" | "needs_identity_confirmation" | string;
+  status:
+    | "pending"
+    | "completed"
+    | "failed"
+    | "expired"
+    | "needs_identity_confirmation"
+    | string;
   authUrl?: string | null;
   redirectUri?: string | null;
   expiresAt: string;
@@ -754,7 +765,8 @@ export interface UpdateUpstreamAccountGroupPayload {
   routingRule?: UpdateGroupAccountRoutingRulePayload;
 }
 
-export type UpdateGroupAccountRoutingRulePayload = Partial<GroupAccountRoutingRule>;
+export type UpdateGroupAccountRoutingRulePayload =
+  Partial<GroupAccountRoutingRule>;
 
 function normalizeRateWindowActualUsage(
   raw: unknown,
@@ -869,19 +881,13 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
   };
 }
 
-function normalizeImageToolRewriteMode(
-  raw: unknown,
-): ImageToolRewriteMode {
-  return raw === "fill_missing" ||
-    raw === "force_add" ||
-    raw === "force_remove"
+function normalizeImageToolRewriteMode(raw: unknown): ImageToolRewriteMode {
+  return raw === "fill_missing" || raw === "force_add" || raw === "force_remove"
     ? raw
     : "keep_original";
 }
 
-function normalizeImageToolCapability(
-  raw: unknown,
-): ImageToolCapability {
+function normalizeImageToolCapability(raw: unknown): ImageToolCapability {
   return raw === "supported" || raw === "unsupported" ? raw : "unknown";
 }
 
@@ -1381,9 +1387,7 @@ function normalizeUpstreamAccountWindowUsageResponse(
         };
         return normalized;
       })
-      .filter(
-        (item): item is UpstreamAccountWindowUsageItem => item != null,
-      ),
+      .filter((item): item is UpstreamAccountWindowUsageItem => item != null),
   };
 }
 
@@ -1921,7 +1925,6 @@ function normalizeOauthMailboxStatus(raw: unknown): OauthMailboxStatus | null {
   };
 }
 
-
 export async function fetchUpstreamAccounts(
   query?: FetchUpstreamAccountsQuery,
 ): Promise<UpstreamAccountListResponse> {
@@ -1944,7 +1947,8 @@ export async function fetchUpstreamAccounts(
   }
   if (query?.page != null) search.set("page", String(query.page));
   if (query?.pageSize != null) search.set("pageSize", String(query.pageSize));
-  if (query?.includeAll != null) search.set("includeAll", String(query.includeAll));
+  if (query?.includeAll != null)
+    search.set("includeAll", String(query.includeAll));
   for (const tagId of query?.tagIds ?? []) {
     search.append("tagIds", String(tagId));
   }
@@ -1987,12 +1991,15 @@ export async function fetchUpstreamAccountWindowUsage(
   if (normalizedAccountIds.length === 0) {
     return { items: [] };
   }
-  const response = await fetchJson<unknown>("/api/pool/upstream-accounts/window-usage", {
-    method: "POST",
-    body: JSON.stringify({
-      accountIds: normalizedAccountIds,
-    }),
-  });
+  const response = await fetchJson<unknown>(
+    "/api/pool/upstream-accounts/window-usage",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        accountIds: normalizedAccountIds,
+      }),
+    },
+  );
   return normalizeUpstreamAccountWindowUsageResponse(response);
 }
 
@@ -2106,12 +2113,27 @@ export async function fetchUpstreamStickyConversations(
 
 export async function fetchUpstreamAccountDetail(
   accountId: number,
-  signal?: AbortSignal,
+  options:
+    | { signal?: AbortSignal; includeRecentActions?: boolean }
+    | AbortSignal = {},
 ): Promise<UpstreamAccountDetail> {
+  type DetailOptions = { signal?: AbortSignal; includeRecentActions?: boolean };
+  let detailOptions: DetailOptions;
+  if (typeof AbortSignal !== "undefined" && options instanceof AbortSignal) {
+    detailOptions = { signal: options };
+  } else {
+    detailOptions = options as DetailOptions;
+  }
+  const search = new URLSearchParams();
+  if (detailOptions.includeRecentActions) {
+    search.set("includeRecentActions", "1");
+  }
   const response = await fetchJson<unknown>(
-    `/api/pool/upstream-accounts/${accountId}`,
+    search.size > 0
+      ? `/api/pool/upstream-accounts/${accountId}?${search.toString()}`
+      : `/api/pool/upstream-accounts/${accountId}`,
     {
-      signal,
+      signal: detailOptions.signal,
     },
   );
   return normalizeUpstreamAccountDetail(response);

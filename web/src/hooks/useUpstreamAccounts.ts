@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   bulkUpdateUpstreamAccounts,
   cancelBulkUpstreamAccountSyncJob,
@@ -54,84 +54,101 @@ import {
   type UpstreamAccountDetail,
   type UpstreamAccountSummary,
   type ValidateImportedOauthAccountsPayload,
-} from '../lib/api'
-import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
-import { UPSTREAM_ACCOUNTS_CHANGED_EVENT, emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
-import { isUpstreamAccountNotFoundError } from '../lib/upstreamAccountErrors'
-import { subscribeToSseOpen } from '../lib/sse'
+} from "../lib/api";
+import { upsertGroupSummary } from "../lib/upstreamAccountGroups";
+import {
+  UPSTREAM_ACCOUNTS_CHANGED_EVENT,
+  emitUpstreamAccountsChanged,
+} from "../lib/upstreamAccountsEvents";
+import { isUpstreamAccountNotFoundError } from "../lib/upstreamAccountErrors";
+import { subscribeToSseOpen } from "../lib/sse";
 
-const LOAD_LIST_FAILED = Symbol('load-list-failed')
-const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {}
-export const UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS = 3_000
+const LOAD_LIST_FAILED = Symbol("load-list-failed");
+const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {};
+export const UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS = 3_000;
 
-export type UpstreamAccountsListFreshness = 'fresh' | 'stale' | 'missing' | 'deferred'
-export type UpstreamAccountsListLoadingState = 'idle' | 'deferred' | 'initial' | 'switching' | 'refreshing'
-export type UpstreamAccountsListStatus = 'ready' | 'loading' | 'error' | 'deferred'
+export type UpstreamAccountsListFreshness =
+  | "fresh"
+  | "stale"
+  | "missing"
+  | "deferred";
+export type UpstreamAccountsListLoadingState =
+  | "idle"
+  | "deferred"
+  | "initial"
+  | "switching"
+  | "refreshing";
+export type UpstreamAccountsListStatus =
+  | "ready"
+  | "loading"
+  | "error"
+  | "deferred";
 export type ForwardProxyCatalogKind =
-  | 'ready-empty'
-  | 'ready-with-data'
-  | 'loading'
-  | 'missing'
-  | 'deferred'
+  | "ready-empty"
+  | "ready-with-data"
+  | "loading"
+  | "missing"
+  | "deferred";
 
 type UpstreamAccountsListState = {
-  queryKey: string | null
-  dataQueryKey: string | null
-  freshness: UpstreamAccountsListFreshness
-  loadingState: UpstreamAccountsListLoadingState
-  status: UpstreamAccountsListStatus
-  hasCurrentQueryData: boolean
-  isPending: boolean
-}
+  queryKey: string | null;
+  dataQueryKey: string | null;
+  freshness: UpstreamAccountsListFreshness;
+  loadingState: UpstreamAccountsListLoadingState;
+  status: UpstreamAccountsListStatus;
+  hasCurrentQueryData: boolean;
+  isPending: boolean;
+};
 
 export type ForwardProxyCatalogState = {
-  kind: ForwardProxyCatalogKind
-  freshness: UpstreamAccountsListFreshness
-  isPending: boolean
-  hasNodes: boolean
-}
+  kind: ForwardProxyCatalogKind;
+  freshness: UpstreamAccountsListFreshness;
+  isPending: boolean;
+  hasNodes: boolean;
+};
 
 type UseUpstreamAccountsOptions = {
-  allowSelectionOutsideList?: boolean
-  fallbackToFirstItem?: boolean
-}
+  allowSelectionOutsideList?: boolean;
+  fallbackToFirstItem?: boolean;
+};
 
 const DEFAULT_OPTIONS: Required<UseUpstreamAccountsOptions> = {
   allowSelectionOutsideList: false,
   fallbackToFirstItem: true,
-}
+};
 
 interface LoadOptions {
-  silent?: boolean
+  silent?: boolean;
+  includeRecentActions?: boolean;
 }
 
 type HydratedWindowUsage = {
-  primaryActualUsage: RateWindowActualUsage | null
-  secondaryActualUsage: RateWindowActualUsage | null
-}
+  primaryActualUsage: RateWindowActualUsage | null;
+  secondaryActualUsage: RateWindowActualUsage | null;
+};
 
 function normalizeQueryStringArray(values?: string[]) {
-  if (!values || values.length === 0) return undefined
+  if (!values || values.length === 0) return undefined;
   const normalized = values
     .map((value) => value.trim())
     .filter((value) => value.length > 0)
-    .sort()
-  return normalized.length > 0 ? normalized : undefined
+    .sort();
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function normalizeQueryNumberArray(values?: number[]) {
-  if (!values || values.length === 0) return undefined
+  if (!values || values.length === 0) return undefined;
   const normalized = values
     .filter((value) => Number.isFinite(value) && value > 0)
-    .sort((left, right) => left - right)
-  return normalized.length > 0 ? normalized : undefined
+    .sort((left, right) => left - right);
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function applyWindowUsageToSummary(
   item: UpstreamAccountSummary,
   usage?: HydratedWindowUsage,
 ) {
-  if (!usage) return item
+  if (!usage) return item;
   return {
     ...item,
     primaryWindow: item.primaryWindow
@@ -146,7 +163,7 @@ function applyWindowUsageToSummary(
           actualUsage: usage.secondaryActualUsage,
         }
       : item.secondaryWindow,
-  }
+  };
 }
 
 function applyWindowUsageToRoster(
@@ -154,13 +171,17 @@ function applyWindowUsageToRoster(
   usageByAccount: Record<number, HydratedWindowUsage>,
 ) {
   if (items.length === 0 || Object.keys(usageByAccount).length === 0) {
-    return items
+    return items;
   }
-  return items.map((item) => applyWindowUsageToSummary(item, usageByAccount[item.id]))
+  return items.map((item) =>
+    applyWindowUsageToSummary(item, usageByAccount[item.id]),
+  );
 }
 
-export function buildUpstreamAccountsListQueryKey(query?: FetchUpstreamAccountsQuery | null) {
-  if (query == null) return null
+export function buildUpstreamAccountsListQueryKey(
+  query?: FetchUpstreamAccountsQuery | null,
+) {
+  if (query == null) return null;
 
   return JSON.stringify({
     groupExact: normalizeQueryStringArray(query.groupExact),
@@ -174,270 +195,332 @@ export function buildUpstreamAccountsListQueryKey(query?: FetchUpstreamAccountsQ
     pageSize: query.pageSize ?? undefined,
     includeAll: query.includeAll === true ? true : undefined,
     tagIds: normalizeQueryNumberArray(query.tagIds),
-  })
+  });
 }
 
-export function shouldTriggerUpstreamAccountsOpenResync(lastResyncAt: number, now: number, force = false) {
-  if (force) return true
-  return now - lastResyncAt >= UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS
+export function shouldTriggerUpstreamAccountsOpenResync(
+  lastResyncAt: number,
+  now: number,
+  force = false,
+) {
+  if (force) return true;
+  return now - lastResyncAt >= UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS;
 }
 
 export function useUpstreamAccounts(
   query: FetchUpstreamAccountsQuery | null = DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY,
   options?: UseUpstreamAccountsOptions,
 ) {
-  const effectiveQuery = query ?? DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY
-  const currentListQueryKey = useMemo(() => buildUpstreamAccountsListQueryKey(query), [query])
+  const effectiveQuery = query ?? DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY;
+  const currentListQueryKey = useMemo(
+    () => buildUpstreamAccountsListQueryKey(query),
+    [query],
+  );
   const resolvedOptions = {
     ...DEFAULT_OPTIONS,
     ...options,
-  }
-  const [rosterItems, setRosterItems] = useState<UpstreamAccountSummary[]>([])
-  const [windowUsageByAccount, setWindowUsageByAccount] = useState<Record<number, HydratedWindowUsage>>({})
-  const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([])
-  const [forwardProxyNodes, setForwardProxyNodes] = useState<ForwardProxyBindingNode[] | null>(null)
-  const [hasUngroupedAccounts, setHasUngroupedAccounts] = useState(false)
-  const [writesEnabled, setWritesEnabled] = useState(true)
-  const [routing, setRouting] = useState<PoolRoutingSettings | null>(null)
-  const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(effectiveQuery.page ?? 1)
-  const [pageSize, setPageSize] = useState(effectiveQuery.pageSize ?? 20)
+  };
+  const [rosterItems, setRosterItems] = useState<UpstreamAccountSummary[]>([]);
+  const [windowUsageByAccount, setWindowUsageByAccount] = useState<
+    Record<number, HydratedWindowUsage>
+  >({});
+  const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([]);
+  const [forwardProxyNodes, setForwardProxyNodes] = useState<
+    ForwardProxyBindingNode[] | null
+  >(null);
+  const [hasUngroupedAccounts, setHasUngroupedAccounts] = useState(false);
+  const [writesEnabled, setWritesEnabled] = useState(true);
+  const [routing, setRouting] = useState<PoolRoutingSettings | null>(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(effectiveQuery.page ?? 1);
+  const [pageSize, setPageSize] = useState(effectiveQuery.pageSize ?? 20);
   const [metrics, setMetrics] = useState<UpstreamAccountListMetrics>({
     total: 0,
     oauth: 0,
     apiKey: 0,
     attention: 0,
-  })
-  const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [detail, setDetail] = useState<UpstreamAccountDetail | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [isListPending, setIsListPending] = useState(false)
-  const [isDetailLoading, setIsDetailLoading] = useState(false)
-  const [listError, setListError] = useState<string | null>(null)
-  const [listDataQueryKey, setListDataQueryKey] = useState<string | null>(null)
-  const [isWindowUsagePending, setIsWindowUsagePending] = useState(false)
-  const [detailErrors, setDetailErrors] = useState<Record<number, string>>({})
-  const [missingDetailAccountId, setMissingDetailAccountId] = useState<number | null>(null)
-  const selectedIdRef = useRef<number | null>(null)
-  const currentListQueryKeyRef = useRef<string | null>(currentListQueryKey)
-  const listDataQueryKeyRef = useRef<string | null>(null)
-  const autoLoadQueryKeyRef = useRef<string | null>(null)
-  const rosterItemsRef = useRef<UpstreamAccountSummary[]>([])
-  const listRequestSeqRef = useRef(0)
-  const listRequestInFlightSeqRef = useRef<number | null>(null)
-  const listRequestPromiseRef = useRef<Promise<number | null | typeof LOAD_LIST_FAILED> | null>(null)
-  const listRequestQueryKeyRef = useRef<string | null>(null)
+  });
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [detail, setDetail] = useState<UpstreamAccountDetail | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isListPending, setIsListPending] = useState(false);
+  const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  const [listDataQueryKey, setListDataQueryKey] = useState<string | null>(null);
+  const [isWindowUsagePending, setIsWindowUsagePending] = useState(false);
+  const [detailErrors, setDetailErrors] = useState<Record<number, string>>({});
+  const [missingDetailAccountId, setMissingDetailAccountId] = useState<
+    number | null
+  >(null);
+  const selectedIdRef = useRef<number | null>(null);
+  const detailRef = useRef<UpstreamAccountDetail | null>(null);
+  const currentListQueryKeyRef = useRef<string | null>(currentListQueryKey);
+  const listDataQueryKeyRef = useRef<string | null>(null);
+  const autoLoadQueryKeyRef = useRef<string | null>(null);
+  const rosterItemsRef = useRef<UpstreamAccountSummary[]>([]);
+  const listRequestSeqRef = useRef(0);
+  const listRequestInFlightSeqRef = useRef<number | null>(null);
+  const listRequestPromiseRef = useRef<Promise<
+    number | null | typeof LOAD_LIST_FAILED
+  > | null>(null);
+  const listRequestQueryKeyRef = useRef<string | null>(null);
   const queuedSameQueryRefreshRef = useRef<{
-    preferredId?: number | null
-    options?: { respectCurrentSelection?: boolean; selectionAnchorId?: number | null; silent?: boolean }
-  } | null>(null)
-  const detailRequestSeqRef = useRef(0)
-  const detailRequestAccountIdRef = useRef<number | null>(null)
-  const detailAbortControllerRef = useRef<AbortController | null>(null)
-  const hasHydratedRef = useRef(false)
-  const detailHydratedAccountIdsRef = useRef(new Set<number>())
-  const usageHydrationGenerationRef = useRef(0)
-  const windowUsageQueryKeyRef = useRef<string | null>(null)
-  const hydratedWindowUsageIdsRef = useRef(new Set<number>())
-  const pendingWindowUsageGenerationByIdRef = useRef(new Map<number, number>())
-  const lastRefreshAtRef = useRef(0)
-  const lastOpenResyncAtRef = useRef(0)
-  const hasSeenSseOpenRef = useRef(false)
+    preferredId?: number | null;
+    options?: {
+      respectCurrentSelection?: boolean;
+      selectionAnchorId?: number | null;
+      silent?: boolean;
+    };
+  } | null>(null);
+  const detailRequestSeqRef = useRef(0);
+  const detailRequestAccountIdRef = useRef<number | null>(null);
+  const detailAbortControllerRef = useRef<AbortController | null>(null);
+  const hasHydratedRef = useRef(false);
+  const detailHydratedAccountIdsRef = useRef(new Set<number>());
+  const detailRecentActionsHydratedAccountIdRef = useRef<number | null>(null);
+  const usageHydrationGenerationRef = useRef(0);
+  const windowUsageQueryKeyRef = useRef<string | null>(null);
+  const hydratedWindowUsageIdsRef = useRef(new Set<number>());
+  const pendingWindowUsageGenerationByIdRef = useRef(new Map<number, number>());
+  const lastRefreshAtRef = useRef(0);
+  const lastOpenResyncAtRef = useRef(0);
+  const hasSeenSseOpenRef = useRef(false);
 
   useEffect(() => {
-    currentListQueryKeyRef.current = currentListQueryKey
-  }, [currentListQueryKey])
+    currentListQueryKeyRef.current = currentListQueryKey;
+  }, [currentListQueryKey]);
 
   useEffect(() => {
-    listDataQueryKeyRef.current = listDataQueryKey
-  }, [listDataQueryKey])
+    listDataQueryKeyRef.current = listDataQueryKey;
+  }, [listDataQueryKey]);
 
   useEffect(() => {
-    rosterItemsRef.current = rosterItems
-  }, [rosterItems])
+    detailRef.current = detail;
+  }, [detail]);
+
+  useEffect(() => {
+    rosterItemsRef.current = rosterItems;
+  }, [rosterItems]);
 
   const items = useMemo(
     () => applyWindowUsageToRoster(rosterItems, windowUsageByAccount),
     [rosterItems, windowUsageByAccount],
-  )
+  );
 
   const setSelectedAccount = useCallback((accountId: number | null) => {
-    selectedIdRef.current = accountId
-    setSelectedId(accountId)
+    selectedIdRef.current = accountId;
+    setSelectedId(accountId);
     setMissingDetailAccountId((current) => {
-      if (accountId == null) return null
-      return current === accountId ? null : current
-    })
-  }, [])
+      if (accountId == null) return null;
+      return current === accountId ? null : current;
+    });
+  }, []);
 
   const clearDetailError = useCallback((accountId: number) => {
     setDetailErrors((current) => {
-      if (!(accountId in current)) return current
-      const next = { ...current }
-      delete next[accountId]
-      return next
-    })
-  }, [])
+      if (!(accountId in current)) return current;
+      const next = { ...current };
+      delete next[accountId];
+      return next;
+    });
+  }, []);
+
+  const commitDetailResponse = useCallback(
+    (response: UpstreamAccountDetail, options: LoadOptions = {}) => {
+      const current = detailRef.current;
+      const preserveRecentActions =
+        options.includeRecentActions !== true &&
+        current?.id === response.id &&
+        detailRecentActionsHydratedAccountIdRef.current === response.id;
+      const nextDetail = preserveRecentActions
+        ? { ...response, recentActions: current.recentActions }
+        : response;
+      if (options.includeRecentActions) {
+        detailRecentActionsHydratedAccountIdRef.current = response.id;
+      } else if (current?.id !== response.id) {
+        detailRecentActionsHydratedAccountIdRef.current = null;
+      }
+      setDetail(nextDetail);
+      return nextDetail;
+    },
+    [],
+  );
 
   const invalidateDetailRequest = useCallback((accountId?: number | null) => {
     if (accountId != null && detailRequestAccountIdRef.current !== accountId) {
-      return
+      return;
     }
-    detailRequestSeqRef.current += 1
-    detailRequestAccountIdRef.current = null
-    detailAbortControllerRef.current?.abort()
-    detailAbortControllerRef.current = null
-    setIsDetailLoading(false)
-  }, [])
+    detailRequestSeqRef.current += 1;
+    detailRequestAccountIdRef.current = null;
+    detailAbortControllerRef.current?.abort();
+    detailAbortControllerRef.current = null;
+    setIsDetailLoading(false);
+  }, []);
 
   const resetWindowUsageHydration = useCallback(
     (queryKey: string | null, options?: { preserveData?: boolean }) => {
-      usageHydrationGenerationRef.current += 1
-      windowUsageQueryKeyRef.current = queryKey
-      hydratedWindowUsageIdsRef.current = new Set()
-      pendingWindowUsageGenerationByIdRef.current = new Map()
-      setIsWindowUsagePending(false)
+      usageHydrationGenerationRef.current += 1;
+      windowUsageQueryKeyRef.current = queryKey;
+      hydratedWindowUsageIdsRef.current = new Set();
+      pendingWindowUsageGenerationByIdRef.current = new Map();
+      setIsWindowUsagePending(false);
       if (!options?.preserveData) {
-        setWindowUsageByAccount({})
+        setWindowUsageByAccount({});
       }
     },
     [],
-  )
+  );
 
   const invalidateListRequest = useCallback(() => {
-    autoLoadQueryKeyRef.current = null
-    listRequestSeqRef.current += 1
-    listRequestInFlightSeqRef.current = null
-    listRequestPromiseRef.current = null
-    listRequestQueryKeyRef.current = null
-    queuedSameQueryRefreshRef.current = null
+    autoLoadQueryKeyRef.current = null;
+    listRequestSeqRef.current += 1;
+    listRequestInFlightSeqRef.current = null;
+    listRequestPromiseRef.current = null;
+    listRequestQueryKeyRef.current = null;
+    queuedSameQueryRefreshRef.current = null;
     resetWindowUsageHydration(currentListQueryKeyRef.current, {
       preserveData: true,
-    })
-    setIsListPending(false)
-    setIsLoading(false)
-  }, [resetWindowUsageHydration])
+    });
+    setIsListPending(false);
+    setIsLoading(false);
+  }, [resetWindowUsageHydration]);
 
   const loadList = useCallback(
     async (
       preferredId?: number | null,
-      options?: { respectCurrentSelection?: boolean; selectionAnchorId?: number | null; silent?: boolean },
+      options?: {
+        respectCurrentSelection?: boolean;
+        selectionAnchorId?: number | null;
+        silent?: boolean;
+      },
     ): Promise<number | null | typeof LOAD_LIST_FAILED> => {
-      const requestQueryKey = currentListQueryKeyRef.current
+      const requestQueryKey = currentListQueryKeyRef.current;
       if (
         listRequestPromiseRef.current &&
         listRequestQueryKeyRef.current != null &&
         listRequestQueryKeyRef.current === requestQueryKey
       ) {
         const currentQueryHydrated =
-          requestQueryKey != null && listDataQueryKeyRef.current === requestQueryKey
+          requestQueryKey != null &&
+          listDataQueryKeyRef.current === requestQueryKey;
         if (currentQueryHydrated) {
-          const queued = queuedSameQueryRefreshRef.current
+          const queued = queuedSameQueryRefreshRef.current;
           queuedSameQueryRefreshRef.current = {
             preferredId,
             options: {
               respectCurrentSelection:
-                options?.respectCurrentSelection ?? queued?.options?.respectCurrentSelection,
+                options?.respectCurrentSelection ??
+                queued?.options?.respectCurrentSelection,
               selectionAnchorId:
-                options?.selectionAnchorId ?? queued?.options?.selectionAnchorId,
-              silent: (options?.silent ?? true) && (queued?.options?.silent ?? true),
+                options?.selectionAnchorId ??
+                queued?.options?.selectionAnchorId,
+              silent:
+                (options?.silent ?? true) && (queued?.options?.silent ?? true),
             },
-          }
+          };
         }
-        return listRequestPromiseRef.current
+        return listRequestPromiseRef.current;
       }
 
-      listRequestSeqRef.current += 1
-      const requestSeq = listRequestSeqRef.current
-      const shouldShowLoading = !(options?.silent && hasHydratedRef.current)
-      listRequestInFlightSeqRef.current = requestSeq
+      listRequestSeqRef.current += 1;
+      const requestSeq = listRequestSeqRef.current;
+      const shouldShowLoading = !(options?.silent && hasHydratedRef.current);
+      listRequestInFlightSeqRef.current = requestSeq;
       const requestPromise = (async () => {
-        setIsListPending(true)
-        if (shouldShowLoading) setIsLoading(true)
-        setListError(null)
+        setIsListPending(true);
+        if (shouldShowLoading) setIsLoading(true);
+        setListError(null);
         try {
-          const response = await fetchUpstreamAccounts(effectiveQuery)
+          const response = await fetchUpstreamAccounts(effectiveQuery);
           if (requestSeq !== listRequestSeqRef.current) {
-            return LOAD_LIST_FAILED
+            return LOAD_LIST_FAILED;
           }
-          const currentSelectedId = selectedIdRef.current
-          const selectionAnchorId = options?.selectionAnchorId ?? preferredId ?? null
+          const currentSelectedId = selectedIdRef.current;
+          const selectionAnchorId =
+            options?.selectionAnchorId ?? preferredId ?? null;
           const shouldPreferRequestedId =
             preferredId != null &&
-            (!options?.respectCurrentSelection || currentSelectedId === selectionAnchorId)
-          const candidateId = shouldPreferRequestedId ? preferredId : currentSelectedId
+            (!options?.respectCurrentSelection ||
+              currentSelectedId === selectionAnchorId);
+          const candidateId = shouldPreferRequestedId
+            ? preferredId
+            : currentSelectedId;
           const hasCandidateInList =
-            candidateId != null && response.items.some((item) => item.id === candidateId)
-          const nextSelectedId =
-            hasCandidateInList
+            candidateId != null &&
+            response.items.some((item) => item.id === candidateId);
+          const nextSelectedId = hasCandidateInList
+            ? candidateId
+            : candidateId != null && resolvedOptions.allowSelectionOutsideList
               ? candidateId
-              : candidateId != null && resolvedOptions.allowSelectionOutsideList
-                ? candidateId
-                : resolvedOptions.fallbackToFirstItem
-                  ? response.items[0]?.id ?? null
-                  : null
+              : resolvedOptions.fallbackToFirstItem
+                ? (response.items[0]?.id ?? null)
+                : null;
 
           const shouldPreserveWindowUsage =
             windowUsageQueryKeyRef.current != null &&
-            windowUsageQueryKeyRef.current === requestQueryKey
-          setRosterItems(response.items)
-          setGroups(response.groups)
-          setForwardProxyNodes(response.forwardProxyNodes ?? [])
-          setHasUngroupedAccounts(response.hasUngroupedAccounts)
-          setWritesEnabled(response.writesEnabled)
-          setRouting(response.routing ?? null)
-          setTotal(response.total ?? 0)
-          setPage(response.page ?? 1)
-          setPageSize(response.pageSize ?? 20)
-          setMetrics(response.metrics ?? {
-            total: 0,
-            oauth: 0,
-            apiKey: 0,
-            attention: 0,
-          })
-          lastRefreshAtRef.current = Date.now()
-          setListDataQueryKey(requestQueryKey)
-          hasHydratedRef.current = true
+            windowUsageQueryKeyRef.current === requestQueryKey;
+          setRosterItems(response.items);
+          setGroups(response.groups);
+          setForwardProxyNodes(response.forwardProxyNodes ?? []);
+          setHasUngroupedAccounts(response.hasUngroupedAccounts);
+          setWritesEnabled(response.writesEnabled);
+          setRouting(response.routing ?? null);
+          setTotal(response.total ?? 0);
+          setPage(response.page ?? 1);
+          setPageSize(response.pageSize ?? 20);
+          setMetrics(
+            response.metrics ?? {
+              total: 0,
+              oauth: 0,
+              apiKey: 0,
+              attention: 0,
+            },
+          );
+          lastRefreshAtRef.current = Date.now();
+          setListDataQueryKey(requestQueryKey);
+          hasHydratedRef.current = true;
           resetWindowUsageHydration(requestQueryKey, {
             preserveData: shouldPreserveWindowUsage,
-          })
-          setListError(null)
-          setSelectedAccount(nextSelectedId)
-          return nextSelectedId
+          });
+          setListError(null);
+          setSelectedAccount(nextSelectedId);
+          return nextSelectedId;
         } catch (err) {
           if (requestSeq !== listRequestSeqRef.current) {
-            return LOAD_LIST_FAILED
+            return LOAD_LIST_FAILED;
           }
-          setListError(err instanceof Error ? err.message : String(err))
-          return LOAD_LIST_FAILED
+          setListError(err instanceof Error ? err.message : String(err));
+          return LOAD_LIST_FAILED;
         } finally {
           const shouldReplaySameQuery =
             requestSeq === listRequestSeqRef.current &&
             requestQueryKey != null &&
             currentListQueryKeyRef.current === requestQueryKey &&
-            queuedSameQueryRefreshRef.current != null
-          const queuedRefresh = shouldReplaySameQuery ? queuedSameQueryRefreshRef.current : null
-          queuedSameQueryRefreshRef.current = null
+            queuedSameQueryRefreshRef.current != null;
+          const queuedRefresh = shouldReplaySameQuery
+            ? queuedSameQueryRefreshRef.current
+            : null;
+          queuedSameQueryRefreshRef.current = null;
           if (listRequestInFlightSeqRef.current === requestSeq) {
-            listRequestInFlightSeqRef.current = null
-            listRequestPromiseRef.current = null
-            listRequestQueryKeyRef.current = null
+            listRequestInFlightSeqRef.current = null;
+            listRequestPromiseRef.current = null;
+            listRequestQueryKeyRef.current = null;
           }
           if (requestSeq === listRequestSeqRef.current) {
-            setIsListPending(false)
+            setIsListPending(false);
             if (shouldShowLoading) {
-              setIsLoading(false)
+              setIsLoading(false);
             }
           }
           if (queuedRefresh) {
-            void loadList(queuedRefresh.preferredId, queuedRefresh.options)
+            void loadList(queuedRefresh.preferredId, queuedRefresh.options);
           }
         }
-      })()
+      })();
 
-      listRequestPromiseRef.current = requestPromise
-      listRequestQueryKeyRef.current = requestQueryKey
-      return requestPromise
+      listRequestPromiseRef.current = requestPromise;
+      listRequestQueryKeyRef.current = requestQueryKey;
+      return requestPromise;
     },
     [
       effectiveQuery,
@@ -446,106 +529,129 @@ export function useUpstreamAccounts(
       resolvedOptions.fallbackToFirstItem,
       setSelectedAccount,
     ],
-  )
+  );
 
-  const loadDetail = useCallback(async (accountId: number | null, options: LoadOptions = {}) => {
-    detailRequestSeqRef.current += 1
-    const requestSeq = detailRequestSeqRef.current
-    detailAbortControllerRef.current?.abort()
-    detailRequestAccountIdRef.current = accountId
+  const loadDetail = useCallback(
+    async (accountId: number | null, options: LoadOptions = {}) => {
+      detailRequestSeqRef.current += 1;
+      const requestSeq = detailRequestSeqRef.current;
+      detailAbortControllerRef.current?.abort();
+      detailRequestAccountIdRef.current = accountId;
 
-    if (accountId == null) {
-      setDetail(null)
-      setIsDetailLoading(false)
-      setMissingDetailAccountId(null)
-      return null
-    }
+      if (accountId == null) {
+        detailRecentActionsHydratedAccountIdRef.current = null;
+        setDetail(null);
+        setIsDetailLoading(false);
+        setMissingDetailAccountId(null);
+        return null;
+      }
 
-    setDetail((current) => (current?.id === accountId ? current : null))
-    const shouldShowLoading =
-      !(options.silent && detailHydratedAccountIdsRef.current.has(accountId))
-    if (shouldShowLoading) setIsDetailLoading(true)
-    const controller = new AbortController()
-    detailAbortControllerRef.current = controller
-    try {
-      const response = await fetchUpstreamAccountDetail(accountId, controller.signal)
-      if (requestSeq !== detailRequestSeqRef.current || selectedIdRef.current !== accountId) {
-        return null
+      if (detailRef.current?.id !== accountId) {
+        detailRecentActionsHydratedAccountIdRef.current = null;
       }
-      setDetail(response)
-      detailHydratedAccountIdsRef.current.add(accountId)
-      clearDetailError(accountId)
-      setMissingDetailAccountId((current) => (current === accountId ? null : current))
-      return response
-    } catch (err) {
-      if (controller.signal.aborted) {
-        return null
+      setDetail((current) => (current?.id === accountId ? current : null));
+      const shouldShowLoading = !(
+        options.silent && detailHydratedAccountIdsRef.current.has(accountId)
+      );
+      if (shouldShowLoading) setIsDetailLoading(true);
+      const controller = new AbortController();
+      detailAbortControllerRef.current = controller;
+      try {
+        const response = await fetchUpstreamAccountDetail(accountId, {
+          signal: controller.signal,
+          includeRecentActions: options.includeRecentActions,
+        });
+        if (
+          requestSeq !== detailRequestSeqRef.current ||
+          selectedIdRef.current !== accountId
+        ) {
+          return null;
+        }
+        const nextDetail = commitDetailResponse(response, options);
+        detailHydratedAccountIdsRef.current.add(accountId);
+        clearDetailError(accountId);
+        setMissingDetailAccountId((current) =>
+          current === accountId ? null : current,
+        );
+        return nextDetail;
+      } catch (err) {
+        if (controller.signal.aborted) {
+          return null;
+        }
+        if (
+          requestSeq !== detailRequestSeqRef.current ||
+          selectedIdRef.current !== accountId
+        ) {
+          return null;
+        }
+        if (isUpstreamAccountNotFoundError(err)) {
+          detailRecentActionsHydratedAccountIdRef.current = null;
+          setDetail((current) => (current?.id === accountId ? null : current));
+          clearDetailError(accountId);
+          setMissingDetailAccountId(accountId);
+          return null;
+        }
+        setDetailErrors((current) => ({
+          ...current,
+          [accountId]: err instanceof Error ? err.message : String(err),
+        }));
+        return null;
+      } finally {
+        if (requestSeq === detailRequestSeqRef.current) {
+          detailRequestAccountIdRef.current = null;
+          detailAbortControllerRef.current = null;
+          if (shouldShowLoading) setIsDetailLoading(false);
+        }
       }
-      if (requestSeq !== detailRequestSeqRef.current || selectedIdRef.current !== accountId) {
-        return null
-      }
-      if (isUpstreamAccountNotFoundError(err)) {
-        setDetail((current) => (current?.id === accountId ? null : current))
-        clearDetailError(accountId)
-        setMissingDetailAccountId(accountId)
-        return null
-      }
-      setDetailErrors((current) => ({
-        ...current,
-        [accountId]: err instanceof Error ? err.message : String(err),
-      }))
-      return null
-    } finally {
-      if (requestSeq === detailRequestSeqRef.current) {
-        detailRequestAccountIdRef.current = null
-        detailAbortControllerRef.current = null
-        if (shouldShowLoading) setIsDetailLoading(false)
-      }
-    }
-  }, [clearDetailError])
+    },
+    [clearDetailError, commitDetailResponse],
+  );
 
   useEffect(() => {
     if (query == null) {
-      autoLoadQueryKeyRef.current = null
-      resetWindowUsageHydration(null)
-      setIsLoading(true)
-      setIsListPending(false)
-      setListError(null)
-      return
+      autoLoadQueryKeyRef.current = null;
+      resetWindowUsageHydration(null);
+      setIsLoading(true);
+      setIsListPending(false);
+      setListError(null);
+      return;
     }
     if (
       autoLoadQueryKeyRef.current === currentListQueryKey &&
-      (listRequestPromiseRef.current != null || listDataQueryKeyRef.current === currentListQueryKey)
+      (listRequestPromiseRef.current != null ||
+        listDataQueryKeyRef.current === currentListQueryKey)
     ) {
-      return
+      return;
     }
-    autoLoadQueryKeyRef.current = currentListQueryKey
-    void loadList()
-  }, [currentListQueryKey, loadList, query, resetWindowUsageHydration])
+    autoLoadQueryKeyRef.current = currentListQueryKey;
+    void loadList();
+  }, [currentListQueryKey, loadList, query, resetWindowUsageHydration]);
 
   useEffect(() => {
-    void loadDetail(selectedId)
-  }, [loadDetail, selectedId])
+    void loadDetail(selectedId);
+  }, [loadDetail, selectedId]);
 
   const selectedSummary = useMemo(
     () => items.find((item) => item.id === selectedId) ?? null,
     [items, selectedId],
-  )
+  );
 
   const hydrateWindowUsage = useCallback(async (accountIds: number[]) => {
-    const requestQueryKey = currentListQueryKeyRef.current
+    const requestQueryKey = currentListQueryKeyRef.current;
     if (
       requestQueryKey == null ||
       listDataQueryKeyRef.current !== requestQueryKey
     ) {
-      return
+      return;
     }
 
     const currentRosterIdSet = new Set(
       rosterItemsRef.current
-        .filter((item) => item.primaryWindow != null || item.secondaryWindow != null)
+        .filter(
+          (item) => item.primaryWindow != null || item.secondaryWindow != null,
+        )
         .map((item) => item.id),
-    )
+    );
     const normalizedAccountIds = Array.from(
       new Set(
         accountIds.filter(
@@ -559,29 +665,30 @@ export function useUpstreamAccounts(
       (accountId) =>
         !hydratedWindowUsageIdsRef.current.has(accountId) &&
         !pendingWindowUsageGenerationByIdRef.current.has(accountId),
-    )
+    );
 
     if (normalizedAccountIds.length === 0) {
-      return
+      return;
     }
 
-    const generation = usageHydrationGenerationRef.current
+    const generation = usageHydrationGenerationRef.current;
     normalizedAccountIds.forEach((accountId) => {
-      pendingWindowUsageGenerationByIdRef.current.set(accountId, generation)
-    })
-    setIsWindowUsagePending(true)
+      pendingWindowUsageGenerationByIdRef.current.set(accountId, generation);
+    });
+    setIsWindowUsagePending(true);
 
     try {
-      const response = await fetchUpstreamAccountWindowUsage(normalizedAccountIds)
+      const response =
+        await fetchUpstreamAccountWindowUsage(normalizedAccountIds);
       if (
         generation !== usageHydrationGenerationRef.current ||
         requestQueryKey !== currentListQueryKeyRef.current ||
         listDataQueryKeyRef.current !== requestQueryKey
       ) {
-        return
+        return;
       }
       if (!response || !Array.isArray(response.items)) {
-        return
+        return;
       }
 
       const usageEntries = Object.fromEntries(
@@ -592,59 +699,56 @@ export function useUpstreamAccounts(
             secondaryActualUsage: item.secondaryActualUsage ?? null,
           } satisfies HydratedWindowUsage,
         ]),
-      ) as Record<number, HydratedWindowUsage>
+      ) as Record<number, HydratedWindowUsage>;
 
       setWindowUsageByAccount((current) => {
         if (
           generation !== usageHydrationGenerationRef.current ||
           requestQueryKey !== currentListQueryKeyRef.current
         ) {
-          return current
+          return current;
         }
-        const next = { ...current }
+        const next = { ...current };
         for (const accountId of normalizedAccountIds) {
           if (usageEntries[accountId]) {
-            next[accountId] = usageEntries[accountId]
+            next[accountId] = usageEntries[accountId];
           }
         }
-        return next
-      })
+        return next;
+      });
 
       normalizedAccountIds.forEach((accountId) => {
-        hydratedWindowUsageIdsRef.current.add(accountId)
-      })
+        hydratedWindowUsageIdsRef.current.add(accountId);
+      });
     } finally {
       const isStillCurrent =
         generation === usageHydrationGenerationRef.current &&
         requestQueryKey === currentListQueryKeyRef.current &&
-        listDataQueryKeyRef.current === requestQueryKey
+        listDataQueryKeyRef.current === requestQueryKey;
       if (isStillCurrent) {
         normalizedAccountIds.forEach((accountId) => {
-          if (pendingWindowUsageGenerationByIdRef.current.get(accountId) === generation) {
-            pendingWindowUsageGenerationByIdRef.current.delete(accountId)
+          if (
+            pendingWindowUsageGenerationByIdRef.current.get(accountId) ===
+            generation
+          ) {
+            pendingWindowUsageGenerationByIdRef.current.delete(accountId);
           }
-        })
+        });
         if (pendingWindowUsageGenerationByIdRef.current.size === 0) {
-          setIsWindowUsagePending(false)
+          setIsWindowUsagePending(false);
         }
       }
     }
-  }, [])
+  }, []);
 
   useEffect(() => {
     if (query == null || listDataQueryKey !== currentListQueryKey) {
-      return
+      return;
     }
-    const hydrationAccountIds =
-      selectedId != null
-        ? [selectedId]
-        : rosterItems
-            .filter((item) => item.primaryWindow != null || item.secondaryWindow != null)
-            .map((item) => item.id)
-    if (hydrationAccountIds.length === 0) {
-      return
+    if (selectedId == null) {
+      return;
     }
-    void hydrateWindowUsage(hydrationAccountIds)
+    void hydrateWindowUsage([selectedId]);
   }, [
     currentListQueryKey,
     hydrateWindowUsage,
@@ -652,46 +756,52 @@ export function useUpstreamAccounts(
     query,
     rosterItems,
     selectedId,
-  ])
+  ]);
 
   const refreshCurrentSelectedDetail = useCallback(
     async (skipAccountId?: number | null, options: LoadOptions = {}) => {
-      const currentSelectedId = selectedIdRef.current
+      const currentSelectedId = selectedIdRef.current;
       if (currentSelectedId == null || currentSelectedId === skipAccountId) {
-        return
+        return;
       }
-      await loadDetail(currentSelectedId, options)
+      await loadDetail(currentSelectedId, options);
     },
     [loadDetail],
-  )
+  );
 
-  const refresh = useCallback(async (options: LoadOptions = {}) => {
-    if (query == null) {
-      return
-    }
-    const currentSelectedId = selectedIdRef.current
-    const nextSelectedId = await loadList(currentSelectedId, {
-      respectCurrentSelection: true,
-      selectionAnchorId: currentSelectedId,
-      silent: options.silent,
-    })
-    if (nextSelectedId === LOAD_LIST_FAILED) {
-      return
-    }
-    if (nextSelectedId != null && nextSelectedId === selectedIdRef.current) {
-      await loadDetail(nextSelectedId, options)
-    }
-  }, [loadDetail, loadList, query])
+  const refresh = useCallback(
+    async (options: LoadOptions = {}) => {
+      if (query == null) {
+        return;
+      }
+      const currentSelectedId = selectedIdRef.current;
+      const nextSelectedId = await loadList(currentSelectedId, {
+        respectCurrentSelection: true,
+        selectionAnchorId: currentSelectedId,
+        silent: options.silent,
+      });
+      if (nextSelectedId === LOAD_LIST_FAILED) {
+        return;
+      }
+      if (nextSelectedId != null && nextSelectedId === selectedIdRef.current) {
+        await loadDetail(nextSelectedId, options);
+      }
+    },
+    [loadDetail, loadList, query],
+  );
 
   useEffect(() => {
     const handleChanged = () => {
-      void refresh()
-    }
-    window.addEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged)
+      void refresh();
+    };
+    window.addEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
     return () => {
-      window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged)
-    }
-  }, [refresh])
+      window.removeEventListener(
+        UPSTREAM_ACCOUNTS_CHANGED_EVENT,
+        handleChanged,
+      );
+    };
+  }, [refresh]);
 
   const triggerOpenResync = useCallback(
     (force = false) => {
@@ -700,51 +810,65 @@ export function useUpstreamAccounts(
         currentListQueryKeyRef.current == null ||
         listDataQueryKeyRef.current !== currentListQueryKeyRef.current
       ) {
-        return
+        return;
       }
-      const now = Date.now()
-      if (!force && now - lastRefreshAtRef.current < UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS) {
-        return
+      const now = Date.now();
+      if (
+        !force &&
+        now - lastRefreshAtRef.current <
+          UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS
+      ) {
+        return;
       }
-      if (!shouldTriggerUpstreamAccountsOpenResync(lastOpenResyncAtRef.current, now, force)) return
-      lastOpenResyncAtRef.current = now
-      void refresh({ silent: true })
+      if (
+        !shouldTriggerUpstreamAccountsOpenResync(
+          lastOpenResyncAtRef.current,
+          now,
+          force,
+        )
+      )
+        return;
+      lastOpenResyncAtRef.current = now;
+      void refresh({ silent: true });
     },
     [refresh],
-  )
+  );
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
       if (!hasSeenSseOpenRef.current) {
-        hasSeenSseOpenRef.current = true
-        return
+        hasSeenSseOpenRef.current = true;
+        return;
       }
-      triggerOpenResync()
-    })
-    return unsubscribe
-  }, [triggerOpenResync])
+      triggerOpenResync();
+    });
+    return unsubscribe;
+  }, [triggerOpenResync]);
 
-  const selectAccount = useCallback((accountId: number | null) => {
-    setSelectedAccount(accountId)
-  }, [setSelectedAccount])
+  const selectAccount = useCallback(
+    (accountId: number | null) => {
+      setSelectedAccount(accountId);
+    },
+    [setSelectedAccount],
+  );
 
   const beginOauthLogin = useCallback(
     async (payload: CreateOauthLoginSessionPayload) => {
-      return createOauthLoginSession(payload)
+      return createOauthLoginSession(payload);
     },
     [],
-  )
+  );
 
-  const beginRelogin = useCallback(
-    async (accountId: number) => {
-      return reloginUpstreamAccount(accountId)
+  const beginRelogin = useCallback(async (accountId: number) => {
+    return reloginUpstreamAccount(accountId);
+  }, []);
+
+  const getLoginSession = useCallback(
+    async (loginId: string): Promise<LoginSessionStatusResponse> => {
+      return fetchOauthLoginSession(loginId);
     },
     [],
-  )
-
-  const getLoginSession = useCallback(async (loginId: string): Promise<LoginSessionStatusResponse> => {
-    return fetchOauthLoginSession(loginId)
-  }, [])
+  );
 
   const updateOauthLogin = useCallback(
     async (
@@ -752,245 +876,304 @@ export function useUpstreamAccounts(
       payload: UpdateOauthLoginSessionPayload,
       baseUpdatedAt?: string | null,
     ): Promise<LoginSessionStatusResponse> => {
-      return updateOauthLoginSession(loginId, payload, baseUpdatedAt)
+      return updateOauthLoginSession(loginId, payload, baseUpdatedAt);
     },
     [],
-  )
+  );
 
-  const beginOauthMailboxSession = useCallback(async (): Promise<OauthMailboxSession> => {
-    const response = await createOauthMailboxSession()
-    setListError(null)
-    return response
-  }, [])
+  const beginOauthMailboxSession =
+    useCallback(async (): Promise<OauthMailboxSession> => {
+      const response = await createOauthMailboxSession();
+      setListError(null);
+      return response;
+    }, []);
 
   const beginOauthMailboxSessionForAddress = useCallback(
     async (emailAddress: string): Promise<OauthMailboxSession> => {
-      const response = await createOauthMailboxSession({ emailAddress })
-      setListError(null)
-      return response
+      const response = await createOauthMailboxSession({ emailAddress });
+      setListError(null);
+      return response;
     },
     [],
-  )
+  );
 
-  const getOauthMailboxStatuses = useCallback(async (sessionIds: string[]): Promise<OauthMailboxStatus[]> => {
-    const response = await fetchOauthMailboxStatuses({ sessionIds })
-    setListError(null)
-    return response
-  }, [])
+  const getOauthMailboxStatuses = useCallback(
+    async (sessionIds: string[]): Promise<OauthMailboxStatus[]> => {
+      const response = await fetchOauthMailboxStatuses({ sessionIds });
+      setListError(null);
+      return response;
+    },
+    [],
+  );
 
   const removeOauthMailboxSession = useCallback(async (sessionId: string) => {
-    await deleteOauthMailboxSession(sessionId)
-    setListError(null)
-  }, [])
+    await deleteOauthMailboxSession(sessionId);
+    setListError(null);
+  }, []);
 
   const completeOauthLogin = useCallback(
     async (loginId: string, payload: CompleteOauthLoginSessionPayload) => {
-      const response = await completeOauthLoginSession(loginId, payload)
-      invalidateListRequest()
-      await loadList(response.id)
-      invalidateDetailRequest()
-      setDetail(response)
-      setSelectedAccount(response.id)
-      clearDetailError(response.id)
-      emitUpstreamAccountsChanged()
-      return response
+      const response = await completeOauthLoginSession(loginId, payload);
+      invalidateListRequest();
+      await loadList(response.id);
+      invalidateDetailRequest();
+      commitDetailResponse(response, { includeRecentActions: true });
+      setSelectedAccount(response.id);
+      clearDetailError(response.id);
+      emitUpstreamAccountsChanged();
+      return response;
     },
-    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList, setSelectedAccount],
-  )
+    [
+      clearDetailError,
+      commitDetailResponse,
+      invalidateDetailRequest,
+      invalidateListRequest,
+      loadList,
+      setSelectedAccount,
+    ],
+  );
 
   const confirmOauthOverwrite = useCallback(
     async (loginId: string) => {
-      const response = await confirmOauthIdentityOverwrite(loginId)
-      invalidateListRequest()
-      await loadList(response.id)
-      invalidateDetailRequest()
-      setDetail(response)
-      setSelectedAccount(response.id)
-      clearDetailError(response.id)
-      emitUpstreamAccountsChanged()
-      return response
+      const response = await confirmOauthIdentityOverwrite(loginId);
+      invalidateListRequest();
+      await loadList(response.id);
+      invalidateDetailRequest();
+      commitDetailResponse(response, { includeRecentActions: true });
+      setSelectedAccount(response.id);
+      clearDetailError(response.id);
+      emitUpstreamAccountsChanged();
+      return response;
     },
-    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList, setSelectedAccount],
-  )
+    [
+      clearDetailError,
+      commitDetailResponse,
+      invalidateDetailRequest,
+      invalidateListRequest,
+      loadList,
+      setSelectedAccount,
+    ],
+  );
 
   const createApiKeyAccount = useCallback(
     async (payload: CreateApiKeyAccountPayload) => {
-      const response = await createApiKeyUpstreamAccount(payload)
-      invalidateListRequest()
-      await loadList(response.id)
-      await loadDetail(response.id)
-      setSelectedAccount(response.id)
-      clearDetailError(response.id)
-      emitUpstreamAccountsChanged()
-      return response
+      const response = await createApiKeyUpstreamAccount(payload);
+      invalidateListRequest();
+      await loadList(response.id);
+      await loadDetail(response.id);
+      setSelectedAccount(response.id);
+      clearDetailError(response.id);
+      emitUpstreamAccountsChanged();
+      return response;
     },
-    [clearDetailError, invalidateListRequest, loadDetail, loadList, setSelectedAccount],
-  )
+    [
+      clearDetailError,
+      invalidateListRequest,
+      loadDetail,
+      loadList,
+      setSelectedAccount,
+    ],
+  );
 
   const runImportedOauthValidation = useCallback(
-    async (payload: ValidateImportedOauthAccountsPayload): Promise<ImportedOauthValidationResponse> => {
-      return validateImportedOauthAccounts(payload)
+    async (
+      payload: ValidateImportedOauthAccountsPayload,
+    ): Promise<ImportedOauthValidationResponse> => {
+      return validateImportedOauthAccounts(payload);
     },
     [],
-  )
+  );
 
   const startImportedOauthValidationJob = useCallback(
-    async (payload: ValidateImportedOauthAccountsPayload): Promise<ImportedOauthValidationJobResponse> => {
-      return createImportedOauthValidationJob(payload)
+    async (
+      payload: ValidateImportedOauthAccountsPayload,
+    ): Promise<ImportedOauthValidationJobResponse> => {
+      return createImportedOauthValidationJob(payload);
     },
     [],
-  )
+  );
 
   const stopImportedOauthValidationJob = useCallback(async (jobId: string) => {
-    await cancelImportedOauthValidationJob(jobId)
-  }, [])
+    await cancelImportedOauthValidationJob(jobId);
+  }, []);
 
   const importOauthAccounts = useCallback(
-    async (payload: ImportValidatedOauthAccountsPayload): Promise<ImportedOauthImportResponse> => {
-      const response = await importValidatedOauthAccounts(payload)
-      invalidateListRequest()
+    async (
+      payload: ImportValidatedOauthAccountsPayload,
+    ): Promise<ImportedOauthImportResponse> => {
+      const response = await importValidatedOauthAccounts(payload);
+      invalidateListRequest();
       await loadList(selectedIdRef.current, {
         respectCurrentSelection: true,
         selectionAnchorId: selectedIdRef.current,
-      })
-      await refreshCurrentSelectedDetail()
-      emitUpstreamAccountsChanged()
-      return response
+      });
+      await refreshCurrentSelectedDetail();
+      emitUpstreamAccountsChanged();
+      return response;
     },
     [invalidateListRequest, loadList, refreshCurrentSelectedDetail],
-  )
+  );
 
   const saveAccount = useCallback(
     async (accountId: number, payload: UpdateUpstreamAccountPayload) => {
-      const response = await updateUpstreamAccount(accountId, payload)
-      invalidateListRequest()
-      invalidateDetailRequest(accountId)
-      await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
-      clearDetailError(accountId)
+      const response = await updateUpstreamAccount(accountId, payload);
+      invalidateListRequest();
+      invalidateDetailRequest(accountId);
+      await loadList(accountId, {
+        respectCurrentSelection: true,
+        selectionAnchorId: accountId,
+      });
+      clearDetailError(accountId);
       if (selectedIdRef.current === accountId) {
-        setDetail(response)
+        commitDetailResponse(response, { includeRecentActions: true });
       } else {
-        await refreshCurrentSelectedDetail(accountId)
+        await refreshCurrentSelectedDetail(accountId);
       }
-      emitUpstreamAccountsChanged()
-      return response
+      emitUpstreamAccountsChanged();
+      return response;
     },
-    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList, refreshCurrentSelectedDetail],
-  )
+    [
+      clearDetailError,
+      commitDetailResponse,
+      invalidateDetailRequest,
+      invalidateListRequest,
+      loadList,
+      refreshCurrentSelectedDetail,
+    ],
+  );
 
-  const saveRouting = useCallback(async (payload: UpdatePoolRoutingSettingsPayload) => {
-    const response = await updatePoolRoutingSettings(payload)
-    setRouting(response)
-    return response
-  }, [])
+  const saveRouting = useCallback(
+    async (payload: UpdatePoolRoutingSettingsPayload) => {
+      const response = await updatePoolRoutingSettings(payload);
+      setRouting(response);
+      return response;
+    },
+    [],
+  );
 
   const saveGroupNote = useCallback(
     async (groupName: string, payload: UpdateUpstreamAccountGroupPayload) => {
-      const response = await updateUpstreamAccountGroup(groupName, payload)
-      setGroups((current) => upsertGroupSummary(current, response))
-      invalidateListRequest()
+      const response = await updateUpstreamAccountGroup(groupName, payload);
+      setGroups((current) => upsertGroupSummary(current, response));
+      invalidateListRequest();
       await loadList(selectedIdRef.current, {
         respectCurrentSelection: true,
         selectionAnchorId: selectedIdRef.current,
-      })
-      await refreshCurrentSelectedDetail()
-      emitUpstreamAccountsChanged()
-      return response
+      });
+      await refreshCurrentSelectedDetail();
+      emitUpstreamAccountsChanged();
+      return response;
     },
     [invalidateListRequest, loadList, refreshCurrentSelectedDetail],
-  )
+  );
 
   const deleteGroupNote = useCallback(
     async (groupName: string) => {
-      await deleteUpstreamAccountGroup(groupName)
+      await deleteUpstreamAccountGroup(groupName);
       setGroups((current) =>
         current.filter((group) => group.groupName.trim() !== groupName.trim()),
-      )
-      invalidateListRequest()
+      );
+      invalidateListRequest();
       await loadList(selectedIdRef.current, {
         respectCurrentSelection: true,
         selectionAnchorId: selectedIdRef.current,
-      })
-      await refreshCurrentSelectedDetail()
-      emitUpstreamAccountsChanged()
+      });
+      await refreshCurrentSelectedDetail();
+      emitUpstreamAccountsChanged();
     },
     [invalidateListRequest, loadList, refreshCurrentSelectedDetail],
-  )
+  );
 
   const runBulkAction = useCallback(
-    async (payload: BulkUpstreamAccountActionPayload): Promise<BulkUpstreamAccountActionResponse> => {
-      const response = await bulkUpdateUpstreamAccounts(payload)
-      invalidateListRequest()
+    async (
+      payload: BulkUpstreamAccountActionPayload,
+    ): Promise<BulkUpstreamAccountActionResponse> => {
+      const response = await bulkUpdateUpstreamAccounts(payload);
+      invalidateListRequest();
       await loadList(selectedIdRef.current, {
         respectCurrentSelection: true,
         selectionAnchorId: selectedIdRef.current,
-      })
-      await refreshCurrentSelectedDetail()
-      emitUpstreamAccountsChanged()
-      return response
+      });
+      await refreshCurrentSelectedDetail();
+      emitUpstreamAccountsChanged();
+      return response;
     },
     [invalidateListRequest, loadList, refreshCurrentSelectedDetail],
-  )
+  );
 
   const startBulkSyncJob = useCallback(
-    async (payload: BulkUpstreamAccountSyncJobPayload): Promise<BulkUpstreamAccountSyncJobResponse> => {
-      return createBulkUpstreamAccountSyncJob(payload)
+    async (
+      payload: BulkUpstreamAccountSyncJobPayload,
+    ): Promise<BulkUpstreamAccountSyncJobResponse> => {
+      return createBulkUpstreamAccountSyncJob(payload);
     },
     [],
-  )
+  );
 
   const getBulkSyncJob = useCallback(
     async (jobId: string): Promise<BulkUpstreamAccountSyncJobResponse> => {
-      return fetchBulkUpstreamAccountSyncJob(jobId)
+      return fetchBulkUpstreamAccountSyncJob(jobId);
     },
     [],
-  )
+  );
 
   const stopBulkSyncJob = useCallback(async (jobId: string) => {
-    await cancelBulkUpstreamAccountSyncJob(jobId)
-  }, [])
+    await cancelBulkUpstreamAccountSyncJob(jobId);
+  }, []);
 
   const runSync = useCallback(
     async (accountId: number) => {
-      const response = await syncUpstreamAccount(accountId)
-      invalidateListRequest()
-      invalidateDetailRequest(accountId)
-      await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
-      clearDetailError(accountId)
+      const response = await syncUpstreamAccount(accountId);
+      invalidateListRequest();
+      invalidateDetailRequest(accountId);
+      await loadList(accountId, {
+        respectCurrentSelection: true,
+        selectionAnchorId: accountId,
+      });
+      clearDetailError(accountId);
       if (selectedIdRef.current === accountId) {
-        setDetail(response)
+        commitDetailResponse(response, { includeRecentActions: true });
       } else {
-        await refreshCurrentSelectedDetail(accountId)
+        await refreshCurrentSelectedDetail(accountId);
       }
-      emitUpstreamAccountsChanged()
-      return response
+      emitUpstreamAccountsChanged();
+      return response;
     },
-    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList, refreshCurrentSelectedDetail],
-  )
+    [
+      clearDetailError,
+      commitDetailResponse,
+      invalidateDetailRequest,
+      invalidateListRequest,
+      loadList,
+      refreshCurrentSelectedDetail,
+    ],
+  );
 
   const removeAccount = useCallback(
     async (accountId: number) => {
-      await deleteUpstreamAccount(accountId)
-      const currentSelectedId = selectedIdRef.current
-      const shouldReanchorSelection = currentSelectedId === accountId
+      await deleteUpstreamAccount(accountId);
+      const currentSelectedId = selectedIdRef.current;
+      const shouldReanchorSelection = currentSelectedId === accountId;
       const fallbackSelectedId =
         shouldReanchorSelection && resolvedOptions.fallbackToFirstItem
-          ? items.find((item) => item.id !== accountId)?.id ?? null
-          : null
-      invalidateListRequest()
+          ? (items.find((item) => item.id !== accountId)?.id ?? null)
+          : null;
+      invalidateListRequest();
       if (shouldReanchorSelection) {
-        invalidateDetailRequest(accountId)
-        setSelectedAccount(fallbackSelectedId)
-        setDetail((current) => (current?.id === accountId ? null : current))
+        invalidateDetailRequest(accountId);
+        setSelectedAccount(fallbackSelectedId);
+        setDetail((current) => (current?.id === accountId ? null : current));
       }
-      const preferredId = shouldReanchorSelection ? fallbackSelectedId : currentSelectedId
+      const preferredId = shouldReanchorSelection
+        ? fallbackSelectedId
+        : currentSelectedId;
       await loadList(preferredId, {
         respectCurrentSelection: !shouldReanchorSelection,
         selectionAnchorId: preferredId,
-      })
-      clearDetailError(accountId)
-      await refreshCurrentSelectedDetail(accountId)
-      emitUpstreamAccountsChanged()
+      });
+      clearDetailError(accountId);
+      await refreshCurrentSelectedDetail(accountId);
+      emitUpstreamAccountsChanged();
     },
     [
       clearDetailError,
@@ -1002,57 +1185,61 @@ export function useUpstreamAccounts(
       resolvedOptions.fallbackToFirstItem,
       setSelectedAccount,
     ],
-  )
+  );
 
   useEffect(
     () => () => {
-      listRequestSeqRef.current += 1
-      listRequestInFlightSeqRef.current = null
-      listRequestPromiseRef.current = null
-      listRequestQueryKeyRef.current = null
-      queuedSameQueryRefreshRef.current = null
-      detailRequestSeqRef.current += 1
-      detailRequestAccountIdRef.current = null
-      detailAbortControllerRef.current?.abort()
-      detailAbortControllerRef.current = null
-      usageHydrationGenerationRef.current += 1
-      hydratedWindowUsageIdsRef.current = new Set()
-      pendingWindowUsageGenerationByIdRef.current = new Map()
-      hasSeenSseOpenRef.current = false
-      autoLoadQueryKeyRef.current = null
+      listRequestSeqRef.current += 1;
+      listRequestInFlightSeqRef.current = null;
+      listRequestPromiseRef.current = null;
+      listRequestQueryKeyRef.current = null;
+      queuedSameQueryRefreshRef.current = null;
+      detailRequestSeqRef.current += 1;
+      detailRequestAccountIdRef.current = null;
+      detailAbortControllerRef.current?.abort();
+      detailAbortControllerRef.current = null;
+      usageHydrationGenerationRef.current += 1;
+      hydratedWindowUsageIdsRef.current = new Set();
+      pendingWindowUsageGenerationByIdRef.current = new Map();
+      hasSeenSseOpenRef.current = false;
+      autoLoadQueryKeyRef.current = null;
     },
     [],
-  )
+  );
 
-  const selectedDetailError = selectedId == null ? null : detailErrors[selectedId] ?? null
+  const selectedDetailError =
+    selectedId == null ? null : (detailErrors[selectedId] ?? null);
+  const isDetailRecentActionsHydrated =
+    detail != null &&
+    detailRecentActionsHydratedAccountIdRef.current === detail.id;
   const hasCurrentQueryData =
-    currentListQueryKey != null && listDataQueryKey === currentListQueryKey
+    currentListQueryKey != null && listDataQueryKey === currentListQueryKey;
   const listFreshness: UpstreamAccountsListFreshness =
     query == null
-      ? 'deferred'
+      ? "deferred"
       : hasCurrentQueryData
-        ? 'fresh'
+        ? "fresh"
         : listDataQueryKey != null
-          ? 'stale'
-          : 'missing'
+          ? "stale"
+          : "missing";
   const listLoadingState: UpstreamAccountsListLoadingState =
     query == null
-      ? 'deferred'
+      ? "deferred"
       : isListPending
         ? hasCurrentQueryData
-          ? 'refreshing'
+          ? "refreshing"
           : listDataQueryKey != null
-            ? 'switching'
-            : 'initial'
-        : 'idle'
+            ? "switching"
+            : "initial"
+        : "idle";
   const listStatus: UpstreamAccountsListStatus =
     query == null
-      ? 'deferred'
+      ? "deferred"
       : isListPending
-        ? 'loading'
+        ? "loading"
         : listError != null && !hasCurrentQueryData
-          ? 'error'
-          : 'ready'
+          ? "error"
+          : "ready";
   const listState: UpstreamAccountsListState = {
     queryKey: currentListQueryKey,
     dataQueryKey: listDataQueryKey,
@@ -1061,40 +1248,40 @@ export function useUpstreamAccounts(
     status: listStatus,
     hasCurrentQueryData,
     isPending: isListPending,
-  }
+  };
   const forwardProxyCatalogWaitingOnRefresh =
     query != null &&
     Array.isArray(forwardProxyNodes) &&
     forwardProxyNodes.length === 0 &&
-    isListPending
+    isListPending;
   const forwardProxyCatalogKind: ForwardProxyCatalogKind =
     query == null
-      ? 'deferred'
+      ? "deferred"
       : forwardProxyNodes == null
         ? isListPending || isLoading
-          ? 'loading'
-          : 'missing'
+          ? "loading"
+          : "missing"
         : forwardProxyCatalogWaitingOnRefresh
-          ? 'loading'
+          ? "loading"
           : forwardProxyNodes.length > 0
-            ? 'ready-with-data'
-            : 'ready-empty'
-  const forwardProxyCatalogFreshness: ForwardProxyCatalogState['freshness'] =
+            ? "ready-with-data"
+            : "ready-empty";
+  const forwardProxyCatalogFreshness: ForwardProxyCatalogState["freshness"] =
     query == null
-      ? 'deferred'
+      ? "deferred"
       : forwardProxyNodes == null
-        ? 'missing'
+        ? "missing"
         : listError != null
-          ? 'stale'
-        : forwardProxyCatalogWaitingOnRefresh
-          ? 'stale'
-          : listFreshness
+          ? "stale"
+          : forwardProxyCatalogWaitingOnRefresh
+            ? "stale"
+            : listFreshness;
   const forwardProxyCatalogState: ForwardProxyCatalogState = {
     kind: forwardProxyCatalogKind,
     freshness: forwardProxyCatalogFreshness,
     isPending: isListPending,
     hasNodes: Array.isArray(forwardProxyNodes) && forwardProxyNodes.length > 0,
-  }
+  };
 
   return {
     items,
@@ -1115,6 +1302,7 @@ export function useUpstreamAccounts(
     detailError: selectedDetailError,
     error: selectedDetailError ?? listError,
     missingDetailAccountId,
+    isDetailRecentActionsHydrated,
     selectAccount,
     refresh,
     hydrateWindowUsage,
@@ -1148,5 +1336,5 @@ export function useUpstreamAccounts(
     page,
     pageSize,
     metrics,
-  }
+  };
 }

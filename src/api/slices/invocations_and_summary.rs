@@ -1707,8 +1707,18 @@ pub(crate) async fn fetch_stats(
     )
     .await?;
     let mut response = totals.into_response();
-    let augmentation =
-        load_summary_live_augmentation(state.as_ref(), source_scope, None, None).await?;
+    response.non_success_cost = Some(totals.non_success_cost);
+    let augmentation = load_summary_live_augmentation(
+        state.as_ref(),
+        source_scope,
+        None,
+        None,
+        SummaryLiveAugmentationPolicy {
+            include_in_progress: true,
+            include_non_success_tokens: false,
+        },
+    )
+    .await?;
     apply_summary_live_augmentation(&mut response, augmentation);
     response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
     Ok(Json(response))
@@ -1732,8 +1742,13 @@ struct SummaryLiveAugmentation {
     in_progress_conversation_count: Option<i64>,
     in_progress_retry_conversation_count: Option<i64>,
     in_progress_avg_wait_ms: Option<f64>,
-    non_success_cost: Option<f64>,
     non_success_tokens: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SummaryLiveAugmentationPolicy {
+    include_in_progress: bool,
+    include_non_success_tokens: bool,
 }
 
 fn summary_window_range(
@@ -1761,32 +1776,37 @@ async fn load_summary_live_augmentation(
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    policy: SummaryLiveAugmentationPolicy,
 ) -> Result<SummaryLiveAugmentation, ApiError> {
-    let in_progress = load_in_progress_summary_snapshot(
-        &state.pool,
-        source_scope,
-        upstream_account_id,
-    )
-    .await?;
-    let non_success = if let Some((start, end)) = range {
-        load_non_success_usage_snapshot(
-            &state.pool,
-            source_scope,
-            upstream_account_id,
-            start,
-            end,
-        )
-        .await?
+    let in_progress = if policy.include_in_progress {
+        let snapshot =
+            load_in_progress_summary_snapshot(&state.pool, source_scope, upstream_account_id).await?;
+        (Some(snapshot.0), Some(snapshot.1), snapshot.2)
     } else {
-        (None, None)
+        (None, None, None)
+    };
+    let non_success_tokens = if policy.include_non_success_tokens {
+        if let Some((start, end)) = range {
+            load_non_success_tokens_snapshot(
+                state,
+                source_scope,
+                upstream_account_id,
+                start,
+                end,
+            )
+            .await?
+        } else {
+            None
+        }
+    } else {
+        None
     };
 
     Ok(SummaryLiveAugmentation {
-        in_progress_conversation_count: Some(in_progress.0),
-        in_progress_retry_conversation_count: Some(in_progress.1),
+        in_progress_conversation_count: in_progress.0,
+        in_progress_retry_conversation_count: in_progress.1,
         in_progress_avg_wait_ms: in_progress.2,
-        non_success_cost: non_success.0,
-        non_success_tokens: non_success.1,
+        non_success_tokens,
     })
 }
 
@@ -1798,7 +1818,6 @@ fn apply_summary_live_augmentation(
     response.in_progress_retry_conversation_count =
         augmentation.in_progress_retry_conversation_count;
     response.in_progress_avg_wait_ms = augmentation.in_progress_avg_wait_ms;
-    response.non_success_cost = augmentation.non_success_cost;
     response.non_success_tokens = augmentation.non_success_tokens;
 }
 
@@ -1974,16 +1993,31 @@ async fn load_live_invocation_ids_in_range(
         .collect())
 }
 
-async fn load_non_success_usage_snapshot(
-    pool: &Pool<Sqlite>,
+fn summary_live_augmentation_policy(
+    window: &SummaryWindow,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    now: DateTime<Utc>,
+) -> SummaryLiveAugmentationPolicy {
+    let closed_named_window = matches!(
+        window,
+        SummaryWindow::Calendar(_) | SummaryWindow::PreviousFullDays(_)
+    ) && range.is_some_and(|(_, end)| end < now);
+
+    SummaryLiveAugmentationPolicy {
+        include_in_progress: !closed_named_window,
+        include_non_success_tokens: !closed_named_window && range.is_some(),
+    }
+}
+
+async fn load_non_success_tokens_snapshot(
+    state: &AppState,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
-) -> Result<(Option<f64>, Option<i64>), ApiError> {
+) -> Result<Option<i64>, ApiError> {
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
-            COALESCE(SUM(COALESCE(cost, 0.0)), 0.0) AS non_success_cost, \
             COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS non_success_tokens \
          FROM codex_invocations \
          WHERE occurred_at >= ",
@@ -2007,34 +2041,101 @@ async fn load_non_success_usage_snapshot(
             .push_bind(upstream_account_id);
     }
 
-    let (non_success_cost, non_success_tokens) = query
-        .build_query_as::<(f64, i64)>()
-        .fetch_one(pool)
-        .await?;
-    let live_invocation_ids =
-        load_live_invocation_ids_in_range(pool, source_scope, upstream_account_id, start, end).await?;
-    let (archived_cost, archived_tokens) = if let Some(upstream_account_id) = upstream_account_id {
-        crate::stats::query_completed_upstream_account_archive_non_success_usage(
-            pool,
+    let live_tokens = match query
+        .build_query_scalar::<i64>()
+        .fetch_one(&state.pool)
+        .await
+    {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            let err = anyhow!(err);
+            if crate::is_sqlite_lock_error(&err) {
+                tracing::warn!(
+                    ?source_scope,
+                    upstream_account_id,
+                    start = %start,
+                    end = %end,
+                    "summary live non-success token snapshot skipped because sqlite is locked"
+                );
+                return Ok(None);
+            }
+            return Err(ApiError::from(err));
+        }
+    };
+
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    if start >= retention_cutoff {
+        return Ok(Some(live_tokens));
+    }
+
+    let live_invocation_ids = match load_live_invocation_ids_in_range(
+        &state.pool,
+        source_scope,
+        upstream_account_id,
+        start,
+        end,
+    )
+    .await
+    {
+        Ok(ids) => ids,
+        Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+            tracing::warn!(
+                ?source_scope,
+                upstream_account_id,
+                start = %start,
+                end = %end,
+                "summary archive overlap scan skipped because sqlite is locked"
+            );
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
+    };
+    let archived_tokens = if let Some(upstream_account_id) = upstream_account_id {
+        match crate::stats::query_completed_upstream_account_archive_non_success_usage(
+            &state.pool,
             source_scope,
             Some((start, end)),
             Some(&live_invocation_ids),
             upstream_account_id,
         )
-        .await?
+        .await
+        {
+            Ok((_, tokens)) => tokens,
+            Err(err) if crate::is_sqlite_lock_error(&err) => {
+                tracing::warn!(
+                    ?source_scope,
+                    upstream_account_id,
+                    start = %start,
+                    end = %end,
+                    "summary archived non-success token lookup skipped because sqlite is locked"
+                );
+                return Ok(None);
+            }
+            Err(err) => return Err(ApiError::from(err)),
+        }
     } else {
-        crate::stats::query_completed_invocation_archive_non_success_usage(
-            pool,
+        match crate::stats::query_completed_invocation_archive_non_success_usage(
+            &state.pool,
             source_scope,
             Some((start, end)),
             Some(&live_invocation_ids),
         )
-        .await?
+        .await
+        {
+            Ok((_, tokens)) => tokens,
+            Err(err) if crate::is_sqlite_lock_error(&err) => {
+                tracing::warn!(
+                    ?source_scope,
+                    start = %start,
+                    end = %end,
+                    "summary archived non-success token lookup skipped because sqlite is locked"
+                );
+                return Ok(None);
+            }
+            Err(err) => return Err(ApiError::from(err)),
+        }
     };
-    Ok((
-        Some(non_success_cost + archived_cost),
-        Some(non_success_tokens + archived_tokens),
-    ))
+    Ok(Some(live_tokens + archived_tokens))
 }
 
 pub(crate) async fn build_empty_summary_response(
@@ -2051,12 +2152,21 @@ pub(crate) async fn build_empty_summary_response(
         in_progress_conversation_count: None,
         in_progress_retry_conversation_count: None,
         in_progress_avg_wait_ms: None,
-        non_success_cost: None,
+        non_success_cost: Some(0.0),
         non_success_tokens: None,
         maintenance: Some(load_stats_maintenance_response(state).await?),
     };
-    let augmentation =
-        load_summary_live_augmentation(state, source_scope, upstream_account_id, None).await?;
+    let augmentation = load_summary_live_augmentation(
+        state,
+        source_scope,
+        upstream_account_id,
+        None,
+        SummaryLiveAugmentationPolicy {
+            include_in_progress: true,
+            include_non_success_tokens: false,
+        },
+    )
+    .await?;
     apply_summary_live_augmentation(&mut response, augmentation);
     Ok(response)
 }
@@ -2189,12 +2299,15 @@ pub(crate) async fn fetch_summary(
     };
 
     let mut response = totals.into_response();
+    response.non_success_cost = Some(totals.non_success_cost);
     let range = summary_window_range(&window, reporting_tz, now)?;
+    let policy = summary_live_augmentation_policy(&window, range, now);
     let augmentation = load_summary_live_augmentation(
         state.as_ref(),
         source_scope,
         upstream_account_id,
         range,
+        policy,
     )
     .await?;
     apply_summary_live_augmentation(&mut response, augmentation);

@@ -11329,7 +11329,7 @@ async fn empty_summary_response_keeps_live_in_progress_conversation_count() {
     assert_eq!(response.in_progress_conversation_count, Some(2));
     assert_eq!(response.in_progress_retry_conversation_count, Some(0));
     assert_eq!(response.in_progress_avg_wait_ms, None);
-    assert_eq!(response.non_success_cost, None);
+    assert_eq!(response.non_success_cost, Some(0.0));
     assert_eq!(response.non_success_tokens, None);
     assert!(response.maintenance.is_some());
 }
