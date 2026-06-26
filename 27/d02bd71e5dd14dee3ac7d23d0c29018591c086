@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.75.5",
+  "base_stable_version": "1.75.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-26T06:51:41Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.75.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "cf9e6b79fce90ce597f121ad33006f5e0d274da7",
+  "pr_number": 476,
+  "pr_title": "fix: restore account detail and records stats hot paths",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.75.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.75.5",
+  "target_sha": "27d02bd71e5dd14dee3ac7d23d0c29018591c086",
+  "type_label": "type:patch"
+}
