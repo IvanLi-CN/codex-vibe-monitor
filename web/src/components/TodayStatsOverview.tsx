@@ -1,9 +1,21 @@
 import type { ParallelWorkStatsResponse, StatsResponse, TimeseriesResponse } from '../lib/api'
-import type { KeyboardEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useTranslation } from '../i18n'
 import { cn } from '../lib/utils'
 import { getBrowserTimeZone } from '../lib/timeZone'
-import { AdaptiveMetricValue, type AdaptiveMetricValueKind } from './AdaptiveMetricValue'
+import {
+  AdaptiveDisplayValue,
+  AdaptiveMetricValue,
+} from './AdaptiveMetricValue'
+import {
+  buildAdaptiveCurrencyTextSpec,
+  buildAdaptiveDurationTextSpec,
+  buildAdaptiveNumberTextSpec,
+  buildAdaptivePercentTextSpec,
+  buildAdaptiveTextSpec,
+  type AdaptiveDisplayValueSpec,
+  type AdaptiveMetricValueKind,
+} from './adaptiveMetricValueSpec'
 import { Alert } from './ui/alert'
 import { Badge } from './ui/badge'
 import { Tooltip } from './ui/tooltip'
@@ -24,6 +36,7 @@ import {
 
 const RATE_UNAVAILABLE_PLACEHOLDER = '—'
 const PREVIOUS_FULL_DAY_COUNT = 7
+const METRIC_TILE_STACK_META_BREAKPOINT_PX = 176
 
 export interface TodayStatsOverviewProps {
   stats: StatsResponse | null
@@ -48,14 +61,14 @@ export interface TodayStatsOverviewProps {
 
 interface MetricTileSecondaryItem {
   label: string
-  value: string
+  valueSpec: AdaptiveDisplayValueSpec
   toneClass?: string
   valueTestId?: string
 }
 
 interface MetricTileMetaItem {
   label: string
-  value: string
+  valueSpec: AdaptiveDisplayValueSpec
   toneClass?: string
   valueTestId?: string
 }
@@ -70,8 +83,8 @@ interface MetricTileProps {
   toneClass?: string
   valueTestId?: string
   displayText?: string
+  displaySpec?: AdaptiveDisplayValueSpec
   subdued?: boolean
-  labelNoWrap?: boolean
   preserveLabelCase?: boolean
   labelTestId?: string
   topRightItem?: MetricTileMetaItem | null
@@ -88,8 +101,8 @@ function MetricTile({
   toneClass,
   valueTestId,
   displayText,
+  displaySpec,
   subdued = false,
-  labelNoWrap = false,
   preserveLabelCase = false,
   labelTestId,
   topRightItem,
@@ -101,13 +114,57 @@ function MetricTile({
     event.currentTarget.click()
   }
 
+  const tileRef = useRef<HTMLDivElement | null>(null)
+  const [stackMeta, setStackMeta] = useState(false)
+
+  useLayoutEffect(() => {
+    const tile = tileRef.current
+    if (!tile) return undefined
+
+    const updateStackMeta = () => {
+      const nextValue = tile.clientWidth > 0 && tile.clientWidth < METRIC_TILE_STACK_META_BREAKPOINT_PX
+      setStackMeta((current) => (current === nextValue ? current : nextValue))
+    }
+
+    updateStackMeta()
+    const frame = window.requestAnimationFrame(updateStackMeta)
+    window.addEventListener('resize', updateStackMeta)
+
+    if (typeof ResizeObserver === 'undefined') {
+      return () => {
+        window.cancelAnimationFrame(frame)
+        window.removeEventListener('resize', updateStackMeta)
+      }
+    }
+
+    const observer = new ResizeObserver(updateStackMeta)
+    observer.observe(tile)
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('resize', updateStackMeta)
+      observer.disconnect()
+    }
+  }, [])
+
+  const inlineSecondaryItems = stackMeta ? [] : secondaryItems
+  const stackedMetaItems = stackMeta
+    ? [
+        ...(topRightItem ? [topRightItem] : []),
+        ...secondaryItems,
+      ]
+    : []
+
   return (
     <div
+      ref={tileRef}
       data-testid="today-stats-metric-tile"
+      data-stack-meta={stackMeta ? 'true' : 'false'}
       className="min-w-0 rounded-xl border border-base-300/75 bg-base-200/60 p-4"
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
         <Tooltip
+          className="min-w-0 flex-1"
           content={description}
           clickToOpen
           side="bottom"
@@ -121,23 +178,21 @@ function MetricTile({
           <span
             data-testid={labelTestId}
             className={cn(
-              'inline-flex cursor-help text-left text-xs font-semibold tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-              labelNoWrap && 'whitespace-nowrap',
+              'block min-w-0 max-w-full cursor-help overflow-hidden text-ellipsis whitespace-nowrap text-left text-xs font-semibold tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
               preserveLabelCase ? 'normal-case' : 'uppercase',
             )}
           >
             {label}
           </span>
         </Tooltip>
-        {topRightItem ? (
-          <div className="min-w-0 shrink-0 text-right text-[11px] leading-5">
-            <span className="text-base-content/52">{topRightItem.label}</span>{' '}
-            <span
+        {!stackMeta && topRightItem ? (
+          <div className="flex min-w-0 items-baseline justify-end gap-1 text-right text-[11px] leading-5">
+            <span className="shrink-0 whitespace-nowrap text-base-content/52">{topRightItem.label}</span>
+            <AdaptiveDisplayValue
+              spec={topRightItem.valueSpec}
               data-testid={topRightItem.valueTestId}
-              className={cn('font-semibold tabular-nums text-base-content/82', topRightItem.toneClass)}
-            >
-              {topRightItem.value}
-            </span>
+              className={cn('min-w-0 max-w-full font-semibold text-base-content/82', topRightItem.toneClass)}
+            />
           </div>
         ) : null}
       </div>
@@ -146,6 +201,20 @@ function MetricTile({
           data-testid={valueTestId ? `${valueTestId}-loading` : undefined}
           className="mt-2 h-8 w-full max-w-[7.5rem] animate-pulse rounded bg-base-300/65"
         />
+      ) : displaySpec ? (
+        <div
+          className={cn(
+            'mt-2 min-w-0 max-w-full overflow-hidden text-[2.1rem] font-semibold leading-tight lg:text-[2rem]',
+            subdued ? 'text-base-content/55' : 'text-base-content',
+            toneClass,
+          )}
+        >
+          <AdaptiveDisplayValue
+            spec={displaySpec}
+            data-testid={valueTestId}
+            className={cn(subdued && 'text-base-content/55')}
+          />
+        </div>
       ) : displayText != null ? (
         <div
           data-testid={valueTestId}
@@ -172,26 +241,42 @@ function MetricTile({
           />
         </div>
       )}
-      {secondaryItems.length > 0 ? (
+      {stackedMetaItems.length > 0 ? (
+        <div
+          data-testid={valueTestId ? `${valueTestId}-stacked-meta` : undefined}
+          className="mt-3 grid min-h-[4.75rem] grid-cols-1 gap-y-2 text-xs leading-5"
+        >
+          {stackedMetaItems.map((item, index) => (
+            <div key={`${item.label}-${index}`} className="min-w-0">
+              <div className="flex min-w-0 items-baseline gap-1">
+                <span className="shrink-0 whitespace-nowrap text-base-content/52">{item.label}</span>
+                <AdaptiveDisplayValue
+                  spec={item.valueSpec}
+                  data-testid={item.valueTestId}
+                  className={cn('min-w-0 flex-1 text-right font-semibold text-base-content/82', item.toneClass)}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {inlineSecondaryItems.length > 0 ? (
         <div className="mt-3 grid min-h-[2.75rem] grid-cols-2 gap-x-4 gap-y-2 text-xs leading-5">
-          {secondaryItems.map((item, index) => (
+          {inlineSecondaryItems.map((item, index) => (
             <div
               key={`${item.label}-${index}`}
               className={cn('min-w-0', index % 2 === 1 ? 'justify-self-end text-right' : undefined)}
             >
-              <div
-                data-testid={item.valueTestId}
-                className="truncate"
-              >
-                <span className="text-base-content/52">{item.label}</span>{' '}
-                <span
+              <div className="flex min-w-0 items-baseline gap-1">
+                <span className="shrink-0 whitespace-nowrap text-base-content/52">{item.label}</span>
+                <AdaptiveDisplayValue
+                  spec={item.valueSpec}
+                  data-testid={item.valueTestId}
                   className={cn(
-                    'font-semibold tabular-nums text-base-content/82',
+                    'min-w-0 flex-1 text-right font-semibold text-base-content/82',
                     item.toneClass,
                   )}
-                >
-                  {item.value}
-                </span>
+                />
               </div>
             </div>
           ))}
@@ -201,28 +286,30 @@ function MetricTile({
   )
 }
 
-function formatPercentValue(value: number | null, localeTag: string) {
-  if (value == null || !Number.isFinite(value)) return '—'
-  return new Intl.NumberFormat(localeTag, {
-    style: 'percent',
-    maximumFractionDigits: 1,
-    signDisplay: 'exceptZero',
-  }).format(value)
+function buildPercentValueSpec(
+  value: number | null,
+  localeTag: string,
+  options?: {
+    maximumFractionDigits?: number
+    signDisplay?: Intl.NumberFormatOptions['signDisplay']
+  },
+) {
+  return buildAdaptivePercentTextSpec(value, localeTag, options)
 }
 
-function formatRatioValue(value: number | null, localeTag: string) {
-  if (value == null || !Number.isFinite(value)) return '—'
-  return new Intl.NumberFormat(localeTag, {
-    style: 'percent',
+function buildRatioValueSpec(value: number | null, localeTag: string) {
+  return buildAdaptivePercentTextSpec(value, localeTag, {
     maximumFractionDigits: 1,
-  }).format(value)
+  })
 }
 
-function formatBaselineRatioValue(value: number | null, localeTag: string) {
-  if (value == null || !Number.isFinite(value)) return '—'
-  return new Intl.NumberFormat(localeTag, {
-    maximumFractionDigits: value >= 10 ? 0 : value >= 1 ? 2 : 3,
-  }).format(value)
+function buildBaselineRatioValueSpec(value: number | null, localeTag: string) {
+  if (value == null || !Number.isFinite(value)) {
+    return buildAdaptiveTextSpec('—', [{ key: 'placeholder', value: '—', priority: 0 }])
+  }
+
+  const maximumFractionDigits = value >= 10 ? 0 : value >= 1 ? 2 : 3
+  return buildAdaptiveNumberTextSpec(value, localeTag, maximumFractionDigits)
 }
 
 function comparisonTone(value: number | null) {
@@ -235,35 +322,16 @@ function latencyComparisonTone(value: number | null) {
   return value > 0 ? 'text-error' : 'text-success'
 }
 
-function formatNumberValue(value: number | null, localeTag: string, maximumFractionDigits = 2) {
-  if (value == null || !Number.isFinite(value)) return '—'
-  return new Intl.NumberFormat(localeTag, {
-    maximumFractionDigits,
-  }).format(value)
+function buildNumberValueSpec(value: number | null, localeTag: string, maximumFractionDigits = 2) {
+  return buildAdaptiveNumberTextSpec(value, localeTag, maximumFractionDigits)
 }
 
-function formatCurrencyValue(value: number | null, localeTag: string) {
-  if (value == null || !Number.isFinite(value)) return '—'
-  return new Intl.NumberFormat(localeTag, {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 2,
-  }).format(value)
+function buildCurrencyValueSpec(value: number | null, localeTag: string) {
+  return buildAdaptiveCurrencyTextSpec(value, localeTag)
 }
 
-function formatLatencyValue(value: number | null, localeTag: string) {
-  if (value == null || !Number.isFinite(value)) return '—'
-  if (value < 1000) {
-    return `${new Intl.NumberFormat(localeTag, { maximumFractionDigits: 1 }).format(value)} ms`
-  }
-
-  const seconds = value / 1000
-  const precision = Math.abs(seconds) >= 100 ? 1 : Math.abs(seconds) >= 1 ? 2 : 3
-  const rounded = Number(seconds.toFixed(precision))
-  return `${rounded.toLocaleString(localeTag, {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: precision,
-  })} s`
+function buildLatencyValueSpec(value: number | null, localeTag: string) {
+  return buildAdaptiveDurationTextSpec(value, localeTag)
 }
 
 function recentWindowAvgTotalMs(
@@ -461,7 +529,7 @@ export function TodayStatsOverview({
           data-testid="today-stats-metrics-grid"
           className={cn(
             'grid grid-cols-1 gap-3 sm:grid-cols-2',
-            showInProgressConversations ? 'lg:grid-cols-7' : 'lg:grid-cols-6',
+            showInProgressConversations ? 'lg:grid-cols-4 xl:grid-cols-7' : 'lg:grid-cols-3 xl:grid-cols-6',
           )}
         >
           <MetricTile
@@ -477,19 +545,19 @@ export function TodayStatsOverview({
             subdued={rateUnavailable}
             topRightItem={{
               label: comparisonLabel,
-              value: formatPercentValue(tpmDailyDelta, localeTag),
+              valueSpec: buildPercentValueSpec(tpmDailyDelta, localeTag, { signDisplay: 'exceptZero' }),
               toneClass: comparisonTone(tpmDailyDelta),
               valueTestId: 'today-stats-secondary-tpm-delta',
             }}
             secondaryItems={[
               {
                 label: t('dashboard.today.secondary.dayAverage'),
-                value: formatNumberValue(activeAverages.tokensPerMinute, localeTag, 0),
+                valueSpec: buildNumberValueSpec(activeAverages.tokensPerMinute, localeTag, 0),
                 valueTestId: 'today-stats-secondary-tpm-day-average',
               },
               {
                 label: t('dashboard.today.secondary.perConversation'),
-                value: formatNumberValue(perConversationTpm, localeTag, 0),
+                valueSpec: buildNumberValueSpec(perConversationTpm, localeTag, 0),
                 valueTestId: 'today-stats-secondary-tpm-per-conversation',
               },
             ]}
@@ -506,19 +574,19 @@ export function TodayStatsOverview({
             subdued={rateUnavailable}
             topRightItem={{
               label: comparisonLabel,
-              value: formatPercentValue(spendRateDailyDelta, localeTag),
+              valueSpec: buildPercentValueSpec(spendRateDailyDelta, localeTag, { signDisplay: 'exceptZero' }),
               toneClass: comparisonTone(spendRateDailyDelta),
               valueTestId: 'today-stats-secondary-spend-rate-delta',
             }}
             secondaryItems={[
               {
                 label: t('dashboard.today.secondary.dayAverage'),
-                value: formatCurrencyValue(activeAverages.spendRate, localeTag),
+                valueSpec: buildCurrencyValueSpec(activeAverages.spendRate, localeTag),
                 valueTestId: 'today-stats-secondary-spend-rate-day-average',
               },
               {
                 label: t('dashboard.today.secondary.perConversation'),
-                value: formatCurrencyValue(perConversationSpendRate, localeTag),
+                valueSpec: buildCurrencyValueSpec(perConversationSpendRate, localeTag),
                 valueTestId: 'today-stats-secondary-spend-rate-per-conversation',
               },
             ]}
@@ -533,7 +601,7 @@ export function TodayStatsOverview({
             valueTestId="today-stats-value-success"
             topRightItem={{
               label: comparisonLabel,
-              value: formatBaselineRatioValue(successComparisonRatio, localeTag),
+              valueSpec: buildBaselineRatioValueSpec(successComparisonRatio, localeTag),
               toneClass: comparisonTone(
                 successComparisonRatio == null ? null : successComparisonRatio - 1,
               ),
@@ -542,13 +610,13 @@ export function TodayStatsOverview({
             secondaryItems={[
               {
                 label: t('stats.cards.failures'),
-                value: formatNumberValue(failureCount, localeTag, 0),
+                valueSpec: buildNumberValueSpec(failureCount, localeTag, 0),
                 toneClass: failureCount > 0 ? 'text-error' : undefined,
                 valueTestId: 'today-stats-secondary-failures',
               },
               {
                 label: t('dashboard.today.secondary.failureRate'),
-                value: formatRatioValue(terminalFailureRate, localeTag),
+                valueSpec: buildRatioValueSpec(terminalFailureRate, localeTag),
                 toneClass: terminalFailureRate > 0 ? 'text-error' : undefined,
                 valueTestId: 'today-stats-secondary-failure-rate',
               },
@@ -566,19 +634,19 @@ export function TodayStatsOverview({
               valueTestId="today-stats-value-in-progress-conversations"
               topRightItem={{
                 label: comparisonLabel,
-                value: formatPercentValue(parallelDelta, localeTag),
+                valueSpec: buildPercentValueSpec(parallelDelta, localeTag, { signDisplay: 'exceptZero' }),
                 toneClass: comparisonTone(parallelDelta),
                 valueTestId: 'today-stats-secondary-in-progress-delta',
               }}
               secondaryItems={[
                 {
                   label: t('dashboard.today.secondary.dayAverage'),
-                  value: formatNumberValue(parallelSnapshot.dayAverage, localeTag, 2),
+                  valueSpec: buildNumberValueSpec(parallelSnapshot.dayAverage, localeTag, 2),
                   valueTestId: 'today-stats-secondary-in-progress-day-average',
                 },
                 {
                   label: t('dashboard.today.secondary.retry'),
-                  value: formatNumberValue(
+                  valueSpec: buildNumberValueSpec(
                     stats?.inProgressRetryConversationCount ?? null,
                     localeTag,
                     0,
@@ -594,21 +662,21 @@ export function TodayStatsOverview({
             localeTag={localeTag}
             loading={loading || rateLoading}
             valueTestId="today-stats-value-response-time"
-            displayText={formatLatencyValue(
+            displaySpec={buildLatencyValueSpec(
               responseTimeCurrentUnavailable ? null : (responseTimeSnapshot?.responseTimeMs ?? null),
               localeTag,
             )}
             subdued={responseTimeCurrentUnavailable}
             topRightItem={{
               label: comparisonLabel,
-              value: formatPercentValue(rateUnavailable ? null : responseTimeDailyDelta, localeTag),
+              valueSpec: buildPercentValueSpec(rateUnavailable ? null : responseTimeDailyDelta, localeTag, { signDisplay: 'exceptZero' }),
               toneClass: latencyComparisonTone(rateUnavailable ? null : responseTimeDailyDelta),
               valueTestId: 'today-stats-secondary-response-time-delta',
             }}
             secondaryItems={[
               {
                 label: t('dashboard.today.secondary.dayAverage'),
-                value: formatLatencyValue(
+                valueSpec: buildLatencyValueSpec(
                   rateUnavailable ? null : (responseTimeSnapshot?.dayAverageMs ?? null),
                   localeTag,
                 ),
@@ -616,7 +684,7 @@ export function TodayStatsOverview({
               },
               {
                 label: t('dashboard.today.responseTime'),
-                value: formatLatencyValue(
+                valueSpec: buildLatencyValueSpec(
                   recentWindowAvgTotalMs(timeseries, {
                     closedNaturalDay: dayKind === 'yesterday',
                     now,
@@ -637,19 +705,19 @@ export function TodayStatsOverview({
             valueTestId="today-stats-value-total-cost"
             topRightItem={{
               label: comparisonLabel,
-              value: formatPercentValue(totalCostDelta, localeTag),
+              valueSpec: buildPercentValueSpec(totalCostDelta, localeTag, { signDisplay: 'exceptZero' }),
               toneClass: comparisonTone(totalCostDelta),
               valueTestId: 'today-stats-secondary-cost-delta',
             }}
             secondaryItems={[
               {
                 label: t('dashboard.today.secondary.previous7dAverage'),
-                value: formatCurrencyValue(previous7dDailyCost, localeTag),
+                valueSpec: buildCurrencyValueSpec(previous7dDailyCost, localeTag),
                 valueTestId: 'today-stats-secondary-cost-previous7d-average',
               },
               {
                 label: t('dashboard.today.secondary.failed'),
-                value: formatCurrencyValue(stats?.nonSuccessCost ?? null, localeTag),
+                valueSpec: buildCurrencyValueSpec(stats?.nonSuccessCost ?? null, localeTag),
                 valueTestId: 'today-stats-secondary-cost-failed',
               },
             ]}
@@ -660,25 +728,24 @@ export function TodayStatsOverview({
             value={totalTokens}
             localeTag={localeTag}
             loading={loading}
-            labelNoWrap
             preserveLabelCase
             labelTestId="today-stats-label-total-tokens"
             valueTestId="today-stats-value-total-tokens"
             topRightItem={{
               label: comparisonLabel,
-              value: formatPercentValue(totalTokensDelta, localeTag),
+              valueSpec: buildPercentValueSpec(totalTokensDelta, localeTag, { signDisplay: 'exceptZero' }),
               toneClass: comparisonTone(totalTokensDelta),
               valueTestId: 'today-stats-secondary-tokens-delta',
             }}
             secondaryItems={[
               {
                 label: t('dashboard.today.secondary.cacheHitRate'),
-                value: formatRatioValue(tokenCacheHitRate, localeTag),
+                valueSpec: buildRatioValueSpec(tokenCacheHitRate, localeTag),
                 valueTestId: 'today-stats-secondary-cache-hit-rate',
               },
               {
                 label: t('dashboard.today.secondary.failed'),
-                value: formatNumberValue(stats?.nonSuccessTokens ?? null, localeTag, 0),
+                valueSpec: buildNumberValueSpec(stats?.nonSuccessTokens ?? null, localeTag, 0),
                 valueTestId: 'today-stats-secondary-tokens-failed',
               },
             ]}

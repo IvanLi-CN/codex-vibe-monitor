@@ -17,6 +17,11 @@
 - 已完成 `首字用时` follow-up：主值固定为首字耗时，右下 `响应时间` 改为最近 5 分钟完整调用结束的 `t_total_ms` 均值，并打通后端 `avgTotalMs` 聚合、前端归一化与本地 SSE patch。
 - 已完成 `DashboardActivityOverview` Storybook timeseries fixture 的 `avgTotalMs` mock 补齐，活动总览今日桌面态中的 `响应时间` 次指标不再空白。
 - 已统一微调七卡主值字号，并刷新单卡裁切图与活动总览桌面态视觉证据。
+- 已完成 `AdaptiveMetricValue` 候选驱动重构：主值不再只在同一单位内裁小数，而是支持完整值、compact、多精度与邻近单位回退的有序候选集。
+- 已完成 `TodayStatsOverview` 内主值、右上 comparison/meta、底部 secondary 的结构化自适应数值渲染；红框同类位不再依赖整行 `truncate`。
+- 已补齐 `1.05B / 1.0B / 1B / 1,050M` 等 `B/M` 临界值规则，保证在真实窄宽度下优先保留 `1.0B` 等最低必要小数位，而不是视觉上塌成 `1B`。
+- 已刷新 `TodayStatsOverview` 与 `DashboardActivityOverview` 的 Storybook 视觉证据，确保取证仅使用仓库支持的 desktop viewport，并去除 story 内部人为 `max-width` 制造的伪窄态。
+- 已补齐 tile 级自适应布局退化：当单卡真实宽度不足时，右上 comparison 与底部两个 secondary 会自动下沉到主值下方逐行展示；宽度恢复后回到原四区布局。
 
 ## Remaining Gaps
 
@@ -32,6 +37,8 @@
 - `web/src/components/TodayStatsOverview.tsx`
 - `web/src/components/TodayStatsOverview.test.tsx`
 - `web/src/components/TodayStatsOverview.stories.tsx`
+- `web/src/components/AdaptiveMetricValue.tsx`
+- `web/src/components/AdaptiveMetricValue.test.tsx`
 - `web/src/components/DashboardTodayActivityChart.tsx`
 - `web/src/components/dashboardTodayActivityChartData.ts`
 - `web/src/components/DashboardActivityOverview.stories.tsx`
