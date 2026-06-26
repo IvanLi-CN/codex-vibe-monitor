@@ -236,24 +236,6 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
             .await?,
         );
     }
-    if rollup_live_cursor < snapshot_id {
-        let tail_range_plan = HourlyRollupExactRangePlan {
-            full_hour_range: None,
-            live_exact_ranges: exact_utc_range(start, end)?.into_iter().collect(),
-        };
-        let tail_records = query_invocation_exact_records_tx_for_account(
-            tx.as_mut(),
-            &tail_range_plan,
-            source_scope,
-            snapshot_id,
-            upstream_account_id,
-            rollup_live_cursor,
-        )
-        .await?;
-        for record in &tail_records {
-            add_invocation_record_to_summary_totals(&mut totals, record);
-        }
-    }
     Ok(totals)
 }
 
