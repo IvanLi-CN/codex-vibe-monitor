@@ -1111,23 +1111,25 @@ async fn create_test_fast_mode_tag(
     fast_mode_rewrite_mode: &str,
     priority_tier: &str,
 ) -> i64 {
-    let payload = serde_json::from_value::<CreateTagRequest>(json!({
-        "name": name,
-        "blockNewConversations": false,
-        "allowCutOut": true,
-        "allowCutIn": true,
-        "priorityTier": priority_tier,
-        "fastModeRewriteMode": fast_mode_rewrite_mode,
-    }))
-    .expect("deserialize fast mode tag payload");
-    let Json(_) = create_tag(State(state.clone()), HeaderMap::new(), Json(payload))
-        .await
-        .expect("create fast mode tag");
-    sqlx::query_scalar("SELECT id FROM pool_tags WHERE name = ?1")
-        .bind(name)
-        .fetch_one(&state.pool)
-        .await
-        .expect("load fast mode tag id")
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, system_key, protected, block_new_conversations, allow_cut_out, allow_cut_in,
+            priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
+            upstream_429_max_retries, available_models_json, created_at, updated_at
+        ) VALUES (?1, ?2, 1, 0, 1, 1, ?3, ?4, 0, 0, 0, '[]', ?5, ?5)
+        RETURNING id
+        "#,
+    )
+    .bind(name)
+    .bind(format!("test:{name}"))
+    .bind(priority_tier)
+    .bind(fast_mode_rewrite_mode)
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert fast mode system tag")
 }
 
 async fn create_test_tagged_pool_api_key_account(
@@ -1143,17 +1145,35 @@ async fn create_test_tagged_pool_api_key_account(
         "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": upstream_base_url,
         "apiKey": api_key,
-        "tagIds": tag_ids,
     }))
     .expect("deserialize tagged api-key account payload");
     let Json(_) = create_api_key_account(State(state.clone()), HeaderMap::new(), Json(payload))
         .await
         .expect("create tagged pool account");
-    sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
+    let account_id: i64 = sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
         .bind(display_name)
         .fetch_one(&state.pool)
         .await
-        .expect("load tagged pool account id")
+        .expect("load tagged pool account id");
+    if !tag_ids.is_empty() {
+        let now_iso = format_utc_iso(Utc::now());
+        for tag_id in tag_ids {
+            sqlx::query(
+                r#"
+                INSERT INTO pool_upstream_account_tags (
+                    account_id, tag_id, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?3)
+                "#,
+            )
+            .bind(account_id)
+            .bind(tag_id)
+            .bind(&now_iso)
+            .execute(&state.pool)
+            .await
+            .expect("attach tagged pool account system tag");
+        }
+    }
+    account_id
 }
 
 async fn insert_test_pool_limit_sample(

@@ -646,7 +646,7 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
         .await;
 
     let (slow_upstream_base, slow_upstream_handle) =
-        spawn_oauth_codex_delayed_headers_upstream(Duration::from_millis(250)).await;
+        spawn_oauth_codex_delayed_headers_upstream(Duration::from_millis(700)).await;
     let (fast_upstream_base, _attempts, fast_upstream_handle) =
         spawn_pool_retry_upstream(&[("Bearer route-fast", 0)]).await;
     oauth_bridge::set_test_oauth_codex_upstream_base_url(
@@ -659,7 +659,7 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
     config.openai_proxy_handshake_timeout = Duration::from_millis(100);
-    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(120);
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(450);
     let state = test_state_from_config(config, true).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let oauth_id = insert_test_pool_oauth_account(&state, "Timeout OAuth", "oauth-timeout").await;
