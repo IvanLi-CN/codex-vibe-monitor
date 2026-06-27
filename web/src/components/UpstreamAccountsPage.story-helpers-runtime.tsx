@@ -20,7 +20,6 @@ import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCrea
 import { resolveDisplayNameAfterEmailChange } from '../pages/account-pool/UpstreamAccountCreate.shared'
 import GroupsPage from '../pages/account-pool/Groups'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
-import TagsPage from '../pages/account-pool/Tags'
 
 import {
   applyDynamicRosterLiveRefresh,
@@ -1277,7 +1276,6 @@ export function AccountPoolStoryRouter({
               element={<MaintenanceRecordsPage />}
             />
             <Route path="groups" element={<GroupsPage />} />
-            <Route path="tags" element={<TagsPage />} />
           </Route>
         </Routes>
       </MemoryRouter>

@@ -4,7 +4,6 @@ import { Button } from "../../components/ui/button";
 import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import { FormFieldFeedback } from "../../components/ui/form-field-feedback";
 import { Input } from "../../components/ui/input";
-import { AccountTagField } from "../../components/AccountTagField";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { MotherAccountToggle } from "../../components/MotherAccountToggle";
 import { resolveDisplayNameAfterEmailChange } from "./UpstreamAccountCreate.shared";
@@ -22,23 +21,18 @@ export function UpstreamAccountCreateApiKeySection() {
     apiKeyNote,
     apiKeyPrimaryLimit,
     apiKeySecondaryLimit,
-    apiKeyTagIds,
     apiKeyUpstreamBaseUrl,
     apiKeyUpstreamBaseUrlError,
     apiKeyValue,
-    availableModelOptions,
     busyAction,
     cn,
     formatGroupAccountCountLabel,
     groupOptions,
     handleApiKeyGroupCreateRequest,
     handleCreateApiKey,
-    handleCreateTag,
-    handleDeleteTag,
     hasGroupSettings,
     normalizeGroupName,
     openGroupNoteEditor,
-    pageCreatedTagIds,
     setApiKeyDisplayName,
     setApiKeyEmail,
     setApiKeyGroupName,
@@ -47,13 +41,9 @@ export function UpstreamAccountCreateApiKeySection() {
     setApiKeyNote,
     setApiKeyPrimaryLimit,
     setApiKeySecondaryLimit,
-    setApiKeyTagIds,
     setApiKeyUpstreamBaseUrl,
     setApiKeyValue,
     t,
-    tagFieldLabels,
-    tagItems,
-    updateTag,
     writesEnabled,
   } = useUpstreamAccountCreateViewContext();
 
@@ -266,20 +256,6 @@ export function UpstreamAccountCreateApiKeySection() {
       onChange={(event) => setApiKeyNote(event.target.value)}
     />
   </label>
-  <div className="md:col-span-2">
-    <AccountTagField
-      tags={tagItems}
-      selectedTagIds={apiKeyTagIds}
-      writesEnabled={writesEnabled}
-      pageCreatedTagIds={pageCreatedTagIds}
-      availableModelOptions={availableModelOptions}
-      labels={tagFieldLabels}
-      onChange={setApiKeyTagIds}
-      onCreateTag={handleCreateTag}
-      onUpdateTag={updateTag}
-      onDeleteTag={handleDeleteTag}
-    />
-  </div>
   <div className="md:col-span-2 flex flex-wrap justify-end gap-2">
     <Button asChild type="button" variant="ghost">
       <Link to="/account-pool/upstream-accounts">

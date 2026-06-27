@@ -711,15 +711,8 @@ export function hydrateBatchOauthRow(
           planType: seed.emailResolution.planType ?? null,
         }
       : null,
-    pendingSharedTagIds: Array.isArray(seed.pendingSharedTagIds)
-      ? normalizeBatchTagIds(seed.pendingSharedTagIds)
-      : null,
-    sharedTagSyncAttempts:
-      typeof seed.sharedTagSyncAttempts === "number" &&
-      Number.isFinite(seed.sharedTagSyncAttempts) &&
-      seed.sharedTagSyncAttempts > 0
-        ? Math.trunc(seed.sharedTagSyncAttempts)
-        : 0,
+    pendingSharedTagIds: null,
+    sharedTagSyncAttempts: 0,
   };
 }
 

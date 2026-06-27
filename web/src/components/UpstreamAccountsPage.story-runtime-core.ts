@@ -92,6 +92,20 @@ const compactDefaultTags: AccountTagSummary[] = [
     name: 'sticky-pool',
     routingRule: defaultEffectiveRoutingRule,
   },
+  {
+    id: 5,
+    name: '不支持 gpt-5.5',
+    routingRule: defaultEffectiveRoutingRule,
+    systemKey: 'unsupported_model:gpt-5.5',
+    protected: true,
+  },
+  {
+    id: 6,
+    name: '不支持 WS',
+    routingRule: defaultEffectiveRoutingRule,
+    systemKey: 'unsupported_transport:websocket',
+    protected: true,
+  },
 ]
 
 function buildRequestBuckets(seed: number, baseline: number, failuresEvery: number): ForwardProxyBindingNode['last24h'] {
@@ -192,6 +206,8 @@ const storyTagMap = {
   burstSafe: compactDefaultTags[1],
   prodApac: compactDefaultTags[2],
   stickyPool: compactDefaultTags[3],
+  unsupportedModelGpt55: compactDefaultTags[4],
+  unsupportedWebsocket: compactDefaultTags[5],
   priority: {
     id: 20,
     name: 'priority-route',
@@ -1763,6 +1779,8 @@ export function createStore(): StoryStore {
     storyId?.endsWith('--oauth-email-overview') === true
   const compactStory = storyId?.endsWith('--compact-long-labels') === true
   const tagFilterStory = storyId?.endsWith('--tag-filter-all-match') === true
+  const readOnlySystemTagsStory =
+    storyId?.endsWith('--detail-drawer-read-only-system-tags') === true
   const availabilityBadgeStory =
     storyId?.endsWith('--availability-badges') === true
   const oauthRetryTerminalStateStory =
@@ -1857,14 +1875,13 @@ export function createStore(): StoryStore {
               compactDefaultTags[3],
             ],
           }
-        : tagFilterStory
+        : tagFilterStory || readOnlySystemTagsStory
           ? {
               tags: [
-                compactDefaultTags[0],
-              compactDefaultTags[1],
-              compactDefaultTags[2],
-            ],
-          }
+                compactDefaultTags[4],
+                compactDefaultTags[5],
+              ],
+            }
         : undefined),
   })
   const apiKey = createApiKeyAccount(

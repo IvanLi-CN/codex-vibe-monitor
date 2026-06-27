@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { AppIcon } from "../../components/AppIcon";
 import { Button } from "../../components/ui/button";
 import {
@@ -9,7 +8,6 @@ import {
   CardTitle,
 } from "../../components/ui/card";
 import { Tooltip } from "../../components/ui/tooltip";
-import { AccountTagField } from "../../components/AccountTagField";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 import { UpstreamAccountCreateApiKeySection } from "./UpstreamAccountCreate.api-key-section";
@@ -22,28 +20,17 @@ export function UpstreamAccountCreatePrimaryCard() {
     activeTab,
     appendBatchRow,
     batchDefaultGroupName,
-    batchSharedTagSyncEnabledRef,
-    batchTagIds,
-    availableModelOptions,
     buildActionTooltip,
     cn,
     formatGroupAccountCountLabel,
     groupOptions,
     handleBatchDefaultGroupCreateRequest,
     handleBatchDefaultGroupChange,
-    handleCreateTag,
-    handleDeleteTag,
     hasBatchMetadataBusy,
     hasGroupSettings,
     normalizeGroupName,
     openGroupNoteEditor,
-    pageCreatedTagIds,
-    setBatchRows,
-    setBatchTagIds,
     t,
-    tagFieldLabels,
-    tagItems,
-    updateTag,
     writesEnabled,
   } = useUpstreamAccountCreateViewContext();
 
@@ -138,30 +125,6 @@ export function UpstreamAccountCreatePrimaryCard() {
                     aria-hidden
                   />
                 </Button>
-              </div>
-              <div className="w-full lg:w-[24rem]">
-                <AccountTagField
-                  tags={tagItems}
-                  selectedTagIds={batchTagIds}
-                  writesEnabled={writesEnabled && !hasBatchMetadataBusy}
-                  pageCreatedTagIds={pageCreatedTagIds}
-                  availableModelOptions={availableModelOptions}
-                  hideLabel
-                  labels={tagFieldLabels}
-                  onChange={(nextTagIds) => {
-                    batchSharedTagSyncEnabledRef.current = true;
-                    setBatchTagIds(nextTagIds);
-                    setBatchRows((current: any[]) =>
-                      current.map((row: any) => ({
-                        ...row,
-                        actionError: null,
-                      })),
-                    );
-                  }}
-                  onCreateTag={handleCreateTag}
-                  onUpdateTag={updateTag}
-                  onDeleteTag={handleDeleteTag}
-                />
               </div>
               <Button
                 type="button"

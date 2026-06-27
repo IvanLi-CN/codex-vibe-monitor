@@ -722,7 +722,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     expect(confirmDialog?.closest(".drawer-body")).toBeNull();
   });
 
-  it("keeps the tag picker popover inside the detail drawer dialog subtree", async () => {
+  it("shows read-only tags inside the detail drawer edit form", async () => {
     mockAccountsPage();
     render({
       pathname: "/account-pool/upstream-accounts",
@@ -737,15 +737,9 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     clickTab(/Edit/i);
     await flushAsync();
     await flushTimers();
-    clickButton(/^add tag$/i);
-    await flushAsync();
-    await flushTimers();
-
-    const searchInput = document.body.querySelector(
-      'input[placeholder="Search existing tags..."]',
-    );
-    expect(searchInput).not.toBeNull();
-    expect(searchInput?.closest('[role="dialog"]')).not.toBeNull();
+    expect(findButton(/^add tag$/i)).toBeUndefined();
+    const detailDialog = document.body.querySelector('[role="dialog"]');
+    expect(detailDialog?.textContent ?? "").toContain("vip");
   });
 
   it("keeps the drawer open until a failing delete request settles", async () => {

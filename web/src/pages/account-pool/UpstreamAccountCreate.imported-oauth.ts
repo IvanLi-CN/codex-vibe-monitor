@@ -59,7 +59,6 @@ export function useUpstreamAccountCreateImportedOauth(
     importFilesRevisionRef,
     importFileSourceSequenceRef,
     importGroupName,
-    importGroupProxyState,
     importPasteDraft,
     importPasteDraftRef,
     importPasteDraftSerial,
@@ -71,6 +70,7 @@ export function useUpstreamAccountCreateImportedOauth(
     importValidationJobIdRef,
     importValidationState,
     importOauthAccounts,
+    resolveRequiredGroupProxyState,
     resolveGroupSingleAccountRotationEnabledForName,
     activeTab,
     setActionError,
@@ -370,8 +370,10 @@ export function useUpstreamAccountCreateImportedOauth(
       options?: { merge?: boolean },
     ) => {
       if (items.length === 0) return;
-      if (importGroupProxyState.error) {
-        setActionError(importGroupProxyState.error);
+      const currentImportGroupProxyState =
+        resolveRequiredGroupProxyState(importGroupName);
+      if (currentImportGroupProxyState.error) {
+        setActionError(currentImportGroupProxyState.error);
         return;
       }
       const merge = options?.merge === true;
@@ -386,9 +388,11 @@ export function useUpstreamAccountCreateImportedOauth(
         }
         const response = await startImportedOauthValidationJob({
           items,
-          groupName: importGroupProxyState.normalizedGroupName || undefined,
-          groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
-          groupNodeShuntEnabled: importGroupProxyState.nodeShuntEnabled,
+          groupName:
+            currentImportGroupProxyState.normalizedGroupName || undefined,
+          groupBoundProxyKeys: currentImportGroupProxyState.boundProxyKeys,
+          groupNodeShuntEnabled:
+            currentImportGroupProxyState.nodeShuntEnabled,
           groupSingleAccountRotationEnabled:
             resolveGroupSingleAccountRotationEnabledForName(importGroupName),
         });
@@ -453,12 +457,9 @@ export function useUpstreamAccountCreateImportedOauth(
       cancelActiveImportedOauthValidation,
       closeImportValidationEventSource,
       importFiles,
-      importGroupProxyState.boundProxyKeys,
-      importGroupProxyState.error,
-      importGroupProxyState.nodeShuntEnabled,
-      importGroupProxyState.normalizedGroupName,
       importGroupName,
       resolveGroupSingleAccountRotationEnabledForName,
+      resolveRequiredGroupProxyState,
       startImportedOauthValidationJob,
     ],
   );
@@ -959,13 +960,15 @@ export function useUpstreamAccountCreateImportedOauth(
   }, [closeImportValidationEventSource, stopImportedOauthValidationJob]);
 
   const handleImportValidatedOauth = useCallback(async () => {
-    if (importGroupProxyState.error) {
-      setActionError(importGroupProxyState.error);
+    const currentImportGroupProxyState =
+      resolveRequiredGroupProxyState(importGroupName);
+    if (currentImportGroupProxyState.error) {
+      setActionError(currentImportGroupProxyState.error);
       setImportValidationState((current: ImportedOauthValidationDialogState | null) =>
         current
           ? {
               ...current,
-              importError: importGroupProxyState.error,
+              importError: currentImportGroupProxyState.error,
             }
           : current,
       );
@@ -1014,9 +1017,11 @@ export function useUpstreamAccountCreateImportedOauth(
           items: batch,
           selectedSourceIds: batch.map((item) => item.sourceId),
           validationJobId,
-          groupName: importGroupProxyState.normalizedGroupName || undefined,
-          groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
-          groupNodeShuntEnabled: importGroupProxyState.nodeShuntEnabled,
+          groupName:
+            currentImportGroupProxyState.normalizedGroupName || undefined,
+          groupBoundProxyKeys: currentImportGroupProxyState.boundProxyKeys,
+          groupNodeShuntEnabled:
+            currentImportGroupProxyState.nodeShuntEnabled,
           groupSingleAccountRotationEnabled:
             resolveGroupSingleAccountRotationEnabledForName(importGroupName),
           groupNote: importGroupNote,
@@ -1112,12 +1117,11 @@ export function useUpstreamAccountCreateImportedOauth(
     importFiles,
     importFilesRef,
     importGroupName,
-    importGroupProxyState.boundProxyKeys,
-    importGroupProxyState.error,
-    importGroupProxyState.normalizedGroupName,
     importOauthAccounts,
     importTagIds,
     importValidationState?.rows,
+    resolveRequiredGroupProxyState,
+    resolveGroupSingleAccountRotationEnabledForName,
     t,
   ]);
 

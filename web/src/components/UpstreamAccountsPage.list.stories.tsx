@@ -685,8 +685,8 @@ export const TagFilterAllMatch: Story = {
       name: /按标签筛选账号|filter accounts by tags/i,
     })
     await userEvent.click(filterTrigger)
-    await userEvent.click(await documentScope.findByText(/^vip$/i))
-    await userEvent.click(await documentScope.findByText(/^burst-safe$/i))
+    await userEvent.click(await documentScope.findByText(/不支持 gpt-5\.5/i))
+    await userEvent.click(await documentScope.findByText(/不支持 WS/i))
     await expect(canvas.getByText(/Codex Pro - Tokyo/i)).toBeInTheDocument()
     await expect(
       canvas.queryByText(/Team key - staging/i),

@@ -46,7 +46,7 @@ describe("UpstreamAccountCreatePage relink detail hydration", () => {
     expect((host?.querySelector('input[name="oauthMailboxInput"]') as HTMLInputElement).value).toBe("reauth-2660@example.com");
     expect((host?.querySelector('input[name="oauthGroupName"]') as HTMLInputElement).value).toBe("prod");
     expect((host?.querySelector('textarea[name="oauthNote"]') as HTMLTextAreaElement).value).toBe("Keep this saved note during reauth.");
-    expect(host?.textContent).toContain("vip");
+    expect(host?.textContent).not.toContain("vip");
 
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
@@ -58,7 +58,7 @@ describe("UpstreamAccountCreatePage relink detail hydration", () => {
         email: "reauth-2660@example.com",
         groupName: "prod",
         note: "Keep this saved note during reauth.",
-        tagIds: [1],
+        tagIds: [],
         isMother: true,
       }),
     );

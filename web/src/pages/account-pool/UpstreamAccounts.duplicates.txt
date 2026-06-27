@@ -1167,7 +1167,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     );
   });
 
-  it("prioritizes the selected accounts tag union when removing tags in bulk", () => {
+  it("does not render bulk remove-tag actions after tag editing removal", () => {
     hookMocks.useUpstreamAccounts.mockReturnValue({
       items: [
         {
@@ -1282,32 +1282,7 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     clickCheckboxByLabel(/select existing oauth/i);
     clickCheckboxByLabel(/select another oauth/i);
-    clickButton(/remove tags/i);
-
-    const dialog = document.body.querySelector('[role="dialog"]');
-    if (!(dialog instanceof HTMLElement)) {
-      throw new Error("missing bulk remove tags dialog");
-    }
-
-    const combobox = dialog.querySelector('button[role="combobox"]');
-    if (!(combobox instanceof HTMLButtonElement)) {
-      throw new Error("missing bulk tag combobox");
-    }
-    pressButton(combobox);
-
-    const options = Array.from(
-      document.body.querySelectorAll("[cmdk-item]"),
-    ) as HTMLElement[];
-    expect(options.map((option) => option.textContent?.trim())).toEqual([
-      "burst-safe",
-      "vip",
-      "prod-apac",
-      "sticky-pool",
-    ]);
-    expect(options[0]?.getAttribute("aria-disabled")).toBe("false");
-    expect(options[1]?.getAttribute("aria-disabled")).toBe("false");
-    expect(options[2]?.getAttribute("aria-disabled")).toBe("true");
-    expect(options[3]?.getAttribute("aria-disabled")).toBe("true");
+    expect(findButton(/remove tags/i)).toBeUndefined();
   });
 
   it("does not locally block saving oauth details when the display name conflicts with another account", () => {

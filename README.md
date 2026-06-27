@@ -81,12 +81,14 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
   - bulk sync jobs 与事件流
 - 界面支持：
   - 平铺 / 分组 / 网格视图
-  - 分组总览子页（`上游账号 / 分组 / 标签`）
-  - 标签管理
+  - 分组总览子页（`上游账号 / 分组`）
+  - 系统标签只读展示与筛选
   - 分组设置
   - sticky keys
   - 5 小时 / 7 天额度窗口
   - 健康状态、启用状态、工作状态筛选
+
+自定义标签管理页、标签 CRUD、人工挂载/解绑与批量加减标签已经移除；标签仅作为系统内部信号出现在列表和详情中。
 
 ### 5. 运行期配置入口
 
@@ -123,10 +125,9 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 | `/stats`                              | 时间窗统计、趋势图、成功/失败、错误分布、并行工作统计               |
 | `/live`                               | 实时 summary、forward proxy 节点状态、实时记录流、Prompt Cache 对话 |
 | `/records`                            | 稳定快照搜索、筛选、分页、详情、response body、pool attempts        |
-| `/account-pool/upstream-accounts`     | 上游账号列表、配额窗口、分组与标签视图                              |
+| `/account-pool/upstream-accounts`     | 上游账号列表、配额窗口、分组视图、系统标签只读筛选                  |
 | `/account-pool/upstream-accounts/new` | 新建 OAuth / API Key / 批量 OAuth / imported OAuth                  |
 | `/account-pool/groups`                | 分组总览、分组设置入口、未分组汇总与回跳账号页筛选                  |
-| `/account-pool/tags`                  | 标签管理与路由语义维护                                              |
 | `/settings`                           | 价格目录、forward proxy、external API keys、运行配置入口            |
 
 ## 快速开始

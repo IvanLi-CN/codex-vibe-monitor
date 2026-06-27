@@ -459,7 +459,8 @@ pub(crate) async fn create_oauth_login_session(
         payload.mailbox_address.as_deref(),
     )
     .await?;
-    let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
+    reject_manual_tag_ids(&payload.tag_ids)?;
+    let tag_ids = Vec::new();
     let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
 
     let mut preserved_mother_flag = false;
@@ -905,11 +906,12 @@ pub(crate) async fn update_oauth_login_session(
         OptionalField::Value(value) => normalize_optional_text(Some(value)),
     };
     let requested_tag_ids = match requested_tag_ids {
-        OptionalField::Missing => parse_tag_ids_json(session.tag_ids_json.as_deref()),
+        OptionalField::Missing => Vec::new(),
         OptionalField::Null => Vec::new(),
         OptionalField::Value(value) => value,
     };
-    let tag_ids = validate_tag_ids(&state.pool, &requested_tag_ids).await?;
+    reject_manual_tag_ids(&requested_tag_ids)?;
+    let tag_ids = Vec::new();
     let is_mother = match requested_is_mother {
         OptionalField::Missing => session.is_mother != 0,
         OptionalField::Null => false,
@@ -1249,14 +1251,6 @@ pub(crate) async fn relogin_upstream_account(
     headers: HeaderMap,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<LoginSessionStatusResponse>, (StatusCode, String)> {
-    let tag_ids = load_account_tag_map(&state.pool, &[id])
-        .await
-        .map_err(internal_error_tuple)?
-        .remove(&id)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|tag| tag.id)
-        .collect();
     let payload = CreateOauthLoginSessionRequest {
         display_name: None,
         email: None,
@@ -1268,7 +1262,7 @@ pub(crate) async fn relogin_upstream_account(
         group_note: None,
         concurrency_limit: None,
         account_id: Some(id),
-        tag_ids,
+        tag_ids: Vec::new(),
         is_mother: None,
         mailbox_session_id: None,
         mailbox_address: None,
@@ -1337,7 +1331,7 @@ pub(crate) async fn create_api_key_account_inner(
     validate_local_limits(payload.local_primary_limit, payload.local_secondary_limit)?;
     let api_key = normalize_required_secret(&payload.api_key, "apiKey")?;
     let email = normalize_optional_email(payload.email, "email")?;
-    let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
+    reject_manual_tag_ids(&payload.tag_ids)?;
     let group_name = Some(normalize_upstream_account_group_name(payload.group_name));
     let note = normalize_optional_text(payload.note);
     let has_group_note = payload.group_note.is_some();
@@ -1431,9 +1425,6 @@ pub(crate) async fn create_api_key_account_inner(
         inserted_id
     };
 
-    sync_account_tag_links(&state.pool, inserted_id, &tag_ids)
-        .await
-        .map_err(internal_error_tuple)?;
     let detail = state
         .upstream_accounts
         .account_ops
@@ -1501,10 +1492,9 @@ pub(crate) async fn update_upstream_account_inner(
             normalize_image_tool_rewrite_mode(Some(value)).map(|mode| mode.as_str().to_string())
         })
         .transpose()?;
-    let tag_ids = match payload.tag_ids.as_ref() {
-        Some(values) => Some(validate_tag_ids(&state.pool, values).await?),
-        None => None,
-    };
+    if let Some(values) = payload.tag_ids.as_ref() {
+        reject_manual_tag_ids(values)?;
+    }
     let previous_display_name = row.display_name.clone();
     let previous_email = row.email.clone();
     let previous_group_name = row.group_name.clone();
@@ -1784,11 +1774,6 @@ pub(crate) async fn update_upstream_account_inner(
             .map_err(internal_error_tuple)?;
     }
     tx.commit().await.map_err(internal_error_tuple)?;
-    if let Some(tag_ids) = tag_ids {
-        sync_account_tag_links(&state.pool, id, &tag_ids)
-            .await
-            .map_err(internal_error_tuple)?;
-    }
     if clear_hard_failure_after_update {
         set_account_status(&state.pool, id, UPSTREAM_ACCOUNT_STATUS_ACTIVE, None)
             .await

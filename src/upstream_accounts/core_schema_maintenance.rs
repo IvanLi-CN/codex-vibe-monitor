@@ -768,6 +768,10 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .await
     .context("failed to ensure idx_pool_upstream_account_tags_tag_id")?;
 
+    cleanup_non_system_tags(pool)
+        .await
+        .context("failed to delete legacy non-system tags")?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS pool_oauth_mailbox_sessions (

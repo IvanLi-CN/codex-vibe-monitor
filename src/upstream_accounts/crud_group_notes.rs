@@ -438,7 +438,7 @@ pub(crate) async fn list_tags(
         .await
         .map_err(internal_error_tuple)?;
     Ok(Json(TagListResponse {
-        writes_enabled: state.upstream_accounts.writes_enabled(),
+        writes_enabled: false,
         items,
     }))
 }

@@ -465,6 +465,77 @@
         .expect("insert oauth account")
     }
 
+    async fn insert_tag(pool: &SqlitePool, name: &str, rule: &TagRoutingRule) -> Result<TagDetail> {
+        let now_iso = format_utc_iso(Utc::now());
+        let inserted_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO pool_tags (
+                name, system_key, protected, block_new_conversations, allow_cut_out, allow_cut_in,
+                priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
+                upstream_429_max_retries, available_models_json, created_at, updated_at
+            ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+            RETURNING id
+            "#,
+        )
+        .bind(name)
+        .bind(format!("test:{name}"))
+        .bind(if rule.block_new_conversations { 1 } else { 0 })
+        .bind(if rule.allow_cut_out { 1 } else { 0 })
+        .bind(if rule.allow_cut_in { 1 } else { 0 })
+        .bind(rule.priority_tier.as_str())
+        .bind(rule.fast_mode_rewrite_mode.as_str())
+        .bind(rule.concurrency_limit)
+        .bind(if rule.upstream_429_retry_enabled {
+            1_i64
+        } else {
+            0_i64
+        })
+        .bind(i64::from(rule.upstream_429_max_retries))
+        .bind(encode_string_array_json(&rule.available_models)?)
+        .bind(&now_iso)
+        .fetch_one(pool)
+        .await?;
+        load_tag_detail(pool, inserted_id)
+            .await?
+            .ok_or_else(|| anyhow!("tag not found after insert"))
+    }
+
+    async fn insert_legacy_custom_tag(
+        pool: &SqlitePool,
+        name: &str,
+        rule: &TagRoutingRule,
+    ) -> i64 {
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO pool_tags (
+                name, block_new_conversations, allow_cut_out, allow_cut_in,
+                priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
+                upstream_429_max_retries, available_models_json, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+            RETURNING id
+            "#,
+        )
+        .bind(name)
+        .bind(if rule.block_new_conversations { 1 } else { 0 })
+        .bind(if rule.allow_cut_out { 1 } else { 0 })
+        .bind(if rule.allow_cut_in { 1 } else { 0 })
+        .bind(rule.priority_tier.as_str())
+        .bind(rule.fast_mode_rewrite_mode.as_str())
+        .bind(rule.concurrency_limit)
+        .bind(if rule.upstream_429_retry_enabled {
+            1_i64
+        } else {
+            0_i64
+        })
+        .bind(i64::from(rule.upstream_429_max_retries))
+        .bind(encode_string_array_json(&rule.available_models).expect("encode legacy custom tag"))
+        .bind(&now_iso)
+        .fetch_one(pool)
+        .await
+        .expect("insert legacy custom tag")
+    }
+
     #[tokio::test]
     async fn find_existing_import_match_loads_compact_support_fields() {
         let pool = test_pool().await;
@@ -4169,66 +4240,21 @@
     }
 
     #[tokio::test]
-    async fn tag_fast_mode_rewrite_mode_round_trips_through_create_update_get_and_list() {
+    async fn list_tags_only_returns_system_tags_and_disables_writes() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-
-        let Json(created) = create_tag(
-            State(state.clone()),
-            HeaderMap::new(),
-            Json(CreateTagRequest {
-                name: "fast-mode-round-trip".to_string(),
-                block_new_conversations: false,
-                allow_cut_out: true,
-                allow_cut_in: true,
-                priority_tier: None,
-                fast_mode_rewrite_mode: None,
-                concurrency_limit: None,
-                upstream_429_retry_enabled: None,
-                upstream_429_max_retries: None,
-                available_models: vec![],
-            }),
-        )
-        .await
-        .expect("create tag");
-        assert_eq!(
-            created.summary.routing_rule.fast_mode_rewrite_mode,
-            TagFastModeRewriteMode::KeepOriginal
-        );
-
-        let Json(updated) = update_tag(
-            State(state.clone()),
-            HeaderMap::new(),
-            AxumPath(created.summary.id),
-            Json(UpdateTagRequest {
-                name: None,
-                block_new_conversations: None,
-                allow_cut_out: None,
-                allow_cut_in: None,
-                priority_tier: None,
-                fast_mode_rewrite_mode: Some("force_add".to_string()),
-                concurrency_limit: None,
-                upstream_429_retry_enabled: None,
-                upstream_429_max_retries: None,
-                available_models: OptionalField::Missing,
-            }),
-        )
-        .await
-        .expect("update tag");
-        assert_eq!(
-            updated.summary.routing_rule.fast_mode_rewrite_mode,
-            TagFastModeRewriteMode::ForceAdd
-        );
-
-        let Json(loaded) = get_tag(State(state.clone()), AxumPath(created.summary.id))
+        let account_id = insert_api_key_account(&state.pool, "System Tag Account").await;
+        ensure_account_has_gpt55_unsupported_tag(&state.pool, account_id)
             .await
-            .expect("get tag");
-        assert_eq!(
-            loaded.summary.routing_rule.fast_mode_rewrite_mode,
-            TagFastModeRewriteMode::ForceAdd
-        );
+            .expect("seed system tag");
+        let custom_tag_id = insert_legacy_custom_tag(
+            &state.pool,
+            "fast-mode-round-trip",
+            &test_tag_routing_rule(),
+        )
+        .await;
 
         let Json(listed) = list_tags(
-            State(state),
+            State(state.clone()),
             Query(ListTagsQuery {
                 search: None,
                 has_accounts: None,
@@ -4239,13 +4265,23 @@
         )
         .await
         .expect("list tags");
-        let listed_tag = listed
-            .items
-            .iter()
-            .find(|item| item.id == created.summary.id)
-            .expect("listed tag");
-        assert_eq!(
-            listed_tag.routing_rule.fast_mode_rewrite_mode,
-            TagFastModeRewriteMode::ForceAdd
+        assert!(!listed.writes_enabled);
+        assert!(
+            listed
+                .items
+                .iter()
+                .all(|item| item.system_key.as_deref().is_some())
+        );
+        assert!(
+            listed
+                .items
+                .iter()
+                .any(|item| item.system_key.as_deref() == Some("unsupported_model:gpt-5.5"))
+        );
+        assert!(
+            listed
+                .items
+                .iter()
+                .all(|item| item.id != custom_tag_id)
         );
     }

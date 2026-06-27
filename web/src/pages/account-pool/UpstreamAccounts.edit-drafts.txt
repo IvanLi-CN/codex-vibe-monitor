@@ -953,7 +953,7 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     )
   })
 
-  it("filters pending fallback tags before reseeding a reopened session", async () => {
+  it("keeps server tags visible after reopening even if the local tag catalog shrinks", async () => {
     const saveRequest = deferred<any>()
     const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
     const tagVip = defaultPoolTags[0]
@@ -1001,10 +1001,10 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     await flushAsync()
 
     expect(document.body.textContent).toContain("vip")
-    expect(document.body.textContent).not.toContain("burst-safe")
+    expect(document.body.textContent).toContain("burst-safe")
   })
 
-  it("filters deleted tag ids out of late save responses even after reopen", async () => {
+  it("keeps server tags visible after late save responses even if the local tag catalog shrinks", async () => {
     const saveRequest = deferred<any>()
     const tagVip = defaultPoolTags[0]
     const tagBurstSafe = defaultPoolTags[1]
@@ -1071,17 +1071,15 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     await flushAsync()
 
     expect(document.body.textContent).toContain("vip")
-    expect(document.body.textContent).not.toContain("burst-safe")
-    expect(saveAccount).toHaveBeenNthCalledWith(
-      2,
-      8,
-      expect.objectContaining({
-        tagIds: [tagVip.id],
-      }),
-    )
+    expect(document.body.textContent).toContain("burst-safe")
+    const secondPayload = saveAccount.mock.calls[1]?.[1] as Record<
+      string,
+      unknown
+    >
+    expect(secondPayload.tagIds).toBeUndefined()
   })
 
-  it("preserves server tag ids that are missing from the local tag catalog when saving unrelated edits", async () => {
+  it("does not send tag ids when saving unrelated edits", async () => {
     const tagVip = defaultPoolTags[0]
     const unknownServerTag = {
       id: 999,
@@ -1133,9 +1131,10 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
       8,
       expect.objectContaining({
         note: "Edited note",
-        tagIds: [tagVip.id, unknownServerTag.id],
       }),
     )
+    const payload = saveAccount.mock.calls[0]?.[1] as Record<string, unknown>
+    expect(payload.tagIds).toBeUndefined()
   })
 
   it("reopens with the saved detail after the save completes while the drawer is closed", async () => {
@@ -1570,7 +1569,7 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     expect((noteInput as HTMLTextAreaElement).value).toBe("Backup note")
   })
 
-  it("keeps the add-tag picker open across same-session detail rerenders", async () => {
+  it("does not render add-tag controls across same-session detail rerenders", async () => {
     const item = createApiKeyItem(8, "Gateway Key")
     const tagVip = defaultPoolTags[0]
     const tagBurstSafe = defaultPoolTags[1]
@@ -1601,14 +1600,7 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     await flushAsync()
     clickTab(/Edit/i)
     await flushAsync()
-    const addTagButton = clickButton(/Add tag/i)
-    await flushAsync()
-
-    const searchInput = document.body.querySelector(
-      'input[placeholder="Search existing tags..."]',
-    ) as HTMLInputElement
-    expect(searchInput).not.toBeNull()
-    expect(addTagButton.getAttribute("aria-expanded")).toBe("true")
+    expect(findButton(/Add tag/i)).toBeUndefined()
 
     state = {
       ...state,
@@ -1621,21 +1613,8 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     rerenderDetailDrawer(8)
     await flushAsync()
 
-    const refreshedSearchInput = document.body.querySelector(
-      'input[placeholder="Search existing tags..."]',
-    ) as HTMLInputElement
-    expect(refreshedSearchInput).not.toBeNull()
-    expect(document.activeElement).toBe(refreshedSearchInput)
-    expect(document.body.querySelector("[cmdk-list]")).not.toBeNull()
-    expect(addTagButton.getAttribute("aria-expanded")).toBe("true")
-
-    clickCommandItem(/burst-safe/i)
-    await flushAsync()
-
-    expect(addTagButton.getAttribute("aria-expanded")).toBe("true")
-    expect(
-      document.body.querySelector('button[aria-label="burst-safe more actions"]'),
-    ).not.toBeNull()
+    expect(findButton(/Add tag/i)).toBeUndefined()
+    expect(document.body.textContent).toContain("vip")
   })
 
   it("edits oauth email in the existing edit tab field", async () => {

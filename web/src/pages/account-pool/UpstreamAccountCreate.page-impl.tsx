@@ -4,7 +4,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
-import { usePoolTags } from "../../hooks/usePoolTags";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import type {
   ImportOauthCredentialFilePayload,
@@ -139,7 +138,6 @@ export default function UpstreamAccountCreatePage() {
     saveGroupNote,
     deleteGroupNote,
   } = useUpstreamAccounts();
-  const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags();
   const availableModelOptions = useAvailableModelOptions(writesEnabled);
   const notifyMotherSwitches = useMotherSwitchNotifications();
 
@@ -201,9 +199,7 @@ export default function UpstreamAccountCreatePage() {
     () => draft?.oauth?.isMother === true,
   );
   const [oauthNote, setOauthNote] = useState(() => draft?.oauth?.note ?? "");
-  const [oauthTagIds, setOauthTagIds] = useState<number[]>(
-    () => draft?.oauth?.tagIds ?? [],
-  );
+  const [oauthTagIds] = useState<number[]>([]);
   const [oauthCallbackUrl, setOauthCallbackUrl] = useState(
     () => draft?.oauth?.callbackUrl ?? "",
   );
@@ -255,9 +251,7 @@ export default function UpstreamAccountCreatePage() {
     () => draft?.apiKey?.isMother === true,
   );
   const [apiKeyNote, setApiKeyNote] = useState(() => draft?.apiKey?.note ?? "");
-  const [apiKeyTagIds, setApiKeyTagIds] = useState<number[]>(
-    () => draft?.apiKey?.tagIds ?? [],
-  );
+  const [apiKeyTagIds] = useState<number[]>([]);
   const [apiKeyValue, setApiKeyValue] = useState(
     () => draft?.apiKey?.apiKeyValue ?? "",
   );
@@ -302,18 +296,12 @@ export default function UpstreamAccountCreatePage() {
   const [batchDefaultGroupName, setBatchDefaultGroupName] = useState(
     () => draft?.batchOauth?.defaultGroupName ?? "",
   );
-  const [batchTagIds, setBatchTagIds] = useState<number[]>(
-    () => draft?.batchOauth?.tagIds ?? [],
-  );
-  const batchSharedTagSyncEnabledRef = useRef(
-    Object.prototype.hasOwnProperty.call(draft?.batchOauth ?? {}, "tagIds"),
-  );
+  const [batchTagIds] = useState<number[]>([]);
+  const batchSharedTagSyncEnabledRef = useRef(false);
   const [importGroupName, setImportGroupName] = useState(
     () => draft?.import?.defaultGroupName ?? "",
   );
-  const [importTagIds, setImportTagIds] = useState<number[]>(
-    () => draft?.import?.tagIds ?? [],
-  );
+  const [importTagIds] = useState<number[]>([]);
   const [importPasteDraft, setImportPasteDraft] = useState("");
   const [importPasteError, setImportPasteError] = useState<string | null>(null);
   const [importPasteBusy, setImportPasteBusy] = useState(false);
@@ -341,7 +329,6 @@ export default function UpstreamAccountCreatePage() {
   const importValidationEventSourceRef = useRef<EventSource | null>(null);
   const importValidationEventCleanupRef = useRef<(() => void) | null>(null);
   const importValidationJobIdRef = useRef<string | null>(null);
-  const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([]);
   const [groupUsage, setGroupUsage] = useState(() =>
     readUpstreamAccountGroupUsage(),
   );
@@ -1424,24 +1411,6 @@ export default function UpstreamAccountCreatePage() {
   const oauthMailboxAddress =
     activeOauthMailboxSession?.emailAddress ?? oauthMailboxInput;
 
-  const handleCreateTag = async (payload: Parameters<typeof createTag>[0]) => {
-    const detail = await createTag(payload);
-    setPageCreatedTagIds((current) =>
-      current.includes(detail.id) ? current : [...current, detail.id],
-    );
-    return detail;
-  };
-
-  const handleDeleteTag = async (tagId: number) => {
-    await deleteTag(tagId);
-    setPageCreatedTagIds((current) =>
-      current.filter((value) => value !== tagId),
-    );
-    setOauthTagIds((current) => current.filter((value) => value !== tagId));
-    setApiKeyTagIds((current) => current.filter((value) => value !== tagId));
-    setBatchTagIds((current) => current.filter((value) => value !== tagId));
-  };
-
   useEffect(() => {
     if (isRelinking) {
       setActiveTab("oauth");
@@ -1495,11 +1464,6 @@ export default function UpstreamAccountCreatePage() {
     setOauthEmail((current) => current || relinkAccount.email || "");
     setOauthMailboxInput((current) => current || relinkAccount.email || "");
     setOauthGroupName((current) => current || relinkAccount.groupName || "");
-    setOauthTagIds((current) =>
-      current.length > 0
-        ? current
-        : (relinkAccount.tags ?? []).map((tag) => tag.id),
-    );
     setOauthIsMother((current) => current || relinkAccount.isMother);
     if ("note" in relinkAccount) {
       const relinkNote = relinkAccount.note;
@@ -2015,6 +1979,7 @@ export default function UpstreamAccountCreatePage() {
     importGroupName,
     importGroupProxyState,
     importOauthAccounts,
+    resolveRequiredGroupProxyState,
     resolveGroupSingleAccountRotationEnabledForName,
     importPasteDraft,
     importPasteDraftRef,
@@ -2080,7 +2045,6 @@ export default function UpstreamAccountCreatePage() {
     apiKeyNote,
     apiKeyPrimaryLimit,
     apiKeySecondaryLimit,
-    apiKeyTagIds,
     apiKeyUpstreamBaseUrl,
     apiKeyUpstreamBaseUrlError,
     apiKeyValue,
@@ -2185,60 +2149,6 @@ export default function UpstreamAccountCreatePage() {
     },
     { total: 0, draft: 0, pending: 0, completed: 0 },
   );
-  const tagFieldLabels = {
-    label: t("accountPool.tags.field.label"),
-    add: t("accountPool.tags.field.add"),
-    empty: t("accountPool.tags.field.empty"),
-    searchPlaceholder: t("accountPool.tags.field.searchPlaceholder"),
-    searchEmpty: t("accountPool.tags.field.searchEmpty"),
-    createInline: (value: string) =>
-      t("accountPool.tags.field.createInline", {
-        value: value || t("accountPool.tags.field.newTag"),
-      }),
-    selectedFromCurrentPage: t("accountPool.tags.field.currentPage"),
-    remove: t("accountPool.tags.field.remove"),
-    deleteAndRemove: t("accountPool.tags.field.deleteAndRemove"),
-    edit: t("accountPool.tags.field.edit"),
-    createTitle: t("accountPool.tags.dialog.createTitle"),
-    editTitle: t("accountPool.tags.dialog.editTitle"),
-    dialogDescription: t("accountPool.tags.dialog.description"),
-    name: t("accountPool.tags.dialog.name"),
-    namePlaceholder: t("accountPool.tags.dialog.namePlaceholder"),
-    blockNewConversations: t("accountPool.tags.dialog.blockNewConversations"),
-    forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
-    allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
-    allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
-    forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
-    forbidCutIn: t("accountPool.tags.dialog.forbidCutIn"),
-    priorityTier: t("accountPool.tags.dialog.priorityTier"),
-    priorityPrimary: t("accountPool.tags.dialog.priorityPrimary"),
-    priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
-    priorityFallback: t("accountPool.tags.dialog.priorityFallback"),
-    fastModeRewriteMode: t("accountPool.tags.dialog.fastModeRewriteMode"),
-    fastModeKeepOriginal: t("accountPool.tags.dialog.fastModeKeepOriginal"),
-    fastModeFillMissing: t("accountPool.tags.dialog.fastModeFillMissing"),
-    fastModeForceAdd: t("accountPool.tags.dialog.fastModeForceAdd"),
-    fastModeForceRemove: t("accountPool.tags.dialog.fastModeForceRemove"),
-    concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
-    concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
-    currentValue: t("accountPool.tags.dialog.currentValue"),
-    unlimited: t("accountPool.tags.dialog.unlimited"),
-    availableModels: t("accountPool.tags.dialog.availableModels"),
-    availableModelsHint: t("accountPool.tags.dialog.availableModelsHint"),
-    availableModelsSearchPlaceholder: t("accountPool.tags.dialog.availableModelsSearchPlaceholder"),
-    availableModelsEmpty: t("accountPool.tags.dialog.availableModelsEmpty"),
-    availableModelsAll: t("accountPool.tags.dialog.availableModelsAll"),
-    availableModelsCustomLabel: (value: string) =>
-      t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
-    availableModelsAddCustom: t("accountPool.tags.dialog.availableModelsAddCustom"),
-    availableModelsInherited: t("accountPool.tags.dialog.availableModelsInherited"),
-    availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
-    cancel: t("accountPool.tags.dialog.cancel"),
-    save: t("accountPool.tags.dialog.save"),
-    createAction: t("accountPool.tags.dialog.createAction"),
-    validation: t("accountPool.tags.dialog.validation"),
-  };
-
   const viewContext = {
     GROUP_UPSTREAM_429_RETRY_OPTIONS,
     accountKindLabel,
@@ -2276,9 +2186,7 @@ export default function UpstreamAccountCreatePage() {
     batchRowStatus,
     batchRowStatusDetail,
     batchRows,
-    batchSharedTagSyncEnabledRef,
     batchStatusVariant,
-    batchTagIds,
     buildActionTooltip,
     busyAction,
     clearOauthMailboxSession,
@@ -2330,8 +2238,6 @@ export default function UpstreamAccountCreatePage() {
     handleCopySingleMailboxCode,
     handleCreateApiKey,
     handleApiKeyGroupCreateRequest,
-    handleCreateTag,
-    handleDeleteTag,
     handleGenerateOauthMailbox,
     handleGenerateOauthUrl,
     handleResolveOauthEmailChoice,
@@ -2359,7 +2265,6 @@ export default function UpstreamAccountCreatePage() {
     importPasteError,
     importSelectionFeedback,
     importSelectionLabel,
-    importTagIds,
     importValidationDialogOpen,
     importValidationState,
     invalidateRelinkPendingOauthSessionForMailboxChange,
@@ -2398,10 +2303,8 @@ export default function UpstreamAccountCreatePage() {
     oauthMailboxTone,
     oauthNote,
     oauthSessionActive,
-    oauthTagIds,
     openDuplicateDetailDialog,
     openGroupNoteEditor,
-    pageCreatedTagIds,
     refreshClockMs,
     refresh,
     relinkDetailError,
@@ -2423,12 +2326,10 @@ export default function UpstreamAccountCreatePage() {
     setApiKeyNote,
     setApiKeyPrimaryLimit,
     setApiKeySecondaryLimit,
-    setApiKeyTagIds,
     setApiKeyUpstreamBaseUrl,
     setApiKeyValue,
     setBatchManualCopyRowId,
     setBatchRows,
-    setBatchTagIds,
     setDuplicateDetail,
     setDuplicateDetailOpen,
     setGroupNoteEditor,
@@ -2438,7 +2339,6 @@ export default function UpstreamAccountCreatePage() {
     setImportPasteDraftSerial,
     setImportPasteError,
     setImportSelectionFeedback,
-    setImportTagIds,
     setManualCopyOpen,
     setOauthCallbackUrl,
     setOauthCompletedDetail,
@@ -2449,12 +2349,8 @@ export default function UpstreamAccountCreatePage() {
     setOauthIsMother,
     setOauthMailboxInput,
     setOauthNote,
-    setOauthTagIds,
     t,
-    tagFieldLabels,
-    tagItems,
     toggleBatchNoteExpanded,
-    updateTag,
     writesEnabled,
   };
 

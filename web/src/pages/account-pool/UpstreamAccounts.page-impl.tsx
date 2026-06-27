@@ -187,7 +187,7 @@ export default function UpstreamAccountsPage() {
   const [rosterViewMode, setRosterViewMode] = useState<AccountRosterViewMode>("grid");
   const [visibleGroupedAccountIds, setVisibleGroupedAccountIds] = useState<number[]>([]);
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
-  const [selectedAccountSummaries, setSelectedAccountSummaries] = useState<
+  const [, setSelectedAccountSummaries] = useState<
     Record<number, UpstreamAccountSummary>
   >({});
   const persistedGroupFiltersRef = useRef(initialFilters.groupFilters);
@@ -383,11 +383,6 @@ export default function UpstreamAccountsPage() {
   const [bulkActionError, setBulkActionError] = useState<string | null>(null);
   const [bulkGroupDialogOpen, setBulkGroupDialogOpen] = useState(false);
   const [bulkGroupName, setBulkGroupName] = useState("");
-  const [bulkTagsDialogOpen, setBulkTagsDialogOpen] = useState(false);
-  const [bulkTagMode, setBulkTagMode] = useState<"add_tags" | "remove_tags">(
-    "add_tags",
-  );
-  const [bulkTagIds, setBulkTagIds] = useState<number[]>([]);
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
   const [bulkSyncSnapshot, setBulkSyncSnapshot] =
     useState<BulkUpstreamAccountSyncSnapshot | null>(null);
@@ -489,7 +484,6 @@ export default function UpstreamAccountsPage() {
   const clearBulkSelection = useCallback(() => {
     setSelectedAccountIds([]);
     setBulkGroupDialogOpen(false);
-    setBulkTagsDialogOpen(false);
     setBulkDeleteDialogOpen(false);
   }, []);
   const handleGroupFilterChange = useCallback(
@@ -1205,26 +1199,6 @@ export default function UpstreamAccountsPage() {
     },
     [bulkGroupName, openGroupSettingsEditor],
   );
-  const bulkRemovableTagIds = useMemo(() => {
-    const removableIds = new Set<number>();
-    for (const summary of Object.values(selectedAccountSummaries)) {
-      for (const tag of summary.tags ?? []) {
-        removableIds.add(tag.id);
-      }
-    }
-    return Array.from(removableIds);
-  }, [selectedAccountSummaries]);
-  const bulkRemovableTagIdSet = useMemo(
-    () => new Set(bulkRemovableTagIds),
-    [bulkRemovableTagIds],
-  );
-  const bulkUnavailableTagIds = useMemo(
-    () =>
-      tagItems
-        .filter((tag) => !bulkRemovableTagIdSet.has(tag.id))
-        .map((tag) => tag.id),
-    [bulkRemovableTagIdSet, tagItems],
-  );
   const handleSelectAccount = (accountId: number) => {
     openUpstreamAccount(accountId);
   };
@@ -1356,7 +1330,6 @@ export default function UpstreamAccountsPage() {
 
   const closeBulkOverlays = useCallback(() => {
     setBulkGroupDialogOpen(false);
-    setBulkTagsDialogOpen(false);
     setBulkDeleteDialogOpen(false);
   }, []);
 
@@ -1405,16 +1378,6 @@ export default function UpstreamAccountsPage() {
       selectedAccountIds.length,
       summarizeBulkAction,
     ],
-  );
-
-  const handleOpenBulkTagsDialog = useCallback(
-    (mode: "add_tags" | "remove_tags") => {
-      setBulkTagMode(mode);
-      setBulkTagIds([]);
-      setBulkTagsDialogOpen(true);
-      setBulkActionError(null);
-    },
-    [],
   );
 
   const applyBulkSyncTerminalState = useCallback(
@@ -2196,32 +2159,6 @@ export default function UpstreamAccountsPage() {
                         type="button"
                         size="sm"
                         variant="secondary"
-                        onClick={() => handleOpenBulkTagsDialog("add_tags")}
-                        disabled={
-                          Boolean(bulkActionBusy) ||
-                          isBulkSyncBusy ||
-                          !writesEnabled
-                        }
-                      >
-                        {t("accountPool.upstreamAccounts.bulk.addTags")}
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => handleOpenBulkTagsDialog("remove_tags")}
-                        disabled={
-                          Boolean(bulkActionBusy) ||
-                          isBulkSyncBusy ||
-                          !writesEnabled
-                        }
-                      >
-                        {t("accountPool.upstreamAccounts.bulk.removeTags")}
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
                         onClick={() => void handleStartBulkSync()}
                         disabled={Boolean(bulkActionBusy) || isBulkSyncBusy}
                       >
@@ -2568,95 +2505,6 @@ export default function UpstreamAccountsPage() {
                 )
               }
               disabled={Boolean(bulkActionBusy) || !writesEnabled}
-            >
-              {t("accountPool.upstreamAccounts.bulk.apply")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={bulkTagsDialogOpen}
-        onOpenChange={(open) =>
-          !bulkActionBusy ? setBulkTagsDialogOpen(open) : undefined
-        }
-      >
-        <DialogContent className="p-0">
-          <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
-            <DialogHeader className="min-w-0 max-w-[28rem]">
-              <DialogTitle>
-                {t(
-                  bulkTagMode === "add_tags"
-                    ? "accountPool.upstreamAccounts.bulk.addTagsDialogTitle"
-                    : "accountPool.upstreamAccounts.bulk.removeTagsDialogTitle",
-                )}
-              </DialogTitle>
-              <DialogDescription>
-                {t("accountPool.upstreamAccounts.bulk.tagsDialogDescription")}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogCloseIcon
-              aria-label={t("accountPool.upstreamAccounts.actions.cancel")}
-              disabled={Boolean(bulkActionBusy)}
-            />
-          </div>
-          <div className="space-y-4 px-6 py-6">
-            <label className="field">
-              <span className="field-label">
-                {t("accountPool.upstreamAccounts.bulk.tagsField")}
-              </span>
-              <AccountTagFilterCombobox
-                tags={tagItems}
-                value={bulkTagIds}
-                prioritizedTagIds={
-                  bulkTagMode === "remove_tags"
-                    ? bulkRemovableTagIds
-                    : undefined
-                }
-                disabledTagIds={
-                  bulkTagMode === "remove_tags"
-                    ? bulkUnavailableTagIds
-                    : undefined
-                }
-                placeholder={t(
-                  "accountPool.upstreamAccounts.bulk.tagsPlaceholder",
-                )}
-                searchPlaceholder={t(
-                  "accountPool.upstreamAccounts.tagFilterSearchPlaceholder",
-                )}
-                emptyLabel={t("accountPool.upstreamAccounts.tagFilterEmpty")}
-                clearLabel={t("accountPool.upstreamAccounts.tagFilterClear")}
-                ariaLabel={t("accountPool.upstreamAccounts.bulk.tagsField")}
-                onValueChange={setBulkTagIds}
-              />
-            </label>
-          </div>
-          <DialogFooter className="border-t border-base-300/80 px-6 py-5">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={closeBulkOverlays}
-              disabled={Boolean(bulkActionBusy)}
-            >
-              {t("accountPool.upstreamAccounts.actions.cancel")}
-            </Button>
-            <Button
-              type="button"
-              onClick={() =>
-                void handleBulkAction(
-                  {
-                    accountIds: selectedAccountIds,
-                    action: bulkTagMode,
-                    tagIds: bulkTagIds,
-                  },
-                  { onSuccess: closeBulkOverlays },
-                )
-              }
-              disabled={
-                Boolean(bulkActionBusy) ||
-                bulkTagIds.length === 0 ||
-                !writesEnabled
-              }
             >
               {t("accountPool.upstreamAccounts.bulk.apply")}
             </Button>

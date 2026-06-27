@@ -109,6 +109,51 @@ async fn ensure_websocket_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<
     .await
 }
 
+pub(crate) async fn cleanup_non_system_tags(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query(
+        r#"
+        UPDATE pool_oauth_login_sessions
+        SET tag_ids_json = NULL
+        WHERE tag_ids_json IS NOT NULL
+        "#,
+    )
+    .execute(tx.as_mut())
+    .await?;
+    sqlx::query(
+        r#"
+        DELETE FROM pool_upstream_account_tags
+        WHERE tag_id IN (
+            SELECT id
+            FROM pool_tags
+            WHERE system_key IS NULL
+        )
+        "#,
+    )
+    .execute(tx.as_mut())
+    .await?;
+    sqlx::query(
+        r#"
+        DELETE FROM pool_tags
+        WHERE system_key IS NULL
+        "#,
+    )
+    .execute(tx.as_mut())
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) fn reject_manual_tag_ids(tag_ids: &[i64]) -> Result<(), (StatusCode, String)> {
+    if tag_ids.is_empty() {
+        return Ok(());
+    }
+    Err((
+        StatusCode::BAD_REQUEST,
+        "manual tag assignment is no longer supported; omit tagIds".to_string(),
+    ))
+}
+
 pub(crate) async fn ensure_account_has_unsupported_model_tag(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -2100,7 +2145,7 @@ async fn load_tag_summaries(
         FROM pool_tags tag
         LEFT JOIN pool_upstream_account_tags link ON link.tag_id = tag.id
         LEFT JOIN pool_upstream_accounts account ON account.id = link.account_id
-        WHERE 1 = 1
+        WHERE tag.system_key IS NOT NULL
         "#,
     );
     if let Some(search) = params
@@ -2810,7 +2855,6 @@ async fn apply_bulk_upstream_account_action(
     account_id: i64,
     action: &str,
     group_name: Option<String>,
-    tag_ids: Vec<i64>,
 ) -> Result<(), (StatusCode, String)> {
     let payload = match action {
         BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE => UpdateUpstreamAccountRequest {
@@ -2873,48 +2917,6 @@ async fn apply_bulk_upstream_account_action(
             tag_ids: None,
             routing_rule: None,
         },
-        BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS | BULK_UPSTREAM_ACCOUNT_ACTION_REMOVE_TAGS => {
-            let current_tag_ids = load_account_tag_map(&state.pool, &[account_id])
-                .await
-                .map_err(internal_error_tuple)?
-                .remove(&account_id)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|tag| tag.id)
-                .collect::<BTreeSet<_>>();
-            let tag_id_set = tag_ids.into_iter().collect::<BTreeSet<_>>();
-            let next_tag_ids = if action == BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS {
-                current_tag_ids
-                    .union(&tag_id_set)
-                    .copied()
-                    .collect::<Vec<_>>()
-            } else {
-                current_tag_ids
-                    .difference(&tag_id_set)
-                    .copied()
-                    .collect::<Vec<_>>()
-            };
-            UpdateUpstreamAccountRequest {
-                display_name: None,
-                email: OptionalField::Missing,
-                group_name: None,
-                group_bound_proxy_keys: None,
-                group_node_shunt_enabled: None,
-                group_single_account_rotation_enabled: None,
-                note: None,
-                group_note: None,
-                concurrency_limit: None,
-                upstream_base_url: OptionalField::Missing,
-                enabled: None,
-                is_mother: None,
-                api_key: None,
-                local_primary_limit: None,
-                local_secondary_limit: None,
-                local_limit_unit: None,
-                tag_ids: Some(next_tag_ids),
-                routing_rule: None,
-            }
-        }
         BULK_UPSTREAM_ACCOUNT_ACTION_DELETE => {
             state
                 .upstream_accounts

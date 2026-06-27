@@ -343,7 +343,10 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         existing_row.note.clone()
     };
     let tag_ids = match metadata.tag_ids.clone() {
-        Some(values) => validate_tag_ids(&state.pool, &values).await?,
+        Some(values) => {
+            reject_manual_tag_ids(&values)?;
+            load_external_account_tag_ids(&state.pool, existing_row.id).await?
+        }
         None => load_external_account_tag_ids(&state.pool, existing_row.id).await?,
     };
     let is_mother = metadata.is_mother.unwrap_or(existing_row.is_mother != 0);
@@ -585,7 +588,10 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
         .or(target_group_name);
     let note = normalize_optional_text(payload.metadata.note.clone());
     let tag_ids = match payload.metadata.tag_ids.clone() {
-        Some(values) => validate_tag_ids(&state.pool, &values).await?,
+        Some(values) => {
+            reject_manual_tag_ids(&values)?;
+            Vec::new()
+        }
         None => Vec::new(),
     };
     let is_mother = payload.metadata.is_mother.unwrap_or(false);
