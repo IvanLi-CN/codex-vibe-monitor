@@ -18,6 +18,7 @@ import type {
   PromptCacheConversation,
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
+  UpstreamAccountActivityResponse,
 } from "../lib/api";
 import {
   formatDashboardWorkingConversationSequenceId,
@@ -251,6 +252,69 @@ function buildRecordFromPreview(
     tRespParseMs: preview.tRespParseMs,
     tPersistMs: preview.tPersistMs,
     tTotalMs: preview.tTotalMs,
+  };
+}
+
+function createUpstreamAccountActivityStoryResponse(): UpstreamAccountActivityResponse {
+  return {
+    range: "today",
+    rangeStart: "2026-04-04T10:00:00Z",
+    rangeEnd: "2026-04-04T10:05:00Z",
+    accounts: [
+      {
+        upstreamAccountId: 42,
+        displayName: "Pool Alpha",
+        groupName: "Primary",
+        planType: "enterprise",
+        requestCount: 8,
+        successCount: 6,
+        failureCount: 2,
+        nonSuccessCount: 2,
+        totalTokens: 3200,
+        successTokens: 2800,
+        nonSuccessTokens: 400,
+        cacheHitRate: 0.25,
+        tokensPerMinute: 640,
+        spendRate: 0.12,
+        firstByteAvgMs: 420,
+        inProgressInvocationCount: 3,
+        retryInvocationCount: 1,
+        recentInvocations: [
+          createPreview({
+            id: 9901,
+            invokeId: "story-account-1",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+          createPreview({
+            id: 9902,
+            invokeId: "story-account-2",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "success",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+          createPreview({
+            id: 9903,
+            invokeId: "story-account-3",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "failed",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+          createPreview({
+            id: 9904,
+            invokeId: "story-account-4",
+            occurredAt: "2026-04-04T10:02:00Z",
+            status: "pending",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ],
+      },
+    ],
   };
 }
 
@@ -1333,6 +1397,7 @@ function HeadInsertAnchorStory() {
         Auto prepend status: <span className="font-mono">{status}</span>
       </div>
       <DashboardWorkingConversationsSection
+        activeRange="today"
         cards={cards}
         totalMatched={cards.length}
         isLoading={false}
@@ -1688,6 +1753,7 @@ function DrawerPreviewStory({
   initialSelection,
   initialConversationKey,
   historyInvocationsByPromptCacheKey,
+  upstreamAccountActivity,
   theme,
 }: {
   response: PromptCacheConversationsResponse;
@@ -1700,6 +1766,7 @@ function DrawerPreviewStory({
     string,
     PromptCacheConversationInvocationPreview[]
   >;
+  upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
   theme?: "vibe-light" | "vibe-dark";
 }) {
   useStoryTheme(theme);
@@ -1828,6 +1895,17 @@ function DrawerPreviewStory({
         return jsonResponse(buildStoryInvocationSummary(records));
       }
 
+      if (url.pathname === "/api/stats/upstream-account-activity") {
+        return jsonResponse(
+          upstreamAccountActivity ?? {
+            range: "today",
+            rangeStart: "2026-04-04T10:00:00Z",
+            rangeEnd: "2026-04-04T10:05:00Z",
+            accounts: [],
+          },
+        );
+      }
+
       const detailMatch = url.pathname.match(
         /^\/api\/invocations\/(\d+)\/detail$/,
       );
@@ -1879,11 +1957,12 @@ function DrawerPreviewStory({
         window.fetch = originalFetchRef.current;
       }
     };
-  }, [storyMocks]);
+  }, [storyMocks, upstreamAccountActivity]);
 
   return (
     <>
       <DashboardWorkingConversationsSection
+        activeRange="today"
         cards={cards}
         isLoading={false}
         error={null}
@@ -1975,6 +2054,7 @@ type Story = StoryObj<typeof meta>;
 
 export const CurrentAndPrevious: Story = {
   args: {
+    activeRange: "today",
     cards: buildCards(currentAndPreviousResponse),
     isLoading: false,
     error: null,
@@ -1983,6 +2063,7 @@ export const CurrentAndPrevious: Story = {
 
 export const CurrentOnlyPlaceholder: Story = {
   args: {
+    activeRange: "today",
     cards: buildCards(currentOnlyResponse),
     isLoading: false,
     error: null,
@@ -1991,6 +2072,7 @@ export const CurrentOnlyPlaceholder: Story = {
 
 export const RunningOnlyConversation: Story = {
   args: {
+    activeRange: "today",
     cards: buildCards(runningOnlyResponse),
     isLoading: false,
     error: null,
@@ -1999,6 +2081,7 @@ export const RunningOnlyConversation: Story = {
 
 export const AccountPlanBadges: Story = {
   args: {
+    activeRange: "today",
     cards: buildCards(accountPlanBadgeResponse),
     isLoading: false,
     error: null,
@@ -2028,6 +2111,7 @@ export const AccountPlanBadges: Story = {
 
 export const TransportBadgeMixed: Story = {
   args: {
+    activeRange: "today",
     cards: buildCards(transportBadgeResponse),
     isLoading: false,
     error: null,
@@ -2056,6 +2140,7 @@ export const TransportBadgeMixed: Story = {
 
 export const ModelRoutingMismatch: Story = {
   args: {
+    activeRange: "today",
     cards: buildCards(
       createResponse([
         createConversation("pck-model-routing", [
@@ -2078,6 +2163,7 @@ export const ModelRoutingMismatch: Story = {
 
 export const InvocationDrawerOpen: Story = {
   args: {
+    activeRange: "today",
     cards: [],
     isLoading: false,
     error: null,
@@ -2103,6 +2189,7 @@ export const InvocationDrawerOpen: Story = {
 
 export const ModelRoutingDrawerOpen: Story = {
   args: {
+    activeRange: "today",
     cards: [],
     isLoading: false,
     error: null,
@@ -2132,6 +2219,7 @@ export const ModelRoutingDrawerOpen: Story = {
 
 export const InterruptedRecoveryDrawerOpen: Story = {
   args: {
+    activeRange: "today",
     cards: [],
     isLoading: false,
     error: null,
@@ -2157,6 +2245,7 @@ export const InterruptedRecoveryDrawerOpen: Story = {
 
 export const AssignedAccountFailureSemantics: Story = {
   args: {
+    activeRange: "today",
     cards: buildCards(assignedAccountFailureSemanticsResponse),
     isLoading: false,
     error: null,
@@ -2173,6 +2262,7 @@ export const AssignedAccountFailureSemantics: Story = {
 
 export const FailedWithClickableAccount: Story = {
   args: {
+    activeRange: "today",
     cards: [],
     isLoading: false,
     error: null,
@@ -2200,6 +2290,7 @@ export const FailedWithClickableAccount: Story = {
 
 export const SequenceButtonOpensConversationHistory: Story = {
   args: {
+    activeRange: "today",
     cards: [],
     isLoading: false,
     error: null,
@@ -2282,6 +2373,7 @@ export const SequenceButtonOpensConversationHistory: Story = {
 
 export const ConversationHistoryDrawerOpen: Story = {
   args: {
+    activeRange: "today",
     cards: [],
     isLoading: false,
     error: null,
@@ -2309,8 +2401,57 @@ export const ConversationHistoryDrawerOpen: Story = {
   },
 };
 
+export const UpstreamAccountTab: Story = {
+  args: {
+    activeRange: "today",
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation("pck-story-upstream-account", [
+          createPreview({
+            id: 9801,
+            invokeId: "story-working-invoke",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ]),
+      ])}
+      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse()}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+    await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
+    await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
+    await expect(canvas.getByText("繁忙")).toBeInTheDocument();
+    await expect(canvas.queryByText("按调用计数，不按对话去重")).toBeNull();
+    await expect(canvas.queryByText("仍在重试链路中的调用")).toBeNull();
+    await expect(
+      canvas.queryByText("最近 4 条调用里仍有活动或异常，优先从下方最近记录继续排查。"),
+    ).toBeNull();
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the latest four invocations in the selected range.",
+      },
+    },
+  },
+};
+
 export const DrawerInteractionFlow: Story = {
   args: {
+    activeRange: "today",
     cards: [],
     isLoading: false,
     error: null,
@@ -2353,6 +2494,7 @@ export const DrawerInteractionFlow: Story = {
 
 export const StateGallery: Story = {
   args: {
+    activeRange: "today",
     cards: buildCards(wideDesktopResponse),
     isLoading: false,
     error: null,
@@ -2361,6 +2503,7 @@ export const StateGallery: Story = {
 
 export const LoadingState: Story = {
   args: {
+    activeRange: "today",
     cards: [],
     totalMatched: 0,
     isLoading: true,
@@ -2370,6 +2513,7 @@ export const LoadingState: Story = {
 
 export const EmptyState: Story = {
   args: {
+    activeRange: "today",
     cards: [],
     totalMatched: 0,
     isLoading: false,
@@ -2379,6 +2523,7 @@ export const EmptyState: Story = {
 
 export const ErrorState: Story = {
   args: {
+    activeRange: "today",
     cards: [],
     totalMatched: 0,
     isLoading: false,
@@ -2388,6 +2533,7 @@ export const ErrorState: Story = {
 
 export const Mobile390: Story = {
   args: {
+    activeRange: "today",
     cards: buildCards(wideDesktopResponse),
     totalMatched: wideDesktopResponse.conversations.length,
     isLoading: false,
@@ -2406,6 +2552,7 @@ export const Mobile390: Story = {
 
 export const WideDesktop1660: Story = {
   args: {
+    activeRange: "today",
     cards: buildCards(wideDesktopResponse),
     totalMatched: wideDesktopResponse.conversations.length,
     isLoading: false,
@@ -2424,6 +2571,7 @@ export const WideDesktop1660: Story = {
 
 export const VirtualizedLargeDataset: Story = {
   args: {
+    activeRange: "today",
     cards: virtualizedLargeDatasetCards,
     totalMatched: virtualizedLargeDatasetCards.length,
     isLoading: false,
@@ -2467,6 +2615,7 @@ export const VirtualizedLargeDataset: Story = {
 
 export const HeadInsertAnchorCompensation: Story = {
   args: {
+    activeRange: "today",
     cards: [],
     isLoading: false,
     error: null,
@@ -2539,6 +2688,7 @@ export const HeadInsertAnchorCompensation: Story = {
 
 export const CreatedAtDescendingOrder: Story = {
   args: {
+    activeRange: "today",
     cards: createdAtDescendingOrderCards,
     isLoading: false,
     error: null,

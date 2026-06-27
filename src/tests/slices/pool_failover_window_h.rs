@@ -11162,7 +11162,7 @@ async fn account_scoped_summary_and_timeseries_filter_by_payload_upstream_accoun
 }
 
 #[tokio::test]
-async fn summary_reports_distinct_in_progress_prompt_cache_conversations() {
+async fn summary_reports_invocation_based_in_progress_counts() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -11233,8 +11233,8 @@ async fn summary_reports_distinct_in_progress_prompt_cache_conversations() {
 
     let Json(stats) = fetch_stats(State(state.clone()))
         .await
-        .expect("fetch stats with in-progress conversations");
-    assert_eq!(stats.in_progress_conversation_count, Some(2));
+        .expect("fetch stats with in-progress invocations");
+    assert_eq!(stats.in_progress_conversation_count, Some(3));
 
     let Json(summary) = fetch_summary(
         State(state),
@@ -11246,8 +11246,8 @@ async fn summary_reports_distinct_in_progress_prompt_cache_conversations() {
         }),
     )
     .await
-    .expect("fetch today summary with in-progress conversations");
-    assert_eq!(summary.in_progress_conversation_count, Some(2));
+    .expect("fetch today summary with in-progress invocations");
+    assert_eq!(summary.in_progress_conversation_count, Some(3));
 }
 
 #[tokio::test]
@@ -11326,7 +11326,7 @@ async fn empty_summary_response_keeps_live_in_progress_conversation_count() {
     assert_eq!(response.failure_count, 0);
     assert_eq!(response.total_tokens, 0);
     assert_f64_close(response.total_cost, 0.0);
-    assert_eq!(response.in_progress_conversation_count, Some(2));
+    assert_eq!(response.in_progress_conversation_count, Some(3));
     assert_eq!(response.in_progress_retry_conversation_count, Some(0));
     assert_eq!(response.in_progress_avg_wait_ms, None);
     assert_eq!(response.non_success_cost, Some(0.0));
@@ -11485,8 +11485,8 @@ async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
     .await
     .expect("fetch today summary with augmentation fields");
 
-    assert_eq!(summary.in_progress_conversation_count, Some(3));
-    assert_eq!(summary.in_progress_retry_conversation_count, Some(1));
+    assert_eq!(summary.in_progress_conversation_count, Some(4));
+    assert_eq!(summary.in_progress_retry_conversation_count, Some(2));
     assert_f64_close(
         summary
             .in_progress_avg_wait_ms
@@ -11612,6 +11612,191 @@ async fn account_scoped_natural_day_summary_keeps_augmentation_fields_scoped() {
             .expect("account-scoped in-progress wait should exist"),
         1700.0,
     );
+}
+
+#[tokio::test]
+async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_live_counts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(42_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Pool Alpha")
+    .bind("Primary")
+    .bind("enterprise")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream activity account");
+
+    let base_local = Utc::now().with_timezone(&Shanghai).naive_local();
+    for (
+        id,
+        invoke_id,
+        status,
+        total_tokens,
+        cost,
+        cache_input_tokens,
+        ttfb_ms,
+        payload,
+        error_message,
+        failure_kind,
+    ) in [
+        (
+            601_i64,
+            "upstream-activity-running",
+            "running",
+            100_i64,
+            0.10_f64,
+            20_i64,
+            Some(410.0_f64),
+            json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
+            None,
+            None,
+        ),
+        (
+            602_i64,
+            "upstream-activity-success",
+            "success",
+            300_i64,
+            0.30_f64,
+            60_i64,
+            Some(430.0_f64),
+            json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
+            None,
+            None,
+        ),
+        (
+            603_i64,
+            "upstream-activity-failed",
+            "failed",
+            200_i64,
+            0.20_f64,
+            40_i64,
+            Some(450.0_f64),
+            json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
+            Some("upstream failed"),
+            Some("upstream_response_failed"),
+        ),
+        (
+            604_i64,
+            "upstream-activity-pending-retry",
+            "pending",
+            50_i64,
+            0.05_f64,
+            10_i64,
+            None,
+            json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
+            None,
+            None,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                cache_input_tokens,
+                error_message,
+                failure_kind,
+                t_upstream_ttfb_ms,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(format_naive(
+            base_local
+                .checked_sub_signed(ChronoDuration::seconds((605_i64 - id) * 10))
+                .expect("valid upstream account activity time"),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(cache_input_tokens)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind(ttfb_ms)
+        .bind(payload)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert upstream account activity invocation");
+    }
+
+    let Json(activity) = fetch_upstream_account_activity(
+        State(state.clone()),
+        Query(UpstreamAccountActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(4),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch upstream account activity");
+
+    assert_eq!(activity.accounts.len(), 1);
+    let account = activity.accounts.first().expect("activity account");
+    assert_eq!(account.upstream_account_id, 42);
+    assert_eq!(account.display_name, "Pool Alpha");
+    assert_eq!(account.group_name.as_deref(), Some("Primary"));
+    assert_eq!(account.plan_type.as_deref(), Some("enterprise"));
+    assert_eq!(account.request_count, 4);
+    assert_eq!(account.success_count, 1);
+    assert_eq!(account.failure_count, 1);
+    assert_eq!(account.non_success_count, 1);
+    assert_eq!(account.success_tokens, 300);
+    assert_eq!(account.non_success_tokens, 200);
+    assert_eq!(account.in_progress_invocation_count, Some(2));
+    assert_eq!(account.retry_invocation_count, Some(1));
+    assert_eq!(account.recent_invocations.len(), 4);
+    assert_eq!(account.recent_invocations[0].invoke_id, "upstream-activity-pending-retry");
+    assert_eq!(account.recent_invocations[1].invoke_id, "upstream-activity-failed");
+    assert_eq!(account.recent_invocations[2].invoke_id, "upstream-activity-success");
+    assert_eq!(account.recent_invocations[3].invoke_id, "upstream-activity-running");
+
+    let Json(yesterday_activity) = fetch_upstream_account_activity(
+        State(state),
+        Query(UpstreamAccountActivityQuery {
+            range: "yesterday".to_string(),
+            recent_limit: Some(4),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch yesterday upstream account activity");
+
+    assert!(yesterday_activity
+        .accounts
+        .iter()
+        .all(|account| account.in_progress_invocation_count.is_none()));
+    assert!(yesterday_activity
+        .accounts
+        .iter()
+        .all(|account| account.retry_invocation_count.is_none()));
 }
 
 #[tokio::test]

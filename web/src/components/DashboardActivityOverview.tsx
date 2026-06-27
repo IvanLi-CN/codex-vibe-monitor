@@ -7,6 +7,12 @@ import { metricAccent } from '../lib/chartTheme'
 import { recordTodayChartDataCommit } from '../lib/dashboardPerformanceDiagnostics'
 import { useTheme } from '../theme'
 import { DashboardTodayActivityChart } from './DashboardTodayActivityChart'
+import {
+  readPersistedDashboardActivityRange,
+  type DashboardActivityRangeKey,
+  DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
+  persistDashboardActivityRange,
+} from './dashboardActivityRange'
 import { Last24hTenMinuteHeatmap, type MetricKey } from './Last24hTenMinuteHeatmap'
 import { StatsCards } from './StatsCards'
 import { TodayStatsOverview } from './TodayStatsOverview'
@@ -15,16 +21,11 @@ import { SegmentedControl, SegmentedControlItem } from './ui/segmented-control'
 import { UsageCalendar } from './UsageCalendar'
 import { WeeklyHourlyHeatmap } from './WeeklyHourlyHeatmap'
 
-type RangeKey = 'today' | 'yesterday' | '1d' | '7d' | 'usage'
 type NaturalDayChartMetric = MetricKey | 'trend'
 
-export const DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY = 'dashboard.activityOverview.activeRange.v1'
-export const ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX = 'account.activityOverview.activeRange.v1'
-
-const DEFAULT_RANGE: RangeKey = 'today'
 const LIVE_RATE_REFRESH_MS = 15_000
 export const DASHBOARD_TOP_CHART_DATA_COMMIT_INTERVAL_MS = 5_000
-const RANGE_OPTIONS: Array<{ key: RangeKey; labelKey: string }> = [
+const RANGE_OPTIONS: Array<{ key: DashboardActivityRangeKey; labelKey: string }> = [
   { key: 'today', labelKey: 'dashboard.activityOverview.rangeToday' },
   { key: 'yesterday', labelKey: 'dashboard.activityOverview.rangeYesterday' },
   { key: '1d', labelKey: 'dashboard.activityOverview.range24h' },
@@ -41,29 +42,6 @@ const NATURAL_DAY_METRIC_OPTIONS: Array<{ key: NaturalDayChartMetric; labelKey: 
   ...METRIC_OPTIONS,
   { key: 'trend', labelKey: 'chart.trend' },
 ]
-
-function isRangeKey(value: string | null): value is RangeKey {
-  return value === 'today' || value === 'yesterday' || value === '1d' || value === '7d' || value === 'usage'
-}
-
-function readPersistedRange(storageKey: string): RangeKey {
-  if (typeof window === 'undefined') return DEFAULT_RANGE
-  try {
-    const cached = window.localStorage.getItem(storageKey)
-    return isRangeKey(cached) ? cached : DEFAULT_RANGE
-  } catch {
-    return DEFAULT_RANGE
-  }
-}
-
-function persistRange(storageKey: string, range: RangeKey) {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(storageKey, range)
-  } catch {
-    // Ignore storage write failures and keep the UI responsive.
-  }
-}
 
 function useScopedSummary(window: string, upstreamAccountId?: number) {
   return useSummary(
@@ -470,6 +448,8 @@ export interface DashboardActivityOverviewProps {
   testId?: string
   upstreamAccountId?: number
   className?: string
+  activeRange?: DashboardActivityRangeKey
+  onActiveRangeChange?: (range: DashboardActivityRangeKey) => void
 }
 
 export function DashboardActivityOverview({
@@ -478,15 +458,27 @@ export function DashboardActivityOverview({
   testId = 'dashboard-activity-overview',
   upstreamAccountId,
   className = 'surface-panel overflow-visible',
+  activeRange: controlledActiveRange,
+  onActiveRangeChange,
 }: DashboardActivityOverviewProps) {
   const { t } = useTranslation()
   const { themeMode } = useTheme()
-  const [activeRange, setActiveRange] = useState<RangeKey>(() => readPersistedRange(storageKey))
+  const [uncontrolledActiveRange, setUncontrolledActiveRange] = useState<DashboardActivityRangeKey>(
+    () => readPersistedDashboardActivityRange(storageKey),
+  )
   const [metricToday, setMetricToday] = useState<NaturalDayChartMetric>('totalCount')
   const [metricYesterday, setMetricYesterday] = useState<NaturalDayChartMetric>('totalCount')
   const [metric24h, setMetric24h] = useState<MetricKey>('totalCount')
   const [metric7d, setMetric7d] = useState<MetricKey>('totalCount')
   const [metricUsage, setMetricUsage] = useState<MetricKey>('totalCount')
+
+  const activeRange = controlledActiveRange ?? uncontrolledActiveRange
+  const setActiveRange = (range: DashboardActivityRangeKey) => {
+    if (controlledActiveRange == null) {
+      setUncontrolledActiveRange(range)
+    }
+    onActiveRangeChange?.(range)
+  }
 
   const rangeOptions = useMemo(
     () => RANGE_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
@@ -512,8 +504,10 @@ export function DashboardActivityOverview({
           : metricUsage
 
   useEffect(() => {
-    persistRange(storageKey, activeRange)
-  }, [activeRange, storageKey])
+    if (controlledActiveRange == null) {
+      persistDashboardActivityRange(storageKey, activeRange)
+    }
+  }, [activeRange, controlledActiveRange, storageKey])
 
   const setActiveMetric = (metric: NaturalDayChartMetric) => {
     if (activeRange === 'today') {

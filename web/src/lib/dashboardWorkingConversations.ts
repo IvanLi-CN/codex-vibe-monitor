@@ -112,7 +112,7 @@ export function hashDashboardWorkingConversationKey(value: string) {
   return (hash >>> 0).toString(16).padStart(8, "0").toUpperCase();
 }
 
-function buildInvocationModel(
+export function buildDashboardWorkingConversationInvocationModel(
   preview: PromptCacheConversationInvocationPreview,
 ): DashboardWorkingConversationInvocationModel {
   const record = buildInvocationFromPromptCachePreview(preview);
@@ -165,7 +165,7 @@ function buildPendingCardModel(
   if (!normalizedPromptCacheKey) return null;
 
   const invocations = conversation.recentInvocations
-    .map(buildInvocationModel)
+    .map(buildDashboardWorkingConversationInvocationModel)
     .sort(sortInvocationsByOccurredAtDesc);
   const currentInvocation = invocations[0];
   if (!currentInvocation) return null;

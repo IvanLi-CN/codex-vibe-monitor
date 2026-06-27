@@ -1204,6 +1204,26 @@ async fn load_completed_invocation_archive_paths_in_range(
         .map_err(Into::into)
 }
 
+pub(crate) async fn load_completed_invocation_archives_in_range(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<Vec<(String, Option<String>, Option<String>, Option<String>)>> {
+    Ok(
+        load_completed_invocation_archive_paths_in_range(executor, range)
+            .await?
+            .into_iter()
+            .map(|row| {
+                (
+                    row.file_path,
+                    row.coverage_start_at,
+                    row.coverage_end_at,
+                    row.historical_rollups_materialized_at,
+                )
+            })
+            .collect(),
+    )
+}
+
 async fn load_invocation_archives_missing_effective_rollup_target(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     target: &str,
@@ -1344,6 +1364,129 @@ async fn open_invocation_archive_batch_pool(
     };
 
     Ok(Some((archive_pool, temp_cleanup)))
+}
+
+async fn query_upstream_account_invocation_preview_rows_from_executor<'e, E>(
+    executor: E,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<crate::api::UpstreamAccountInvocationPreviewRow>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, occurred_at, ");
+    query
+        .push(crate::api::invocation_display_status_sql())
+        .push(" AS status, ")
+        .push(crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" AS failure_class, ")
+        .push(crate::api::INVOCATION_ROUTE_MODE_SQL)
+        .push(" AS route_mode, model, ")
+        .push(crate::api::INVOCATION_REQUEST_MODEL_SQL)
+        .push(" AS request_model, ")
+        .push(crate::api::INVOCATION_RESPONSE_MODEL_SQL)
+        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
+        .push(crate::api::INVOCATION_REASONING_EFFORT_SQL)
+        .push(" AS reasoning_effort, error_message, ")
+        .push(crate::api::INVOCATION_FAILURE_KIND_SQL)
+        .push(" AS failure_kind, CASE WHEN ")
+        .push(crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, ")
+        .push(crate::api::INVOCATION_PROXY_DISPLAY_SQL)
+        .push(" AS proxy_display_name, ")
+        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" AS upstream_account_id, ")
+        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
+        .push(" AS upstream_account_name, ")
+        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL)
+        .push(" AS upstream_account_plan_type, ")
+        .push(crate::api::INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
+        .push(" AS response_content_encoding, ")
+        .push(crate::api::INVOCATION_TRANSPORT_SQL)
+        .push(" AS transport, ")
+        .push(crate::api::INVOCATION_COMPACTION_REQUEST_KIND_SQL)
+        .push(" AS compaction_request_kind, ")
+        .push(crate::api::INVOCATION_COMPACTION_RESPONSE_KIND_SQL)
+        .push(" AS compaction_response_kind, ")
+        .push(crate::api::INVOCATION_IMAGE_INTENT_SQL)
+        .push(
+            " AS image_intent, \
+             CASE \
+               WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
+                 THEN json_extract(payload, '$.requestedServiceTier') \
+               WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text' \
+                 THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier, \
+             CASE \
+               WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
+                 THEN json_extract(payload, '$.serviceTier') \
+               WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
+                 THEN json_extract(payload, '$.service_tier') END AS service_tier, \
+             ",
+        )
+        .push(crate::api::INVOCATION_BILLING_SERVICE_TIER_SQL)
+        .push(" AS billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ")
+        .push(crate::api::INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
+        .push(" AS downstream_status_code, ")
+        .push(crate::api::INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
+        .push(" AS downstream_error_message, ")
+        .push(crate::api::INVOCATION_ENDPOINT_SQL)
+        .push(
+            " AS endpoint \
+             FROM codex_invocations \
+             WHERE occurred_at >= ",
+        )
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end))
+        .push(" AND ")
+        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" IS NOT NULL");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY occurred_at DESC, id DESC");
+
+    query
+        .build_query_as::<crate::api::UpstreamAccountInvocationPreviewRow>()
+        .fetch_all(executor)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn query_completed_invocation_archive_preview_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+) -> Result<Vec<crate::api::UpstreamAccountInvocationPreviewRow>> {
+    let archive_rows =
+        load_completed_invocation_archive_paths_in_range(pool, Some((range.start, range.end)))
+            .await?;
+    let mut previews = Vec::new();
+
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) =
+            open_invocation_archive_batch_pool(&archive_row, "upstream-account-activity").await?
+        else {
+            continue;
+        };
+        let rows = query_upstream_account_invocation_preview_rows_from_executor(
+            &archive_pool,
+            range,
+            source_scope,
+        )
+        .await?
+        .into_iter()
+        .filter(|row| {
+            !exclude_invocation_ids.is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
+        })
+        .collect::<Vec<_>>();
+        previews.extend(rows);
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok(previews)
 }
 
 #[derive(Debug, Clone, FromRow)]

@@ -26,6 +26,7 @@
 | e8n4q | 加密会话 owner 锁与危险改绑收口                                           | active    | `e8n4q-encrypted-session-owner-guard/SPEC.md`              | `e8n4q-encrypted-session-owner-guard/IMPLEMENTATION.md`              | topic anchor: prompt cache / encrypted session owner       |
 | mmdms | 上游账号列表分组筛选                                                      | active    | `mmdms-upstream-account-roster-group-filters/SPEC.md`      | `mmdms-upstream-account-roster-group-filters/IMPLEMENTATION.md`      | topic anchor: account pool / roster filters                |
 | gz5ns | Dashboard 自然日七卡 KPI 语义与布局重构                                   | active    | `gz5ns-dashboard-natural-day-kpi-semantics/SPEC.md`        | `gz5ns-dashboard-natural-day-kpi-semantics/IMPLEMENTATION.md`        | topic anchor: dashboard / natural-day KPI / account detail |
+| z6ysw | Dashboard 工作区卡片双视图与上游账号活动聚合                              | active    | `z6ysw-dashboard-account-activity-tabs/SPEC.md`            | `z6ysw-dashboard-account-activity-tabs/IMPLEMENTATION.md`            | topic anchor: dashboard / workspace / account activity     |
 
 ## Archived Sources
 

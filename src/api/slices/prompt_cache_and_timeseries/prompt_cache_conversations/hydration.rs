@@ -178,63 +178,7 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         grouped_recent_invocations
             .entry(row.prompt_cache_key.clone())
             .or_default()
-            .push(PromptCacheConversationInvocationPreviewResponse {
-                id: row.id,
-                invoke_id: row.invoke_id,
-                occurred_at: row.occurred_at,
-                status: row.status,
-                failure_class: normalize_trimmed_optional_string(row.failure_class),
-                route_mode: normalize_trimmed_optional_string(row.route_mode),
-                model: normalize_trimmed_optional_string(row.model),
-                request_model: normalize_trimmed_optional_string(row.request_model),
-                response_model: normalize_trimmed_optional_string(row.response_model),
-                total_tokens: row.total_tokens.max(0),
-                cost: row.cost,
-                proxy_display_name: normalize_trimmed_optional_string(row.proxy_display_name),
-                upstream_account_id: row.upstream_account_id,
-                upstream_account_name: normalize_trimmed_optional_string(row.upstream_account_name),
-                upstream_account_plan_type: normalize_trimmed_optional_string(
-                    row.upstream_account_plan_type,
-                ),
-                endpoint: normalize_trimmed_optional_string(row.endpoint),
-                source: normalize_trimmed_optional_string(row.source),
-                input_tokens: row.input_tokens,
-                output_tokens: row.output_tokens,
-                cache_input_tokens: row.cache_input_tokens,
-                reasoning_tokens: row.reasoning_tokens,
-                reasoning_effort: normalize_trimmed_optional_string(row.reasoning_effort),
-                error_message: normalize_trimmed_optional_string(row.error_message),
-                downstream_status_code: row.downstream_status_code,
-                downstream_error_message: normalize_trimmed_optional_string(
-                    row.downstream_error_message,
-                ),
-                failure_kind: normalize_trimmed_optional_string(row.failure_kind),
-                is_actionable: row.is_actionable.map(|value| value != 0),
-                response_content_encoding: normalize_trimmed_optional_string(
-                    row.response_content_encoding,
-                ),
-                transport: normalize_trimmed_optional_string(row.transport),
-                requested_service_tier: normalize_trimmed_optional_string(
-                    row.requested_service_tier,
-                ),
-                service_tier: normalize_trimmed_optional_string(row.service_tier),
-                billing_service_tier: normalize_trimmed_optional_string(row.billing_service_tier),
-                compaction_request_kind: normalize_trimmed_optional_string(
-                    row.compaction_request_kind,
-                ),
-                compaction_response_kind: normalize_trimmed_optional_string(
-                    row.compaction_response_kind,
-                ),
-                image_intent: normalize_trimmed_optional_string(row.image_intent),
-                t_req_read_ms: row.t_req_read_ms,
-                t_req_parse_ms: row.t_req_parse_ms,
-                t_upstream_connect_ms: row.t_upstream_connect_ms,
-                t_upstream_ttfb_ms: row.t_upstream_ttfb_ms,
-                t_upstream_stream_ms: row.t_upstream_stream_ms,
-                t_resp_parse_ms: row.t_resp_parse_ms,
-                t_persist_ms: row.t_persist_ms,
-                t_total_ms: row.t_total_ms,
-            });
+            .push(prompt_cache_invocation_preview_from_row(row));
     }
 
     let mut grouped_upstream_accounts: HashMap<
@@ -408,6 +352,110 @@ fn normalize_trimmed_optional_string(raw: Option<String>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
+}
+
+pub(crate) fn prompt_cache_invocation_preview_from_row(
+    row: PromptCacheConversationInvocationPreviewRow,
+) -> PromptCacheConversationInvocationPreviewResponse {
+    PromptCacheConversationInvocationPreviewResponse {
+        id: row.id,
+        invoke_id: row.invoke_id,
+        occurred_at: row.occurred_at,
+        status: row.status,
+        failure_class: normalize_trimmed_optional_string(row.failure_class),
+        route_mode: normalize_trimmed_optional_string(row.route_mode),
+        model: normalize_trimmed_optional_string(row.model),
+        request_model: normalize_trimmed_optional_string(row.request_model),
+        response_model: normalize_trimmed_optional_string(row.response_model),
+        total_tokens: row.total_tokens.max(0),
+        cost: row.cost,
+        proxy_display_name: normalize_trimmed_optional_string(row.proxy_display_name),
+        upstream_account_id: row.upstream_account_id,
+        upstream_account_name: normalize_trimmed_optional_string(row.upstream_account_name),
+        upstream_account_plan_type: normalize_trimmed_optional_string(row.upstream_account_plan_type),
+        endpoint: normalize_trimmed_optional_string(row.endpoint),
+        compaction_request_kind: normalize_trimmed_optional_string(row.compaction_request_kind),
+        compaction_response_kind: normalize_trimmed_optional_string(row.compaction_response_kind),
+        image_intent: normalize_trimmed_optional_string(row.image_intent),
+        source: normalize_trimmed_optional_string(row.source),
+        input_tokens: row.input_tokens,
+        output_tokens: row.output_tokens,
+        cache_input_tokens: row.cache_input_tokens,
+        reasoning_tokens: row.reasoning_tokens,
+        reasoning_effort: normalize_trimmed_optional_string(row.reasoning_effort),
+        error_message: normalize_trimmed_optional_string(row.error_message),
+        downstream_status_code: row.downstream_status_code,
+        downstream_error_message: normalize_trimmed_optional_string(row.downstream_error_message),
+        failure_kind: normalize_trimmed_optional_string(row.failure_kind),
+        is_actionable: row.is_actionable.map(|value| value != 0),
+        response_content_encoding: normalize_trimmed_optional_string(
+            row.response_content_encoding,
+        ),
+        transport: normalize_trimmed_optional_string(row.transport),
+        requested_service_tier: normalize_trimmed_optional_string(row.requested_service_tier),
+        service_tier: normalize_trimmed_optional_string(row.service_tier),
+        billing_service_tier: normalize_trimmed_optional_string(row.billing_service_tier),
+        t_req_read_ms: row.t_req_read_ms,
+        t_req_parse_ms: row.t_req_parse_ms,
+        t_upstream_connect_ms: row.t_upstream_connect_ms,
+        t_upstream_ttfb_ms: row.t_upstream_ttfb_ms,
+        t_upstream_stream_ms: row.t_upstream_stream_ms,
+        t_resp_parse_ms: row.t_resp_parse_ms,
+        t_persist_ms: row.t_persist_ms,
+        t_total_ms: row.t_total_ms,
+    }
+}
+
+pub(crate) fn upstream_account_invocation_preview_from_row(
+    row: UpstreamAccountInvocationPreviewRow,
+) -> PromptCacheConversationInvocationPreviewResponse {
+    PromptCacheConversationInvocationPreviewResponse {
+        id: row.id,
+        invoke_id: row.invoke_id,
+        occurred_at: row.occurred_at,
+        status: row.status,
+        failure_class: normalize_trimmed_optional_string(row.failure_class),
+        route_mode: normalize_trimmed_optional_string(row.route_mode),
+        model: normalize_trimmed_optional_string(row.model),
+        request_model: normalize_trimmed_optional_string(row.request_model),
+        response_model: normalize_trimmed_optional_string(row.response_model),
+        total_tokens: row.total_tokens.max(0),
+        cost: row.cost,
+        proxy_display_name: normalize_trimmed_optional_string(row.proxy_display_name),
+        upstream_account_id: Some(row.upstream_account_id),
+        upstream_account_name: normalize_trimmed_optional_string(row.upstream_account_name),
+        upstream_account_plan_type: normalize_trimmed_optional_string(row.upstream_account_plan_type),
+        endpoint: normalize_trimmed_optional_string(row.endpoint),
+        compaction_request_kind: normalize_trimmed_optional_string(row.compaction_request_kind),
+        compaction_response_kind: normalize_trimmed_optional_string(row.compaction_response_kind),
+        image_intent: normalize_trimmed_optional_string(row.image_intent),
+        source: normalize_trimmed_optional_string(row.source),
+        input_tokens: row.input_tokens,
+        output_tokens: row.output_tokens,
+        cache_input_tokens: row.cache_input_tokens,
+        reasoning_tokens: row.reasoning_tokens,
+        reasoning_effort: normalize_trimmed_optional_string(row.reasoning_effort),
+        error_message: normalize_trimmed_optional_string(row.error_message),
+        downstream_status_code: row.downstream_status_code,
+        downstream_error_message: normalize_trimmed_optional_string(row.downstream_error_message),
+        failure_kind: normalize_trimmed_optional_string(row.failure_kind),
+        is_actionable: row.is_actionable.map(|value| value != 0),
+        response_content_encoding: normalize_trimmed_optional_string(
+            row.response_content_encoding,
+        ),
+        transport: normalize_trimmed_optional_string(row.transport),
+        requested_service_tier: normalize_trimmed_optional_string(row.requested_service_tier),
+        service_tier: normalize_trimmed_optional_string(row.service_tier),
+        billing_service_tier: normalize_trimmed_optional_string(row.billing_service_tier),
+        t_req_read_ms: row.t_req_read_ms,
+        t_req_parse_ms: row.t_req_parse_ms,
+        t_upstream_connect_ms: row.t_upstream_connect_ms,
+        t_upstream_ttfb_ms: row.t_upstream_ttfb_ms,
+        t_upstream_stream_ms: row.t_upstream_stream_ms,
+        t_resp_parse_ms: row.t_resp_parse_ms,
+        t_persist_ms: row.t_persist_ms,
+        t_total_ms: row.t_total_ms,
+    }
 }
 
 fn resolve_prompt_cache_upstream_account_label(

@@ -1,0 +1,26 @@
+# Dashboard 工作区卡片双视图与上游账号活动聚合 演进历史（#z6ysw）
+
+> 这里记录会影响 Agent 理解“为什么一步步变成现在这样”的关键演进；单次任务流水账不放这里，规范正文仍以 `./SPEC.md` 为准。
+
+## Decision Trace
+
+- 2026-06-26：创建 active spec，冻结 Dashboard 工作区双 tabs、账号活动跟随总览 range、以及 `usage` 下 disabled 回退的交互边界。
+- 2026-06-26：明确账号视图不是折叠卡、不是四小格，而是单张放大账号卡，上半部摘要、下半部最近 4 条调用记录。
+- 2026-06-26：锁定 summary `inProgressConversationCount` / `inProgressRetryConversationCount` 保留 wire name 但改为 invocation-based 语义，owner-facing 文案同步改成“进行中调用 / 重试调用”。
+- 2026-06-26：明确账号 tab 只能在首次激活后请求数据，未激活时不参与 SSE / records refresh budget。
+- 2026-06-27：收紧账号卡 UI 合同为“紧凑信息卡”，禁止状态说明条与解释性废话常驻显示；请求数 / Token / recent bridge 分解改为卡面只显示色点与数值，完整标签仅在 hover 暴露。
+- 2026-06-27：进一步收紧分解摘要常驻态，连单字 / 缩写短标签也不允许可见；卡面仅保留色点与数值。
+- 2026-06-27：明确 recent 区标题行右侧统计为例外，需显示完整状态文字，并与左侧标题保持垂直对齐；请求数 / Token 分解继续维持“仅色点与数值”。
+- 2026-06-27：锁定账号卡 recent 区必须完整保留 4 条调用记录，且单条 recent 行的信息密度不得低于对话卡片中的调用记录摘要。
+- 2026-06-27：桌面宽屏账号卡固定高度从更高版本收敛到紧凑高度，后续新增信息优先通过行内压缩而不是继续增高卡片。
+
+## Key Reasons / Replacements
+
+- `#gz5ns` 已冻结 Dashboard 顶部自然日 KPI 语义，但没有覆盖工作区 section 的双视图与账号活动聚合边界，因此需要新的 active topic spec 承接。
+- `#t6d9r` 已限制账号详情统计走 account read-model，本 spec 只为 Dashboard 引入“批量账号活动摘要 + recent query”能力，不替代账号详情页的 read-model 责任。
+- `#5932d` 曾冻结 Dashboard in-progress 的严格语义，但 owner-facing 视图已从“按对话观察”演进到“按调用观察”，因此本 spec 覆盖 Dashboard summary owner-facing 语义的后续收口。
+
+## References
+
+- `./SPEC.md`
+- `./IMPLEMENTATION.md`

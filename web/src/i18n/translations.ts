@@ -1777,7 +1777,13 @@ const baseTranslations = {
     "dashboard.section.workingConversationsSubtitle":
       "Shows terminal calls from the last 5 minutes plus any running or pending conversations.",
     "dashboard.section.recentLiveTitle": "Latest {{count}} live records",
-    "dashboard.workingConversations.countBadge": "{{count}} visible",
+    "dashboard.workingConversations.countBadge": "{{count}} conversations",
+    "dashboard.upstreamAccounts.countBadge": "{{count}} active accounts",
+    "dashboard.upstreamAccounts.subtitle":
+      "Shows upstream accounts with activity in the selected overview range plus the latest 4 invocations for each account.",
+    "dashboard.upstreamAccounts.empty": "No active upstream accounts in the selected range.",
+    "dashboard.upstreamAccounts.recentInvocations": "Latest 4 invocations",
+    "dashboard.upstreamAccounts.channelName": "Channel {{name}}",
     "dashboard.workingConversations.empty":
       "No working conversations match the last 5 minutes or active in-flight window.",
     "dashboard.workingConversations.sequenceLabel": "Conversation",
@@ -1816,7 +1822,7 @@ const baseTranslations = {
     "dashboard.today.spendRate": "Spend rate",
     "dashboard.today.responseTime": "Response time",
     "dashboard.today.firstResponseTime": "Time to first byte",
-    "dashboard.today.inProgressConversations": "In-progress conversations",
+    "dashboard.today.inProgressConversations": "In-progress invocations",
     "dashboard.today.parallelConversations": "Parallel conversations",
     "dashboard.today.todayCost": "Today cost",
     "dashboard.today.yesterdayCost": "Yesterday cost",
@@ -1829,7 +1835,7 @@ const baseTranslations = {
     "dashboard.today.responseTimeDescription":
       "Average first-response-byte total from the active tail inside the latest 5-minute window.",
     "dashboard.today.inProgressConversationsDescription":
-      "Current number of unique prompt-cache conversations with a running or pending invocation.",
+      "Current number of running or pending invocations. Multiple in-flight invocations from one conversation are counted separately.",
     "dashboard.today.parallelConversationsDescription":
       "Distinct prompt-cache conversations counted in the latest minute bucket of the selected window.",
     "dashboard.today.successDescription":
@@ -4040,7 +4046,13 @@ const baseTranslations = {
     "dashboard.section.workingConversationsSubtitle":
       "展示最近 5 分钟内有终态调用，或当前仍处于运行中 / 排队中的对话。",
     "dashboard.section.recentLiveTitle": "最近 {{count}} 条实况",
-    "dashboard.workingConversations.countBadge": "当前 {{count}} 条",
+    "dashboard.workingConversations.countBadge": "当前对话 {{count}} 条",
+    "dashboard.upstreamAccounts.countBadge": "当前活动账号 {{count}} 个",
+    "dashboard.upstreamAccounts.subtitle":
+      "展示当前总览范围内有调用的上游账号，以及每个账号最近 4 条调用。",
+    "dashboard.upstreamAccounts.empty": "当前范围内暂无活动上游账号。",
+    "dashboard.upstreamAccounts.recentInvocations": "最近 4 条调用",
+    "dashboard.upstreamAccounts.channelName": "渠道 {{name}}",
     "dashboard.workingConversations.empty":
       "最近 5 分钟内暂无终态调用，且当前也没有运行中 / 排队中的对话。",
     "dashboard.workingConversations.sequenceLabel": "对话序列",
@@ -4074,7 +4086,7 @@ const baseTranslations = {
     "dashboard.today.spendRate": "消费速率",
     "dashboard.today.responseTime": "响应时间",
     "dashboard.today.firstResponseTime": "首字用时",
-    "dashboard.today.inProgressConversations": "进行中对话",
+    "dashboard.today.inProgressConversations": "进行中调用",
     "dashboard.today.parallelConversations": "并行对话",
     "dashboard.today.todayCost": "今日成本",
     "dashboard.today.yesterdayCost": "昨日成本",
@@ -4087,7 +4099,7 @@ const baseTranslations = {
     "dashboard.today.responseTimeDescription":
       "首字总耗时均值，按最近 5 分钟窗口内的活跃尾段计算；无完整样本时显示为空。",
     "dashboard.today.inProgressConversationsDescription":
-      "当前仍存在 running 或 pending 调用的唯一 prompt-cache 对话数量。",
+      "当前仍处于 running 或 pending 状态的调用数；同一对话下的多个进行中调用会分别计数。",
     "dashboard.today.parallelConversationsDescription":
       "所选窗口最后一分钟切片内统计到的唯一 prompt-cache 对话数量。",
     "dashboard.today.successDescription":

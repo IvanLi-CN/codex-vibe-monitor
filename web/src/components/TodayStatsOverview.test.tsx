@@ -18,7 +18,7 @@ vi.mock('../i18n', () => ({
         'dashboard.today.responseTime': 'Response time',
         'dashboard.today.firstResponseTime': 'Time to first byte',
         'dashboard.today.responseTimeDescription': 'Response time uses the latest 5-minute active tail.',
-        'dashboard.today.inProgressConversations': 'In-progress conversations',
+        'dashboard.today.inProgressConversations': 'In-progress invocations',
         'dashboard.today.parallelConversations': 'Parallel conversations',
         'dashboard.today.todayCost': 'Today cost',
         'dashboard.today.yesterdayCost': 'Yesterday cost',
@@ -26,7 +26,7 @@ vi.mock('../i18n', () => ({
         'dashboard.today.yesterdayTokens': 'Yesterday Token',
         'dashboard.today.tokensPerMinuteDescription': 'TPM uses the active tail inside the latest 5-minute window.',
         'dashboard.today.spendRateDescription': 'Spend rate uses the active tail inside the latest 5-minute window.',
-        'dashboard.today.inProgressConversationsDescription': 'Current running or pending prompt-cache conversations.',
+        'dashboard.today.inProgressConversationsDescription': 'Current running or pending invocations, counted per invocation.',
         'dashboard.today.parallelConversationsDescription': 'Distinct prompt-cache conversations counted in the latest minute bucket.',
         'dashboard.today.successDescription': 'Successful calls in the selected day.',
         'dashboard.today.failuresDescription': 'Failed calls in the selected day.',
@@ -244,7 +244,7 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).toContain('TPM')
     expect(host?.textContent).toContain('Spend rate')
     expect(host?.textContent).toContain('Time to first byte')
-    expect(host?.textContent).toContain('In-progress conversations')
+    expect(host?.textContent).toContain('In-progress invocations')
     expect(host?.textContent).toContain('Today cost')
     expect(host?.textContent).toContain('Today Token')
     expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('11')
@@ -282,7 +282,7 @@ describe('TodayStatsOverview', () => {
     expect(grid?.className).toContain('xl:grid-cols-6')
     expect(grid?.className).not.toContain('xl:grid-cols-7')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6)
-    expect(host?.textContent).not.toContain('In-progress conversations')
+    expect(host?.textContent).not.toContain('In-progress invocations')
     expect(host?.textContent).toContain('Time to first byte')
     expect(host?.textContent).toContain('Today cost')
     expect(host?.textContent).toContain('Today Token')
@@ -349,8 +349,9 @@ describe('TodayStatsOverview', () => {
     )
 
     expect(host?.textContent).toContain('Parallel conversations')
-    expect(host?.textContent).not.toContain('In-progress conversations')
-    expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('3')
+    expect(host?.textContent).not.toContain('In-progress invocations')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-retry"]')?.textContent).toContain('—')
+    expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('—')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('2')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('—')
   })
@@ -477,6 +478,36 @@ describe('TodayStatsOverview', () => {
     expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('11')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('2')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('+175%')
+  })
+
+  it('keeps the yesterday retry slot empty for the closed range view', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 42,
+          successCount: 40,
+          failureCount: 2,
+          totalCost: 1.48,
+          totalTokens: 9000,
+          inProgressConversationCount: 11,
+          inProgressRetryConversationCount: 3,
+        }}
+        rate={{
+          tokensPerMinute: 1000.6,
+          spendRate: 0.104,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        parallelWorkStats={buildParallelWorkStats([1, 3], 2, 4)}
+        comparisonParallelWorkStats={buildParallelWorkStats([4], 4, 4)}
+        loading={false}
+        error={null}
+        dayKind="yesterday"
+      />,
+    )
+
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-retry"]')?.textContent).toContain('—')
   })
 
   it('renders TPM as a whole number even when the averaged rate is fractional', () => {

@@ -14,7 +14,7 @@ import type {
 } from '../lib/api'
 import App from '../App'
 import DashboardPage from '../pages/Dashboard'
-import { DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY } from './DashboardActivityOverview'
+import { DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY } from './dashboardActivityRange'
 import { DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY } from '../lib/dashboardPerformanceDiagnostics'
 import {
   FullPageStorySurface,

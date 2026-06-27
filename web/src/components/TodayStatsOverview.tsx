@@ -481,7 +481,10 @@ export function TodayStatsOverview({
     stats,
     parallelWorkStats,
     comparisonParallelWorkStats,
-    { preferSummaryCurrentCount: isToday },
+    {
+      preferSummaryCurrentCount: isToday,
+      allowParallelFallback: dayKind !== 'yesterday',
+    },
   )
   const parallelDelta = percentDelta(parallelSnapshot.currentCount, parallelSnapshot.yesterdayAverage)
   const parallelLabel = isToday
@@ -497,6 +500,9 @@ export function TodayStatsOverview({
   const spendRate = rate?.spendRate ?? 0
   const perConversationTpm = dividePerConversation(tokensPerMinute, stats?.inProgressConversationCount)
   const perConversationSpendRate = dividePerConversation(spendRate, stats?.inProgressConversationCount)
+  const inProgressRetryCount = dayKind === 'yesterday'
+    ? null
+    : (stats?.inProgressRetryConversationCount ?? null)
   const costLabel = isToday ? t('dashboard.today.todayCost') : t('dashboard.today.yesterdayCost')
   const tokensLabel = isToday ? t('dashboard.today.todayTokens') : t('dashboard.today.yesterdayTokens')
   const comparisonLabel = isToday
@@ -632,6 +638,12 @@ export function TodayStatsOverview({
               kind="integer"
               toneClass="text-info"
               valueTestId="today-stats-value-in-progress-conversations"
+              displayText={
+                parallelSnapshot.currentCount == null
+                  ? RATE_UNAVAILABLE_PLACEHOLDER
+                  : undefined
+              }
+              subdued={parallelSnapshot.currentCount == null}
               topRightItem={{
                 label: comparisonLabel,
                 valueSpec: buildPercentValueSpec(parallelDelta, localeTag, { signDisplay: 'exceptZero' }),
@@ -647,7 +659,7 @@ export function TodayStatsOverview({
                 {
                   label: t('dashboard.today.secondary.retry'),
                   valueSpec: buildNumberValueSpec(
-                    stats?.inProgressRetryConversationCount ?? null,
+                    inProgressRetryCount,
                     localeTag,
                     0,
                   ),
