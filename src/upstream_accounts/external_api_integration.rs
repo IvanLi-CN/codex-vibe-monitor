@@ -342,6 +342,8 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
     } else {
         existing_row.note.clone()
     };
+    // Empty tagIds is a compatibility no-op. External metadata writes are not
+    // allowed to clear preserved system tags.
     let tag_ids = match metadata.tag_ids.clone() {
         Some(values) => {
             reject_manual_tag_ids(&values)?;
@@ -587,6 +589,8 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
         .map(|value| value.group_name.clone())
         .or(target_group_name);
     let note = normalize_optional_text(payload.metadata.note.clone());
+    // New external imports no longer accept manual tag mutation; keep the
+    // stored contract stable by tolerating an explicit empty array.
     let tag_ids = match payload.metadata.tag_ids.clone() {
         Some(values) => {
             reject_manual_tag_ids(&values)?;

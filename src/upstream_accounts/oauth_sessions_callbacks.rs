@@ -1478,6 +1478,8 @@ pub(crate) async fn update_upstream_account_inner(
             normalize_image_tool_rewrite_mode(Some(value)).map(|mode| mode.as_str().to_string())
         })
         .transpose()?;
+    // Empty tagIds remains a compatibility no-op. Manual tag mutation is removed,
+    // so account edits must not clear preserved system tags.
     if let Some(values) = payload.tag_ids.as_ref() {
         reject_manual_tag_ids(values)?;
     }
