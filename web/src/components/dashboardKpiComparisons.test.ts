@@ -266,4 +266,44 @@ describe('dashboard KPI comparison helpers', () => {
     expect(snapshot.dayAverage).toBe(2.5)
     expect(snapshot.yesterdayAverage).toBe(2)
   })
+
+  it('keeps currentCount empty when parallel fallback is disabled', () => {
+    const snapshot = buildParallelWorkKpiSnapshot(
+      {
+        totalCount: 2,
+        successCount: 2,
+        failureCount: 0,
+        totalCost: 0.02,
+        totalTokens: 200,
+        inProgressConversationCount: 4,
+      },
+      {
+        current: {
+          rangeStart: 'today',
+          rangeEnd: 'today',
+          bucketSeconds: 60,
+          completeBucketCount: 2,
+          activeBucketCount: 2,
+          minCount: 1,
+          maxCount: 4,
+          avgCount: 2.5,
+          points: [
+            { bucketStart: 'a', bucketEnd: 'b', parallelCount: 1 },
+            { bucketStart: 'b', bucketEnd: 'c', parallelCount: 4 },
+          ],
+        },
+        minute7d: {} as never,
+        hour30d: {} as never,
+        dayAll: {} as never,
+      },
+      null,
+      {
+        preferSummaryCurrentCount: false,
+        allowParallelFallback: false,
+      },
+    )
+
+    expect(snapshot.currentCount).toBeNull()
+    expect(snapshot.dayAverage).toBe(2.5)
+  })
 })

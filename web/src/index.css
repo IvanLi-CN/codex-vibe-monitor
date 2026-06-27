@@ -140,12 +140,18 @@ body {
   font-feature-settings: 'tnum' 1;
 }
 
-* {
+[data-motion-surface] {
   transition:
     background-color 180ms ease,
     border-color 180ms ease,
     color 180ms ease,
     box-shadow 220ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-motion-surface] {
+    transition: none;
+  }
 }
 
 /* Align Storybook docs surfaces with the app theme instead of the default white canvas. */

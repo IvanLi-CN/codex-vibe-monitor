@@ -1,6 +1,14 @@
 import { useEffect, useLayoutEffect, useState } from "react";
+import {
+  DashboardActivityOverview,
+} from "../components/DashboardActivityOverview";
 import { DashboardInvocationDetailDrawer } from "../components/DashboardInvocationDetailDrawer";
-import { DashboardActivityOverview } from "../components/DashboardActivityOverview";
+import {
+  DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
+  persistDashboardActivityRange,
+  readPersistedDashboardActivityRange,
+  type DashboardActivityRangeKey,
+} from "../components/dashboardActivityRange";
 import { DashboardPerformanceDiagnostics } from "../components/DashboardPerformanceDiagnostics";
 import { DashboardWorkingConversationsSection } from "../components/DashboardWorkingConversationsSection";
 import { PromptCacheConversationHistoryDrawer } from "../components/PromptCacheConversationTable";
@@ -17,6 +25,9 @@ import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccoun
 
 export default function DashboardPage() {
   const { t } = useTranslation();
+  const [activeRange, setActiveRange] = useState<DashboardActivityRangeKey>(() =>
+    readPersistedDashboardActivityRange(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY),
+  );
   const [selectedInvocation, setSelectedInvocation] =
     useState<DashboardWorkingConversationInvocationSelection | null>(null);
   const [selectedConversation, setSelectedConversation] =
@@ -45,12 +56,20 @@ export default function DashboardPage() {
     resetDashboardPerformanceDiagnostics();
   }, []);
 
+  useEffect(() => {
+    persistDashboardActivityRange(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, activeRange);
+  }, [activeRange]);
+
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
-      <DashboardActivityOverview />
+      <DashboardActivityOverview
+        activeRange={activeRange}
+        onActiveRangeChange={setActiveRange}
+      />
       <DashboardPerformanceDiagnostics />
 
       <DashboardWorkingConversationsSection
+        activeRange={activeRange}
         cards={cards}
         totalMatched={totalMatched}
         hasMore={hasMore}

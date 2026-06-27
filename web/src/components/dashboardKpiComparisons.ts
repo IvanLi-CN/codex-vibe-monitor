@@ -188,16 +188,20 @@ export function buildParallelWorkKpiSnapshot(
   yesterdayParallelWork: ParallelWorkStatsResponse | null | undefined,
   options: {
     preferSummaryCurrentCount?: boolean
+    allowParallelFallback?: boolean
   } = {},
 ): ParallelWorkKpiSnapshot {
   const preferSummaryCurrentCount = options.preferSummaryCurrentCount ?? false
+  const allowParallelFallback = options.allowParallelFallback ?? true
   const summaryCurrentCount = currentSummary?.inProgressConversationCount ?? null
 
   return {
     currentCount:
       preferSummaryCurrentCount && summaryCurrentCount != null
         ? summaryCurrentCount
-        : latestParallelCount(currentParallelWork?.current),
+        : allowParallelFallback
+          ? latestParallelCount(currentParallelWork?.current)
+          : null,
     dayAverage: currentParallelWork?.current.avgCount ?? null,
     yesterdayAverage: yesterdayParallelWork?.current.avgCount ?? null,
   }

@@ -1206,6 +1206,53 @@ pub(crate) struct PromptCacheConversationInvocationPreviewRow {
     pub(crate) image_intent: Option<String>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct UpstreamAccountInvocationPreviewRow {
+    pub(crate) upstream_account_id: i64,
+    pub(crate) id: i64,
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
+    pub(crate) status: String,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) route_mode: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) request_model: Option<String>,
+    pub(crate) response_model: Option<String>,
+    pub(crate) total_tokens: i64,
+    pub(crate) cost: Option<f64>,
+    pub(crate) source: Option<String>,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) reasoning_tokens: Option<i64>,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) error_message: Option<String>,
+    pub(crate) downstream_status_code: Option<i64>,
+    pub(crate) downstream_error_message: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) is_actionable: Option<i64>,
+    pub(crate) proxy_display_name: Option<String>,
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) upstream_account_plan_type: Option<String>,
+    pub(crate) response_content_encoding: Option<String>,
+    pub(crate) transport: Option<String>,
+    pub(crate) requested_service_tier: Option<String>,
+    pub(crate) service_tier: Option<String>,
+    pub(crate) billing_service_tier: Option<String>,
+    pub(crate) t_req_read_ms: Option<f64>,
+    pub(crate) t_req_parse_ms: Option<f64>,
+    pub(crate) t_upstream_connect_ms: Option<f64>,
+    pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) t_upstream_stream_ms: Option<f64>,
+    pub(crate) t_resp_parse_ms: Option<f64>,
+    pub(crate) t_persist_ms: Option<f64>,
+    pub(crate) t_total_ms: Option<f64>,
+    pub(crate) endpoint: Option<String>,
+    pub(crate) compaction_request_kind: Option<String>,
+    pub(crate) compaction_response_kind: Option<String>,
+    pub(crate) image_intent: Option<String>,
+}
+
 #[derive(Debug, FromRow)]
 pub(crate) struct PromptCacheConversationUpstreamAccountSummaryRow {
     pub(crate) prompt_cache_key: String,
@@ -1327,6 +1374,15 @@ pub(crate) struct ParallelWorkStatsQuery {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountActivityQuery {
+    #[serde(default = "default_range")]
+    pub(crate) range: String,
+    pub(crate) recent_limit: Option<i64>,
+    pub(crate) time_zone: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PerfQuery {
     #[serde(default = "default_range")]
     pub(crate) range: String,
@@ -1340,6 +1396,46 @@ pub(crate) struct PerfStatsResponse {
     pub(crate) range_end: String,
     pub(crate) source: String,
     pub(crate) stages: Vec<PerfStageStats>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountActivityResponse {
+    pub(crate) range: String,
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) accounts: Vec<UpstreamAccountActivityAccountResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountActivityAccountResponse {
+    pub(crate) upstream_account_id: i64,
+    pub(crate) display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) group_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) plan_type: Option<String>,
+    pub(crate) request_count: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) non_success_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) success_tokens: i64,
+    pub(crate) non_success_tokens: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_hit_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) tokens_per_minute: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) spend_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) first_byte_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) in_progress_invocation_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) retry_invocation_count: Option<i64>,
+    pub(crate) recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
 }
 
 #[derive(Debug, Serialize)]

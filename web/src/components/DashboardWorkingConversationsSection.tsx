@@ -17,8 +17,10 @@ import type {
   DashboardWorkingConversationInvocationSelection,
   DashboardWorkingConversationTone,
 } from "../lib/dashboardWorkingConversations";
+import type { UpstreamAccountActivityAccount } from "../lib/api";
 import {
   DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
+  buildDashboardWorkingConversationInvocationModel,
   formatDashboardWorkingConversationSequenceId,
 } from "../lib/dashboardWorkingConversations";
 import { cn } from "../lib/utils";
@@ -34,7 +36,9 @@ import {
 } from "../lib/upstreamAccountBadges";
 import { Alert } from "./ui/alert";
 import { Badge } from "./ui/badge";
+import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Spinner } from "./ui/spinner";
+import { Tooltip } from "./ui/tooltip";
 import {
   FALLBACK_CELL,
   buildInvocationDetailViewModel,
@@ -44,8 +48,11 @@ import {
   renderInvocationModelBadge,
 } from "./invocation-details-shared";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
+import { useDashboardUpstreamAccountActivity } from "../hooks/useDashboardUpstreamAccountActivity";
+import type { DashboardActivityRangeKey } from "./dashboardActivityRange";
 
 interface DashboardWorkingConversationsSectionProps {
+  activeRange: DashboardActivityRangeKey;
   cards: DashboardWorkingConversationCardModel[];
   totalMatched?: number;
   hasMore?: boolean;
@@ -61,10 +68,18 @@ interface DashboardWorkingConversationsSectionProps {
   ) => void;
 }
 
+type DashboardWorkspaceView = "conversations" | "upstreamAccounts";
+
 export interface DashboardWorkingConversationSelection {
   conversationSequenceId: string;
   promptCacheKey: string;
 }
+
+const ACCOUNT_CARD_CLASS_NAME =
+  "flex h-full w-full max-w-full flex-col rounded-[1rem] border border-[rgba(148,163,184,0.32)] bg-base-100/72 p-4 shadow-[0_6px_12px_rgba(15,23,42,0.07)] desktop1660:min-h-[34.5rem]";
+
+const ACCOUNT_CARD_INNER_BORDER_CLASS_NAME = "border-[rgba(148,163,184,0.22)]";
+const ACCOUNT_CARD_INNER_RING_CLASS_NAME = "ring-[rgba(148,163,184,0.22)]";
 
 type StatusMeta = {
   badgeVariant:
@@ -253,6 +268,41 @@ function resolveStatusMeta(
   return base;
 }
 
+function formatAccountPercentValue(
+  value: number | null | undefined,
+  localeTag: string,
+) {
+  if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
+  return new Intl.NumberFormat(localeTag, {
+    style: "percent",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function formatAccountNumberValue(
+  value: number | null | undefined,
+  localeTag: string,
+  maximumFractionDigits = 0,
+) {
+  if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
+  return new Intl.NumberFormat(localeTag, {
+    maximumFractionDigits,
+  }).format(value);
+}
+
+function formatAccountCurrencyValue(
+  value: number | null | undefined,
+  localeTag: string,
+  maximumFractionDigits = 2,
+) {
+  if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
+  return new Intl.NumberFormat(localeTag, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits,
+  }).format(value);
+}
+
 function SummaryMetric({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 rounded-[0.65rem] bg-base-100/4 px-1.5 py-1 sm:px-2">
@@ -264,6 +314,550 @@ function SummaryMetric({ label, value }: { label: string; value: ReactNode }) {
       </span>
     </div>
   );
+}
+
+type AccountMetricTone =
+  | "neutral"
+  | "primary"
+  | "secondary"
+  | "success"
+  | "warning"
+  | "error"
+  | "info";
+
+type AccountActivityStatus = {
+  kind: "busy" | "attention" | "steady";
+  badgeVariant: "info" | "warning" | "success";
+  label: string;
+  summary: string;
+};
+
+const ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES: Record<AccountMetricTone, string> = {
+  neutral: "text-base-content",
+  primary: "text-primary",
+  secondary: "text-secondary",
+  success: "text-success",
+  warning: "text-warning-content",
+  error: "text-error",
+  info: "text-info",
+};
+
+const ACCOUNT_METRIC_DOT_TONE_CLASSNAMES: Record<AccountMetricTone, string> = {
+  neutral: "bg-base-content/38",
+  primary: "bg-primary/90",
+  secondary: "bg-secondary/90",
+  success: "bg-success/90",
+  warning: "bg-warning/90",
+  error: "bg-error/90",
+  info: "bg-info/90",
+};
+
+function AccountStatusBadge({
+  label,
+  variant,
+  description,
+}: {
+  label: string;
+  variant: AccountActivityStatus["badgeVariant"];
+  description?: string;
+}) {
+  const surfaceClassName = {
+    info: "border-[rgba(148,163,184,0.26)] bg-base-100/86",
+    warning: "border-[rgba(148,163,184,0.26)] bg-base-100/86",
+    success: "border-[rgba(148,163,184,0.26)] bg-base-100/86",
+  }[variant];
+  const dotClassName = {
+    info: "bg-info/90",
+    warning: "bg-warning/90",
+    success: "bg-success/90",
+  }[variant];
+
+  return (
+    <Badge
+      variant="secondary"
+      data-testid="dashboard-upstream-account-status"
+      title={description}
+      aria-label={description ? `${label} · ${description}` : label}
+      data-motion-surface
+      className={cn(
+        "min-h-6 gap-2 border px-2.5 py-0.5 text-[11px] font-semibold text-base-content",
+        surfaceClassName,
+      )}
+    >
+      <span className={cn("h-1.5 w-1.5 rounded-full", dotClassName)} aria-hidden="true" />
+      {label}
+    </Badge>
+  );
+}
+
+function AccountHeroMetric({
+  label,
+  value,
+  tone,
+  hint,
+  children,
+}: {
+  label: string;
+  value: string;
+  tone: "neutral" | "primary" | "secondary" | "success" | "warning" | "info";
+  hint?: string;
+  children?: ReactNode;
+}) {
+  const toneSurfaceClassName = {
+    neutral: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
+    primary: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
+    secondary: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
+    success: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
+    warning: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
+    info: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
+  }[tone];
+  const valueClassName =
+    value === FALLBACK_CELL
+      ? "text-base-content/55"
+      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[
+          tone === "neutral" ? "neutral" : tone
+        ];
+
+  return (
+    <div
+      data-motion-surface
+      className={cn("rounded-[0.85rem] px-3 py-2.5", toneSurfaceClassName)}
+    >
+      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/54">
+        {label}
+      </div>
+      <div
+        className={cn(
+          "mt-1 font-mono text-[1.08rem] font-semibold leading-none",
+          valueClassName,
+        )}
+      >
+        {value}
+      </div>
+      {hint ? (
+        <div className="mt-1 text-[11px] leading-4 text-base-content/58">{hint}</div>
+      ) : null}
+      {children ? <div className="mt-1.5">{children}</div> : null}
+    </div>
+  );
+}
+
+function AccountSegmentList({
+  segments,
+  className,
+  testId,
+  showLabel = false,
+}: {
+  segments: Array<{
+    label: string;
+    value: ReactNode;
+    tone: AccountMetricTone;
+  }>;
+  className?: string;
+  testId?: string;
+  showLabel?: boolean;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      aria-label={segments
+        .map((segment) => `${segment.label} ${String(segment.value)}`)
+        .join(" · ")}
+      className={cn(
+        "flex flex-wrap items-center gap-x-3 gap-y-1.5",
+        showLabel && "gap-x-4",
+        className,
+      )}
+    >
+      {segments.map((segment) => (
+        <Tooltip
+          key={`${segment.label}-${String(segment.value)}`}
+          content={
+            <span className="font-medium">
+              {segment.label}
+              <span className="font-mono font-semibold"> {String(segment.value)}</span>
+            </span>
+          }
+          clickToOpen
+          className="rounded-md"
+          triggerProps={{
+            tabIndex: 0,
+            "aria-label": `${segment.label} ${String(segment.value)}`,
+          }}
+        >
+          <span
+            data-testid="dashboard-upstream-account-segment"
+            data-motion-surface
+            className={cn(
+              "inline-flex items-center whitespace-nowrap rounded-md px-1 py-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+              showLabel ? "gap-1.5" : "gap-1.5",
+            )}
+          >
+            <span
+              className={cn(
+                "h-1.5 w-1.5 rounded-full",
+                ACCOUNT_METRIC_DOT_TONE_CLASSNAMES[segment.tone],
+              )}
+              aria-hidden="true"
+            />
+            {showLabel ? (
+              <span className="text-[11px] font-semibold leading-none text-base-content/72">
+                {segment.label}
+              </span>
+            ) : null}
+            <span
+              className={cn(
+                "font-mono text-[12px] font-semibold leading-none",
+                ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[segment.tone],
+              )}
+            >
+              {segment.value}
+            </span>
+          </span>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
+function AccountRecentInvocationRow({
+  invocation,
+  locale,
+  nowMs,
+  onOpenUpstreamAccount,
+  onOpenInvocation,
+}: {
+  invocation: DashboardWorkingConversationInvocationModel;
+  locale: "zh" | "en";
+  nowMs: number;
+  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  onOpenInvocation?: (
+    selection: DashboardWorkingConversationInvocationSelection,
+  ) => void;
+}) {
+  const { t } = useTranslation();
+  const localeTag = locale === "zh" ? "zh-CN" : "en-US";
+  const numberFormatter = useMemo(
+    () => new Intl.NumberFormat(localeTag),
+    [localeTag],
+  );
+  const currencyFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat(localeTag, {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 4,
+        maximumFractionDigits: 4,
+      }),
+    [localeTag],
+  );
+  const timestampFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(localeTag, {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }),
+    [localeTag],
+  );
+
+  const renderAccountValue = useCallback(
+    (
+      accountLabel: string,
+      accountId: number | null,
+      accountClickable: boolean,
+      className?: string,
+    ) => {
+      if (!accountClickable || accountId == null) {
+        return (
+          <span className={cn("truncate", className)} title={accountLabel}>
+            {accountLabel}
+          </span>
+        );
+      }
+
+      return (
+        <button
+          type="button"
+          className={cn(
+            "inline-flex min-w-0 cursor-pointer appearance-none items-center truncate border-0 bg-transparent p-0 text-left font-inherit text-current no-underline transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+            className,
+          )}
+          data-motion-surface
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenUpstreamAccount?.(accountId, accountLabel);
+          }}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+          }}
+          title={accountLabel}
+        >
+          {accountLabel}
+        </button>
+      );
+    },
+    [onOpenUpstreamAccount],
+  );
+
+  const viewModel = useMemo(
+    () =>
+      buildInvocationDetailViewModel({
+        record: invocation.record,
+        normalizedStatus: invocation.displayStatus.trim().toLowerCase(),
+        t,
+        locale,
+        localeTag,
+        nowMs,
+        numberFormatter,
+        currencyFormatter,
+        renderAccountValue,
+      }),
+    [
+      currencyFormatter,
+      invocation.displayStatus,
+      invocation.record,
+      locale,
+      localeTag,
+      nowMs,
+      numberFormatter,
+      renderAccountValue,
+      t,
+    ],
+  );
+  const statusMeta = resolveStatusMeta(
+    invocation.tone,
+    invocation.displayStatus,
+  );
+  const statusLabel = statusMeta.labelKey
+    ? t(statusMeta.labelKey)
+    : (statusMeta.label ?? t("table.status.unknown"));
+  const occurredAtLabel =
+    invocation.occurredAtEpoch != null
+      ? timestampFormatter.format(new Date(invocation.occurredAtEpoch))
+      : invocation.preview.occurredAt || FALLBACK_CELL;
+  const occurredAtShortLabel =
+    invocation.occurredAtEpoch != null
+      ? timestampFormatter.format(new Date(invocation.occurredAtEpoch))
+      : occurredAtLabel;
+  const compactCostValue = viewModel.costValue.startsWith("US$")
+    ? `$${viewModel.costValue.slice(3)}`
+    : viewModel.costValue;
+  const compactTimingSummary = `RQ ${formatCompactMilliseconds(invocation.record.tReqReadMs)}/${formatCompactMilliseconds(invocation.record.tReqParseMs)} · UP ${formatCompactMilliseconds(invocation.record.tUpstreamConnectMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamTtfbMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamStreamMs)} · ED ${formatCompactMilliseconds(invocation.record.tRespParseMs)}/${formatCompactMilliseconds(invocation.record.tPersistMs)} · TT ${typeof invocation.record.tTotalMs === "number" && Number.isFinite(invocation.record.tTotalMs) ? `${formatCompactMilliseconds(invocation.record.tTotalMs)}ms` : viewModel.totalLatencyValue}`;
+  const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${invocation.record.invokeId}`;
+  const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
+
+  const handleOpenInvocation = useCallback(() => {
+    onOpenInvocation?.({
+      slotKind: "current",
+      conversationSequenceId: invocation.record.invokeId,
+      promptCacheKey: invocation.preview.invokeId,
+      invocation,
+    });
+  }, [invocation, onOpenInvocation]);
+
+  const handleRowKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      handleOpenInvocation();
+    },
+    [handleOpenInvocation],
+  );
+
+  return (
+    <button
+      type="button"
+      aria-label={invocationActionLabel}
+      data-testid="dashboard-upstream-account-recent-row"
+      data-motion-surface
+      className={cn(
+        "w-full rounded-[0.85rem] border bg-base-100/58 px-3.5 py-2.5 text-left transition-colors duration-200 hover:bg-base-100/72 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+        ACCOUNT_CARD_INNER_BORDER_CLASS_NAME,
+      )}
+      onClick={handleOpenInvocation}
+      onKeyDown={handleRowKeyDown}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="font-mono text-[12px] font-semibold text-base-content/88">
+              {invocation.record.invokeId}
+            </span>
+            <Badge
+              variant={statusMeta.badgeVariant}
+              className="min-h-5 gap-1 border-transparent bg-base-200/82 px-2 py-0.5 text-[9px] font-semibold leading-none shadow-none"
+            >
+              <AppIcon
+                name={statusMeta.icon}
+                className={cn(
+                  "h-2.25 w-2.25 shrink-0",
+                  invocation.isInFlight &&
+                    "motion-safe:animate-spin motion-reduce:animate-none",
+                )}
+                aria-hidden
+              />
+              <span>{statusLabel}</span>
+            </Badge>
+            {renderInvocationTransportBadge(
+              invocation.record,
+              "min-h-5 border-[rgba(148,163,184,0.24)] bg-primary/8 px-2 py-0.5 text-[9px]",
+            )}
+            {fastIndicator}
+          </div>
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-[1.45] text-base-content/70">
+            <span>{occurredAtShortLabel}</span>
+            <span className="text-base-content/28">·</span>
+            <span className="truncate">{viewModel.accountLabel}</span>
+            <span className="text-base-content/28">·</span>
+            <span className="min-w-0">
+              {renderInvocationModelBadge(viewModel.modelValue, {
+                t,
+                hasMismatch: viewModel.modelHasMismatch,
+                className: "max-w-full",
+                textClassName: "font-mono",
+                iconClassName: "h-3 w-3",
+                testId: "dashboard-upstream-account-recent-model",
+              })}
+            </span>
+            {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
+              <>
+                <span className="text-base-content/28">·</span>
+                <CompactReasoningEffortBadge value={viewModel.reasoningEffortValue} />
+              </>
+            ) : null}
+            {renderEndpointSummary(
+              viewModel.endpointDisplay,
+              t,
+              "min-h-5 border-transparent bg-base-200/82 px-2 py-0.5 text-[9px] font-semibold leading-none text-base-content/76 shadow-none",
+            ) ? (
+              <>
+                <span className="text-base-content/28">·</span>
+                {renderEndpointSummary(
+                  viewModel.endpointDisplay,
+                  t,
+                  "min-h-5 border-transparent bg-base-200/82 px-2 py-0.5 text-[9px] font-semibold leading-none text-base-content/76 shadow-none",
+                )}
+              </>
+            ) : null}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="font-mono text-[11px] font-semibold text-base-content/88">
+            {viewModel.totalTokensValue}
+          </div>
+          <div className="text-[10px] text-base-content/62">{compactCostValue}</div>
+        </div>
+      </div>
+      <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10px] leading-[1.45] text-base-content/72">
+        <span>IN {viewModel.inputTokensValue}</span>
+        <span className="text-base-content/28">·</span>
+        <span>C {viewModel.cacheInputTokensValue}</span>
+        <span className="text-base-content/28">·</span>
+        <span>O {viewModel.outputTokensValue}</span>
+        <span className="text-base-content/28">·</span>
+        <span>T {viewModel.totalTokensValue}</span>
+        <span className="text-base-content/28">·</span>
+        <span>{compactTimingSummary}</span>
+      </div>
+      {viewModel.collapsedErrorSummary ? (
+        <div
+          className="mt-1 truncate text-[10px] text-error"
+          title={viewModel.collapsedErrorSummary}
+        >
+          {viewModel.collapsedErrorSummary}
+        </div>
+      ) : null}
+    </button>
+  );
+}
+
+function summarizeRecentInvocations(
+  invocations: DashboardWorkingConversationInvocationModel[],
+) {
+  return invocations.reduce(
+    (summary, invocation) => {
+      if (invocation.isInFlight) {
+        summary.inFlightCount += 1;
+        return summary;
+      }
+      if (invocation.tone === "warning" || invocation.tone === "error") {
+        summary.nonSuccessCount += 1;
+        if (invocation.tone === "error") {
+          summary.failureCount += 1;
+        }
+        return summary;
+      }
+      if (invocation.tone === "success") {
+        summary.successCount += 1;
+      }
+      return summary;
+    },
+    {
+      totalCount: invocations.length,
+      inFlightCount: 0,
+      nonSuccessCount: 0,
+      failureCount: 0,
+      successCount: 0,
+    },
+  );
+}
+
+function resolveAccountActivityStatus({
+  account,
+  locale,
+  localeTag,
+}: {
+  account: UpstreamAccountActivityAccount;
+  locale: "zh" | "en";
+  localeTag: string;
+}): AccountActivityStatus {
+  const inProgress = account.inProgressInvocationCount ?? 0;
+  const retry = account.retryInvocationCount ?? 0;
+  const failure = account.failureCount ?? 0;
+  const nonSuccess = account.nonSuccessCount ?? 0;
+
+  if (inProgress > 0) {
+    return {
+      kind: "busy",
+      badgeVariant: "info",
+      label: locale === "zh" ? "繁忙" : "Busy",
+      summary:
+        retry > 0
+          ? locale === "zh"
+            ? `当前有 ${formatAccountNumberValue(inProgress, localeTag, 0)} 个进行中调用，其中 ${formatAccountNumberValue(retry, localeTag, 0)} 个处于重试。`
+            : `${formatAccountNumberValue(inProgress, localeTag, 0)} in-flight invocations, including ${formatAccountNumberValue(retry, localeTag, 0)} retrying.`
+          : locale === "zh"
+            ? `当前有 ${formatAccountNumberValue(inProgress, localeTag, 0)} 个进行中调用，账号仍在承压。`
+            : `${formatAccountNumberValue(inProgress, localeTag, 0)} in-flight invocations are still loading this account.`,
+    };
+  }
+
+  if (retry > 0 || failure > 0 || nonSuccess > 0) {
+    return {
+      kind: "attention",
+      badgeVariant: "warning",
+      label: locale === "zh" ? "关注" : "Attention",
+      summary:
+        locale === "zh"
+          ? `当前无进行中调用，但范围内有 ${formatAccountNumberValue(failure, localeTag, 0)} 次失败、${formatAccountNumberValue(retry, localeTag, 0)} 次重试。`
+          : `No live invocations right now, but this range still contains ${formatAccountNumberValue(failure, localeTag, 0)} failures and ${formatAccountNumberValue(retry, localeTag, 0)} retries.`,
+    };
+  }
+
+  return {
+    kind: "steady",
+    badgeVariant: "success",
+    label: locale === "zh" ? "稳定" : "Steady",
+    summary:
+      locale === "zh"
+        ? "当前无进行中或重试调用，范围内活动已回到稳定状态。"
+        : "No in-flight or retrying invocations are active in this range.",
+  };
 }
 
 function InvocationMetaLine({
@@ -813,6 +1407,282 @@ function chunkDashboardWorkingConversationRows(
   return rows;
 }
 
+function resolveDashboardUpstreamAccountColumnCount(width: number) {
+  return width >= 1660 ? 2 : 1;
+}
+
+function chunkDashboardUpstreamAccountRows(
+  accounts: UpstreamAccountActivityAccount[],
+  columnCount: number,
+) {
+  if (columnCount <= 1) {
+    return accounts.map((account) => [account]);
+  }
+  const rows: UpstreamAccountActivityAccount[][] = [];
+  for (let index = 0; index < accounts.length; index += columnCount) {
+    rows.push(accounts.slice(index, index + columnCount));
+  }
+  return rows;
+}
+
+function DashboardUpstreamAccountActivityCard({
+  account,
+  locale,
+  localeTag,
+  nowMs,
+  onOpenUpstreamAccount,
+  onOpenInvocation,
+}: {
+  account: UpstreamAccountActivityAccount;
+  locale: "zh" | "en";
+  localeTag: string;
+  nowMs: number;
+  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  onOpenInvocation?: (
+    selection: DashboardWorkingConversationInvocationSelection,
+  ) => void;
+}) {
+  const { t } = useTranslation();
+  const recentInvocations = useMemo(
+    () =>
+      account.recentInvocations.map((preview: DashboardWorkingConversationInvocationModel["preview"]) =>
+        buildDashboardWorkingConversationInvocationModel(preview),
+      ),
+    [account.recentInvocations],
+  );
+  const accountStatus = useMemo(
+    () => resolveAccountActivityStatus({ account, locale, localeTag }),
+    [account, locale, localeTag],
+  );
+  const recentSummary = useMemo(
+    () => summarizeRecentInvocations(recentInvocations),
+    [recentInvocations],
+  );
+  const requestSummarySegments = useMemo(
+    () => [
+      {
+        label: locale === "zh" ? "成功" : "Success",
+        value: formatAccountNumberValue(account.successCount, localeTag, 0),
+        tone: "success" as const,
+      },
+      {
+        label: locale === "zh" ? "失败" : "Failure",
+        value: formatAccountNumberValue(account.failureCount, localeTag, 0),
+        tone: "error" as const,
+      },
+      {
+        label: locale === "zh" ? "非成功" : "Non-success",
+        value: formatAccountNumberValue(account.nonSuccessCount, localeTag, 0),
+        tone: "warning" as const,
+      },
+    ],
+    [account.failureCount, account.nonSuccessCount, account.successCount, locale, localeTag],
+  );
+  const tokenSummarySegments = useMemo(
+    () => [
+      {
+        label: locale === "zh" ? "成功" : "Success",
+        value: formatAccountNumberValue(account.successTokens, localeTag, 0),
+        tone: "primary" as const,
+      },
+      {
+        label: locale === "zh" ? "非成功" : "Non-success",
+        value: formatAccountNumberValue(account.nonSuccessTokens, localeTag, 0),
+        tone: "warning" as const,
+      },
+    ],
+    [account.nonSuccessTokens, account.successTokens, locale, localeTag],
+  );
+  const recentBridgeSegments = useMemo(() => {
+    const segments = [];
+    if (recentSummary.inFlightCount > 0) {
+      segments.push({
+        label: locale === "zh" ? "进行中" : "In flight",
+        value: formatAccountNumberValue(recentSummary.inFlightCount, localeTag, 0),
+        tone: "info" as const,
+      });
+    }
+    if (recentSummary.failureCount > 0) {
+      segments.push({
+        label: locale === "zh" ? "失败" : "Failure",
+        value: formatAccountNumberValue(recentSummary.failureCount, localeTag, 0),
+        tone: "error" as const,
+      });
+    }
+    if (recentSummary.nonSuccessCount > recentSummary.failureCount) {
+      segments.push({
+        label: locale === "zh" ? "非成功" : "Non-success",
+        value: formatAccountNumberValue(
+          recentSummary.nonSuccessCount - recentSummary.failureCount,
+          localeTag,
+          0,
+        ),
+        tone: "warning" as const,
+      });
+    }
+    if (recentSummary.successCount > 0) {
+      segments.push({
+        label: locale === "zh" ? "成功" : "Success",
+        value: formatAccountNumberValue(recentSummary.successCount, localeTag, 0),
+        tone: "success" as const,
+      });
+    }
+    return segments;
+  }, [locale, localeTag, recentSummary.failureCount, recentSummary.inFlightCount, recentSummary.nonSuccessCount, recentSummary.successCount]);
+  const firstByteValue =
+    account.firstByteAvgMs == null
+      ? FALLBACK_CELL
+      : `${formatAccountNumberValue(account.firstByteAvgMs, localeTag, 1)} ms`;
+  const totalRequestValue = formatAccountNumberValue(account.requestCount, localeTag, 0);
+
+  return (
+    <article
+      data-testid="dashboard-upstream-account-card"
+      data-account-status={accountStatus.kind}
+      className={ACCOUNT_CARD_CLASS_NAME}
+    >
+      <div
+        data-testid="dashboard-upstream-account-header-row"
+        className="flex flex-wrap items-start justify-between gap-3"
+      >
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              data-motion-surface
+              className="inline-flex min-h-11 min-w-0 max-w-full cursor-pointer appearance-none items-center border-0 bg-transparent py-1 text-left text-[1rem] font-semibold text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              onClick={() =>
+                onOpenUpstreamAccount?.(account.upstreamAccountId, account.displayName)
+              }
+            >
+              <span className="truncate">{account.displayName}</span>
+            </button>
+            <AccountStatusBadge
+              label={accountStatus.label}
+              variant={accountStatus.badgeVariant}
+              description={accountStatus.summary}
+            />
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[13px] leading-[1.4] text-base-content/68">
+            <span>{t("dashboard.upstreamAccounts.channelName", { name: account.displayName })}</span>
+            {account.groupName ? <span>{account.groupName}</span> : null}
+            {shouldShowUpstreamPlanBadge(account.planType) ? (
+              <Badge
+                variant={upstreamPlanBadgeRecipe(account.planType)?.variant ?? "secondary"}
+                className={cn(
+                  "h-5 px-2 py-0 text-[10px] font-semibold",
+                  upstreamPlanBadgeRecipe(account.planType)?.className,
+                )}
+              >
+                {compactUpstreamPlanLabel(account.planType)}
+              </Badge>
+            ) : null}
+          </div>
+        </div>
+        <div className="shrink-0 rounded-full bg-base-200/78 px-3 py-1 font-mono text-xs font-semibold text-base-content/72">
+          #{account.upstreamAccountId}
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-2.5">
+        <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+          <AccountHeroMetric
+            label="TPM"
+            value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
+            tone="primary"
+          />
+          <AccountHeroMetric
+            label={t("dashboard.today.spendRate")}
+            value={formatAccountCurrencyValue(account.spendRate, localeTag, 2)}
+            tone="warning"
+          />
+          <AccountHeroMetric
+            label={locale === "zh" ? "进行中调用" : "In-flight"}
+            value={formatAccountNumberValue(
+              account.inProgressInvocationCount ?? null,
+              localeTag,
+              0,
+            )}
+            tone="info"
+          />
+          <AccountHeroMetric
+            label={locale === "zh" ? "重试调用" : "Retrying"}
+            value={formatAccountNumberValue(
+              account.retryInvocationCount ?? null,
+              localeTag,
+              0,
+            )}
+            tone="warning"
+          />
+          <AccountHeroMetric
+            label={locale === "zh" ? "请求数" : "Requests"}
+            value={totalRequestValue}
+            tone="neutral"
+          >
+            <AccountSegmentList
+              segments={requestSummarySegments}
+              testId="dashboard-upstream-account-request-breakdown"
+            />
+          </AccountHeroMetric>
+          <AccountHeroMetric
+            label={t("dashboard.today.firstResponseTime")}
+            value={firstByteValue}
+            tone={firstByteValue === FALLBACK_CELL ? "neutral" : "secondary"}
+          />
+          <AccountHeroMetric
+            label="Token"
+            value={formatAccountNumberValue(account.totalTokens, localeTag, 0)}
+            tone="success"
+          >
+            <AccountSegmentList
+              segments={tokenSummarySegments}
+              testId="dashboard-upstream-account-token-breakdown"
+            />
+          </AccountHeroMetric>
+          <AccountHeroMetric
+            label={locale === "zh" ? "缓存命中率" : "Cache hit"}
+            value={formatAccountPercentValue(account.cacheHitRate, localeTag)}
+            tone="secondary"
+          />
+        </div>
+      </div>
+
+      <div
+        className={cn(
+          "mt-3.5 flex flex-1 flex-col border-t pt-2.5",
+          ACCOUNT_CARD_INNER_BORDER_CLASS_NAME,
+        )}
+      >
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+          <div className="text-xs font-semibold leading-5 tracking-[0.06em] text-base-content/62">
+            {t("dashboard.upstreamAccounts.recentInvocations")}
+          </div>
+          {recentBridgeSegments.length > 0 ? (
+            <AccountSegmentList
+              segments={recentBridgeSegments}
+              testId="dashboard-upstream-account-recent-breakdown"
+              showLabel
+              className="justify-end"
+            />
+          ) : null}
+        </div>
+        <div className="grid flex-1 auto-rows-fr gap-1.5">
+          {recentInvocations.map((invocation: DashboardWorkingConversationInvocationModel) => (
+            <AccountRecentInvocationRow
+              key={invocation.record.id}
+              invocation={invocation}
+              locale={locale}
+              nowMs={nowMs}
+              onOpenUpstreamAccount={onOpenUpstreamAccount}
+              onOpenInvocation={onOpenInvocation}
+            />
+          ))}
+        </div>
+      </div>
+    </article>
+  );
+}
+
 interface DashboardWorkingConversationAnchorCardElement extends HTMLElement {
   __dashboardWorkingConversationAnchorKey?: string;
 }
@@ -860,6 +1730,7 @@ function captureVisibleCardAnchor(
 }
 
 export function DashboardWorkingConversationsSection({
+  activeRange,
   cards,
   totalMatched,
   hasMore = false,
@@ -873,6 +1744,8 @@ export function DashboardWorkingConversationsSection({
   onOpenInvocation,
 }: DashboardWorkingConversationsSectionProps) {
   const { t, locale } = useTranslation();
+  const [activeView, setActiveView] =
+    useState<DashboardWorkspaceView>("conversations");
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [containerWidth, setContainerWidth] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(() =>
@@ -922,7 +1795,50 @@ export function DashboardWorkingConversationsSection({
       }),
     [localeTag],
   );
+  const upstreamAccountsDisabled = activeRange === "usage";
+  const upstreamAccountActivityEnabled =
+    !upstreamAccountsDisabled && activeView === "upstreamAccounts";
+  const {
+    data: upstreamAccountActivity,
+    isLoading: upstreamAccountActivityLoading,
+    error: upstreamAccountActivityError,
+  } = useDashboardUpstreamAccountActivity(
+    activeRange,
+    upstreamAccountActivityEnabled,
+  );
+  const upstreamAccounts = useMemo(
+    () => upstreamAccountActivity?.accounts ?? [],
+    [upstreamAccountActivity],
+  );
+  useEffect(() => {
+    if (upstreamAccountsDisabled && activeView === "upstreamAccounts") {
+      setActiveView("conversations");
+    }
+  }, [activeView, upstreamAccountsDisabled]);
   const countBadgeValue = totalMatched ?? cards.length;
+  const accountCountBadgeValue = upstreamAccounts.length;
+  const countBadgeLabel =
+    activeView === "conversations"
+      ? t("dashboard.workingConversations.countBadge", {
+          count: countBadgeValue,
+        })
+      : t("dashboard.upstreamAccounts.countBadge", {
+          count: accountCountBadgeValue,
+        });
+  const upstreamAccountRows = useMemo(
+    () =>
+      chunkDashboardUpstreamAccountRows(
+        upstreamAccounts,
+        resolveDashboardUpstreamAccountColumnCount(
+          Math.max(containerWidth, viewportWidth),
+        ),
+      ),
+    [containerWidth, upstreamAccounts, viewportWidth],
+  );
+  const sectionSubtitle =
+    activeView === "upstreamAccounts"
+      ? t("dashboard.upstreamAccounts.subtitle")
+      : t("dashboard.section.workingConversationsSubtitle");
   const cssColumnCount =
     resolveDashboardWorkingConversationCssColumnCount(gridElement);
   const columnCount =
@@ -1169,17 +2085,42 @@ export function DashboardWorkingConversationsSection({
               {t("dashboard.section.workingConversationsTitle")}
             </h2>
             <p className="section-description">
-              {t("dashboard.section.workingConversationsSubtitle")}
+              {sectionSubtitle}
             </p>
           </div>
-          <Badge
-            variant="default"
-            className="rounded-full px-3 py-1 font-mono text-xs font-semibold"
-          >
-            {t("dashboard.workingConversations.countBadge", {
-              count: countBadgeValue,
-            })}
-          </Badge>
+          <div className="flex flex-wrap items-center gap-2">
+            <SegmentedControl
+              size="compact"
+              role="tablist"
+              aria-label="Dashboard workspace view"
+            >
+              <SegmentedControlItem
+                active={activeView === "conversations"}
+                role="tab"
+                aria-selected={activeView === "conversations"}
+                className="h-11 px-3.5 text-[0.95rem]"
+                onClick={() => setActiveView("conversations")}
+              >
+                对话
+              </SegmentedControlItem>
+              <SegmentedControlItem
+                active={activeView === "upstreamAccounts"}
+                role="tab"
+                aria-selected={activeView === "upstreamAccounts"}
+                disabled={upstreamAccountsDisabled}
+                className="h-11 px-3.5 text-[0.95rem]"
+                onClick={() => setActiveView("upstreamAccounts")}
+              >
+                上游账号
+              </SegmentedControlItem>
+            </SegmentedControl>
+            <Badge
+              variant="default"
+              className="rounded-full px-3 py-1 font-mono text-xs font-semibold"
+            >
+              {countBadgeLabel}
+            </Badge>
+          </div>
         </div>
 
         {error && cards.length > 0 ? (
@@ -1188,7 +2129,48 @@ export function DashboardWorkingConversationsSection({
           </Alert>
         ) : null}
 
-        {isLoading && cards.length === 0 ? (
+        {activeView === "upstreamAccounts" ? (
+          <>
+            {upstreamAccountActivityError ? (
+              <Alert variant="error">
+                <span>{upstreamAccountActivityError}</span>
+              </Alert>
+            ) : null}
+            {upstreamAccountActivityLoading && upstreamAccounts.length === 0 ? (
+              <div className="flex min-h-44 items-center justify-center gap-3 rounded-2xl border border-dashed border-base-300/75 bg-base-100/45">
+                <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
+                <span className="text-sm text-base-content/70">
+                  {t("chart.loadingDetailed")}
+                </span>
+              </div>
+            ) : null}
+            {!upstreamAccountActivityLoading && upstreamAccounts.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-base-300/75 bg-base-100/45 px-5 py-8 text-sm text-base-content/65">
+                {t("dashboard.upstreamAccounts.empty")}
+              </div>
+            ) : null}
+            {upstreamAccounts.length > 0 ? (
+              <div
+                data-testid="dashboard-upstream-account-grid"
+                className="grid grid-cols-1 gap-4 desktop1660:grid-cols-2"
+              >
+                {upstreamAccountRows.flat().map((account) => (
+                  <DashboardUpstreamAccountActivityCard
+                    key={account.upstreamAccountId}
+                    account={account}
+                    locale={locale}
+                    localeTag={localeTag}
+                    nowMs={nowMs}
+                    onOpenUpstreamAccount={onOpenUpstreamAccount}
+                    onOpenInvocation={onOpenInvocation}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+
+        {activeView === "conversations" && isLoading && cards.length === 0 ? (
           <div className="flex min-h-44 items-center justify-center gap-3 rounded-2xl border border-dashed border-base-300/75 bg-base-100/45">
             <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
             <span className="text-sm text-base-content/70">
@@ -1197,13 +2179,13 @@ export function DashboardWorkingConversationsSection({
           </div>
         ) : null}
 
-        {!isLoading && cards.length === 0 ? (
+        {activeView === "conversations" && !isLoading && cards.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-base-300/75 bg-base-100/45 px-5 py-8 text-sm text-base-content/65">
             {t("dashboard.workingConversations.empty")}
           </div>
         ) : null}
 
-        {cards.length > 0 ? (
+        {activeView === "conversations" && cards.length > 0 ? (
           <div
             data-testid="dashboard-working-conversations-grid"
             ref={setGridContainerRef}

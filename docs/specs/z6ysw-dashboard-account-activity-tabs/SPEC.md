@@ -1,0 +1,191 @@
+# Dashboard 工作区卡片双视图与上游账号活动聚合（#z6ysw）
+
+> 当前有效规范以本文为准；实现覆盖与当前状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
+
+## 背景 / 问题陈述
+
+- Dashboard 当前“工作中对话”区域只支持按对话查看，无法在同一块工作区里观察“当前活跃的上游账号”及其范围内聚合指标。
+- 顶部总览已经拥有 `today / yesterday / 1d / 7d / usage` 的范围切换，但工作区部分没有共享这套状态，导致账号级视图无法与总览范围保持一致。
+- Dashboard / account-scoped summary 现有 `inProgressConversationCount` / `inProgressRetryConversationCount` 仍沿用“按对话去重”的旧语义，与 owner-facing 认知中的“进行中的调用数”不一致。
+
+## 目标 / 非目标
+
+### Goals
+
+- 把 Dashboard 当前“工作中对话”区域改成右上角 `对话 / 上游账号` 双 tabs，保留现有对话视图行为不变。
+- 新增懒加载的 `上游账号` 视图，只展示当前所选 Dashboard 总览范围内有调用的账号，并跟随 `today / yesterday / 1d / 7d` 聚合。
+- 提供一个 Dashboard 专用的后端批量读接口，一次返回账号级摘要与最近 4 条调用记录，禁止前端 fanout 账号详情或 `window-usage` 做 N+1 聚合。
+- 把 summary 中现有 `inProgressConversationCount` / `inProgressRetryConversationCount` 语义统一改成 invocation-based，并同步更新 owner-facing 文案为“进行中调用 / 重试调用”。
+
+### Non-goals
+
+- 不把现有 `对话` tab 改成跟随总览范围；它继续保持当前 5 分钟工作集与现有 SSE patch 行为。
+- 不把账号视图做成账号池 roster/table 的嵌入版，也不复用账号详情抽屉的整页布局。
+- 不支持 `usage` 范围下的账号活动聚合，也不为此新增替代语义。
+- 不引入账号卡展开态、二级 tabs、四小格内层卡片或额外 drill-down 交互。
+
+## 范围（Scope）
+
+### In scope
+
+- `web/src/pages/Dashboard.tsx`：把 `DashboardActivityOverview` 的 range 状态提升为 Dashboard 共享状态，并接线到工作区 section。
+- `web/src/components/DashboardActivityOverview.tsx`：支持 controlled range 输入，同时保留既有持久化 key 与独立复用能力。
+- `web/src/components/DashboardWorkingConversationsSection.tsx` 及新增账号视图组件：右上 tabs、badge、usage disabled 回退、账号卡布局与最近 4 条调用记录。
+- `web/src/hooks/useDashboardUpstreamAccountActivity.ts` 与 API 层：账号 tab 懒加载、范围跟随、激活态刷新预算。
+- `src/api/slices/invocations_and_summary.rs`、`src/api/slices/settings_models_and_cache.rs`、`src/maintenance/hourly_rollups.rs`：新增 `GET /api/stats/upstream-account-activity`，并修正 summary in-progress 语义。
+- 相关 Storybook、前后端测试与视觉证据。
+
+### Out of scope
+
+- 调整 Dashboard 顶部总览范围集合本身，或新增新的全局范围枚举。
+- 改造 working conversations 的卡片结构、详情抽屉、抽屉路由或 5 分钟工作集筛选逻辑。
+- 修改账号详情整页的布局范式。
+
+## 需求（Requirements）
+
+### MUST
+
+- Dashboard 工作区区块右上必须新增 `对话 / 上游账号` tabs，默认保持在 `对话`。
+- `上游账号` tab 首次打开前不得发请求；首次激活后才加载，并在 tab 未激活时不参与 SSE/records 刷新预算。
+- `上游账号` 视图只展示当前共享 range 内“至少有 1 条调用”的账号；`渠道名` 直接使用 `displayName`。
+- `上游账号` 视图仅支持 `today / yesterday / 1d / 7d`；当共享 range 为 `usage` 时，该 tab 必须 disabled，且若当前停留在账号 tab，必须自动回退到 `对话`。
+- 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`firstByteAvgMs`、`inProgressInvocationCount`、`retryInvocationCount` 与 `recentInvocations[4]`。
+- `recentInvocations` 必须限制在当前所选范围内，按 `occurredAt DESC` 排序，并使用后端 bounded query 返回。
+- 账号卡不是折叠卡，也不是 `2 x 2` 小格子；它是单张放大卡片，桌面宽屏 `>=1660px` 时每行 2 张，其余断点为 1 列。
+- 账号卡必须保持紧凑信息卡定位；在桌面宽屏下允许按放大卡呈现，但不得因为固定高度或装饰性留白把视觉效果拉成整页面板。
+- 单账号卡上半部分必须展示账号级摘要：渠道名、TPM、消费速率、进行中调用、重试调用、请求数（成功 / 失败 / 非成功）、首字用时、Token（成功 / 非成功）、缓存命中率。
+- 摘要区不得加入低价值说明型文案；“按调用计数，不按对话去重”、“仍在重试链路中的调用”、“账号状态说明条”之类解释性文字不得出现在卡面常驻内容里。
+- 请求数与 Token 分解摘要在卡面常驻态只显示色点与数值；不得出现任何可见文字标签（包括单字、缩写、短标签）。完整 `label + value` 只通过 hover / title 暴露，不得额外占用版面。
+- 账号卡内部所有结构性描边（外框、摘要格子、recent 行、分隔线）必须统一使用低对比中性边框，不得把主题主色、语义色或任意彩色边框用于结构分割；颜色只保留给状态点、数值与徽章等语义元素。
+- recent bridge 作为 recent 区标题行右侧统计例外，必须显示完整状态文字（如“进行中 / 失败 / 成功”），并与左侧“最近 4 条调用”标题保持同一垂直对齐节奏。
+- 单账号卡下半部分必须展示当前范围内最近 4 条调用记录，复用现有紧凑调用行语言，而不是再做卡中卡；4 条记录必须在卡内完整可见，不得依赖展开、滚动或裁切。
+- 账号卡内每条 recent 调用记录的信息密度不得低于 Dashboard 对话卡片中的调用记录：至少需要覆盖状态、模型、endpoint、Token 用量摘要，以及 `RQ / UP / ED / TT` 时序摘要。
+- `StatsResponse.inProgressConversationCount` 与 `StatsResponse.inProgressRetryConversationCount` 必须保留 wire name，但语义改为 invocation-based；所有 Dashboard owner-facing 文案同步改成“进行中调用 / 重试调用”。
+- `today / 1d / 7d` 的 `inProgressInvocationCount / retryInvocationCount` 允许使用 live augmentation 语义；`yesterday` 为 closed range，这两项必须返回 `null` 并在前端显示 `—`。
+
+### SHOULD
+
+- 账号视图的刷新应沿用现有 Dashboard reconcile budget，在 tab 激活时才对 `records` / SSE open 做节流 refresh，不增加逐条本地 SSE patch。
+- 共享 range 状态应继续使用现有 localStorage key，避免打断用户已保存的 Dashboard 偏好。
+- 账号卡内的最近调用记录应复用已有 invocation 语义 helper，保证状态、模型、耗时与账号 badge 文案一致。
+
+### COULD
+
+- `groupName` 与 `planType` 可作为 badge 或辅信息展示，但不得替代主标题 `displayName`。
+
+## 功能与行为规格（Functional/Behavior Spec）
+
+### Core flows
+
+- Dashboard 页面加载后，顶部总览和工作区 section 共享同一个 `activeRange` 状态；总览的已有行为、持久化 key 与渲染顺序保持不变。
+- `对话` tab 继续显示最近 5 分钟内有终态调用，或当前仍处于运行中 / 排队中的对话卡片。
+- 用户首次切到 `上游账号` tab 时，前端发起一次账号活动批量请求；后续只在账号 tab 激活时，随共享 range 变化或节流 refresh 再次请求。
+- `上游账号` 视图中的 badge 显示“当前活动账号数”；`对话` 视图中的 badge 继续显示“当前对话数”。
+- 账号卡顶部显示 `displayName` 与必要 badge；主体显示账号级 KPI；底部显示最近 4 条调用记录。
+- 账号卡摘要区保持两行 KPI 栅格，底部 recent 列表优先压缩行内密度而不是继续增加卡片高度。
+- `yesterday` 账号视图中的 `进行中调用` 与 `重试调用` 显示 `—`，因为它是 closed range，不做 live augmentation。
+
+### Edge cases / errors
+
+- 当账号活动接口返回空列表时，账号 tab 需要显示空态而不是沿用对话列表占位。
+- 当账号活动接口失败时，账号 tab 只在自身视图内显示错误态，不影响对话 tab 与顶部总览。
+- 当用户停留在账号 tab，随后把范围切到 `usage`，UI 必须立即切回 `对话`，且不触发账号活动请求。
+- 当某账号范围内只有失败 / 中断调用时，请求分解、Token 分解与最近 4 条记录仍需稳定显示，不得因为缺少 success 样本而隐藏整卡。
+- 当 `cacheHitRate`、`firstByteAvgMs` 或 live augmentation 值缺失时，对应字段显示 `—`，但账号卡其余部分继续渲染。
+
+## 接口契约（Interfaces & Contracts）
+
+### 接口清单（Inventory）
+
+| 接口（Name）                                     | 类型（Kind）        | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                       | 备注（Notes）                                   |
+| ------------------------------------------------ | ------------------- | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------------- | ----------------------------------------------- |
+| `GET /api/stats/upstream-account-activity`       | http-endpoint       | external      | Add            | None                     | backend/stats   | Dashboard account activity tab            | range 聚合 + recent 4 bounded query             |
+| `StatsResponse.inProgressConversationCount`      | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail | wire name 保留，语义改为 invocation-based       |
+| `StatsResponse.inProgressRetryConversationCount` | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail | wire name 保留，语义改为 invocation-based retry |
+| `DashboardActivityOverview` range contract       | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | Dashboard page, account detail overview   | 支持 controlled / uncontrolled 双模式           |
+| `Dashboard workspace double-tab section`         | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | Dashboard page                            | `对话 / 上游账号` tabs + count badge            |
+| `useDashboardUpstreamAccountActivity`            | ui-hook             | internal      | Add            | None                     | web/dashboard   | Dashboard account activity tab            | lazy load + tab-active refresh gate             |
+
+### 契约文档（按 Kind 拆分）
+
+- `None`
+
+## 验收标准（Acceptance Criteria）
+
+- Given Dashboard 工作区加载完成，When 查看右上角，Then 可以看到 `对话 / 上游账号` tabs，默认激活 `对话`，且现有 working-conversation 卡片交互不变。
+- Given 共享 range 为 `today / yesterday / 1d / 7d`，When 切到 `上游账号`，Then 账号集合与汇总指标随范围变化，且只包含该范围内至少有一条调用的账号。
+- Given 当前在 `上游账号` tab，When 把共享 range 切到 `usage`，Then 账号 tab disabled，界面自动回退到 `对话`，且不会发账号活动请求。
+- Given 从未打开过账号 tab，When 停留在 `对话` tab，Then 前端不会请求账号活动接口。
+- Given 某账号有范围内调用，When 查看账号卡，Then 标题使用 `displayName`，且主体包含渠道名、TPM、消费速率、进行中调用、重试调用、请求数分解、首字用时、Token 分解、缓存命中率。
+- Given 某账号有至少 4 条范围内调用，When 查看账号卡底部，Then 只显示最近 4 条，按 `occurredAt DESC` 排序。
+- Given 查看账号卡摘要区，When 卡片处于常驻态，Then 不出现解释性废话或状态说明条，请求数 / Token 分解只显示色点与数值，且不出现任何可见文字标签。
+- Given 查看账号卡 recent 区标题行，When 右侧存在 recent bridge 统计，Then 显示完整状态文字，并与左侧“最近 4 条调用”标题保持同一垂直对齐。
+- Given 查看账号卡内 recent 调用记录，When 与对话卡片调用记录对照，Then recent 行至少包含状态、模型、endpoint、Token 摘要与 `RQ / UP / ED / TT` 时序摘要，且 4 条记录完整留在卡内。
+- Given Dashboard 顶部 KPI 使用 `StatsResponse.inProgressConversationCount` / `inProgressRetryConversationCount`，When 显示 owner-facing 文案，Then 标签为“进行中调用 / 重试调用”，并按 invocation-based 计数，而不是按 prompt-cache 对话去重。
+- Given 后端账号活动接口需要账号摘要与最近 4 条记录，When 发起请求，Then 响应来自单个 batch endpoint，不依赖前端 fanout `upstream-account detail` 或 `window-usage`。
+
+## 验收清单（Acceptance checklist）
+
+- [x] 核心路径的长期行为已被明确描述。
+- [x] 关键边界/错误场景已被覆盖。
+- [x] 涉及的接口/契约已写清楚或明确为 `None`。
+- [x] 相关验收条件已经可以用于实现与 review 对齐。
+
+## 非功能性验收 / 质量门槛（Quality Gates）
+
+### Testing
+
+- Unit tests: 账号活动 hook / 账号视图组件 / Dashboard range 共享与回退行为。
+- Integration tests: summary invocation-based 计数、账号活动接口 range + recent query、Dashboard 页面 tabs / lazy load / disabled 回退。
+- E2E tests (if applicable): None。
+
+### UI / Storybook (if applicable)
+
+- Stories to add/update: `DashboardWorkingConversationsSection`、Dashboard page story、账号活动卡状态图库。
+- Docs pages / state galleries to add/update: working conversations / account activity 双视图状态。
+- `play` / interaction coverage to add/update: `today / yesterday / 1d / 7d / usage`、tab 切换、空态、错误态。
+- Visual regression baseline changes (if any): 以本 spec 的 `## Visual Evidence` 为准。
+
+### Quality checks
+
+- `cargo test`（summary / account activity 相关 targeted tests）
+- `cargo check`
+- `cd web && bun run test`
+- `cd web && bun run build`
+- `cd web && bun run build-storybook`
+
+## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
+  scenario: `desktop1660`
+  evidence_note: 验证 Dashboard 工作区已切换到 `上游账号` tab，桌面宽屏下账号卡按 2 列紧凑放大布局展示账号级 KPI 与 4 条完整 recent 调用记录。
+  image:
+  ![Dashboard 上游账号 tab 桌面宽屏证据](./assets/dashboard-upstream-account-tab-desktop.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
+  scenario: `mobile390`
+  evidence_note: 验证相同账号 tab 在移动视口下收敛为单列卡片，并保留摘要区与最近 4 条调用记录。
+  image:
+  ![Dashboard 上游账号 tab 移动视口证据](./assets/dashboard-upstream-account-tab-mobile.png)
+
+## Related PRs
+
+- None
+
+## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
+
+- 风险：账号活动接口若直接扫 live invocations，未来数据量继续增长时可能需要进一步下沉到 read-model / materialized rollup，但本轮先保证 bounded recent query 与单次聚合链路正确。
+- 风险：summary wire field 保留旧名字但改语义，会要求所有 owner-facing 文案和测试同时更新；遗漏任何一处都可能造成“字段值对、文案错”的混乱。
+- 风险：账号卡若继续通过增高固定高度容纳信息，会重新滑向“整页面板”观感；后续新增字段时应优先压缩行内布局与摘要表达，而不是继续加高卡片。
+- 假设：`today / 1d / 7d` 的进行中调用与重试调用使用 live augmentation 语义；`yesterday` closed range 返回 `null`。
+- 假设：活动账号判定是“当前所选范围内至少有 1 条调用的账号”。
+- 假设：`渠道名 = displayName`，`groupName / planType` 仅作辅信息。
+
+## 参考（References）
+
+- `docs/specs/gz5ns-dashboard-natural-day-kpi-semantics/SPEC.md`
+- `docs/specs/t6d9r-account-detail-stats-read-model/SPEC.md`
+- `docs/specs/5932d-sse-proxy-live-sync/SPEC.md`
+- `docs/solutions/performance/realtime-dashboard-reconcile-budget.md`

@@ -1729,12 +1729,9 @@ async fn load_in_progress_conversation_count(
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
 ) -> Result<i64, ApiError> {
-    Ok(query_in_progress_prompt_cache_conversation_count(
-        &state.pool,
-        source_scope,
-        upstream_account_id,
-    )
-    .await?)
+    Ok(load_in_progress_summary_snapshot(&state.pool, source_scope, upstream_account_id)
+        .await?
+        .0)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1828,35 +1825,21 @@ async fn load_in_progress_summary_snapshot(
 ) -> Result<(i64, i64, Option<f64>), ApiError> {
     let mut query = QueryBuilder::<Sqlite>::new(
         "WITH in_flight AS (\
-            SELECT id, occurred_at, ",
+            SELECT id, ",
     );
     query
+        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(
+            " AS upstream_account_id, \
+             ",
+        )
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
         .push(
             " AS prompt_cache_key, \
-             ",
-        )
-        .push(INVOCATION_STATUS_NORMALIZED_SQL)
-        .push(
-            " AS normalized_status, \
-             ",
-        )
-        .push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
-        .push(
-            " AS downstream_error_message, \
-             ",
-        )
-        .push(INVOCATION_FAILURE_KIND_SQL)
-        .push(
-            " AS failure_kind, \
              t_upstream_ttfb_ms \
              FROM codex_invocations \
-             WHERE ",
+             WHERE LOWER(TRIM(",
         )
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(" IS NOT NULL AND ")
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(" <> '' AND LOWER(TRIM(")
         .push(invocation_display_status_sql())
         .push(")) IN ('running', 'pending')");
 
@@ -1872,17 +1855,11 @@ async fn load_in_progress_summary_snapshot(
     }
 
     query.push(
-        " ), latest_in_flight AS (\
-            SELECT prompt_cache_key, MAX(id) AS latest_in_flight_id \
-            FROM in_flight \
-            GROUP BY prompt_cache_key\
-         ), previous_terminal AS (\
-            SELECT current.prompt_cache_key AS prompt_cache_key, \
-                   previous.id AS previous_id, \
-                   previous.display_status AS previous_display_status \
-            FROM latest_in_flight current \
-            LEFT JOIN (\
-                SELECT id, source, ",
+        " ), retry_candidates AS (\
+            SELECT in_flight.id AS in_flight_id, \
+                   (SELECT previous_inner.display_status \
+                      FROM (\
+                        SELECT id, source, ",
     );
     query
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
@@ -1898,29 +1875,9 @@ async fn load_in_progress_summary_snapshot(
         .push(invocation_display_status_sql())
         .push(
             ")) AS display_status \
-             FROM codex_invocations\
-            ) previous \
-              ON previous.id = (\
-                    SELECT previous_inner.id \
-                    FROM (\
-                        SELECT id, source, ",
-        )
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(
-            " AS prompt_cache_key, \
-             ",
-        )
-        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-        .push(
-            " AS upstream_account_id, \
-             LOWER(TRIM(",
-        )
-        .push(invocation_display_status_sql())
-        .push(
-            ")) AS display_status \
                          FROM codex_invocations\
                     ) previous_inner \
-                    WHERE previous_inner.prompt_cache_key = current.prompt_cache_key",
+                    WHERE previous_inner.prompt_cache_key = in_flight.prompt_cache_key",
         );
 
     if source_scope == InvocationSourceScope::ProxyOnly {
@@ -1933,19 +1890,19 @@ async fn load_in_progress_summary_snapshot(
     }
 
     query.push(
-        " AND previous_inner.id < current.latest_in_flight_id \
+        " AND previous_inner.id < in_flight.id \
                     AND previous_inner.display_status NOT IN ('running', 'pending') \
                     ORDER BY previous_inner.id DESC \
-                    LIMIT 1\
-              )\
+                    LIMIT 1) AS previous_display_status \
+             FROM in_flight \
+             WHERE in_flight.prompt_cache_key IS NOT NULL \
+               AND in_flight.prompt_cache_key <> ''\
          ) \
          SELECT \
-            COALESCE(COUNT(DISTINCT latest_in_flight.prompt_cache_key), 0) AS in_progress_count, \
-            COALESCE(SUM(CASE WHEN previous_terminal.previous_display_status = 'failed' THEN 1 ELSE 0 END), 0) AS retry_count, \
+            COALESCE(COUNT(*), 0) AS in_progress_count, \
+            COALESCE((SELECT SUM(CASE WHEN retry_candidates.previous_display_status = 'failed' THEN 1 ELSE 0 END) FROM retry_candidates), 0) AS retry_count, \
             AVG(CASE WHEN in_flight.t_upstream_ttfb_ms IS NOT NULL AND in_flight.t_upstream_ttfb_ms >= 0 THEN in_flight.t_upstream_ttfb_ms END) AS avg_wait_ms \
-         FROM latest_in_flight \
-         INNER JOIN in_flight ON in_flight.id = latest_in_flight.latest_in_flight_id \
-         LEFT JOIN previous_terminal ON previous_terminal.prompt_cache_key = latest_in_flight.prompt_cache_key",
+         FROM in_flight",
     );
 
     let (in_progress_count, retry_count, avg_wait_ms) = query
@@ -2169,6 +2126,476 @@ pub(crate) async fn build_empty_summary_response(
     .await?;
     apply_summary_live_augmentation(&mut response, augmentation);
     Ok(response)
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct UpstreamAccountActivityMetaRow {
+    id: i64,
+    display_name: Option<String>,
+    group_name: Option<String>,
+    plan_type: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct UpstreamAccountInProgressRow {
+    upstream_account_id: i64,
+    in_progress_count: i64,
+    retry_count: i64,
+}
+
+#[derive(Debug, Default)]
+struct UpstreamAccountActivityAccumulator {
+    display_name_hint: Option<String>,
+    plan_type_hint: Option<String>,
+    request_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    non_success_count: i64,
+    total_tokens: i64,
+    success_tokens: i64,
+    non_success_tokens: i64,
+    cache_input_tokens: i64,
+    total_cost: f64,
+    first_byte_sample_count: i64,
+    first_byte_sum_ms: f64,
+    last_occurred_at_epoch_ms: i64,
+    active_minute_request_count: BTreeMap<i64, i64>,
+    recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
+}
+
+fn normalize_trimmed_optional_string_local(raw: Option<String>) -> Option<String> {
+    raw.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn resolve_upstream_account_activity_display_name(
+    account_id: i64,
+    meta: Option<&UpstreamAccountActivityMetaRow>,
+    hint: Option<&str>,
+) -> String {
+    if let Some(display_name) = meta
+        .and_then(|row| row.display_name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return display_name.to_string();
+    }
+    if let Some(display_name) = hint.map(str::trim).filter(|value| !value.is_empty()) {
+        return display_name.to_string();
+    }
+    format!("账号 #{account_id}")
+}
+
+fn compute_upstream_account_activity_rates(
+    active_minute_request_count: &BTreeMap<i64, i64>,
+    total_tokens: i64,
+    total_cost: f64,
+) -> (Option<f64>, Option<f64>) {
+    let active_minutes = active_minute_request_count
+        .values()
+        .filter(|count| **count > 0)
+        .count();
+    if active_minutes == 0 {
+        return (None, None);
+    }
+    let active_minutes = active_minutes as f64;
+    (
+        Some(total_tokens as f64 / active_minutes),
+        Some(total_cost / active_minutes),
+    )
+}
+
+async fn query_live_upstream_account_activity_preview_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, occurred_at, ");
+    query
+        .push(invocation_display_status_sql())
+        .push(" AS status, ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" AS failure_class, ")
+        .push(INVOCATION_ROUTE_MODE_SQL)
+        .push(" AS route_mode, model, ")
+        .push(INVOCATION_REQUEST_MODEL_SQL)
+        .push(" AS request_model, ")
+        .push(INVOCATION_RESPONSE_MODEL_SQL)
+        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
+        .push(INVOCATION_REASONING_EFFORT_SQL)
+        .push(" AS reasoning_effort, error_message, ")
+        .push(INVOCATION_FAILURE_KIND_SQL)
+        .push(" AS failure_kind, CASE WHEN ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, ")
+        .push(INVOCATION_PROXY_DISPLAY_SQL)
+        .push(" AS proxy_display_name, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" AS upstream_account_id, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
+        .push(" AS upstream_account_name, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL)
+        .push(" AS upstream_account_plan_type, ")
+        .push(INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
+        .push(" AS response_content_encoding, ")
+        .push(INVOCATION_TRANSPORT_SQL)
+        .push(" AS transport, ")
+        .push(INVOCATION_COMPACTION_REQUEST_KIND_SQL)
+        .push(" AS compaction_request_kind, ")
+        .push(INVOCATION_COMPACTION_RESPONSE_KIND_SQL)
+        .push(" AS compaction_response_kind, ")
+        .push(INVOCATION_IMAGE_INTENT_SQL)
+        .push(
+            " AS image_intent, \
+             CASE \
+               WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
+                 THEN json_extract(payload, '$.requestedServiceTier') \
+               WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text' \
+                 THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier, \
+             CASE \
+               WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
+                 THEN json_extract(payload, '$.serviceTier') \
+               WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
+                 THEN json_extract(payload, '$.service_tier') END AS service_tier, \
+             ",
+        )
+        .push(INVOCATION_BILLING_SERVICE_TIER_SQL)
+        .push(" AS billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ")
+        .push(INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
+        .push(" AS downstream_status_code, ")
+        .push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
+        .push(" AS downstream_error_message, ")
+        .push(INVOCATION_ENDPOINT_SQL)
+        .push(
+            " AS endpoint \
+             FROM codex_invocations \
+             WHERE occurred_at >= ",
+        )
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end))
+        .push(" AND ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" IS NOT NULL");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY occurred_at DESC, id DESC");
+
+    Ok(query
+        .build_query_as::<UpstreamAccountInvocationPreviewRow>()
+        .fetch_all(pool)
+        .await?)
+}
+
+async fn query_upstream_account_activity_meta(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<HashMap<i64, UpstreamAccountActivityMetaRow>, ApiError> {
+    if account_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT id, display_name, group_name, plan_type FROM pool_upstream_accounts WHERE id IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(*account_id);
+        }
+    }
+    query.push(")");
+    Ok(query
+        .build_query_as::<UpstreamAccountActivityMetaRow>()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| (row.id, row))
+        .collect())
+}
+
+async fn query_upstream_account_in_progress_counts(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+) -> Result<HashMap<i64, (i64, i64)>, ApiError> {
+    let mut query = QueryBuilder::<Sqlite>::new("WITH in_flight AS (SELECT id, ");
+    query
+        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" AS upstream_account_id, ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(
+            " AS prompt_cache_key \
+             FROM codex_invocations \
+             WHERE LOWER(TRIM(",
+        )
+        .push(invocation_display_status_sql())
+        .push(")) IN ('running', 'pending') AND ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" IS NOT NULL");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push("), retry_candidates AS (SELECT in_flight.upstream_account_id AS upstream_account_id, (SELECT previous_inner.display_status FROM (SELECT id, source, ");
+    query
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" AS prompt_cache_key, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" AS upstream_account_id, LOWER(TRIM(")
+        .push(invocation_display_status_sql())
+        .push(
+            ")) AS display_status FROM codex_invocations) previous_inner \
+             WHERE previous_inner.prompt_cache_key = in_flight.prompt_cache_key \
+               AND previous_inner.upstream_account_id = in_flight.upstream_account_id",
+        );
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND previous_inner.source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(
+        " AND previous_inner.id < in_flight.id \
+               AND previous_inner.display_status NOT IN ('running', 'pending') \
+             ORDER BY previous_inner.id DESC \
+             LIMIT 1) AS previous_display_status \
+           FROM in_flight \
+          WHERE in_flight.prompt_cache_key IS NOT NULL \
+            AND in_flight.prompt_cache_key <> ''), retry_counts AS (\
+            SELECT upstream_account_id, \
+                   SUM(CASE WHEN previous_display_status = 'failed' THEN 1 ELSE 0 END) AS retry_count \
+              FROM retry_candidates \
+             GROUP BY upstream_account_id \
+         ) \
+         SELECT in_flight.upstream_account_id AS upstream_account_id, \
+                COUNT(*) AS in_progress_count, \
+                COALESCE(retry_counts.retry_count, 0) AS retry_count \
+           FROM in_flight \
+           LEFT JOIN retry_counts \
+             ON retry_counts.upstream_account_id = in_flight.upstream_account_id \
+          GROUP BY in_flight.upstream_account_id, retry_counts.retry_count",
+    );
+
+    Ok(query
+        .build_query_as::<UpstreamAccountInProgressRow>()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| {
+            (
+                row.upstream_account_id,
+                (row.in_progress_count.max(0), row.retry_count.max(0)),
+            )
+        })
+        .collect())
+}
+
+pub(crate) async fn fetch_upstream_account_activity(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<UpstreamAccountActivityQuery>,
+) -> Result<Json<UpstreamAccountActivityResponse>, ApiError> {
+    if !matches!(params.range.as_str(), "today" | "yesterday" | "1d" | "7d") {
+        return Err(ApiError::bad_request(anyhow!(
+            "unsupported upstream-account-activity range: {}",
+            params.range
+        )));
+    }
+
+    let recent_limit = params.recent_limit.unwrap_or(4).clamp(1, 4) as usize;
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let range_window = resolve_range_window(&params.range, reporting_tz).map_err(ApiError::from)?;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let range = ExactUtcRange {
+        start: range_window.start,
+        end: range_window.end,
+    };
+    let live_rows =
+        query_live_upstream_account_activity_preview_rows(&state.pool, source_scope, range).await?;
+    let live_ids = live_rows.iter().map(|row| row.id).collect::<HashSet<_>>();
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    let mut combined_rows = live_rows;
+    if range.start < retention_cutoff {
+        combined_rows.extend(
+            crate::stats::query_completed_invocation_archive_preview_rows(
+                &state.pool,
+                source_scope,
+                range,
+                Some(&live_ids),
+            )
+            .await?,
+        );
+    }
+
+    combined_rows.sort_by(|left, right| {
+        right
+            .occurred_at
+            .cmp(&left.occurred_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+
+    let mut account_activity = HashMap::<i64, UpstreamAccountActivityAccumulator>::new();
+    for row in combined_rows {
+        let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+            continue;
+        };
+        let classification = resolve_failure_classification(
+            Some(row.status.as_str()),
+            row.error_message.as_deref(),
+            row.failure_kind.as_deref(),
+            row.failure_class.as_deref(),
+            row.is_actionable,
+        );
+        let is_success = prompt_cache_and_timeseries_shared::invocation_status_is_success_like(
+            Some(row.status.as_str()),
+            row.error_message.as_deref(),
+        ) && classification.failure_class == FailureClass::None;
+        let counts_toward_failure =
+            prompt_cache_and_timeseries_shared::invocation_status_counts_toward_terminal_totals(
+                Some(row.status.as_str()),
+            ) && classification.failure_class != FailureClass::None;
+        let counts_toward_non_success = invocation_counts_toward_non_success_usage(
+            Some(row.status.as_str()),
+            row.error_message.as_deref(),
+            row.failure_kind.as_deref(),
+            row.failure_class.as_deref(),
+            row.is_actionable,
+        );
+
+        let entry = account_activity
+            .entry(row.upstream_account_id)
+            .or_default();
+        if entry.last_occurred_at_epoch_ms == 0 {
+            entry.last_occurred_at_epoch_ms = occurred_at.timestamp_millis();
+        }
+        if entry.display_name_hint.is_none() {
+            entry.display_name_hint =
+                normalize_trimmed_optional_string_local(row.upstream_account_name.clone());
+        }
+        if entry.plan_type_hint.is_none() {
+            entry.plan_type_hint =
+                normalize_trimmed_optional_string_local(row.upstream_account_plan_type.clone());
+        }
+        entry.request_count += 1;
+        entry.total_tokens += row.total_tokens.max(0);
+        entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default().max(0);
+        entry.total_cost += row.cost.unwrap_or_default();
+        if is_success {
+            entry.success_count += 1;
+            entry.success_tokens += row.total_tokens.max(0);
+            if let Some(ttfb_ms) = row.t_upstream_ttfb_ms.filter(|value| value.is_finite() && *value > 0.0) {
+                entry.first_byte_sample_count += 1;
+                entry.first_byte_sum_ms += ttfb_ms;
+            }
+        } else if counts_toward_failure {
+            entry.failure_count += 1;
+        }
+        if counts_toward_non_success {
+            entry.non_success_count += 1;
+            entry.non_success_tokens += row.total_tokens.max(0);
+        }
+        let minute_bucket_epoch = occurred_at.timestamp().div_euclid(60) * 60;
+        *entry
+            .active_minute_request_count
+            .entry(minute_bucket_epoch)
+            .or_default() += 1;
+        if entry.recent_invocations.len() < recent_limit {
+            entry.recent_invocations.push(
+                upstream_account_invocation_preview_from_row(row.clone()),
+            );
+        }
+    }
+
+    if account_activity.is_empty() {
+        return Ok(Json(UpstreamAccountActivityResponse {
+            range: params.range,
+            range_start: format_utc_iso(range.start),
+            range_end: format_utc_iso(range.end),
+            accounts: Vec::new(),
+        }));
+    }
+
+    let account_ids = account_activity.keys().copied().collect::<Vec<_>>();
+    let account_meta = query_upstream_account_activity_meta(&state.pool, &account_ids).await?;
+    let in_progress_counts = if params.range == "yesterday" {
+        HashMap::new()
+    } else {
+        query_upstream_account_in_progress_counts(&state.pool, source_scope).await?
+    };
+
+    let mut accounts = account_activity
+        .into_iter()
+        .map(|(upstream_account_id, aggregate)| {
+            let meta = account_meta.get(&upstream_account_id);
+            let (tokens_per_minute, spend_rate) = compute_upstream_account_activity_rates(
+                &aggregate.active_minute_request_count,
+                aggregate.total_tokens,
+                aggregate.total_cost,
+            );
+            let (in_progress_invocation_count, retry_invocation_count) =
+                if params.range == "yesterday" {
+                    (None, None)
+                } else {
+                    let (in_progress_count, retry_count) = in_progress_counts
+                        .get(&upstream_account_id)
+                        .copied()
+                        .unwrap_or((0, 0));
+                    (Some(in_progress_count), Some(retry_count))
+                };
+
+            UpstreamAccountActivityAccountResponse {
+                upstream_account_id,
+                display_name: resolve_upstream_account_activity_display_name(
+                    upstream_account_id,
+                    meta,
+                    aggregate.display_name_hint.as_deref(),
+                ),
+                group_name: normalize_trimmed_optional_string_local(
+                    meta.and_then(|row| row.group_name.clone()),
+                ),
+                plan_type: normalize_trimmed_optional_string_local(
+                    meta.and_then(|row| row.plan_type.clone())
+                        .or(aggregate.plan_type_hint),
+                ),
+                request_count: aggregate.request_count,
+                success_count: aggregate.success_count,
+                failure_count: aggregate.failure_count,
+                non_success_count: aggregate.non_success_count,
+                total_tokens: aggregate.total_tokens,
+                success_tokens: aggregate.success_tokens,
+                non_success_tokens: aggregate.non_success_tokens,
+                cache_hit_rate: (aggregate.total_tokens > 0)
+                    .then_some(aggregate.cache_input_tokens as f64 / aggregate.total_tokens as f64),
+                tokens_per_minute,
+                spend_rate,
+                first_byte_avg_ms: (aggregate.first_byte_sample_count > 0).then_some(
+                    aggregate.first_byte_sum_ms / aggregate.first_byte_sample_count as f64,
+                ),
+                in_progress_invocation_count,
+                retry_invocation_count,
+                recent_invocations: aggregate.recent_invocations,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    accounts.sort_by(|left, right| {
+        right
+            .recent_invocations
+            .first()
+            .map(|row| row.occurred_at.as_str())
+            .cmp(&left.recent_invocations.first().map(|row| row.occurred_at.as_str()))
+            .then_with(|| right.request_count.cmp(&left.request_count))
+            .then_with(|| right.upstream_account_id.cmp(&left.upstream_account_id))
+    });
+
+    Ok(Json(UpstreamAccountActivityResponse {
+        range: params.range,
+        range_start: format_utc_iso(range.start),
+        range_end: format_utc_iso(range.end),
+        accounts,
+    }))
 }
 
 pub(crate) async fn fetch_summary(

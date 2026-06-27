@@ -587,6 +587,34 @@ export interface StatsResponse {
   maintenance?: StatsMaintenanceResponse;
 }
 
+export interface UpstreamAccountActivityAccount {
+  upstreamAccountId: number;
+  displayName: string;
+  groupName?: string | null;
+  planType?: string | null;
+  requestCount: number;
+  successCount: number;
+  failureCount: number;
+  nonSuccessCount: number;
+  totalTokens: number;
+  successTokens: number;
+  nonSuccessTokens: number;
+  cacheHitRate?: number | null;
+  tokensPerMinute?: number | null;
+  spendRate?: number | null;
+  firstByteAvgMs?: number | null;
+  inProgressInvocationCount?: number | null;
+  retryInvocationCount?: number | null;
+  recentInvocations: PromptCacheConversationInvocationPreview[];
+}
+
+export interface UpstreamAccountActivityResponse {
+  range: string;
+  rangeStart: string;
+  rangeEnd: string;
+  accounts: UpstreamAccountActivityAccount[];
+}
+
 export interface StatsMaintenanceResponse {
   rawCompressionBacklog?: RawCompressionBacklogResponse;
   startupBackfill?: StartupBackfillResponse;
@@ -2424,6 +2452,63 @@ function normalizeForwardProxyValidationResult(
   };
 }
 
+function normalizeUpstreamAccountActivityAccount(
+  raw: unknown,
+): UpstreamAccountActivityAccount | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const upstreamAccountId = normalizeFiniteNumber(payload.upstreamAccountId);
+  const displayName =
+    typeof payload.displayName === "string" ? payload.displayName.trim() : "";
+  if (upstreamAccountId == null || !displayName) {
+    return null;
+  }
+  const recentInvocations = Array.isArray(payload.recentInvocations)
+    ? payload.recentInvocations
+        .map(normalizePromptCacheConversationInvocationPreview)
+        .filter((item): item is PromptCacheConversationInvocationPreview => item != null)
+    : [];
+  return {
+    upstreamAccountId,
+    displayName,
+    groupName:
+      typeof payload.groupName === "string" ? payload.groupName.trim() : null,
+    planType:
+      typeof payload.planType === "string" ? payload.planType.trim() : null,
+    requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
+    successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
+    failureCount: normalizeFiniteNumber(payload.failureCount) ?? 0,
+    nonSuccessCount: normalizeFiniteNumber(payload.nonSuccessCount) ?? 0,
+    totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
+    successTokens: normalizeFiniteNumber(payload.successTokens) ?? 0,
+    nonSuccessTokens: normalizeFiniteNumber(payload.nonSuccessTokens) ?? 0,
+    cacheHitRate: normalizeFiniteNumber(payload.cacheHitRate),
+    tokensPerMinute: normalizeFiniteNumber(payload.tokensPerMinute),
+    spendRate: normalizeFiniteNumber(payload.spendRate),
+    firstByteAvgMs: normalizeFiniteNumber(payload.firstByteAvgMs),
+    inProgressInvocationCount: normalizeFiniteNumber(
+      payload.inProgressInvocationCount,
+    ),
+    retryInvocationCount: normalizeFiniteNumber(payload.retryInvocationCount),
+    recentInvocations,
+  };
+}
+
+function normalizeUpstreamAccountActivityResponse(
+  raw: unknown,
+): UpstreamAccountActivityResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    range: typeof payload.range === "string" ? payload.range : "",
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    accounts: Array.isArray(payload.accounts)
+      ? payload.accounts
+          .map(normalizeUpstreamAccountActivityAccount)
+          .filter((item): item is UpstreamAccountActivityAccount => item != null)
+      : [],
+  };
+}
+
 function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
@@ -2758,6 +2843,23 @@ export async function fetchSummary(
   return fetchJson<StatsResponse>(`/api/stats/summary?${search.toString()}`, {
     signal: options?.signal,
   });
+}
+
+export async function fetchUpstreamAccountActivity(
+  range: string,
+  options?: { recentLimit?: number; timeZone?: string; signal?: AbortSignal },
+) {
+  const search = new URLSearchParams();
+  search.set("range", range);
+  search.set("timeZone", options?.timeZone ?? getBrowserTimeZone());
+  if (options?.recentLimit !== undefined) {
+    search.set("recentLimit", String(options.recentLimit));
+  }
+  const response = await fetchJson<unknown>(
+    `/api/stats/upstream-account-activity?${search.toString()}`,
+    { signal: options?.signal },
+  );
+  return normalizeUpstreamAccountActivityResponse(response);
 }
 
 export async function fetchForwardProxyLiveStats() {

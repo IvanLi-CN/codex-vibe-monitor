@@ -2,11 +2,13 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent } from "@testing-library/dom";
 import { I18nProvider } from "../i18n";
 import type {
   PromptCacheConversation,
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
+  UpstreamAccountActivityResponse,
 } from "../lib/api";
 import {
   mapPromptCacheConversationsToDashboardCards,
@@ -48,6 +50,26 @@ vi.mock("@tanstack/react-virtual", () => ({
             end: index * 360 + 360,
           })),
       getTotalSize: () => virtualizerMocks.totalSize ?? count * 360,
+    };
+  },
+}));
+
+const upstreamAccountActivityMock = vi.hoisted(() => ({
+  data: null as UpstreamAccountActivityResponse | null,
+  isLoading: false,
+  error: null as string | null,
+  calls: [] as Array<{ range: string; enabled: boolean }>,
+}));
+
+vi.mock("../hooks/useDashboardUpstreamAccountActivity", () => ({
+  useDashboardUpstreamAccountActivity: (range: string, enabled: boolean) => {
+    upstreamAccountActivityMock.calls.push({ range, enabled });
+    return {
+      data: upstreamAccountActivityMock.data,
+      isLoading: upstreamAccountActivityMock.isLoading,
+      error: upstreamAccountActivityMock.error,
+      hasActivated: enabled,
+      reload: vi.fn(),
     };
   },
 }));
@@ -153,6 +175,65 @@ function createResponse(
   };
 }
 
+function createUpstreamAccountActivityResponse(): UpstreamAccountActivityResponse {
+  return {
+    range: "today",
+    rangeStart: "2026-04-04T10:00:00Z",
+    rangeEnd: "2026-04-04T10:05:00Z",
+    accounts: [
+      {
+        upstreamAccountId: 42,
+        displayName: "Pool Alpha",
+        groupName: "Primary",
+        planType: "enterprise",
+        requestCount: 8,
+        successCount: 6,
+        failureCount: 2,
+        nonSuccessCount: 2,
+        totalTokens: 3200,
+        successTokens: 2800,
+        nonSuccessTokens: 400,
+        cacheHitRate: 0.25,
+        tokensPerMinute: 640,
+        spendRate: 0.12,
+        firstByteAvgMs: 420,
+        inProgressInvocationCount: 3,
+        retryInvocationCount: 1,
+        recentInvocations: [
+          createPreview({
+            id: 9001,
+            invokeId: "acct-invoke-1",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+            upstreamAccountName: "Pool Alpha",
+          }),
+          createPreview({
+            id: 9002,
+            invokeId: "acct-invoke-2",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "failed",
+            upstreamAccountName: "Pool Alpha",
+          }),
+          createPreview({
+            id: 9003,
+            invokeId: "acct-invoke-3",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "success",
+            upstreamAccountName: "Pool Alpha",
+          }),
+          createPreview({
+            id: 9004,
+            invokeId: "acct-invoke-4",
+            occurredAt: "2026-04-04T10:02:00Z",
+            status: "pending",
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ],
+      },
+    ],
+  };
+}
+
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 const originalResizeObserver = globalThis.ResizeObserver;
@@ -184,6 +265,10 @@ afterEach(() => {
   virtualizerMocks.rowIndexes = null;
   virtualizerMocks.totalSize = null;
   virtualizerMocks.customVirtualItems = null;
+  upstreamAccountActivityMock.data = null;
+  upstreamAccountActivityMock.isLoading = false;
+  upstreamAccountActivityMock.error = null;
+  upstreamAccountActivityMock.calls = [];
   globalThis.ResizeObserver = originalResizeObserver;
   vi.restoreAllMocks();
 });
@@ -191,6 +276,7 @@ afterEach(() => {
 function renderSection(
   response: PromptCacheConversationsResponse,
   options?: {
+    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -247,6 +333,7 @@ function renderSectionWithCards(
     root?.render(
       <I18nProvider>
         <DashboardWorkingConversationsSection
+          activeRange={options?.activeRange ?? "today"}
           cards={cards}
           totalMatched={options?.totalMatched}
           hasMore={options?.hasMore}
@@ -295,6 +382,7 @@ describe("DashboardWorkingConversationsSection model routing", () => {
 function rerenderSection(
   response: PromptCacheConversationsResponse,
   options?: {
+    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -351,6 +439,7 @@ function rerenderSectionWithCards(
     root?.render(
       <I18nProvider>
         <DashboardWorkingConversationsSection
+          activeRange={options?.activeRange ?? "today"}
           cards={cards}
           totalMatched={options?.totalMatched}
           hasMore={options?.hasMore}
@@ -370,6 +459,186 @@ function rerenderSectionWithCards(
 }
 
 describe("DashboardWorkingConversationsSection", () => {
+  it("lazy-loads upstream account activity only after the account tab is opened", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    renderSection(
+      createResponse([
+        createConversation("pck-lazy-load", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-lazy-load",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    expect(upstreamAccountActivityMock.calls[0]).toEqual({
+      range: "today",
+      enabled: false,
+    });
+    expect(host?.textContent).toContain("当前对话 1 条");
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    expect(upstreamAccountActivityMock.calls.at(-1)).toEqual({
+      range: "today",
+      enabled: true,
+    });
+    expect(host?.textContent).toContain("当前活动账号 1 个");
+    expect(host?.textContent).toContain(
+      "展示当前总览范围内有调用的上游账号，以及每个账号最近 4 条调用。",
+    );
+    expect(host?.textContent).toContain("最近 4 条调用");
+    expect(host?.textContent).not.toContain("账号状态");
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.getAttribute(
+        "data-account-status",
+      ),
+    ).toBe("busy");
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.className,
+    ).toContain("desktop1660:min-h-[34.5rem]");
+    expect(host?.textContent).toContain("繁忙");
+    expect(host?.textContent).not.toContain("按调用计数，不按对话去重");
+    expect(host?.textContent).not.toContain("仍在重试链路中的调用");
+    expect(host?.textContent).not.toContain("最近 4 条调用里仍有活动或异常");
+    expect(
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]')
+        .length,
+    ).toBe(4);
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-header-row"]'),
+    ).not.toBeNull();
+    const firstRecentRow = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"]',
+    );
+    expect(firstRecentRow?.textContent).toContain("Responses");
+    expect(firstRecentRow?.textContent).toContain("T 200");
+    expect(firstRecentRow?.textContent).toContain("RQ 10/7");
+    expect(firstRecentRow?.textContent).toContain("UP 90/70/220");
+    expect(firstRecentRow?.textContent).toContain("ED 12/9");
+
+    const requestBreakdown = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-request-breakdown"]',
+    );
+    expect(requestBreakdown?.textContent).toContain("6");
+    expect(requestBreakdown?.textContent).toContain("2");
+    expect(requestBreakdown?.textContent).not.toContain("成");
+    expect(requestBreakdown?.textContent).not.toContain("失");
+    expect(requestBreakdown?.textContent).not.toContain("非");
+
+    const requestSegments = Array.from(
+      requestBreakdown?.querySelectorAll('[data-testid="dashboard-upstream-account-segment"]') ??
+        [],
+    );
+    expect(requestSegments).toHaveLength(3);
+    expect(requestSegments[0]?.textContent).toContain("6");
+    expect(requestSegments[1]?.textContent).toContain("2");
+    expect(requestSegments[2]?.textContent).toContain("2");
+    expect(requestSegments[0]?.parentElement?.getAttribute("aria-label")).toContain("成功 6");
+    expect(requestSegments[1]?.parentElement?.getAttribute("aria-label")).toContain("失败 2");
+    expect(requestSegments[2]?.parentElement?.getAttribute("aria-label")).toContain("非成功 2");
+
+    const recentBreakdown = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-breakdown"]',
+    );
+    expect(recentBreakdown?.textContent).toContain("进行中");
+    expect(recentBreakdown?.textContent).toContain("失败");
+    expect(recentBreakdown?.textContent).toContain("成功");
+    expect(recentBreakdown?.textContent).toContain("2");
+    expect(recentBreakdown?.textContent).toContain("1");
+  });
+
+  it("disables and falls back from the upstream account tab for usage range", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    const response = createResponse([
+      createConversation("pck-usage-fallback", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-usage-fallback",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+        }),
+      ]),
+    ]);
+
+    renderSection(response);
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+    expect(host?.textContent).toContain("当前活动账号 1 个");
+
+    act(() => {
+      rerenderSection(response, { activeRange: "usage" });
+    });
+
+    expect(host?.textContent).toContain("当前对话 1 条");
+    const accountTabAfter = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    expect(accountTabAfter?.disabled).toBe(true);
+  });
+
+  it("switches the section subtitle when the upstream account tab is active", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-subtitle", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-subtitle",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    expect(host?.textContent).toContain(
+      "展示最近 5 分钟内有终态调用，或当前仍处于运行中 / 排队中的对话。",
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    expect(host?.textContent).toContain(
+      "展示当前总览范围内有调用的上游账号，以及每个账号最近 4 条调用。",
+    );
+    expect(host?.textContent).not.toContain(
+      "展示最近 5 分钟内有终态调用，或当前仍处于运行中 / 排队中的对话。",
+    );
+  });
+
   it("renders the WS transport badge only in websocket invocation slots", () => {
     renderSection(
       createResponse([

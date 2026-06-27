@@ -229,7 +229,7 @@ export const DesktopSingleRow: Story = {
     const tiles = canvas.getAllByTestId('today-stats-metric-tile')
     await expect(tiles).toHaveLength(7)
     const labels = tiles.map((tile) => tile.textContent ?? '')
-    expect(labels[3]).toMatch(/in-progress conversations|进行中对话/i)
+    expect(labels[3]).toMatch(/in-progress invocations|进行中调用/i)
     expect(labels[4]).toMatch(/time to first byte|首字用时/i)
   },
 }
@@ -279,7 +279,7 @@ export const ScopedAccountEmbedded: Story = {
     await expect(grid).toHaveClass(/lg:grid-cols-4/)
     await expect(grid).toHaveClass(/xl:grid-cols-7/)
     await expect(tiles).toHaveLength(7)
-    await expect(canvas.getByText(/in-progress conversations|进行中对话/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/in-progress invocations|进行中调用/i)).toBeInTheDocument()
     await expect(canvas.getByTestId('today-stats-secondary-in-progress-delta')).toHaveTextContent('+37.5%')
     await expect(canvas.getByTestId('today-stats-secondary-in-progress-day-average')).toHaveTextContent('9')
     await expect(canvas.getByTestId('today-stats-secondary-in-progress-retry')).toBeVisible()

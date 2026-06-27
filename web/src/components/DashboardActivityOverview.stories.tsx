@@ -2,8 +2,8 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
+import { DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY } from './dashboardActivityRange'
 import {
-  DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
   DashboardActivityOverview,
 } from './DashboardActivityOverview'
 

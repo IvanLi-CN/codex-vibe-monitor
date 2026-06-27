@@ -18,6 +18,8 @@ export type {
   ApiInvocationRecordDetailResponse,
   ApiInvocationResponseBodyResponse,
   StatsResponse,
+  UpstreamAccountActivityAccount,
+  UpstreamAccountActivityResponse,
   StatsMaintenanceResponse,
   RawCompressionBacklogResponse,
   StartupBackfillResponse,

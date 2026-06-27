@@ -1743,6 +1743,10 @@ fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
         .route(
+            "/api/stats/upstream-account-activity",
+            get(fetch_upstream_account_activity),
+        )
+        .route(
             "/api/stats/forward-proxy",
             get(fetch_forward_proxy_live_stats),
         )
