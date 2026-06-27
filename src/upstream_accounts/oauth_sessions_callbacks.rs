@@ -717,18 +717,6 @@ pub(crate) async fn update_oauth_login_session(
                 .unwrap_or_default(),
             None => UpstreamAccountGroupMetadata::default(),
         };
-        let current_tag_ids = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT tag_id
-            FROM pool_upstream_account_tags
-            WHERE account_id = ?1
-            ORDER BY tag_id ASC
-            "#,
-        )
-        .bind(account_id)
-        .fetch_all(tx.as_mut())
-        .await
-        .map_err(internal_error_tuple)?;
         let session_group_node_shunt_enabled_requested =
             decode_group_requested_flag(session.group_node_shunt_enabled_requested);
         session.display_name.as_deref() == Some(account.display_name.as_str())
@@ -744,7 +732,6 @@ pub(crate) async fn update_oauth_login_session(
                     == current_group_metadata.node_shunt_enabled)
             && session.group_concurrency_limit == current_group_metadata.concurrency_limit
             && (session.is_mother != 0) == (account.is_mother != 0)
-            && parse_tag_ids_json(session.tag_ids_json.as_deref()) == current_tag_ids
     } else {
         false
     };
@@ -981,7 +968,6 @@ pub(crate) async fn update_oauth_login_session(
             note.clone(),
             &requested_group_metadata_changes,
             is_mother,
-            &tag_ids,
         )
         .await?;
         let completed_group_metadata_snapshot = load_group_metadata_snapshot_conn_with_limit(
@@ -1799,7 +1785,6 @@ pub(crate) async fn apply_oauth_login_session_metadata_to_account_with_executor(
     note: Option<String>,
     requested_group_metadata_changes: &RequestedGroupMetadataChanges,
     is_mother: bool,
-    tag_ids: &[i64],
 ) -> Result<(), (StatusCode, String)> {
     let row = load_upstream_account_row_conn(tx.as_mut(), account_id)
         .await
@@ -1866,9 +1851,6 @@ pub(crate) async fn apply_oauth_login_session_metadata_to_account_with_executor(
             .map_err(internal_error_tuple)?;
     }
     apply_mother_assignment(tx, account_id, group_name.as_deref(), is_mother)
-        .await
-        .map_err(internal_error_tuple)?;
-    sync_account_tag_links_with_executor(tx.as_mut(), account_id, tag_ids)
         .await
         .map_err(internal_error_tuple)?;
     Ok(())
