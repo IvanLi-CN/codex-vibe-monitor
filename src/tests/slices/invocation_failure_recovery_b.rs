@@ -1509,44 +1509,45 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
 
-    let force_remove_tag_payload = serde_json::from_value::<CreateTagRequest>(json!({
-        "name": "force-remove-primary",
-        "blockNewConversations": false,
-        "allowCutOut": true,
-        "allowCutIn": true,
-        "priorityTier": "primary",
-        "fastModeRewriteMode": "force_remove",
-    }))
-    .expect("deserialize force-remove tag payload");
-    let Json(_force_remove_tag) = create_tag(
-        State(state.clone()),
-        HeaderMap::new(),
-        Json(force_remove_tag_payload),
+    let now_iso = format_utc_iso(Utc::now());
+    let force_remove_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, system_key, protected, block_new_conversations, allow_cut_out, allow_cut_in,
+            priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
+            upstream_429_max_retries, available_models_json, created_at, updated_at
+        ) VALUES (?1, ?2, 1, 0, 1, 1, 'primary', 'force_remove', 0, 0, 0, '[]', ?3, ?3)
+        RETURNING id
+        "#,
     )
+    .bind("force-remove-primary")
+    .bind("test:force-remove-primary")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
     .await
-    .expect("create force-remove tag");
-    let force_remove_tag_id: i64 = sqlx::query_scalar("SELECT id FROM pool_tags WHERE name = ?1")
+    .expect("insert force-remove tag");
+    let _force_remove_tag_id: i64 = sqlx::query_scalar("SELECT id FROM pool_tags WHERE name = ?1")
         .bind("force-remove-primary")
         .fetch_one(&state.pool)
         .await
         .expect("load force-remove tag id");
-    let fill_missing_tag_payload = serde_json::from_value::<CreateTagRequest>(json!({
-        "name": "fill-missing-normal",
-        "blockNewConversations": false,
-        "allowCutOut": true,
-        "allowCutIn": true,
-        "priorityTier": "normal",
-        "fastModeRewriteMode": "fill_missing",
-    }))
-    .expect("deserialize fill-missing tag payload");
-    let Json(_fill_missing_tag) = create_tag(
-        State(state.clone()),
-        HeaderMap::new(),
-        Json(fill_missing_tag_payload),
+    let fill_missing_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, system_key, protected, block_new_conversations, allow_cut_out, allow_cut_in,
+            priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
+            upstream_429_max_retries, available_models_json, created_at, updated_at
+        ) VALUES (?1, ?2, 1, 0, 1, 1, 'normal', 'fill_missing', 0, 0, 0, '[]', ?3, ?3)
+        RETURNING id
+        "#,
     )
+    .bind("fill-missing-normal")
+    .bind("test:fill-missing-normal")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
     .await
-    .expect("create fill-missing tag");
-    let fill_missing_tag_id: i64 = sqlx::query_scalar("SELECT id FROM pool_tags WHERE name = ?1")
+    .expect("insert fill-missing tag");
+    let _fill_missing_tag_id: i64 = sqlx::query_scalar("SELECT id FROM pool_tags WHERE name = ?1")
         .bind("fill-missing-normal")
         .fetch_one(&state.pool)
         .await
@@ -1558,7 +1559,6 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
         "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": failing_base,
         "apiKey": "route-remove",
-        "tagIds": [force_remove_tag_id],
     }))
     .expect("deserialize first api-key account payload");
     let Json(_first_account) = create_api_key_account(
@@ -1568,13 +1568,31 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
     )
     .await
     .expect("create first pool account");
+    let first_account_id: i64 =
+        sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
+            .bind("Route Remove")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load first pool account id");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (
+            account_id, tag_id, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind(first_account_id)
+    .bind(force_remove_tag_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("attach force-remove tag");
     let second_account_payload = serde_json::from_value::<CreateApiKeyAccountRequest>(json!({
         "displayName": "Route Fill",
         "groupName": test_required_group_name(),
         "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": capture_base,
         "apiKey": "route-fill",
-        "tagIds": [fill_missing_tag_id],
     }))
     .expect("deserialize second api-key account payload");
     let Json(_second_account) = create_api_key_account(
@@ -1584,6 +1602,25 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
     )
     .await
     .expect("create second pool account");
+    let second_account_id: i64 =
+        sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
+            .bind("Route Fill")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load second pool account id");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (
+            account_id, tag_id, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind(second_account_id)
+    .bind(fill_missing_tag_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("attach fill-missing tag");
 
     let request_body = serde_json::to_vec(&json!({
         "model": "gpt-5.3-codex",

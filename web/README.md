@@ -45,7 +45,7 @@ bun run storybook:build
 - `Monitoring/*`：Invocation / Forward Proxy 相关页面状态
 - `Records/*`：记录列表、筛选与摘要
 - `Settings/*`：设置页表单与配置状态
-- `Account Pool/*`：账号列表、创建页与标签页
+- `Account Pool/*`：账号列表、详情抽屉、创建页与系统标签只读筛选
 - `UI/*`：基础输入组件与表单反馈
 
 ## docs-site 关系

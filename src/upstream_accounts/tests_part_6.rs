@@ -1422,6 +1422,75 @@
     }
 
     #[tokio::test]
+    async fn update_account_preserves_system_tags_when_empty_tag_ids_are_sent() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Tag Preserve Target").await;
+        ensure_account_has_gpt55_unsupported_tag(&state.pool, account_id)
+            .await
+            .expect("seed system tag");
+
+        let original_tag_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load original account tags");
+        assert!(!original_tag_ids.is_empty());
+
+        let detail = state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    email: OptionalField::Missing,
+                    group_name: None,
+                    group_bound_proxy_keys: None,
+                    group_node_shunt_enabled: None,
+                    group_single_account_rotation_enabled: None,
+                    note: Some("preserved note".to_string()),
+                    group_note: None,
+                    concurrency_limit: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: None,
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: Some(vec![]),
+                    routing_rule: None,
+                },
+            )
+            .await
+            .expect("update should preserve system tags");
+
+        assert_eq!(detail.note.as_deref(), Some("preserved note"));
+
+        let updated_tag_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load updated account tags");
+        assert_eq!(updated_tag_ids, original_tag_ids);
+    }
+
+    #[tokio::test]
     async fn refresh_uses_latest_sample_plan_type_for_current_mixed_plan_same_name_exemption() {
         let pool = test_pool().await;
         let crypto_key = derive_secret_key("refresh-mixed-plan-sample-fallback");

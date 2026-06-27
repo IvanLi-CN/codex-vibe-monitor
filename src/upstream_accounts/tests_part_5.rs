@@ -1938,11 +1938,6 @@ async fn resolver_prefers_sticky_cut_in_policy_over_group_proxy_error() {
 #[tokio::test]
 async fn update_oauth_login_session_preserves_pending_url_and_persists_metadata() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let tag_id = insert_tag(&state.pool, "pending-sync", &test_tag_routing_rule())
-        .await
-        .expect("insert tag")
-        .summary
-        .id;
     insert_test_oauth_mailbox_session(
         &state.pool,
         "mailbox-session-1",
@@ -1989,7 +1984,7 @@ async fn update_oauth_login_session_preserves_pending_url_and_persists_metadata(
             note: OptionalField::Value("after".to_string()),
             group_note: OptionalField::Value("beta shared".to_string()),
             concurrency_limit: OptionalField::Missing,
-            tag_ids: OptionalField::Value(vec![tag_id]),
+            tag_ids: OptionalField::Value(vec![]),
             is_mother: OptionalField::Value(true),
             mailbox_session_id: OptionalField::Value("mailbox-session-1".to_string()),
             mailbox_address: OptionalField::Value("pending-sync@mail-tw.707079.xyz".to_string()),
@@ -2015,7 +2010,7 @@ async fn update_oauth_login_session_preserves_pending_url_and_persists_metadata(
     assert_eq!(stored.is_mother, 1);
     assert_eq!(
         parse_tag_ids_json(stored.tag_ids_json.as_deref()),
-        vec![tag_id]
+        Vec::<i64>::new()
     );
     assert_eq!(
         stored.mailbox_session_id.as_deref(),
@@ -2132,11 +2127,6 @@ async fn update_oauth_login_session_ignores_stale_baseline_updates() {
 #[tokio::test]
 async fn update_oauth_login_session_preserves_omitted_fields() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let tag_id = insert_tag(&state.pool, "partial-sync", &test_tag_routing_rule())
-        .await
-        .expect("insert tag")
-        .summary
-        .id;
     insert_test_oauth_mailbox_session(
         &state.pool,
         "mailbox-session-partial",
@@ -2159,7 +2149,7 @@ async fn update_oauth_login_session_preserves_omitted_fields() {
             group_note: Some("partial draft note".to_string()),
             concurrency_limit: None,
             account_id: None,
-            tag_ids: vec![tag_id],
+            tag_ids: vec![],
             is_mother: Some(true),
             mailbox_session_id: Some("mailbox-session-partial".to_string()),
             mailbox_address: Some("partial-sync@mail-tw.707079.xyz".to_string()),
@@ -2209,7 +2199,7 @@ async fn update_oauth_login_session_preserves_omitted_fields() {
     assert_eq!(stored.is_mother, 1);
     assert_eq!(
         parse_tag_ids_json(stored.tag_ids_json.as_deref()),
-        vec![tag_id]
+        Vec::<i64>::new()
     );
     assert_eq!(
         stored.mailbox_session_id.as_deref(),
@@ -2349,11 +2339,6 @@ async fn update_oauth_login_session_normalizes_blank_group_to_default_group() {
 #[tokio::test]
 async fn updated_oauth_login_session_metadata_is_used_when_callback_persists_account() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let tag_id = insert_tag(&state.pool, "callback-sync", &test_tag_routing_rule())
-        .await
-        .expect("insert tag")
-        .summary
-        .id;
     insert_test_oauth_mailbox_session(
         &state.pool,
         "mailbox-session-2",
@@ -2400,7 +2385,7 @@ async fn updated_oauth_login_session_metadata_is_used_when_callback_persists_acc
             note: OptionalField::Value("after note".to_string()),
             group_note: OptionalField::Value("draft group note".to_string()),
             concurrency_limit: OptionalField::Missing,
-            tag_ids: OptionalField::Value(vec![tag_id]),
+            tag_ids: OptionalField::Value(vec![]),
             is_mother: OptionalField::Value(true),
             mailbox_session_id: OptionalField::Value("mailbox-session-2".to_string()),
             mailbox_address: OptionalField::Value("callback-sync@mail-tw.707079.xyz".to_string()),
@@ -2477,7 +2462,7 @@ async fn updated_oauth_login_session_metadata_is_used_when_callback_persists_acc
     .fetch_all(&state.pool)
     .await
     .expect("load oauth account tags");
-    assert_eq!(account_tag_ids, vec![tag_id]);
+    assert!(account_tag_ids.is_empty());
 
     let group_note = sqlx::query_scalar::<_, Option<String>>(
         r#"
@@ -2629,11 +2614,6 @@ async fn persist_oauth_callback_preserves_group_node_shunt_for_legacy_pending_se
 #[tokio::test]
 async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_metadata() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let tag_id = insert_tag(&state.pool, "callback-race-sync", &test_tag_routing_rule())
-        .await
-        .expect("insert tag")
-        .summary
-        .id;
 
     let created = create_oauth_login_session(
         State(state.clone()),
@@ -2721,7 +2701,7 @@ async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_
             note: OptionalField::Value("after note".to_string()),
             group_note: OptionalField::Value("after group note".to_string()),
             concurrency_limit: OptionalField::Missing,
-            tag_ids: OptionalField::Value(vec![tag_id]),
+            tag_ids: OptionalField::Value(vec![]),
             is_mother: OptionalField::Value(true),
             mailbox_session_id: OptionalField::Missing,
             mailbox_address: OptionalField::Missing,
@@ -2758,7 +2738,7 @@ async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_
     .fetch_all(&state.pool)
     .await
     .expect("load repaired oauth account tags");
-    assert_eq!(account_tag_ids, vec![tag_id]);
+    assert!(account_tag_ids.is_empty());
 
     let group_note = sqlx::query_scalar::<_, Option<String>>(
         r#"
@@ -2830,7 +2810,7 @@ async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_
     .fetch_all(&state.pool)
     .await
     .expect("load twice repaired oauth account tags");
-    assert_eq!(account_tag_ids, vec![tag_id]);
+    assert!(account_tag_ids.is_empty());
 
     let second_group_note = sqlx::query_scalar::<_, Option<String>>(
         r#"
@@ -2854,9 +2834,362 @@ async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_
     assert_eq!(repaired_session.note.as_deref(), Some("after note"));
     assert_eq!(
         parse_tag_ids_json(repaired_session.tag_ids_json.as_deref()),
-        vec![tag_id]
+        Vec::<i64>::new()
     );
     assert_ne!(second_repair.updated_at, repaired.updated_at);
+}
+
+#[tokio::test]
+async fn completed_race_repair_preserves_existing_system_tags() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let created = create_oauth_login_session(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(CreateOauthLoginSessionRequest {
+            display_name: Some("Race Before".to_string()),
+            email: None,
+            group_name: Some("race-group".to_string()),
+            group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+            group_node_shunt_enabled: None,
+            group_single_account_rotation_enabled: None,
+            note: Some("before note".to_string()),
+            group_note: Some("before group note".to_string()),
+            concurrency_limit: None,
+            account_id: None,
+            tag_ids: vec![],
+            is_mother: Some(false),
+            mailbox_session_id: None,
+            mailbox_address: None,
+        }),
+    )
+    .await
+    .expect("create oauth login session")
+    .0;
+
+    let pending_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+        .await
+        .expect("load pending session")
+        .expect("pending session should exist");
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let encrypted_credentials = encrypt_credentials(
+        crypto_key,
+        &StoredCredentials::Oauth(StoredOauthCredentials {
+            access_token: "race-access".to_string(),
+            refresh_token: Some("race-refresh".to_string()),
+            id_token: test_id_token(
+                "race@example.com",
+                Some("org_race"),
+                Some("user_race"),
+                Some("team"),
+            ),
+            token_type: Some("Bearer".to_string()),
+        }),
+    )
+    .expect("encrypt oauth credentials");
+    let account_id = persist_oauth_callback_inner(
+        state.as_ref(),
+        PersistOauthCallbackInput {
+            display_name: pending_session
+                .display_name
+                .clone()
+                .expect("display name should be stored"),
+            chosen_email: None,
+            verified_email: None,
+            session: pending_session,
+            claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
+            encrypted_credentials,
+            has_refresh_token: true,
+            token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+        },
+    )
+    .await
+    .expect("persist oauth callback");
+    ensure_account_has_gpt55_unsupported_tag(&state.pool, account_id)
+        .await
+        .expect("seed system tag");
+
+    let original_tag_ids = sqlx::query_scalar::<_, i64>(
+        r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load original account tags");
+    assert!(!original_tag_ids.is_empty());
+
+    let mut repair_headers = HeaderMap::new();
+    repair_headers.insert(
+        LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+        header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+    );
+    let repaired = update_oauth_login_session(
+        State(state.clone()),
+        repair_headers,
+        AxumPath(created.login_id.clone()),
+        Json(UpdateOauthLoginSessionRequest {
+            display_name: OptionalField::Value("Race Latest".to_string()),
+            email: OptionalField::Missing,
+            group_name: OptionalField::Value("race-group".to_string()),
+            group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
+            group_node_shunt_enabled: OptionalField::Missing,
+            group_single_account_rotation_enabled: OptionalField::Missing,
+            note: OptionalField::Value("latest note".to_string()),
+            group_note: OptionalField::Value("latest group note".to_string()),
+            concurrency_limit: OptionalField::Missing,
+            tag_ids: OptionalField::Value(vec![]),
+            is_mother: OptionalField::Value(true),
+            mailbox_session_id: OptionalField::Missing,
+            mailbox_address: OptionalField::Missing,
+        }),
+    )
+    .await
+    .expect("repair completed callback race with system tags")
+    .0;
+
+    assert_eq!(repaired.account_id, Some(account_id));
+
+    let repaired_account = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load repaired account")
+        .expect("oauth account should still exist");
+    assert_eq!(repaired_account.display_name, "Race Latest");
+    assert_eq!(repaired_account.note.as_deref(), Some("latest note"));
+    assert_eq!(repaired_account.is_mother, 1);
+
+    let repaired_tag_ids = sqlx::query_scalar::<_, i64>(
+        r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load repaired account tags");
+    assert_eq!(repaired_tag_ids, original_tag_ids);
+}
+
+#[tokio::test]
+async fn create_oauth_login_session_rejects_manual_tag_ids() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+
+    let err = create_oauth_login_session(
+        State(state),
+        HeaderMap::new(),
+        Json(CreateOauthLoginSessionRequest {
+            display_name: Some("Tagged Pending".to_string()),
+            email: None,
+            group_name: Some("alpha".to_string()),
+            group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+            group_node_shunt_enabled: None,
+            group_single_account_rotation_enabled: None,
+            note: None,
+            group_note: None,
+            concurrency_limit: None,
+            account_id: None,
+            tag_ids: vec![123],
+            is_mother: Some(false),
+            mailbox_session_id: None,
+            mailbox_address: None,
+        }),
+    )
+    .await
+    .expect_err("manual tag ids should be rejected");
+
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "manual tag assignment is no longer supported; omit tagIds"
+    );
+}
+
+#[tokio::test]
+async fn update_oauth_login_session_rejects_manual_tag_ids() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let created = create_oauth_login_session(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(CreateOauthLoginSessionRequest {
+            display_name: Some("Pending".to_string()),
+            email: None,
+            group_name: Some("alpha".to_string()),
+            group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+            group_node_shunt_enabled: None,
+            group_single_account_rotation_enabled: None,
+            note: None,
+            group_note: None,
+            concurrency_limit: None,
+            account_id: None,
+            tag_ids: vec![],
+            is_mother: Some(false),
+            mailbox_session_id: None,
+            mailbox_address: None,
+        }),
+    )
+    .await
+    .expect("create oauth login session")
+    .0;
+
+    let err = update_oauth_login_session(
+        State(state),
+        HeaderMap::new(),
+        AxumPath(created.login_id),
+        Json(UpdateOauthLoginSessionRequest {
+            display_name: OptionalField::Missing,
+            email: OptionalField::Missing,
+            group_name: OptionalField::Missing,
+            group_bound_proxy_keys: OptionalField::Missing,
+            group_node_shunt_enabled: OptionalField::Missing,
+            group_single_account_rotation_enabled: OptionalField::Missing,
+            note: OptionalField::Missing,
+            group_note: OptionalField::Missing,
+            concurrency_limit: OptionalField::Missing,
+            tag_ids: OptionalField::Value(vec![456]),
+            is_mother: OptionalField::Missing,
+            mailbox_session_id: OptionalField::Missing,
+            mailbox_address: OptionalField::Missing,
+        }),
+    )
+    .await
+    .expect_err("manual tag ids should be rejected");
+
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "manual tag assignment is no longer supported; omit tagIds"
+    );
+}
+
+#[tokio::test]
+async fn cleanup_non_system_tags_removes_custom_tags_links_and_session_references() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_api_key_account(&state.pool, "Cleanup Target").await;
+    let custom_tag_id =
+        insert_legacy_custom_tag(&state.pool, "cleanup-custom", &test_tag_routing_rule()).await;
+    ensure_account_has_gpt55_unsupported_tag(&state.pool, account_id)
+        .await
+        .expect("seed system tag");
+    let system_tag_id = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT id
+        FROM pool_tags
+        WHERE system_key = ?1
+        "#,
+    )
+    .bind("unsupported_model:gpt-5.5")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load system tag id");
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (account_id, tag_id, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind(account_id)
+    .bind(custom_tag_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("attach custom tag");
+
+    let created = create_oauth_login_session(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(CreateOauthLoginSessionRequest {
+            display_name: Some("Cleanup Pending".to_string()),
+            email: None,
+            group_name: Some("alpha".to_string()),
+            group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+            group_node_shunt_enabled: None,
+            group_single_account_rotation_enabled: None,
+            note: None,
+            group_note: None,
+            concurrency_limit: None,
+            account_id: None,
+            tag_ids: vec![],
+            is_mother: Some(false),
+            mailbox_session_id: None,
+            mailbox_address: None,
+        }),
+    )
+    .await
+    .expect("create oauth login session")
+    .0;
+    sqlx::query(
+        r#"
+        UPDATE pool_oauth_login_sessions
+        SET tag_ids_json = ?2
+        WHERE login_id = ?1
+        "#,
+    )
+    .bind(&created.login_id)
+    .bind(serde_json::to_string(&vec![custom_tag_id, system_tag_id]).expect("encode tag ids"))
+    .execute(&state.pool)
+    .await
+    .expect("seed legacy session tag ids");
+
+    cleanup_non_system_tags(&state.pool)
+        .await
+        .expect("cleanup non-system tags");
+
+    let remaining_tag_ids = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT tag_id
+        FROM pool_upstream_account_tags
+        WHERE account_id = ?1
+        ORDER BY tag_id ASC
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load remaining account tags");
+    assert_eq!(remaining_tag_ids, vec![system_tag_id]);
+
+    let custom_tag_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_tags
+        WHERE id = ?1
+        "#,
+    )
+    .bind(custom_tag_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count custom tags");
+    assert_eq!(custom_tag_count, 0);
+
+    let system_tag_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_tags
+        WHERE id = ?1
+        "#,
+    )
+    .bind(system_tag_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count system tags");
+    assert_eq!(system_tag_count, 1);
+
+    let stored = load_login_session_by_login_id(&state.pool, &created.login_id)
+        .await
+        .expect("load cleaned login session")
+        .expect("cleaned login session should exist");
+    assert_eq!(stored.tag_ids_json, None);
 }
 
 #[tokio::test]

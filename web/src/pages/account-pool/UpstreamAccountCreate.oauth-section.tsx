@@ -13,7 +13,6 @@ import {
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
 import { OauthMailboxChip } from "../../components/account-pool/OauthMailboxChip";
-import { AccountTagField } from "../../components/AccountTagField";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { MotherAccountToggle } from "../../components/MotherAccountToggle";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
@@ -27,7 +26,6 @@ import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.con
 export function UpstreamAccountCreateOauthSection() {
   const {
     activeOauthMailboxSession,
-    availableModelOptions,
     buildActionTooltip,
     busyAction,
     clearOauthMailboxSession,
@@ -43,8 +41,6 @@ export function UpstreamAccountCreateOauthSection() {
     handleCopySingleInvite,
     handleCopySingleMailbox,
     handleCopySingleMailboxCode,
-    handleCreateTag,
-    handleDeleteTag,
     handleGenerateOauthMailbox,
     handleGenerateOauthUrl,
     handleConfirmOauthIdentityOverwrite,
@@ -78,11 +74,9 @@ export function UpstreamAccountCreateOauthSection() {
     oauthMailboxTone,
     oauthNote,
     oauthSessionActive,
-    oauthTagIds,
     relinkReady,
     openDuplicateDetailDialog,
     openGroupNoteEditor,
-    pageCreatedTagIds,
     selectAllReadonlyText,
     session,
     setActionError,
@@ -94,11 +88,7 @@ export function UpstreamAccountCreateOauthSection() {
     setOauthIsMother,
     setOauthMailboxInput,
     setOauthNote,
-    setOauthTagIds,
     t,
-    tagFieldLabels,
-    tagItems,
-    updateTag,
     writesEnabled,
   } = useUpstreamAccountCreateViewContext();
   const oauthResolutionPlanBadge = upstreamPlanBadgeRecipe(
@@ -425,23 +415,6 @@ export function UpstreamAccountCreateOauthSection() {
       }}
     />
   </label>
-  <AccountTagField
-    tags={tagItems}
-    selectedTagIds={oauthTagIds}
-    writesEnabled={writesEnabled}
-    pageCreatedTagIds={pageCreatedTagIds}
-    availableModelOptions={availableModelOptions}
-    labels={tagFieldLabels}
-    onChange={(nextTagIds) => {
-      markRelinkMetadataDirty();
-      setOauthTagIds(nextTagIds);
-      setActionError(null);
-      invalidateSingleOauthSessionForMetadataEdit();
-    }}
-    onCreateTag={handleCreateTag}
-    onUpdateTag={updateTag}
-    onDeleteTag={handleDeleteTag}
-  />
 
   {oauthMailboxIssue ? (
     <Alert

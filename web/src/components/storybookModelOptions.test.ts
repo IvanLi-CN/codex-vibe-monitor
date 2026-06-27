@@ -3,7 +3,6 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const storybookModelOptionFiles = [
-  'src/components/TagRuleDialog.stories.tsx',
   'src/components/UpstreamAccountsPage.story-helpers-runtime.tsx',
 ]
 

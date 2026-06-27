@@ -1239,21 +1239,6 @@ pub(crate) async fn bulk_update_upstream_accounts(
     state.upstream_accounts.require_crypto_key()?;
     let action = normalize_bulk_upstream_account_action(&payload.action)?;
     let account_ids = normalize_bulk_upstream_account_ids(&payload.account_ids)?;
-    let normalized_tag_ids = if matches!(
-        action.as_str(),
-        BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS | BULK_UPSTREAM_ACCOUNT_ACTION_REMOVE_TAGS
-    ) {
-        let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
-        if tag_ids.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "tagIds must contain at least one tag".to_string(),
-            ));
-        }
-        tag_ids
-    } else {
-        Vec::new()
-    };
 
     let mut results = Vec::with_capacity(account_ids.len());
     for account_id in &account_ids {
@@ -1266,7 +1251,6 @@ pub(crate) async fn bulk_update_upstream_accounts(
             *account_id,
             action.as_str(),
             payload.group_name.clone(),
-            normalized_tag_ids.clone(),
         )
         .await;
         let (status, detail) = match outcome {
@@ -1381,7 +1365,8 @@ pub(crate) async fn import_validated_oauth_accounts(
     )
     .await?;
     let group_name = Some(resolved_group_binding.group_name.clone());
-    let tag_ids = validate_tag_ids(&state.pool, &tag_ids).await?;
+    reject_manual_tag_ids(&tag_ids)?;
+    let tag_ids = Vec::new();
     let cached_validation_results = if let Some(job_id) = normalize_optional_text(validation_job_id)
     {
         if let Some(job) = state.upstream_accounts.get_validation_job(&job_id).await {

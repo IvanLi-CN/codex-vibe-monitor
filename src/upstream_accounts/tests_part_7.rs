@@ -827,6 +827,110 @@
     }
 
     #[tokio::test]
+    async fn external_oauth_patch_preserves_system_tags_when_tag_ids_is_empty() {
+        let (usage_base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 9,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&usage_base_url).await;
+        let (_key_id, secret, key_row) =
+            create_external_api_key_for_test(&state, "Partner Patch Tags").await;
+
+        let _ = external_upsert_oauth_upstream_account_route(
+            State(state.clone()),
+            external_api_auth_headers(&secret),
+            AxumPath("patch-source-tags".to_string()),
+            Json(test_external_upsert_request(
+                "patch-tags@example.com",
+                "org_patch_tags",
+                "user_patch_tags",
+                "patch-access-tags-1",
+                "patch-refresh-tags-1",
+                "Patch Tags Original",
+                None,
+                Some("before patch"),
+            )),
+        )
+        .await
+        .expect("create patch target account");
+
+        let before = load_upstream_account_row_by_external_identity(
+            &state.pool,
+            &key_row.client_id,
+            "patch-source-tags",
+        )
+        .await
+        .expect("load patch target before patch")
+        .expect("patch target should exist");
+        ensure_account_has_gpt55_unsupported_tag(&state.pool, before.id)
+            .await
+            .expect("seed system tag");
+
+        let original_tag_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+        )
+        .bind(before.id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load original tag ids");
+        assert!(!original_tag_ids.is_empty());
+
+        let _ = external_patch_oauth_upstream_account_route(
+            State(state.clone()),
+            external_api_auth_headers(&secret),
+            AxumPath("patch-source-tags".to_string()),
+            Json(ExternalUpstreamAccountMetadataRequest {
+                note: Some("after patch".to_string()),
+                tag_ids: Some(vec![]),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("patch metadata should preserve system tags");
+
+        let after = load_upstream_account_row_by_external_identity(
+            &state.pool,
+            &key_row.client_id,
+            "patch-source-tags",
+        )
+        .await
+        .expect("load patch target after patch")
+        .expect("patched target should exist");
+        assert_eq!(after.note.as_deref(), Some("after patch"));
+
+        let updated_tag_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+        )
+        .bind(after.id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load patched tag ids");
+        assert_eq!(updated_tag_ids, original_tag_ids);
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn external_oauth_patch_waits_for_inflight_maintenance() {
         let (base_url, started, release, _requests, server) = spawn_blocking_usage_server().await;
         let state = test_app_state_with_usage_base(&base_url).await;

@@ -1779,11 +1779,7 @@ fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
             "/api/pool/routing-settings",
             get(get_pool_routing_settings).put(update_pool_routing_settings),
         )
-        .route("/api/pool/tags", get(list_tags).post(create_tag))
-        .route(
-            "/api/pool/tags/:id",
-            get(get_tag).patch(update_tag).delete(delete_tag),
-        )
+        .route("/api/pool/tags", get(list_tags))
         .route(
             "/api/pool/forward-proxy-binding-nodes",
             get(list_forward_proxy_binding_nodes),

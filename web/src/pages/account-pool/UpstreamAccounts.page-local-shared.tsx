@@ -50,7 +50,6 @@ import {
 } from "../../components/MotherAccountToggle";
 import { Spinner } from "../../components/ui/spinner";
 import { Switch } from "../../components/ui/switch";
-import { AccountTagField } from "../../components/AccountTagField";
 import { EffectiveRoutingRuleCard } from "../../components/EffectiveRoutingRuleCard";
 import { GroupAccountRoutingRuleDialog } from "../../components/GroupAccountRoutingRuleDialog";
 import { InvocationTable } from "../../components/InvocationTable";
@@ -61,7 +60,6 @@ import {
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { UpstreamAccountUsageCard } from "../../components/UpstreamAccountUsageCard";
 import { StickyKeyConversationTable } from "../../components/StickyKeyConversationTable";
-import { usePoolTags } from "../../hooks/usePoolTags";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useInvocationRecordsRealtime } from "../../hooks/useInvocationRecordsRealtime";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
@@ -400,12 +398,6 @@ function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
     localLimitUnit: detail?.localLimits?.limitUnit ?? "requests",
     apiKey: "",
   };
-}
-
-function removeAccountDraftTagId(draft: AccountDraft, tagId: number) {
-  return draft.tagIds.includes(tagId)
-    ? { ...draft, tagIds: draft.tagIds.filter((value) => value !== tagId) }
-    : draft;
 }
 
 function removeAccountDraftTagIds(
@@ -851,7 +843,6 @@ function SharedUpstreamAccountDetailDrawerInner({
     allowSelectionOutsideList: true,
     fallbackToFirstItem: false,
   });
-  const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags();
   const availableModelOptions = useAvailableModelOptions(writesEnabled);
   const notifyMotherSwitches = useMotherSwitchNotifications();
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null));
@@ -865,7 +856,6 @@ function SharedUpstreamAccountDetailDrawerInner({
   }));
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [accountPolicyEditorOpen, setAccountPolicyEditorOpen] = useState(false);
-  const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([]);
   const [
     stickyConversationSelectionValue,
     setStickyConversationSelectionValue,
@@ -910,10 +900,6 @@ function SharedUpstreamAccountDetailDrawerInner({
     detailTab: AccountDetailTab;
     accountRecordLimit: number;
   } | null>(null);
-  const validTagIds = useMemo(
-    () => new Set(tagItems.map((tag) => tag.id)),
-    [tagItems],
-  );
   const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null);
   const detailDrawerTitleId = "upstream-account-detail-title";
   const detailDrawerTabsBaseId = useId();
@@ -927,8 +913,6 @@ function SharedUpstreamAccountDetailDrawerInner({
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
   const latestServerDraftRef = useRef<AccountDraft>(buildDraft(null));
-  const validTagIdsRef = useRef(validTagIds);
-  const previousValidTagIdsRef = useRef(new Set(validTagIds));
   const knownRemovedTagIdsRef = useRef<Set<number>>(new Set());
   const pendingSaveSessionsRef = useRef<Map<number, PendingSaveSession>>(
     new Map(),
@@ -936,7 +920,6 @@ function SharedUpstreamAccountDetailDrawerInner({
   const recentSaveResponseGuardsRef = useRef<
     Map<number, RecentSaveResponseGuard>
   >(new Map());
-  validTagIdsRef.current = validTagIds;
   const draftSessionSnapshotRef = useRef({
     open,
     accountId,
@@ -1187,58 +1170,6 @@ function SharedUpstreamAccountDetailDrawerInner({
       return Object.fromEntries(nextEntries);
     });
   }, [groups]);
-
-  useEffect(() => {
-    const removedTagIds = new Set<number>();
-    for (const tagId of previousValidTagIdsRef.current) {
-      if (!validTagIds.has(tagId)) {
-        removedTagIds.add(tagId);
-      }
-    }
-    previousValidTagIdsRef.current = new Set(validTagIds);
-    for (const tagId of removedTagIds) {
-      knownRemovedTagIdsRef.current.add(tagId);
-    }
-    for (const tagId of validTagIds) {
-      knownRemovedTagIdsRef.current.delete(tagId);
-    }
-    if (removedTagIds.size === 0) {
-      return;
-    }
-    for (const pendingSaveSession of pendingSaveSessionsRef.current.values()) {
-      pendingSaveSession.fallbackDraft = removeAccountDraftTagIds(
-        pendingSaveSession.fallbackDraft,
-        removedTagIds,
-      );
-    }
-    for (const recentSaveResponseGuard of recentSaveResponseGuardsRef.current.values()) {
-      recentSaveResponseGuard.startedDraft = removeAccountDraftTagIds(
-        recentSaveResponseGuard.startedDraft,
-        removedTagIds,
-      );
-      recentSaveResponseGuard.draft = removeAccountDraftTagIds(
-        recentSaveResponseGuard.draft,
-        removedTagIds,
-      );
-      recentSaveResponseGuard.fallbackDraft = removeAccountDraftTagIds(
-        recentSaveResponseGuard.fallbackDraft,
-        removedTagIds,
-      );
-      recentSaveResponseGuard.retainedDraft = removeAccountDraftTagIds(
-        recentSaveResponseGuard.retainedDraft,
-        removedTagIds,
-      );
-    }
-    draftBaselineRef.current = removeAccountDraftTagIds(
-      draftBaselineRef.current,
-      removedTagIds,
-    );
-    latestServerDraftRef.current = removeAccountDraftTagIds(
-      latestServerDraftRef.current,
-      removedTagIds,
-    );
-    setDraft((current) => removeAccountDraftTagIds(current, removedTagIds));
-  }, [validTagIds]);
 
   const availableGroups = useMemo(() => {
     const draftNames = Object.fromEntries([
@@ -1586,37 +1517,6 @@ function SharedUpstreamAccountDetailDrawerInner({
     },
     [openGroupNoteEditor],
   );
-
-  const handleCreateTag = useCallback(
-    async (payload: Parameters<typeof createTag>[0]) => {
-      const detail = await createTag(payload);
-      setPageCreatedTagIds((current) =>
-        current.includes(detail.id) ? current : [...current, detail.id],
-      );
-      return detail;
-    },
-    [createTag],
-  );
-
-  const handleDeleteTag = useCallback(
-    async (tagId: number) => {
-      await deleteTag(tagId);
-      setPageCreatedTagIds((current) =>
-        current.filter((value) => value !== tagId),
-      );
-      draftBaselineRef.current = removeAccountDraftTagId(
-        draftBaselineRef.current,
-        tagId,
-      );
-      latestServerDraftRef.current = removeAccountDraftTagId(
-        latestServerDraftRef.current,
-        tagId,
-      );
-      setDraft((current) => removeAccountDraftTagId(current, tagId));
-    },
-    [deleteTag],
-  );
-
   const stickyConversationSelection = STICKY_CONVERSATION_SELECTION_LOOKUP.get(
     stickyConversationSelectionValue,
   ) ??
@@ -1871,65 +1771,6 @@ function SharedUpstreamAccountDetailDrawerInner({
     }
     return null;
   }, [draft.upstreamBaseUrl, t]);
-  const tagFieldLabels = {
-    label: t("accountPool.tags.field.label"),
-    add: t("accountPool.tags.field.add"),
-    empty: t("accountPool.tags.field.empty"),
-    searchPlaceholder: t("accountPool.tags.field.searchPlaceholder"),
-    searchEmpty: t("accountPool.tags.field.searchEmpty"),
-    createInline: (value: string) =>
-      t("accountPool.tags.field.createInline", {
-        value: value || t("accountPool.tags.field.newTag"),
-      }),
-    selectedFromCurrentPage: t("accountPool.tags.field.currentPage"),
-    remove: t("accountPool.tags.field.remove"),
-    deleteAndRemove: t("accountPool.tags.field.deleteAndRemove"),
-    edit: t("accountPool.tags.field.edit"),
-    createTitle: t("accountPool.tags.dialog.createTitle"),
-    editTitle: t("accountPool.tags.dialog.editTitle"),
-    dialogDescription: t("accountPool.tags.dialog.description"),
-    name: t("accountPool.tags.dialog.name"),
-    namePlaceholder: t("accountPool.tags.dialog.namePlaceholder"),
-    blockNewConversations: t("accountPool.tags.dialog.blockNewConversations"),
-    forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
-    allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
-    allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
-    forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
-    forbidCutIn: t("accountPool.tags.dialog.forbidCutIn"),
-    priorityTier: t("accountPool.tags.dialog.priorityTier"),
-    priorityPrimary: t("accountPool.tags.dialog.priorityPrimary"),
-    priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
-    priorityFallback: t("accountPool.tags.dialog.priorityFallback"),
-    fastModeRewriteMode: t("accountPool.tags.dialog.fastModeRewriteMode"),
-    fastModeKeepOriginal: t("accountPool.tags.dialog.fastModeKeepOriginal"),
-    fastModeFillMissing: t("accountPool.tags.dialog.fastModeFillMissing"),
-    fastModeForceAdd: t("accountPool.tags.dialog.fastModeForceAdd"),
-    fastModeForceRemove: t("accountPool.tags.dialog.fastModeForceRemove"),
-    concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
-    concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
-    currentValue: t("accountPool.tags.dialog.currentValue"),
-    unlimited: t("accountPool.tags.dialog.unlimited"),
-    availableModels: t("accountPool.tags.dialog.availableModels"),
-    availableModelsHint: t("accountPool.tags.dialog.availableModelsHint"),
-    availableModelsSearchPlaceholder: t(
-      "accountPool.tags.dialog.availableModelsSearchPlaceholder",
-    ),
-    availableModelsEmpty: t("accountPool.tags.dialog.availableModelsEmpty"),
-    availableModelsAll: t("accountPool.tags.dialog.availableModelsAll"),
-    availableModelsCustomLabel: (value: string) =>
-      t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
-    availableModelsAddCustom: t(
-      "accountPool.tags.dialog.availableModelsAddCustom",
-    ),
-    availableModelsInherited: t(
-      "accountPool.tags.dialog.availableModelsInherited",
-    ),
-    availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
-    cancel: t("accountPool.tags.dialog.cancel"),
-    save: t("accountPool.tags.dialog.save"),
-    createAction: t("accountPool.tags.dialog.createAction"),
-    validation: t("accountPool.tags.dialog.validation"),
-  };
 
   const accountKindLabel = (kind: string) =>
     kind === "oauth_codex"
@@ -2130,7 +1971,6 @@ function SharedUpstreamAccountDetailDrawerInner({
           isMother: draft.isMother,
           note: draft.note.trim() || undefined,
           groupNote: pendingGroupNote || undefined,
-          tagIds: draft.tagIds,
           upstreamBaseUrl:
             source.kind === "api_key_codex"
               ? draft.upstreamBaseUrl.trim() || null
@@ -3145,21 +2985,28 @@ function SharedUpstreamAccountDetailDrawerInner({
                           }
                         />
                       </label>
-                      <div className="md:col-span-2">
-                        <AccountTagField
-                          tags={tagItems}
-                          selectedTagIds={draft.tagIds}
-                          writesEnabled={writesEnabled}
-                          pageCreatedTagIds={pageCreatedTagIds}
-                          availableModelOptions={availableModelOptions}
-                          labels={tagFieldLabels}
-                          onChange={(tagIds) =>
-                            setDraft((current) => ({ ...current, tagIds }))
-                          }
-                          onCreateTag={handleCreateTag}
-                          onUpdateTag={updateTag}
-                          onDeleteTag={handleDeleteTag}
-                        />
+                      <div className="field gap-3 md:col-span-2">
+                        <span className="field-label">
+                          {t("accountPool.tags.field.label")}
+                        </span>
+                        <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-[1.2rem] border border-base-300/80 bg-base-100/55 px-3 py-2 shadow-sm">
+                          {(selectedDetail.tags ?? []).length > 0 ? (
+                            selectedDetail.tags.map((tag) => (
+                              <Badge
+                                key={tag.id}
+                                variant="secondary"
+                                className="min-w-0 max-w-[10rem] truncate border-base-300/90 bg-base-200/90 px-2 py-px text-[11px] font-medium leading-4 text-base-content/92"
+                                title={tag.name}
+                              >
+                                {tag.name}
+                              </Badge>
+                            ))
+                          ) : (
+                            <span className="text-sm text-base-content/60">
+                              {t("accountPool.tags.field.empty")}
+                            </span>
+                          )}
+                        </div>
                       </div>
                       {selectedDetail.kind === "api_key_codex" ? (
                         <>

@@ -5,7 +5,6 @@ import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Spinner } from "../../components/ui/spinner";
-import { AccountTagField } from "../../components/AccountTagField";
 import { Alert } from "../../components/ui/alert";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
@@ -17,8 +16,6 @@ export function UpstreamAccountCreateImportSection() {
     formatGroupAccountCountLabel,
     groupOptions,
     handleClearImportSelection,
-    handleCreateTag,
-    handleDeleteTag,
     handleImportFilesChange,
     handleImportedOauthPaste,
     handleImportedOauthPasteDraftChange,
@@ -35,20 +32,13 @@ export function UpstreamAccountCreateImportSection() {
     importPasteError,
     importSelectionFeedback,
     importSelectionLabel,
-    importTagIds,
-    availableModelOptions,
     normalizeGroupName,
     openGroupNoteEditor,
-    pageCreatedTagIds,
     setImportGroupName,
     setImportPasteDraft,
     setImportPasteDraftSerial,
     setImportPasteError,
-    setImportTagIds,
     t,
-    tagFieldLabels,
-    tagItems,
-    updateTag,
     writesEnabled,
   } = useUpstreamAccountCreateViewContext();
   const isSessionImport = activeTab === "importSession";
@@ -272,20 +262,6 @@ export function UpstreamAccountCreateImportSection() {
       )}
     </p>
   </label>
-  <div className="md:col-span-2">
-    <AccountTagField
-      tags={tagItems}
-      selectedTagIds={importTagIds}
-      writesEnabled={writesEnabled}
-      pageCreatedTagIds={pageCreatedTagIds}
-      availableModelOptions={availableModelOptions}
-      labels={tagFieldLabels}
-      onChange={setImportTagIds}
-      onCreateTag={handleCreateTag}
-      onUpdateTag={updateTag}
-      onDeleteTag={handleDeleteTag}
-    />
-  </div>
   <div className="md:col-span-2 flex flex-wrap justify-end gap-2">
     <Button asChild type="button" variant="ghost">
       <Link to="/account-pool/upstream-accounts">

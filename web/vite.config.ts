@@ -14,6 +14,9 @@ export function createAppViteConfig(mode: string): UserConfig {
       testTimeout: 20_000,
       hookTimeout: 20_000,
     },
+    optimizeDeps: {
+      include: ['@iconify-icons/mdi/compare-horizontal'],
+    },
     server: {
       host: '127.0.0.1',
       port: 60080,

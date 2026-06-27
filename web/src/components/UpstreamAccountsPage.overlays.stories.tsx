@@ -378,7 +378,7 @@ export const OauthEmailOverview: Story = {
   },
 }
 
-export const EditTagPickerSurvivesBackgroundRefresh: Story = {
+export const DetailDrawerReadOnlySystemTags: Story = {
   render: () => (
     <AccountPoolStoryRouter
       initialEntry={detailRouteEntry(101)}
@@ -390,33 +390,20 @@ export const EditTagPickerSurvivesBackgroundRefresh: Story = {
     await userEvent.click(
       within(dialog).getByRole('tab', { name: /编辑|edit/i }),
     )
-    const addTagButton = within(dialog).getByRole('button', {
-      name: /添加 tag|add tag/i,
-    })
-    await userEvent.click(addTagButton)
-    const searchInput = await documentScope.findByPlaceholderText(
-      /搜索已有 tag|search existing tag/i,
-    )
-    await expect(searchInput).toHaveFocus()
+    await expect(
+      within(dialog).queryByRole('button', {
+        name: /添加 tag|add tag/i,
+      }),
+    ).not.toBeInTheDocument()
+    await expect(within(dialog).getByText(/不支持 gpt-5\.5/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/不支持 WS/i)).toBeInTheDocument()
 
     window.dispatchEvent(new CustomEvent(UPSTREAM_ACCOUNTS_CHANGED_EVENT))
 
     await waitFor(() => {
-      expect(
-        documentScope.queryByPlaceholderText(
-          /搜索已有 tag|search existing tag/i,
-        ),
-      ).not.toBeNull()
-      expect(addTagButton).toHaveAttribute('aria-expanded', 'true')
+      expect(within(dialog).getByText(/不支持 gpt-5\.5/i)).toBeInTheDocument()
+      expect(within(dialog).getByText(/不支持 WS/i)).toBeInTheDocument()
     })
-
-    await userEvent.click(
-      await documentScope.findByText(/burst-safe/i),
-    )
-    await expect(addTagButton).toHaveAttribute('aria-expanded', 'true')
-    await expect(
-      within(dialog).getByRole('button', { name: /burst-safe more actions/i }),
-    ).toBeInTheDocument()
   },
 }
 

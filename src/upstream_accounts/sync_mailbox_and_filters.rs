@@ -1363,9 +1363,7 @@ fn normalize_bulk_upstream_account_action(value: &str) -> Result<String, (Status
         BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE
         | BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE
         | BULK_UPSTREAM_ACCOUNT_ACTION_DELETE
-        | BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP
-        | BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS
-        | BULK_UPSTREAM_ACCOUNT_ACTION_REMOVE_TAGS => Ok(normalized),
+        | BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP => Ok(normalized),
         _ => Err((
             StatusCode::BAD_REQUEST,
             "unsupported bulk action".to_string(),

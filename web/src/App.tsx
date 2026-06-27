@@ -15,7 +15,6 @@ import GroupsPage from './pages/account-pool/Groups'
 import MaintenanceRecordsPage from './pages/account-pool/MaintenanceRecords'
 import UpstreamAccountsPage from './pages/account-pool/UpstreamAccounts'
 import UpstreamAccountCreatePage from './pages/account-pool/UpstreamAccountCreate'
-import TagsPage from './pages/account-pool/Tags'
 
 function App() {
   return (
@@ -32,7 +31,6 @@ function App() {
           <Route path="upstream-accounts/new" element={<UpstreamAccountCreatePage />} />
           <Route path="maintenance-records" element={<MaintenanceRecordsPage />} />
           <Route path="groups" element={<GroupsPage />} />
-          <Route path="tags" element={<TagsPage />} />
         </Route>
         <Route path="system" element={<SystemLayout />}>
           <Route index element={<Navigate to="/system/status" replace />} />
