@@ -64,7 +64,7 @@ export default {
         'signal-glow': 'signal-glow 2.6s cubic-bezier(0.25, 1, 0.5, 1) infinite',
         'signal-halo': 'signal-halo 2.2s cubic-bezier(0.25, 1, 0.5, 1) infinite',
         'signal-core': 'signal-core 2.2s cubic-bezier(0.25, 1, 0.5, 1) infinite',
-        'orbit-spin': 'orbit-spin 1.15s linear infinite',
+        'orbit-spin': 'orbit-spin 1.85s linear infinite',
       },
     },
   },
