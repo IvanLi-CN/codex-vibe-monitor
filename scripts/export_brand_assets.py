@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BRAND_DIR = REPO_ROOT / "docs" / "readme-assets" / "brand"
+PUBLIC_DIR = REPO_ROOT / "web" / "public"
+
+PRODUCT_MARK_MASTER = BRAND_DIR / "codex-vibe-monitor-product-mark.svg"
+APP_ICON_MASTER = BRAND_DIR / "codex-vibe-monitor-app-icon.svg"
+
+PRODUCT_MARK_PUBLIC = PUBLIC_DIR / "brand-mark.svg"
+FAVICON_PUBLIC = PUBLIC_DIR / "favicon.svg"
+APPLE_TOUCH_PUBLIC = PUBLIC_DIR / "apple-touch-icon.png"
+ICON_192_PUBLIC = PUBLIC_DIR / "icon-192.png"
+ICON_512_PUBLIC = PUBLIC_DIR / "icon-512.png"
+
+
+SIGNAL_GRADIENT = [
+    '<linearGradient id="signal-gradient" x1="400" y1="2540" x2="5620" y2="2540" gradientUnits="userSpaceOnUse">',
+    '  <stop offset="0%" stop-color="#1CD3E6" />',
+    '  <stop offset="14%" stop-color="#1DD1E6" />',
+    '  <stop offset="30%" stop-color="#29D4FA" />',
+    '  <stop offset="50%" stop-color="#29CEFC" />',
+    '  <stop offset="58%" stop-color="#19A2F6" />',
+    '  <stop offset="74%" stop-color="#1387F7" />',
+    '  <stop offset="100%" stop-color="#157DF8" />',
+    '</linearGradient>',
+]
+
+RING_FILLS = [
+    "#2BC8D8",
+    "#0D77F6",
+    "#0C76F6",
+    "#2DC8D9",
+]
+
+PRODUCT_MARK_PATHS = [
+    'M3031 4103 c-27 -25 -38 -56 -96 -273 -36 -135 -77 -283 -90 -330 -28 -100 -144 -546 -213 -814 l-48 -188 -43 98 c-23 55 -45 106 -50 114 -4 8 -38 87 -75 175 -74 175 -97 205 -153 205 -40 0 -52 -11 -176 -162 l-72 -88 -430 0 c-236 0 -481 -3 -543 -7 -97 -5 -112 -4 -112 9 0 9 -18 42 -40 75 -50 76 -114 113 -206 121 -58 4 -71 1 -130 -28 -101 -50 -152 -131 -153 -246 -2 -113 46 -197 141 -250 46 -25 63 -29 128 -29 57 0 85 6 116 22 44 23 104 85 128 131 l15 29 576 6 c391 5 581 11 593 18 9 6 47 49 83 94 l66 83 26 -61 c126 -306 260 -605 278 -619 12 -10 37 -18 56 -18 60 0 74 25 127 235 27 105 75 291 108 415 32 124 77 295 99 380 22 85 55 209 74 275 18 66 35 129 38 140 l5 20 1 -20 c1 -11 8 -69 16 -130 34 -258 107 -845 145 -1160 l41 -340 29 -27 c35 -32 78 -36 109 -11 13 12 37 69 67 163 135 428 246 760 252 760 4 0 32 -41 62 -91 30 -50 63 -97 74 -105 17 -12 122 -14 626 -14 l605 0 20 -36 c45 -83 150 -144 250 -144 61 0 162 54 202 108 111 148 62 351 -102 428 -132 62 -305 -5 -361 -140 l-18 -43 -126 -7 c-69 -3 -324 -6 -567 -6 l-442 0 -12 23 c-6 12 -46 80 -88 150 -91 154 -129 183 -190 141 -31 -22 -38 -39 -162 -409 -59 -176 -108 -315 -108 -309 -6 89 -208 1644 -217 1668 -8 20 -55 46 -83 46 -12 0 -34 -12 -50 -27z m-2300 -1230 c17 -10 35 -34 45 -60 42 -109 -44 -208 -151 -173 -94 31 -102 196 -12 235 43 19 83 18 118 -2z m4680 -6 c22 -14 39 -38 49 -64 13 -39 12 -46 -6 -90 -57 -141 -258 -79 -230 72 17 91 111 133 187 82z',
+    'M2765 5163 c-223 -27 -400 -69 -570 -133 -686 -257 -1224 -842 -1430 -1555 -34 -118 -41 -177 -24 -192 12 -10 193 -31 409 -48 l75 -6 48 148 c183 571 622 1008 1200 1198 113 37 309 78 412 87 l30 3 3 253 2 252 -62 -1 c-35 -1 -76 -4 -93 -6z',
+    'M3137 5163 c-4 -3 -7 -115 -7 -249 l0 -242 23 -6 c12 -3 42 -6 67 -6 70 0 206 -25 328 -59 300 -85 533 -223 763 -451 173 -171 287 -336 391 -566 40 -87 108 -284 108 -312 1 -44 6 -45 231 -22 117 12 219 26 226 32 20 16 16 56 -16 180 -42 163 -83 274 -161 436 -299 622 -846 1066 -1500 1217 -176 41 -434 68 -453 48z',
+    'M1020 2269 c-120 -14 -244 -30 -263 -35 -36 -11 -37 -36 -2 -160 175 -617 627 -1149 1230 -1445 285 -140 582 -220 855 -231 l75 -3 3 233 c1 127 -1 232 -5 232 -99 2 -317 42 -438 79 -579 180 -1040 642 -1246 1249 l-32 92 -51 -1 c-28 -1 -85 -5 -126 -10z',
+    'M4798 2274 c-3 -5 -20 -54 -38 -109 -67 -206 -211 -469 -347 -632 -215 -259 -478 -447 -789 -564 -128 -48 -198 -66 -359 -93 l-130 -21 0 -230 0 -230 65 3 c510 23 1051 273 1446 667 290 289 497 642 613 1041 12 39 21 77 21 85 -1 40 -28 48 -265 69 -60 5 -133 13 -161 16 -29 3 -54 2 -56 -2z',
+]
+
+DOT_PATHS = [
+    'M1551 3334 c-12 -15 -21 -33 -21 -40 0 -23 38 -54 65 -54 27 0 65 31 65 54 0 24 -41 66 -65 66 -14 0 -32 -11 -44 -26z',
+    'M4428 2244 c-32 -17 -42 -52 -23 -81 22 -33 53 -38 84 -15 32 24 37 46 17 76 -19 30 -46 37 -78 20z',
+    'M3767 1462 c-23 -25 -21 -58 3 -82 39 -39 100 -14 100 42 0 51 -69 78 -103 40z',
+    'M3990 1610 c-39 -39 -14 -100 42 -100 53 0 79 74 36 104 -30 21 -54 20 -78 -4z',
+    'M3530 1360 c-24 -24 -25 -48 -4 -78 18 -26 65 -30 88 -6 24 23 20 70 -6 88 -30 21 -54 20 -78 -4z',
+    'M3277 1292 c-10 -10 -17 -28 -17 -40 0 -27 33 -62 58 -62 31 0 62 29 62 59 0 54 -68 82 -103 43z',
+    'M2127 4112 c-10 -10 -17 -28 -17 -40 0 -28 34 -62 60 -62 27 0 60 35 60 63 0 50 -70 76 -103 39z',
+    'M4311 1996 c-27 -29 -23 -69 10 -86 30 -17 59 -8 82 23 l21 27 -21 28 c-27 36 -62 40 -92 8z',
+    'M2576 4288 c-45 -64 29 -133 84 -78 11 11 20 29 20 40 0 28 -35 60 -64 60 -14 0 -32 -10 -40 -22z',
+    'M4178 1793 c-26 -31 -29 -42 -17 -65 15 -29 28 -38 56 -38 29 0 65 47 57 74 -13 45 -68 61 -96 29z',
+    'M1782 3798 c-24 -12 -38 -48 -29 -72 3 -8 17 -22 31 -31 20 -14 29 -14 48 -4 46 24 51 67 12 98 -30 24 -31 24 -62 9z',
+    'M1947 3979 c-37 -21 -38 -78 -3 -101 37 -25 102 14 91 55 -7 24 -41 57 -59 57 -6 0 -19 -5 -29 -11z',
+    'M1646 3579 c-30 -24 -34 -59 -8 -82 38 -35 102 -9 102 41 0 18 -42 62 -60 62 -4 0 -19 -9 -34 -21z',
+    'M2347 4222 c-23 -25 -21 -58 3 -82 25 -25 52 -26 73 -2 22 24 21 65 -1 85 -24 22 -55 21 -75 -1z',
+]
+
+DOT_FILLS = [
+    "#3BC9FC",
+    "#3CA0F4",
+    "#5AB9F9",
+    "#48ADF6",
+    "#60BBF9",
+    "#7FCFFA",
+    "#62D5FC",
+    "#37A2F7",
+    "#87DCFB",
+    "#40A9F9",
+    "#47CAFC",
+    "#54CDFB",
+    "#3BC8FC",
+    "#77D8FB",
+]
+
+
+def write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def render_png(source_svg: Path, output_png: Path, size: int) -> None:
+    subprocess.run(
+        [
+            "rsvg-convert",
+            "-w",
+            str(size),
+            "-h",
+            str(size),
+            "-o",
+            str(output_png),
+            str(source_svg),
+        ],
+        check=True,
+        cwd=REPO_ROOT,
+    )
+
+
+def product_mark_svg() -> str:
+    lines = [
+        '<svg width="603" height="557" viewBox="0 0 6030 5570" fill="none" xmlns="http://www.w3.org/2000/svg">',
+        "<!-- Generated from traced components extracted from docs/readme-assets/brand/codex-vibe-monitor-brand-sheet.png -->",
+        "  <title>Codex Vibe Monitor product mark</title>",
+        "  <desc>Product mark traced directly from the approved brand sheet artwork.</desc>",
+        "  <defs>",
+        *[f"    {line}" for line in SIGNAL_GRADIENT],
+        "  </defs>",
+        '  <g transform="translate(0 5570) scale(1 -1)">',
+    ]
+    lines.append(f'    <path d="{PRODUCT_MARK_PATHS[0]}" fill="url(#signal-gradient)" />')
+    for path, fill in zip(PRODUCT_MARK_PATHS[1:], RING_FILLS, strict=True):
+        lines.append(f'    <path d="{path}" fill="{fill}" />')
+    for path, fill in zip(DOT_PATHS, DOT_FILLS, strict=True):
+        lines.append(f'    <path d="{path}" fill="{fill}" />')
+    lines.extend(["  </g>", "</svg>"])
+    lines.append("")
+    return "\n".join(lines)
+
+
+def app_icon_svg() -> str:
+    lines = [
+        '<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">',
+        "<!-- Generated from traced product mark + approved rounded-square app-icon container -->",
+        "  <title>Codex Vibe Monitor app icon</title>",
+        "  <desc>Rounded-square application icon using the traced product mark.</desc>",
+        "  <defs>",
+        '    <filter id="icon-shadow" x="0" y="0" width="512" height="512" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">',
+        '      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#CCD7EA" flood-opacity="0.75" />',
+        "    </filter>",
+        "  </defs>",
+        '  <g filter="url(#icon-shadow)">',
+        '    <rect x="32" y="40" width="448" height="432" rx="72" fill="#FBFDFF" />',
+        '    <rect x="34" y="42" width="444" height="428" rx="70" stroke="#DDE7F5" stroke-width="4" />',
+        "  </g>",
+        '  <g transform="translate(58 67) scale(0.065)">',
+        '    <defs>',
+        *[f"      {line}" for line in SIGNAL_GRADIENT],
+        "    </defs>",
+        '    <g transform="translate(0 5570) scale(1 -1)">',
+    ]
+    lines.append(f'      <path d="{PRODUCT_MARK_PATHS[0]}" fill="url(#signal-gradient)" />')
+    for path, fill in zip(PRODUCT_MARK_PATHS[1:], RING_FILLS, strict=True):
+        lines.append(f'      <path d="{path}" fill="{fill}" />')
+    for path, fill in zip(DOT_PATHS, DOT_FILLS, strict=True):
+        lines.append(f'      <path d="{path}" fill="{fill}" />')
+    lines.extend(["    </g>", "  </g>", "</svg>", ""])
+    return "\n".join(lines)
+
+
+def main() -> None:
+    product_svg = product_mark_svg()
+    icon_svg = app_icon_svg()
+
+    write_text(PRODUCT_MARK_MASTER, product_svg)
+    write_text(APP_ICON_MASTER, icon_svg)
+    write_text(PRODUCT_MARK_PUBLIC, product_svg)
+    write_text(FAVICON_PUBLIC, icon_svg)
+
+    render_png(APP_ICON_MASTER, APPLE_TOUCH_PUBLIC, 180)
+    render_png(APP_ICON_MASTER, ICON_192_PUBLIC, 192)
+    render_png(APP_ICON_MASTER, ICON_512_PUBLIC, 512)
+
+
+if __name__ == "__main__":
+    main()

@@ -14,6 +14,7 @@ import { Button } from './ui/button'
 import { SegmentedControl } from './ui/segmented-control'
 import { segmentedControlItemVariants } from './ui/segmented-control.variants'
 import { UpdateAvailableBanner } from './UpdateAvailableBanner'
+import { HeaderBrandMark, type HeaderBrandMarkState } from './HeaderBrandMark'
 
 const navItems = [
   { to: '/dashboard', labelKey: 'app.nav.dashboard' },
@@ -30,13 +31,13 @@ const LOCALE_FLAG: Record<Locale, string> = {
   en: '🇺🇸',
 }
 const OFFLINE_NOTICE_THRESHOLD_MS = 2 * 60 * 1000
+export const HEADER_BRAND_ACTIVITY_HOLD_MS = 3200
 
 export function AppLayout() {
   const { t, locale, setLocale } = useTranslation()
   const { themeMode, toggleTheme } = useTheme()
-  const [pulse, setPulse] = useState(false)
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const animationDurationMs = 1400
+  const [hasRecentActivity, setHasRecentActivity] = useState(false)
+  const activityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [versionInfo, setVersionInfo] = useState<VersionResponse | null>(null)
   const [backendLoading, setBackendLoading] = useState(true)
   const update = useUpdateAvailable()
@@ -64,24 +65,43 @@ export function AppLayout() {
     : t('app.sse.banner.autoDisabled')
 
   useEffect(() => {
-    const unsubscribe = subscribeToSse(() => {
-      setPulse(true)
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current)
+    const clearActivityWindow = () => {
+      if (activityTimeoutRef.current) {
+        clearTimeout(activityTimeoutRef.current)
+        activityTimeoutRef.current = null
       }
-      timeoutRef.current = setTimeout(() => setPulse(false), animationDurationMs)
+    }
+
+    const unsubscribe = subscribeToSse(() => {
+      if (sseStatus.phase !== 'connected') return
+      setHasRecentActivity(true)
+      clearActivityWindow()
+      activityTimeoutRef.current = setTimeout(() => {
+        activityTimeoutRef.current = null
+        setHasRecentActivity(false)
+      }, HEADER_BRAND_ACTIVITY_HOLD_MS)
     })
+    return () => {
+      clearActivityWindow()
+      unsubscribe()
+    }
+  }, [sseStatus.phase])
+
+  useEffect(() => {
+    if (sseStatus.phase === 'connected') return
+    if (activityTimeoutRef.current) {
+      clearTimeout(activityTimeoutRef.current)
+      activityTimeoutRef.current = null
+    }
+    setHasRecentActivity(false)
+  }, [sseStatus.phase])
+
+  useEffect(() => {
     setBackendLoading(true)
     fetchVersion()
       .then(setVersionInfo)
       .catch(() => setVersionInfo(null))
       .finally(() => setBackendLoading(false))
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current)
-      }
-      unsubscribe()
-    }
   }, [])
 
   const handleLocaleChange = (next: Locale) => {
@@ -165,47 +185,27 @@ export function AppLayout() {
     )
   }
 
-  const logoImageClass = `h-8 w-8 relative z-20 transition-transform duration-300 ${
-    pulse
-      ? 'animate-pulse-core scale-110 drop-shadow-[0_0_18px_rgba(59,130,246,0.65)]'
-      : 'drop-shadow-[0_0_6px_rgba(59,130,246,0.35)]'
-  } ${isOffline ? 'grayscale opacity-70' : ''} ${isSseDisabled ? 'opacity-60' : ''}`
-
-  const reconnectRingClass = `pointer-events-none absolute inline-flex h-14 w-14 rounded-full border-2 border-dashed transition-opacity duration-300 ${
-    isSseDisabled ? 'border-warning/80' : 'border-primary/70'
-  } ${isReconnecting ? 'opacity-95 animate-orbit-spin' : 'opacity-0'}`
-
   const isDarkTheme = themeMode === 'dark'
   const themeLabel = t(isDarkTheme ? 'app.theme.currentDark' : 'app.theme.currentLight')
   const themeSwitcherLabel = t(isDarkTheme ? 'app.theme.switchToLight' : 'app.theme.switchToDark')
+  const headerBrandMarkState: HeaderBrandMarkState = isSseDisabled
+    ? 'disabled'
+    : isReconnecting
+      ? 'reconnecting'
+      : hasRecentActivity
+        ? 'active'
+        : 'idle'
 
   return (
     <div className="app-shell min-h-screen flex flex-col text-base-content">
       <header className="sticky top-0 z-50 border-b border-base-300/75 bg-base-100/80 backdrop-blur-md">
         <div className="app-shell-boundary flex items-center gap-2 px-4 py-2" data-testid="app-header-inner">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <span className="relative inline-flex items-center justify-center">
-              <span
-                className={`pointer-events-none absolute inline-flex h-16 w-16 rounded-full bg-gradient-to-r from-primary/30 via-primary/5 to-primary/30 opacity-0 transition-opacity ${
-                  pulse ? 'opacity-95 animate-pulse-glow' : ''
-                }`}
-                aria-hidden
-              />
-              <span className={reconnectRingClass} aria-hidden />
-              <span
-                className={`pointer-events-none absolute inline-flex h-12 w-12 rounded-full border-2 border-primary/70 transition-opacity ${
-                  pulse ? 'opacity-100 animate-pulse-ring' : 'opacity-0'
-                }`}
-                aria-hidden
-              />
-              <span
-                className={`pointer-events-none absolute inline-flex h-10 w-10 rounded-full bg-primary/30 blur-md transition-opacity ${
-                  pulse ? 'opacity-80' : 'opacity-0'
-                }`}
-                aria-hidden
-              />
-              <img src="/favicon.svg" alt={t('app.logoAlt')} className={logoImageClass} />
-            </span>
+            <HeaderBrandMark
+              alt={t('app.logoAlt')}
+              state={headerBrandMarkState}
+              data-testid="app-header-logo-mark"
+            />
             <span className="truncate text-lg font-semibold tracking-tight sm:text-xl">{t('app.brand')}</span>
           </div>
 

@@ -36,20 +36,23 @@ export default {
         btn: 'var(--radius-field)',
       },
       keyframes: {
-        'pulse-ring': {
-          '0%': { transform: 'scale(0.65)', opacity: '0.65' },
-          '45%': { transform: 'scale(1.85)', opacity: '0.35' },
-          '100%': { transform: 'scale(2.8)', opacity: '0' },
+        'signal-ring': {
+          '0%': { transform: 'scale(0.86)', opacity: '0' },
+          '20%': { opacity: '0.38' },
+          '60%': { opacity: '0.12' },
+          '100%': { transform: 'scale(1.42)', opacity: '0' },
         },
-        'pulse-glow': {
-          '0%': { opacity: '0.45', boxShadow: '0 0 0 rgba(59, 130, 246, 0.0)' },
-          '50%': { opacity: '0.9', boxShadow: '0 0 36px rgba(59, 130, 246, 0.55)' },
-          '100%': { opacity: '0', boxShadow: '0 0 0 rgba(59, 130, 246, 0.0)' },
+        'signal-glow': {
+          '0%, 100%': { transform: 'scale(0.96)', opacity: '0.12' },
+          '50%': { transform: 'scale(1.08)', opacity: '0.3' },
         },
-        'pulse-core': {
-          '0%': { transform: 'scale(1)', opacity: '1' },
-          '50%': { transform: 'scale(1.12)', opacity: '0.75' },
-          '100%': { transform: 'scale(1)', opacity: '1' },
+        'signal-halo': {
+          '0%, 100%': { transform: 'scale(0.92)', opacity: '0.1' },
+          '50%': { transform: 'scale(1.08)', opacity: '0.24' },
+        },
+        'signal-core': {
+          '0%, 100%': { transform: 'scale(1)' },
+          '50%': { transform: 'scale(1.028)' },
         },
         'orbit-spin': {
           '0%': { transform: 'rotate(0deg)' },
@@ -57,10 +60,11 @@ export default {
         },
       },
       animation: {
-        'pulse-ring': 'pulse-ring 1.4s ease-out',
-        'pulse-glow': 'pulse-glow 1.4s ease-out',
-        'pulse-core': 'pulse-core 1.4s ease-in-out',
-        'orbit-spin': 'orbit-spin 1.1s linear infinite',
+        'signal-ring': 'signal-ring 2.3s cubic-bezier(0.16, 1, 0.3, 1) infinite',
+        'signal-glow': 'signal-glow 2.6s cubic-bezier(0.25, 1, 0.5, 1) infinite',
+        'signal-halo': 'signal-halo 2.2s cubic-bezier(0.25, 1, 0.5, 1) infinite',
+        'signal-core': 'signal-core 2.2s cubic-bezier(0.25, 1, 0.5, 1) infinite',
+        'orbit-spin': 'orbit-spin 1.85s linear infinite',
       },
     },
   },
