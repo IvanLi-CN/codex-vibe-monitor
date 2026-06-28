@@ -16,6 +16,7 @@ const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     compact_support_reason, image_tool_capability, local_primary_limit, local_secondary_limit,
     local_limit_unit,
     policy_block_new_conversations,
+    policy_allow_new_conversations,
     policy_allow_cut_out, policy_allow_cut_in, policy_priority_tier,
     policy_fast_mode_rewrite_mode, policy_image_tool_rewrite_mode, policy_concurrency_limit,
     policy_upstream_429_retry_enabled, policy_upstream_429_max_retries,
@@ -2432,6 +2433,7 @@ async fn load_upstream_account_groups(
             notes.upstream_429_max_retries,
             notes.concurrency_limit,
             notes.policy_block_new_conversations,
+            notes.policy_allow_new_conversations,
             notes.policy_allow_cut_out,
             notes.policy_allow_cut_in,
             notes.policy_priority_tier,
@@ -2487,6 +2489,7 @@ async fn load_upstream_account_groups(
                         upstream_429_retry_enabled,
                         upstream_429_max_retries,
                         row.policy_block_new_conversations,
+                        row.policy_allow_new_conversations,
                         row.policy_allow_cut_out,
                         row.policy_allow_cut_in,
                         row.policy_priority_tier.as_deref(),
@@ -3479,6 +3482,7 @@ fn group_routing_rule_from_group_metadata(
         upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
         upstream_429_max_retries: metadata.upstream_429_max_retries,
         available_models: Vec::new(),
+        available_models_defined: false,
     }
 }
 

@@ -4,12 +4,14 @@ import { useTheme } from '../theme/context'
 import type {
   CreateApiKeyAccountPayload,
   CompleteOauthLoginSessionPayload,
+  EffectiveRoutingRule,
   ImportOauthCredentialFilePayload,
   OauthMailboxStatus,
   StatsResponse,
   TimeseriesResponse,
   UpdateOauthLoginSessionPayload,
   UpdatePoolRoutingSettingsPayload,
+  UpdateGroupAccountRoutingRulePayload,
   UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
   UpstreamAccountListResponse,
@@ -20,6 +22,57 @@ import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCrea
 import { resolveDisplayNameAfterEmailChange } from '../pages/account-pool/UpstreamAccountCreate.shared'
 import GroupsPage from '../pages/account-pool/Groups'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
+
+function applyRoutingRulePatchToEffectiveRule(
+  rule: EffectiveRoutingRule,
+  patch: UpdateGroupAccountRoutingRulePayload,
+): EffectiveRoutingRule {
+  const fieldSources = {
+    blockNewConversations: rule.fieldSources?.blockNewConversations ?? 'root',
+    allowCutOut: rule.fieldSources?.allowCutOut ?? 'root',
+    allowCutIn: rule.fieldSources?.allowCutIn ?? 'root',
+    priorityTier: rule.fieldSources?.priorityTier ?? 'root',
+    fastModeRewriteMode: rule.fieldSources?.fastModeRewriteMode ?? 'root',
+    imageToolRewriteMode: rule.fieldSources?.imageToolRewriteMode ?? 'root',
+    concurrencyLimit: rule.fieldSources?.concurrencyLimit ?? 'root',
+    upstream429Retry: rule.fieldSources?.upstream429Retry ?? 'root',
+    availableModels: rule.fieldSources?.availableModels ?? 'root',
+    systemDeniedModels: rule.fieldSources?.systemDeniedModels ?? 'root',
+  }
+  const allowNewConversations =
+    patch.allowNewConversations ??
+    (typeof patch.blockNewConversations === 'boolean'
+      ? !patch.blockNewConversations
+      : patch.blockNewConversations)
+  const hasNewConversationPatch =
+    Object.prototype.hasOwnProperty.call(patch, 'allowNewConversations') ||
+    Object.prototype.hasOwnProperty.call(patch, 'blockNewConversations')
+  return {
+    ...rule,
+    ...(allowNewConversations == null ? {} : { blockNewConversations: !allowNewConversations }),
+    ...(patch.allowCutOut == null ? {} : { allowCutOut: patch.allowCutOut }),
+    ...(patch.allowCutIn == null ? {} : { allowCutIn: patch.allowCutIn }),
+    ...(patch.priorityTier == null ? {} : { priorityTier: patch.priorityTier }),
+    ...(patch.fastModeRewriteMode == null ? {} : { fastModeRewriteMode: patch.fastModeRewriteMode }),
+    ...(patch.imageToolRewriteMode == null ? {} : { imageToolRewriteMode: patch.imageToolRewriteMode }),
+    ...(patch.concurrencyLimit == null ? {} : { concurrencyLimit: patch.concurrencyLimit }),
+    ...(patch.upstream429RetryEnabled == null ? {} : { upstream429RetryEnabled: patch.upstream429RetryEnabled }),
+    ...(patch.upstream429MaxRetries == null ? {} : { upstream429MaxRetries: patch.upstream429MaxRetries }),
+    ...(patch.availableModels == null ? {} : { availableModels: patch.availableModels }),
+    fieldSources: {
+      ...fieldSources,
+      ...(hasNewConversationPatch ? { blockNewConversations: allowNewConversations == null ? 'root' : 'account' } : {}),
+      ...(Object.prototype.hasOwnProperty.call(patch, 'allowCutOut') ? { allowCutOut: patch.allowCutOut == null ? 'root' : 'account' } : {}),
+      ...(Object.prototype.hasOwnProperty.call(patch, 'allowCutIn') ? { allowCutIn: patch.allowCutIn == null ? 'root' : 'account' } : {}),
+      ...(Object.prototype.hasOwnProperty.call(patch, 'priorityTier') ? { priorityTier: patch.priorityTier == null ? 'root' : 'account' } : {}),
+      ...(Object.prototype.hasOwnProperty.call(patch, 'fastModeRewriteMode') ? { fastModeRewriteMode: patch.fastModeRewriteMode == null ? 'root' : 'account' } : {}),
+      ...(Object.prototype.hasOwnProperty.call(patch, 'imageToolRewriteMode') ? { imageToolRewriteMode: patch.imageToolRewriteMode == null ? 'root' : 'account' } : {}),
+      ...(Object.prototype.hasOwnProperty.call(patch, 'concurrencyLimit') ? { concurrencyLimit: patch.concurrencyLimit == null ? 'root' : 'account' } : {}),
+      ...(Object.prototype.hasOwnProperty.call(patch, 'upstream429RetryEnabled') ? { upstream429Retry: patch.upstream429RetryEnabled == null ? 'root' : 'account' } : {}),
+      ...(Object.prototype.hasOwnProperty.call(patch, 'availableModels') ? { availableModels: patch.availableModels == null ? 'root' : 'account' } : {}),
+    },
+  }
+}
 
 import {
   applyDynamicRosterLiveRefresh,
@@ -1064,46 +1117,7 @@ export function StorybookUpstreamAccountsMock({
           ? (body.email ?? null)
           : detail.email
         const nextEffectiveRoutingRule = body.routingRule
-          ? {
-              ...detail.effectiveRoutingRule,
-              ...body.routingRule,
-              fieldSources: {
-                blockNewConversations:
-                  body.routingRule.blockNewConversations == null
-                    ? detail.effectiveRoutingRule.fieldSources?.blockNewConversations ?? 'root'
-                    : 'account',
-                allowCutOut:
-                  body.routingRule.allowCutOut == null
-                    ? detail.effectiveRoutingRule.fieldSources?.allowCutOut ?? 'root'
-                    : 'account',
-                allowCutIn:
-                  body.routingRule.allowCutIn == null
-                    ? detail.effectiveRoutingRule.fieldSources?.allowCutIn ?? 'root'
-                    : 'account',
-                priorityTier:
-                  body.routingRule.priorityTier == null
-                    ? detail.effectiveRoutingRule.fieldSources?.priorityTier ?? 'root'
-                    : 'account',
-                fastModeRewriteMode:
-                  body.routingRule.fastModeRewriteMode == null
-                    ? detail.effectiveRoutingRule.fieldSources?.fastModeRewriteMode ?? 'root'
-                    : 'account',
-                concurrencyLimit:
-                  body.routingRule.concurrencyLimit == null
-                    ? detail.effectiveRoutingRule.fieldSources?.concurrencyLimit ?? 'root'
-                    : 'account',
-                upstream429Retry:
-                  body.routingRule.upstream429RetryEnabled == null
-                    ? detail.effectiveRoutingRule.fieldSources?.upstream429Retry ?? 'root'
-                    : 'account',
-                availableModels:
-                  body.routingRule.availableModels == null
-                    ? detail.effectiveRoutingRule.fieldSources?.availableModels ?? 'root'
-                    : 'account',
-                systemDeniedModels:
-                  detail.effectiveRoutingRule.fieldSources?.systemDeniedModels ?? 'root',
-              },
-            }
+          ? applyRoutingRulePatchToEffectiveRule(detail.effectiveRoutingRule, body.routingRule)
           : detail.effectiveRoutingRule
         const updated = syncLocalWindows({
           ...detail,

@@ -71,8 +71,8 @@ function render(ui: React.ReactNode) {
 }
 
 const labels = {
-  blockNewConversations: 'Block new conversations',
-  forbidNewConversation: 'Block new conversations',
+  allowNewConversations: 'New conversations',
+  newConversationHint: 'Allow new conversations on this group',
   allowCutOut: 'Cut out is not blocked',
   allowCutIn: 'Cut in is not blocked',
   forbidCutOut: 'Block cut out',
@@ -160,6 +160,147 @@ describe('GroupAccountRoutingRuleDialog', () => {
         imageToolRewriteMode: 'keep_original',
         priorityTier: 'normal',
         fastModeRewriteMode: 'keep_original',
+      }),
+    )
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        availableModels: [],
+      }),
+    )
+  })
+
+  it('preserves an explicit empty model override after clearing existing models', () => {
+    const onSubmit = vi.fn()
+    render(
+      <GroupAccountRoutingRuleDialog
+        open
+        title="Group policy"
+        description="Shared routing policy"
+        submitLabel="Apply group policy"
+        rule={{ ...defaultRule, availableModels: ['gpt-5.5'] }}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const removeButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-label') === 'Remove model gpt-5.5',
+    )
+    expect(removeButton).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      removeButton!.click()
+    })
+
+    const submit = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Apply group policy',
+    )
+    expect(submit).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      submit!.click()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        availableModels: [],
+      }),
+    )
+  })
+
+  it('submits an explicit empty model override after touching an inherited empty model list', () => {
+    const onSubmit = vi.fn()
+    render(
+      <GroupAccountRoutingRuleDialog
+        open
+        title="Group policy"
+        description="Shared routing policy"
+        submitLabel="Apply group policy"
+        rule={defaultRule}
+        availableModelOptions={['gpt-5.5']}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const input = document.querySelector('input[name="availableModelInput"]')
+    expect(input).toBeInstanceOf(HTMLInputElement)
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set
+    expect(valueSetter).toBeTypeOf('function')
+    act(() => {
+      valueSetter!.call(input, 'gpt-5.5')
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    const addButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Add custom model id',
+    )
+    expect(addButton).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      addButton!.click()
+    })
+
+    const removeButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-label') === 'Remove model gpt-5.5',
+    )
+    expect(removeButton).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      removeButton!.click()
+    })
+
+    const submit = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Apply group policy',
+    )
+    expect(submit).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      submit!.click()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        availableModels: [],
+      }),
+    )
+  })
+
+  it('preserves an untouched explicit empty model override when changing another field', () => {
+    const onSubmit = vi.fn()
+    render(
+      <GroupAccountRoutingRuleDialog
+        open
+        title="Group policy"
+        description="Shared routing policy"
+        submitLabel="Apply group policy"
+        rule={{ ...defaultRule, availableModels: [], availableModelsDefined: true }}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const newConversationsSwitch = Array.from(document.querySelectorAll('button[role="switch"]')).find(
+      (button) => button.closest('div')?.textContent?.includes('New conversations'),
+    )
+    expect(newConversationsSwitch).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      newConversationsSwitch!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const submit = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Apply group policy',
+    )
+    expect(submit).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      submit!.click()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowNewConversations: false,
+        availableModels: [],
       }),
     )
   })

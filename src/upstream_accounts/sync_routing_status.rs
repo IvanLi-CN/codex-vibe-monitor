@@ -120,6 +120,7 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
 struct RoutingPolicyOverrideRow {
     id: i64,
     policy_block_new_conversations: Option<i64>,
+    policy_allow_new_conversations: Option<i64>,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<String>,
@@ -138,6 +139,7 @@ struct GroupRoutingPolicyOverrideRow {
     upstream_429_retry_enabled: i64,
     upstream_429_max_retries: i64,
     policy_block_new_conversations: Option<i64>,
+    policy_allow_new_conversations: Option<i64>,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<String>,
@@ -152,7 +154,7 @@ struct GroupRoutingPolicyOverrideRow {
 fn apply_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     source: &str,
-    block_new_conversations: Option<i64>,
+    allow_new_conversations: Option<i64>,
     allow_cut_out: Option<i64>,
     allow_cut_in: Option<i64>,
     priority_tier: Option<&str>,
@@ -163,11 +165,9 @@ fn apply_routing_policy_override(
     upstream_429_max_retries: Option<i64>,
     available_models_json: Option<&str>,
 ) {
-    if let Some(block_new_conversations) = block_new_conversations {
-        if block_new_conversations != 0 {
-            rule.field_sources.block_new_conversations = source.to_string();
-            rule.block_new_conversations = true;
-        }
+    if let Some(allow_new_conversations) = allow_new_conversations {
+        rule.field_sources.block_new_conversations = source.to_string();
+        rule.block_new_conversations = allow_new_conversations == 0;
     }
     if let Some(allow_cut_out) = allow_cut_out {
         rule.field_sources.allow_cut_out = source.to_string();
@@ -217,11 +217,9 @@ fn apply_routing_policy_override(
     }
     if let Some(available_models_json) = available_models_json {
         let available_models = parse_string_array_json(Some(available_models_json));
-        if !available_models.is_empty() {
-            rule.field_sources.available_models = source.to_string();
-            rule.available_models = available_models;
-            rule.available_models_defined = true;
-        }
+        rule.field_sources.available_models = source.to_string();
+        rule.available_models = available_models;
+        rule.available_models_defined = true;
     }
 }
 
@@ -240,6 +238,7 @@ async fn load_group_routing_policy_override_map(
             upstream_429_retry_enabled,
             upstream_429_max_retries,
             policy_block_new_conversations,
+            policy_allow_new_conversations,
             policy_allow_cut_out,
             policy_allow_cut_in,
             policy_priority_tier,
@@ -282,6 +281,7 @@ async fn load_account_routing_policy_override_map(
         SELECT
             id,
             policy_block_new_conversations,
+            policy_allow_new_conversations,
             policy_allow_cut_out,
             policy_allow_cut_in,
             policy_priority_tier,
@@ -316,7 +316,10 @@ fn apply_group_routing_policy_override(
     apply_routing_policy_override(
         rule,
         "group",
-        row.policy_block_new_conversations,
+        row.policy_allow_new_conversations.or_else(|| {
+            row.policy_block_new_conversations
+                .map(|block_new_conversations| if block_new_conversations == 0 { 1 } else { 0 })
+        }),
         row.policy_allow_cut_out,
         row.policy_allow_cut_in,
         row.policy_priority_tier.as_deref(),
@@ -396,7 +399,10 @@ fn apply_account_routing_policy_override(
     apply_routing_policy_override(
         rule,
         "account",
-        row.policy_block_new_conversations,
+        row.policy_allow_new_conversations.or_else(|| {
+            row.policy_block_new_conversations
+                .map(|block_new_conversations| if block_new_conversations == 0 { 1 } else { 0 })
+        }),
         row.policy_allow_cut_out,
         row.policy_allow_cut_in,
         row.policy_priority_tier.as_deref(),

@@ -90,6 +90,7 @@ export interface TagRoutingRule {
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   availableModels?: string[];
+  availableModelsDefined?: boolean;
 }
 
 export type EffectiveRoutingRuleSource =
@@ -765,8 +766,22 @@ export interface UpdateUpstreamAccountGroupPayload {
   routingRule?: UpdateGroupAccountRoutingRulePayload;
 }
 
-export type UpdateGroupAccountRoutingRulePayload =
-  Partial<GroupAccountRoutingRule>;
+export type NullableRoutingRuleValue<T> = T | null;
+
+export interface UpdateGroupAccountRoutingRulePayload {
+  allowNewConversations?: NullableRoutingRuleValue<boolean>;
+  /** @deprecated use allowNewConversations for new writes */
+  blockNewConversations?: NullableRoutingRuleValue<boolean>;
+  allowCutOut?: NullableRoutingRuleValue<boolean>;
+  allowCutIn?: NullableRoutingRuleValue<boolean>;
+  priorityTier?: NullableRoutingRuleValue<TagPriorityTier>;
+  fastModeRewriteMode?: NullableRoutingRuleValue<TagFastModeRewriteMode>;
+  imageToolRewriteMode?: NullableRoutingRuleValue<ImageToolRewriteMode>;
+  concurrencyLimit?: NullableRoutingRuleValue<number>;
+  upstream429RetryEnabled?: NullableRoutingRuleValue<boolean>;
+  upstream429MaxRetries?: NullableRoutingRuleValue<number>;
+  availableModels?: NullableRoutingRuleValue<string[]>;
+}
 
 function normalizeRateWindowActualUsage(
   raw: unknown,
@@ -878,6 +893,9 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
     availableModels: normalizeStringArray(payload.availableModels)
       .map((value) => value.trim())
       .filter((value) => value.length > 0),
+    availableModelsDefined:
+      payload.availableModelsDefined === true ||
+      Array.isArray(payload.availableModels),
   };
 }
 

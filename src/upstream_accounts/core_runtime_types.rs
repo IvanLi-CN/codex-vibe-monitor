@@ -1204,6 +1204,7 @@ pub(crate) struct GroupAccountRoutingRule {
     upstream_429_max_retries: u8,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     available_models: Vec<String>,
+    available_models_defined: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2270,17 +2271,84 @@ pub(crate) struct UpdateTagRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
-    block_new_conversations: Option<bool>,
-    allow_cut_out: Option<bool>,
-    allow_cut_in: Option<bool>,
-    priority_tier: Option<String>,
-    fast_mode_rewrite_mode: Option<String>,
-    image_tool_rewrite_mode: Option<String>,
-    concurrency_limit: Option<i64>,
-    upstream_429_retry_enabled: Option<bool>,
-    upstream_429_max_retries: Option<u8>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    allow_new_conversations: OptionalField<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    block_new_conversations: OptionalField<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    allow_cut_out: OptionalField<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    allow_cut_in: OptionalField<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    priority_tier: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    fast_mode_rewrite_mode: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    image_tool_rewrite_mode: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    concurrency_limit: OptionalField<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    upstream_429_retry_enabled: OptionalField<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    upstream_429_max_retries: OptionalField<u8>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     available_models: OptionalField<Vec<String>>,
+}
+
+impl UpdateGroupAccountRoutingRuleRequest {
+    fn allow_new_conversations_field(&self) -> OptionalField<bool> {
+        match &self.allow_new_conversations {
+            OptionalField::Missing => match &self.block_new_conversations {
+                OptionalField::Missing => OptionalField::Missing,
+                OptionalField::Null => OptionalField::Null,
+                OptionalField::Value(value) => OptionalField::Value(!*value),
+            },
+            OptionalField::Null => OptionalField::Null,
+            OptionalField::Value(value) => OptionalField::Value(*value),
+        }
+    }
+
+    fn priority_tier_value(&self) -> Option<&str> {
+        match &self.priority_tier {
+            OptionalField::Value(value) => Some(value.as_str()),
+            OptionalField::Missing | OptionalField::Null => None,
+        }
+    }
+
+    fn fast_mode_rewrite_mode_value(&self) -> Option<&str> {
+        match &self.fast_mode_rewrite_mode {
+            OptionalField::Value(value) => Some(value.as_str()),
+            OptionalField::Missing | OptionalField::Null => None,
+        }
+    }
+
+    fn image_tool_rewrite_mode_value(&self) -> Option<&str> {
+        match &self.image_tool_rewrite_mode {
+            OptionalField::Value(value) => Some(value.as_str()),
+            OptionalField::Missing | OptionalField::Null => None,
+        }
+    }
+}
+
+fn optional_bool_to_i64(value: &OptionalField<bool>) -> Option<i64> {
+    match value {
+        OptionalField::Value(value) => Some(if *value { 1_i64 } else { 0_i64 }),
+        OptionalField::Missing | OptionalField::Null => None,
+    }
+}
+
+fn optional_inverted_bool_to_i64(value: &OptionalField<bool>) -> Option<i64> {
+    match value {
+        OptionalField::Value(value) => Some(if *value { 0_i64 } else { 1_i64 }),
+        OptionalField::Missing | OptionalField::Null => None,
+    }
+}
+
+fn optional_retry_count_to_i64(value: &OptionalField<u8>) -> Option<i64> {
+    match value {
+        OptionalField::Value(value) => Some(i64::from(normalize_group_upstream_429_max_retries(*value))),
+        OptionalField::Missing | OptionalField::Null => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
