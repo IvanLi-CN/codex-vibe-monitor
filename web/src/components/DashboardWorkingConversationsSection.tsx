@@ -36,6 +36,7 @@ import {
   upstreamPlanBadgeRecipe,
 } from "../lib/upstreamAccountBadges";
 import { Alert } from "./ui/alert";
+import { AnimatedDigits } from "./AnimatedDigits";
 import { Badge } from "./ui/badge";
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Spinner } from "./ui/spinner";
@@ -77,7 +78,7 @@ export interface DashboardWorkingConversationSelection {
 }
 
 const ACCOUNT_CARD_CLASS_NAME =
-  "flex h-full w-full max-w-full flex-col rounded-[1rem] border border-[rgba(148,163,184,0.32)] bg-base-100/72 p-4 shadow-[0_6px_12px_rgba(15,23,42,0.07)] desktop1660:min-h-[34.5rem]";
+  "flex h-full w-full max-w-full flex-col rounded-[1rem] border border-[rgba(148,163,184,0.32)] bg-base-100/72 p-4 shadow-[0_6px_12px_rgba(15,23,42,0.07)] desktop1660:min-h-[31.5rem]";
 
 const ACCOUNT_CARD_INNER_BORDER_CLASS_NAME = "border-[rgba(148,163,184,0.22)]";
 const ACCOUNT_CARD_INNER_RING_CLASS_NAME = "ring-[rgba(148,163,184,0.22)]";
@@ -352,6 +353,20 @@ function formatAccountCurrencyValue(
   }).format(value);
 }
 
+function formatAccountDurationValue(
+  value: number | null | undefined,
+  localeTag: string,
+) {
+  if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
+  const abs = Math.abs(value);
+  if (abs >= 1000) {
+    const seconds = value / 1000;
+    const maximumFractionDigits = abs >= 100_000 ? 1 : 2;
+    return `${formatAccountNumberValue(seconds, localeTag, maximumFractionDigits)} s`;
+  }
+  return `${formatAccountNumberValue(value, localeTag, abs >= 100 ? 0 : 1)} ms`;
+}
+
 function SummaryMetric({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 rounded-[0.65rem] bg-base-100/4 px-1.5 py-1 sm:px-2">
@@ -481,12 +496,43 @@ function AccountHeroMetric({
           valueClassName,
         )}
       >
-        {value}
+        <AnimatedDigits value={value} />
       </div>
       {hint ? (
         <div className="mt-1 text-[11px] leading-4 text-base-content/58">{hint}</div>
       ) : null}
       {children ? <div className="mt-1.5">{children}</div> : null}
+    </div>
+  );
+}
+
+function AccountInlineMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: AccountMetricTone;
+}) {
+  const valueClassName =
+    value === FALLBACK_CELL
+      ? "text-base-content/55"
+      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
+
+  return (
+    <div className="inline-flex min-w-0 items-baseline gap-1.5 whitespace-nowrap">
+      <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/52">
+        {label}
+      </span>
+      <span
+        className={cn(
+          "font-mono text-[1.02rem] font-semibold leading-none",
+          valueClassName,
+        )}
+      >
+        <AnimatedDigits value={value} />
+      </span>
     </div>
   );
 }
@@ -1551,27 +1597,49 @@ function DashboardUpstreamAccountActivityCard({
         tone: "error" as const,
       },
       {
-        label: locale === "zh" ? "非成功" : "Non-success",
-        value: formatAccountNumberValue(account.nonSuccessCount, localeTag, 0),
+        label: locale === "zh" ? "其他" : "Other",
+        value: formatAccountNumberValue(
+          Math.max(0, account.nonSuccessCount - account.failureCount),
+          localeTag,
+          0,
+        ),
         tone: "warning" as const,
       },
     ],
     [account.failureCount, account.nonSuccessCount, account.successCount, locale, localeTag],
   );
+  const costSummarySegments = useMemo(
+    () => [
+      {
+        label: locale === "zh" ? "失败" : "Failure",
+        value: formatAccountCurrencyValue(account.failureCost, localeTag, 2),
+        tone: "error" as const,
+      },
+      {
+        label: locale === "zh" ? "失败比率" : "Failure rate",
+        value: formatAccountPercentValue(
+          account.requestCount > 0 ? account.failureCount / account.requestCount : null,
+          localeTag,
+        ),
+        tone: "error" as const,
+      },
+    ],
+    [account.failureCost, account.failureCount, account.requestCount, locale, localeTag],
+  );
   const tokenSummarySegments = useMemo(
     () => [
       {
-        label: locale === "zh" ? "成功" : "Success",
-        value: formatAccountNumberValue(account.successTokens, localeTag, 0),
-        tone: "primary" as const,
+        label: locale === "zh" ? "缓存命中率" : "Cache hit",
+        value: formatAccountPercentValue(account.cacheHitRate, localeTag),
+        tone: "secondary" as const,
       },
       {
-        label: locale === "zh" ? "非成功" : "Non-success",
-        value: formatAccountNumberValue(account.nonSuccessTokens, localeTag, 0),
-        tone: "warning" as const,
+        label: locale === "zh" ? "失败" : "Failure",
+        value: formatAccountNumberValue(account.failureTokens, localeTag, 0),
+        tone: "error" as const,
       },
     ],
-    [account.nonSuccessTokens, account.successTokens, locale, localeTag],
+    [account.cacheHitRate, account.failureTokens, locale, localeTag],
   );
   const recentBridgeSegments = useMemo(() => {
     const segments = [];
@@ -1612,9 +1680,10 @@ function DashboardUpstreamAccountActivityCard({
   const firstByteValue =
     account.firstByteAvgMs == null
       ? FALLBACK_CELL
-      : `${formatAccountNumberValue(account.firstByteAvgMs, localeTag, 1)} ms`;
+      : formatAccountDurationValue(account.firstByteAvgMs, localeTag);
+  const avgTotalValue = formatAccountDurationValue(account.avgTotalMs, localeTag);
   const totalRequestValue = formatAccountNumberValue(account.requestCount, localeTag, 0);
-
+  const totalCostValue = formatAccountCurrencyValue(account.totalCost, localeTag, 2);
   return (
     <article
       data-testid="dashboard-upstream-account-card"
@@ -1623,9 +1692,9 @@ function DashboardUpstreamAccountActivityCard({
     >
       <div
         data-testid="dashboard-upstream-account-header-row"
-        className="flex flex-wrap items-start justify-between gap-3"
+        className="flex flex-wrap items-start justify-between gap-4"
       >
-        <div className="min-w-0">
+        <div className="min-w-[12rem] flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -1642,10 +1711,6 @@ function DashboardUpstreamAccountActivityCard({
               variant={accountStatus.badgeVariant}
               description={accountStatus.summary}
             />
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-[13px] leading-[1.4] text-base-content/68">
-            <span>{t("dashboard.upstreamAccounts.channelName", { name: account.displayName })}</span>
-            {account.groupName ? <span>{account.groupName}</span> : null}
             {shouldShowUpstreamPlanBadge(account.planType) ? (
               <Badge
                 variant={upstreamPlanBadgeRecipe(account.planType)?.variant ?? "secondary"}
@@ -1659,41 +1724,41 @@ function DashboardUpstreamAccountActivityCard({
             ) : null}
           </div>
         </div>
-        <div className="shrink-0 rounded-full bg-base-200/78 px-3 py-1 font-mono text-xs font-semibold text-base-content/72">
-          #{account.upstreamAccountId}
+        <div className="flex min-w-0 flex-1 flex-wrap items-baseline justify-end gap-x-5 gap-y-1.5 text-right">
+          <AccountInlineMetric
+            label="TPM"
+            value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
+            tone="primary"
+          />
+          <AccountInlineMetric
+            label={t("dashboard.today.spendRate")}
+            value={formatAccountCurrencyValue(account.spendRate, localeTag, 2)}
+            tone="warning"
+          />
+          <div className="shrink-0 font-mono text-xs font-semibold text-base-content/72">
+            #{account.upstreamAccountId}
+          </div>
         </div>
       </div>
 
       <div className="mt-4 flex flex-col gap-2.5">
         <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
           <AccountHeroMetric
-            label="TPM"
-            value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
-            tone="primary"
-          />
-          <AccountHeroMetric
-            label={t("dashboard.today.spendRate")}
-            value={formatAccountCurrencyValue(account.spendRate, localeTag, 2)}
-            tone="warning"
-          />
-          <AccountHeroMetric
-            label={locale === "zh" ? "进行中调用" : "In-flight"}
-            value={formatAccountNumberValue(
-              account.inProgressInvocationCount ?? null,
-              localeTag,
-              0,
-            )}
-            tone="info"
-          />
-          <AccountHeroMetric
-            label={locale === "zh" ? "重试调用" : "Retrying"}
-            value={formatAccountNumberValue(
-              account.retryInvocationCount ?? null,
-              localeTag,
-              0,
-            )}
-            tone="warning"
-          />
+            label={t("dashboard.today.firstResponseTime")}
+            value={firstByteValue}
+            tone={firstByteValue === FALLBACK_CELL ? "neutral" : "secondary"}
+          >
+            <AccountSegmentList
+              segments={[
+                {
+                  label: t("dashboard.today.responseTime"),
+                  value: avgTotalValue,
+                  tone: avgTotalValue === FALLBACK_CELL ? "neutral" : "primary",
+                },
+              ]}
+              testId="dashboard-upstream-account-latency-breakdown"
+            />
+          </AccountHeroMetric>
           <AccountHeroMetric
             label={locale === "zh" ? "请求数" : "Requests"}
             value={totalRequestValue}
@@ -1705,10 +1770,15 @@ function DashboardUpstreamAccountActivityCard({
             />
           </AccountHeroMetric>
           <AccountHeroMetric
-            label={t("dashboard.today.firstResponseTime")}
-            value={firstByteValue}
-            tone={firstByteValue === FALLBACK_CELL ? "neutral" : "secondary"}
-          />
+            label={locale === "zh" ? "成本" : "Cost"}
+            value={totalCostValue}
+            tone="warning"
+          >
+            <AccountSegmentList
+              segments={costSummarySegments}
+              testId="dashboard-upstream-account-cost-breakdown"
+            />
+          </AccountHeroMetric>
           <AccountHeroMetric
             label="Token"
             value={formatAccountNumberValue(account.totalTokens, localeTag, 0)}
@@ -1719,11 +1789,6 @@ function DashboardUpstreamAccountActivityCard({
               testId="dashboard-upstream-account-token-breakdown"
             />
           </AccountHeroMetric>
-          <AccountHeroMetric
-            label={locale === "zh" ? "缓存命中率" : "Cache hit"}
-            value={formatAccountPercentValue(account.cacheHitRate, localeTag)}
-            tone="secondary"
-          />
         </div>
       </div>
 
@@ -1887,7 +1952,17 @@ export function DashboardWorkingConversationsSection({
     upstreamAccountActivityEnabled,
   );
   const upstreamAccounts = useMemo(
-    () => upstreamAccountActivity?.accounts ?? [],
+    () =>
+      [...(upstreamAccountActivity?.accounts ?? [])].sort((left, right) => {
+        if (right.totalTokens !== left.totalTokens) {
+          return right.totalTokens - left.totalTokens;
+        }
+        const rightRecent = right.recentInvocations[0]?.occurredAt ?? "";
+        const leftRecent = left.recentInvocations[0]?.occurredAt ?? "";
+        const recentCompare = rightRecent.localeCompare(leftRecent);
+        if (recentCompare !== 0) return recentCompare;
+        return right.upstreamAccountId - left.upstreamAccountId;
+      }),
     [upstreamAccountActivity],
   );
   useEffect(() => {

@@ -197,10 +197,14 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         totalTokens: 3200,
         successTokens: 2800,
         nonSuccessTokens: 400,
+        failureTokens: 350,
+        failureCost: 0.22,
+        totalCost: 0.72,
         cacheHitRate: 0.25,
         tokensPerMinute: 640,
         spendRate: 0.12,
         firstByteAvgMs: 420,
+        avgTotalMs: 860,
         inProgressInvocationCount: 3,
         retryInvocationCount: 1,
         recentInvocations: [
@@ -520,8 +524,10 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toBe("busy");
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.className,
-    ).toContain("desktop1660:min-h-[34.5rem]");
+    ).toContain("desktop1660:min-h-[31.5rem]");
     expect(host?.textContent).toContain("繁忙");
+    expect(host?.textContent).not.toContain("渠道 Pool Alpha");
+    expect(host?.textContent).not.toContain("Primary");
     expect(host?.textContent).not.toContain("按调用计数，不按对话去重");
     expect(host?.textContent).not.toContain("仍在重试链路中的调用");
     expect(host?.textContent).not.toContain("最近 4 条调用里仍有活动或异常");
@@ -541,6 +547,25 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(firstRecentRow?.textContent).toContain("UP 90/70/220");
     expect(firstRecentRow?.textContent).toContain("ED 12/9");
 
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-live-call-breakdown"]'),
+    ).toBeNull();
+    const accountHeaderText = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-header-row"]',
+    )?.textContent;
+    expect(accountHeaderText).toContain("TPM");
+    expect(accountHeaderText).toContain("消费速率");
+    expect(accountHeaderText).not.toContain("调用");
+    expect(accountHeaderText).not.toContain("重试");
+
+    const latencyBreakdown = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-latency-breakdown"]',
+    );
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.textContent,
+    ).toContain("420");
+    expect(latencyBreakdown?.textContent).toContain("860");
+
     const requestBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-request-breakdown"]',
     );
@@ -557,10 +582,27 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(requestSegments).toHaveLength(3);
     expect(requestSegments[0]?.textContent).toContain("6");
     expect(requestSegments[1]?.textContent).toContain("2");
-    expect(requestSegments[2]?.textContent).toContain("2");
+    expect(requestSegments[2]?.textContent).toContain("0");
     expect(requestSegments[0]?.parentElement?.getAttribute("aria-label")).toContain("成功 6");
     expect(requestSegments[1]?.parentElement?.getAttribute("aria-label")).toContain("失败 2");
-    expect(requestSegments[2]?.parentElement?.getAttribute("aria-label")).toContain("非成功 2");
+    expect(requestSegments[2]?.parentElement?.getAttribute("aria-label")).toContain("其他 0");
+
+    const costBreakdown = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-cost-breakdown"]',
+    );
+    const accountCardText = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-card"]',
+    )?.textContent;
+    expect(accountCardText).toContain("$0.72");
+    expect(costBreakdown?.textContent).toContain("$0.22");
+    expect(costBreakdown?.textContent).toContain("25%");
+
+    const tokenBreakdown = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-token-breakdown"]',
+    );
+    expect(accountCardText).toContain("3,200");
+    expect(tokenBreakdown?.textContent).toContain("25%");
+    expect(tokenBreakdown?.textContent).toContain("350");
 
     const recentBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-recent-breakdown"]',
