@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AppIcon } from './AppIcon'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -260,15 +260,18 @@ export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: Effec
   const defaultExpandedField = isEditable ? firstAccountOverrideField(fieldSources) : null
   const [expandedField, setExpandedField] = useState<EditablePolicyField | null>(defaultExpandedField)
   const [availableModelInput, setAvailableModelInput] = useState('')
+  const userTouchedExpansionRef = useRef(false)
 
   useEffect(() => {
     if (!isEditable) {
+      userTouchedExpansionRef.current = false
       setExpandedField(null)
       return
     }
 
     const nextDefaultExpandedField = firstAccountOverrideField(fieldSources)
     setExpandedField((current) => {
+      if (userTouchedExpansionRef.current) return current
       if (current && fieldToSource(current, fieldSources) === 'account') return current
       return nextDefaultExpandedField
     })
@@ -296,10 +299,12 @@ export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: Effec
     void editablePolicy?.onChange(field, payload)
   }
   const clearField = (field: EditablePolicyField, payloadKey: keyof UpdateGroupAccountRoutingRulePayload) => {
+    userTouchedExpansionRef.current = true
     changeField(field, { [payloadKey]: null } as UpdateGroupAccountRoutingRulePayload)
     setExpandedField((current) => (current === field ? null : current))
   }
   const toggleExpanded = (field: EditablePolicyField, payloadKey: keyof UpdateGroupAccountRoutingRulePayload) => {
+    userTouchedExpansionRef.current = true
     const active = fieldToSource(field, fieldSources) === 'account'
     if (active) {
       clearField(field, payloadKey)

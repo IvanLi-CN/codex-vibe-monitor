@@ -298,7 +298,12 @@ describe('EffectiveRoutingRuleCard', () => {
     act(() => {
       root?.render(
         <EffectiveRoutingRuleCard
-          rule={rule}
+          rule={{
+            ...rule,
+            fieldSources: {
+              ...rule.fieldSources,
+            },
+          }}
           labels={labels}
           editablePolicy={{ onChange, busyField: null }}
         />,
