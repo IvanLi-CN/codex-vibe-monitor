@@ -23,7 +23,7 @@ export function HeaderBrandMark({
 
   return (
     <span
-      className={cn('header-brand-mark relative inline-flex h-20 w-20 shrink-0 items-center justify-center', className)}
+      className={cn('header-brand-mark relative inline-flex h-10 w-10 shrink-0 items-center justify-center overflow-visible', className)}
       data-logo-state={state}
       data-testid={dataTestId}
     >

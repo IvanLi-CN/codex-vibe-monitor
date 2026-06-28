@@ -222,6 +222,8 @@ describe('AppLayout', () => {
     expect(systemLink?.className).toContain('segmented-control-item')
     expect(systemLink?.className).not.toContain('segmented-control-item--active')
     expect(logoMark?.getAttribute('data-logo-state')).toBe('idle')
+    expect(logoMark?.className).toContain('h-10')
+    expect(logoMark?.className).toContain('w-10')
     expect(logoImage).not.toBeNull()
   })
 
