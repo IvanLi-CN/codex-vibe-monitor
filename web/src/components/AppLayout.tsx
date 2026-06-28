@@ -165,13 +165,13 @@ export function AppLayout() {
     )
   }
 
-  const logoImageClass = `h-8 w-8 relative z-20 transition-transform duration-300 ${
+  const logoImageClass = `h-10 w-10 relative z-20 transition-transform duration-300 ${
     pulse
       ? 'animate-pulse-core scale-110 drop-shadow-[0_0_18px_rgba(59,130,246,0.65)]'
       : 'drop-shadow-[0_0_6px_rgba(59,130,246,0.35)]'
   } ${isOffline ? 'grayscale opacity-70' : ''} ${isSseDisabled ? 'opacity-60' : ''}`
 
-  const reconnectRingClass = `pointer-events-none absolute inline-flex h-14 w-14 rounded-full border-2 border-dashed transition-opacity duration-300 ${
+  const reconnectRingClass = `pointer-events-none absolute inline-flex h-16 w-16 rounded-full border-2 border-dashed transition-opacity duration-300 ${
     isSseDisabled ? 'border-warning/80' : 'border-primary/70'
   } ${isReconnecting ? 'opacity-95 animate-orbit-spin' : 'opacity-0'}`
 
@@ -186,20 +186,20 @@ export function AppLayout() {
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <span className="relative inline-flex items-center justify-center">
               <span
-                className={`pointer-events-none absolute inline-flex h-16 w-16 rounded-full bg-gradient-to-r from-primary/30 via-primary/5 to-primary/30 opacity-0 transition-opacity ${
+                className={`pointer-events-none absolute inline-flex h-20 w-20 rounded-full bg-gradient-to-r from-primary/30 via-primary/5 to-primary/30 opacity-0 transition-opacity ${
                   pulse ? 'opacity-95 animate-pulse-glow' : ''
                 }`}
                 aria-hidden
               />
               <span className={reconnectRingClass} aria-hidden />
               <span
-                className={`pointer-events-none absolute inline-flex h-12 w-12 rounded-full border-2 border-primary/70 transition-opacity ${
+                className={`pointer-events-none absolute inline-flex h-14 w-14 rounded-full border-2 border-primary/70 transition-opacity ${
                   pulse ? 'opacity-100 animate-pulse-ring' : 'opacity-0'
                 }`}
                 aria-hidden
               />
               <span
-                className={`pointer-events-none absolute inline-flex h-10 w-10 rounded-full bg-primary/30 blur-md transition-opacity ${
+                className={`pointer-events-none absolute inline-flex h-12 w-12 rounded-full bg-primary/30 blur-md transition-opacity ${
                   pulse ? 'opacity-80' : 'opacity-0'
                 }`}
                 aria-hidden
