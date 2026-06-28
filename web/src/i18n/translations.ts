@@ -1796,9 +1796,9 @@ const baseTranslations = {
     "dashboard.workingConversations.countBadge": "{{count}} conversations",
     "dashboard.upstreamAccounts.countBadge": "{{count}} active accounts",
     "dashboard.upstreamAccounts.subtitle":
-      "Shows upstream accounts with activity in the selected overview range plus the latest 4 invocations for each account.",
+      "Shows upstream accounts with activity in the selected overview range plus a dynamic recent invocation window for each account.",
     "dashboard.upstreamAccounts.empty": "No active upstream accounts in the selected range.",
-    "dashboard.upstreamAccounts.recentInvocations": "Latest 4 invocations",
+    "dashboard.upstreamAccounts.recentInvocations": "Latest {{count}} invocations",
     "dashboard.upstreamAccounts.channelName": "Channel {{name}}",
     "dashboard.workingConversations.empty":
       "No working conversations match the last 5 minutes or active in-flight window.",
@@ -4077,9 +4077,9 @@ const baseTranslations = {
     "dashboard.workingConversations.countBadge": "当前对话 {{count}} 条",
     "dashboard.upstreamAccounts.countBadge": "当前活动账号 {{count}} 个",
     "dashboard.upstreamAccounts.subtitle":
-      "展示当前总览范围内有调用的上游账号，以及每个账号最近 4 条调用。",
+      "展示当前总览范围内有调用的上游账号，以及每个账号的动态最近调用窗口。",
     "dashboard.upstreamAccounts.empty": "当前范围内暂无活动上游账号。",
-    "dashboard.upstreamAccounts.recentInvocations": "最近 4 条调用",
+    "dashboard.upstreamAccounts.recentInvocations": "最近 {{count}} 条调用",
     "dashboard.upstreamAccounts.channelName": "渠道 {{name}}",
     "dashboard.workingConversations.empty":
       "最近 5 分钟内暂无终态调用，且当前也没有运行中 / 排队中的对话。",

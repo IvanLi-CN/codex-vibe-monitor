@@ -258,7 +258,61 @@ function buildRecordFromPreview(
   };
 }
 
-function createUpstreamAccountActivityStoryResponse(): UpstreamAccountActivityResponse {
+function createUpstreamAccountActivityStoryResponse(
+  recentInvocationCount = 4,
+): UpstreamAccountActivityResponse {
+  const promptCacheKeys = [
+    "pck-story-account-running",
+    "pck-story-account-success",
+    "pck-story-account-failed",
+    "pck-story-account-pending",
+    "pck-story-account-retry",
+    "pck-story-account-cache",
+    "pck-story-account-edition",
+    "pck-story-account-proxy",
+    "pck-story-account-burst",
+    "pck-story-account-latency",
+    "pck-story-account-stream",
+    "pck-story-account-owner",
+    "pck-story-account-route",
+    "pck-story-account-budget",
+    "pck-story-account-archive",
+    "pck-story-account-final",
+  ];
+  const statuses = [
+    "running",
+    "success",
+    "failed",
+    "pending",
+    "running",
+    "success",
+    "success",
+    "failed",
+    "pending",
+    "success",
+    "running",
+    "success",
+    "failed",
+    "success",
+    "pending",
+    "success",
+  ];
+  const recentInvocations = Array.from(
+    { length: Math.max(0, Math.min(recentInvocationCount, 16)) },
+    (_, index) =>
+      createPreview({
+        id: 9901 + index,
+        invokeId: `story-account-${index + 1}`,
+        promptCacheKey: promptCacheKeys[index] ?? `pck-story-account-${index + 1}`,
+        occurredAt: `2026-04-04T10:${String(Math.max(0, 5 - index)).padStart(2, "0")}:00Z`,
+        status: statuses[index] ?? "success",
+        upstreamAccountId: 42,
+        upstreamAccountName: "Pool Alpha",
+        requestModel: index === 0 ? "gpt-5.5-mini" : undefined,
+        responseModel: index === 0 ? "gpt-5.5" : undefined,
+        model: index === 0 ? "gpt-5.5" : undefined,
+      }),
+  );
   return {
     range: "today",
     rangeStart: "2026-04-04T10:00:00Z",
@@ -286,47 +340,7 @@ function createUpstreamAccountActivityStoryResponse(): UpstreamAccountActivityRe
         avgTotalMs: 860,
         inProgressInvocationCount: 3,
         retryInvocationCount: 1,
-        recentInvocations: [
-          createPreview({
-            id: 9901,
-            invokeId: "story-account-1",
-            promptCacheKey: "pck-story-account-running",
-            occurredAt: "2026-04-04T10:05:00Z",
-            status: "running",
-            upstreamAccountId: 42,
-            upstreamAccountName: "Pool Alpha",
-            requestModel: "gpt-5.5-mini",
-            responseModel: "gpt-5.5",
-            model: "gpt-5.5",
-          }),
-          createPreview({
-            id: 9902,
-            invokeId: "story-account-2",
-            promptCacheKey: "pck-story-account-success",
-            occurredAt: "2026-04-04T10:04:00Z",
-            status: "success",
-            upstreamAccountId: 42,
-            upstreamAccountName: "Pool Alpha",
-          }),
-          createPreview({
-            id: 9903,
-            invokeId: "story-account-3",
-            promptCacheKey: "pck-story-account-failed",
-            occurredAt: "2026-04-04T10:03:00Z",
-            status: "failed",
-            upstreamAccountId: 42,
-            upstreamAccountName: "Pool Alpha",
-          }),
-          createPreview({
-            id: 9904,
-            invokeId: "story-account-4",
-            promptCacheKey: "pck-story-account-pending",
-            occurredAt: "2026-04-04T10:02:00Z",
-            status: "pending",
-            upstreamAccountId: 42,
-            upstreamAccountName: "Pool Alpha",
-          }),
-        ],
+        recentInvocations,
       },
     ],
   };
@@ -1768,6 +1782,7 @@ function DrawerPreviewStory({
   initialConversationKey,
   historyInvocationsByPromptCacheKey,
   upstreamAccountActivity,
+  recentPreviewLimit = 4,
   theme,
 }: {
   response: PromptCacheConversationsResponse;
@@ -1781,6 +1796,7 @@ function DrawerPreviewStory({
     PromptCacheConversationInvocationPreview[]
   >;
   upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
+  recentPreviewLimit?: number;
   theme?: "vibe-light" | "vibe-dark";
 }) {
   useStoryTheme(theme);
@@ -1977,6 +1993,7 @@ function DrawerPreviewStory({
     <>
       <DashboardWorkingConversationsSection
         activeRange="today"
+        recentPreviewLimit={recentPreviewLimit}
         cards={cards}
         isLoading={false}
         error={null}
@@ -2449,6 +2466,9 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("story-account-1")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5-mini")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5")).toBeInTheDocument();
+    await expect(
+      canvas.getAllByTestId("dashboard-upstream-account-recent-conversation-marker"),
+    ).toHaveLength(4);
     await expect(canvas.queryByText("按调用计数，不按对话去重")).toBeNull();
     await expect(canvas.queryByText("仍在重试链路中的调用")).toBeNull();
     await expect(
@@ -2460,7 +2480,89 @@ export const UpstreamAccountTab: Story = {
     docs: {
       description: {
         story:
-          "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the latest four invocations in the selected range, including short conversation ids and request/response model mismatch rows.",
+          "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the dynamic recent invocation window in the selected range, including colored short conversation ids and request/response model mismatch rows.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountTabDynamicSeven: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation("pck-story-upstream-account-seven", [
+          createPreview({
+            id: 9811,
+            invokeId: "story-working-seven",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ]),
+      ])}
+      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(7)}
+      recentPreviewLimit={7}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+    await expect(canvas.getByText("最近 7 条调用")).toBeInTheDocument();
+    await expect(canvas.getByText("story-account-7")).toBeInTheDocument();
+    await expect(
+      canvas.getAllByTestId("dashboard-upstream-account-recent-conversation-marker"),
+    ).toHaveLength(7);
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Medium dynamic recent invocation window showing seven account rows and stable colored short conversation id markers.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountTabMaxSixteen: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation("pck-story-upstream-account-sixteen", [
+          createPreview({
+            id: 9821,
+            invokeId: "story-working-sixteen",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ]),
+      ])}
+      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(16)}
+      recentPreviewLimit={16}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+    await expect(canvas.getByText("最近 16 条调用")).toBeInTheDocument();
+    await expect(canvas.getByText("story-account-16")).toBeInTheDocument();
+    await expect(
+      canvas.getAllByTestId("dashboard-upstream-account-recent-conversation-marker"),
+    ).toHaveLength(16);
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Upper clamp state for the upstream-account recent invocation list, keeping the dense account card scannable at sixteen rows.",
       },
     },
   },

@@ -49,6 +49,7 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
     aggregates: Vec<PromptCacheConversationAggregateRow>,
     range_end: DateTime<Utc>,
     detail_level: PromptCacheConversationDetailLevel,
+    recent_invocation_limit: Option<i64>,
     snapshot: Option<&PromptCacheConversationHydrationSnapshot<'_>>,
 ) -> Result<Vec<PromptCacheConversationResponse>> {
     if aggregates.is_empty() {
@@ -61,9 +62,10 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         .collect::<Vec<_>>();
     let recent_invocation_limit = match detail_level {
         PromptCacheConversationDetailLevel::Full => {
-            PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT as i64
+            recent_invocation_limit
+                .unwrap_or(PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT as i64)
         }
-        PromptCacheConversationDetailLevel::Compact => 2,
+        PromptCacheConversationDetailLevel::Compact => recent_invocation_limit.unwrap_or(2),
     };
 
     let events = if detail_level == PromptCacheConversationDetailLevel::Full {

@@ -132,6 +132,7 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
             cursor: None,
             snapshot_at: None,
             detail: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -442,6 +443,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -554,6 +556,58 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     assert_eq!(enriched_preview.t_resp_parse_ms, Some(15.0));
     assert_eq!(enriched_preview.t_persist_ms, Some(16.0));
     assert_eq!(enriched_preview.t_total_ms, Some(91.0));
+
+    let Json(expanded_response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+            recent_invocation_limit: Some(6),
+        }),
+    )
+    .await
+    .expect("non-paginated recent invocation limit should be honored");
+    let expanded_conversation = expanded_response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-preview")
+        .expect("expanded pck-preview should be included");
+    assert_eq!(expanded_conversation.recent_invocations.len(), 6);
+    assert_eq!(
+        expanded_conversation.recent_invocations[5].invoke_id,
+        "preview-02"
+    );
+
+    let Json(expanded_compact_response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+            recent_invocation_limit: Some(6),
+        }),
+    )
+    .await
+    .expect("compact non-paginated recent invocation limit should be honored");
+    let expanded_compact_conversation = expanded_compact_response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-preview")
+        .expect("expanded compact pck-preview should be included");
+    assert_eq!(expanded_compact_conversation.recent_invocations.len(), 6);
+    assert_eq!(
+        expanded_compact_conversation.recent_invocations[5].invoke_id,
+        "preview-02"
+    );
 
     sqlx::query(
         r#"
@@ -741,6 +795,7 @@ async fn prompt_cache_conversations_preserve_upstream_account_history_after_raw_
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -821,6 +876,7 @@ async fn prompt_cache_conversations_keep_totals_when_recent_preview_is_empty() {
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -904,6 +960,7 @@ async fn prompt_cache_conversations_count_mode_reports_inactive_recent_history_f
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -995,6 +1052,7 @@ async fn prompt_cache_conversations_count_mode_reports_all_skipped_newer_inactiv
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1083,6 +1141,7 @@ async fn prompt_cache_conversations_count_mode_clamps_sparse_inactive_hidden_row
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1142,6 +1201,7 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1207,6 +1267,7 @@ async fn prompt_cache_conversations_activity_minutes_legacy_path_still_caps_resu
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1314,6 +1375,7 @@ async fn prompt_cache_conversations_activity_minutes_include_running_only_rows_a
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1393,6 +1455,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1447,6 +1510,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             cursor: Some(first_next_cursor),
             snapshot_at: Some(first_snapshot.clone()),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1472,6 +1536,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             cursor: Some(last_visible_row_cursor),
             snapshot_at: Some(first_snapshot.clone()),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1504,6 +1569,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             cursor: second_page.next_cursor.clone(),
             snapshot_at: Some(first_snapshot),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1619,6 +1685,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1644,6 +1711,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1665,6 +1733,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
             cursor: first_page.next_cursor.clone(),
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1746,6 +1815,7 @@ async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1778,6 +1848,7 @@ async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_
             cursor: Some(next_cursor),
             snapshot_at: Some(snapshot_at.clone()),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1798,6 +1869,7 @@ async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_
             cursor: Some(row_cursor),
             snapshot_at: Some(snapshot_at),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1844,6 +1916,7 @@ async fn prompt_cache_conversations_paginated_invalid_snapshot_at_returns_bad_re
             cursor: None,
             snapshot_at: Some("not-a-timestamp".to_string()),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1874,6 +1947,7 @@ async fn prompt_cache_conversations_paginated_invalid_cursor_returns_bad_request
             cursor: Some("not-base64".to_string()),
             snapshot_at: Some(Utc::now().to_rfc3339()),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -1982,6 +2056,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
             cursor: None,
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2003,6 +2078,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
             cursor: first_page.next_cursor.clone(),
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2107,6 +2183,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_null_cos
             cursor: None,
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2122,6 +2199,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_null_cos
             cursor: first_page.next_cursor.clone(),
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2226,6 +2304,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             cursor: None,
             snapshot_at: Some(requested_snapshot_at.to_rfc3339()),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2263,6 +2342,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             cursor: first_page.next_cursor.clone(),
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2380,6 +2460,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snap
             cursor: None,
             snapshot_at: Some(format_utc_iso(snapshot_second)),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2416,6 +2497,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snap
             cursor: first_page.next_cursor.clone(),
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2525,6 +2607,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             cursor: None,
             snapshot_at: Some(requested_snapshot_at.to_rfc3339()),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2557,6 +2640,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             cursor: first_page.next_cursor.clone(),
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2678,6 +2762,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserve
             cursor: None,
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2699,6 +2784,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserve
             cursor: first_page.next_cursor.clone(),
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2816,6 +2902,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hy
             cursor: None,
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("full".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2837,6 +2924,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hy
             cursor: first_page.next_cursor.clone(),
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("full".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2971,6 +3059,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_full_det
             cursor: None,
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("full".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2986,6 +3075,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_full_det
             cursor: first_page.next_cursor.clone(),
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("full".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3104,6 +3194,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_keeps_running_and
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3209,6 +3300,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_sorts_by_newer_in
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3299,6 +3391,7 @@ async fn prompt_cache_conversations_chart_window_caps_history_to_recent_24_hours
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3417,6 +3510,7 @@ async fn prompt_cache_conversation_activity_keeps_http_200_errors_out_of_success
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3476,6 +3570,7 @@ async fn prompt_cache_conversation_timestamps_serialize_as_utc_iso() {
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3571,6 +3666,7 @@ async fn prompt_cache_conversations_live_response_includes_encrypted_owner_metad
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3685,6 +3781,7 @@ async fn prompt_cache_conversations_snapshot_excludes_future_encrypted_owner_loc
             cursor: None,
             snapshot_at: Some(snapshot_at),
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3710,6 +3807,7 @@ async fn prompt_cache_conversations_snapshot_excludes_future_encrypted_owner_loc
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3782,6 +3880,7 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3824,6 +3923,7 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3887,6 +3987,7 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3917,6 +4018,7 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -3982,6 +4084,7 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -4011,6 +4114,7 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -4085,6 +4189,7 @@ async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations(
                 cursor: None,
                 snapshot_at: None,
                 detail: None,
+                recent_invocation_limit: None,
             }),
         ),
     )
@@ -4155,6 +4260,7 @@ async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall(
                         cursor: None,
                         snapshot_at: None,
                         detail: None,
+                recent_invocation_limit: None,
                     }),
                 ),
             )

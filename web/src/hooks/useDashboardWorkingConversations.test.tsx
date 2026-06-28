@@ -24,7 +24,10 @@ import {
 } from "../lib/dashboardPerformanceDiagnostics";
 import {
   DASHBOARD_WORKING_CONVERSATIONS_REFRESH_THROTTLE_MS,
+  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
   DASHBOARD_WORKING_CONVERSATIONS_VISIBLE_PATCH_BATCH_MS,
+  resolveDashboardWorkingConversationsRecentPreviewLimit,
   useDashboardWorkingConversations,
 } from "./useDashboardWorkingConversations";
 
@@ -37,6 +40,7 @@ const apiMocks = vi.hoisted(() => ({
         cursor?: string | null;
         snapshotAt?: string | null;
         detail?: "compact" | "full";
+        recentInvocationLimit?: number;
         signal?: AbortSignal;
       },
     ) => Promise<PromptCacheConversationsResponse>
@@ -360,6 +364,7 @@ function Probe() {
     error,
     loadMore,
     refresh,
+    recentPreviewLimit,
     setRefreshTargetCount,
   } = useDashboardWorkingConversations();
 
@@ -407,6 +412,10 @@ function Probe() {
       <div data-testid="preview-status">
         {stats?.conversations[0]?.recentInvocations[0]?.status ?? ""}
       </div>
+      <div data-testid="preview-count">
+        {String(stats?.conversations[0]?.recentInvocations.length ?? 0)}
+      </div>
+      <div data-testid="recent-preview-limit">{String(recentPreviewLimit)}</div>
       <div data-testid="request-count">
         {String(stats?.conversations[0]?.requestCount ?? 0)}
       </div>
@@ -430,6 +439,59 @@ function Probe() {
 }
 
 describe("useDashboardWorkingConversations", () => {
+  it("clamps the recent preview limit from recent in-flight calls", () => {
+    const referenceMs = Date.parse("2026-04-10T02:05:00Z");
+    const runningPreviews = Array.from({ length: 7 }, (_, index) =>
+      createPreview({
+        id: 100 + index,
+        invokeId: `running-${index}`,
+        occurredAt: `2026-04-10T02:04:${String(50 - index).padStart(2, "0")}Z`,
+        status: "running",
+      }),
+    );
+
+    expect(
+      resolveDashboardWorkingConversationsRecentPreviewLimit([], referenceMs),
+    ).toBe(DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN);
+    expect(
+      resolveDashboardWorkingConversationsRecentPreviewLimit(
+        [
+          createConversation("pck-recent", {
+            recentInvocations: runningPreviews,
+          }),
+          createConversation("pck-old", {
+            recentInvocations: [
+              createPreview({
+                id: 200,
+                invokeId: "old-running",
+                occurredAt: "2026-04-10T01:58:00Z",
+                status: "running",
+              }),
+            ],
+          }),
+        ],
+        referenceMs,
+      ),
+    ).toBe(7);
+    expect(
+      resolveDashboardWorkingConversationsRecentPreviewLimit(
+        [
+          createConversation("pck-max", {
+            recentInvocations: Array.from({ length: 20 }, (_, index) =>
+              createPreview({
+                id: 300 + index,
+                invokeId: `running-max-${index}`,
+                occurredAt: "2026-04-10T02:04:30Z",
+                status: index % 2 === 0 ? "pending" : "running",
+              }),
+            ),
+          }),
+        ],
+        referenceMs,
+      ),
+    ).toBe(DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX);
+  });
+
   it("keeps card display order on createdAt descending even when the backing rows remain activity-sorted", async () => {
     apiMocks.fetchPromptCacheConversationsPage.mockResolvedValueOnce(
       createResponseWithConversations([
@@ -516,6 +578,7 @@ describe("useDashboardWorkingConversations", () => {
       expect.objectContaining({
         pageSize: 20,
         detail: "compact",
+        recentInvocationLimit: 16,
         signal: expect.any(AbortSignal),
       }),
     );
@@ -576,6 +639,7 @@ describe("useDashboardWorkingConversations", () => {
         cursor: "cursor-page-1",
         snapshotAt: "2026-04-10T02:05:00Z",
         detail: "compact",
+        recentInvocationLimit: 16,
         signal: expect.any(AbortSignal),
       }),
     );
@@ -636,6 +700,7 @@ describe("useDashboardWorkingConversations", () => {
         cursor: "cursor-page-1",
         snapshotAt: "2026-04-10T02:05:00Z",
         detail: "compact",
+        recentInvocationLimit: 16,
         signal: expect.any(AbortSignal),
       }),
     );
@@ -1114,7 +1179,105 @@ describe("useDashboardWorkingConversations", () => {
     expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(1);
   });
 
-  it("resyncs the head page when a loaded key receives a hidden pre-snapshot update", async () => {
+  it("expands the dynamic recent preview window from live in-flight records", async () => {
+    apiMocks.fetchPromptCacheConversationsPage.mockResolvedValueOnce(
+      createResponseWithConversations([
+        createConversation("pck-live-burst", {
+          recentInvocations: Array.from({ length: 4 }, (_, index) =>
+            createPreview({
+              id: 10 - index,
+              invokeId: `burst-${4 - index}`,
+              occurredAt: `2026-04-10T02:04:${String(40 - index).padStart(2, "0")}Z`,
+              status: "running",
+              totalTokens: 0,
+              cost: 0,
+            }),
+          ),
+          requestCount: 4,
+          totalTokens: 0,
+          totalCost: 0,
+          lastTerminalAt: null,
+          lastInFlightAt: "2026-04-10T02:04:40Z",
+        }),
+      ]),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+    await flushAsync();
+
+    expect(text("preview-count")).toBe("4");
+    expect(text("recent-preview-limit")).toBe("4");
+
+    act(() => {
+      emitRecords([
+        createRecord("pck-live-burst", {
+          id: 11,
+          invokeId: "burst-5",
+          occurredAt: "2026-04-10T02:04:45Z",
+          status: "running",
+          totalTokens: 0,
+          cost: 0,
+        }),
+      ]);
+    });
+
+    expect(text("preview-invoke-id")).toBe("burst-5");
+    expect(text("preview-count")).toBe("5");
+    expect(text("recent-preview-limit")).toBe("5");
+    expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps terminal SSE records capped at the current dynamic preview window", async () => {
+    apiMocks.fetchPromptCacheConversationsPage.mockResolvedValueOnce(
+      createResponseWithConversations([
+        createConversation("pck-live-terminal", {
+          recentInvocations: Array.from({ length: 4 }, (_, index) =>
+            createPreview({
+              id: 20 - index,
+              invokeId: `terminal-${4 - index}`,
+              occurredAt: `2026-04-10T02:04:${String(40 - index).padStart(2, "0")}Z`,
+              status: "success",
+              totalTokens: 20,
+              cost: 0.02,
+            }),
+          ),
+          requestCount: 4,
+          totalTokens: 80,
+          totalCost: 0.08,
+          lastTerminalAt: "2026-04-10T02:04:40Z",
+          lastInFlightAt: null,
+        }),
+      ]),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+    await flushAsync();
+
+    expect(text("preview-count")).toBe("4");
+    expect(text("recent-preview-limit")).toBe("4");
+
+    act(() => {
+      emitRecords([
+        createRecord("pck-live-terminal", {
+          id: 21,
+          invokeId: "terminal-5",
+          occurredAt: "2026-04-10T02:04:45Z",
+          status: "success",
+          totalTokens: 20,
+          cost: 0.02,
+        }),
+      ]);
+    });
+
+    expect(text("preview-invoke-id")).toBe("terminal-5");
+    expect(text("preview-count")).toBe("4");
+    expect(text("recent-preview-limit")).toBe("4");
+    expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("patches a loaded key when a pre-snapshot update fits the dynamic recent preview window", async () => {
     apiMocks.fetchPromptCacheConversationsPage
       .mockResolvedValueOnce(
         createResponseWithConversations([
@@ -1199,7 +1362,7 @@ describe("useDashboardWorkingConversations", () => {
     expect(text("request-count")).toBe("4");
     expect(text("preview-invoke-id")).toBe("invoke-4");
     expect(text("last-in-flight-at")).toBe("2026-04-10T02:02:00Z");
-    expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(2);
+    expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(1);
   });
 
   it("treats late-persisted same-second SSE records as post-snapshot aggregate updates without forcing a refetch", async () => {
@@ -1575,6 +1738,7 @@ describe("useDashboardWorkingConversations", () => {
         cursor: "cursor-page-1",
         snapshotAt: "2026-04-10T02:05:00Z",
         detail: "compact",
+        recentInvocationLimit: 16,
         signal: expect.any(AbortSignal),
       }),
     );

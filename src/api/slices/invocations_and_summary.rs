@@ -2410,7 +2410,15 @@ pub(crate) async fn fetch_upstream_account_activity(
         )));
     }
 
-    let recent_limit = params.recent_limit.unwrap_or(4).clamp(1, 4) as usize;
+    let recent_limit = match params.recent_limit {
+        Some(value) if !(1..=16).contains(&value) => {
+            return Err(ApiError::bad_request(anyhow!(
+                "recentLimit must be between 1 and 16"
+            )));
+        }
+        Some(value) => value as usize,
+        None => 4,
+    };
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz).map_err(ApiError::from)?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;

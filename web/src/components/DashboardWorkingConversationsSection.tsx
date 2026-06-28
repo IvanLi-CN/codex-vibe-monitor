@@ -58,6 +58,7 @@ interface DashboardWorkingConversationsSectionProps {
   cards: DashboardWorkingConversationCardModel[];
   totalMatched?: number;
   hasMore?: boolean;
+  recentPreviewLimit?: number;
   isLoading: boolean;
   isLoadingMore?: boolean;
   error?: string | null;
@@ -117,6 +118,15 @@ const INVOCATION_SURFACE_CLASS_NAME = "working-conversation-slot-surface";
 const DASHBOARD_WORKING_CONVERSATION_ROW_GAP_PX = 16;
 const UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME =
   "min-h-5 border-transparent bg-base-200/82 px-2 py-0.5 text-[9px] font-semibold leading-none text-base-content/76 shadow-none";
+
+function resolveConversationMarkerStyle(seed: string) {
+  const hash = hashDashboardWorkingConversationKey(seed);
+  const hue = Number.parseInt(hash.slice(0, 6), 16) % 360;
+  return {
+    backgroundColor: `oklch(74% 0.13 ${hue})`,
+    boxShadow: `0 0 0 3px oklch(74% 0.13 ${hue} / 0.16)`,
+  };
+}
 
 const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
   running: {
@@ -747,6 +757,9 @@ function AccountRecentInvocationRow({
         `WC-${hashDashboardWorkingConversationKey(displayPromptCacheKey).slice(0, 6)}`,
       )
     : "";
+  const conversationMarkerStyle = displayPromptCacheKey
+    ? resolveConversationMarkerStyle(displayPromptCacheKey)
+    : undefined;
   const requestModelValue = viewModel.requestModelValue;
   const responseModelValue = viewModel.responseModelValue;
   const compactTimingSummary = `RQ ${formatCompactMilliseconds(invocation.record.tReqReadMs)}/${formatCompactMilliseconds(invocation.record.tReqParseMs)} · UP ${formatCompactMilliseconds(invocation.record.tUpstreamConnectMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamTtfbMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamStreamMs)} · ED ${formatCompactMilliseconds(invocation.record.tRespParseMs)}/${formatCompactMilliseconds(invocation.record.tPersistMs)} · TT ${typeof invocation.record.tTotalMs === "number" && Number.isFinite(invocation.record.tTotalMs) ? `${formatCompactMilliseconds(invocation.record.tTotalMs)}ms` : viewModel.totalLatencyValue}`;
@@ -797,6 +810,12 @@ function AccountRecentInvocationRow({
             >
               {displayConversationSequenceId ? (
                 <>
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-full border border-base-100/70"
+                    style={conversationMarkerStyle}
+                    data-testid="dashboard-upstream-account-recent-conversation-marker"
+                    aria-hidden
+                  />
                   <span
                     className="truncate font-mono text-[12px] font-semibold text-base-content/70"
                     title={displayConversationSequenceId}
@@ -1556,6 +1575,7 @@ function DashboardUpstreamAccountActivityCard({
   locale,
   localeTag,
   nowMs,
+  recentPreviewLimit,
   onOpenUpstreamAccount,
   onOpenInvocation,
 }: {
@@ -1563,6 +1583,7 @@ function DashboardUpstreamAccountActivityCard({
   locale: "zh" | "en";
   localeTag: string;
   nowMs: number;
+  recentPreviewLimit: number;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   onOpenInvocation?: (
     selection: DashboardWorkingConversationInvocationSelection,
@@ -1800,7 +1821,9 @@ function DashboardUpstreamAccountActivityCard({
       >
         <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
           <div className="text-xs font-semibold leading-5 tracking-[0.06em] text-base-content/62">
-            {t("dashboard.upstreamAccounts.recentInvocations")}
+            {t("dashboard.upstreamAccounts.recentInvocations", {
+              count: recentPreviewLimit,
+            })}
           </div>
           {recentBridgeSegments.length > 0 ? (
             <AccountSegmentList
@@ -1879,6 +1902,7 @@ export function DashboardWorkingConversationsSection({
   cards,
   totalMatched,
   hasMore = false,
+  recentPreviewLimit = 4,
   isLoading,
   isLoadingMore = false,
   error,
@@ -1950,6 +1974,7 @@ export function DashboardWorkingConversationsSection({
   } = useDashboardUpstreamAccountActivity(
     activeRange,
     upstreamAccountActivityEnabled,
+    recentPreviewLimit,
   );
   const upstreamAccounts = useMemo(
     () =>
@@ -2316,6 +2341,7 @@ export function DashboardWorkingConversationsSection({
                     locale={locale}
                     localeTag={localeTag}
                     nowMs={nowMs}
+                    recentPreviewLimit={recentPreviewLimit}
                     onOpenUpstreamAccount={onOpenUpstreamAccount}
                     onOpenInvocation={onOpenInvocation}
                   />
