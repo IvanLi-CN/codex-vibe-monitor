@@ -5,17 +5,17 @@
       <stop offset="1" stop-color="#1F74F2" />
     </linearGradient>
   </defs>
-  <path d="M19 23.5C20.8 19.9 23.8 17.1 27.5 15.8" stroke="url(#signal)" stroke-width="4.5" stroke-linecap="round" />
-  <path d="M36.5 15.8C40.2 17.1 43.2 19.9 45 23.5" stroke="url(#signal)" stroke-width="4.5" stroke-linecap="round" />
-  <path d="M19 40.5C20.8 44.1 23.8 46.9 27.5 48.2" stroke="url(#signal)" stroke-width="4.5" stroke-linecap="round" />
-  <path d="M36.5 48.2C40.2 46.9 43.2 44.1 45 40.5" stroke="url(#signal)" stroke-width="4.5" stroke-linecap="round" />
+  <path d="M19.65 23.16C21.36 19.42 24.21 16.5 27.73 15.15" stroke="url(#signal)" stroke-width="4.5" stroke-linecap="round" />
+  <path d="M36.27 15.15C39.79 16.5 42.64 19.42 44.35 23.16" stroke="url(#signal)" stroke-width="4.5" stroke-linecap="round" />
+  <path d="M19.65 40.84C21.36 44.58 24.21 47.5 27.73 48.85" stroke="url(#signal)" stroke-width="4.5" stroke-linecap="round" />
+  <path d="M36.27 48.85C39.79 47.5 42.64 44.58 44.35 40.84" stroke="url(#signal)" stroke-width="4.5" stroke-linecap="round" />
   <path
-    d="M15.5 32H22.2L26.1 28L29.9 38.3L34 22L37.7 32H48.5"
+    d="M16.82 32H22.98L26.57 28L30.07 38.3L33.84 22L37.24 32H47.18"
     stroke="url(#signal)"
     stroke-width="4"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
-  <circle cx="15.5" cy="32" r="1.8" fill="#20C3D7" />
-  <circle cx="48.5" cy="32" r="1.8" fill="#2876F0" />
+  <circle cx="16.82" cy="32" r="1.8" fill="#20C3D7" />
+  <circle cx="47.18" cy="32" r="1.8" fill="#2876F0" />
 </svg>
