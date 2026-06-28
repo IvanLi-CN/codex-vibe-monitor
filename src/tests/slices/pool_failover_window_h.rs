@@ -11836,6 +11836,23 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
         "upstream-activity-running"
     );
 
+    let Json(compact_activity) = fetch_upstream_account_activity(
+        State(state.clone()),
+        Query(UpstreamAccountActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch compact upstream account activity");
+
+    let compact_account = compact_activity
+        .accounts
+        .first()
+        .expect("compact activity account");
+    assert_eq!(compact_account.recent_invocations.len(), 2);
+
     let invalid_limit = fetch_upstream_account_activity(
         State(state.clone()),
         Query(UpstreamAccountActivityQuery {

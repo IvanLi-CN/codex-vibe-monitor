@@ -2407,9 +2407,9 @@ pub(crate) async fn fetch_upstream_account_activity(
     }
 
     let recent_limit = match params.recent_limit {
-        Some(value) if !(4..=16).contains(&value) => {
+        Some(value) if !(1..=16).contains(&value) => {
             return Err(ApiError::bad_request(anyhow!(
-                "recentLimit must be between 4 and 16"
+                "recentLimit must be between 1 and 16"
             )));
         }
         Some(value) => value as usize,
