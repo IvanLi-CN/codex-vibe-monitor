@@ -11,6 +11,8 @@ import type {
   UpstreamAccountActivityResponse,
 } from "../lib/api";
 import {
+  formatDashboardWorkingConversationSequenceId,
+  hashDashboardWorkingConversationKey,
   mapPromptCacheConversationsToDashboardCards,
   type DashboardWorkingConversationCardModel,
 } from "../lib/dashboardWorkingConversations";
@@ -85,6 +87,8 @@ function createPreview(
   return {
     id: overrides.id,
     invokeId: overrides.invokeId,
+    promptCacheKey:
+      "promptCacheKey" in overrides ? (overrides.promptCacheKey ?? null) : null,
     occurredAt: overrides.occurredAt,
     status: overrides.status,
     failureClass: overrides.failureClass ?? "none",
@@ -203,13 +207,18 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
           createPreview({
             id: 9001,
             invokeId: "acct-invoke-1",
+            promptCacheKey: "pck-upstream-running",
             occurredAt: "2026-04-04T10:05:00Z",
             status: "running",
             upstreamAccountName: "Pool Alpha",
+            requestModel: "gpt-5.5-mini",
+            responseModel: "gpt-5.5",
+            model: "gpt-5.5",
           }),
           createPreview({
             id: 9002,
             invokeId: "acct-invoke-2",
+            promptCacheKey: "pck-upstream-failed",
             occurredAt: "2026-04-04T10:04:00Z",
             status: "failed",
             upstreamAccountName: "Pool Alpha",
@@ -217,6 +226,7 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
           createPreview({
             id: 9003,
             invokeId: "acct-invoke-3",
+            promptCacheKey: "pck-upstream-success",
             occurredAt: "2026-04-04T10:03:00Z",
             status: "success",
             upstreamAccountName: "Pool Alpha",
@@ -224,6 +234,7 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
           createPreview({
             id: 9004,
             invokeId: "acct-invoke-4",
+            promptCacheKey: "pck-upstream-pending",
             occurredAt: "2026-04-04T10:02:00Z",
             status: "pending",
             upstreamAccountName: "Pool Alpha",
@@ -636,6 +647,86 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(host?.textContent).not.toContain(
       "展示最近 5 分钟内有终态调用，或当前仍处于运行中 / 排队中的对话。",
+    );
+  });
+
+  it("shows conversation short id, full request id, mismatch models, and real prompt cache key in upstream recent rows", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    const onOpenInvocation = vi.fn();
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-anchor", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-anchor",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+      { onOpenInvocation },
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const rows = Array.from(
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]') ?? [],
+    );
+    const firstRow = rows[0];
+    if (!(firstRow instanceof HTMLButtonElement)) {
+      throw new Error("missing first upstream recent row");
+    }
+
+    const expectedConversationId = formatDashboardWorkingConversationSequenceId(
+      `WC-${hashDashboardWorkingConversationKey("pck-upstream-running").slice(0, 6)}`,
+    );
+    const displayConversationId = expectedConversationId.replace(/^WC-/, "");
+
+    const identity = firstRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-identity"]',
+    );
+    expect(identity?.textContent).toContain(displayConversationId);
+    expect(identity?.textContent).toContain("acct-invoke-1");
+    expect(identity?.textContent).not.toContain("WC-");
+    expect(firstRow.textContent).not.toContain("Pool Alpha");
+    expect(firstRow.textContent).toContain("gpt-5.5-mini");
+    expect(firstRow.textContent).toContain("gpt-5.5");
+    expect(
+      firstRow.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-model-routing-indicator"]',
+      ),
+    ).not.toBeNull();
+
+    const reasoningBadge = firstRow.querySelector(
+      '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+    );
+    const endpointBadge = Array.from(firstRow.querySelectorAll("span")).find(
+      (element) => element.textContent?.trim() === "Responses",
+    )?.parentElement;
+    expect(reasoningBadge?.className).toContain("min-h-5");
+    expect(endpointBadge?.className).toContain("min-h-5");
+
+    act(() => {
+      firstRow.click();
+    });
+
+    expect(onOpenInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        promptCacheKey: "pck-upstream-running",
+      }),
+    );
+    expect(onOpenInvocation.mock.calls[0]?.[0]?.promptCacheKey).not.toBe(
+      "acct-invoke-1",
     );
   });
 

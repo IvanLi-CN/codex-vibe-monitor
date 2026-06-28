@@ -23,6 +23,7 @@
 - `/api/invocations` 与 SSE `records` 在不改 schema 的前提下额外返回 `compactionRequestKind` / `compactionResponseKind`，把原始 endpoint 与压缩语义解耦。
 - `/api/invocations`、SSE `records` 与 Prompt Cache / Dashboard preview 在不改 schema 的前提下额外返回 `imageIntent`，使图片请求语义脱离 endpoint 和历史 raw body 存活状态而独立存在。
 - `/api/invocations`、SSE `records`、Prompt Cache preview 与 Dashboard working conversations 在不改 schema 的前提下额外返回 `requestModel` / `responseModel`，用于区分请求模型与实际响应模型。
+- 复用 invocation preview wire shape 的 owner-facing 列表在需要稳定对话关联时，必须继续返回真实 `promptCacheKey`；Dashboard 上游账号活动 recent 行不得再把 `invokeId` 当成对话键替代。
 - Records 与 Dashboard 两个 owner-facing 列表同时显示独立“图片工具”徽标，避免同一条 invocation 在不同列表面出现语义漂移。
 
 ### Non-goals
@@ -131,6 +132,12 @@
 - `requestModel?: string | null`
 - `responseModel?: string | null`
 
+### Shared invocation preview object（沿用扩展字段）
+
+- `promptCacheKey?: string | null`
+- `requestModel?: string | null`
+- `responseModel?: string | null`
+
 ### `GET /api/invocations` 记录对象（已存在并沿用）
 
 - `tReqReadMs?`、`tReqParseMs?`、`tUpstreamConnectMs?`、`tUpstreamTtfbMs?`、`tUpstreamStreamMs?`、`tRespParseMs?`、`tPersistMs?`、`tTotalMs?`
@@ -159,6 +166,7 @@
 - Given `requestModel` 与 `responseModel` 仅大小写不同，或仅 dated alias/base-model 归并后等价，When 列表渲染，Then 不显示模型路由差异图标。
 - Given 调用详情打开，When 记录存在双模型字段，Then 页面始终分别展示“请求模型 / 响应模型”，且 mismatch 时仅响应模型带差异图标。
 - Given 历史记录仅存在 `model`，When 调用详情打开，Then 请求模型显示 `—`，响应模型显示该历史 `model` 值。
+- Given Dashboard 上游账号 recent 行来源于共享 invocation preview，When 用户点击调用打开详情，Then selection 使用真实 `promptCacheKey` 建立对话关联，而不是退化成 `invokeId`。
 
 ### Manual verification
 

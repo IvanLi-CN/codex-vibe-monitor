@@ -143,6 +143,7 @@ pub(crate) async fn build_account_sticky_keys_response(
                 crate::api::PromptCacheConversationInvocationPreviewResponse {
                     id: row.id,
                     invoke_id: row.invoke_id,
+                    prompt_cache_key: Some(row.sticky_key.clone()),
                     occurred_at: row.occurred_at,
                     status: row.status,
                     failure_class: row.failure_class,

@@ -4,7 +4,10 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '../../i18n'
-import { useUpstreamAccountGroupSettingsDialog } from './useUpstreamAccountGroupSettingsDialog'
+import {
+  mergeRoutingRulePatch,
+  useUpstreamAccountGroupSettingsDialog,
+} from './useUpstreamAccountGroupSettingsDialog'
 import { normalizeGroupName } from '../../lib/upstreamAccountGroups'
 
 const hookMocks = vi.hoisted(() => ({
@@ -268,6 +271,31 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
 
     expect(deleteGroupNote).toHaveBeenCalledWith('prod')
     expect(readValue('detail-group')).toBe('')
+  })
+
+  it('maps positive new-conversation patches into the stored rule draft', () => {
+    expect(
+      mergeRoutingRulePatch(createGroupState('prod').routingRule, {
+        allowNewConversations: false,
+      }).blockNewConversations,
+    ).toBe(true)
+  })
+
+  it('preserves unrelated group routing fields when applying a partial patch', () => {
+    const base = {
+      ...createGroupState('prod').routingRule,
+      blockNewConversations: true,
+      allowCutOut: false,
+      allowCutIn: false,
+      priorityTier: 'primary' as const,
+      fastModeRewriteMode: 'force_add' as const,
+      availableModels: ['gpt-5.5'],
+    }
+
+    expect(mergeRoutingRulePatch(base, { allowNewConversations: true })).toEqual({
+      ...base,
+      blockNewConversations: false,
+    })
   })
 
   it('clears the bulk draft field after deleting the active group', async () => {

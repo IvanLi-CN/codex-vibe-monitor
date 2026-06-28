@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type {
   GroupAccountRoutingRule,
+  UpdateGroupAccountRoutingRulePayload,
   UpdateUpstreamAccountGroupPayload,
 } from "../../lib/api";
 import { apiConcurrencyLimitToSliderValue, sliderConcurrencyLimitToApiValue } from "../../lib/concurrencyLimit";
@@ -57,7 +58,30 @@ const defaultRoutingRule: GroupAccountRoutingRule = {
   upstream429RetryEnabled: false,
   upstream429MaxRetries: 0,
   availableModels: [],
+  availableModelsDefined: false,
 };
+
+export function mergeRoutingRulePatch(
+  base: GroupAccountRoutingRule,
+  patch: UpdateGroupAccountRoutingRulePayload,
+): GroupAccountRoutingRule {
+  return {
+    ...base,
+    ...(patch.allowNewConversations == null
+      ? {}
+      : { blockNewConversations: !patch.allowNewConversations }),
+    ...(patch.blockNewConversations == null ? {} : { blockNewConversations: patch.blockNewConversations }),
+    ...(patch.allowCutOut == null ? {} : { allowCutOut: patch.allowCutOut }),
+    ...(patch.allowCutIn == null ? {} : { allowCutIn: patch.allowCutIn }),
+    ...(patch.priorityTier == null ? {} : { priorityTier: patch.priorityTier }),
+    ...(patch.fastModeRewriteMode == null ? {} : { fastModeRewriteMode: patch.fastModeRewriteMode }),
+    ...(patch.imageToolRewriteMode == null ? {} : { imageToolRewriteMode: patch.imageToolRewriteMode }),
+    ...(patch.concurrencyLimit == null ? {} : { concurrencyLimit: patch.concurrencyLimit }),
+    ...(patch.upstream429RetryEnabled == null ? {} : { upstream429RetryEnabled: patch.upstream429RetryEnabled }),
+    ...(patch.upstream429MaxRetries == null ? {} : { upstream429MaxRetries: patch.upstream429MaxRetries }),
+    ...(patch.availableModels == null ? {} : { availableModels: patch.availableModels }),
+  };
+}
 
 function createInitialEditorState(): GroupSettingsEditorState {
   return {
@@ -474,15 +498,12 @@ export function useUpstreamAccountGroupSettingsDialog(
             ...current,
             policyEditorOpen: false,
             routingRuleDirty: true,
-            routingRule: {
-              ...defaultRoutingRule,
-              ...payload,
-            },
+            routingRule: mergeRoutingRulePatch(current.routingRule, payload),
           }));
         }}
         labels={{
-          blockNewConversations: t("accountPool.tags.dialog.blockNewConversations"),
-          forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
+          allowNewConversations: t("accountPool.tags.dialog.allowNewConversations"),
+          newConversationHint: t("accountPool.tags.dialog.newConversationHint"),
           allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
           allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
           forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),

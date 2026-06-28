@@ -11,6 +11,7 @@
 - invocation payload 现在额外携带 `imageIntent`，并通过 `/api/invocations`、SSE `records`、Prompt Cache / Dashboard preview 一路透出，公开合同为 `yes | direct_image | no | unknown | null`。
 - Records 与 Dashboard 列表共用图片信号 resolver：仅 `yes` / `direct_image` 渲染独立“图片工具”徽标；详情区保留四态文本区分，历史缺字段降级为 `—`。
 - invocation payload 现已对外打通 `requestModel` / `responseModel`；Records、InvocationTable、Dashboard working conversations 与详情抽屉统一采用“响应模型优先”显示，并在规范化后的请求/响应模型真正不一致时显示上游路由差异图标。
+- 共享 invocation preview 现已继续透出真实 `promptCacheKey`；Dashboard 上游账号活动 recent 行据此恢复稳定的对话短 ID 生成与详情抽屉 selection 关联，不再误用 `invokeId` 充当对话键。
 - 调用详情现在固定展示“请求模型 / 响应模型”两个 badge；旧记录仅有历史 `model` 时，响应模型回填旧值，请求模型显示 `—`。
 - 本次修复是 future-only：不改 SQLite schema，不对历史 invocation 回填 `imageIntent` 或 `compactionRequestKind`。
 - 运行态 V2 识别来自 request body 的 `context_management[type=compaction][compact_threshold]`，终态识别来自响应内实际出现的 compaction item；两者独立写入 payload，不回填历史记录。

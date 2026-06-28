@@ -33,6 +33,27 @@ The account-pool UI is reduced to group/account policy editing plus read-only sy
 - account cards and detail drawers still display system tags as read-only badges
 - roster filtering still uses `usePoolTags`, but only against the system-tag directory
 
+The account detail Routing tab exposes final effective rules as field-level inline account overrides.
+
+- each editable effective-rule row has an icon-only account override control
+- activating a row expands a field-local editor; clearing an active account override sends `null` and collapses the row
+- boolean fields use positive operator-facing labels: `new conversations`, `cut-out`, and `cut-in`
+- `new conversations` writes the positive `allowNewConversations` API payload and persists in `policy_allow_new_conversations`
+- discrete policy fields use inline radio groups with an animated selected-state indicator and reduced-motion fallback
+- concurrency and 429 retry controls reuse the existing account-policy value semantics inside the expanded row
+- available-model overrides may store an empty list to explicitly allow no models
+- `systemDeniedModels` stays a read-only system result and has no account override control
+
+## API and Resolution
+
+Account and group routing policy writes distinguish missing, `null`, and value for nullable policy fields.
+
+- missing preserves the stored override
+- `null` clears the stored override
+- value writes the override, including boolean `false`
+
+Effective routing resolution applies group policy, read-only system signals, then account policy. Account-level `new conversations`, `cut-out`, and `cut-in` values replace inherited values directly; they no longer use a most-conservative merge at the account layer.
+
 Local stale state is sanitized instead of preserved as a hidden write path.
 
 - persisted roster filters drop tag IDs that are no longer present in the system-tag directory before they are applied back to the query
@@ -51,3 +72,4 @@ Validation covers:
   - create page no longer exposes tag editors
   - detail edit view keeps system tags read-only
   - roster filtering still works against system tags
+  - inline account override rows show inherited, account override, expanded editor, saving/error, and empty-model override states

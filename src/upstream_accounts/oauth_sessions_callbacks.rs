@@ -1459,13 +1459,19 @@ pub(crate) async fn update_upstream_account_inner(
     let policy_priority_tier = payload
         .routing_rule
         .as_ref()
-        .and_then(|rule| rule.priority_tier.as_deref())
+        .and_then(|rule| match &rule.priority_tier {
+            OptionalField::Value(value) => Some(value.as_str()),
+            OptionalField::Missing | OptionalField::Null => None,
+        })
         .map(|value| normalize_tag_priority_tier(Some(value)).map(|tier| tier.as_str().to_string()))
         .transpose()?;
     let policy_fast_mode_rewrite_mode = payload
         .routing_rule
         .as_ref()
-        .and_then(|rule| rule.fast_mode_rewrite_mode.as_deref())
+        .and_then(|rule| match &rule.fast_mode_rewrite_mode {
+            OptionalField::Value(value) => Some(value.as_str()),
+            OptionalField::Missing | OptionalField::Null => None,
+        })
         .map(|value| {
             normalize_tag_fast_mode_rewrite_mode(Some(value)).map(|mode| mode.as_str().to_string())
         })
@@ -1473,7 +1479,10 @@ pub(crate) async fn update_upstream_account_inner(
     let policy_image_tool_rewrite_mode = payload
         .routing_rule
         .as_ref()
-        .and_then(|rule| rule.image_tool_rewrite_mode.as_deref())
+        .and_then(|rule| match &rule.image_tool_rewrite_mode {
+            OptionalField::Value(value) => Some(value.as_str()),
+            OptionalField::Missing | OptionalField::Null => None,
+        })
         .map(|value| {
             normalize_image_tool_rewrite_mode(Some(value)).map(|mode| mode.as_str().to_string())
         })
@@ -1636,16 +1645,17 @@ pub(crate) async fn update_upstream_account_inner(
             local_limit_unit = ?12,
             upstream_base_url = ?13,
             policy_block_new_conversations = ?14,
-            policy_allow_cut_out = ?15,
-            policy_allow_cut_in = ?16,
-            policy_priority_tier = ?17,
-            policy_fast_mode_rewrite_mode = ?18,
-            policy_image_tool_rewrite_mode = ?19,
-            policy_concurrency_limit = ?20,
-            policy_upstream_429_retry_enabled = ?21,
-            policy_upstream_429_max_retries = ?22,
-            policy_available_models_json = ?23,
-            updated_at = ?24
+            policy_allow_new_conversations = ?15,
+            policy_allow_cut_out = ?16,
+            policy_allow_cut_in = ?17,
+            policy_priority_tier = ?18,
+            policy_fast_mode_rewrite_mode = ?19,
+            policy_image_tool_rewrite_mode = ?20,
+            policy_concurrency_limit = ?21,
+            policy_upstream_429_retry_enabled = ?22,
+            policy_upstream_429_max_retries = ?23,
+            policy_available_models_json = ?24,
+            updated_at = ?25
         WHERE id = ?1
         "#,
     )
@@ -1663,67 +1673,102 @@ pub(crate) async fn update_upstream_account_inner(
     .bind(&row.local_limit_unit)
     .bind(&row.upstream_base_url)
     .bind(match payload.routing_rule.as_ref() {
-        Some(rule) => rule
-            .block_new_conversations
-            .map(|value| if value { 1_i64 } else { 0_i64 })
-            .or(row.policy_block_new_conversations),
-        None => row.policy_block_new_conversations,
+        Some(rule) => match rule.allow_new_conversations {
+            OptionalField::Missing => match rule.block_new_conversations {
+                OptionalField::Missing => row.policy_block_new_conversations.or_else(|| {
+                    row.policy_allow_new_conversations
+                        .map(
+                            |allow_new_conversations| {
+                                if allow_new_conversations == 0 { 1 } else { 0 }
+                            },
+                        )
+                }),
+                OptionalField::Null => None,
+                OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+            },
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 0_i64 } else { 1_i64 }),
+        },
+        None => row.policy_block_new_conversations.or_else(|| {
+            row.policy_allow_new_conversations
+                .map(|allow_new_conversations| if allow_new_conversations == 0 { 1 } else { 0 })
+        }),
     })
     .bind(match payload.routing_rule.as_ref() {
-        Some(rule) => rule
-            .allow_cut_out
-            .map(|value| if value { 1_i64 } else { 0_i64 })
-            .or(row.policy_allow_cut_out),
+        Some(rule) => match rule.allow_new_conversations_field() {
+            OptionalField::Missing => row.policy_allow_new_conversations,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_allow_new_conversations,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => match rule.allow_cut_out {
+            OptionalField::Missing => row.policy_allow_cut_out,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
         None => row.policy_allow_cut_out,
     })
     .bind(match payload.routing_rule.as_ref() {
-        Some(rule) => rule
-            .allow_cut_in
-            .map(|value| if value { 1_i64 } else { 0_i64 })
-            .or(row.policy_allow_cut_in),
+        Some(rule) => match rule.allow_cut_in {
+            OptionalField::Missing => row.policy_allow_cut_in,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
         None => row.policy_allow_cut_in,
     })
     .bind(match payload.routing_rule.as_ref() {
-        Some(_) => policy_priority_tier
-            .clone()
-            .or(row.policy_priority_tier.clone()),
+        Some(rule) => match rule.priority_tier {
+            OptionalField::Missing => row.policy_priority_tier.clone(),
+            OptionalField::Null => None,
+            OptionalField::Value(_) => policy_priority_tier.clone(),
+        },
         None => row.policy_priority_tier.clone(),
     })
     .bind(match payload.routing_rule.as_ref() {
-        Some(_) => policy_fast_mode_rewrite_mode
-            .clone()
-            .or(row.policy_fast_mode_rewrite_mode.clone()),
+        Some(rule) => match rule.fast_mode_rewrite_mode {
+            OptionalField::Missing => row.policy_fast_mode_rewrite_mode.clone(),
+            OptionalField::Null => None,
+            OptionalField::Value(_) => policy_fast_mode_rewrite_mode.clone(),
+        },
         None => row.policy_fast_mode_rewrite_mode.clone(),
     })
     .bind(match payload.routing_rule.as_ref() {
-        Some(_) => policy_image_tool_rewrite_mode
-            .clone()
-            .or(row.policy_image_tool_rewrite_mode.clone()),
+        Some(rule) => match rule.image_tool_rewrite_mode {
+            OptionalField::Missing => row.policy_image_tool_rewrite_mode.clone(),
+            OptionalField::Null => None,
+            OptionalField::Value(_) => policy_image_tool_rewrite_mode.clone(),
+        },
         None => row.policy_image_tool_rewrite_mode.clone(),
     })
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => match rule.concurrency_limit {
-            Some(value) => Some(normalize_concurrency_limit(
+            OptionalField::Missing => row.policy_concurrency_limit,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(normalize_concurrency_limit(
                 Some(value),
                 "concurrencyLimit",
             )?),
-            None => row.policy_concurrency_limit,
         },
         None => row.policy_concurrency_limit,
     })
     .bind(match payload.routing_rule.as_ref() {
-        Some(rule) => rule
-            .upstream_429_retry_enabled
-            .map(|value| if value { 1_i64 } else { 0_i64 })
-            .or(row.policy_upstream_429_retry_enabled),
+        Some(rule) => match rule.upstream_429_retry_enabled {
+            OptionalField::Missing => row.policy_upstream_429_retry_enabled,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
         None => row.policy_upstream_429_retry_enabled,
     })
     .bind(match payload.routing_rule.as_ref() {
-        Some(rule) => rule
-            .upstream_429_max_retries
-            .map(normalize_group_upstream_429_max_retries)
-            .map(i64::from)
-            .or(row.policy_upstream_429_max_retries),
+        Some(rule) => match rule.upstream_429_max_retries {
+            OptionalField::Missing => row.policy_upstream_429_max_retries,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => {
+                Some(i64::from(normalize_group_upstream_429_max_retries(value)))
+            }
+        },
         None => row.policy_upstream_429_max_retries,
     })
     .bind(match payload.routing_rule.as_ref() {

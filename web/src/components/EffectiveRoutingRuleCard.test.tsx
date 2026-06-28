@@ -2,7 +2,7 @@
 import * as React from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { EffectiveRoutingRule } from '../lib/api'
 import { EffectiveRoutingRuleCard } from './EffectiveRoutingRuleCard'
 
@@ -37,13 +37,13 @@ function render(ui: React.ReactNode) {
 
 const labels = {
   title: 'Effective routing rule',
-  description: 'Merged routing constraints applied to the selected upstream account.',
+  description: 'Merged routing constraints applied to the selected upstream account. Use account overrides when needed.',
   noTags: 'No tags linked',
-  blockNewConversations: 'Block new conversations',
-  allowNewConversations: 'New conversations are not blocked',
-  allowCutOut: 'Cut-out not blocked',
+  blockNewConversations: 'New conversations blocked',
+  allowNewConversations: 'New conversations allowed',
+  allowCutOut: 'Cut-out allowed',
   denyCutOut: 'Cut-out blocked',
-  allowCutIn: 'Cut-in not blocked',
+  allowCutIn: 'Cut-in allowed',
   denyCutIn: 'Cut-in blocked',
   sourceTags: 'Source tags',
   priorityPrimary: 'Primary',
@@ -65,7 +65,7 @@ const labels = {
   concurrencyLimit: (count: number) => `Concurrency ${count}`,
   concurrencyUnlimited: 'Concurrency unlimited',
   sourceBreakdownTitle: 'Field source breakdown',
-  fieldBlockNewConversations: 'Block new conversations',
+  fieldBlockNewConversations: 'New conversations',
   fieldAllowCutOut: 'Cut out',
   fieldAllowCutIn: 'Cut in',
   fieldPriority: 'Priority',
@@ -80,6 +80,19 @@ const labels = {
   sourceTag: 'Tag',
   sourceAccount: 'Account',
   sourceSystem: 'System',
+  overrideEdit: 'Edit account override',
+  overrideActive: 'Account override',
+  overrideClear: 'Clear account override',
+  overrideSaving: 'Saving account override...',
+  inheritValue: 'Default value starts from the inherited value.',
+  newConversationLabel: 'New conversations',
+  cutOutLabel: 'Cut out',
+  cutInLabel: 'Cut in',
+  currentValue: 'Current value',
+  availableModelsAddCustom: 'Add model',
+  availableModelsCustomLabel: (value: string) => `Add ${value}`,
+  availableModelsRemove: 'Remove model',
+  availableModelsPlaceholder: 'Model id',
 }
 
 function buildRule(overrides: Partial<EffectiveRoutingRule> = {}): EffectiveRoutingRule {
@@ -152,5 +165,102 @@ describe('EffectiveRoutingRuleCard', () => {
 
     expect(document.body.textContent).toContain('No models allowed')
     expect(document.body.textContent).not.toContain('Inherited / unrestricted')
+  })
+
+  it('shows deny-all copy for empty group model overrides', () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: [],
+          fieldSources: {
+            ...buildRule().fieldSources,
+            availableModels: 'group',
+          },
+        })}
+        labels={labels}
+      />,
+    )
+
+    expect(document.body.textContent).toContain('No models allowed')
+    expect(document.body.textContent).not.toContain('Inherited / unrestricted')
+  })
+
+  it('expands an inherited boolean override and saves the positive switch as the backend inverse', () => {
+    const onChange = vi.fn()
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule()}
+        labels={labels}
+        editablePolicy={{ onChange }}
+      />,
+    )
+
+    const editButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit account override: New conversations"]',
+    )
+    expect(editButton).not.toBeNull()
+
+    act(() => {
+      editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(document.body.textContent).toContain('Default value starts from the inherited value.')
+    const switchButton = document.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="New conversations"]')
+    expect(switchButton).not.toBeNull()
+
+    act(() => {
+      switchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(onChange).toHaveBeenCalledWith('allowNewConversations', { allowNewConversations: false })
+  })
+
+  it('clears an account override when the active override button is clicked again', () => {
+    const onChange = vi.fn()
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          allowCutIn: false,
+          fieldSources: {
+            ...buildRule().fieldSources,
+            allowCutIn: 'account',
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange }}
+      />,
+    )
+
+    const clearButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Clear account override: Cut in"]',
+    )
+    expect(clearButton).not.toBeNull()
+
+    act(() => {
+      clearButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(onChange).toHaveBeenCalledWith('allowCutIn', { allowCutIn: null })
+  })
+
+  it('keeps system denied models read-only even when account policy editing is enabled', () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          systemDeniedModels: ['gpt-5.5'],
+          fieldSources: {
+            ...buildRule().fieldSources,
+            systemDeniedModels: 'system',
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange: vi.fn() }}
+      />,
+    )
+
+    expect(document.body.textContent).toContain('gpt-5.5')
+    expect(
+      document.querySelector('button[aria-label="Edit account override: System denied models"]'),
+    ).toBeNull()
   })
 })

@@ -30,3 +30,4 @@
 - 2026-06-24: 将 `imageIntent` 升级为公开 invocation 可观测合同，打通 `/api/invocations`、SSE `records`、Prompt Cache preview、Records 与 Dashboard，并新增独立“图片工具”徽标。
 - 2026-06-26: 将 `requestModel` / `responseModel` 扩展到 `/api/invocations`、SSE `records`、Prompt Cache preview 与 Dashboard working conversations，并统一主模型显示为 `responseModel ?? model ?? requestModel`。
 - 2026-06-26: 调用详情拆分为“请求模型 / 响应模型”双字段；当规范化后的请求/响应模型不一致时，仅响应模型 badge 显示上游路由差异图标，旧 `model` 记录继续作为响应模型回填。
+- 2026-06-28: 将共享 invocation preview 的 `promptCacheKey` 明确打通到 Dashboard 上游账号活动 recent 行，修复详情抽屉 selection 误把 `invokeId` 当对话键的问题。

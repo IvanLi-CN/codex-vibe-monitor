@@ -22,6 +22,7 @@ import {
   DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
   buildDashboardWorkingConversationInvocationModel,
   formatDashboardWorkingConversationSequenceId,
+  hashDashboardWorkingConversationKey,
 } from "../lib/dashboardWorkingConversations";
 import { cn } from "../lib/utils";
 import { AppIcon } from "./AppIcon";
@@ -113,6 +114,8 @@ const CARD_SURFACE_CLASS_NAME = "working-conversation-card-surface";
 
 const INVOCATION_SURFACE_CLASS_NAME = "working-conversation-slot-surface";
 const DASHBOARD_WORKING_CONVERSATION_ROW_GAP_PX = 16;
+const UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME =
+  "min-h-5 border-transparent bg-base-200/82 px-2 py-0.5 text-[9px] font-semibold leading-none text-base-content/76 shadow-none";
 
 const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
   running: {
@@ -196,13 +199,59 @@ function CompactReasoningEffortBadge({ value }: { value: string }) {
       data-testid="dashboard-working-conversation-reasoning-effort"
       data-reasoning-effort-tone={tone}
       className={cn(
-        "inline-flex max-w-[5rem] shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[7px] font-semibold leading-none tracking-[0.01em]",
+        "inline-flex min-h-5 max-w-[5rem] shrink-0 items-center rounded-full border px-2 py-0.5 text-[9px] font-semibold leading-none tracking-[0.01em]",
         REASONING_EFFORT_TONE_CLASSNAMES[tone],
       )}
       title={value}
     >
       <span className="truncate whitespace-nowrap">{value}</span>
     </span>
+  );
+}
+
+function renderUpstreamAccountRecentModelDisplay(
+  hasMismatch: boolean,
+  modelValue: string,
+  requestModelValue: string,
+  responseModelValue: string,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  const shouldRenderMismatch = hasMismatch &&
+    requestModelValue !== FALLBACK_CELL &&
+    responseModelValue !== FALLBACK_CELL;
+
+  if (!shouldRenderMismatch) {
+    return renderInvocationModelBadge(modelValue, {
+      t,
+      hasMismatch: false,
+      className: "max-w-full",
+      textClassName: "font-mono",
+      iconClassName: "h-3 w-3",
+      testId: "dashboard-upstream-account-recent-model",
+    });
+  }
+
+  return (
+    <div
+      data-testid="dashboard-upstream-account-recent-model"
+      className="flex min-w-0 items-center gap-1"
+      title={`${requestModelValue} -> ${responseModelValue}`}
+    >
+      <span className="truncate font-mono leading-none text-base-content/84">
+        {requestModelValue}
+      </span>
+      <span
+        className="inline-flex h-4 w-4 flex-none items-center justify-center text-base-content/55"
+        aria-label={t("table.model.routingMismatchAria")}
+        data-testid="dashboard-upstream-account-recent-model-routing-indicator"
+        role="img"
+      >
+        <AppIcon name="compare-horizontal" className="h-3 w-3" aria-hidden />
+      </span>
+      <span className="truncate font-mono leading-none text-base-content/88">
+        {responseModelValue}
+      </span>
+    </div>
   );
 }
 
@@ -646,6 +695,14 @@ function AccountRecentInvocationRow({
   const compactCostValue = viewModel.costValue.startsWith("US$")
     ? `$${viewModel.costValue.slice(3)}`
     : viewModel.costValue;
+  const displayPromptCacheKey = invocation.preview.promptCacheKey?.trim() ?? "";
+  const displayConversationSequenceId = displayPromptCacheKey
+    ? formatDashboardWorkingConversationSequenceId(
+        `WC-${hashDashboardWorkingConversationKey(displayPromptCacheKey).slice(0, 6)}`,
+      )
+    : "";
+  const requestModelValue = viewModel.requestModelValue;
+  const responseModelValue = viewModel.responseModelValue;
   const compactTimingSummary = `RQ ${formatCompactMilliseconds(invocation.record.tReqReadMs)}/${formatCompactMilliseconds(invocation.record.tReqParseMs)} · UP ${formatCompactMilliseconds(invocation.record.tUpstreamConnectMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamTtfbMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamStreamMs)} · ED ${formatCompactMilliseconds(invocation.record.tRespParseMs)}/${formatCompactMilliseconds(invocation.record.tPersistMs)} · TT ${typeof invocation.record.tTotalMs === "number" && Number.isFinite(invocation.record.tTotalMs) ? `${formatCompactMilliseconds(invocation.record.tTotalMs)}ms` : viewModel.totalLatencyValue}`;
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${invocation.record.invokeId}`;
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
@@ -654,7 +711,10 @@ function AccountRecentInvocationRow({
     onOpenInvocation?.({
       slotKind: "current",
       conversationSequenceId: invocation.record.invokeId,
-      promptCacheKey: invocation.preview.invokeId,
+      promptCacheKey:
+        invocation.preview.promptCacheKey?.trim() ||
+        invocation.record.promptCacheKey?.trim() ||
+        "",
       invocation,
     });
   }, [invocation, onOpenInvocation]);
@@ -685,9 +745,32 @@ function AccountRecentInvocationRow({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="font-mono text-[12px] font-semibold text-base-content/88">
-              {invocation.record.invokeId}
-            </span>
+            <div
+              className="flex min-w-0 items-center gap-1.5"
+              data-testid="dashboard-upstream-account-recent-identity"
+            >
+              {displayConversationSequenceId ? (
+                <>
+                  <span
+                    className="truncate font-mono text-[12px] font-semibold text-base-content/70"
+                    title={displayConversationSequenceId}
+                  >
+                    {displayConversationSequenceId}
+                  </span>
+                  <AppIcon
+                    name="chevron-right"
+                    className="h-3 w-3 shrink-0 text-base-content/45"
+                    aria-hidden
+                  />
+                </>
+              ) : null}
+              <span
+                className="truncate font-mono text-[12px] font-semibold text-base-content/88"
+                title={invocation.record.invokeId}
+              >
+                {invocation.record.invokeId}
+              </span>
+            </div>
             <Badge
               variant={statusMeta.badgeVariant}
               className="min-h-5 gap-1 border-transparent bg-base-200/82 px-2 py-0.5 text-[9px] font-semibold leading-none shadow-none"
@@ -712,17 +795,14 @@ function AccountRecentInvocationRow({
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-[1.45] text-base-content/70">
             <span>{occurredAtShortLabel}</span>
             <span className="text-base-content/28">·</span>
-            <span className="truncate">{viewModel.accountLabel}</span>
-            <span className="text-base-content/28">·</span>
             <span className="min-w-0">
-              {renderInvocationModelBadge(viewModel.modelValue, {
+              {renderUpstreamAccountRecentModelDisplay(
+                viewModel.modelHasMismatch,
+                viewModel.modelValue,
+                requestModelValue,
+                responseModelValue,
                 t,
-                hasMismatch: viewModel.modelHasMismatch,
-                className: "max-w-full",
-                textClassName: "font-mono",
-                iconClassName: "h-3 w-3",
-                testId: "dashboard-upstream-account-recent-model",
-              })}
+              )}
             </span>
             {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
               <>
@@ -733,14 +813,14 @@ function AccountRecentInvocationRow({
             {renderEndpointSummary(
               viewModel.endpointDisplay,
               t,
-              "min-h-5 border-transparent bg-base-200/82 px-2 py-0.5 text-[9px] font-semibold leading-none text-base-content/76 shadow-none",
+              UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
             ) ? (
               <>
                 <span className="text-base-content/28">·</span>
                 {renderEndpointSummary(
                   viewModel.endpointDisplay,
                   t,
-                  "min-h-5 border-transparent bg-base-200/82 px-2 py-0.5 text-[9px] font-semibold leading-none text-base-content/76 shadow-none",
+                  UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
                 )}
               </>
             ) : null}

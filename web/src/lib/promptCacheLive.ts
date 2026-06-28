@@ -261,6 +261,7 @@ export function buildInvocationFromPromptCachePreview(
     invokeId: preview.invokeId,
     occurredAt: preview.occurredAt,
     createdAt: preview.occurredAt,
+    promptCacheKey: preview.promptCacheKey ?? undefined,
     source: extras.source,
     status: preview.status,
     failureClass: preview.failureClass ?? undefined,
@@ -310,6 +311,7 @@ export function buildPromptCachePreviewFromInvocation(
   return {
     id: record.id,
     invokeId: record.invokeId,
+    promptCacheKey: record.promptCacheKey?.trim() || null,
     occurredAt: record.occurredAt,
     status: record.status?.trim() || "unknown",
     failureClass: normalizeFailureClass(record.failureClass),
