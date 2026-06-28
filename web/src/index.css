@@ -594,11 +594,11 @@ body {
   }
 
   [data-theme='vibe-dark'] .header-brand-mark[data-logo-state='active'] {
-    --header-brand-mark-glow-opacity: 0.44;
-    --header-brand-mark-halo-opacity: 0.32;
-    --header-brand-mark-ring-opacity: 0.42;
-    --header-brand-mark-ring-secondary-opacity: 0.22;
-    --header-brand-mark-image-active-shadow: drop-shadow(0 0 9px rgba(56, 189, 248, 0.28));
+    --header-brand-mark-glow-opacity: 0.26;
+    --header-brand-mark-halo-opacity: 0.18;
+    --header-brand-mark-ring-opacity: 0.26;
+    --header-brand-mark-ring-secondary-opacity: 0.12;
+    --header-brand-mark-image-active-shadow: drop-shadow(0 0 6px rgba(56, 189, 248, 0.18));
   }
 
   [data-theme='vibe-dark'] .header-brand-mark[data-logo-state='reconnecting'] {
