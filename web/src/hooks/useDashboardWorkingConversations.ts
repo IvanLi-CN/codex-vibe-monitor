@@ -949,7 +949,9 @@ export function useDashboardWorkingConversations() {
           nextConversation,
           record,
           current.snapshotAt,
-          DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+          isInFlightStatus(record.status)
+            ? DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX
+            : recentPreviewLimitRef.current,
           patchedPostSnapshotInvocations,
         );
         nextConversation = patchResult.conversation;

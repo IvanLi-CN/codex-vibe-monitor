@@ -1228,6 +1228,55 @@ describe("useDashboardWorkingConversations", () => {
     expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps terminal SSE records capped at the current dynamic preview window", async () => {
+    apiMocks.fetchPromptCacheConversationsPage.mockResolvedValueOnce(
+      createResponseWithConversations([
+        createConversation("pck-live-terminal", {
+          recentInvocations: Array.from({ length: 4 }, (_, index) =>
+            createPreview({
+              id: 20 - index,
+              invokeId: `terminal-${4 - index}`,
+              occurredAt: `2026-04-10T02:04:${String(40 - index).padStart(2, "0")}Z`,
+              status: "success",
+              totalTokens: 20,
+              cost: 0.02,
+            }),
+          ),
+          requestCount: 4,
+          totalTokens: 80,
+          totalCost: 0.08,
+          lastTerminalAt: "2026-04-10T02:04:40Z",
+          lastInFlightAt: null,
+        }),
+      ]),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+    await flushAsync();
+
+    expect(text("preview-count")).toBe("4");
+    expect(text("recent-preview-limit")).toBe("4");
+
+    act(() => {
+      emitRecords([
+        createRecord("pck-live-terminal", {
+          id: 21,
+          invokeId: "terminal-5",
+          occurredAt: "2026-04-10T02:04:45Z",
+          status: "success",
+          totalTokens: 20,
+          cost: 0.02,
+        }),
+      ]);
+    });
+
+    expect(text("preview-invoke-id")).toBe("terminal-5");
+    expect(text("preview-count")).toBe("4");
+    expect(text("recent-preview-limit")).toBe("4");
+    expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(1);
+  });
+
   it("patches a loaded key when a pre-snapshot update fits the dynamic recent preview window", async () => {
     apiMocks.fetchPromptCacheConversationsPage
       .mockResolvedValueOnce(
