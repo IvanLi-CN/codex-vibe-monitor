@@ -3,12 +3,23 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { AppLayout } from './AppLayout'
+import { AppLayout, HEADER_BRAND_ACTIVITY_HOLD_MS } from './AppLayout'
 
-const sseMocks = vi.hoisted(() => ({
-  subscribeToSse: vi.fn(() => () => undefined),
-  requestImmediateReconnect: vi.fn(),
-}))
+const sseMocks = vi.hoisted(() => {
+  const state = {
+    lastMessageListener: null as ((payload?: unknown) => void) | null,
+    subscribeToSse: vi.fn((listener: (payload?: unknown) => void) => {
+      state.lastMessageListener = listener
+      return () => {
+        if (state.lastMessageListener === listener) {
+          state.lastMessageListener = null
+        }
+      }
+    }),
+    requestImmediateReconnect: vi.fn(),
+  }
+  return state
+})
 
 const hookMocks = vi.hoisted(() => ({
   useSseStatus: vi.fn(() => ({
@@ -149,6 +160,8 @@ afterEach(() => {
   host?.remove()
   host = null
   root = null
+  sseMocks.lastMessageListener = null
+  vi.useRealTimers()
   vi.clearAllMocks()
 })
 
@@ -200,6 +213,7 @@ describe('AppLayout', () => {
     const navGroup = host?.querySelector('nav .segmented-control')
     const dashboardLink = host?.querySelector('a[href="/dashboard"]')
     const systemLink = host?.querySelector('a[href="/system"]')
+    const logoMark = host?.querySelector('[data-testid="app-header-logo-mark"]')
     const logoImage = host?.querySelector('img[src="/brand-mark.svg"][alt="product icon"]')
 
     expect(navGroup).not.toBeNull()
@@ -207,6 +221,61 @@ describe('AppLayout', () => {
     expect(dashboardLink?.className).toContain('segmented-control-item--active')
     expect(systemLink?.className).toContain('segmented-control-item')
     expect(systemLink?.className).not.toContain('segmented-control-item--active')
+    expect(logoMark?.getAttribute('data-logo-state')).toBe('idle')
     expect(logoImage).not.toBeNull()
+  })
+
+  it('keeps the header logo mark active across bursty updates until the recent-activity window expires', async () => {
+    vi.useFakeTimers()
+    hookMocks.useUpdateAvailable.mockReturnValue({
+      currentVersion: null,
+      availableVersion: null,
+      visible: false,
+      dismiss: vi.fn(),
+      reload: vi.fn(),
+    })
+    hookMocks.useSseStatus.mockReturnValue({
+      phase: 'connected',
+      downtimeMs: 0,
+      autoReconnect: true,
+      nextRetryAt: null,
+    })
+    hookMocks.fetchVersion.mockResolvedValue({ backend: 'v0.2.0' })
+
+    render('/dashboard')
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const logoMark = host?.querySelector('[data-testid="app-header-logo-mark"]')
+    expect(logoMark?.getAttribute('data-logo-state')).toBe('idle')
+
+    act(() => {
+      sseMocks.lastMessageListener?.()
+    })
+    expect(logoMark?.getAttribute('data-logo-state')).toBe('active')
+
+    await act(async () => {
+      vi.advanceTimersByTime(HEADER_BRAND_ACTIVITY_HOLD_MS - 500)
+      await Promise.resolve()
+    })
+    expect(logoMark?.getAttribute('data-logo-state')).toBe('active')
+
+    act(() => {
+      sseMocks.lastMessageListener?.()
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+      await Promise.resolve()
+    })
+    expect(logoMark?.getAttribute('data-logo-state')).toBe('active')
+
+    await act(async () => {
+      vi.advanceTimersByTime(HEADER_BRAND_ACTIVITY_HOLD_MS + 20)
+      await Promise.resolve()
+    })
+    expect(logoMark?.getAttribute('data-logo-state')).toBe('idle')
   })
 })
