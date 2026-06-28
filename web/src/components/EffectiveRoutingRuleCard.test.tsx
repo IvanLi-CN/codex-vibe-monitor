@@ -243,6 +243,29 @@ describe('EffectiveRoutingRuleCard', () => {
     expect(onChange).toHaveBeenCalledWith('allowCutIn', { allowCutIn: null })
   })
 
+  it('expands the first account override by default', () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          fastModeRewriteMode: 'force_add',
+          fieldSources: {
+            ...buildRule().fieldSources,
+            fastModeRewriteMode: 'account',
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange: vi.fn() }}
+      />,
+    )
+
+    expect(document.body.textContent).toContain('Default value starts from the inherited value.')
+    const activeButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Clear account override: FAST mode"]',
+    )
+    expect(activeButton?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull()
+  })
+
   it('keeps system denied models read-only even when account policy editing is enabled', () => {
     render(
       <EffectiveRoutingRuleCard

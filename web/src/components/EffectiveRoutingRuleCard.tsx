@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AppIcon } from './AppIcon'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -38,6 +38,18 @@ type EditablePolicyField =
   | 'availableModels'
 
 type FieldSourceMap = NonNullable<EffectiveRoutingRule['fieldSources']>
+
+const editableFieldSourceKeys: Array<[EditablePolicyField, keyof FieldSourceMap]> = [
+  ['allowNewConversations', 'blockNewConversations'],
+  ['allowCutOut', 'allowCutOut'],
+  ['allowCutIn', 'allowCutIn'],
+  ['priorityTier', 'priorityTier'],
+  ['fastModeRewriteMode', 'fastModeRewriteMode'],
+  ['imageToolRewriteMode', 'imageToolRewriteMode'],
+  ['concurrencyLimit', 'concurrencyLimit'],
+  ['upstream429Retry', 'upstream429Retry'],
+  ['availableModels', 'availableModels'],
+]
 
 interface InlineOption<T extends string | number> {
   value: T
@@ -222,6 +234,10 @@ function sourceVariant(source: string) {
   return source === 'account' ? 'default' : source === 'tag' ? 'accent' : source === 'group' ? 'info' : 'secondary'
 }
 
+function firstAccountOverrideField(fieldSources: FieldSourceMap): EditablePolicyField | null {
+  return editableFieldSourceKeys.find(([, sourceKey]) => fieldSources[sourceKey] === 'account')?.[0] ?? null
+}
+
 function normalizeModelIds(values: string[]) {
   const seen = new Set<string>()
   const normalized: string[] = []
@@ -236,9 +252,38 @@ function normalizeModelIds(values: string[]) {
 
 export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: EffectiveRoutingRuleCardProps) {
   const resolvedRule = defaultRule(rule)
-  const fieldSources = { ...defaultFieldSources, ...(resolvedRule.fieldSources ?? {}) }
-  const [expandedField, setExpandedField] = useState<EditablePolicyField | null>(null)
+  const fieldSources = useMemo(
+    () => ({ ...defaultFieldSources, ...(resolvedRule.fieldSources ?? {}) }),
+    [resolvedRule.fieldSources],
+  )
+  const defaultExpandedField = editablePolicy ? firstAccountOverrideField(fieldSources) : null
+  const [expandedField, setExpandedField] = useState<EditablePolicyField | null>(defaultExpandedField)
   const [availableModelInput, setAvailableModelInput] = useState('')
+
+  useEffect(() => {
+    if (!editablePolicy) {
+      setExpandedField(null)
+      return
+    }
+
+    const nextDefaultExpandedField = firstAccountOverrideField(fieldSources)
+    setExpandedField((current) => {
+      if (current && fieldToSource(current, fieldSources) === 'account') return current
+      return nextDefaultExpandedField
+    })
+  }, [
+    editablePolicy,
+    fieldSources.blockNewConversations,
+    fieldSources.allowCutOut,
+    fieldSources.allowCutIn,
+    fieldSources.priorityTier,
+    fieldSources.fastModeRewriteMode,
+    fieldSources.imageToolRewriteMode,
+    fieldSources.concurrencyLimit,
+    fieldSources.upstream429Retry,
+    fieldSources.availableModels,
+    fieldSources,
+  ])
 
   const availableModelOptions = useMemo(
     () => normalizeModelIds([...(editablePolicy?.availableModelOptions ?? []), ...(resolvedRule.availableModels ?? [])]),
