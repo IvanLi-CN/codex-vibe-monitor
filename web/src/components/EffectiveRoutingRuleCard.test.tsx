@@ -266,6 +266,49 @@ describe('EffectiveRoutingRuleCard', () => {
     expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull()
   })
 
+  it('keeps a user-opened inherited field when editable policy identity changes', () => {
+    const rule = buildRule({
+      fastModeRewriteMode: 'force_add',
+      fieldSources: {
+        ...buildRule().fieldSources,
+        fastModeRewriteMode: 'account',
+      },
+    })
+    const onChange = vi.fn()
+
+    render(
+      <EffectiveRoutingRuleCard
+        rule={rule}
+        labels={labels}
+        editablePolicy={{ onChange }}
+      />,
+    )
+
+    const cutOutButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit account override: Cut out"]',
+    )
+    expect(cutOutButton).not.toBeNull()
+
+    act(() => {
+      cutOutButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(document.querySelector('[role="switch"][aria-label="Cut out"]')).not.toBeNull()
+
+    act(() => {
+      root?.render(
+        <EffectiveRoutingRuleCard
+          rule={rule}
+          labels={labels}
+          editablePolicy={{ onChange, busyField: null }}
+        />,
+      )
+    })
+
+    expect(document.querySelector('[role="switch"][aria-label="Cut out"]')).not.toBeNull()
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).toBeNull()
+  })
+
   it('keeps system denied models read-only even when account policy editing is enabled', () => {
     render(
       <EffectiveRoutingRuleCard

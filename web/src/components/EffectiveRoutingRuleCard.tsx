@@ -252,16 +252,17 @@ function normalizeModelIds(values: string[]) {
 
 export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: EffectiveRoutingRuleCardProps) {
   const resolvedRule = defaultRule(rule)
+  const isEditable = editablePolicy != null
   const fieldSources = useMemo(
     () => ({ ...defaultFieldSources, ...(resolvedRule.fieldSources ?? {}) }),
     [resolvedRule.fieldSources],
   )
-  const defaultExpandedField = editablePolicy ? firstAccountOverrideField(fieldSources) : null
+  const defaultExpandedField = isEditable ? firstAccountOverrideField(fieldSources) : null
   const [expandedField, setExpandedField] = useState<EditablePolicyField | null>(defaultExpandedField)
   const [availableModelInput, setAvailableModelInput] = useState('')
 
   useEffect(() => {
-    if (!editablePolicy) {
+    if (!isEditable) {
       setExpandedField(null)
       return
     }
@@ -272,7 +273,7 @@ export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: Effec
       return nextDefaultExpandedField
     })
   }, [
-    editablePolicy,
+    isEditable,
     fieldSources.blockNewConversations,
     fieldSources.allowCutOut,
     fieldSources.allowCutIn,
