@@ -204,7 +204,7 @@ export function AppLayout() {
                 }`}
                 aria-hidden
               />
-              <img src="/favicon.svg" alt={t('app.logoAlt')} className={logoImageClass} />
+              <img src="/brand-mark.svg" alt={t('app.logoAlt')} className={logoImageClass} />
             </span>
             <span className="truncate text-lg font-semibold tracking-tight sm:text-xl">{t('app.brand')}</span>
           </div>

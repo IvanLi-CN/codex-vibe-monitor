@@ -70,7 +70,7 @@ vi.mock('../i18n', () => ({
         case 'app.brand':
           return 'Codex Vibe Monitor'
         case 'app.logoAlt':
-          return 'logo'
+          return 'product icon'
         case 'app.theme.currentDark':
           return '深色'
         case 'app.theme.currentLight':
@@ -200,11 +200,13 @@ describe('AppLayout', () => {
     const navGroup = host?.querySelector('nav .segmented-control')
     const dashboardLink = host?.querySelector('a[href="/dashboard"]')
     const systemLink = host?.querySelector('a[href="/system"]')
+    const logoImage = host?.querySelector('img[src="/brand-mark.svg"][alt="product icon"]')
 
     expect(navGroup).not.toBeNull()
     expect(dashboardLink?.className).toContain('segmented-control-item')
     expect(dashboardLink?.className).toContain('segmented-control-item--active')
     expect(systemLink?.className).toContain('segmented-control-item')
     expect(systemLink?.className).not.toContain('segmented-control-item--active')
+    expect(logoImage).not.toBeNull()
   })
 })
