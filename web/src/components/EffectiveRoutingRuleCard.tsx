@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AppIcon } from './AppIcon'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -38,6 +38,18 @@ type EditablePolicyField =
   | 'availableModels'
 
 type FieldSourceMap = NonNullable<EffectiveRoutingRule['fieldSources']>
+
+const editableFieldSourceKeys: Array<[EditablePolicyField, keyof FieldSourceMap]> = [
+  ['allowNewConversations', 'blockNewConversations'],
+  ['allowCutOut', 'allowCutOut'],
+  ['allowCutIn', 'allowCutIn'],
+  ['priorityTier', 'priorityTier'],
+  ['fastModeRewriteMode', 'fastModeRewriteMode'],
+  ['imageToolRewriteMode', 'imageToolRewriteMode'],
+  ['concurrencyLimit', 'concurrencyLimit'],
+  ['upstream429Retry', 'upstream429Retry'],
+  ['availableModels', 'availableModels'],
+]
 
 interface InlineOption<T extends string | number> {
   value: T
@@ -101,6 +113,7 @@ interface EditablePolicyConfig {
 
 interface EffectiveRoutingRuleCardProps {
   rule?: EffectiveRoutingRule | null
+  identityKey?: string | number | null
   editablePolicy?: EditablePolicyConfig
   labels: {
     title: string
@@ -222,6 +235,10 @@ function sourceVariant(source: string) {
   return source === 'account' ? 'default' : source === 'tag' ? 'accent' : source === 'group' ? 'info' : 'secondary'
 }
 
+function firstAccountOverrideField(fieldSources: FieldSourceMap): EditablePolicyField | null {
+  return editableFieldSourceKeys.find(([, sourceKey]) => fieldSources[sourceKey] === 'account')?.[0] ?? null
+}
+
 function normalizeModelIds(values: string[]) {
   const seen = new Set<string>()
   const normalized: string[] = []
@@ -234,11 +251,52 @@ function normalizeModelIds(values: string[]) {
   return normalized
 }
 
-export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: EffectiveRoutingRuleCardProps) {
+export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePolicy }: EffectiveRoutingRuleCardProps) {
   const resolvedRule = defaultRule(rule)
-  const fieldSources = { ...defaultFieldSources, ...(resolvedRule.fieldSources ?? {}) }
-  const [expandedField, setExpandedField] = useState<EditablePolicyField | null>(null)
+  const isEditable = editablePolicy != null
+  const fieldSources = useMemo(
+    () => ({ ...defaultFieldSources, ...(resolvedRule.fieldSources ?? {}) }),
+    [resolvedRule.fieldSources],
+  )
+  const defaultExpandedField = isEditable ? firstAccountOverrideField(fieldSources) : null
+  const [expandedField, setExpandedField] = useState<EditablePolicyField | null>(defaultExpandedField)
   const [availableModelInput, setAvailableModelInput] = useState('')
+  const userTouchedExpansionRef = useRef(false)
+  const previousIdentityKeyRef = useRef(identityKey)
+
+  useEffect(() => {
+    const identityChanged = previousIdentityKeyRef.current !== identityKey
+    if (identityChanged) {
+      previousIdentityKeyRef.current = identityKey
+      userTouchedExpansionRef.current = false
+    }
+
+    if (!isEditable) {
+      userTouchedExpansionRef.current = false
+      setExpandedField(null)
+      return
+    }
+
+    const nextDefaultExpandedField = firstAccountOverrideField(fieldSources)
+    setExpandedField((current) => {
+      if (userTouchedExpansionRef.current) return current
+      if (current && fieldToSource(current, fieldSources) === 'account') return current
+      return nextDefaultExpandedField
+    })
+  }, [
+    isEditable,
+    identityKey,
+    fieldSources.blockNewConversations,
+    fieldSources.allowCutOut,
+    fieldSources.allowCutIn,
+    fieldSources.priorityTier,
+    fieldSources.fastModeRewriteMode,
+    fieldSources.imageToolRewriteMode,
+    fieldSources.concurrencyLimit,
+    fieldSources.upstream429Retry,
+    fieldSources.availableModels,
+    fieldSources,
+  ])
 
   const availableModelOptions = useMemo(
     () => normalizeModelIds([...(editablePolicy?.availableModelOptions ?? []), ...(resolvedRule.availableModels ?? [])]),
@@ -250,10 +308,12 @@ export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: Effec
     void editablePolicy?.onChange(field, payload)
   }
   const clearField = (field: EditablePolicyField, payloadKey: keyof UpdateGroupAccountRoutingRulePayload) => {
+    userTouchedExpansionRef.current = true
     changeField(field, { [payloadKey]: null } as UpdateGroupAccountRoutingRulePayload)
     setExpandedField((current) => (current === field ? null : current))
   }
   const toggleExpanded = (field: EditablePolicyField, payloadKey: keyof UpdateGroupAccountRoutingRulePayload) => {
+    userTouchedExpansionRef.current = true
     const active = fieldToSource(field, fieldSources) === 'account'
     if (active) {
       clearField(field, payloadKey)

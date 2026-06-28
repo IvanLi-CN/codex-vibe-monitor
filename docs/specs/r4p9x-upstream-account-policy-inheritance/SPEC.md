@@ -165,6 +165,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - upstream account detail edit view showing system tags as read-only badges
 - upstream account list filtering by system tags while keeping system badges visible
 - effective routing rule card inherited state, account override state, expanded inline editor state, field-level saving/error state, and explicit empty available-model override
+- effective routing rule card opening an existing account override panel by default
 
 PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)
@@ -180,3 +181,6 @@ PR: include
 
 PR: include
 ![Effective routing rule inline account overrides](./assets/effective-rule-inline-overrides-trimmed.png)
+
+PR: include
+![Effective routing rule account overrides default expanded](./assets/effective-rule-account-overrides-default-expanded.png)
