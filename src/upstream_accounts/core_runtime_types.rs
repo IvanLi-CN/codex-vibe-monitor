@@ -1204,6 +1204,7 @@ pub(crate) struct GroupAccountRoutingRule {
     upstream_429_max_retries: u8,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     available_models: Vec<String>,
+    available_models_defined: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

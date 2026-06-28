@@ -58,6 +58,7 @@ const defaultRoutingRule: GroupAccountRoutingRule = {
   upstream429RetryEnabled: false,
   upstream429MaxRetries: 0,
   availableModels: [],
+  availableModelsDefined: false,
 };
 
 export function mergeRoutingRulePatch(

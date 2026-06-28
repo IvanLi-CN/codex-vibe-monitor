@@ -132,7 +132,11 @@ function buildPayload(
     return changedPayload;
   }
 
-  if (!draft.availableModelsTouched && payload.availableModels?.length === 0) {
+  if (
+    !draft.availableModelsTouched &&
+    payload.availableModels?.length === 0 &&
+    options?.baseRule?.availableModelsDefined !== true
+  ) {
     delete payload.availableModels;
   }
 

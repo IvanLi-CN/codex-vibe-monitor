@@ -90,6 +90,7 @@ export interface TagRoutingRule {
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   availableModels?: string[];
+  availableModelsDefined?: boolean;
 }
 
 export type EffectiveRoutingRuleSource =
@@ -892,6 +893,9 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
     availableModels: normalizeStringArray(payload.availableModels)
       .map((value) => value.trim())
       .filter((value) => value.length > 0),
+    availableModelsDefined:
+      payload.availableModelsDefined === true ||
+      Array.isArray(payload.availableModels),
   };
 }
 

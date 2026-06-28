@@ -3482,6 +3482,7 @@ fn group_routing_rule_from_group_metadata(
         upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
         upstream_429_max_retries: metadata.upstream_429_max_retries,
         available_models: Vec::new(),
+        available_models_defined: false,
     }
 }
 

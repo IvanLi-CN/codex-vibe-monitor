@@ -1417,6 +1417,7 @@ fn normalize_group_account_routing_rule(
     upstream_429_max_retries: Option<u8>,
     available_models: Option<Vec<String>>,
 ) -> Result<GroupAccountRoutingRule, (StatusCode, String)> {
+    let available_models_defined = available_models.is_some();
     let priority_tier = normalize_tag_priority_tier(priority_tier)?;
     let fast_mode_rewrite_mode = normalize_tag_fast_mode_rewrite_mode(fast_mode_rewrite_mode)?;
     let image_tool_rewrite_mode = normalize_image_tool_rewrite_mode(image_tool_rewrite_mode)?;
@@ -1439,6 +1440,7 @@ fn normalize_group_account_routing_rule(
         upstream_429_retry_enabled,
         upstream_429_max_retries,
         available_models: normalize_available_models(available_models, "availableModels")?,
+        available_models_defined,
     })
 }
 
@@ -1688,6 +1690,7 @@ fn group_routing_rule_from_columns(
                 .unwrap_or(legacy_upstream_429_max_retries),
         ),
         available_models: parse_string_array_json(policy_available_models_json),
+        available_models_defined: policy_available_models_json.is_some(),
     }
 }
 

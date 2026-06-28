@@ -265,4 +265,43 @@ describe('GroupAccountRoutingRuleDialog', () => {
       }),
     )
   })
+
+  it('preserves an untouched explicit empty model override when changing another field', () => {
+    const onSubmit = vi.fn()
+    render(
+      <GroupAccountRoutingRuleDialog
+        open
+        title="Group policy"
+        description="Shared routing policy"
+        submitLabel="Apply group policy"
+        rule={{ ...defaultRule, availableModels: [], availableModelsDefined: true }}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const newConversationsSwitch = Array.from(document.querySelectorAll('button[role="switch"]')).find(
+      (button) => button.closest('div')?.textContent?.includes('New conversations'),
+    )
+    expect(newConversationsSwitch).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      newConversationsSwitch!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const submit = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Apply group policy',
+    )
+    expect(submit).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      submit!.click()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowNewConversations: false,
+        availableModels: [],
+      }),
+    )
+  })
 })
