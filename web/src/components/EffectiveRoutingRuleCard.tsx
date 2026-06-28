@@ -113,6 +113,7 @@ interface EditablePolicyConfig {
 
 interface EffectiveRoutingRuleCardProps {
   rule?: EffectiveRoutingRule | null
+  identityKey?: string | number | null
   editablePolicy?: EditablePolicyConfig
   labels: {
     title: string
@@ -250,7 +251,7 @@ function normalizeModelIds(values: string[]) {
   return normalized
 }
 
-export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: EffectiveRoutingRuleCardProps) {
+export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePolicy }: EffectiveRoutingRuleCardProps) {
   const resolvedRule = defaultRule(rule)
   const isEditable = editablePolicy != null
   const fieldSources = useMemo(
@@ -261,8 +262,15 @@ export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: Effec
   const [expandedField, setExpandedField] = useState<EditablePolicyField | null>(defaultExpandedField)
   const [availableModelInput, setAvailableModelInput] = useState('')
   const userTouchedExpansionRef = useRef(false)
+  const previousIdentityKeyRef = useRef(identityKey)
 
   useEffect(() => {
+    const identityChanged = previousIdentityKeyRef.current !== identityKey
+    if (identityChanged) {
+      previousIdentityKeyRef.current = identityKey
+      userTouchedExpansionRef.current = false
+    }
+
     if (!isEditable) {
       userTouchedExpansionRef.current = false
       setExpandedField(null)
@@ -277,6 +285,7 @@ export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: Effec
     })
   }, [
     isEditable,
+    identityKey,
     fieldSources.blockNewConversations,
     fieldSources.allowCutOut,
     fieldSources.allowCutIn,

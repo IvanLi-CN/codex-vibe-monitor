@@ -3232,6 +3232,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   </div>
                   <EffectiveRoutingRuleCard
                     rule={selectedDetail.effectiveRoutingRule}
+                    identityKey={selectedDetail.id}
                     editablePolicy={{
                       busyField: inlinePolicyBusyField,
                       errorByField: inlinePolicyErrors,

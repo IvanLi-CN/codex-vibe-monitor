@@ -277,11 +277,12 @@ describe('EffectiveRoutingRuleCard', () => {
     const onChange = vi.fn()
 
     render(
-      <EffectiveRoutingRuleCard
-        rule={rule}
-        labels={labels}
-        editablePolicy={{ onChange }}
-      />,
+        <EffectiveRoutingRuleCard
+          rule={rule}
+          identityKey="account-a"
+          labels={labels}
+          editablePolicy={{ onChange }}
+        />,
     )
 
     const cutOutButton = document.querySelector<HTMLButtonElement>(
@@ -304,6 +305,7 @@ describe('EffectiveRoutingRuleCard', () => {
               ...rule.fieldSources,
             },
           }}
+          identityKey="account-a"
           labels={labels}
           editablePolicy={{ onChange, busyField: null }}
         />,
@@ -312,6 +314,24 @@ describe('EffectiveRoutingRuleCard', () => {
 
     expect(document.querySelector('[role="switch"][aria-label="Cut out"]')).not.toBeNull()
     expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).toBeNull()
+
+    act(() => {
+      root?.render(
+        <EffectiveRoutingRuleCard
+          rule={{
+            ...rule,
+            fieldSources: {
+              ...rule.fieldSources,
+            },
+          }}
+          identityKey="account-b"
+          labels={labels}
+          editablePolicy={{ onChange }}
+        />,
+      )
+    })
+
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull()
   })
 
   it('keeps system denied models read-only even when account policy editing is enabled', () => {
