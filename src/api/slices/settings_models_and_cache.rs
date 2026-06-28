@@ -1425,6 +1425,9 @@ pub(crate) struct UpstreamAccountActivityAccountResponse {
     pub(crate) total_tokens: i64,
     pub(crate) success_tokens: i64,
     pub(crate) non_success_tokens: i64,
+    pub(crate) failure_tokens: i64,
+    pub(crate) failure_cost: f64,
+    pub(crate) total_cost: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_hit_rate: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1433,6 +1436,8 @@ pub(crate) struct UpstreamAccountActivityAccountResponse {
     pub(crate) spend_rate: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) first_byte_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) avg_total_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_invocation_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]

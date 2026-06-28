@@ -21,6 +21,9 @@
 - 已实现：上游账号 recent 行改为“对话短 ID + 请求 ID”主标识布局，短 ID 基于真实 `promptCacheKey` 计算并去掉 `WC-` 前缀；点击详情时传递的 `selection.promptCacheKey` 也已修正为真实对话键。
 - 已实现：上游账号 recent 行不再重复显示账号名；当 `requestModel` / `responseModel` 规范化后仍不一致时，recent 行改为同时展示请求模型、切换图标与响应模型。
 - 已实现：上游账号 recent 行的 endpoint、reasoning effort 与双模型 badge 统一复用 compact 尺寸 recipe，消除同一行内 badge 高度不一致问题。
+- 已实现：上游账号卡片标题区改为账号名 + 文本型实时 `TPM / 消费速率` 指标，删除卡内 `渠道 / 分组` 行和顶部 `调用` 指标；周期统计重排为首字用时、请求数、成本、Token 四组，并沿用滚动数字效果。
+- 已实现：账号活动接口补出 `avgTotalMs`、`totalCost`、严格失败 `failureCost` 与 `failureTokens`；失败比率由前端按 `failureCount / requestCount` 计算，`其他` 按 `nonSuccessCount - failureCount` 下限归零。
+- 已实现：账号卡列表按 `totalTokens` 倒序排列，并用最近调用时间与账号 ID 作稳定排序兜底。
 
 ## Remaining Gaps
 

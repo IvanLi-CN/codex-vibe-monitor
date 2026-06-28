@@ -599,10 +599,14 @@ export interface UpstreamAccountActivityAccount {
   totalTokens: number;
   successTokens: number;
   nonSuccessTokens: number;
+  failureTokens: number;
+  failureCost: number;
+  totalCost: number;
   cacheHitRate?: number | null;
   tokensPerMinute?: number | null;
   spendRate?: number | null;
   firstByteAvgMs?: number | null;
+  avgTotalMs?: number | null;
   inProgressInvocationCount?: number | null;
   retryInvocationCount?: number | null;
   recentInvocations: PromptCacheConversationInvocationPreview[];
@@ -2486,10 +2490,14 @@ function normalizeUpstreamAccountActivityAccount(
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     successTokens: normalizeFiniteNumber(payload.successTokens) ?? 0,
     nonSuccessTokens: normalizeFiniteNumber(payload.nonSuccessTokens) ?? 0,
+    failureTokens: normalizeFiniteNumber(payload.failureTokens) ?? 0,
+    failureCost: normalizeFiniteNumber(payload.failureCost) ?? 0,
+    totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
     cacheHitRate: normalizeFiniteNumber(payload.cacheHitRate),
     tokensPerMinute: normalizeFiniteNumber(payload.tokensPerMinute),
     spendRate: normalizeFiniteNumber(payload.spendRate),
     firstByteAvgMs: normalizeFiniteNumber(payload.firstByteAvgMs),
+    avgTotalMs: normalizeFiniteNumber(payload.avgTotalMs),
     inProgressInvocationCount: normalizeFiniteNumber(
       payload.inProgressInvocationCount,
     ),

@@ -47,16 +47,18 @@
 
 - Dashboard 工作区区块右上必须新增 `对话 / 上游账号` tabs，默认保持在 `对话`。
 - `上游账号` tab 首次打开前不得发请求；首次激活后才加载，并在 tab 未激活时不参与 SSE/records 刷新预算。
-- `上游账号` 视图只展示当前共享 range 内“至少有 1 条调用”的账号；`渠道名` 直接使用 `displayName`。
+- `上游账号` 视图只展示当前共享 range 内“至少有 1 条调用”的账号；账号标题直接使用 `displayName`。
 - `上游账号` 视图仅支持 `today / yesterday / 1d / 7d`；当共享 range 为 `usage` 时，该 tab 必须 disabled，且若当前停留在账号 tab，必须自动回退到 `对话`。
-- 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`firstByteAvgMs`、`inProgressInvocationCount`、`retryInvocationCount` 与 `recentInvocations[4]`。
+- 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`retryInvocationCount` 与 `recentInvocations[4]`。
 - `recentInvocations` 必须限制在当前所选范围内，按 `occurredAt DESC` 排序，并使用后端 bounded query 返回。
 - `recentInvocations[]` 必须额外返回真实 `promptCacheKey?: string | null`，供账号卡 recent 行生成稳定的对话短 ID 与详情抽屉 selection。
 - 账号卡不是折叠卡，也不是 `2 x 2` 小格子；它是单张放大卡片，桌面宽屏 `>=1660px` 时每行 2 张，其余断点为 1 列。
 - 账号卡必须保持紧凑信息卡定位；在桌面宽屏下允许按放大卡呈现，但不得因为固定高度或装饰性留白把视觉效果拉成整页面板。
-- 单账号卡上半部分必须展示账号级摘要：渠道名、TPM、消费速率、进行中调用、重试调用、请求数（成功 / 失败 / 非成功）、首字用时、Token（成功 / 非成功）、缓存命中率。
+- 单账号卡标题行必须展示账号名、计划/状态、账号 ID，并把实时主指标 `TPM`、`消费速率` 作为文本型行内指标放在同一顶部区域；不得用卡片型容器展示这些实时指标，且账号卡内不得再渲染 `渠道 xxx / 分组` 或顶部 `调用` 指标。
+- 单账号卡周期统计必须改为四组：`首字用时 + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败比率(%)`、`Token + 缓存命中率 / 失败`。前者为主参数，后者为附加参数。
+- 四组周期统计与顶部实时指标中的所有数值必须使用 Dashboard 既有滚动数字效果；账号卡排序必须按 `totalTokens DESC`，再按最近调用时间与账号 ID 保持稳定。
 - 摘要区不得加入低价值说明型文案；“按调用计数，不按对话去重”、“仍在重试链路中的调用”、“账号状态说明条”之类解释性文字不得出现在卡面常驻内容里。
-- 请求数与 Token 分解摘要在卡面常驻态只显示色点与数值；不得出现任何可见文字标签（包括单字、缩写、短标签）。完整 `label + value` 只通过 hover / title 暴露，不得额外占用版面。
+- 请求数、成本与 Token 附加分解摘要在卡面常驻态只显示色点与数值；不得出现任何可见文字标签（包括单字、缩写、短标签）。完整 `label + value` 只通过 hover / title 暴露，不得额外占用版面。
 - 账号卡内部所有结构性描边（外框、摘要格子、recent 行、分隔线）必须统一使用低对比中性边框，不得把主题主色、语义色或任意彩色边框用于结构分割；颜色只保留给状态点、数值与徽章等语义元素。
 - recent bridge 作为 recent 区标题行右侧统计例外，必须显示完整状态文字（如“进行中 / 失败 / 成功”），并与左侧“最近 4 条调用”标题保持同一垂直对齐节奏。
 - 单账号卡下半部分必须展示当前范围内最近 4 条调用记录，复用现有紧凑调用行语言，而不是再做卡中卡；4 条记录必须在卡内完整可见，不得依赖展开、滚动或裁切。
@@ -126,7 +128,9 @@
 - Given 共享 range 为 `today / yesterday / 1d / 7d`，When 切到 `上游账号`，Then 账号集合与汇总指标随范围变化，且只包含该范围内至少有一条调用的账号。
 - Given 当前在 `上游账号` tab，When 把共享 range 切到 `usage`，Then 账号 tab disabled，界面自动回退到 `对话`，且不会发账号活动请求。
 - Given 从未打开过账号 tab，When 停留在 `对话` tab，Then 前端不会请求账号活动接口。
-- Given 某账号有范围内调用，When 查看账号卡，Then 标题使用 `displayName`，且主体包含渠道名、TPM、消费速率、进行中调用、重试调用、请求数分解、首字用时、Token 分解、缓存命中率。
+- Given 某账号有范围内调用，When 查看账号卡，Then 标题使用 `displayName`，顶部同一行包含文本型 `TPM`、`消费速率` 实时指标和账号 ID，且卡内不再出现 `渠道 xxx / 分组` 行或顶部 `调用` 指标。
+- Given 查看账号卡周期统计，When 卡片渲染完成，Then 可见四组统计：`首字用时 + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败比率(%)`、`Token + 缓存命中率 / 失败`，且所有数值使用滚动数字效果。
+- Given 多个账号都有范围内调用，When 查看上游账号列表，Then 账号卡按 `totalTokens` 倒序排列；Token 相同再按最近调用时间和账号 ID 稳定排序。
 - Given 某账号有至少 4 条范围内调用，When 查看账号卡底部，Then 只显示最近 4 条，按 `occurredAt DESC` 排序。
 - Given 某账号 recent 调用记录存在真实 `promptCacheKey`，When 查看请求标识主行，Then 可见基于该键计算出的对话短 ID、分隔图标与完整请求 ID，且短 ID 展示值不带 `WC-` 前缀。
 - Given 查看账号卡摘要区，When 卡片处于常驻态，Then 不出现解释性废话或状态说明条，请求数 / Token 分解只显示色点与数值，且不出现任何可见文字标签。
