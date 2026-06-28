@@ -37,22 +37,22 @@ export default {
       },
       keyframes: {
         'signal-ring': {
-          '0%': { transform: 'scale(0.72)', opacity: '0' },
-          '18%': { opacity: '0.58' },
-          '62%': { opacity: '0.18' },
-          '100%': { transform: 'scale(1.92)', opacity: '0' },
+          '0%': { transform: 'scale(0.86)', opacity: '0' },
+          '20%': { opacity: '0.38' },
+          '60%': { opacity: '0.12' },
+          '100%': { transform: 'scale(1.42)', opacity: '0' },
         },
         'signal-glow': {
-          '0%, 100%': { transform: 'scale(0.92)', opacity: '0.18' },
-          '50%': { transform: 'scale(1.16)', opacity: '0.52' },
+          '0%, 100%': { transform: 'scale(0.96)', opacity: '0.12' },
+          '50%': { transform: 'scale(1.08)', opacity: '0.3' },
         },
         'signal-halo': {
-          '0%, 100%': { transform: 'scale(0.86)', opacity: '0.16' },
-          '50%': { transform: 'scale(1.18)', opacity: '0.44' },
+          '0%, 100%': { transform: 'scale(0.92)', opacity: '0.1' },
+          '50%': { transform: 'scale(1.08)', opacity: '0.24' },
         },
         'signal-core': {
           '0%, 100%': { transform: 'scale(1)' },
-          '50%': { transform: 'scale(1.055)' },
+          '50%': { transform: 'scale(1.028)' },
         },
         'orbit-spin': {
           '0%': { transform: 'rotate(0deg)' },
