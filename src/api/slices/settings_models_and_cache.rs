@@ -663,6 +663,7 @@ pub(crate) struct PromptCacheConversationResponse {
 pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) id: i64,
     pub(crate) invoke_id: String,
+    pub(crate) prompt_cache_key: Option<String>,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) occurred_at: String,
     pub(crate) status: String,
@@ -1211,6 +1212,7 @@ pub(crate) struct UpstreamAccountInvocationPreviewRow {
     pub(crate) upstream_account_id: i64,
     pub(crate) id: i64,
     pub(crate) invoke_id: String,
+    pub(crate) prompt_cache_key: Option<String>,
     pub(crate) occurred_at: String,
     pub(crate) status: String,
     pub(crate) failure_class: Option<String>,

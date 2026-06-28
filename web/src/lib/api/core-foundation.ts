@@ -1124,6 +1124,7 @@ export interface PromptCacheConversationUpstreamAccount {
 export interface PromptCacheConversationInvocationPreview {
   id: number;
   invokeId: string;
+  promptCacheKey?: string | null;
   occurredAt: string;
   status: string;
   failureClass: Exclude<ApiInvocation["failureClass"], undefined> | null;
@@ -2005,6 +2006,10 @@ function normalizePromptCacheConversationInvocationPreview(
   return {
     id: normalizeFiniteNumber(payload.id) ?? 0,
     invokeId,
+    promptCacheKey:
+      typeof payload.promptCacheKey === "string" && payload.promptCacheKey.trim()
+        ? payload.promptCacheKey.trim()
+        : null,
     occurredAt,
     status:
       typeof payload.status === "string" && payload.status.trim()
