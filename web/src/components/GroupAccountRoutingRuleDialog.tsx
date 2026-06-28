@@ -130,7 +130,8 @@ function buildPayload(
     return changedPayload;
   }
 
-  if (payload.availableModels?.length === 0) {
+  const baseModels = normalizeModelIds(options?.baseRule?.availableModels ?? []);
+  if (payload.availableModels?.length === 0 && baseModels.length === 0) {
     delete payload.availableModels;
   }
 
