@@ -12,7 +12,7 @@ pub(crate) async fn fetch_prompt_cache_conversations(
             match request.detail_level {
                 PromptCacheConversationDetailLevel::Full => response,
                 PromptCacheConversationDetailLevel::Compact => {
-                    compact_prompt_cache_conversations_response(response)
+                    compact_prompt_cache_conversations_response(response, None)
                 }
             }
         } else {

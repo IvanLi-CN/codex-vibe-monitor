@@ -583,6 +583,32 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         "preview-02"
     );
 
+    let Json(expanded_compact_response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+            recent_invocation_limit: Some(6),
+        }),
+    )
+    .await
+    .expect("compact non-paginated recent invocation limit should be honored");
+    let expanded_compact_conversation = expanded_compact_response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-preview")
+        .expect("expanded compact pck-preview should be included");
+    assert_eq!(expanded_compact_conversation.recent_invocations.len(), 6);
+    assert_eq!(
+        expanded_compact_conversation.recent_invocations[5].invoke_id,
+        "preview-02"
+    );
+
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_accounts (

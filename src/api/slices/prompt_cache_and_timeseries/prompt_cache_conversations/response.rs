@@ -15,7 +15,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
         return Ok(match request.detail_level {
             PromptCacheConversationDetailLevel::Full => response,
             PromptCacheConversationDetailLevel::Compact => {
-                compact_prompt_cache_conversations_response(response)
+                compact_prompt_cache_conversations_response(response, request.recent_invocation_limit)
             }
         });
     }

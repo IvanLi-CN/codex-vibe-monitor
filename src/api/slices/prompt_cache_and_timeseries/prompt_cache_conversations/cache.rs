@@ -97,12 +97,13 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
 
 pub(crate) fn compact_prompt_cache_conversations_response(
     mut response: PromptCacheConversationsResponse,
+    recent_invocation_limit: Option<i64>,
 ) -> PromptCacheConversationsResponse {
+    let recent_invocation_limit = recent_invocation_limit.unwrap_or(2).max(0) as usize;
     for conversation in &mut response.conversations {
         conversation.upstream_accounts.clear();
         conversation.last24h_requests.clear();
-        conversation.recent_invocations.truncate(2);
+        conversation.recent_invocations.truncate(recent_invocation_limit);
     }
     response
 }
-
