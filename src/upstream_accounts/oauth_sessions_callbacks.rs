@@ -1692,10 +1692,7 @@ pub(crate) async fn update_upstream_account_inner(
             OptionalField::Null => None,
             OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
         },
-        None => row.policy_allow_new_conversations.or_else(|| {
-            row.policy_block_new_conversations
-                .map(|block_new_conversations| if block_new_conversations == 0 { 1 } else { 0 })
-        }),
+        None => row.policy_allow_new_conversations,
     })
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => match rule.allow_cut_out {
