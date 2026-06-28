@@ -412,6 +412,9 @@ function Probe() {
       <div data-testid="preview-status">
         {stats?.conversations[0]?.recentInvocations[0]?.status ?? ""}
       </div>
+      <div data-testid="preview-count">
+        {String(stats?.conversations[0]?.recentInvocations.length ?? 0)}
+      </div>
       <div data-testid="recent-preview-limit">{String(recentPreviewLimit)}</div>
       <div data-testid="request-count">
         {String(stats?.conversations[0]?.requestCount ?? 0)}
@@ -1173,6 +1176,55 @@ describe("useDashboardWorkingConversations", () => {
     expect(text("preview-status")).toBe("running");
     expect(text("request-count")).toBe("2");
     expect(text("last-in-flight-at")).toBe("2026-04-10T02:59:30Z");
+    expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("expands the dynamic recent preview window from live in-flight records", async () => {
+    apiMocks.fetchPromptCacheConversationsPage.mockResolvedValueOnce(
+      createResponseWithConversations([
+        createConversation("pck-live-burst", {
+          recentInvocations: Array.from({ length: 4 }, (_, index) =>
+            createPreview({
+              id: 10 - index,
+              invokeId: `burst-${4 - index}`,
+              occurredAt: `2026-04-10T02:04:${String(40 - index).padStart(2, "0")}Z`,
+              status: "running",
+              totalTokens: 0,
+              cost: 0,
+            }),
+          ),
+          requestCount: 4,
+          totalTokens: 0,
+          totalCost: 0,
+          lastTerminalAt: null,
+          lastInFlightAt: "2026-04-10T02:04:40Z",
+        }),
+      ]),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+    await flushAsync();
+
+    expect(text("preview-count")).toBe("4");
+    expect(text("recent-preview-limit")).toBe("4");
+
+    act(() => {
+      emitRecords([
+        createRecord("pck-live-burst", {
+          id: 11,
+          invokeId: "burst-5",
+          occurredAt: "2026-04-10T02:04:45Z",
+          status: "running",
+          totalTokens: 0,
+          cost: 0,
+        }),
+      ]);
+    });
+
+    expect(text("preview-invoke-id")).toBe("burst-5");
+    expect(text("preview-count")).toBe("5");
+    expect(text("recent-preview-limit")).toBe("5");
     expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(1);
   });
 

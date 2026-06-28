@@ -949,7 +949,7 @@ export function useDashboardWorkingConversations() {
           nextConversation,
           record,
           current.snapshotAt,
-          recentPreviewLimitRef.current,
+          DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
           patchedPostSnapshotInvocations,
         );
         nextConversation = patchResult.conversation;
