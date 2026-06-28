@@ -1247,6 +1247,7 @@ export interface PromptCacheConversationPageQuery {
   cursor?: string | null;
   snapshotAt?: string | null;
   detail?: PromptCacheConversationDetailLevel;
+  recentInvocationLimit?: number;
   signal?: AbortSignal;
 }
 
@@ -3022,6 +3023,9 @@ export async function fetchPromptCacheConversationsPage(
   }
   if (options.detail) {
     search.set("detail", options.detail);
+  }
+  if (options.recentInvocationLimit != null) {
+    search.set("recentInvocationLimit", String(options.recentInvocationLimit));
   }
   const response = await fetchJson<unknown>(
     `/api/stats/prompt-cache-conversations?${search.toString()}`,

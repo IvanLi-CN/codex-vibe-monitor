@@ -42,6 +42,7 @@ export default function DashboardPage() {
     isLoadingMore: workingCardsLoadingMore,
     error: workingCardsError,
     loadMore,
+    recentPreviewLimit,
     setRefreshTargetCount,
   } = useDashboardWorkingConversations();
 
@@ -73,6 +74,7 @@ export default function DashboardPage() {
         cards={cards}
         totalMatched={totalMatched}
         hasMore={hasMore}
+        recentPreviewLimit={recentPreviewLimit}
         isLoading={workingCardsLoading}
         isLoadingMore={workingCardsLoadingMore}
         error={workingCardsError}

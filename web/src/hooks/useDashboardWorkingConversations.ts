@@ -28,7 +28,8 @@ export const DASHBOARD_WORKING_CONVERSATIONS_VISIBLE_PATCH_BATCH_MS = 1_000;
 export const DASHBOARD_WORKING_CONVERSATIONS_REFRESH_THROTTLE_MS = 5_000;
 const DASHBOARD_WORKING_CONVERSATIONS_POLL_INTERVAL_MS = 15_000;
 const DASHBOARD_WORKING_CONVERSATIONS_OPEN_RESYNC_COOLDOWN_MS = 3_000;
-const DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_LIMIT = 2;
+export const DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN = 4;
+export const DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX = 16;
 const WORKING_SET_WINDOW_MS = 5 * 60 * 1_000;
 
 interface FreshSnapshotKeysState {
@@ -63,6 +64,42 @@ function isRecordWithinSnapshotBoundary(
 function isInFlightStatus(status: string | null | undefined) {
   const normalized = status?.trim().toLowerCase() ?? "";
   return normalized === "running" || normalized === "pending";
+}
+
+function clampRecentPreviewLimit(value: number) {
+  if (!Number.isFinite(value)) {
+    return DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN;
+  }
+  return Math.min(
+    DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+    Math.max(
+      DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
+      Math.trunc(value),
+    ),
+  );
+}
+
+export function resolveDashboardWorkingConversationsRecentPreviewLimit(
+  conversations: Pick<PromptCacheConversation, "recentInvocations">[],
+  referenceMs: number,
+) {
+  let maxRecentInFlightCount = 0;
+  for (const conversation of conversations) {
+    let recentInFlightCount = 0;
+    for (const invocation of conversation.recentInvocations) {
+      if (!isInFlightStatus(invocation.status)) continue;
+      const occurredAtEpoch = parseEpoch(invocation.occurredAt);
+      if (occurredAtEpoch == null) continue;
+      const ageMs = referenceMs - occurredAtEpoch;
+      if (ageMs < 0 || ageMs > WORKING_SET_WINDOW_MS) continue;
+      recentInFlightCount += 1;
+    }
+    maxRecentInFlightCount = Math.max(
+      maxRecentInFlightCount,
+      recentInFlightCount,
+    );
+  }
+  return clampRecentPreviewLimit(maxRecentInFlightCount);
 }
 
 function resolveConversationSortAnchor(
@@ -132,6 +169,7 @@ function getPreviewStableKey(preview: {
 function buildRecentInvocations(
   previews: PromptCacheConversation["recentInvocations"],
   record: ApiInvocation,
+  recentPreviewLimit: number,
 ) {
   const nextPreview = buildPromptCachePreviewFromInvocation(record);
   const nextByKey = new Map<
@@ -153,7 +191,7 @@ function buildRecentInvocations(
         (left.id ?? Number.MIN_SAFE_INTEGER)
       );
     })
-    .slice(0, DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_LIMIT);
+    .slice(0, clampRecentPreviewLimit(recentPreviewLimit));
 }
 
 function resolveVisibleLastInFlightAt(
@@ -264,6 +302,7 @@ function patchConversationWithRecord(
   conversation: PromptCacheConversation,
   record: ApiInvocation,
   snapshotAt: string | null | undefined,
+  recentPreviewLimit: number,
   patchedPostSnapshotInvocations: Map<
     string,
     {
@@ -289,6 +328,7 @@ function patchConversationWithRecord(
   const nextRecentInvocations = buildRecentInvocations(
     conversation.recentInvocations,
     record,
+    recentPreviewLimit,
   );
   const previewTotalTokens = Math.max(0, preview.totalTokens ?? 0);
   const existingTotalTokens = Math.max(0, existingPreview?.totalTokens ?? 0);
@@ -586,6 +626,9 @@ export function useDashboardWorkingConversations() {
   >(new Map());
   const lastHeadRefreshAtRef = useRef(0);
   const lastOpenResyncAtRef = useRef(0);
+  const recentPreviewLimitRef = useRef(
+    DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+  );
 
   useEffect(() => {
     responseRef.current = response;
@@ -632,12 +675,19 @@ export function useDashboardWorkingConversations() {
           {
             pageSize: DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
             detail: "compact",
+            recentInvocationLimit:
+              DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
             signal: controller.signal,
           },
         );
         if (requestSeq !== requestSeqRef.current) return;
         recordWorkingConversationHeadFetch();
         const nowMs = Date.now();
+        recentPreviewLimitRef.current =
+          resolveDashboardWorkingConversationsRecentPreviewLimit(
+            nextResponse.conversations,
+            resolveWorkingSetReferenceMs(nextResponse.snapshotAt, nowMs),
+          );
         const { response: mergedResponse } = mergeHeadPage(
           responseRef.current,
           nextResponse,
@@ -730,11 +780,21 @@ export function useDashboardWorkingConversations() {
           cursor: current.nextCursor,
           snapshotAt: current.snapshotAt,
           detail: "compact",
+          recentInvocationLimit:
+            DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
           signal: controller.signal,
         },
       );
       if (requestSeq !== requestSeqRef.current) return;
       const nowMs = Date.now();
+      recentPreviewLimitRef.current =
+        resolveDashboardWorkingConversationsRecentPreviewLimit(
+          [...(responseRef.current?.conversations ?? []), ...nextResponse.conversations],
+          resolveWorkingSetReferenceMs(
+            nextResponse.snapshotAt ?? responseRef.current?.snapshotAt,
+            nowMs,
+          ),
+        );
       freshSnapshotKeysRef.current = mergeFreshSnapshotKeysState(
         freshSnapshotKeysRef.current,
         nextResponse.snapshotAt,
@@ -889,6 +949,7 @@ export function useDashboardWorkingConversations() {
           nextConversation,
           record,
           current.snapshotAt,
+          recentPreviewLimitRef.current,
           patchedPostSnapshotInvocations,
         );
         nextConversation = patchResult.conversation;
@@ -960,6 +1021,8 @@ export function useDashboardWorkingConversations() {
     abortControllerRef.current = null;
     responseRef.current = null;
     refreshTargetCountRef.current = DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE;
+    recentPreviewLimitRef.current =
+      DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX;
     freshSnapshotKeysRef.current = {
       snapshotAt: null,
       keys: new Set(),
@@ -1028,6 +1091,8 @@ export function useDashboardWorkingConversations() {
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
       refreshTargetCountRef.current = DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE;
+      recentPreviewLimitRef.current =
+        DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX;
       freshSnapshotKeysRef.current = {
         snapshotAt: null,
         keys: new Set(),
@@ -1048,6 +1113,17 @@ export function useDashboardWorkingConversations() {
     () => mapPromptCacheConversationsToDashboardCards(response),
     [response],
   );
+  const recentPreviewLimit = useMemo(
+    () =>
+      resolveDashboardWorkingConversationsRecentPreviewLimit(
+        response?.conversations ?? [],
+        resolveWorkingSetReferenceMs(response?.snapshotAt, Date.now()),
+      ),
+    [response],
+  );
+  useEffect(() => {
+    recentPreviewLimitRef.current = recentPreviewLimit;
+  }, [recentPreviewLimit]);
   const setRefreshTargetCount = useCallback(
     (count: number) => {
       if (!Number.isFinite(count)) return;
@@ -1087,6 +1163,7 @@ export function useDashboardWorkingConversations() {
     error,
     loadMore,
     refresh,
+    recentPreviewLimit,
     setRefreshTargetCount,
   };
 }

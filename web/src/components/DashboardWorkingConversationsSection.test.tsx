@@ -60,12 +60,24 @@ const upstreamAccountActivityMock = vi.hoisted(() => ({
   data: null as UpstreamAccountActivityResponse | null,
   isLoading: false,
   error: null as string | null,
-  calls: [] as Array<{ range: string; enabled: boolean }>,
+  calls: [] as Array<{
+    range: string;
+    enabled: boolean;
+    recentInvocationLimit?: number;
+  }>,
 }));
 
 vi.mock("../hooks/useDashboardUpstreamAccountActivity", () => ({
-  useDashboardUpstreamAccountActivity: (range: string, enabled: boolean) => {
-    upstreamAccountActivityMock.calls.push({ range, enabled });
+  useDashboardUpstreamAccountActivity: (
+    range: string,
+    enabled: boolean,
+    recentInvocationLimit?: number,
+  ) => {
+    upstreamAccountActivityMock.calls.push({
+      range,
+      enabled,
+      recentInvocationLimit,
+    });
     return {
       data: upstreamAccountActivityMock.data,
       isLoading: upstreamAccountActivityMock.isLoading,
@@ -293,6 +305,7 @@ function renderSection(
     isLoadingMore?: boolean;
     hasMore?: boolean;
     totalMatched?: number;
+    recentPreviewLimit?: number;
     onLoadMore?: () => void;
     setRefreshTargetCount?: (count: number) => void;
     onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
@@ -345,6 +358,7 @@ function renderSectionWithCards(
       <I18nProvider>
         <DashboardWorkingConversationsSection
           activeRange={options?.activeRange ?? "today"}
+          recentPreviewLimit={options?.recentPreviewLimit}
           cards={cards}
           totalMatched={options?.totalMatched}
           hasMore={options?.hasMore}
@@ -399,6 +413,7 @@ function rerenderSection(
     isLoadingMore?: boolean;
     hasMore?: boolean;
     totalMatched?: number;
+    recentPreviewLimit?: number;
     onLoadMore?: () => void;
     setRefreshTargetCount?: (count: number) => void;
     onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
@@ -428,6 +443,7 @@ function rerenderSectionWithCards(
     isLoadingMore?: boolean;
     hasMore?: boolean;
     totalMatched?: number;
+    recentPreviewLimit?: number;
     onLoadMore?: () => void;
     setRefreshTargetCount?: (count: number) => void;
     onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
@@ -451,6 +467,7 @@ function rerenderSectionWithCards(
       <I18nProvider>
         <DashboardWorkingConversationsSection
           activeRange={options?.activeRange ?? "today"}
+          recentPreviewLimit={options?.recentPreviewLimit}
           cards={cards}
           totalMatched={options?.totalMatched}
           hasMore={options?.hasMore}
@@ -489,6 +506,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(upstreamAccountActivityMock.calls[0]).toEqual({
       range: "today",
       enabled: false,
+      recentInvocationLimit: 4,
     });
     expect(host?.textContent).toContain("当前对话 1 条");
 
@@ -506,10 +524,11 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(upstreamAccountActivityMock.calls.at(-1)).toEqual({
       range: "today",
       enabled: true,
+      recentInvocationLimit: 4,
     });
     expect(host?.textContent).toContain("当前活动账号 1 个");
     expect(host?.textContent).toContain(
-      "展示当前总览范围内有调用的上游账号，以及每个账号最近 4 条调用。",
+      "展示当前总览范围内有调用的上游账号，以及每个账号的动态最近调用窗口。",
     );
     expect(host?.textContent).toContain("最近 4 条调用");
     expect(host?.textContent).not.toContain("账号状态");
@@ -528,6 +547,11 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(
       host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]')
         .length,
+    ).toBe(4);
+    expect(
+      host?.querySelectorAll(
+        '[data-testid="dashboard-upstream-account-recent-conversation-marker"]',
+      ).length,
     ).toBe(4);
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-header-row"]'),
@@ -570,6 +594,42 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(recentBreakdown?.textContent).toContain("成功");
     expect(recentBreakdown?.textContent).toContain("2");
     expect(recentBreakdown?.textContent).toContain("1");
+  });
+
+  it("passes the dynamic recent preview limit into upstream account activity", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-dynamic-limit", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-dynamic-limit",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+      { recentPreviewLimit: 7 },
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    expect(upstreamAccountActivityMock.calls.at(-1)).toEqual({
+      range: "today",
+      enabled: true,
+      recentInvocationLimit: 7,
+    });
+    expect(host?.textContent).toContain("最近 7 条调用");
   });
 
   it("disables and falls back from the upstream account tab for usage range", () => {
@@ -643,7 +703,7 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     expect(host?.textContent).toContain(
-      "展示当前总览范围内有调用的上游账号，以及每个账号最近 4 条调用。",
+      "展示当前总览范围内有调用的上游账号，以及每个账号的动态最近调用窗口。",
     );
     expect(host?.textContent).not.toContain(
       "展示最近 5 分钟内有终态调用，或当前仍处于运行中 / 排队中的对话。",

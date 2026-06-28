@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN } from "./useDashboardWorkingConversations";
 import {
   fetchUpstreamAccountActivity,
   type UpstreamAccountActivityResponse,
@@ -19,12 +20,14 @@ function isAbortError(error: unknown) {
 export function useDashboardUpstreamAccountActivity(
   range: string,
   enabled: boolean,
+  recentInvocationLimit = DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
 ) {
   const [data, setData] = useState<UpstreamAccountActivityResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const enabledRef = useRef(enabled);
   const rangeRef = useRef(range);
+  const recentInvocationLimitRef = useRef(recentInvocationLimit);
   const hasActivatedRef = useRef(false);
   const hasHydratedRef = useRef(false);
   const inFlightRef = useRef(false);
@@ -42,6 +45,10 @@ export function useDashboardUpstreamAccountActivity(
   useEffect(() => {
     rangeRef.current = range;
   }, [range]);
+
+  useEffect(() => {
+    recentInvocationLimitRef.current = recentInvocationLimit;
+  }, [recentInvocationLimit]);
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return;
@@ -65,18 +72,20 @@ export function useDashboardUpstreamAccountActivity(
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
     const requestedRange = rangeRef.current;
+    const requestedRecentLimit = recentInvocationLimitRef.current;
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const shouldShowLoading = !(silent && hasHydratedRef.current);
     if (shouldShowLoading) setIsLoading(true);
     try {
       const response = await fetchUpstreamAccountActivity(requestedRange, {
-        recentLimit: 4,
+        recentLimit: requestedRecentLimit,
         signal: controller.signal,
       });
       if (
         requestSeq !== requestSeqRef.current ||
         rangeRef.current !== requestedRange ||
+        recentInvocationLimitRef.current !== requestedRecentLimit ||
         !enabledRef.current
       ) {
         return;
@@ -127,7 +136,14 @@ export function useDashboardUpstreamAccountActivity(
     }
     hasActivatedRef.current = true;
     void load({ silent: hasHydratedRef.current });
-  }, [clearPendingRefreshTimer, enabled, invalidateCurrentRequest, load, range]);
+  }, [
+    clearPendingRefreshTimer,
+    enabled,
+    invalidateCurrentRequest,
+    load,
+    range,
+    recentInvocationLimit,
+  ]);
 
   useEffect(() => {
     if (!enabled) return;

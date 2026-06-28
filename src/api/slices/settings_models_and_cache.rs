@@ -514,6 +514,7 @@ pub(crate) enum PromptCacheConversationDetailLevel {
 pub(crate) struct PromptCacheConversationsRequest {
     pub(crate) selection: PromptCacheConversationSelection,
     pub(crate) detail_level: PromptCacheConversationDetailLevel,
+    pub(crate) recent_invocation_limit: Option<i64>,
     pub(crate) page_size: Option<i64>,
     pub(crate) cursor: Option<String>,
     pub(crate) snapshot_at: Option<String>,
@@ -524,6 +525,7 @@ impl PromptCacheConversationsRequest {
         Self {
             selection,
             detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: None,
             page_size: None,
             cursor: None,
             snapshot_at: None,
@@ -532,6 +534,7 @@ impl PromptCacheConversationsRequest {
 
     pub(crate) fn uses_legacy_cache(&self) -> bool {
         self.detail_level == PromptCacheConversationDetailLevel::Full
+            && self.recent_invocation_limit.is_none()
             && self.page_size.is_none()
             && self.cursor.is_none()
             && self.snapshot_at.is_none()
@@ -1341,6 +1344,7 @@ pub(crate) struct PromptCacheConversationsQuery {
     pub(crate) cursor: Option<String>,
     pub(crate) snapshot_at: Option<String>,
     pub(crate) detail: Option<String>,
+    pub(crate) recent_invocation_limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

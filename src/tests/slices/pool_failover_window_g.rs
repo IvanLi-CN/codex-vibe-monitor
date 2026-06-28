@@ -1921,6 +1921,7 @@ async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await
@@ -2009,6 +2010,7 @@ async fn runtime_snapshot_keeps_prompt_cache_rollups_inline_without_background_f
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
         }),
     )
     .await

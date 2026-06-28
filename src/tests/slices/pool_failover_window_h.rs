@@ -11704,6 +11704,30 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             None,
             None,
         ),
+        (
+            605_i64,
+            "upstream-activity-extra-running",
+            "running",
+            75_i64,
+            0.07_f64,
+            15_i64,
+            Some(405.0_f64),
+            json!({ "promptCacheKey": "pck-upstream-b", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
+            None,
+            None,
+        ),
+        (
+            606_i64,
+            "upstream-activity-extra-success",
+            "success",
+            125_i64,
+            0.12_f64,
+            25_i64,
+            Some(415.0_f64),
+            json!({ "promptCacheKey": "pck-upstream-c", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
+            None,
+            None,
+        ),
     ] {
         sqlx::query(
             r#"
@@ -11729,7 +11753,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
         .bind(invoke_id)
         .bind(format_naive(
             base_local
-                .checked_sub_signed(ChronoDuration::seconds((605_i64 - id) * 10))
+                .checked_sub_signed(ChronoDuration::seconds((607_i64 - id) * 10))
                 .expect("valid upstream account activity time"),
         ))
         .bind(SOURCE_PROXY)
@@ -11751,7 +11775,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
         State(state.clone()),
         Query(UpstreamAccountActivityQuery {
             range: "today".to_string(),
-            recent_limit: Some(4),
+            recent_limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
     )
@@ -11764,23 +11788,64 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     assert_eq!(account.display_name, "Pool Alpha");
     assert_eq!(account.group_name.as_deref(), Some("Primary"));
     assert_eq!(account.plan_type.as_deref(), Some("enterprise"));
-    assert_eq!(account.request_count, 4);
-    assert_eq!(account.success_count, 1);
+    assert_eq!(account.request_count, 6);
+    assert_eq!(account.success_count, 2);
     assert_eq!(account.failure_count, 1);
     assert_eq!(account.non_success_count, 1);
-    assert_eq!(account.success_tokens, 300);
+    assert_eq!(account.success_tokens, 425);
     assert_eq!(account.non_success_tokens, 200);
-    assert_eq!(account.in_progress_invocation_count, Some(2));
+    assert_eq!(account.in_progress_invocation_count, Some(3));
     assert_eq!(account.retry_invocation_count, Some(1));
     assert_eq!(account.recent_invocations.len(), 4);
-    assert_eq!(account.recent_invocations[0].invoke_id, "upstream-activity-pending-retry");
+    assert_eq!(
+        account.recent_invocations[0].invoke_id,
+        "upstream-activity-extra-success"
+    );
     assert_eq!(
         account.recent_invocations[0].prompt_cache_key.as_deref(),
-        Some("pck-upstream-a")
+        Some("pck-upstream-c")
     );
-    assert_eq!(account.recent_invocations[1].invoke_id, "upstream-activity-failed");
-    assert_eq!(account.recent_invocations[2].invoke_id, "upstream-activity-success");
-    assert_eq!(account.recent_invocations[3].invoke_id, "upstream-activity-running");
+    assert_eq!(
+        account.recent_invocations[1].invoke_id,
+        "upstream-activity-extra-running"
+    );
+    assert_eq!(
+        account.recent_invocations[2].invoke_id,
+        "upstream-activity-pending-retry"
+    );
+    assert_eq!(account.recent_invocations[3].invoke_id, "upstream-activity-failed");
+
+    let Json(expanded_activity) = fetch_upstream_account_activity(
+        State(state.clone()),
+        Query(UpstreamAccountActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(6),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch expanded upstream account activity");
+
+    let expanded_account = expanded_activity
+        .accounts
+        .first()
+        .expect("expanded activity account");
+    assert_eq!(expanded_account.recent_invocations.len(), 6);
+    assert_eq!(
+        expanded_account.recent_invocations[5].invoke_id,
+        "upstream-activity-running"
+    );
+
+    let invalid_limit = fetch_upstream_account_activity(
+        State(state.clone()),
+        Query(UpstreamAccountActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(17),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await;
+    assert!(invalid_limit.is_err());
 
     let Json(yesterday_activity) = fetch_upstream_account_activity(
         State(state),

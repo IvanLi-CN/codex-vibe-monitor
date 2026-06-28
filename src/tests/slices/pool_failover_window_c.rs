@@ -2935,6 +2935,7 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
             cursor: None,
             snapshot_at: None,
             detail: None,
+                recent_invocation_limit: None,
         }),
     )
     .await

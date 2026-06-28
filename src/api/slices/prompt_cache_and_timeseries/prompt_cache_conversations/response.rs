@@ -108,6 +108,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
         aggregates,
         range_end,
         request.detail_level,
+        request.recent_invocation_limit,
         Some(&hydration_snapshot),
     )
     .await?;
@@ -223,6 +224,7 @@ pub(crate) async fn build_prompt_cache_conversations_response(
         range_end,
         PromptCacheConversationDetailLevel::Full,
         None,
+        None,
     )
     .await?;
 
@@ -241,4 +243,3 @@ pub(crate) async fn build_prompt_cache_conversations_response(
         conversations,
     })
 }
-

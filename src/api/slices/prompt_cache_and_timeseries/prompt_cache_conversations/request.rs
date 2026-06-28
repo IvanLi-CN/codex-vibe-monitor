@@ -6,8 +6,7 @@ pub(crate) async fn fetch_prompt_cache_conversations(
 ) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
     let request = resolve_prompt_cache_conversations_request(params)?;
     let response =
-        if request.page_size.is_none() && request.cursor.is_none() && request.snapshot_at.is_none()
-        {
+        if request.uses_legacy_cache() {
             let response =
                 fetch_prompt_cache_conversations_cached(state.as_ref(), request.selection).await?;
             match request.detail_level {
@@ -92,6 +91,20 @@ fn normalize_prompt_cache_conversation_page_size(
     Ok(Some(value))
 }
 
+fn normalize_prompt_cache_conversation_recent_invocation_limit(
+    raw: Option<i64>,
+) -> Result<Option<i64>, ApiError> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    if !(4..=16).contains(&value) {
+        return Err(ApiError::bad_request(anyhow!(
+            "recentInvocationLimit must be between 4 and 16"
+        )));
+    }
+    Ok(Some(value))
+}
+
 fn resolve_prompt_cache_conversation_detail_level(
     raw: Option<&str>,
 ) -> Result<PromptCacheConversationDetailLevel, ApiError> {
@@ -118,8 +131,12 @@ fn resolve_prompt_cache_conversations_request(
         cursor: None,
         snapshot_at: None,
         detail: None,
+        recent_invocation_limit: None,
     })?;
     let detail_level = resolve_prompt_cache_conversation_detail_level(params.detail.as_deref())?;
+    let recent_invocation_limit = normalize_prompt_cache_conversation_recent_invocation_limit(
+        params.recent_invocation_limit,
+    )?;
     let normalized_page_size = normalize_prompt_cache_conversation_page_size(params.page_size)?;
     let uses_pagination =
         normalized_page_size.is_some() || params.cursor.is_some() || params.snapshot_at.is_some();
@@ -142,6 +159,7 @@ fn resolve_prompt_cache_conversations_request(
     Ok(PromptCacheConversationsRequest {
         selection,
         detail_level,
+        recent_invocation_limit,
         page_size: if uses_pagination {
             Some(normalized_page_size.unwrap_or(20))
         } else {
