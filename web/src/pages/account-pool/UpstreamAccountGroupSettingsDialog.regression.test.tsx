@@ -281,6 +281,23 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
     ).toBe(true)
   })
 
+  it('preserves unrelated group routing fields when applying a partial patch', () => {
+    const base = {
+      ...createGroupState('prod').routingRule,
+      blockNewConversations: true,
+      allowCutOut: false,
+      allowCutIn: false,
+      priorityTier: 'primary' as const,
+      fastModeRewriteMode: 'force_add' as const,
+      availableModels: ['gpt-5.5'],
+    }
+
+    expect(mergeRoutingRulePatch(base, { allowNewConversations: true })).toEqual({
+      ...base,
+      blockNewConversations: false,
+    })
+  })
+
   it('clears the bulk draft field after deleting the active group', async () => {
     const deleteGroupNote = vi.fn().mockResolvedValue(undefined)
     render(<BulkDeleteHarness deleteGroupNote={deleteGroupNote} />)

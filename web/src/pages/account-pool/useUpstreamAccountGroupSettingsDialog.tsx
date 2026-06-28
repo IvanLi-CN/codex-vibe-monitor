@@ -497,7 +497,7 @@ export function useUpstreamAccountGroupSettingsDialog(
             ...current,
             policyEditorOpen: false,
             routingRuleDirty: true,
-            routingRule: mergeRoutingRulePatch(defaultRoutingRule, payload),
+            routingRule: mergeRoutingRulePatch(current.routingRule, payload),
           }));
         }}
         labels={{
