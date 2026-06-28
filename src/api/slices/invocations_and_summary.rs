@@ -2154,10 +2154,14 @@ struct UpstreamAccountActivityAccumulator {
     total_tokens: i64,
     success_tokens: i64,
     non_success_tokens: i64,
+    failure_tokens: i64,
+    failure_cost: f64,
     cache_input_tokens: i64,
     total_cost: f64,
     first_byte_sample_count: i64,
     first_byte_sum_ms: f64,
+    total_latency_sample_count: i64,
+    total_latency_sum_ms: f64,
     last_occurred_at_epoch_ms: i64,
     active_minute_request_count: BTreeMap<i64, i64>,
     recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
@@ -2499,8 +2503,14 @@ pub(crate) async fn fetch_upstream_account_activity(
                 entry.first_byte_sample_count += 1;
                 entry.first_byte_sum_ms += ttfb_ms;
             }
+            if let Some(total_ms) = row.t_total_ms.filter(|value| value.is_finite() && *value >= 0.0) {
+                entry.total_latency_sample_count += 1;
+                entry.total_latency_sum_ms += total_ms;
+            }
         } else if counts_toward_failure {
             entry.failure_count += 1;
+            entry.failure_tokens += row.total_tokens.max(0);
+            entry.failure_cost += row.cost.unwrap_or_default();
         }
         if counts_toward_non_success {
             entry.non_success_count += 1;
@@ -2576,12 +2586,18 @@ pub(crate) async fn fetch_upstream_account_activity(
                 total_tokens: aggregate.total_tokens,
                 success_tokens: aggregate.success_tokens,
                 non_success_tokens: aggregate.non_success_tokens,
+                failure_tokens: aggregate.failure_tokens,
+                failure_cost: aggregate.failure_cost,
+                total_cost: aggregate.total_cost,
                 cache_hit_rate: (aggregate.total_tokens > 0)
                     .then_some(aggregate.cache_input_tokens as f64 / aggregate.total_tokens as f64),
                 tokens_per_minute,
                 spend_rate,
                 first_byte_avg_ms: (aggregate.first_byte_sample_count > 0).then_some(
                     aggregate.first_byte_sum_ms / aggregate.first_byte_sample_count as f64,
+                ),
+                avg_total_ms: (aggregate.total_latency_sample_count > 0).then_some(
+                    aggregate.total_latency_sum_ms / aggregate.total_latency_sample_count as f64,
                 ),
                 in_progress_invocation_count,
                 retry_invocation_count,
@@ -2592,11 +2608,15 @@ pub(crate) async fn fetch_upstream_account_activity(
 
     accounts.sort_by(|left, right| {
         right
-            .recent_invocations
-            .first()
-            .map(|row| row.occurred_at.as_str())
-            .cmp(&left.recent_invocations.first().map(|row| row.occurred_at.as_str()))
-            .then_with(|| right.request_count.cmp(&left.request_count))
+            .total_tokens
+            .cmp(&left.total_tokens)
+            .then_with(|| {
+                right
+                    .recent_invocations
+                    .first()
+                    .map(|row| row.occurred_at.as_str())
+                    .cmp(&left.recent_invocations.first().map(|row| row.occurred_at.as_str()))
+            })
             .then_with(|| right.upstream_account_id.cmp(&left.upstream_account_id))
     });
 

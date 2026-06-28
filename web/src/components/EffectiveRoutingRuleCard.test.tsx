@@ -243,6 +243,97 @@ describe('EffectiveRoutingRuleCard', () => {
     expect(onChange).toHaveBeenCalledWith('allowCutIn', { allowCutIn: null })
   })
 
+  it('expands the first account override by default', () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          fastModeRewriteMode: 'force_add',
+          fieldSources: {
+            ...buildRule().fieldSources,
+            fastModeRewriteMode: 'account',
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange: vi.fn() }}
+      />,
+    )
+
+    expect(document.body.textContent).toContain('Default value starts from the inherited value.')
+    const activeButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Clear account override: FAST mode"]',
+    )
+    expect(activeButton?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull()
+  })
+
+  it('keeps a user-opened inherited field when editable policy identity changes', () => {
+    const rule = buildRule({
+      fastModeRewriteMode: 'force_add',
+      fieldSources: {
+        ...buildRule().fieldSources,
+        fastModeRewriteMode: 'account',
+      },
+    })
+    const onChange = vi.fn()
+
+    render(
+        <EffectiveRoutingRuleCard
+          rule={rule}
+          identityKey="account-a"
+          labels={labels}
+          editablePolicy={{ onChange }}
+        />,
+    )
+
+    const cutOutButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit account override: Cut out"]',
+    )
+    expect(cutOutButton).not.toBeNull()
+
+    act(() => {
+      cutOutButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(document.querySelector('[role="switch"][aria-label="Cut out"]')).not.toBeNull()
+
+    act(() => {
+      root?.render(
+        <EffectiveRoutingRuleCard
+          rule={{
+            ...rule,
+            fieldSources: {
+              ...rule.fieldSources,
+            },
+          }}
+          identityKey="account-a"
+          labels={labels}
+          editablePolicy={{ onChange, busyField: null }}
+        />,
+      )
+    })
+
+    expect(document.querySelector('[role="switch"][aria-label="Cut out"]')).not.toBeNull()
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).toBeNull()
+
+    act(() => {
+      root?.render(
+        <EffectiveRoutingRuleCard
+          rule={{
+            ...rule,
+            fieldSources: {
+              ...rule.fieldSources,
+            },
+          }}
+          identityKey="account-b"
+          labels={labels}
+          editablePolicy={{ onChange }}
+        />,
+      )
+    })
+
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull()
+  })
+
   it('keeps system denied models read-only even when account policy editing is enabled', () => {
     render(
       <EffectiveRoutingRuleCard

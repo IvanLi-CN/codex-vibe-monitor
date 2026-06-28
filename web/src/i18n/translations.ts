@@ -1789,7 +1789,7 @@ const baseTranslations = {
     "dashboard.activityOverview.rangeUsage": "History",
     "dashboard.activityOverview.rangeToggleAria": "Switch activity range",
     "dashboard.section.liveRefreshing": "Live refresh",
-    "dashboard.section.workingConversationsTitle": "Working conversations",
+    "dashboard.section.workingConversationsTitle": "Current",
     "dashboard.section.workingConversationsSubtitle":
       "Shows terminal calls from the last 5 minutes plus any running or pending conversations.",
     "dashboard.section.recentLiveTitle": "Latest {{count}} live records",
@@ -4070,7 +4070,7 @@ const baseTranslations = {
     "dashboard.activityOverview.rangeUsage": "历史",
     "dashboard.activityOverview.rangeToggleAria": "时间范围切换",
     "dashboard.section.liveRefreshing": "实时刷新",
-    "dashboard.section.workingConversationsTitle": "当前工作中的对话",
+    "dashboard.section.workingConversationsTitle": "当前",
     "dashboard.section.workingConversationsSubtitle":
       "展示最近 5 分钟内有终态调用，或当前仍处于运行中 / 排队中的对话。",
     "dashboard.section.recentLiveTitle": "最近 {{count}} 条实况",

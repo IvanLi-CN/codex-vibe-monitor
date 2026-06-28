@@ -11652,6 +11652,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
         cost,
         cache_input_tokens,
         ttfb_ms,
+        total_ms,
         payload,
         error_message,
         failure_kind,
@@ -11664,6 +11665,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             0.10_f64,
             20_i64,
             Some(410.0_f64),
+            Some(1_000.0_f64),
             json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
             None,
             None,
@@ -11676,6 +11678,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             0.30_f64,
             60_i64,
             Some(430.0_f64),
+            Some(2_000.0_f64),
             json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
             None,
             None,
@@ -11688,6 +11691,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             0.20_f64,
             40_i64,
             Some(450.0_f64),
+            Some(3_000.0_f64),
             json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
             Some("upstream failed"),
             Some("upstream_response_failed"),
@@ -11699,6 +11703,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             50_i64,
             0.05_f64,
             10_i64,
+            None,
             None,
             json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
             None,
@@ -11712,6 +11717,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             0.07_f64,
             15_i64,
             Some(405.0_f64),
+            Some(1_500.0_f64),
             json!({ "promptCacheKey": "pck-upstream-b", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
             None,
             None,
@@ -11724,6 +11730,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             0.12_f64,
             25_i64,
             Some(415.0_f64),
+            Some(2_000.0_f64),
             json!({ "promptCacheKey": "pck-upstream-c", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
             None,
             None,
@@ -11743,10 +11750,11 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
                 error_message,
                 failure_kind,
                 t_upstream_ttfb_ms,
+                t_total_ms,
                 payload,
                 raw_response
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             "#,
         )
         .bind(id)
@@ -11764,6 +11772,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
         .bind(error_message)
         .bind(failure_kind)
         .bind(ttfb_ms)
+        .bind(total_ms)
         .bind(payload)
         .bind("{}")
         .execute(&state.pool)
@@ -11794,6 +11803,15 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     assert_eq!(account.non_success_count, 1);
     assert_eq!(account.success_tokens, 425);
     assert_eq!(account.non_success_tokens, 200);
+    assert_eq!(account.failure_tokens, 200);
+    assert_f64_close(account.failure_cost, 0.20);
+    assert_f64_close(account.total_cost, 0.84);
+    assert_f64_close(
+        account
+            .avg_total_ms
+            .expect("success total latency avg should exist"),
+        2_000.0,
+    );
     assert_eq!(account.in_progress_invocation_count, Some(3));
     assert_eq!(account.retry_invocation_count, Some(1));
     assert_eq!(account.recent_invocations.len(), 4);
