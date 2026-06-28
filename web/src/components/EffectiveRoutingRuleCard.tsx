@@ -437,7 +437,9 @@ export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: Effec
       value:
         availableModelsValue.length > 0
           ? availableModelsValue.join(', ')
-          : fieldSources.availableModels === 'account' || fieldSources.availableModels === 'tag'
+          : fieldSources.availableModels === 'account' ||
+              fieldSources.availableModels === 'group' ||
+              fieldSources.availableModels === 'tag'
             ? labels.availableModelsNoneAllowed ?? 'No models allowed'
             : labels.availableModelsInherited ?? 'Inherited / unrestricted',
       source: fieldSources.availableModels ?? 'root',

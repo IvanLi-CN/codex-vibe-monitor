@@ -60,12 +60,15 @@ const defaultRoutingRule: GroupAccountRoutingRule = {
   availableModels: [],
 };
 
-function mergeRoutingRulePatch(
+export function mergeRoutingRulePatch(
   base: GroupAccountRoutingRule,
   patch: UpdateGroupAccountRoutingRulePayload,
 ): GroupAccountRoutingRule {
   return {
     ...base,
+    ...(patch.allowNewConversations == null
+      ? {}
+      : { blockNewConversations: !patch.allowNewConversations }),
     ...(patch.blockNewConversations == null ? {} : { blockNewConversations: patch.blockNewConversations }),
     ...(patch.allowCutOut == null ? {} : { allowCutOut: patch.allowCutOut }),
     ...(patch.allowCutIn == null ? {} : { allowCutIn: patch.allowCutIn }),

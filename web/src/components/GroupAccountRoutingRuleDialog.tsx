@@ -130,6 +130,10 @@ function buildPayload(
     return changedPayload;
   }
 
+  if (payload.availableModels?.length === 0) {
+    delete payload.availableModels;
+  }
+
   return payload;
 }
 

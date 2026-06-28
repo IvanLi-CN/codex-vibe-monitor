@@ -162,5 +162,10 @@ describe('GroupAccountRoutingRuleDialog', () => {
         fastModeRewriteMode: 'keep_original',
       }),
     )
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        availableModels: [],
+      }),
+    )
   })
 })

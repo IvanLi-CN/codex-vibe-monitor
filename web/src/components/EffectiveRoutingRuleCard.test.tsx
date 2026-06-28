@@ -167,6 +167,24 @@ describe('EffectiveRoutingRuleCard', () => {
     expect(document.body.textContent).not.toContain('Inherited / unrestricted')
   })
 
+  it('shows deny-all copy for empty group model overrides', () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: [],
+          fieldSources: {
+            ...buildRule().fieldSources,
+            availableModels: 'group',
+          },
+        })}
+        labels={labels}
+      />,
+    )
+
+    expect(document.body.textContent).toContain('No models allowed')
+    expect(document.body.textContent).not.toContain('Inherited / unrestricted')
+  })
+
   it('expands an inherited boolean override and saves the positive switch as the backend inverse', () => {
     const onChange = vi.fn()
     render(
