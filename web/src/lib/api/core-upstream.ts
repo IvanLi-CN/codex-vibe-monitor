@@ -765,8 +765,20 @@ export interface UpdateUpstreamAccountGroupPayload {
   routingRule?: UpdateGroupAccountRoutingRulePayload;
 }
 
-export type UpdateGroupAccountRoutingRulePayload =
-  Partial<GroupAccountRoutingRule>;
+export type NullableRoutingRuleValue<T> = T | null;
+
+export interface UpdateGroupAccountRoutingRulePayload {
+  blockNewConversations?: NullableRoutingRuleValue<boolean>;
+  allowCutOut?: NullableRoutingRuleValue<boolean>;
+  allowCutIn?: NullableRoutingRuleValue<boolean>;
+  priorityTier?: NullableRoutingRuleValue<TagPriorityTier>;
+  fastModeRewriteMode?: NullableRoutingRuleValue<TagFastModeRewriteMode>;
+  imageToolRewriteMode?: NullableRoutingRuleValue<ImageToolRewriteMode>;
+  concurrencyLimit?: NullableRoutingRuleValue<number>;
+  upstream429RetryEnabled?: NullableRoutingRuleValue<boolean>;
+  upstream429MaxRetries?: NullableRoutingRuleValue<number>;
+  availableModels?: NullableRoutingRuleValue<string[]>;
+}
 
 function normalizeRateWindowActualUsage(
   raw: unknown,

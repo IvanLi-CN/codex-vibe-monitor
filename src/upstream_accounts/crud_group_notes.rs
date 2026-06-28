@@ -684,27 +684,27 @@ pub(crate) async fn update_upstream_account_group(
     .await
     .map_err(internal_error_tuple)?;
     if let Some(routing_rule) = payload.routing_rule.as_ref() {
-        let policy_concurrency_limit =
-            normalize_concurrency_limit(routing_rule.concurrency_limit, "concurrencyLimit")?;
+        let policy_concurrency_limit = match routing_rule.concurrency_limit {
+            OptionalField::Value(value) => Some(normalize_concurrency_limit(
+                Some(value),
+                "concurrencyLimit",
+            )?),
+            OptionalField::Missing | OptionalField::Null => None,
+        };
         let policy_priority_tier = routing_rule
-            .priority_tier
-            .as_deref()
+            .priority_tier_value()
             .map(|value| normalize_tag_priority_tier(Some(value)).map(|tier| tier.as_str()))
             .transpose()?;
         let policy_fast_mode_rewrite_mode = routing_rule
-            .fast_mode_rewrite_mode
-            .as_deref()
+            .fast_mode_rewrite_mode_value()
             .map(|value| {
                 normalize_tag_fast_mode_rewrite_mode(Some(value)).map(|mode| mode.as_str())
             })
             .transpose()?;
         let policy_image_tool_rewrite_mode = routing_rule
-            .image_tool_rewrite_mode
-            .as_deref()
+            .image_tool_rewrite_mode_value()
             .map(|value| normalize_image_tool_rewrite_mode(Some(value)).map(|mode| mode.as_str()))
             .transpose()?;
-        let preserve_available_models =
-            matches!(&routing_rule.available_models, OptionalField::Missing);
         let available_models_json = match &routing_rule.available_models {
             OptionalField::Missing | OptionalField::Null => None,
             OptionalField::Value(value) => Some(
@@ -718,58 +718,42 @@ pub(crate) async fn update_upstream_account_group(
         sqlx::query(
             r#"
             UPDATE pool_upstream_account_group_notes
-            SET policy_block_new_conversations = COALESCE(?2, policy_block_new_conversations),
-                policy_allow_cut_out = COALESCE(?3, policy_allow_cut_out),
-                policy_allow_cut_in = COALESCE(?4, policy_allow_cut_in),
-                policy_priority_tier = COALESCE(?5, policy_priority_tier),
-                policy_fast_mode_rewrite_mode = COALESCE(?6, policy_fast_mode_rewrite_mode),
-                policy_image_tool_rewrite_mode = COALESCE(?7, policy_image_tool_rewrite_mode),
-                policy_concurrency_limit = COALESCE(?8, policy_concurrency_limit),
-                policy_upstream_429_retry_enabled = COALESCE(?9, policy_upstream_429_retry_enabled),
-                policy_upstream_429_max_retries = COALESCE(?10, policy_upstream_429_max_retries),
+            SET policy_block_new_conversations = CASE WHEN ?2 != 0 THEN policy_block_new_conversations ELSE ?3 END,
+                policy_allow_cut_out = CASE WHEN ?4 != 0 THEN policy_allow_cut_out ELSE ?5 END,
+                policy_allow_cut_in = CASE WHEN ?6 != 0 THEN policy_allow_cut_in ELSE ?7 END,
+                policy_priority_tier = CASE WHEN ?8 != 0 THEN policy_priority_tier ELSE ?9 END,
+                policy_fast_mode_rewrite_mode = CASE WHEN ?10 != 0 THEN policy_fast_mode_rewrite_mode ELSE ?11 END,
+                policy_image_tool_rewrite_mode = CASE WHEN ?12 != 0 THEN policy_image_tool_rewrite_mode ELSE ?13 END,
+                policy_concurrency_limit = CASE WHEN ?14 != 0 THEN policy_concurrency_limit ELSE ?15 END,
+                policy_upstream_429_retry_enabled = CASE WHEN ?16 != 0 THEN policy_upstream_429_retry_enabled ELSE ?17 END,
+                policy_upstream_429_max_retries = CASE WHEN ?18 != 0 THEN policy_upstream_429_max_retries ELSE ?19 END,
                 policy_available_models_json = CASE
-                    WHEN ?11 != 0 THEN policy_available_models_json
-                    ELSE ?12
+                    WHEN ?20 != 0 THEN policy_available_models_json
+                    ELSE ?21
                 END
             WHERE group_name = ?1
             "#,
         )
         .bind(&group_name)
-        .bind(
-            routing_rule
-                .block_new_conversations
-                .map(|value| if value { 1_i64 } else { 0_i64 }),
-        )
-        .bind(
-            routing_rule
-                .allow_cut_out
-                .map(|value| if value { 1_i64 } else { 0_i64 }),
-        )
-        .bind(
-            routing_rule
-                .allow_cut_in
-                .map(|value| if value { 1_i64 } else { 0_i64 }),
-        )
+        .bind(if matches!(routing_rule.block_new_conversations, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&routing_rule.block_new_conversations))
+        .bind(if matches!(routing_rule.allow_cut_out, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&routing_rule.allow_cut_out))
+        .bind(if matches!(routing_rule.allow_cut_in, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&routing_rule.allow_cut_in))
+        .bind(if matches!(routing_rule.priority_tier, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(policy_priority_tier)
+        .bind(if matches!(routing_rule.fast_mode_rewrite_mode, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(policy_fast_mode_rewrite_mode)
+        .bind(if matches!(routing_rule.image_tool_rewrite_mode, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(policy_image_tool_rewrite_mode)
+        .bind(if matches!(routing_rule.concurrency_limit, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(policy_concurrency_limit)
-        .bind(
-            routing_rule
-                .upstream_429_retry_enabled
-                .map(|value| if value { 1_i64 } else { 0_i64 }),
-        )
-        .bind(
-            routing_rule
-                .upstream_429_max_retries
-                .map(normalize_group_upstream_429_max_retries)
-                .map(i64::from),
-        )
-        .bind(if preserve_available_models {
-            1_i64
-        } else {
-            0_i64
-        })
+        .bind(if matches!(routing_rule.upstream_429_retry_enabled, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&routing_rule.upstream_429_retry_enabled))
+        .bind(if matches!(routing_rule.upstream_429_max_retries, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_retry_count_to_i64(&routing_rule.upstream_429_max_retries))
+        .bind(if matches!(routing_rule.available_models, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(available_models_json)
         .execute(tx.as_mut())
         .await

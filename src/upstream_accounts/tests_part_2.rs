@@ -3910,7 +3910,8 @@
     }
 
     #[tokio::test]
-    async fn load_effective_routing_rule_for_account_or_merges_block_new_conversations() {
+    async fn load_effective_routing_rule_for_account_allows_account_block_override_to_clear_group()
+    {
         let pool = test_pool().await;
         sqlx::query(
             r#"
@@ -3952,8 +3953,8 @@
             .await
             .expect("load effective routing rule");
 
-        assert!(rule.block_new_conversations);
-        assert_eq!(rule.field_sources.block_new_conversations, "group");
+        assert!(!rule.block_new_conversations);
+        assert_eq!(rule.field_sources.block_new_conversations, "account");
     }
 
     #[tokio::test]
@@ -4034,6 +4035,131 @@
     }
 
     #[tokio::test]
+    async fn update_upstream_account_clears_individual_account_policy_override() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Clear Account Policy").await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET policy_allow_cut_in = 0,
+                policy_fast_mode_rewrite_mode = 'force_add',
+                policy_available_models_json = '[]'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("seed account policy");
+
+        state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    email: OptionalField::Missing,
+                    group_name: None,
+                    group_bound_proxy_keys: None,
+                    group_node_shunt_enabled: None,
+                    group_single_account_rotation_enabled: None,
+                    note: None,
+                    group_note: None,
+                    concurrency_limit: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: None,
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                    routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
+                        block_new_conversations: OptionalField::Missing,
+                        allow_cut_out: OptionalField::Missing,
+                        allow_cut_in: OptionalField::Null,
+                        priority_tier: OptionalField::Missing,
+                        fast_mode_rewrite_mode: OptionalField::Missing,
+                        image_tool_rewrite_mode: OptionalField::Missing,
+                        concurrency_limit: OptionalField::Missing,
+                        upstream_429_retry_enabled: OptionalField::Missing,
+                        upstream_429_max_retries: OptionalField::Missing,
+                        available_models: OptionalField::Missing,
+                    }),
+                },
+            )
+            .await
+            .expect("clear account policy field");
+
+        let stored = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
+            "SELECT policy_allow_cut_in, policy_fast_mode_rewrite_mode, policy_available_models_json FROM pool_upstream_accounts WHERE id = ?1",
+        )
+        .bind(account_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load stored policy");
+        assert_eq!(stored.0, None);
+        assert_eq!(stored.1.as_deref(), Some("force_add"));
+        assert_eq!(stored.2.as_deref(), Some("[]"));
+    }
+
+    #[tokio::test]
+    async fn update_upstream_account_persists_empty_available_models_as_deny_all() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Deny All Models").await;
+
+        state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    email: OptionalField::Missing,
+                    group_name: None,
+                    group_bound_proxy_keys: None,
+                    group_node_shunt_enabled: None,
+                    group_single_account_rotation_enabled: None,
+                    note: None,
+                    group_note: None,
+                    concurrency_limit: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: None,
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                    routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
+                        block_new_conversations: OptionalField::Missing,
+                        allow_cut_out: OptionalField::Missing,
+                        allow_cut_in: OptionalField::Missing,
+                        priority_tier: OptionalField::Missing,
+                        fast_mode_rewrite_mode: OptionalField::Missing,
+                        image_tool_rewrite_mode: OptionalField::Missing,
+                        concurrency_limit: OptionalField::Missing,
+                        upstream_429_retry_enabled: OptionalField::Missing,
+                        upstream_429_max_retries: OptionalField::Missing,
+                        available_models: OptionalField::Value(vec![]),
+                    }),
+                },
+            )
+            .await
+            .expect("save empty model override");
+
+        let rule = load_effective_routing_rule_for_account(&state.pool, account_id)
+            .await
+            .expect("load effective routing rule");
+        assert!(rule.available_models_defined);
+        assert!(rule.available_models.is_empty());
+        assert_eq!(rule.field_sources.available_models, "account");
+    }
+
+    #[tokio::test]
     async fn update_upstream_account_rejects_invalid_routing_policy_enums() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = insert_api_key_account(&state.pool, "Invalid Account Policy").await;
@@ -4063,15 +4189,15 @@
                     local_limit_unit: None,
                     tag_ids: None,
                     routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                        block_new_conversations: None,
-                        allow_cut_out: None,
-                        allow_cut_in: None,
-                        priority_tier: Some("normal".to_string()),
-                        fast_mode_rewrite_mode: Some("always_fast".to_string()),
-                        image_tool_rewrite_mode: None,
-                        concurrency_limit: None,
-                        upstream_429_retry_enabled: None,
-                        upstream_429_max_retries: None,
+                        block_new_conversations: OptionalField::Missing,
+                        allow_cut_out: OptionalField::Missing,
+                        allow_cut_in: OptionalField::Missing,
+                        priority_tier: OptionalField::Value("normal".to_string()),
+                        fast_mode_rewrite_mode: OptionalField::Value("always_fast".to_string()),
+                        image_tool_rewrite_mode: OptionalField::Missing,
+                        concurrency_limit: OptionalField::Missing,
+                        upstream_429_retry_enabled: OptionalField::Missing,
+                        upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
                     }),
                 },

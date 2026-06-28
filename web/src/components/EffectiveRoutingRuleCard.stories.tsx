@@ -1,16 +1,18 @@
+import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import type { UpdateGroupAccountRoutingRulePayload } from '../lib/api'
 import type { EffectiveRoutingRule } from '../lib/api'
 import { EffectiveRoutingRuleCard } from './EffectiveRoutingRuleCard'
 
 const labels = {
   title: 'Effective routing rule',
-  description: 'Merged routing constraints applied to the selected upstream account.',
+  description: 'Merged routing constraints applied to the selected upstream account. Use account overrides when needed.',
   noTags: 'No tags linked',
-  blockNewConversations: 'Block new conversations',
-  allowNewConversations: 'New conversations are not blocked',
-  allowCutOut: 'Cut-out not blocked',
+  blockNewConversations: 'New conversations blocked',
+  allowNewConversations: 'New conversations allowed',
+  allowCutOut: 'Cut-out allowed',
   denyCutOut: 'Cut-out blocked',
-  allowCutIn: 'Cut-in not blocked',
+  allowCutIn: 'Cut-in allowed',
   denyCutIn: 'Cut-in blocked',
   sourceTags: 'Source tags',
   priorityPrimary: 'Primary',
@@ -32,7 +34,7 @@ const labels = {
   concurrencyLimit: (count: number) => `Concurrency ${count}`,
   concurrencyUnlimited: 'Concurrency unlimited',
   sourceBreakdownTitle: 'Field source breakdown',
-  fieldBlockNewConversations: 'Block new conversations',
+  fieldBlockNewConversations: 'New conversations',
   fieldAllowCutOut: 'Cut out',
   fieldAllowCutIn: 'Cut in',
   fieldPriority: 'Priority',
@@ -47,6 +49,21 @@ const labels = {
   sourceTag: 'Tag',
   sourceAccount: 'Account',
   sourceSystem: 'System',
+  overrideEdit: 'Edit account override',
+  overrideActive: 'Account override',
+  overrideClear: 'Clear account override',
+  overrideSaving: 'Saving account override...',
+  inheritValue: 'Default value starts from the inherited value.',
+  newConversationLabel: 'New conversations',
+  cutOutLabel: 'Cut out',
+  cutInLabel: 'Cut in',
+  upstream429RetryCountOnce: 'Retry once',
+  upstream429RetryCountMany: (count: number) => `Retry ${count} times`,
+  availableModelsAddCustom: 'Add model',
+  availableModelsCustomLabel: (value: string) => `Add ${value}`,
+  availableModelsRemove: 'Remove model',
+  availableModelsPlaceholder: 'Model id',
+  currentValue: 'Current value',
 }
 
 const relaxedRule: EffectiveRoutingRule = {
@@ -198,4 +215,136 @@ export const FillMissingRule: Story = {
       sourceTagNames: ['overflow-guard'],
     },
   },
+}
+
+const editableOptions = ['gpt-5.5', 'gpt-5.4-mini', 'o3', 'gpt-4.1']
+type StoryFieldSources = NonNullable<EffectiveRoutingRule['fieldSources']>
+type EditablePolicyConfig = NonNullable<Parameters<typeof EffectiveRoutingRuleCard>[0]['editablePolicy']>
+
+function applyPatchToRule(rule: EffectiveRoutingRule, patch: UpdateGroupAccountRoutingRulePayload): EffectiveRoutingRule {
+  const fieldSources: StoryFieldSources = {
+    blockNewConversations: rule.fieldSources?.blockNewConversations ?? 'root',
+    allowCutOut: rule.fieldSources?.allowCutOut ?? 'root',
+    allowCutIn: rule.fieldSources?.allowCutIn ?? 'root',
+    priorityTier: rule.fieldSources?.priorityTier ?? 'root',
+    fastModeRewriteMode: rule.fieldSources?.fastModeRewriteMode ?? 'root',
+    imageToolRewriteMode: rule.fieldSources?.imageToolRewriteMode ?? 'root',
+    concurrencyLimit: rule.fieldSources?.concurrencyLimit ?? 'root',
+    upstream429Retry: rule.fieldSources?.upstream429Retry ?? 'root',
+    availableModels: rule.fieldSources?.availableModels ?? 'root',
+    systemDeniedModels: rule.fieldSources?.systemDeniedModels ?? 'root',
+  }
+  const next: EffectiveRoutingRule = {
+    ...rule,
+    fieldSources,
+  }
+  const nextSources = fieldSources
+  const sourceFor = (value: unknown): 'root' | 'account' => (value === null ? 'root' : 'account')
+  if ('blockNewConversations' in patch) {
+    if (typeof patch.blockNewConversations === 'boolean') next.blockNewConversations = patch.blockNewConversations
+    nextSources.blockNewConversations = sourceFor(patch.blockNewConversations)
+  }
+  if ('allowCutOut' in patch) {
+    if (typeof patch.allowCutOut === 'boolean') next.allowCutOut = patch.allowCutOut
+    nextSources.allowCutOut = sourceFor(patch.allowCutOut)
+  }
+  if ('allowCutIn' in patch) {
+    if (typeof patch.allowCutIn === 'boolean') next.allowCutIn = patch.allowCutIn
+    nextSources.allowCutIn = sourceFor(patch.allowCutIn)
+  }
+  if ('priorityTier' in patch) {
+    if (patch.priorityTier !== null) next.priorityTier = patch.priorityTier ?? next.priorityTier
+    nextSources.priorityTier = sourceFor(patch.priorityTier)
+  }
+  if ('fastModeRewriteMode' in patch) {
+    if (patch.fastModeRewriteMode !== null) next.fastModeRewriteMode = patch.fastModeRewriteMode ?? next.fastModeRewriteMode
+    nextSources.fastModeRewriteMode = sourceFor(patch.fastModeRewriteMode)
+  }
+  if ('imageToolRewriteMode' in patch) {
+    if (patch.imageToolRewriteMode !== null) next.imageToolRewriteMode = patch.imageToolRewriteMode ?? next.imageToolRewriteMode
+    nextSources.imageToolRewriteMode = sourceFor(patch.imageToolRewriteMode)
+  }
+  if ('concurrencyLimit' in patch) {
+    if (patch.concurrencyLimit !== null) next.concurrencyLimit = patch.concurrencyLimit ?? next.concurrencyLimit
+    nextSources.concurrencyLimit = sourceFor(patch.concurrencyLimit)
+  }
+  if ('upstream429RetryEnabled' in patch || 'upstream429MaxRetries' in patch) {
+    if (patch.upstream429RetryEnabled !== null && patch.upstream429RetryEnabled !== undefined) {
+      next.upstream429RetryEnabled = patch.upstream429RetryEnabled
+    }
+    if (patch.upstream429MaxRetries !== null && patch.upstream429MaxRetries !== undefined) {
+      next.upstream429MaxRetries = patch.upstream429MaxRetries
+    }
+    nextSources.upstream429Retry = sourceFor(patch.upstream429RetryEnabled ?? patch.upstream429MaxRetries)
+  }
+  if ('availableModels' in patch) {
+    if (patch.availableModels !== null) next.availableModels = patch.availableModels ?? next.availableModels
+    nextSources.availableModels = sourceFor(patch.availableModels)
+  }
+  return next
+}
+
+function EditableRoutingRuleDemo({
+  initialRule,
+  busyField,
+  errorByField,
+}: {
+  initialRule: EffectiveRoutingRule
+  busyField?: EditablePolicyConfig['busyField']
+  errorByField?: EditablePolicyConfig['errorByField']
+}) {
+  const [rule, setRule] = useState(initialRule)
+  return (
+    <EffectiveRoutingRuleCard
+      rule={rule}
+      labels={labels}
+      editablePolicy={{
+        busyField,
+        errorByField,
+        availableModelOptions: editableOptions,
+        onChange: (_field, payload) => setRule((current) => applyPatchToRule(current, payload)),
+      }}
+    />
+  )
+}
+
+export const EditableInherited: Story = {
+  render: () => <EditableRoutingRuleDemo initialRule={relaxedRule} />,
+}
+
+export const EditableAccountOverrides: Story = {
+  render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
+}
+
+export const EditableSavingAndError: Story = {
+  render: () => (
+    <EditableRoutingRuleDemo
+      initialRule={strictRule}
+      busyField="priorityTier"
+      errorByField={{ allowCutIn: 'Save failed. Check the account policy and retry.' }}
+    />
+  ),
+}
+
+export const EditableDenyAllModels: Story = {
+  render: () => (
+    <EditableRoutingRuleDemo
+      initialRule={{
+        ...strictRule,
+        availableModels: [],
+        fieldSources: {
+          blockNewConversations: strictRule.fieldSources?.blockNewConversations ?? 'root',
+          allowCutOut: strictRule.fieldSources?.allowCutOut ?? 'root',
+          allowCutIn: strictRule.fieldSources?.allowCutIn ?? 'root',
+          priorityTier: strictRule.fieldSources?.priorityTier ?? 'root',
+          fastModeRewriteMode: strictRule.fieldSources?.fastModeRewriteMode ?? 'root',
+          imageToolRewriteMode: strictRule.fieldSources?.imageToolRewriteMode ?? 'root',
+          concurrencyLimit: strictRule.fieldSources?.concurrencyLimit ?? 'root',
+          upstream429Retry: strictRule.fieldSources?.upstream429Retry ?? 'root',
+          ...strictRule.fieldSources,
+          availableModels: 'account',
+        },
+      }}
+    />
+  ),
 }

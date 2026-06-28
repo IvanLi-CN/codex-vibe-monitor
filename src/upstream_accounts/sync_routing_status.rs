@@ -164,10 +164,8 @@ fn apply_routing_policy_override(
     available_models_json: Option<&str>,
 ) {
     if let Some(block_new_conversations) = block_new_conversations {
-        if block_new_conversations != 0 {
-            rule.field_sources.block_new_conversations = source.to_string();
-            rule.block_new_conversations = true;
-        }
+        rule.field_sources.block_new_conversations = source.to_string();
+        rule.block_new_conversations = block_new_conversations != 0;
     }
     if let Some(allow_cut_out) = allow_cut_out {
         rule.field_sources.allow_cut_out = source.to_string();
@@ -217,11 +215,9 @@ fn apply_routing_policy_override(
     }
     if let Some(available_models_json) = available_models_json {
         let available_models = parse_string_array_json(Some(available_models_json));
-        if !available_models.is_empty() {
-            rule.field_sources.available_models = source.to_string();
-            rule.available_models = available_models;
-            rule.available_models_defined = true;
-        }
+        rule.field_sources.available_models = source.to_string();
+        rule.available_models = available_models;
+        rule.available_models_defined = true;
     }
 }
 

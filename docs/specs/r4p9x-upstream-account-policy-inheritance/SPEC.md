@@ -19,9 +19,9 @@ The editable inherited policy covers:
 - priority tier
 - FAST mode rewrite mode
 - image tool rewrite mode
-- block new conversations
-- allow cut-out
-- allow cut-in
+- new conversations
+- cut-out
+- cut-in
 - concurrency limit
 - upstream 429 retry enabled
 - upstream 429 max retries
@@ -31,9 +31,9 @@ Root defaults preserve existing behavior:
 
 - priority tier: normal
 - FAST mode rewrite mode: keep original
-- block new conversations: disabled
-- allow cut-out: enabled
-- allow cut-in: enabled
+- new conversations: allowed
+- cut-out: allowed
+- cut-in: allowed
 - concurrency limit: unlimited
 - upstream 429 retry: disabled
 - upstream 429 max retries: 0
@@ -61,11 +61,12 @@ System tags are not an editable routing authoring surface. Their current contrac
 - `unsupported_transport:websocket` remains a read-only transport signal for display and filtering
 - future system tags may add internal signals, but they must remain operator read-only
 
-`availableModels` now follows only group/account inheritance semantics:
+`availableModels` follows only group/account inheritance semantics:
 
-- missing or empty means inherit the upstream layer
+- missing or `null` means inherit the upstream layer
 - there is no tag-level allowlist editing
-- account policy may replace the inherited group/root model set with its own non-empty list
+- account policy may replace the inherited group/root model set with its own list
+- an explicit empty account or group list means no models are allowed
 
 ## Image Tool Routing
 
@@ -96,7 +97,9 @@ The only supported exception is an explicit Prompt Cache conversation binding wr
 
 HTTP 4xx responses are not route-health successes for sticky routing. They remain recorded as failed invocations and upstream attempts with the real account, status, and error details, but they must not update `pool_sticky_routes`.
 
-`blockNewConversations` / `block_new_conversations` is a hard fresh-routing gate. If a group or account layer sets it to true, the final effective rule is true and lower layers cannot clear the inherited block. Existing system tags may only add internal deny/signal state; they are not a user-editable escape hatch for the block contract.
+`blockNewConversations` / `block_new_conversations` remains the stored backend field, but the operator-facing UI presents it as positive `new conversations`. An enabled switch means new conversations are allowed and stores `blockNewConversations=false`; a disabled switch means new conversations are forbidden and stores `blockNewConversations=true`.
+
+`new conversations`, `cut-out`, and `cut-in` are direct group/account overrides, not most-conservative merges. A lower editable layer that stores either `true` or `false` replaces the inherited value for that field. System tags may only add read-only deny/signal state; they are not a user-editable escape hatch.
 
 Legacy rolling guard fields (`guardEnabled`, `lookbackHours`, `maxConversations`, and `guardRules`) are not part of the policy surface. Existing stored rolling guard data is ignored rather than migrated into the hard block.
 
@@ -122,7 +125,13 @@ Account summaries and detail responses expose:
 - read-only `imageToolCapability`
 - effective-rule field sources including `systemDeniedModels`
 
-Account update payloads accept `routingRule`. Missing `routingRule` preserves account-level overrides; present fields override the inherited effective policy for that account.
+Account update payloads accept `routingRule`. Missing `routingRule` preserves account-level overrides. Inside a present `routingRule`, every account-policy field is tri-state:
+
+- missing field: preserve that account override as stored
+- `null`: clear that account override and inherit the upstream effective value
+- value: store that value as the account override
+
+The same tri-state semantics apply to group policy updates for nullable policy fields. Boolean `false` is a stored override value and must not be treated as absent.
 
 `GET /api/pool/tags` returns only system tags and reports the directory as non-writable.
 
@@ -155,6 +164,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - upstream account create page without any tag editing controls
 - upstream account detail edit view showing system tags as read-only badges
 - upstream account list filtering by system tags while keeping system badges visible
+- effective routing rule card inherited state, account override state, expanded inline editor state, field-level saving/error state, and explicit empty available-model override
 
 PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)
@@ -167,3 +177,6 @@ PR: include
 
 PR: include
 ![Upstream account list system tag filter](./assets/upstream-account-list-system-tag-filter.png)
+
+PR: include
+![Effective routing rule inline account overrides](./assets/effective-rule-inline-overrides-trimmed.png)

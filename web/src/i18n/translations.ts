@@ -790,19 +790,19 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.title":
       "Effective routing rule",
     "accountPool.upstreamAccounts.effectiveRule.description":
-      "This is the merged policy currently applied to the account after all selected tags are combined.",
+      "This is the final policy currently used by routing, with account-level overrides applied last.",
     "accountPool.upstreamAccounts.effectiveRule.noTags":
       "No tag is attached, so the account keeps the default pool routing behavior.",
     "accountPool.upstreamAccounts.effectiveRule.blockNewConversations":
-      "Block new conversations",
+      "New conversations blocked",
     "accountPool.upstreamAccounts.effectiveRule.allowNewConversations":
-      "New conversations are not blocked",
+      "New conversations allowed",
     "accountPool.upstreamAccounts.effectiveRule.allowCutOut":
-      "Cut out is not blocked",
-    "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "Block cut out",
+      "Cut out allowed",
+    "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "Cut out blocked",
     "accountPool.upstreamAccounts.effectiveRule.allowCutIn":
-      "Cut in is not blocked",
-    "accountPool.upstreamAccounts.effectiveRule.denyCutIn": "Block cut in",
+      "Cut in allowed",
+    "accountPool.upstreamAccounts.effectiveRule.denyCutIn": "Cut in blocked",
     "accountPool.upstreamAccounts.effectiveRule.priorityPrimary": "Primary",
     "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "Normal",
     "accountPool.upstreamAccounts.effectiveRule.priorityFallback":
@@ -818,11 +818,15 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
       "Field source breakdown",
     "accountPool.upstreamAccounts.effectiveRule.fieldBlockNewConversations":
-      "Block new conversations",
+      "New conversations",
+    "accountPool.upstreamAccounts.effectiveRule.fieldNewConversations":
+      "New conversations",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut":
-      "Block cut out",
+      "Cut out",
+    "accountPool.upstreamAccounts.effectiveRule.fieldCutOut": "Cut out",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn":
-      "Block cut in",
+      "Cut in",
+    "accountPool.upstreamAccounts.effectiveRule.fieldCutIn": "Cut in",
     "accountPool.upstreamAccounts.effectiveRule.fieldPriority": "Priority",
     "accountPool.upstreamAccounts.effectiveRule.fieldFastMode": "FAST mode",
     "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode":
@@ -845,6 +849,15 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.sourceTag": "Tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceAccount": "Account",
     "accountPool.upstreamAccounts.effectiveRule.sourceSystem": "System",
+    "accountPool.upstreamAccounts.effectiveRule.overrideEdit":
+      "Edit account override",
+    "accountPool.upstreamAccounts.effectiveRule.overrideActive":
+      "Account override",
+    "accountPool.upstreamAccounts.effectiveRule.overrideClear":
+      "Clear account override",
+    "accountPool.upstreamAccounts.effectiveRule.overrideSaving": "Saving...",
+    "accountPool.upstreamAccounts.effectiveRule.inheritValue":
+      "The default control value matches the inherited value.",
     "accountPool.upstreamAccounts.detailTitle": "Account details",
     "accountPool.upstreamAccounts.detailTabs.overview": "Overview",
     "accountPool.upstreamAccounts.detailTabs.records": "Records",
@@ -3134,15 +3147,15 @@ const baseTranslations = {
       "这个上游账号暂时还没有保留的调用记录。",
     "accountPool.upstreamAccounts.effectiveRule.title": "最终生效规则",
     "accountPool.upstreamAccounts.effectiveRule.description":
-      "这里展示的是当前账号在所有已关联 tag 合并后，真正参与路由判定的规则。",
+      "这里展示的是当前账号最终参与路由判定的规则，账号级覆盖会最后生效。",
     "accountPool.upstreamAccounts.effectiveRule.noTags":
       "当前没有关联 tag，所以这个账号仍使用号池默认路由行为。",
     "accountPool.upstreamAccounts.effectiveRule.blockNewConversations": "禁止新对话",
     "accountPool.upstreamAccounts.effectiveRule.allowNewConversations":
-      "未禁止新对话",
-    "accountPool.upstreamAccounts.effectiveRule.allowCutOut": "未禁止切出",
+      "允许新对话",
+    "accountPool.upstreamAccounts.effectiveRule.allowCutOut": "允许切出",
     "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "禁止切出",
-    "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "未禁止切入",
+    "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "允许切入",
     "accountPool.upstreamAccounts.effectiveRule.denyCutIn": "禁止切入",
     "accountPool.upstreamAccounts.effectiveRule.priorityPrimary": "主力",
     "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "正常",
@@ -3159,9 +3172,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "规则来源 tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
       "字段来源明细",
-    "accountPool.upstreamAccounts.effectiveRule.fieldBlockNewConversations": "禁止新对话",
-    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut": "禁止切出",
-    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn": "禁止切入",
+    "accountPool.upstreamAccounts.effectiveRule.fieldBlockNewConversations": "新对话",
+    "accountPool.upstreamAccounts.effectiveRule.fieldNewConversations": "新对话",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut": "切出",
+    "accountPool.upstreamAccounts.effectiveRule.fieldCutOut": "切出",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn": "切入",
+    "accountPool.upstreamAccounts.effectiveRule.fieldCutIn": "切入",
     "accountPool.upstreamAccounts.effectiveRule.fieldPriority": "优先级",
     "accountPool.upstreamAccounts.effectiveRule.fieldFastMode": "FAST 模式",
     "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency": "并发限制",
@@ -3180,6 +3196,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.sourceTag": "Tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceAccount": "账号",
     "accountPool.upstreamAccounts.effectiveRule.sourceSystem": "系统",
+    "accountPool.upstreamAccounts.effectiveRule.overrideEdit": "编辑账号覆盖",
+    "accountPool.upstreamAccounts.effectiveRule.overrideActive": "账号覆盖",
+    "accountPool.upstreamAccounts.effectiveRule.overrideClear": "清除账号覆盖",
+    "accountPool.upstreamAccounts.effectiveRule.overrideSaving": "正在保存...",
+    "accountPool.upstreamAccounts.effectiveRule.inheritValue":
+      "默认控件值等于当前继承到的值。",
     "accountPool.upstreamAccounts.detailTitle": "账号详情",
     "accountPool.upstreamAccounts.detailTabs.overview": "概览",
     "accountPool.upstreamAccounts.detailTabs.records": "调用记录",

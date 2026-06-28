@@ -276,6 +276,17 @@ type RecentSaveResponseGuard = {
   retainedDraft: AccountDraft;
 };
 
+type InlinePolicyField =
+  | "allowNewConversations"
+  | "allowCutOut"
+  | "allowCutIn"
+  | "priorityTier"
+  | "fastModeRewriteMode"
+  | "imageToolRewriteMode"
+  | "concurrencyLimit"
+  | "upstream429Retry"
+  | "availableModels";
+
 function createBusyActionKey(type: AccountBusyActionType, accountId: number) {
   return `${type}:${accountId}`;
 }
@@ -854,6 +865,11 @@ function SharedUpstreamAccountDetailDrawerInner({
     routing: false,
     accountActions: new Set(),
   }));
+  const [inlinePolicyBusyField, setInlinePolicyBusyField] =
+    useState<InlinePolicyField | null>(null);
+  const [inlinePolicyErrors, setInlinePolicyErrors] = useState<
+    Partial<Record<InlinePolicyField, string | null>>
+  >({});
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [accountPolicyEditorOpen, setAccountPolicyEditorOpen] = useState(false);
   const [
@@ -2075,6 +2091,40 @@ function SharedUpstreamAccountDetailDrawerInner({
     },
     [busyAction, handleNotFoundClose, notifyMotherChange, saveAccount],
   );
+  const handleSaveInlineAccountPolicy = useCallback(
+    async (
+      source: UpstreamAccountDetail,
+      field: InlinePolicyField,
+      payload: UpdateGroupAccountRoutingRulePayload,
+    ) => {
+      if (inlinePolicyBusyField != null || hasBusyAccountAction(busyAction, source.id)) {
+        return;
+      }
+      setInlinePolicyErrors((current) => ({ ...current, [field]: null }));
+      setInlinePolicyBusyField(field);
+      try {
+        const response = await saveAccount(source.id, {
+          routingRule: payload,
+        });
+        notifyMotherChange(response);
+      } catch (err) {
+        if (handleNotFoundClose(source.id, err)) return;
+        setInlinePolicyErrors((current) => ({
+          ...current,
+          [field]: err instanceof Error ? err.message : String(err),
+        }));
+      } finally {
+        setInlinePolicyBusyField((current) => (current === field ? null : current));
+      }
+    },
+    [
+      busyAction,
+      handleNotFoundClose,
+      inlinePolicyBusyField,
+      notifyMotherChange,
+      saveAccount,
+    ],
+  );
 
   const handleSync = useCallback(
     async (source: UpstreamAccountSummary) => {
@@ -3182,6 +3232,17 @@ function SharedUpstreamAccountDetailDrawerInner({
                   </div>
                   <EffectiveRoutingRuleCard
                     rule={selectedDetail.effectiveRoutingRule}
+                    editablePolicy={{
+                      busyField: inlinePolicyBusyField,
+                      errorByField: inlinePolicyErrors,
+                      availableModelOptions,
+                      onChange: (field, payload) =>
+                        handleSaveInlineAccountPolicy(
+                          selectedDetail,
+                          field as InlinePolicyField,
+                          payload,
+                        ),
+                    }}
                     labels={{
                       title: t(
                         "accountPool.upstreamAccounts.effectiveRule.title",
@@ -3267,6 +3328,49 @@ function SharedUpstreamAccountDetailDrawerInner({
                       sourceSystem: t(
                         "accountPool.upstreamAccounts.effectiveRule.sourceSystem",
                       ),
+                      overrideEdit: t(
+                        "accountPool.upstreamAccounts.effectiveRule.overrideEdit",
+                      ),
+                      overrideActive: t(
+                        "accountPool.upstreamAccounts.effectiveRule.overrideActive",
+                      ),
+                      overrideClear: t(
+                        "accountPool.upstreamAccounts.effectiveRule.overrideClear",
+                      ),
+                      overrideSaving: t(
+                        "accountPool.upstreamAccounts.effectiveRule.overrideSaving",
+                      ),
+                      inheritValue: t(
+                        "accountPool.upstreamAccounts.effectiveRule.inheritValue",
+                      ),
+                      newConversationLabel: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldNewConversations",
+                      ),
+                      cutOutLabel: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldCutOut",
+                      ),
+                      cutInLabel: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldCutIn",
+                      ),
+                      upstream429RetryCountOnce: t(
+                        "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce",
+                      ),
+                      upstream429RetryCountMany: (count) =>
+                        t("accountPool.upstreamAccounts.groupNotes.upstream429.countMany", {
+                          count,
+                        }),
+                      availableModelsAddCustom: t(
+                        "accountPool.tags.dialog.availableModelsAddCustom",
+                      ),
+                      availableModelsCustomLabel: (value) =>
+                        t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
+                      availableModelsRemove: t(
+                        "accountPool.tags.dialog.availableModelsRemove",
+                      ),
+                      availableModelsPlaceholder: t(
+                        "accountPool.tags.dialog.availableModelsSearchPlaceholder",
+                      ),
+                      currentValue: t("accountPool.tags.dialog.currentValue"),
                       priorityPrimary: t(
                         "accountPool.upstreamAccounts.effectiveRule.priorityPrimary",
                       ),
