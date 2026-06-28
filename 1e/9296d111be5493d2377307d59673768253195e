@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.2.0",
+  "base_stable_version": "2.1.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-28T06:40:32Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.2.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8edffa2634371bc0ab228a84294b9c765a7f471f",
+  "pr_number": 483,
+  "pr_title": "feat(account-pool): add inline account policy overrides",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.2.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.2.0",
+  "target_sha": "1e9296d111be5493d2377307d59673768253195e",
+  "type_label": "type:minor"
+}
