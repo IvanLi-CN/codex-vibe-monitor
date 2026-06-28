@@ -29,6 +29,7 @@ type GroupAccountRoutingRuleDraft = {
   upstream429MaxRetries: number;
   availableModels: string[];
   availableModelInput: string;
+  availableModelsTouched: boolean;
 };
 
 function normalizeRetryCount(value?: number | null): number {
@@ -61,6 +62,7 @@ function buildDraft(rule?: GroupAccountRoutingRule | null): GroupAccountRoutingR
     upstream429MaxRetries: normalizeRetryCount(rule?.upstream429MaxRetries),
     availableModels: normalizeModelIds(rule?.availableModels ?? []),
     availableModelInput: "",
+    availableModelsTouched: false,
   };
 }
 
@@ -130,8 +132,7 @@ function buildPayload(
     return changedPayload;
   }
 
-  const baseModels = normalizeModelIds(options?.baseRule?.availableModels ?? []);
-  if (payload.availableModels?.length === 0 && baseModels.length === 0) {
+  if (!draft.availableModelsTouched && payload.availableModels?.length === 0) {
     delete payload.availableModels;
   }
 
@@ -277,6 +278,7 @@ export function GroupAccountRoutingRuleDialog({
         normalizedModel,
       ]),
       availableModelInput: "",
+      availableModelsTouched: true,
     }));
   };
 
@@ -446,6 +448,7 @@ export function GroupAccountRoutingRuleDialog({
                   setDraft((current) => ({
                     ...current,
                     availableModels: normalizeModelIds(value),
+                    availableModelsTouched: true,
                   }))
                 }
                 disabled={busy}
@@ -502,6 +505,7 @@ export function GroupAccountRoutingRuleDialog({
                             availableModels: current.availableModels.filter(
                               (value) => value !== model,
                             ),
+                            availableModelsTouched: true,
                           }))
                         }
                       >

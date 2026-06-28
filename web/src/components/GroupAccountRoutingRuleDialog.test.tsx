@@ -206,4 +206,63 @@ describe('GroupAccountRoutingRuleDialog', () => {
       }),
     )
   })
+
+  it('submits an explicit empty model override after touching an inherited empty model list', () => {
+    const onSubmit = vi.fn()
+    render(
+      <GroupAccountRoutingRuleDialog
+        open
+        title="Group policy"
+        description="Shared routing policy"
+        submitLabel="Apply group policy"
+        rule={defaultRule}
+        availableModelOptions={['gpt-5.5']}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const input = document.querySelector('input[name="availableModelInput"]')
+    expect(input).toBeInstanceOf(HTMLInputElement)
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set
+    expect(valueSetter).toBeTypeOf('function')
+    act(() => {
+      valueSetter!.call(input, 'gpt-5.5')
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    const addButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Add custom model id',
+    )
+    expect(addButton).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      addButton!.click()
+    })
+
+    const removeButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-label') === 'Remove model gpt-5.5',
+    )
+    expect(removeButton).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      removeButton!.click()
+    })
+
+    const submit = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Apply group policy',
+    )
+    expect(submit).toBeInstanceOf(HTMLButtonElement)
+    act(() => {
+      submit!.click()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        availableModels: [],
+      }),
+    )
+  })
 })
