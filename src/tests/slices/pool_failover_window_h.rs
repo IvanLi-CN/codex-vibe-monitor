@@ -11774,6 +11774,10 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     assert_eq!(account.retry_invocation_count, Some(1));
     assert_eq!(account.recent_invocations.len(), 4);
     assert_eq!(account.recent_invocations[0].invoke_id, "upstream-activity-pending-retry");
+    assert_eq!(
+        account.recent_invocations[0].prompt_cache_key.as_deref(),
+        Some("pck-upstream-a")
+    );
     assert_eq!(account.recent_invocations[1].invoke_id, "upstream-activity-failed");
     assert_eq!(account.recent_invocations[2].invoke_id, "upstream-activity-success");
     assert_eq!(account.recent_invocations[3].invoke_id, "upstream-activity-running");

@@ -81,6 +81,8 @@ function createPreview(
   return {
     id: overrides.id,
     invokeId: overrides.invokeId,
+    promptCacheKey:
+      "promptCacheKey" in overrides ? (overrides.promptCacheKey ?? null) : null,
     occurredAt: overrides.occurredAt,
     status: overrides.status,
     failureClass: overrides.failureClass ?? "none",
@@ -214,6 +216,7 @@ function buildRecordFromPreview(
   return {
     id: preview.id,
     invokeId: preview.invokeId,
+    promptCacheKey: preview.promptCacheKey ?? undefined,
     occurredAt: preview.occurredAt,
     createdAt: preview.occurredAt,
     source: preview.source ?? "pool",
@@ -283,14 +286,19 @@ function createUpstreamAccountActivityStoryResponse(): UpstreamAccountActivityRe
           createPreview({
             id: 9901,
             invokeId: "story-account-1",
+            promptCacheKey: "pck-story-account-running",
             occurredAt: "2026-04-04T10:05:00Z",
             status: "running",
             upstreamAccountId: 42,
             upstreamAccountName: "Pool Alpha",
+            requestModel: "gpt-5.5-mini",
+            responseModel: "gpt-5.5",
+            model: "gpt-5.5",
           }),
           createPreview({
             id: 9902,
             invokeId: "story-account-2",
+            promptCacheKey: "pck-story-account-success",
             occurredAt: "2026-04-04T10:04:00Z",
             status: "success",
             upstreamAccountId: 42,
@@ -299,6 +307,7 @@ function createUpstreamAccountActivityStoryResponse(): UpstreamAccountActivityRe
           createPreview({
             id: 9903,
             invokeId: "story-account-3",
+            promptCacheKey: "pck-story-account-failed",
             occurredAt: "2026-04-04T10:03:00Z",
             status: "failed",
             upstreamAccountId: 42,
@@ -307,6 +316,7 @@ function createUpstreamAccountActivityStoryResponse(): UpstreamAccountActivityRe
           createPreview({
             id: 9904,
             invokeId: "story-account-4",
+            promptCacheKey: "pck-story-account-pending",
             occurredAt: "2026-04-04T10:02:00Z",
             status: "pending",
             upstreamAccountId: 42,
@@ -2432,6 +2442,9 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
     await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
     await expect(canvas.getByText("繁忙")).toBeInTheDocument();
+    await expect(canvas.getByText("story-account-1")).toBeInTheDocument();
+    await expect(canvas.getByText("gpt-5.5-mini")).toBeInTheDocument();
+    await expect(canvas.getByText("gpt-5.5")).toBeInTheDocument();
     await expect(canvas.queryByText("按调用计数，不按对话去重")).toBeNull();
     await expect(canvas.queryByText("仍在重试链路中的调用")).toBeNull();
     await expect(
@@ -2443,7 +2456,7 @@ export const UpstreamAccountTab: Story = {
     docs: {
       description: {
         story:
-          "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the latest four invocations in the selected range.",
+          "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the latest four invocations in the selected range, including short conversation ids and request/response model mismatch rows.",
       },
     },
   },

@@ -2217,8 +2217,10 @@ async fn query_live_upstream_account_activity_preview_rows(
     range: ExactUtcRange,
 ) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
     let mut query =
-        QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, occurred_at, ");
+        QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
     query
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" AS prompt_cache_key, occurred_at, ")
         .push(invocation_display_status_sql())
         .push(" AS status, ")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)

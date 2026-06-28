@@ -360,6 +360,7 @@ pub(crate) fn prompt_cache_invocation_preview_from_row(
     PromptCacheConversationInvocationPreviewResponse {
         id: row.id,
         invoke_id: row.invoke_id,
+        prompt_cache_key: Some(row.prompt_cache_key),
         occurred_at: row.occurred_at,
         status: row.status,
         failure_class: normalize_trimmed_optional_string(row.failure_class),
@@ -412,6 +413,7 @@ pub(crate) fn upstream_account_invocation_preview_from_row(
     PromptCacheConversationInvocationPreviewResponse {
         id: row.id,
         invoke_id: row.invoke_id,
+        prompt_cache_key: row.prompt_cache_key,
         occurred_at: row.occurred_at,
         status: row.status,
         failure_class: normalize_trimmed_optional_string(row.failure_class),

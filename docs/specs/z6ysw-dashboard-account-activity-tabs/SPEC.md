@@ -51,6 +51,7 @@
 - `上游账号` 视图仅支持 `today / yesterday / 1d / 7d`；当共享 range 为 `usage` 时，该 tab 必须 disabled，且若当前停留在账号 tab，必须自动回退到 `对话`。
 - 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`firstByteAvgMs`、`inProgressInvocationCount`、`retryInvocationCount` 与 `recentInvocations[4]`。
 - `recentInvocations` 必须限制在当前所选范围内，按 `occurredAt DESC` 排序，并使用后端 bounded query 返回。
+- `recentInvocations[]` 必须额外返回真实 `promptCacheKey?: string | null`，供账号卡 recent 行生成稳定的对话短 ID 与详情抽屉 selection。
 - 账号卡不是折叠卡，也不是 `2 x 2` 小格子；它是单张放大卡片，桌面宽屏 `>=1660px` 时每行 2 张，其余断点为 1 列。
 - 账号卡必须保持紧凑信息卡定位；在桌面宽屏下允许按放大卡呈现，但不得因为固定高度或装饰性留白把视觉效果拉成整页面板。
 - 单账号卡上半部分必须展示账号级摘要：渠道名、TPM、消费速率、进行中调用、重试调用、请求数（成功 / 失败 / 非成功）、首字用时、Token（成功 / 非成功）、缓存命中率。
@@ -60,6 +61,10 @@
 - recent bridge 作为 recent 区标题行右侧统计例外，必须显示完整状态文字（如“进行中 / 失败 / 成功”），并与左侧“最近 4 条调用”标题保持同一垂直对齐节奏。
 - 单账号卡下半部分必须展示当前范围内最近 4 条调用记录，复用现有紧凑调用行语言，而不是再做卡中卡；4 条记录必须在卡内完整可见，不得依赖展开、滚动或裁切。
 - 账号卡内每条 recent 调用记录的信息密度不得低于 Dashboard 对话卡片中的调用记录：至少需要覆盖状态、模型、endpoint、Token 用量摘要，以及 `RQ / UP / ED / TT` 时序摘要。
+- 账号卡 recent 调用记录的主标识行必须改为“对话短 ID + 分隔符/图标 + 请求 ID”；其中对话短 ID 固定基于真实 `promptCacheKey` 走既有 working-conversation 哈希与格式化规则，展示值去掉 `WC-` 前缀；请求 ID 显示完整 `invokeId` 并允许单行截断。
+- 账号卡 recent 调用记录不得重复显示所属账号名；调用已嵌在账号大卡内时，账号名必须让位给请求标识、状态与时序摘要。
+- 账号卡 recent 调用记录中的紧凑 badge 必须统一高度、字号、圆角、padding 与 line-height；至少 `reasoning effort`、endpoint 与 recent 行双模型显示要复用同一 compact recipe，不得再出现同一行内视觉尺寸不一致。
+- 当 recent 调用记录的 `requestModel` 与 `responseModel` 规范化后仍不一致时，账号卡 recent 行必须同时显示“请求模型 + 模型切换图标 + 响应模型”；模型一致时继续显示单模型 badge。
 - `StatsResponse.inProgressConversationCount` 与 `StatsResponse.inProgressRetryConversationCount` 必须保留 wire name，但语义改为 invocation-based；所有 Dashboard owner-facing 文案同步改成“进行中调用 / 重试调用”。
 - `today / 1d / 7d` 的 `inProgressInvocationCount / retryInvocationCount` 允许使用 live augmentation 语义；`yesterday` 为 closed range，这两项必须返回 `null` 并在前端显示 `—`。
 
@@ -110,6 +115,11 @@
 
 - `None`
 
+### Shared preview contract notes
+
+- `GET /api/stats/upstream-account-activity.recentInvocations[]` 复用现有 invocation preview wire shape，并额外包含 `promptCacheKey?: string | null`。
+- 前端共享 `PromptCacheConversationInvocationPreview` 合同同步包含 `promptCacheKey?: string | null`；`DashboardWorkingConversationInvocationSelection.promptCacheKey` 语义不变，仍表示真实对话键。
+
 ## 验收标准（Acceptance Criteria）
 
 - Given Dashboard 工作区加载完成，When 查看右上角，Then 可以看到 `对话 / 上游账号` tabs，默认激活 `对话`，且现有 working-conversation 卡片交互不变。
@@ -118,9 +128,13 @@
 - Given 从未打开过账号 tab，When 停留在 `对话` tab，Then 前端不会请求账号活动接口。
 - Given 某账号有范围内调用，When 查看账号卡，Then 标题使用 `displayName`，且主体包含渠道名、TPM、消费速率、进行中调用、重试调用、请求数分解、首字用时、Token 分解、缓存命中率。
 - Given 某账号有至少 4 条范围内调用，When 查看账号卡底部，Then 只显示最近 4 条，按 `occurredAt DESC` 排序。
+- Given 某账号 recent 调用记录存在真实 `promptCacheKey`，When 查看请求标识主行，Then 可见基于该键计算出的对话短 ID、分隔图标与完整请求 ID，且短 ID 展示值不带 `WC-` 前缀。
 - Given 查看账号卡摘要区，When 卡片处于常驻态，Then 不出现解释性废话或状态说明条，请求数 / Token 分解只显示色点与数值，且不出现任何可见文字标签。
 - Given 查看账号卡 recent 区标题行，When 右侧存在 recent bridge 统计，Then 显示完整状态文字，并与左侧“最近 4 条调用”标题保持同一垂直对齐。
 - Given 查看账号卡内 recent 调用记录，When 与对话卡片调用记录对照，Then recent 行至少包含状态、模型、endpoint、Token 摘要与 `RQ / UP / ED / TT` 时序摘要，且 4 条记录完整留在卡内。
+- Given 账号卡 recent 调用记录所在账号已由大卡标题表达，When 查看 recent 行辅助元信息，Then 不再重复渲染账号名。
+- Given 账号卡 recent 调用记录的 `requestModel` 与 `responseModel` 规范化后不一致，When recent 行渲染模型区域，Then 同时显示请求模型、模型切换图标与响应模型；若两者等价，则只显示单模型。
+- Given 点击账号卡 recent 调用记录打开详情，When 详情抽屉接收 selection，Then `selection.promptCacheKey` 必须等于真实 preview `promptCacheKey`，而不是 `invokeId`。
 - Given Dashboard 顶部 KPI 使用 `StatsResponse.inProgressConversationCount` / `inProgressRetryConversationCount`，When 显示 owner-facing 文案，Then 标签为“进行中调用 / 重试调用”，并按 invocation-based 计数，而不是按 prompt-cache 对话去重。
 - Given 后端账号活动接口需要账号摘要与最近 4 条记录，When 发起请求，Then 响应来自单个 batch endpoint，不依赖前端 fanout `upstream-account detail` 或 `window-usage`。
 
@@ -159,8 +173,9 @@
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
   scenario: `desktop1660`
-  evidence_note: 验证 Dashboard 工作区已切换到 `上游账号` tab，桌面宽屏下账号卡按 2 列紧凑放大布局展示账号级 KPI 与 4 条完整 recent 调用记录。
+  evidence_note: 验证 Dashboard 工作区已切换到 `上游账号` tab，桌面宽屏下账号卡按 2 列紧凑放大布局展示账号级 KPI、对话短 ID + 请求 ID 主标识行，以及请求/响应模型不一致时的双模型切换展示。
   image:
+  PR: include
   ![Dashboard 上游账号 tab 桌面宽屏证据](./assets/dashboard-upstream-account-tab-desktop.png)
 
 - source_type: storybook_canvas
