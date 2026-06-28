@@ -16,6 +16,7 @@ const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     compact_support_reason, image_tool_capability, local_primary_limit, local_secondary_limit,
     local_limit_unit,
     policy_block_new_conversations,
+    policy_allow_new_conversations,
     policy_allow_cut_out, policy_allow_cut_in, policy_priority_tier,
     policy_fast_mode_rewrite_mode, policy_image_tool_rewrite_mode, policy_concurrency_limit,
     policy_upstream_429_retry_enabled, policy_upstream_429_max_retries,

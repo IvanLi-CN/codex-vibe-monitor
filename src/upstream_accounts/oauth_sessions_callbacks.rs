@@ -1674,7 +1674,10 @@ pub(crate) async fn update_upstream_account_inner(
     .bind(&row.upstream_base_url)
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => match rule.allow_new_conversations_field() {
-            OptionalField::Missing => row.policy_allow_new_conversations,
+            OptionalField::Missing => row.policy_block_new_conversations.or_else(|| {
+                row.policy_allow_new_conversations
+                    .map(|allow_new_conversations| if allow_new_conversations == 0 { 1 } else { 0 })
+            }),
             OptionalField::Null => None,
             OptionalField::Value(value) => Some(if value { 0_i64 } else { 1_i64 }),
         },
