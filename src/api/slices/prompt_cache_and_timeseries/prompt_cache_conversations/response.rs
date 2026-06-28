@@ -5,9 +5,13 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
     request: PromptCacheConversationsRequest,
 ) -> Result<PromptCacheConversationsResponse, ApiError> {
     if request.page_size.is_none() && request.cursor.is_none() && request.snapshot_at.is_none() {
-        let response = build_prompt_cache_conversations_response(state, request.selection)
-            .await
-            .map_err(ApiError::from)?;
+        let response = build_prompt_cache_conversations_response_with_recent_limit(
+            state,
+            request.selection,
+            request.recent_invocation_limit,
+        )
+        .await
+        .map_err(ApiError::from)?;
         return Ok(match request.detail_level {
             PromptCacheConversationDetailLevel::Full => response,
             PromptCacheConversationDetailLevel::Compact => {
@@ -141,6 +145,14 @@ pub(crate) async fn build_prompt_cache_conversations_response(
     state: &AppState,
     selection: PromptCacheConversationSelection,
 ) -> Result<PromptCacheConversationsResponse> {
+    build_prompt_cache_conversations_response_with_recent_limit(state, selection, None).await
+}
+
+async fn build_prompt_cache_conversations_response_with_recent_limit(
+    state: &AppState,
+    selection: PromptCacheConversationSelection,
+    recent_invocation_limit: Option<i64>,
+) -> Result<PromptCacheConversationsResponse> {
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let range_end = Utc::now();
     let range_start = range_end - selection.activity_window_duration();
@@ -223,7 +235,7 @@ pub(crate) async fn build_prompt_cache_conversations_response(
         aggregates,
         range_end,
         PromptCacheConversationDetailLevel::Full,
-        None,
+        recent_invocation_limit,
         None,
     )
     .await?;

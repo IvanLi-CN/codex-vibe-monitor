@@ -132,7 +132,7 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -556,6 +556,32 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     assert_eq!(enriched_preview.t_resp_parse_ms, Some(15.0));
     assert_eq!(enriched_preview.t_persist_ms, Some(16.0));
     assert_eq!(enriched_preview.t_total_ms, Some(91.0));
+
+    let Json(expanded_response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+            recent_invocation_limit: Some(6),
+        }),
+    )
+    .await
+    .expect("non-paginated recent invocation limit should be honored");
+    let expanded_conversation = expanded_response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-preview")
+        .expect("expanded pck-preview should be included");
+    assert_eq!(expanded_conversation.recent_invocations.len(), 6);
+    assert_eq!(
+        expanded_conversation.recent_invocations[5].invoke_id,
+        "preview-02"
+    );
 
     sqlx::query(
         r#"
