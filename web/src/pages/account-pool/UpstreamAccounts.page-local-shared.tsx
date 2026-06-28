@@ -3789,11 +3789,11 @@ function SharedUpstreamAccountDetailDrawerInner({
           void handleSaveAccountPolicy(selectedDetail, payload);
         }}
         labels={{
-          blockNewConversations: t(
-            "accountPool.tags.dialog.blockNewConversations",
+          allowNewConversations: t(
+            "accountPool.tags.dialog.allowNewConversations",
           ),
-          forbidNewConversation: t(
-            "accountPool.tags.dialog.forbidNewConversation",
+          newConversationHint: t(
+            "accountPool.tags.dialog.newConversationHint",
           ),
           allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
           allowCutIn: t("accountPool.tags.dialog.allowCutIn"),

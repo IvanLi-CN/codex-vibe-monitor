@@ -194,7 +194,7 @@ describe('EffectiveRoutingRuleCard', () => {
       switchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(onChange).toHaveBeenCalledWith('allowNewConversations', { blockNewConversations: true })
+    expect(onChange).toHaveBeenCalledWith('allowNewConversations', { allowNewConversations: false })
   })
 
   it('clears an account override when the active override button is clicked again', () => {

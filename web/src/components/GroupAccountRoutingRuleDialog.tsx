@@ -18,7 +18,7 @@ import type {
 import { apiConcurrencyLimitToSliderValue, sliderConcurrencyLimitToApiValue } from "../lib/concurrencyLimit";
 
 type GroupAccountRoutingRuleDraft = {
-  blockNewConversations: boolean;
+  allowNewConversations: boolean;
   allowCutOut: boolean;
   allowCutIn: boolean;
   priorityTier: TagPriorityTier;
@@ -50,7 +50,7 @@ function normalizeModelIds(values: string[]) {
 
 function buildDraft(rule?: GroupAccountRoutingRule | null): GroupAccountRoutingRuleDraft {
   return {
-    blockNewConversations: rule?.blockNewConversations ?? false,
+    allowNewConversations: !(rule?.blockNewConversations ?? false),
     allowCutOut: rule?.allowCutOut ?? true,
     allowCutIn: rule?.allowCutIn ?? true,
     priorityTier: rule?.priorityTier ?? "normal",
@@ -76,7 +76,7 @@ function buildPayload(
   },
 ): UpdateGroupAccountRoutingRulePayload | null {
   const payload: UpdateGroupAccountRoutingRulePayload = {
-    blockNewConversations: draft.blockNewConversations,
+    allowNewConversations: draft.allowNewConversations,
     allowCutOut: draft.allowCutOut,
     allowCutIn: draft.allowCutIn,
     priorityTier: draft.priorityTier,
@@ -93,8 +93,8 @@ function buildPayload(
   if (options?.changedFieldsOnly && options.baseRule) {
     const base = options.baseRule;
     const changedPayload: UpdateGroupAccountRoutingRulePayload = {};
-    if (draft.blockNewConversations !== (base.blockNewConversations ?? false)) {
-      changedPayload.blockNewConversations = payload.blockNewConversations;
+    if (draft.allowNewConversations !== !(base.blockNewConversations ?? false)) {
+      changedPayload.allowNewConversations = payload.allowNewConversations;
     }
     if (draft.allowCutOut !== (base.allowCutOut ?? true)) {
       changedPayload.allowCutOut = payload.allowCutOut;
@@ -145,8 +145,8 @@ interface GroupAccountRoutingRuleDialogProps {
   onClose: () => void;
   onSubmit: (payload: UpdateGroupAccountRoutingRulePayload) => Promise<void> | void;
   labels: {
-    blockNewConversations: string;
-    forbidNewConversation?: string;
+    allowNewConversations: string;
+    newConversationHint?: string;
     allowCutOut: string;
     allowCutIn: string;
     forbidCutOut?: string;
@@ -357,20 +357,20 @@ export function GroupAccountRoutingRuleDialog({
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="font-medium text-base-content">
-                  {labels.blockNewConversations}
+                  {labels.allowNewConversations}
                 </p>
-                {labels.forbidNewConversation ? (
+                {labels.newConversationHint ? (
                   <p className="text-xs leading-5 text-base-content/65">
-                    {labels.forbidNewConversation}
+                    {labels.newConversationHint}
                   </p>
                 ) : null}
               </div>
               <Switch
-                checked={draft.blockNewConversations}
+                checked={draft.allowNewConversations}
                 onCheckedChange={(checked) =>
                   setDraft((current) => ({
                     ...current,
-                    blockNewConversations: checked,
+                    allowNewConversations: checked,
                   }))
                 }
               />

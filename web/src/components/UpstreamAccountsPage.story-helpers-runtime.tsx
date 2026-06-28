@@ -39,9 +39,17 @@ function applyRoutingRulePatchToEffectiveRule(
     availableModels: rule.fieldSources?.availableModels ?? 'root',
     systemDeniedModels: rule.fieldSources?.systemDeniedModels ?? 'root',
   }
+  const allowNewConversations =
+    patch.allowNewConversations ??
+    (typeof patch.blockNewConversations === 'boolean'
+      ? !patch.blockNewConversations
+      : patch.blockNewConversations)
+  const hasNewConversationPatch =
+    Object.prototype.hasOwnProperty.call(patch, 'allowNewConversations') ||
+    Object.prototype.hasOwnProperty.call(patch, 'blockNewConversations')
   return {
     ...rule,
-    ...(patch.blockNewConversations == null ? {} : { blockNewConversations: patch.blockNewConversations }),
+    ...(allowNewConversations == null ? {} : { blockNewConversations: !allowNewConversations }),
     ...(patch.allowCutOut == null ? {} : { allowCutOut: patch.allowCutOut }),
     ...(patch.allowCutIn == null ? {} : { allowCutIn: patch.allowCutIn }),
     ...(patch.priorityTier == null ? {} : { priorityTier: patch.priorityTier }),
@@ -53,7 +61,7 @@ function applyRoutingRulePatchToEffectiveRule(
     ...(patch.availableModels == null ? {} : { availableModels: patch.availableModels }),
     fieldSources: {
       ...fieldSources,
-      ...(Object.prototype.hasOwnProperty.call(patch, 'blockNewConversations') ? { blockNewConversations: patch.blockNewConversations == null ? 'root' : 'account' } : {}),
+      ...(hasNewConversationPatch ? { blockNewConversations: allowNewConversations == null ? 'root' : 'account' } : {}),
       ...(Object.prototype.hasOwnProperty.call(patch, 'allowCutOut') ? { allowCutOut: patch.allowCutOut == null ? 'root' : 'account' } : {}),
       ...(Object.prototype.hasOwnProperty.call(patch, 'allowCutIn') ? { allowCutIn: patch.allowCutIn == null ? 'root' : 'account' } : {}),
       ...(Object.prototype.hasOwnProperty.call(patch, 'priorityTier') ? { priorityTier: patch.priorityTier == null ? 'root' : 'account' } : {}),

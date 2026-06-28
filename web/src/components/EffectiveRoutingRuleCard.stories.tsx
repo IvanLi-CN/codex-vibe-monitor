@@ -240,9 +240,12 @@ function applyPatchToRule(rule: EffectiveRoutingRule, patch: UpdateGroupAccountR
   }
   const nextSources = fieldSources
   const sourceFor = (value: unknown): 'root' | 'account' => (value === null ? 'root' : 'account')
-  if ('blockNewConversations' in patch) {
-    if (typeof patch.blockNewConversations === 'boolean') next.blockNewConversations = patch.blockNewConversations
-    nextSources.blockNewConversations = sourceFor(patch.blockNewConversations)
+  if ('allowNewConversations' in patch || 'blockNewConversations' in patch) {
+    const value =
+      patch.allowNewConversations ??
+      (typeof patch.blockNewConversations === 'boolean' ? !patch.blockNewConversations : patch.blockNewConversations)
+    if (typeof value === 'boolean') next.blockNewConversations = !value
+    nextSources.blockNewConversations = sourceFor(value)
   }
   if ('allowCutOut' in patch) {
     if (typeof patch.allowCutOut === 'boolean') next.allowCutOut = patch.allowCutOut

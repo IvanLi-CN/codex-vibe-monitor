@@ -38,7 +38,7 @@ The account detail Routing tab exposes final effective rules as field-level inli
 - each editable effective-rule row has an icon-only account override control
 - activating a row expands a field-local editor; clearing an active account override sends `null` and collapses the row
 - boolean fields use positive operator-facing labels: `new conversations`, `cut-out`, and `cut-in`
-- `new conversations` stores the inverse backend field `blockNewConversations`
+- `new conversations` writes the positive `allowNewConversations` API payload and persists in `policy_allow_new_conversations`
 - discrete policy fields use inline radio groups with an animated selected-state indicator and reduced-motion fallback
 - concurrency and 429 retry controls reuse the existing account-policy value semantics inside the expanded row
 - available-model overrides may store an empty list to explicitly allow no models

@@ -768,6 +768,8 @@ export interface UpdateUpstreamAccountGroupPayload {
 export type NullableRoutingRuleValue<T> = T | null;
 
 export interface UpdateGroupAccountRoutingRulePayload {
+  allowNewConversations?: NullableRoutingRuleValue<boolean>;
+  /** @deprecated use allowNewConversations for new writes */
   blockNewConversations?: NullableRoutingRuleValue<boolean>;
   allowCutOut?: NullableRoutingRuleValue<boolean>;
   allowCutIn?: NullableRoutingRuleValue<boolean>;

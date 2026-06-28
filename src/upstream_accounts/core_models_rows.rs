@@ -52,6 +52,8 @@ pub(crate) struct UpstreamAccountRow {
     #[sqlx(default)]
     policy_block_new_conversations: Option<i64>,
     #[sqlx(default)]
+    policy_allow_new_conversations: Option<i64>,
+    #[sqlx(default)]
     policy_allow_cut_out: Option<i64>,
     #[sqlx(default)]
     policy_allow_cut_in: Option<i64>,
@@ -478,6 +480,8 @@ struct UpstreamAccountGroupListRow {
     upstream_429_max_retries: Option<i64>,
     concurrency_limit: Option<i64>,
     policy_block_new_conversations: Option<i64>,
+    #[sqlx(default)]
+    policy_allow_new_conversations: Option<i64>,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<String>,

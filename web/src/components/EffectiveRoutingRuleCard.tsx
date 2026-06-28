@@ -279,12 +279,12 @@ export function EffectiveRoutingRuleCard({ rule, labels, editablePolicy }: Effec
       label: labels.newConversationLabel ?? labels.fieldBlockNewConversations ?? 'New conversations',
       value: resolvedRule.blockNewConversations ? labels.blockNewConversations : labels.allowNewConversations,
       source: fieldSources.blockNewConversations,
-      payloadKey: 'blockNewConversations' as const,
+      payloadKey: 'allowNewConversations' as const,
       editor: (
         <Switch
           checked={!resolvedRule.blockNewConversations}
           disabled={isBusy('allowNewConversations')}
-          onCheckedChange={(checked) => changeField('allowNewConversations', { blockNewConversations: !checked })}
+          onCheckedChange={(checked) => changeField('allowNewConversations', { allowNewConversations: checked })}
           aria-label={labels.newConversationLabel ?? 'New conversations'}
         />
       ),

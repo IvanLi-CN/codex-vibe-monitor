@@ -1645,16 +1645,17 @@ pub(crate) async fn update_upstream_account_inner(
             local_limit_unit = ?12,
             upstream_base_url = ?13,
             policy_block_new_conversations = ?14,
-            policy_allow_cut_out = ?15,
-            policy_allow_cut_in = ?16,
-            policy_priority_tier = ?17,
-            policy_fast_mode_rewrite_mode = ?18,
-            policy_image_tool_rewrite_mode = ?19,
-            policy_concurrency_limit = ?20,
-            policy_upstream_429_retry_enabled = ?21,
-            policy_upstream_429_max_retries = ?22,
-            policy_available_models_json = ?23,
-            updated_at = ?24
+            policy_allow_new_conversations = ?15,
+            policy_allow_cut_out = ?16,
+            policy_allow_cut_in = ?17,
+            policy_priority_tier = ?18,
+            policy_fast_mode_rewrite_mode = ?19,
+            policy_image_tool_rewrite_mode = ?20,
+            policy_concurrency_limit = ?21,
+            policy_upstream_429_retry_enabled = ?22,
+            policy_upstream_429_max_retries = ?23,
+            policy_available_models_json = ?24,
+            updated_at = ?25
         WHERE id = ?1
         "#,
     )
@@ -1672,12 +1673,26 @@ pub(crate) async fn update_upstream_account_inner(
     .bind(&row.local_limit_unit)
     .bind(&row.upstream_base_url)
     .bind(match payload.routing_rule.as_ref() {
-        Some(rule) => match rule.block_new_conversations {
-            OptionalField::Missing => row.policy_block_new_conversations,
+        Some(rule) => match rule.allow_new_conversations_field() {
+            OptionalField::Missing => row.policy_allow_new_conversations,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 0_i64 } else { 1_i64 }),
+        },
+        None => row.policy_block_new_conversations.or_else(|| {
+            row.policy_allow_new_conversations
+                .map(|allow_new_conversations| if allow_new_conversations == 0 { 1 } else { 0 })
+        }),
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => match rule.allow_new_conversations_field() {
+            OptionalField::Missing => row.policy_allow_new_conversations,
             OptionalField::Null => None,
             OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
         },
-        None => row.policy_block_new_conversations,
+        None => row.policy_allow_new_conversations.or_else(|| {
+            row.policy_block_new_conversations
+                .map(|block_new_conversations| if block_new_conversations == 0 { 1 } else { 0 })
+        }),
     })
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => match rule.allow_cut_out {

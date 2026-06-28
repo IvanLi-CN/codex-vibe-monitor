@@ -97,7 +97,7 @@ The only supported exception is an explicit Prompt Cache conversation binding wr
 
 HTTP 4xx responses are not route-health successes for sticky routing. They remain recorded as failed invocations and upstream attempts with the real account, status, and error details, but they must not update `pool_sticky_routes`.
 
-`blockNewConversations` / `block_new_conversations` remains the stored backend field, but the operator-facing UI presents it as positive `new conversations`. An enabled switch means new conversations are allowed and stores `blockNewConversations=false`; a disabled switch means new conversations are forbidden and stores `blockNewConversations=true`.
+`new conversations` is stored as positive nullable policy in `policy_allow_new_conversations`. An enabled switch means new conversations are allowed and stores `true`; a disabled switch means new conversations are forbidden and stores `false`. Legacy `policy_block_new_conversations` and `blockNewConversations` API response fields are compatibility surfaces only; new writes use `allowNewConversations`.
 
 `new conversations`, `cut-out`, and `cut-in` are direct group/account overrides, not most-conservative merges. A lower editable layer that stores either `true` or `false` replaces the inherited value for that field. System tags may only add read-only deny/signal state; they are not a user-editable escape hatch.
 

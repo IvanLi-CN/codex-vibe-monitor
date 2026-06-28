@@ -71,8 +71,8 @@ function render(ui: React.ReactNode) {
 }
 
 const labels = {
-  blockNewConversations: 'Block new conversations',
-  forbidNewConversation: 'Block new conversations',
+  allowNewConversations: 'New conversations',
+  newConversationHint: 'Allow new conversations on this group',
   allowCutOut: 'Cut out is not blocked',
   allowCutIn: 'Cut in is not blocked',
   forbidCutOut: 'Block cut out',

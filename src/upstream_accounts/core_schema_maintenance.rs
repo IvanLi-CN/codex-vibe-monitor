@@ -48,6 +48,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             local_secondary_limit REAL,
             local_limit_unit TEXT,
             policy_block_new_conversations INTEGER,
+            policy_allow_new_conversations INTEGER,
             policy_allow_cut_out INTEGER,
             policy_allow_cut_in INTEGER,
             policy_priority_tier TEXT,
@@ -118,6 +119,17 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_block_new_conversations")
         .await
         .context("failed to ensure pool_upstream_accounts.policy_block_new_conversations")?;
+    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_allow_new_conversations")
+        .await
+        .context("failed to ensure pool_upstream_accounts.policy_allow_new_conversations")?;
+    backfill_allow_new_conversations_policy(
+        pool,
+        "pool_upstream_accounts",
+        "policy_block_new_conversations",
+        "policy_allow_new_conversations",
+    )
+    .await
+    .context("failed to backfill pool_upstream_accounts.policy_allow_new_conversations")?;
     ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_allow_cut_out")
         .await
         .context("failed to ensure pool_upstream_accounts.policy_allow_cut_out")?;
@@ -824,6 +836,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             upstream_429_max_retries INTEGER NOT NULL DEFAULT 0,
             concurrency_limit INTEGER NOT NULL DEFAULT 0,
             policy_block_new_conversations INTEGER,
+            policy_allow_new_conversations INTEGER,
             policy_allow_cut_out INTEGER,
             policy_allow_cut_in INTEGER,
             policy_priority_tier TEXT,
@@ -910,6 +923,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .context("failed to ensure pool_upstream_account_group_notes.concurrency_limit")?;
     for column in [
         "policy_block_new_conversations",
+        "policy_allow_new_conversations",
         "policy_allow_cut_out",
         "policy_allow_cut_in",
         "policy_concurrency_limit",
@@ -920,6 +934,14 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             .await
             .with_context(|| format!("failed to ensure pool_upstream_account_group_notes.{column}"))?;
     }
+    backfill_allow_new_conversations_policy(
+        pool,
+        "pool_upstream_account_group_notes",
+        "policy_block_new_conversations",
+        "policy_allow_new_conversations",
+    )
+    .await
+    .context("failed to backfill pool_upstream_account_group_notes.policy_allow_new_conversations")?;
     ensure_nullable_text_column(
         pool,
         "pool_upstream_account_group_notes",
@@ -1209,6 +1231,28 @@ async fn ensure_nullable_integer_column(
     }
 
     let statement = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} INTEGER");
+    sqlx::query(&statement).execute(pool).await?;
+    Ok(())
+}
+
+async fn backfill_allow_new_conversations_policy(
+    pool: &Pool<Sqlite>,
+    table_name: &str,
+    legacy_column_name: &str,
+    column_name: &str,
+) -> Result<()> {
+    let statement = format!(
+        r#"
+        UPDATE {table_name}
+        SET {column_name} = CASE
+            WHEN {legacy_column_name} = 0 THEN 1
+            WHEN {legacy_column_name} = 1 THEN 0
+            ELSE NULL
+        END
+        WHERE {column_name} IS NULL
+          AND {legacy_column_name} IS NOT NULL
+        "#
+    );
     sqlx::query(&statement).execute(pool).await?;
     Ok(())
 }

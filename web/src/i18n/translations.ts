@@ -1074,6 +1074,9 @@ const baseTranslations = {
       "Block new conversations",
     "accountPool.tags.dialog.forbidNewConversation":
       "Block new conversations",
+    "accountPool.tags.dialog.allowNewConversations": "New conversations",
+    "accountPool.tags.dialog.newConversationHint":
+      "Allow new conversations for this routing policy.",
     "accountPool.tags.dialog.allowCutOut":
       "Do not block moving conversations out of this account",
     "accountPool.tags.dialog.allowCutIn":
@@ -3408,6 +3411,9 @@ const baseTranslations = {
       "例如：vip、night-shift、warm-standby",
     "accountPool.tags.dialog.blockNewConversations": "禁止新对话",
     "accountPool.tags.dialog.forbidNewConversation": "禁止新对话",
+    "accountPool.tags.dialog.allowNewConversations": "新对话",
+    "accountPool.tags.dialog.newConversationHint":
+      "开启表示允许新对话，关闭表示禁止新对话。",
     "accountPool.tags.dialog.allowCutOut": "未禁止把对话切出到其他账号",
     "accountPool.tags.dialog.allowCutIn": "未禁止把对话切入到当前账号",
     "accountPool.tags.dialog.forbidCutOut": "禁止切出",

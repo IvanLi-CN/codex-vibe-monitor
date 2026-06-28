@@ -2271,6 +2271,8 @@ pub(crate) struct UpdateTagRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
+    allow_new_conversations: OptionalField<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
     block_new_conversations: OptionalField<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     allow_cut_out: OptionalField<bool>,
@@ -2293,6 +2295,18 @@ pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
 }
 
 impl UpdateGroupAccountRoutingRuleRequest {
+    fn allow_new_conversations_field(&self) -> OptionalField<bool> {
+        match &self.allow_new_conversations {
+            OptionalField::Missing => match &self.block_new_conversations {
+                OptionalField::Missing => OptionalField::Missing,
+                OptionalField::Null => OptionalField::Null,
+                OptionalField::Value(value) => OptionalField::Value(!*value),
+            },
+            OptionalField::Null => OptionalField::Null,
+            OptionalField::Value(value) => OptionalField::Value(*value),
+        }
+    }
+
     fn priority_tier_value(&self) -> Option<&str> {
         match &self.priority_tier {
             OptionalField::Value(value) => Some(value.as_str()),
@@ -2318,6 +2332,13 @@ impl UpdateGroupAccountRoutingRuleRequest {
 fn optional_bool_to_i64(value: &OptionalField<bool>) -> Option<i64> {
     match value {
         OptionalField::Value(value) => Some(if *value { 1_i64 } else { 0_i64 }),
+        OptionalField::Missing | OptionalField::Null => None,
+    }
+}
+
+fn optional_inverted_bool_to_i64(value: &OptionalField<bool>) -> Option<i64> {
+    match value {
+        OptionalField::Value(value) => Some(if *value { 0_i64 } else { 1_i64 }),
         OptionalField::Missing | OptionalField::Null => None,
     }
 }

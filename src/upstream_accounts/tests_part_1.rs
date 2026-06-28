@@ -2440,7 +2440,8 @@
                 upstream_429_max_retries: None,
                 concurrency_limit: None,
                 routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                    block_new_conversations: OptionalField::Missing,
+                    allow_new_conversations: OptionalField::Missing,
+                        block_new_conversations: OptionalField::Missing,
                     allow_cut_out: OptionalField::Missing,
                     allow_cut_in: OptionalField::Missing,
                     priority_tier: OptionalField::Value("urgent".to_string()),
@@ -2510,7 +2511,8 @@
                 upstream_429_max_retries: None,
                 concurrency_limit: None,
                 routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                    block_new_conversations: OptionalField::Missing,
+                    allow_new_conversations: OptionalField::Missing,
+                        block_new_conversations: OptionalField::Missing,
                     allow_cut_out: OptionalField::Missing,
                     allow_cut_in: OptionalField::Missing,
                     priority_tier: OptionalField::Missing,
@@ -2585,7 +2587,8 @@
                 upstream_429_max_retries: None,
                 concurrency_limit: None,
                 routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                    block_new_conversations: OptionalField::Missing,
+                    allow_new_conversations: OptionalField::Missing,
+                        block_new_conversations: OptionalField::Missing,
                     allow_cut_out: OptionalField::Missing,
                     allow_cut_in: OptionalField::Missing,
                     priority_tier: OptionalField::Value("primary".to_string()),
@@ -3147,6 +3150,7 @@
                 local_secondary_limit: None,
                 local_limit_unit: None,
                 policy_block_new_conversations: None,
+                policy_allow_new_conversations: None,
                 policy_allow_cut_out: None,
                 policy_allow_cut_in: None,
                 policy_priority_tier: None,

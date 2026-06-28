@@ -1649,6 +1649,7 @@ fn group_routing_rule_from_columns(
     legacy_upstream_429_retry_enabled: bool,
     legacy_upstream_429_max_retries: u8,
     policy_block_new_conversations: Option<i64>,
+    policy_allow_new_conversations: Option<i64>,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<&str>,
@@ -1659,7 +1660,11 @@ fn group_routing_rule_from_columns(
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<&str>,
 ) -> GroupAccountRoutingRule {
-    let block_new_conversations = policy_block_new_conversations.is_some_and(|value| value != 0);
+    let allow_new_conversations = policy_allow_new_conversations.or_else(|| {
+        policy_block_new_conversations
+            .map(|block_new_conversations| if block_new_conversations == 0 { 1 } else { 0 })
+    });
+    let block_new_conversations = allow_new_conversations.is_some_and(|value| value == 0);
     let upstream_429_retry_enabled = policy_upstream_429_retry_enabled
         .map(|value| value != 0)
         .unwrap_or(legacy_upstream_429_retry_enabled);
@@ -1699,6 +1704,7 @@ async fn load_group_routing_rule(
             Option<i64>,
             Option<i64>,
             Option<i64>,
+            Option<i64>,
             Option<String>,
             Option<String>,
             Option<String>,
@@ -1714,6 +1720,7 @@ async fn load_group_routing_rule(
             upstream_429_retry_enabled,
             upstream_429_max_retries,
             policy_block_new_conversations,
+            policy_allow_new_conversations,
             policy_allow_cut_out,
             policy_allow_cut_in,
             policy_priority_tier,
@@ -1736,6 +1743,7 @@ async fn load_group_routing_rule(
             upstream_429_retry_enabled,
             upstream_429_max_retries,
             policy_block_new_conversations,
+            policy_allow_new_conversations,
             policy_allow_cut_out,
             policy_allow_cut_in,
             policy_priority_tier,
@@ -1748,7 +1756,7 @@ async fn load_group_routing_rule(
     )) = row
     else {
         return Ok(group_routing_rule_from_columns(
-            0, false, 0, None, None, None, None, None, None, None, None, None, None,
+            0, false, 0, None, None, None, None, None, None, None, None, None, None, None,
         ));
     };
     let upstream_429_retry_enabled =
@@ -1762,6 +1770,7 @@ async fn load_group_routing_rule(
         upstream_429_retry_enabled,
         upstream_429_max_retries,
         policy_block_new_conversations,
+        policy_allow_new_conversations,
         policy_allow_cut_out,
         policy_allow_cut_in,
         policy_priority_tier.as_deref(),

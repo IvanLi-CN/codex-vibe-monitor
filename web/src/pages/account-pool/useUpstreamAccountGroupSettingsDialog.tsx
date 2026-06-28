@@ -498,8 +498,8 @@ export function useUpstreamAccountGroupSettingsDialog(
           }));
         }}
         labels={{
-          blockNewConversations: t("accountPool.tags.dialog.blockNewConversations"),
-          forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
+          allowNewConversations: t("accountPool.tags.dialog.allowNewConversations"),
+          newConversationHint: t("accountPool.tags.dialog.newConversationHint"),
           allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
           allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
           forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
