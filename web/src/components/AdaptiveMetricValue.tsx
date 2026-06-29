@@ -2,12 +2,14 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatedDigits } from './AnimatedDigits'
 import {
   buildAdaptiveMetricSpec,
+  type AdaptiveCurrencyProfile,
   type AdaptiveDisplayValueSpec,
   type AdaptiveMetricValueKind,
 } from './adaptiveMetricValueSpec'
 import { cn } from '../lib/utils'
 
 const ADAPTIVE_METRIC_COMPACT_GUTTER_PX = 12
+const ADAPTIVE_METRIC_UPGRADE_HEADROOM_PX = 6
 
 interface AdaptiveDisplayValueProps {
   spec: AdaptiveDisplayValueSpec
@@ -21,6 +23,7 @@ interface AdaptiveMetricValueProps {
   value: number
   localeTag: string
   kind?: AdaptiveMetricValueKind
+  currencyProfile?: AdaptiveCurrencyProfile
   className?: string
   'data-testid'?: string
 }
@@ -38,22 +41,43 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec) {
     if (availableWidth <= 0) return
 
     const measures = measureRefs.current
-    let nextCandidate = spec.candidates.at(-1)
+    const candidateWidths = spec.candidates.map((candidate, index) => ({
+      candidate,
+      index,
+      requiredWidth: measures[index]?.scrollWidth ?? 0,
+    }))
+    const currentIndex = Math.max(
+      0,
+      spec.candidates.findIndex((candidate) => candidate.key === selectedCandidateKey),
+    )
+    const currentCandidateWidth = candidateWidths[currentIndex]?.requiredWidth ?? 0
 
-    for (let index = 0; index < spec.candidates.length; index += 1) {
-      const measure = measures[index]
-      const requiredWidth = measure?.scrollWidth ?? 0
-      if (requiredWidth <= 0) continue
-      if (requiredWidth + ADAPTIVE_METRIC_COMPACT_GUTTER_PX <= availableWidth) {
-        nextCandidate = spec.candidates[index]
-        break
+    const fitsWithinWidth = (requiredWidth: number, extraHeadroomPx: number) =>
+      requiredWidth > 0 && requiredWidth + ADAPTIVE_METRIC_COMPACT_GUTTER_PX + extraHeadroomPx <= availableWidth
+
+    let nextCandidate = spec.candidates[currentIndex] ?? spec.candidates.at(-1)
+
+    if (!fitsWithinWidth(currentCandidateWidth, 0)) {
+      nextCandidate = spec.candidates.at(-1) ?? nextCandidate
+      for (let index = currentIndex + 1; index < candidateWidths.length; index += 1) {
+        if (fitsWithinWidth(candidateWidths[index]?.requiredWidth ?? 0, 0)) {
+          nextCandidate = candidateWidths[index]?.candidate ?? nextCandidate
+          break
+        }
+      }
+    } else {
+      for (let index = 0; index < currentIndex; index += 1) {
+        if (fitsWithinWidth(candidateWidths[index]?.requiredWidth ?? 0, ADAPTIVE_METRIC_UPGRADE_HEADROOM_PX)) {
+          nextCandidate = candidateWidths[index]?.candidate ?? nextCandidate
+          break
+        }
       }
     }
 
     setSelectedCandidateKey((current) =>
       current === (nextCandidate?.key ?? current) ? current : (nextCandidate?.key ?? current),
     )
-  }, [spec.candidates])
+  }, [selectedCandidateKey, spec.candidates])
 
   useLayoutEffect(() => {
     evaluateOverflow()
@@ -158,12 +182,13 @@ export function AdaptiveMetricValue({
   value,
   localeTag,
   kind = 'number',
+  currencyProfile,
   className,
   'data-testid': dataTestId,
 }: AdaptiveMetricValueProps) {
   const spec = useMemo(
-    () => buildAdaptiveMetricSpec(value, localeTag, kind),
-    [kind, localeTag, value],
+    () => buildAdaptiveMetricSpec(value, localeTag, kind, { currencyProfile }),
+    [currencyProfile, kind, localeTag, value],
   )
 
   return (
@@ -176,4 +201,8 @@ export function AdaptiveMetricValue({
   )
 }
 
-export type { AdaptiveDisplayValueSpec, AdaptiveMetricValueKind } from './adaptiveMetricValueSpec'
+export type {
+  AdaptiveCurrencyProfile,
+  AdaptiveDisplayValueSpec,
+  AdaptiveMetricValueKind,
+} from './adaptiveMetricValueSpec'

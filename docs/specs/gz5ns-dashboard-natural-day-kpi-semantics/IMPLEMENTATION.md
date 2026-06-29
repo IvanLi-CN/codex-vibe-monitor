@@ -22,6 +22,10 @@
 - 已补齐 `1.05B / 1.0B / 1B / 1,050M` 等 `B/M` 临界值规则，保证在真实窄宽度下优先保留 `1.0B` 等最低必要小数位，而不是视觉上塌成 `1B`。
 - 已刷新 `TodayStatsOverview` 与 `DashboardActivityOverview` 的 Storybook 视觉证据，确保取证仅使用仓库支持的 desktop viewport，并去除 story 内部人为 `max-width` 制造的伪窄态。
 - 已补齐 tile 级自适应布局退化：当单卡真实宽度不足时，右上 comparison 与底部两个 secondary 会自动下沉到主值下方逐行展示；宽度恢复后回到原四区布局。
+- 已完成共享 `AdaptiveDisplayValue` 候选防抖：当前候选只会在真实超宽时降级，只有更高信息量候选额外满足 `6px` headroom 时才升级，重复 `ResizeObserver` / resize 评估不再让同一数值在两种长度之间抖动。
+- 已完成共享货币 profile 扩展：`default` 保持累计金额现有非补零语义，`rate` 固定走 `2 位小数 -> 1 位小数 -> 0 位小数 -> compact` 梯度，并把 full 候选固定成两位小数。
+- 已完成 `TodayStatsOverview` 的 `消费速率` 主值、`日均`、`每对话` 接入 `rate` profile；`今日成本`、`失败成本` 与其余累计金额调用保持 `default` profile，不扩散 `.00` 风格。
+- 已补齐 `AdaptiveMetricValue.test.tsx`、`TodayStatsOverview.test.tsx` 与 `TodayStatsOverview.stories.tsx` 的回归覆盖，并追加 rate 精度 / antijitter Storybook 证据。
 
 ## Remaining Gaps
 
@@ -39,6 +43,7 @@
 - `web/src/components/TodayStatsOverview.stories.tsx`
 - `web/src/components/AdaptiveMetricValue.tsx`
 - `web/src/components/AdaptiveMetricValue.test.tsx`
+- `web/src/components/adaptiveMetricValueSpec.ts`
 - `web/src/components/DashboardTodayActivityChart.tsx`
 - `web/src/components/dashboardTodayActivityChartData.ts`
 - `web/src/components/DashboardActivityOverview.stories.tsx`

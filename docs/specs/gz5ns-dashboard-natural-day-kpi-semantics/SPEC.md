@@ -56,6 +56,9 @@
 - 增强后的 summary 字段必须同时在全局 Dashboard 与 `upstreamAccountId` 账号作用域下可用。
 - 自然日金额图保留“累计金额”语义，但在 `metric=totalCost` 时必须改为两层堆叠面积：`累计成功金额` + `累计 Non-success 金额`。
 - 自然日金额图中的 `Non-success` 固定表示 `failed + interrupted` 成本；图例、tooltip 与 Storybook 证据必须统一使用这一领域术语，并按当前 locale 正确本地化，不再把 `interrupted` 隐含进“失败”一词。
+- 共享 `AdaptiveDisplayValue` 的候选切换必须稳定：保留当前候选作为同一容器下的稳定真相源；只有当前候选真实超宽时才允许降级；只有更高信息量候选在真实可用宽度下额外留出 `6px` headroom 时才允许升级。重复 `ResizeObserver` / resize 评估不得让同一数值在两个候选字符串之间来回翻转。
+- 货币类候选必须支持共享 profile。`rate` profile 的 full 候选固定从两位小数开始，并按 `2 位小数 -> 1 位小数 -> 0 位小数 -> compact` 的顺序退化；`default` profile 保持累计金额现有的非补零语义，不被强制补 `.00`。
+- `TodayStatsOverview` 的 `消费速率` 主值、`日均`、`每对话` 必须统一走 `rate` 货币 profile；`今日成本`、`失败成本`、`StatsCards` 总成本等累计金额继续走 `default` profile。
 
 ### SHOULD
 
@@ -64,6 +67,7 @@
 - 后端 augmentation 保持“主 summary totals + live augmentation”结构，避免重写已有 rollup-backed totals 路径。
 - `TodayStatsOverview` 内的主值、右上 comparison/meta、底部 secondary 数值应优先保留完整精度；仅在真实可用宽度不足时，才按“减少小数 -> compact -> compact 邻近单位回退”阶梯退化。
 - 对计数、Token、货币类 compact 候选，选择规则必须优先保留更多有效信息；允许 `B` 回退到 `M`，也允许在必要时保留 `1.0B` 这类最小小数位，禁止在仍可表达更多信息时直接塌成 `1B`。
+- `rate` 型货币在仓库支持的 desktop viewport 内应优先保留两位小数，只有真实宽度不足时才允许退到 `1` 位、`0` 位或 compact；空间充足时不允许显示成 `US$1` 这类丢精度主值。
 
 ### COULD
 
@@ -126,6 +130,9 @@
 - Given 账号详情页传入 `upstreamAccountId`，When 查看自然日金额图，Then 堆叠面积与 tooltip 语义与主 Dashboard 一致，且数据仍严格受账号作用域约束。
 - Given `TodayStatsOverview` 任一主值、右上 comparison 或底部 secondary 在仓库支持的桌面 viewport 内接近溢出，When 自适应格式化生效，Then 标签语义保留且 label 保持单行；若同一 tile 的横向空间仍不足，则右上 comparison、左下 secondary、右下 secondary 必须自动下沉到主值下方逐行展示，数值只允许通过降小数、compact 或 compact 邻近单位回退来缩短，不允许出现省略号截断数值。
 - Given `Today Token` 等 `B/M` 临界值主值在紧张宽度下渲染，When `1.05B` 放不下但 `1.0B` 仍可放下，Then 应优先显示 `1.0B`；只有更高信息量候选都放不下时，才允许进一步退化到 `1B` 或邻近单位整数值。
+- Given 同一 KPI 容器在阈值附近反复收到重复 `ResizeObserver` / resize 回调，When 当前候选仍能在现有可用宽度内放下，Then 共享候选选择器不得在两个不同长度的表示之间来回翻转。
+- Given `消费速率` 属于 `rate` 型货币，When 桌面宽度足够，Then 主值、`日均`、`每对话` 都应优先显示两位小数（例如 `US$1.00`、`US$0.10`）；只有真实宽度不足时，才允许按既定梯度退化。
+- Given `今日成本`、`失败成本` 等累计金额属于 `default` 货币 profile，When 它们落在整数或一位小数边界，Then 共享防抖仍生效，但显示语义不得被统一强制成固定两位小数。
 
 ## 验收清单（Acceptance checklist）
 
@@ -191,6 +198,18 @@
   scenario: `desktop 1280 precision guard`
   evidence_note: `验证仓库支持的 Desktop 1280 viewport 下，单卡宽度不足时会自动切到“主值下三行 meta”布局；Today Token 主值仍可保留为 1.05B，而 comparison 与 secondary 不再横向争抢空间，也不依赖字符串截断。`
   ![TodayStatsOverview desktop 1280 precision guard](./assets/today-stats-overview-narrow-precision-guard.png)
+- SHA `worktree`
+- source_type: `storybook_canvas`
+  story_id_or_title: `dashboard-todaystatsoverview--rate-precision-guard`
+  scenario: `rate currency precision guard`
+  evidence_note: `验证 TodayStatsOverview 的 rate 型货币在桌面宽度充足时保留两位小数；消费速率主值、日均、每对话统一显示为 US$1.00，而累计金额位仍保持 default profile 语义。`
+  ![TodayStatsOverview rate precision guard](./assets/today-stats-overview-rate-precision-guard.png)
+- SHA `worktree`
+- source_type: `storybook_canvas`
+  story_id_or_title: `dashboard-todaystatsoverview--desktop-1280-precision-guard`
+  scenario: `rate candidate antijitter desktop 1280`
+  evidence_note: `验证共享候选选择器在 TodayStatsOverview 的桌面 1280 窄态下保持稳定；消费速率主值会按 2 位 -> 1 位的小数梯度退化，不再在同一数值的两种长度之间来回抖动。`
+  ![TodayStatsOverview rate antijitter desktop 1280](./assets/today-stats-overview-rate-antijitter-1280.png)
 
 ## Related PRs
 
