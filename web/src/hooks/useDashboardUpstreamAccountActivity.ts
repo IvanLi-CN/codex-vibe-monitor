@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN } from "./useDashboardWorkingConversations";
+import {
+  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
+} from "./useDashboardWorkingConversations";
 import {
   fetchUpstreamAccountActivity,
+  type UpstreamAccountActivityAccount,
   type UpstreamAccountActivityResponse,
 } from "../lib/api";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
@@ -17,17 +21,49 @@ function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
+function clampRecentInvocationLimit(value: number) {
+  if (!Number.isFinite(value)) {
+    return DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN;
+  }
+  return Math.min(
+    DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+    Math.max(
+      DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
+      Math.trunc(value),
+    ),
+  );
+}
+
+export function resolveUpstreamAccountRecentPreviewLimit(
+  accounts: Pick<UpstreamAccountActivityAccount, "inProgressInvocationCount">[],
+) {
+  let maxInProgressInvocationCount = 0;
+  for (const account of accounts) {
+    maxInProgressInvocationCount = Math.max(
+      maxInProgressInvocationCount,
+      account.inProgressInvocationCount ?? 0,
+    );
+  }
+  return clampRecentInvocationLimit(maxInProgressInvocationCount);
+}
+
 export function useDashboardUpstreamAccountActivity(
   range: string,
   enabled: boolean,
   recentInvocationLimit = DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
 ) {
+  const initialRecentInvocationLimit = clampRecentInvocationLimit(
+    recentInvocationLimit,
+  );
   const [data, setData] = useState<UpstreamAccountActivityResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [visibleRecentInvocationLimit, setVisibleRecentInvocationLimit] =
+    useState(initialRecentInvocationLimit);
   const enabledRef = useRef(enabled);
   const rangeRef = useRef(range);
-  const recentInvocationLimitRef = useRef(recentInvocationLimit);
+  const recentInvocationLimitRef = useRef(initialRecentInvocationLimit);
+  const previousRangeRef = useRef(range);
   const hasActivatedRef = useRef(false);
   const hasHydratedRef = useRef(false);
   const inFlightRef = useRef(false);
@@ -47,8 +83,23 @@ export function useDashboardUpstreamAccountActivity(
   }, [range]);
 
   useEffect(() => {
-    recentInvocationLimitRef.current = recentInvocationLimit;
-  }, [recentInvocationLimit]);
+    const nextSeedRecentInvocationLimit = clampRecentInvocationLimit(
+      recentInvocationLimit,
+    );
+    const rangeChanged = previousRangeRef.current !== range;
+    previousRangeRef.current = range;
+    if (!enabled) {
+      recentInvocationLimitRef.current = nextSeedRecentInvocationLimit;
+      setVisibleRecentInvocationLimit(nextSeedRecentInvocationLimit);
+      return;
+    }
+    recentInvocationLimitRef.current = rangeChanged
+      ? nextSeedRecentInvocationLimit
+      : Math.max(
+          recentInvocationLimitRef.current,
+          nextSeedRecentInvocationLimit,
+        );
+  }, [enabled, range, recentInvocationLimit]);
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return;
@@ -90,9 +141,28 @@ export function useDashboardUpstreamAccountActivity(
       ) {
         return;
       }
+      const resolvedRecentInvocationLimit =
+        resolveUpstreamAccountRecentPreviewLimit(response.accounts);
+      const nextRecentInvocationLimit = Math.max(
+        requestedRecentLimit,
+        resolvedRecentInvocationLimit,
+      );
+      const needsExpandedReload =
+        nextRecentInvocationLimit > requestedRecentLimit;
+      recentInvocationLimitRef.current = nextRecentInvocationLimit;
+      setVisibleRecentInvocationLimit(
+        needsExpandedReload
+          ? requestedRecentLimit
+          : nextRecentInvocationLimit,
+      );
       setData(response);
       hasHydratedRef.current = true;
       setError(null);
+      if (needsExpandedReload) {
+        pendingLoadRef.current = {
+          silent: pendingLoadRef.current?.silent ?? true,
+        };
+      }
     } catch (err) {
       if (isAbortError(err)) return;
       if (requestSeq !== requestSeqRef.current) return;
@@ -192,6 +262,7 @@ export function useDashboardUpstreamAccountActivity(
     data,
     isLoading,
     error,
+    recentInvocationLimit: visibleRecentInvocationLimit,
     hasActivated: hasActivatedRef.current,
     reload: load,
   };

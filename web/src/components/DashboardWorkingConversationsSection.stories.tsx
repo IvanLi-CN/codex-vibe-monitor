@@ -338,7 +338,10 @@ function createUpstreamAccountActivityStoryResponse(
         spendRate: 0.12,
         firstByteAvgMs: 420,
         avgTotalMs: 860,
-        inProgressInvocationCount: 3,
+        inProgressInvocationCount: Math.max(
+          0,
+          Math.min(recentInvocationCount, 16),
+        ),
         retryInvocationCount: 1,
         recentInvocations,
       },
