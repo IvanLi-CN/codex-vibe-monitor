@@ -19,6 +19,7 @@
 - 已实现：账号卡底部 4 条 recent 调用记录全部留在卡内可见，单条 recent 行补齐 endpoint、Token 摘要与 `RQ / UP / ED / TT` 时序摘要，使信息密度不低于对话卡片中的调用记录。
 - 已实现：桌面宽屏账号卡固定高度收敛到更紧凑值，避免整页面板观感，同时保持 4 条 recent 记录完整可见。
 - 已实现：上游账号 recent 行改为“对话短 ID + 请求 ID”主标识布局，短 ID 基于真实 `promptCacheKey` 计算并去掉 `WC-` 前缀；点击详情时传递的 `selection.promptCacheKey` 也已修正为真实对话键。
+- 已实现：上游账号 recent 行的对话短 ID 从“连续色圆点 + 短码”收口为轻量 identity chip；chip 以短码文本为主识别，颜色降为离散辅助槽位，不再与状态徽标混淆语义。
 - 已实现：上游账号 recent 行不再重复显示账号名；当 `requestModel` / `responseModel` 规范化后仍不一致时，recent 行改为同时展示请求模型、切换图标与响应模型。
 - 已实现：上游账号 recent 行的 endpoint、reasoning effort 与双模型 badge 统一复用 compact 尺寸 recipe，消除同一行内 badge 高度不一致问题。
 - 已实现：上游账号卡片标题区改为账号名 + 文本型实时 `TPM / 消费速率` 指标，删除卡内 `渠道 / 分组` 行和顶部 `调用` 指标；周期统计重排为首字用时、请求数、成本、Token 四组，并沿用滚动数字效果。

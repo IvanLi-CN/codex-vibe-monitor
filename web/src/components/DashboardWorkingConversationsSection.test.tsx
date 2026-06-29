@@ -556,7 +556,7 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toBe(4);
     expect(
       host?.querySelectorAll(
-        '[data-testid="dashboard-upstream-account-recent-conversation-marker"]',
+        '[data-testid="dashboard-upstream-account-recent-identity-chip"]',
       ).length,
     ).toBe(4);
     expect(
@@ -797,6 +797,12 @@ describe("DashboardWorkingConversationsSection", () => {
     const identity = firstRow.querySelector(
       '[data-testid="dashboard-upstream-account-recent-identity"]',
     );
+    const identityChip = firstRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-identity-chip"]',
+    );
+    expect(identityChip).not.toBeNull();
+    expect(identityChip?.className).toContain("rounded-full");
+    expect(identityChip?.className).toContain("font-mono");
     expect(identity?.textContent).toContain(displayConversationId);
     expect(identity?.textContent).toContain("acct-invoke-1");
     expect(identity?.textContent).not.toContain("WC-");

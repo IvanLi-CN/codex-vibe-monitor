@@ -64,6 +64,8 @@
 - 单账号卡下半部分必须展示当前范围内最近 4 条调用记录，复用现有紧凑调用行语言，而不是再做卡中卡；4 条记录必须在卡内完整可见，不得依赖展开、滚动或裁切。
 - 账号卡内每条 recent 调用记录的信息密度不得低于 Dashboard 对话卡片中的调用记录：至少需要覆盖状态、模型、endpoint、Token 用量摘要，以及 `RQ / UP / ED / TT` 时序摘要。
 - 账号卡 recent 调用记录的主标识行必须改为“对话短 ID + 分隔符/图标 + 请求 ID”；其中对话短 ID 固定基于真实 `promptCacheKey` 走既有 working-conversation 哈希与格式化规则，展示值去掉 `WC-` 前缀；请求 ID 显示完整 `invokeId` 并允许单行截断。
+- recent 行里的对话短 ID 必须渲染为轻量 identity chip，而不是独立彩色圆点；chip 以短码文本为主识别，颜色只作辅助 cue，不得与运行状态徽标争夺语义。
+- identity chip 的颜色映射必须使用稳定离散槽位，而不是连续 hue；同一 `promptCacheKey` 在刷新、排序和 range 切换后应落到同一槽位，不同对话复用同一槽位可接受。
 - 账号卡 recent 调用记录不得重复显示所属账号名；调用已嵌在账号大卡内时，账号名必须让位给请求标识、状态与时序摘要。
 - 账号卡 recent 调用记录中的紧凑 badge 必须统一高度、字号、圆角、padding 与 line-height；至少 `reasoning effort`、endpoint 与 recent 行双模型显示要复用同一 compact recipe，不得再出现同一行内视觉尺寸不一致。
 - 当 recent 调用记录的 `requestModel` 与 `responseModel` 规范化后仍不一致时，账号卡 recent 行必须同时显示“请求模型 + 模型切换图标 + 响应模型”；模型一致时继续显示单模型 badge。
@@ -133,6 +135,7 @@
 - Given 多个账号都有范围内调用，When 查看上游账号列表，Then 账号卡按 `totalTokens` 倒序排列；Token 相同再按最近调用时间和账号 ID 稳定排序。
 - Given 某账号有至少 4 条范围内调用，When 查看账号卡底部，Then 只显示最近 4 条，按 `occurredAt DESC` 排序。
 - Given 某账号 recent 调用记录存在真实 `promptCacheKey`，When 查看请求标识主行，Then 可见基于该键计算出的对话短 ID、分隔图标与完整请求 ID，且短 ID 展示值不带 `WC-` 前缀。
+- Given 某账号 recent 调用记录渲染主标识行，When 查看对话短 ID，Then 它表现为轻量短码 chip，且颜色来自稳定离散辅助色槽位，而不是单独的状态样式圆点。
 - Given 查看账号卡摘要区，When 卡片处于常驻态，Then 不出现解释性废话或状态说明条，请求数 / Token 分解只显示色点与数值，且不出现任何可见文字标签。
 - Given 查看账号卡 recent 区标题行，When 右侧存在 recent bridge 统计，Then 显示完整状态文字，并与左侧“最近 4 条调用”标题保持同一垂直对齐。
 - Given 查看账号卡内 recent 调用记录，When 与对话卡片调用记录对照，Then recent 行至少包含状态、模型、endpoint、Token 摘要与 `RQ / UP / ED / TT` 时序摘要，且 4 条记录完整留在卡内。
@@ -177,7 +180,7 @@
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
   scenario: `desktop1660`
-  evidence_note: 验证 Dashboard 工作区已切换到 `上游账号` tab，桌面宽屏下账号卡按 2 列紧凑放大布局展示账号级 KPI、对话短 ID + 请求 ID 主标识行，以及请求/响应模型不一致时的双模型切换展示。
+  evidence_note: 验证 Dashboard 工作区已切换到 `上游账号` tab，桌面宽屏下账号卡按 2 列紧凑放大布局展示账号级 KPI、轻量对话短码 identity chip + 请求 ID 主标识行，以及请求/响应模型不一致时的双模型切换展示。
   image:
   PR: include
   ![Dashboard 上游账号 tab 桌面宽屏证据](./assets/dashboard-upstream-account-tab-desktop.png)
@@ -198,6 +201,7 @@
 - 风险：账号活动接口若直接扫 live invocations，未来数据量继续增长时可能需要进一步下沉到 read-model / materialized rollup，但本轮先保证 bounded recent query 与单次聚合链路正确。
 - 风险：summary wire field 保留旧名字但改语义，会要求所有 owner-facing 文案和测试同时更新；遗漏任何一处都可能造成“字段值对、文案错”的混乱。
 - 风险：账号卡若继续通过增高固定高度容纳信息，会重新滑向“整页面板”观感；后续新增字段时应优先压缩行内布局与摘要表达，而不是继续加高卡片。
+- 假设：recent 行 identity chip 仅在上游账号 tab 内收口为当前真相；对话 tab 主卡片与详情抽屉的短码呈现方式不在本 spec 本轮改动范围内。
 - 假设：`today / 1d / 7d` 的进行中调用与重试调用使用 live augmentation 语义；`yesterday` closed range 返回 `null`。
 - 假设：活动账号判定是“当前所选范围内至少有 1 条调用的账号”。
 - 假设：`渠道名 = displayName`，`groupName / planType` 仅作辅信息。

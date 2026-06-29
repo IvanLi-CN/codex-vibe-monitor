@@ -2467,7 +2467,7 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("gpt-5.5-mini")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5")).toBeInTheDocument();
     await expect(
-      canvas.getAllByTestId("dashboard-upstream-account-recent-conversation-marker"),
+      canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip"),
     ).toHaveLength(4);
     await expect(canvas.queryByText("按调用计数，不按对话去重")).toBeNull();
     await expect(canvas.queryByText("仍在重试链路中的调用")).toBeNull();
@@ -2480,7 +2480,7 @@ export const UpstreamAccountTab: Story = {
     docs: {
       description: {
         story:
-          "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the dynamic recent invocation window in the selected range, including colored short conversation ids and request/response model mismatch rows.",
+          "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the dynamic recent invocation window in the selected range, including lightweight short conversation identity chips and request/response model mismatch rows.",
       },
     },
   },
@@ -2513,7 +2513,7 @@ export const UpstreamAccountTabDynamicSeven: Story = {
     await expect(canvas.getByText("最近 7 条调用")).toBeInTheDocument();
     await expect(canvas.getByText("story-account-7")).toBeInTheDocument();
     await expect(
-      canvas.getAllByTestId("dashboard-upstream-account-recent-conversation-marker"),
+      canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip"),
     ).toHaveLength(7);
   },
   parameters: {
@@ -2521,7 +2521,7 @@ export const UpstreamAccountTabDynamicSeven: Story = {
     docs: {
       description: {
         story:
-          "Medium dynamic recent invocation window showing seven account rows and stable colored short conversation id markers.",
+          "Medium dynamic recent invocation window showing seven account rows and stable short conversation identity chips with discrete helper tones.",
       },
     },
   },
@@ -2554,7 +2554,7 @@ export const UpstreamAccountTabMaxSixteen: Story = {
     await expect(canvas.getByText("最近 16 条调用")).toBeInTheDocument();
     await expect(canvas.getByText("story-account-16")).toBeInTheDocument();
     await expect(
-      canvas.getAllByTestId("dashboard-upstream-account-recent-conversation-marker"),
+      canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip"),
     ).toHaveLength(16);
   },
   parameters: {
