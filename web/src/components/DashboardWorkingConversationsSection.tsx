@@ -123,21 +123,24 @@ const UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME =
   "inline-flex h-[1.2rem] max-w-[4.8rem] shrink-0 items-center rounded-full border px-1.5 font-mono text-[10px] font-semibold leading-none tracking-[0.04em]";
 
 const UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES = [
-  "border-sky-300/55 bg-sky-50/92 text-sky-700 dark:border-sky-400/28 dark:bg-sky-400/10 dark:text-sky-200",
-  "border-cyan-300/55 bg-cyan-50/92 text-cyan-700 dark:border-cyan-400/28 dark:bg-cyan-400/10 dark:text-cyan-200",
-  "border-blue-300/55 bg-blue-50/92 text-blue-700 dark:border-blue-400/28 dark:bg-blue-400/10 dark:text-blue-200",
-  "border-violet-300/55 bg-violet-50/92 text-violet-700 dark:border-violet-400/28 dark:bg-violet-400/10 dark:text-violet-200",
-  "border-indigo-300/55 bg-indigo-50/92 text-indigo-700 dark:border-indigo-400/28 dark:bg-indigo-400/10 dark:text-indigo-200",
-  "border-fuchsia-300/55 bg-fuchsia-50/92 text-fuchsia-700 dark:border-fuchsia-400/28 dark:bg-fuchsia-400/10 dark:text-fuchsia-200",
-  "border-teal-300/55 bg-teal-50/92 text-teal-700 dark:border-teal-400/28 dark:bg-teal-400/10 dark:text-teal-200",
-  "border-emerald-300/55 bg-emerald-50/92 text-emerald-700 dark:border-emerald-400/28 dark:bg-emerald-400/10 dark:text-emerald-200",
+  "dashboard-upstream-account-identity-chip--tone-sky",
+  "dashboard-upstream-account-identity-chip--tone-cyan",
+  "dashboard-upstream-account-identity-chip--tone-blue",
+  "dashboard-upstream-account-identity-chip--tone-violet",
+  "dashboard-upstream-account-identity-chip--tone-indigo",
+  "dashboard-upstream-account-identity-chip--tone-fuchsia",
+  "dashboard-upstream-account-identity-chip--tone-teal",
+  "dashboard-upstream-account-identity-chip--tone-emerald",
 ] as const;
 
 function resolveConversationIdentityToneClassName(seed: string) {
   const hash = hashDashboardWorkingConversationKey(seed);
+  const hashValue = Number.parseInt(hash, 16) >>> 0;
+  const mixedHash =
+    (hashValue ^ (hashValue >>> 7) ^ (hashValue >>> 13) ^ (hashValue >>> 21)) >>>
+    0;
   const toneIndex =
-    Number.parseInt(hash.slice(0, 6), 16) %
-    UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES.length;
+    mixedHash % UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES.length;
   return UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES[toneIndex];
 }
 

@@ -606,6 +606,50 @@ async fn ensure_schema_rebuilds_invocation_in_progress_live_from_existing_invoca
 }
 
 #[tokio::test]
+async fn ensure_schema_serializes_live_trigger_rebuild_under_concurrent_reentry() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open concurrent schema migration pool");
+    ensure_schema(&pool).await.expect("seed current schema");
+
+    let worker_a = {
+        let pool = pool.clone();
+        tokio::spawn(async move { ensure_schema(&pool).await })
+    };
+    let worker_b = {
+        let pool = pool.clone();
+        tokio::spawn(async move { ensure_schema(&pool).await })
+    };
+
+    worker_a
+        .await
+        .expect("join first concurrent ensure_schema")
+        .expect("first concurrent ensure_schema should succeed");
+    worker_b
+        .await
+        .expect("join second concurrent ensure_schema")
+        .expect("second concurrent ensure_schema should succeed");
+
+    let trigger_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM sqlite_master
+        WHERE type = 'trigger'
+          AND name IN (
+              'trg_codex_invocations_live_insert',
+              'trg_codex_invocations_live_update',
+              'trg_codex_invocations_live_delete'
+          )
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count rebuilt live triggers");
+
+    assert_eq!(trigger_count, 3);
+}
+
+#[tokio::test]
 async fn health_check_reports_starting_until_startup_is_ready() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18080").expect("valid upstream url"),

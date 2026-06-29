@@ -262,10 +262,10 @@ function createUpstreamAccountActivityStoryResponse(
   recentInvocationCount = 4,
 ): UpstreamAccountActivityResponse {
   const promptCacheKeys = [
-    "pck-story-account-running",
-    "pck-story-account-success",
-    "pck-story-account-failed",
-    "pck-story-account-pending",
+    "tone-seed-4",
+    "tone-seed-12",
+    "tone-seed-17",
+    "tone-seed-25",
     "pck-story-account-retry",
     "pck-story-account-cache",
     "pck-story-account-edition",
@@ -2473,6 +2473,10 @@ export const UpstreamAccountTab: Story = {
     await expect(
       canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip"),
     ).toHaveLength(4);
+    const identityChips = canvas.getAllByTestId(
+      "dashboard-upstream-account-recent-identity-chip",
+    );
+    await expect(new Set(identityChips.map((chip) => chip.className)).size).toBe(4);
     await expect(canvas.queryByText("按调用计数，不按对话去重")).toBeNull();
     await expect(canvas.queryByText("仍在重试链路中的调用")).toBeNull();
     await expect(
@@ -2519,6 +2523,10 @@ export const UpstreamAccountTabDynamicSeven: Story = {
     await expect(
       canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip"),
     ).toHaveLength(7);
+    const identityChips = canvas.getAllByTestId(
+      "dashboard-upstream-account-recent-identity-chip",
+    );
+    await expect(new Set(identityChips.map((chip) => chip.className)).size).toBeGreaterThan(3);
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
