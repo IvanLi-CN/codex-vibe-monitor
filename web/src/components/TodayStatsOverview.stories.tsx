@@ -206,6 +206,10 @@ export const Populated: Story = {
     await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
     await userEvent.click(canvas.getByRole('button', { name: /time to first byte|首字用时/i }))
     await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
+    await expect(canvas.getByTestId('today-stats-value-spend-rate')).toHaveTextContent('$0.10')
+    await expect(canvas.getByTestId('today-stats-secondary-spend-rate-per-conversation')).toHaveTextContent(
+      '$0.01',
+    )
   },
 }
 
@@ -485,6 +489,96 @@ export const Desktop1280LabelGuard: Story = {
       expect(canvas.getByTestId('today-stats-label-total-tokens')).toHaveTextContent('Today Token')
       expect(canvas.getByTestId('today-stats-secondary-cost-failed').textContent ?? '').not.toContain('…')
       expect(canvas.getByTestId('today-stats-secondary-tokens-failed').textContent ?? '').not.toContain('…')
+    })
+  },
+}
+
+const ratePrecisionStats: StatsResponse = {
+  totalCount: 12,
+  successCount: 11,
+  failureCount: 1,
+  totalCost: 1,
+  totalTokens: 4200,
+  inProgressConversationCount: 1,
+  inProgressRetryConversationCount: 0,
+  inProgressAvgWaitMs: 820,
+  nonSuccessCost: 0.2,
+  nonSuccessTokens: 120,
+}
+
+const ratePrecisionTimeseries: TimeseriesResponse = {
+  rangeStart: '2026-04-10T00:00:00.000Z',
+  rangeEnd: '2026-04-10T00:02:00.000Z',
+  bucketSeconds: 60,
+  points: [
+    {
+      bucketStart: '2026-04-10T00:00:00.000Z',
+      bucketEnd: '2026-04-10T00:01:00.000Z',
+      totalCount: 12,
+      successCount: 11,
+      failureCount: 1,
+      totalTokens: 4200,
+      cacheInputTokens: 1800,
+      totalCost: 1,
+      avgTotalMs: 1280,
+      totalLatencySampleCount: 6,
+      firstResponseByteTotalSampleCount: 6,
+      firstResponseByteTotalAvgMs: 760,
+      firstResponseByteTotalP95Ms: 960,
+    },
+    {
+      bucketStart: '2026-04-10T00:01:00.000Z',
+      bucketEnd: '2026-04-10T00:02:00.000Z',
+      totalCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      totalTokens: 0,
+      cacheInputTokens: 0,
+      totalCost: 0,
+      avgTotalMs: null,
+      totalLatencySampleCount: 0,
+      firstResponseByteTotalSampleCount: 0,
+      firstResponseByteTotalAvgMs: null,
+      firstResponseByteTotalP95Ms: null,
+    },
+  ],
+}
+
+export const RatePrecisionGuard: Story = {
+  args: {
+    stats: ratePrecisionStats,
+    rate: {
+      tokensPerMinute: 4200,
+      spendRate: 1,
+      windowMinutes: 5,
+      available: true,
+    },
+    timeseries: ratePrecisionTimeseries,
+    comparisonStats,
+    comparisonTimeseries,
+    previous7dStats,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
+    loading: false,
+    error: null,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1440',
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByTestId('today-stats-value-spend-rate')).toHaveTextContent('$1.00')
+      expect(canvas.getByTestId('today-stats-secondary-spend-rate-day-average')).toHaveTextContent('$1.00')
+      expect(canvas.getByTestId('today-stats-secondary-spend-rate-per-conversation')).toHaveTextContent(
+        '$1.00',
+      )
+      expect(canvas.getByTestId('today-stats-secondary-cost-failed')).toHaveTextContent('$0.2')
     })
   },
 }

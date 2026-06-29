@@ -351,4 +351,94 @@ describe('AdaptiveMetricValue', () => {
     expect(getVisibleMetricText()).toContain('1,050M')
     expect(getVisibleMetricText()).not.toBe('1B')
   })
+
+  it('keeps a stable candidate when repeated resize observations stay near the same threshold', () => {
+    metricContainerWidth = 98
+    metricMeasureWidths = new Map([
+      ['$0.84', 76],
+      ['$0.8', 68],
+      ['$1', 64],
+    ])
+
+    render(
+      <AdaptiveMetricValue
+        value={0.84}
+        localeTag="en-US"
+        kind="currency"
+        currencyProfile="rate"
+        data-testid="adaptive-metric"
+      />,
+    )
+
+    expect(getVisibleMetricText()).toBe('$0.84')
+
+    act(() => {
+      MockResizeObserver.notify(getMeasure())
+      MockResizeObserver.notify(getMeasure())
+    })
+
+    expect(getVisibleMetricText()).toBe('$0.84')
+
+    metricContainerWidth = 86
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(getVisibleMetricText()).toBe('$0.8')
+
+    metricContainerWidth = 92
+    act(() => {
+      MockResizeObserver.notify(getMeasure())
+    })
+
+    expect(getVisibleMetricText()).toBe('$0.8')
+
+    metricContainerWidth = 94
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(getVisibleMetricText()).toBe('$0.84')
+  })
+
+  it('uses a two-decimal full candidate for rate currency when width allows', () => {
+    metricMeasureWidths = new Map([
+      ['$1.00', 72],
+      ['$1.0', 64],
+      ['$1', 56],
+    ])
+
+    render(
+      <AdaptiveMetricValue
+        value={1}
+        localeTag="en-US"
+        kind="currency"
+        currencyProfile="rate"
+        data-testid="adaptive-metric"
+      />,
+    )
+
+    expect(getVisibleMetricText()).toBe('$1.00')
+    expect(getMetric().dataset.compact).toBe('false')
+  })
+
+  it('allows default currency rendering to keep the existing non-padded full candidate', () => {
+    metricMeasureWidths = new Map([
+      ['$12.4', 72],
+      ['$12.4', 72],
+      ['$12', 56],
+    ])
+
+    render(
+      <AdaptiveMetricValue
+        value={12.4}
+        localeTag="en-US"
+        kind="currency"
+        data-testid="adaptive-metric"
+      />,
+    )
+
+    expect(getVisibleMetricText()).toBe('$12.4')
+    expect(getMetric().dataset.compact).toBe('false')
+  })
 })

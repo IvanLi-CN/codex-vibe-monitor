@@ -1,4 +1,5 @@
 export type AdaptiveMetricValueKind = 'number' | 'integer' | 'currency'
+export type AdaptiveCurrencyProfile = 'default' | 'rate'
 
 const COMPACT_SUFFIX_LOCALE = 'en-US'
 const COMPACT_UNITS = [
@@ -19,6 +20,10 @@ export interface AdaptiveDisplayMeasureCandidate {
 export interface AdaptiveDisplayValueSpec {
   fullValue: string
   candidates: AdaptiveDisplayMeasureCandidate[]
+}
+
+interface AdaptiveMetricSpecOptions {
+  currencyProfile?: AdaptiveCurrencyProfile
 }
 
 interface StandardFormatterOptions {
@@ -45,6 +50,19 @@ function createStandardMetricFormatter(
   }
 
   return new Intl.NumberFormat(localeTag, {
+    minimumFractionDigits,
+    maximumFractionDigits,
+  })
+}
+
+function createCurrencyFormatter(
+  localeTag: string,
+  maximumFractionDigits: number,
+  minimumFractionDigits = 0,
+) {
+  return new Intl.NumberFormat(localeTag, {
+    style: 'currency',
+    currency: 'USD',
     minimumFractionDigits,
     maximumFractionDigits,
   })
@@ -129,18 +147,28 @@ export function buildAdaptiveMetricSpec(
   value: number,
   localeTag: string,
   kind: AdaptiveMetricValueKind,
+  options: AdaptiveMetricSpecOptions = {},
 ): AdaptiveDisplayValueSpec {
-  const defaultPrecision = standardPrecisionCandidates(kind)[0] ?? 0
+  const currencyProfile = options.currencyProfile ?? 'default'
+  const standardPrecisions =
+    kind === 'currency' && currencyProfile === 'rate' ? [2, 1, 0] : standardPrecisionCandidates(kind)
+  const defaultPrecision = standardPrecisions[0] ?? 0
+  const defaultMinimumFractionDigits =
+    kind === 'currency' && currencyProfile === 'rate' ? defaultPrecision : 0
   const fullValue = createStandardMetricFormatter(localeTag, kind, {
     maximumFractionDigits: defaultPrecision,
+    minimumFractionDigits: defaultMinimumFractionDigits,
   }).format(value)
   const candidates: AdaptiveDisplayMeasureCandidate[] = []
 
-  for (const [index, precision] of standardPrecisionCandidates(kind).entries()) {
+  for (const [index, precision] of standardPrecisions.entries()) {
+    const minimumFractionDigits =
+      kind === 'currency' && currencyProfile === 'rate' ? precision : 0
     candidates.push({
       key: `standard-${precision}`,
       value: createStandardMetricFormatter(localeTag, kind, {
         maximumFractionDigits: precision,
+        minimumFractionDigits,
       }).format(value),
       compact: false,
       precisionLabel: index === 0 ? 'full' : `standard-${precision}`,
@@ -232,11 +260,7 @@ export function buildAdaptiveCurrencyTextSpec(value: number | null, localeTag: s
     return buildAdaptiveTextSpec('—', [{ key: 'placeholder', value: '—', priority: 0 }])
   }
 
-  const fullValue = new Intl.NumberFormat(localeTag, {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 2,
-  }).format(value)
+  const fullValue = createCurrencyFormatter(localeTag, 2).format(value)
 
   return buildAdaptiveTextSpec(fullValue, [
     {
@@ -246,20 +270,12 @@ export function buildAdaptiveCurrencyTextSpec(value: number | null, localeTag: s
     },
     {
       key: 'standard-1',
-      value: new Intl.NumberFormat(localeTag, {
-        style: 'currency',
-        currency: 'USD',
-        maximumFractionDigits: 1,
-      }).format(value),
+      value: createCurrencyFormatter(localeTag, 1).format(value),
       priority: 1,
     },
     {
       key: 'standard-0',
-      value: new Intl.NumberFormat(localeTag, {
-        style: 'currency',
-        currency: 'USD',
-        maximumFractionDigits: 0,
-      }).format(value),
+      value: createCurrencyFormatter(localeTag, 0).format(value),
       priority: 2,
     },
     ...buildAdaptiveMetricSpec(value, localeTag, 'currency').candidates.map((candidate, index) => ({
@@ -268,6 +284,14 @@ export function buildAdaptiveCurrencyTextSpec(value: number | null, localeTag: s
       priority: 20 + index,
     })),
   ])
+}
+
+export function buildAdaptiveRateCurrencyTextSpec(value: number | null, localeTag: string) {
+  if (value == null || !Number.isFinite(value)) {
+    return buildAdaptiveTextSpec('—', [{ key: 'placeholder', value: '—', priority: 0 }])
+  }
+
+  return buildAdaptiveMetricSpec(value, localeTag, 'currency', { currencyProfile: 'rate' })
 }
 
 export function buildAdaptivePercentTextSpec(
