@@ -27,19 +27,34 @@ pub(crate) fn push_snapshot_invocation_visibility_clause(
 ) {
     if let Some(snapshot) = snapshot {
         let snapshot_upper_bound = snapshot.snapshot_upper_bound().to_string();
-        query
-            .push("(")
-            .push(occurred_at_expr)
-            .push(" < ")
-            .push_bind(snapshot_upper_bound);
         if let Some(row_id_ceiling) = snapshot.snapshot_boundary_row_id_ceiling {
+            let boundary_occurred_at = parse_to_utc_datetime(&snapshot_upper_bound)
+                .map(|upper_bound| {
+                    db_occurred_at_lower_bound(upper_bound - ChronoDuration::seconds(1))
+                })
+                .unwrap_or_else(|| snapshot_upper_bound.clone());
             query
+                .push("((")
+                .push(occurred_at_expr)
+                .push(" < ")
+                .push_bind(boundary_occurred_at.clone())
+                .push(") OR (")
+                .push(occurred_at_expr)
+                .push(" = ")
+                .push_bind(boundary_occurred_at)
                 .push(" AND ")
                 .push(id_expr)
                 .push(" <= ")
-                .push_bind(row_id_ceiling);
+                .push_bind(row_id_ceiling)
+                .push("))");
+        } else {
+            query
+                .push("(")
+                .push(occurred_at_expr)
+                .push(" < ")
+                .push_bind(snapshot_upper_bound)
+                .push(")");
         }
-        query.push(")");
     }
 }
 
@@ -56,6 +71,7 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         return Ok(Vec::new());
     }
 
+    let started_at = Instant::now();
     let selected_keys = aggregates
         .iter()
         .map(|row| row.prompt_cache_key.clone())
@@ -292,7 +308,7 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         .map(|row| (row.prompt_cache_key.clone(), row))
         .collect();
 
-    Ok(aggregates
+    let conversations = aggregates
         .into_iter()
         .map(|row| {
             let owner = encrypted_owner_rows_by_key.remove(&row.prompt_cache_key);
@@ -327,7 +343,34 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
                     .unwrap_or_default(),
             }
         })
-        .collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    if elapsed_ms >= 250 {
+        tracing::warn!(
+            endpoint = "/api/prompt-cache/conversations",
+            window = if snapshot.is_some() { "snapshot" } else { "live" },
+            ?source_scope,
+            selected_key_count = selected_keys.len() as i64,
+            row_count = conversations.len() as i64,
+            cache_hit_or_miss = "hydrate",
+            elapsed_ms,
+            "prompt cache conversation hydration exceeded slow-path threshold"
+        );
+    } else {
+        tracing::debug!(
+            endpoint = "/api/prompt-cache/conversations",
+            window = if snapshot.is_some() { "snapshot" } else { "live" },
+            ?source_scope,
+            selected_key_count = selected_keys.len() as i64,
+            row_count = conversations.len() as i64,
+            cache_hit_or_miss = "hydrate",
+            elapsed_ms,
+            "prompt cache conversation hydration completed"
+        );
+    }
+
+    Ok(conversations)
 }
 
 fn resolve_prompt_cache_conversation_chart_range_start(

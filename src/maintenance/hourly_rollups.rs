@@ -2213,8 +2213,35 @@ async fn collect_summary_snapshots(
     let mut cached_all: Option<StatsResponse> = None;
     let now = Utc::now();
     let source_scope = resolve_default_source_scope(pool).await?;
+    let in_progress_started_at = Instant::now();
     let in_progress_conversation_count =
         query_in_progress_prompt_cache_conversation_count(pool, source_scope, None).await?;
+    let in_progress_elapsed_ms = in_progress_started_at.elapsed().as_millis() as u64;
+    if in_progress_elapsed_ms >= 150 {
+        warn!(
+            endpoint = "summary_publish",
+            window = "current",
+            ?source_scope,
+            upstream_account_id = Option::<i64>::None,
+            selected_key_count = 0_i64,
+            row_count = in_progress_conversation_count,
+            cache_hit_or_miss = "maintenance_live_distinct_count",
+            elapsed_ms = in_progress_elapsed_ms,
+            "summary publish in-progress distinct-count exceeded slow-path threshold"
+        );
+    } else {
+        debug!(
+            endpoint = "summary_publish",
+            window = "current",
+            ?source_scope,
+            upstream_account_id = Option::<i64>::None,
+            selected_key_count = 0_i64,
+            row_count = in_progress_conversation_count,
+            cache_hit_or_miss = "maintenance_live_distinct_count",
+            elapsed_ms = in_progress_elapsed_ms,
+            "summary publish in-progress distinct-count completed"
+        );
+    }
 
     for spec in summary_broadcast_specs() {
         let mut summary = match spec.duration {
