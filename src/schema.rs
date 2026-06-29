@@ -1,7 +1,37 @@
+static ENSURE_SCHEMA_LOCKS: once_cell::sync::Lazy<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 const INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL: &str =
     "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
 const INVOCATION_UPSTREAM_ACCOUNT_ID_EXPR_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+
+fn ensure_schema_lock_key(pool: &Pool<Sqlite>) -> String {
+    let connect_options = pool.connect_options();
+    let filename = connect_options.get_filename();
+
+    if filename == std::path::Path::new(":memory:") {
+        format!("sqlite:memory:{:p}", std::sync::Arc::as_ptr(&connect_options))
+    } else {
+        format!("sqlite:{}", filename.to_string_lossy())
+    }
+}
+
+fn ensure_schema_lock(pool: &Pool<Sqlite>) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    let key = ensure_schema_lock_key(pool);
+    let mut registry = ENSURE_SCHEMA_LOCKS
+        .lock()
+        .expect("schema lock registry should remain available");
+
+    if let Some(lock) = registry.get(&key).and_then(std::sync::Weak::upgrade) {
+        return lock;
+    }
+
+    let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    registry.insert(key, std::sync::Arc::downgrade(&lock));
+    lock
+}
 
 fn invocation_in_progress_live_prompt_cache_key_expr(subject: &str) -> String {
     format!(
@@ -201,6 +231,97 @@ async fn rebuild_invocation_in_progress_live_table(pool: &Pool<Sqlite>) -> Resul
         .execute(pool)
         .await
         .context("failed to refresh invocation_in_progress_live retry flags during rebuild")?;
+
+    Ok(())
+}
+
+async fn rebuild_invocation_in_progress_live_triggers(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin immediate invocation_in_progress_live trigger rebuild")?;
+
+    for trigger_name in [
+        "trg_codex_invocations_live_insert",
+        "trg_codex_invocations_live_update",
+        "trg_codex_invocations_live_delete",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
+            .execute(tx.as_mut())
+            .await
+            .with_context(|| format!("failed to drop stale trigger {trigger_name}"))?;
+    }
+
+    let insert_refresh_sql = invocation_in_progress_live_refresh_sql_for_key(
+        &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
+    );
+    let insert_trigger_sql = format!(
+        r#"
+        CREATE TRIGGER trg_codex_invocations_live_insert
+        AFTER INSERT ON codex_invocations
+        BEGIN
+            {upsert_sql};
+            {refresh_sql};
+        END
+        "#,
+        upsert_sql = invocation_in_progress_live_upsert_sql("NEW"),
+        refresh_sql = insert_refresh_sql,
+    );
+    sqlx::query(&insert_trigger_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to ensure trigger trg_codex_invocations_live_insert")?;
+
+    let update_old_refresh_sql = invocation_in_progress_live_refresh_sql_for_key(
+        &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
+    );
+    let update_new_refresh_sql = invocation_in_progress_live_refresh_sql_for_key(
+        &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
+    );
+    let update_trigger_sql = format!(
+        r#"
+        CREATE TRIGGER trg_codex_invocations_live_update
+        AFTER UPDATE ON codex_invocations
+        BEGIN
+            DELETE FROM invocation_in_progress_live
+            WHERE invocation_id = OLD.id;
+            {upsert_sql};
+            {refresh_old_sql};
+            {refresh_new_sql};
+        END
+        "#,
+        upsert_sql = invocation_in_progress_live_upsert_sql("NEW"),
+        refresh_old_sql = update_old_refresh_sql,
+        refresh_new_sql = update_new_refresh_sql,
+    );
+    sqlx::query(&update_trigger_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to ensure trigger trg_codex_invocations_live_update")?;
+
+    let delete_refresh_sql = invocation_in_progress_live_refresh_sql_for_key(
+        &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
+    );
+    let delete_trigger_sql = format!(
+        r#"
+        CREATE TRIGGER trg_codex_invocations_live_delete
+        AFTER DELETE ON codex_invocations
+        BEGIN
+            DELETE FROM invocation_in_progress_live
+            WHERE invocation_id = OLD.id;
+            {refresh_sql};
+        END
+        "#,
+        refresh_sql = delete_refresh_sql,
+    );
+    sqlx::query(&delete_trigger_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to ensure trigger trg_codex_invocations_live_delete")?;
+
+    tx.commit()
+        .await
+        .context("failed to commit invocation_in_progress_live trigger rebuild")?;
 
     Ok(())
 }
@@ -488,6 +609,9 @@ async fn reopen_upstream_account_stats_rollup_archives(pool: &Pool<Sqlite>) -> R
 }
 
 async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let schema_lock = ensure_schema_lock(pool);
+    let _schema_guard = schema_lock.lock_owned().await;
+
     let create_sql = codex_invocations_create_sql("codex_invocations");
     sqlx::query(&create_sql)
         .execute(pool)
@@ -893,83 +1017,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_invocation_in_progress_live_prompt_cache_key")?;
 
-    for trigger_name in [
-        "trg_codex_invocations_live_insert",
-        "trg_codex_invocations_live_update",
-        "trg_codex_invocations_live_delete",
-    ] {
-        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
-            .execute(pool)
-            .await
-            .with_context(|| format!("failed to drop stale trigger {trigger_name}"))?;
-    }
-
-    let insert_refresh_sql = invocation_in_progress_live_refresh_sql_for_key(
-        &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
-    );
-    let insert_trigger_sql = format!(
-        r#"
-        CREATE TRIGGER trg_codex_invocations_live_insert
-        AFTER INSERT ON codex_invocations
-        BEGIN
-            {upsert_sql};
-            {refresh_sql};
-        END
-        "#,
-        upsert_sql = invocation_in_progress_live_upsert_sql("NEW"),
-        refresh_sql = insert_refresh_sql,
-    );
-    sqlx::query(&insert_trigger_sql)
-        .execute(pool)
+    rebuild_invocation_in_progress_live_triggers(pool)
         .await
-        .context("failed to ensure trigger trg_codex_invocations_live_insert")?;
-
-    let update_old_refresh_sql = invocation_in_progress_live_refresh_sql_for_key(
-        &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
-    );
-    let update_new_refresh_sql = invocation_in_progress_live_refresh_sql_for_key(
-        &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
-    );
-    let update_trigger_sql = format!(
-        r#"
-        CREATE TRIGGER trg_codex_invocations_live_update
-        AFTER UPDATE ON codex_invocations
-        BEGIN
-            DELETE FROM invocation_in_progress_live
-            WHERE invocation_id = OLD.id;
-            {upsert_sql};
-            {refresh_old_sql};
-            {refresh_new_sql};
-        END
-        "#,
-        upsert_sql = invocation_in_progress_live_upsert_sql("NEW"),
-        refresh_old_sql = update_old_refresh_sql,
-        refresh_new_sql = update_new_refresh_sql,
-    );
-    sqlx::query(&update_trigger_sql)
-        .execute(pool)
-        .await
-        .context("failed to ensure trigger trg_codex_invocations_live_update")?;
-
-    let delete_refresh_sql = invocation_in_progress_live_refresh_sql_for_key(
-        &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
-    );
-    let delete_trigger_sql = format!(
-        r#"
-        CREATE TRIGGER trg_codex_invocations_live_delete
-        AFTER DELETE ON codex_invocations
-        BEGIN
-            DELETE FROM invocation_in_progress_live
-            WHERE invocation_id = OLD.id;
-            {refresh_sql};
-        END
-        "#,
-        refresh_sql = delete_refresh_sql,
-    );
-    sqlx::query(&delete_trigger_sql)
-        .execute(pool)
-        .await
-        .context("failed to ensure trigger trg_codex_invocations_live_delete")?;
+        .context("failed to rebuild invocation_in_progress_live triggers at startup")?;
 
     rebuild_invocation_in_progress_live_table(pool)
         .await

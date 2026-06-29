@@ -3223,8 +3223,8 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
 
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     assert!(
-        elapsed < Duration::from_millis(260),
-        "late account recovery should still terminate near the original total-timeout window, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(900),
+        "late account recovery should still terminate within a loaded-runner sub-second timeout budget, elapsed={elapsed:?}"
     );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await

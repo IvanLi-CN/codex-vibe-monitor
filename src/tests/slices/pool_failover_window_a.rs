@@ -1099,9 +1099,9 @@ async fn pool_openai_v1_responses_total_timeout_starts_at_first_upstream_attempt
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(180);
-    config.pool_upstream_responses_total_timeout = Duration::from_millis(300);
-    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(450);
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(240);
+    config.openai_proxy_request_read_timeout = Duration::from_millis(900);
     let state = test_state_from_config(config, true).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account_with_options(
@@ -1122,7 +1122,7 @@ async fn pool_openai_v1_responses_total_timeout_starts_at_first_upstream_attempt
     let slow_body = stream::unfold(Some(request_body), |state| async move {
         match state {
             Some(body) => {
-                tokio::time::sleep(Duration::from_millis(220)).await;
+                tokio::time::sleep(Duration::from_millis(420)).await;
                 Some((Ok::<Bytes, Infallible>(Bytes::from(body)), None))
             }
             None => None,
