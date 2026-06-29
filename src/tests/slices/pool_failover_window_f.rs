@@ -705,6 +705,173 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
 }
 
 #[tokio::test]
+async fn prompt_cache_recent_invocations_keep_per_key_limits_for_snapshot_and_proxy_scope() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_start = Utc
+        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("current hour start should be valid");
+    let snapshot_second = current_hour_start + ChronoDuration::minutes(20);
+    let requested_snapshot_at = snapshot_second + ChronoDuration::milliseconds(123);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        source: &str,
+        key: &str,
+    ) -> i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, model, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(source)
+        .bind("success")
+        .bind("gpt-5.4")
+        .bind(10_i64)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "endpoint": "/v1/responses",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert recent invocation row")
+        .last_insert_rowid()
+    }
+
+    let _alpha_older = insert_row(
+        &state.pool,
+        "recent-alpha-older",
+        snapshot_second - ChronoDuration::seconds(30),
+        SOURCE_PROXY,
+        "recent-alpha",
+    )
+    .await;
+    let alpha_boundary_id = insert_row(
+        &state.pool,
+        "recent-alpha-boundary",
+        snapshot_second,
+        SOURCE_PROXY,
+        "recent-alpha",
+    )
+    .await;
+    let _alpha_late_same_second = insert_row(
+        &state.pool,
+        "recent-alpha-late-same-second",
+        snapshot_second,
+        SOURCE_PROXY,
+        "recent-alpha",
+    )
+    .await;
+    let _alpha_post_snapshot = insert_row(
+        &state.pool,
+        "recent-alpha-post-snapshot",
+        snapshot_second + ChronoDuration::seconds(2),
+        SOURCE_PROXY,
+        "recent-alpha",
+    )
+    .await;
+    let _beta_proxy_old = insert_row(
+        &state.pool,
+        "recent-beta-proxy-old",
+        snapshot_second - ChronoDuration::seconds(15),
+        SOURCE_PROXY,
+        "recent-beta",
+    )
+    .await;
+    let _beta_proxy_new = insert_row(
+        &state.pool,
+        "recent-beta-proxy-new",
+        snapshot_second - ChronoDuration::seconds(3),
+        SOURCE_PROXY,
+        "recent-beta",
+    )
+    .await;
+    let _beta_xy = insert_row(
+        &state.pool,
+        "recent-beta-xy",
+        snapshot_second - ChronoDuration::seconds(1),
+        SOURCE_XY,
+        "recent-beta",
+    )
+    .await;
+
+    let snapshot_upper_bound = db_occurred_at_upper_bound(requested_snapshot_at);
+    let snapshot_hour_start_bound = format_utc_iso(current_hour_start);
+    let snapshot = PromptCacheConversationHydrationSnapshot {
+        snapshot_upper_bound: snapshot_upper_bound.as_str(),
+        snapshot_created_at_upper_bound: None,
+        snapshot_hour_start_epoch: current_hour_start.timestamp(),
+        snapshot_hour_start_bound: snapshot_hour_start_bound.as_str(),
+        snapshot_boundary_row_id_ceiling: Some(alpha_boundary_id),
+    };
+
+    let all_rows = query_prompt_cache_conversation_recent_invocations(
+        &state.pool,
+        InvocationSourceScope::All,
+        &["recent-beta".to_string(), "recent-alpha".to_string()],
+        2,
+        Some(&snapshot),
+    )
+    .await
+    .expect("all-scope recent preview query should succeed");
+
+    assert_eq!(
+        all_rows
+            .iter()
+            .map(|row| (row.prompt_cache_key.as_str(), row.invoke_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("recent-alpha", "recent-alpha-boundary"),
+            ("recent-alpha", "recent-alpha-older"),
+            ("recent-beta", "recent-beta-xy"),
+            ("recent-beta", "recent-beta-proxy-new"),
+        ]
+    );
+
+    let proxy_only_rows = query_prompt_cache_conversation_recent_invocations(
+        &state.pool,
+        InvocationSourceScope::ProxyOnly,
+        &["recent-beta".to_string(), "recent-alpha".to_string()],
+        2,
+        Some(&snapshot),
+    )
+    .await
+    .expect("proxy-only recent preview query should succeed");
+
+    assert_eq!(
+        proxy_only_rows
+            .iter()
+            .map(|row| (row.prompt_cache_key.as_str(), row.invoke_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("recent-alpha", "recent-alpha-boundary"),
+            ("recent-alpha", "recent-alpha-older"),
+            ("recent-beta", "recent-beta-proxy-new"),
+            ("recent-beta", "recent-beta-proxy-old"),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_preserve_upstream_account_history_after_raw_rows_are_removed() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

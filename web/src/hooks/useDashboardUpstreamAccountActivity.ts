@@ -8,10 +8,14 @@ import {
   type UpstreamAccountActivityAccount,
   type UpstreamAccountActivityResponse,
 } from "../lib/api";
+import {
+  recordUpstreamAccountActivityOpenResync,
+  recordUpstreamAccountActivityRefresh,
+} from "../lib/dashboardPerformanceDiagnostics";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
 
 export const DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_REFRESH_THROTTLE_MS = 5_000;
-export const DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_OPEN_RESYNC_COOLDOWN_MS = 3_000;
+export const DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_OPEN_RESYNC_COOLDOWN_MS = 5_000;
 
 interface LoadOptions {
   silent?: boolean;
@@ -156,6 +160,7 @@ export function useDashboardUpstreamAccountActivity(
           : nextRecentInvocationLimit,
       );
       setData(response);
+      recordUpstreamAccountActivityRefresh();
       hasHydratedRef.current = true;
       setError(null);
       if (needsExpandedReload) {
@@ -253,6 +258,7 @@ export function useDashboardUpstreamAccountActivity(
         return;
       }
       lastOpenResyncAtRef.current = now;
+      recordUpstreamAccountActivityOpenResync();
       void load({ silent: true });
     });
     return unsubscribe;

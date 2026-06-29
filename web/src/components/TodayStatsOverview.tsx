@@ -12,7 +12,9 @@ import {
   buildAdaptiveDurationTextSpec,
   buildAdaptiveNumberTextSpec,
   buildAdaptivePercentTextSpec,
+  buildAdaptiveRateCurrencyTextSpec,
   buildAdaptiveTextSpec,
+  type AdaptiveCurrencyProfile,
   type AdaptiveDisplayValueSpec,
   type AdaptiveMetricValueKind,
 } from './adaptiveMetricValueSpec'
@@ -80,6 +82,7 @@ interface MetricTileProps {
   localeTag: string
   loading: boolean
   kind?: AdaptiveMetricValueKind
+  currencyProfile?: AdaptiveCurrencyProfile
   toneClass?: string
   valueTestId?: string
   displayText?: string
@@ -98,6 +101,7 @@ function MetricTile({
   localeTag,
   loading,
   kind = 'number',
+  currencyProfile,
   toneClass,
   valueTestId,
   displayText,
@@ -237,6 +241,7 @@ function MetricTile({
             value={value ?? 0}
             localeTag={localeTag}
             kind={kind}
+            currencyProfile={currencyProfile}
             data-testid={valueTestId}
           />
         </div>
@@ -328,6 +333,10 @@ function buildNumberValueSpec(value: number | null, localeTag: string, maximumFr
 
 function buildCurrencyValueSpec(value: number | null, localeTag: string) {
   return buildAdaptiveCurrencyTextSpec(value, localeTag)
+}
+
+function buildRateCurrencyValueSpec(value: number | null, localeTag: string) {
+  return buildAdaptiveRateCurrencyTextSpec(value, localeTag)
 }
 
 function buildLatencyValueSpec(value: number | null, localeTag: string) {
@@ -575,6 +584,7 @@ export function TodayStatsOverview({
             localeTag={localeTag}
             loading={loading || rateLoading}
             kind="currency"
+            currencyProfile="rate"
             valueTestId="today-stats-value-spend-rate"
             displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
             subdued={rateUnavailable}
@@ -587,12 +597,12 @@ export function TodayStatsOverview({
             secondaryItems={[
               {
                 label: t('dashboard.today.secondary.dayAverage'),
-                valueSpec: buildCurrencyValueSpec(activeAverages.spendRate, localeTag),
+                valueSpec: buildRateCurrencyValueSpec(activeAverages.spendRate, localeTag),
                 valueTestId: 'today-stats-secondary-spend-rate-day-average',
               },
               {
                 label: t('dashboard.today.secondary.perConversation'),
-                valueSpec: buildCurrencyValueSpec(perConversationSpendRate, localeTag),
+                valueSpec: buildRateCurrencyValueSpec(perConversationSpendRate, localeTag),
                 valueTestId: 'today-stats-secondary-spend-rate-per-conversation',
               },
             ]}

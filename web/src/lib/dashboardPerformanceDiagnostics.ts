@@ -12,12 +12,20 @@ export interface DashboardPerformanceDiagnosticsSnapshot {
   workingConversationHeadFetchLastUpdatedAt: string | null;
   todaySummaryRefreshCount: number;
   todaySummaryLastUpdatedAt: string | null;
+  currentSummaryRefreshCount: number;
+  currentSummaryLastUpdatedAt: string | null;
+  currentSummaryOpenResyncCount: number;
+  currentSummaryOpenResyncLastUpdatedAt: string | null;
   todaySummarySseCommitCount: number;
   todaySummarySseCommitLastUpdatedAt: string | null;
   todayChartDataCommitCount: number;
   todayChartDataCommitLastUpdatedAt: string | null;
   todayChartRenderCount: number;
   todayChartLastRenderedAt: string | null;
+  upstreamAccountActivityRefreshCount: number;
+  upstreamAccountActivityRefreshLastUpdatedAt: string | null;
+  upstreamAccountActivityOpenResyncCount: number;
+  upstreamAccountActivityOpenResyncLastUpdatedAt: string | null;
   parallelWorkFullFetchCount: number;
   parallelWorkNotModifiedCount: number;
   parallelWorkLastUpdatedAt: string | null;
@@ -36,12 +44,20 @@ interface DashboardPerformanceDiagnosticsMetrics {
   workingConversationHeadFetchLastUpdatedAt: string | null;
   todaySummaryRefreshCount: number;
   todaySummaryLastUpdatedAt: string | null;
+  currentSummaryRefreshCount: number;
+  currentSummaryLastUpdatedAt: string | null;
+  currentSummaryOpenResyncCount: number;
+  currentSummaryOpenResyncLastUpdatedAt: string | null;
   todaySummarySseCommitCount: number;
   todaySummarySseCommitLastUpdatedAt: string | null;
   todayChartDataCommitCount: number;
   todayChartDataCommitLastUpdatedAt: string | null;
   todayChartRenderCount: number;
   todayChartLastRenderedAt: string | null;
+  upstreamAccountActivityRefreshCount: number;
+  upstreamAccountActivityRefreshLastUpdatedAt: string | null;
+  upstreamAccountActivityOpenResyncCount: number;
+  upstreamAccountActivityOpenResyncLastUpdatedAt: string | null;
   parallelWorkFullFetchCount: number;
   parallelWorkNotModifiedCount: number;
   parallelWorkLastUpdatedAt: string | null;
@@ -84,12 +100,20 @@ function createEmptyMetrics(): DashboardPerformanceDiagnosticsMetrics {
     workingConversationHeadFetchLastUpdatedAt: null,
     todaySummaryRefreshCount: 0,
     todaySummaryLastUpdatedAt: null,
+    currentSummaryRefreshCount: 0,
+    currentSummaryLastUpdatedAt: null,
+    currentSummaryOpenResyncCount: 0,
+    currentSummaryOpenResyncLastUpdatedAt: null,
     todaySummarySseCommitCount: 0,
     todaySummarySseCommitLastUpdatedAt: null,
     todayChartDataCommitCount: 0,
     todayChartDataCommitLastUpdatedAt: null,
     todayChartRenderCount: 0,
     todayChartLastRenderedAt: null,
+    upstreamAccountActivityRefreshCount: 0,
+    upstreamAccountActivityRefreshLastUpdatedAt: null,
+    upstreamAccountActivityOpenResyncCount: 0,
+    upstreamAccountActivityOpenResyncLastUpdatedAt: null,
     parallelWorkFullFetchCount: 0,
     parallelWorkNotModifiedCount: 0,
     parallelWorkLastUpdatedAt: null,
@@ -186,6 +210,23 @@ export function recordTodaySummaryRefresh(window: string) {
   }));
 }
 
+export function recordCurrentSummaryRefresh(window: string) {
+  if (window !== "current") return;
+  updateMetricsSnapshot((current, timestamp) => ({
+    ...current,
+    currentSummaryRefreshCount: current.currentSummaryRefreshCount + 1,
+    currentSummaryLastUpdatedAt: timestamp,
+  }));
+}
+
+export function recordCurrentSummaryOpenResync() {
+  updateMetricsSnapshot((current, timestamp) => ({
+    ...current,
+    currentSummaryOpenResyncCount: current.currentSummaryOpenResyncCount + 1,
+    currentSummaryOpenResyncLastUpdatedAt: timestamp,
+  }));
+}
+
 export function recordTodaySummarySseCommit(window: string) {
   if (window !== "today") return;
   updateMetricsSnapshot((current, timestamp) => ({
@@ -235,6 +276,24 @@ export function recordParallelWorkFetch(kind: "full" | "notModified") {
     parallelWorkNotModifiedCount:
       current.parallelWorkNotModifiedCount + (kind === "notModified" ? 1 : 0),
     parallelWorkLastUpdatedAt: timestamp,
+  }));
+}
+
+export function recordUpstreamAccountActivityRefresh() {
+  updateMetricsSnapshot((current, timestamp) => ({
+    ...current,
+    upstreamAccountActivityRefreshCount:
+      current.upstreamAccountActivityRefreshCount + 1,
+    upstreamAccountActivityRefreshLastUpdatedAt: timestamp,
+  }));
+}
+
+export function recordUpstreamAccountActivityOpenResync() {
+  updateMetricsSnapshot((current, timestamp) => ({
+    ...current,
+    upstreamAccountActivityOpenResyncCount:
+      current.upstreamAccountActivityOpenResyncCount + 1,
+    upstreamAccountActivityOpenResyncLastUpdatedAt: timestamp,
   }));
 }
 

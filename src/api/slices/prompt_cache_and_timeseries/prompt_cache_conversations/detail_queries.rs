@@ -35,12 +35,16 @@ pub(crate) async fn query_prompt_cache_conversation_events(
     if let Some(snapshot) = snapshot {
         let snapshot_filter = PromptCacheConversationSnapshotFilter {
             snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+            snapshot_created_at_upper_bound: snapshot
+                .snapshot_created_at_upper_bound
+                .map(str::to_string),
             snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
         };
         push_snapshot_invocation_visibility_clause(
             &mut query,
             "occurred_at",
             "id",
+            "created_at",
             Some(&snapshot_filter),
         );
         query.push(" AND ");
@@ -80,116 +84,112 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
     }
 
     const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
-    let mut query =
-        QueryBuilder::<Sqlite>::new("WITH ranked AS (SELECT id, invoke_id, occurred_at, ");
-    query
-        .push(invocation_display_status_sql())
-        .push(" AS status, ")
-        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
-        .push(" AS failure_class, ")
-        .push(INVOCATION_ROUTE_MODE_SQL)
-        .push(" AS route_mode, model, ")
-        .push(INVOCATION_REQUEST_MODEL_SQL)
-        .push(" AS request_model, ")
-        .push(INVOCATION_RESPONSE_MODEL_SQL)
-        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
-        .push(INVOCATION_REASONING_EFFORT_SQL)
-        .push(" AS reasoning_effort, error_message, ")
-        .push(INVOCATION_FAILURE_KIND_SQL)
-        .push(" AS failure_kind, CASE WHEN ")
-        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
-        .push(" = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, ")
-        .push(INVOCATION_PROXY_DISPLAY_SQL)
-        .push(" AS proxy_display_name, ")
-        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-        .push(" AS upstream_account_id, ")
-        .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
-        .push(" AS upstream_account_name, ")
-        .push(INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL)
-        .push(" AS upstream_account_plan_type, ")
-        .push(INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
-        .push(
-            " AS response_content_encoding, \
-             ",
-        )
-        .push(INVOCATION_TRANSPORT_SQL)
-        .push(
-            " AS transport, \
-             ",
-        )
-        .push(INVOCATION_COMPACTION_REQUEST_KIND_SQL)
-        .push(
-            " AS compaction_request_kind, \
-             ",
-        )
-        .push(INVOCATION_COMPACTION_RESPONSE_KIND_SQL)
-        .push(
-            " AS compaction_response_kind, \
-             ",
-        )
-        .push(INVOCATION_IMAGE_INTENT_SQL)
-        .push(
-            " AS image_intent, \
-             CASE \
-               WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
-                 THEN json_extract(payload, '$.requestedServiceTier') \
-               WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text' \
-                 THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier, \
-             CASE \
-               WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
-                 THEN json_extract(payload, '$.serviceTier') \
-               WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
-                 THEN json_extract(payload, '$.service_tier') END AS service_tier, \
-             ",
-        )
-        .push(INVOCATION_BILLING_SERVICE_TIER_SQL)
-        .push(
-            " AS billing_service_tier, \
-             t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
-             t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
-        )
-        .push(INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
-        .push(" AS downstream_status_code, ")
-        .push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
-        .push(" AS downstream_error_message, ")
-        .push(INVOCATION_ENDPOINT_SQL)
-        .push(" AS endpoint, ")
-        .push(KEY_EXPR)
-        .push(" AS prompt_cache_key, ROW_NUMBER() OVER (PARTITION BY ")
-        .push(KEY_EXPR)
-        .push(" ORDER BY occurred_at DESC, id DESC) AS row_number FROM codex_invocations WHERE ")
-        .push(KEY_EXPR)
-        .push(" IN (");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT * FROM (");
 
-    {
-        let mut separated = query.separated(", ");
-        for key in selected_keys {
-            separated.push_bind(key);
+    for (index, key) in selected_keys.iter().enumerate() {
+        if index > 0 {
+            query.push(" UNION ALL ");
         }
-    }
-    query.push(")");
-    if let Some(snapshot) = snapshot {
-        let snapshot_filter = PromptCacheConversationSnapshotFilter {
-            snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
-            snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
-        };
-        query.push(" AND ");
-        push_snapshot_invocation_visibility_clause(
-            &mut query,
-            "occurred_at",
-            "id",
-            Some(&snapshot_filter),
-        );
+        query.push("SELECT * FROM (SELECT ");
+        query
+            .push_bind(key)
+            .push(" AS prompt_cache_key, id, invoke_id, occurred_at, ")
+            .push(invocation_display_status_sql())
+            .push(" AS status, ")
+            .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+            .push(" AS failure_class, ")
+            .push(INVOCATION_ROUTE_MODE_SQL)
+            .push(" AS route_mode, model, ")
+            .push(INVOCATION_REQUEST_MODEL_SQL)
+            .push(" AS request_model, ")
+            .push(INVOCATION_RESPONSE_MODEL_SQL)
+            .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
+            .push(INVOCATION_REASONING_EFFORT_SQL)
+            .push(" AS reasoning_effort, error_message, ")
+            .push(INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
+            .push(" AS downstream_status_code, ")
+            .push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
+            .push(" AS downstream_error_message, ")
+            .push(INVOCATION_FAILURE_KIND_SQL)
+            .push(" AS failure_kind, CASE WHEN ")
+            .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+            .push(" = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, ")
+            .push(INVOCATION_PROXY_DISPLAY_SQL)
+            .push(" AS proxy_display_name, ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" AS upstream_account_id, ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
+            .push(" AS upstream_account_name, ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL)
+            .push(" AS upstream_account_plan_type, ")
+            .push(INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
+            .push(
+                " AS response_content_encoding, \
+                 ",
+            )
+            .push(INVOCATION_TRANSPORT_SQL)
+            .push(
+                " AS transport, \
+                 CASE \
+                   WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
+                     THEN json_extract(payload, '$.requestedServiceTier') \
+                   WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text' \
+                     THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier, \
+                 CASE \
+                   WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
+                     THEN json_extract(payload, '$.serviceTier') \
+                   WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
+                     THEN json_extract(payload, '$.service_tier') END AS service_tier, \
+                 ",
+            )
+            .push(INVOCATION_BILLING_SERVICE_TIER_SQL)
+            .push(
+                " AS billing_service_tier, \
+                 t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
+                 t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
+            )
+            .push(INVOCATION_ENDPOINT_SQL)
+            .push(" AS endpoint, ")
+            .push(INVOCATION_COMPACTION_REQUEST_KIND_SQL)
+            .push(" AS compaction_request_kind, ")
+            .push(INVOCATION_COMPACTION_RESPONSE_KIND_SQL)
+            .push(" AS compaction_response_kind, ")
+            .push(INVOCATION_IMAGE_INTENT_SQL)
+            .push(" AS image_intent \
+             FROM codex_invocations WHERE ")
+            .push(KEY_EXPR)
+            .push(" = ")
+            .push_bind(key);
+
+        if let Some(snapshot) = snapshot {
+            let snapshot_filter = PromptCacheConversationSnapshotFilter {
+                snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+                snapshot_created_at_upper_bound: snapshot
+                    .snapshot_created_at_upper_bound
+                    .map(str::to_string),
+                snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
+            };
+            query.push(" AND ");
+            push_snapshot_invocation_visibility_clause(
+                &mut query,
+                "occurred_at",
+                "id",
+                "created_at",
+                Some(&snapshot_filter),
+            );
+        }
+
+        if source_scope == InvocationSourceScope::ProxyOnly {
+            query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        }
+
+        query
+            .push(" ORDER BY occurred_at DESC, id DESC LIMIT ")
+            .push_bind(limit_per_key)
+            .push(")");
     }
 
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-
-    query
-        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, request_model, response_model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, downstream_status_code, downstream_error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, upstream_account_plan_type, response_content_encoding, transport, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint, compaction_request_kind, compaction_response_kind, image_intent FROM ranked WHERE row_number <= ")
-        .push_bind(limit_per_key)
-        .push(" ORDER BY prompt_cache_key ASC, occurred_at DESC, id DESC");
+    query.push(") ORDER BY prompt_cache_key ASC, occurred_at DESC, id DESC");
 
     query
         .build_query_as::<PromptCacheConversationInvocationPreviewRow>()
@@ -281,12 +281,16 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_a
         .push(" AND ");
     let snapshot_filter = PromptCacheConversationSnapshotFilter {
         snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+        snapshot_created_at_upper_bound: snapshot
+            .snapshot_created_at_upper_bound
+            .map(str::to_string),
         snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
     };
     push_snapshot_invocation_visibility_clause(
         &mut query,
         "occurred_at",
         "id",
+        "created_at",
         Some(&snapshot_filter),
     );
     query.push(" AND ").push(KEY_EXPR).push(" IN (");
@@ -450,12 +454,16 @@ pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries_at
     query.push(") AND ");
     let snapshot_filter = PromptCacheConversationSnapshotFilter {
         snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+        snapshot_created_at_upper_bound: snapshot
+            .snapshot_created_at_upper_bound
+            .map(str::to_string),
         snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
     };
     push_snapshot_invocation_visibility_clause(
         &mut query,
         "occurred_at",
         "id",
+        "created_at",
         Some(&snapshot_filter),
     );
     query
