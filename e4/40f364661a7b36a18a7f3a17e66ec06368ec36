@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.4.1",
+  "base_stable_version": "2.4.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-29T05:17:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.4.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0e9caf1110804e1f0bb73b21d72b47595bed58d7",
+  "pr_number": 489,
+  "pr_title": "fix(account-pool): refine inline override editors",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.4.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.4.1",
+  "target_sha": "e440f364661a7b36a18a7f3a17e66ec06368ec36",
+  "type_label": "type:patch"
+}
