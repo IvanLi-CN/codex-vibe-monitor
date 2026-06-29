@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.4.5",
+  "base_stable_version": "2.4.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-29T16:39:13Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.4.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1b7f39c21959068ed564235d2e329d84ed22d76e",
+  "pr_number": 492,
+  "pr_title": "fix(perf): remove dashboard sqlite hot scans",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.4.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.4.5",
+  "target_sha": "f95c2fcd2800f97aa890eb06193b622c242cf5f7",
+  "type_label": "type:patch"
+}
