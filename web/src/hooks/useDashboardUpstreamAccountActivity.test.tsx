@@ -189,6 +189,7 @@ function createAccountResponse(
         tokensPerMinute: 250,
         spendRate: 0.03,
         firstByteAvgMs: 320,
+        firstResponseByteTotalAvgMs: 780,
         avgTotalMs: 780,
         inProgressInvocationCount,
         retryInvocationCount: 1,

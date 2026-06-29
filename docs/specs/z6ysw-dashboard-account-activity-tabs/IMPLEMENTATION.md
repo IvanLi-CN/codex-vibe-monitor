@@ -25,6 +25,7 @@
 - 已实现：上游账号卡片标题区改为账号名 + 文本型实时 `TPM / 消费速率` 指标，删除卡内 `渠道 / 分组` 行和顶部 `调用` 指标；周期统计重排为首字用时、请求数、成本、Token 四组，并沿用滚动数字效果。
 - 已实现：账号活动接口补出 `avgTotalMs`、`totalCost`、严格失败 `failureCost` 与 `failureTokens`；失败比率由前端按 `failureCount / requestCount` 计算，`其他` 按 `nonSuccessCount - failureCount` 下限归零。
 - 已实现：账号卡列表按 `totalTokens` 倒序排列，并用最近调用时间与账号 ID 作稳定排序兜底。
+- 已实现：账号卡“首字用时”从阶段级 `t_upstream_ttfb_ms` 纠偏为 owner-facing 的首字总耗时口径；后端聚合现在复用 `resolve_first_response_byte_total_ms(...)`，并额外暴露显式 `firstResponseByteTotalAvgMs` 供前端优先消费，避免真实秒级总耗时被渲染成 `0ms`。
 
 ## Remaining Gaps
 
