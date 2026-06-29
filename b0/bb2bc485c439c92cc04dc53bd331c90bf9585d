@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.4.3",
+  "base_stable_version": "2.4.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-29T06:35:20Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.4.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "9c53e7f545ec8ed488afbfd46864de81105a1618",
+  "pr_number": 491,
+  "pr_title": "fix(dashboard): expand upstream account recent rows",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.4.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.4.3",
+  "target_sha": "b0bb2bc485c439c92cc04dc53bd331c90bf9585d",
+  "type_label": "type:patch"
+}
