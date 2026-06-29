@@ -337,6 +337,7 @@ function createUpstreamAccountActivityStoryResponse(
         tokensPerMinute: 640,
         spendRate: 0.12,
         firstByteAvgMs: 420,
+        firstResponseByteTotalAvgMs: 2_867.5,
         avgTotalMs: 860,
         inProgressInvocationCount: Math.max(
           0,

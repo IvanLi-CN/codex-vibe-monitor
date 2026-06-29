@@ -192,6 +192,13 @@
   image:
   ![Dashboard 上游账号 tab 移动视口证据](./assets/dashboard-upstream-account-tab-mobile.png)
 
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
+  scenario: `first-response-byte-total desktop card`
+  evidence_note: 验证账号卡“首字用时”主值使用 owner-facing 的首字总耗时口径；当后端同时返回阶段级 `firstByteAvgMs` 与显式 `firstResponseByteTotalAvgMs` 时，卡面主值显示秒级总耗时而不是被极小的上游首字节时延误导成 `0ms`。
+  image:
+  ![Dashboard 上游账号首字总耗时证据](./assets/dashboard-upstream-account-first-byte-total.png)
+
 ## Related PRs
 
 - None
