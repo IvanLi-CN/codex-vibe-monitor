@@ -3,7 +3,16 @@ import { AppIcon } from './AppIcon'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
-import { Input } from './ui/input'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from './ui/command'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Switch } from './ui/switch'
 import type {
   EffectiveRoutingRule,
@@ -137,10 +146,9 @@ interface EffectiveRoutingRuleCardProps {
     imageToolFillMissing: string
     imageToolForceAdd: string
     imageToolForceRemove: string
-    upstream429Retry?: string
-    upstream429RetryOff?: string
     availableModelsInherited?: string
     availableModelsNoneAllowed?: string
+    availableModelsEmpty?: string
     availableModelsField?: string
     systemDeniedModelsField?: string
     systemDeniedModelsEmpty?: string
@@ -172,8 +180,7 @@ interface EffectiveRoutingRuleCardProps {
     newConversationLabel?: string
     cutOutLabel?: string
     cutInLabel?: string
-    upstream429RetryCountOnce?: string
-    upstream429RetryCountMany?: (count: number) => string
+    upstream429RetryCountValue?: (count: number) => string
     availableModelsAddCustom?: string
     availableModelsCustomLabel?: (value: string) => string
     availableModelsRemove?: string
@@ -235,8 +242,10 @@ function sourceVariant(source: string) {
   return source === 'account' ? 'default' : source === 'tag' ? 'accent' : source === 'group' ? 'info' : 'secondary'
 }
 
-function firstAccountOverrideField(fieldSources: FieldSourceMap): EditablePolicyField | null {
-  return editableFieldSourceKeys.find(([, sourceKey]) => fieldSources[sourceKey] === 'account')?.[0] ?? null
+function accountOverrideFields(fieldSources: FieldSourceMap): EditablePolicyField[] {
+  return editableFieldSourceKeys
+    .filter(([, sourceKey]) => fieldSources[sourceKey] === 'account')
+    .map(([field]) => field)
 }
 
 function normalizeModelIds(values: string[]) {
@@ -251,6 +260,14 @@ function normalizeModelIds(values: string[]) {
   return normalized
 }
 
+function formatUpstream429RetryCount(
+  count: number,
+  labels: EffectiveRoutingRuleCardProps['labels'],
+) {
+  const normalized = Math.min(5, Math.max(0, Math.trunc(count)))
+  return labels.upstream429RetryCountValue?.(normalized) ?? String(normalized)
+}
+
 export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePolicy }: EffectiveRoutingRuleCardProps) {
   const resolvedRule = defaultRule(rule)
   const isEditable = editablePolicy != null
@@ -258,8 +275,8 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
     () => ({ ...defaultFieldSources, ...(resolvedRule.fieldSources ?? {}) }),
     [resolvedRule.fieldSources],
   )
-  const defaultExpandedField = isEditable ? firstAccountOverrideField(fieldSources) : null
-  const [expandedField, setExpandedField] = useState<EditablePolicyField | null>(defaultExpandedField)
+  const defaultExpandedFields = isEditable ? accountOverrideFields(fieldSources) : []
+  const [expandedFields, setExpandedFields] = useState<EditablePolicyField[]>(defaultExpandedFields)
   const [availableModelInput, setAvailableModelInput] = useState('')
   const userTouchedExpansionRef = useRef(false)
   const previousIdentityKeyRef = useRef(identityKey)
@@ -273,15 +290,15 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
 
     if (!isEditable) {
       userTouchedExpansionRef.current = false
-      setExpandedField(null)
+      setExpandedFields([])
       return
     }
 
-    const nextDefaultExpandedField = firstAccountOverrideField(fieldSources)
-    setExpandedField((current) => {
+    const nextDefaultExpandedFields = accountOverrideFields(fieldSources)
+    setExpandedFields((current) => {
       if (userTouchedExpansionRef.current) return current
-      if (current && fieldToSource(current, fieldSources) === 'account') return current
-      return nextDefaultExpandedField
+      if (current.some((field) => fieldToSource(field, fieldSources) === 'account')) return current
+      return nextDefaultExpandedFields
     })
   }, [
     isEditable,
@@ -307,19 +324,29 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
   const changeField = (field: EditablePolicyField, payload: UpdateGroupAccountRoutingRulePayload) => {
     void editablePolicy?.onChange(field, payload)
   }
-  const clearField = (field: EditablePolicyField, payloadKey: keyof UpdateGroupAccountRoutingRulePayload) => {
+  const clearField = (
+    field: EditablePolicyField,
+    payload: UpdateGroupAccountRoutingRulePayload,
+  ) => {
     userTouchedExpansionRef.current = true
-    changeField(field, { [payloadKey]: null } as UpdateGroupAccountRoutingRulePayload)
-    setExpandedField((current) => (current === field ? null : current))
+    changeField(field, payload)
+    setExpandedFields((current) => current.filter((value) => value !== field))
   }
-  const toggleExpanded = (field: EditablePolicyField, payloadKey: keyof UpdateGroupAccountRoutingRulePayload) => {
+  const toggleExpanded = (
+    field: EditablePolicyField,
+    clearPayload: UpdateGroupAccountRoutingRulePayload,
+  ) => {
     userTouchedExpansionRef.current = true
     const active = fieldToSource(field, fieldSources) === 'account'
     if (active) {
-      clearField(field, payloadKey)
+      clearField(field, clearPayload)
       return
     }
-    setExpandedField((current) => (current === field ? null : field))
+    setExpandedFields((current) => (
+      current.includes(field)
+        ? current.filter((value) => value !== field)
+        : [...current, field]
+    ))
   }
 
   const availableModelsValue = normalizeModelIds(resolvedRule.availableModels ?? [])
@@ -332,6 +359,10 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
     updateAvailableModels([...availableModelsValue, trimmed])
     setAvailableModelInput('')
   }
+  const upstream429RetryCount =
+    resolvedRule.upstream429RetryEnabled === true
+      ? Math.min(5, Math.max(0, Math.trunc(resolvedRule.upstream429MaxRetries ?? 0)))
+      : 0
 
   const fieldRows = [
     {
@@ -339,7 +370,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
       label: labels.newConversationLabel ?? labels.fieldBlockNewConversations ?? 'New conversations',
       value: resolvedRule.blockNewConversations ? labels.blockNewConversations : labels.allowNewConversations,
       source: fieldSources.blockNewConversations,
-      payloadKey: 'allowNewConversations' as const,
+      clearPayload: { allowNewConversations: null },
       editor: (
         <Switch
           checked={!resolvedRule.blockNewConversations}
@@ -354,7 +385,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
       label: labels.cutOutLabel ?? labels.fieldAllowCutOut ?? 'Cut out',
       value: resolvedRule.allowCutOut ? labels.allowCutOut : labels.denyCutOut,
       source: fieldSources.allowCutOut,
-      payloadKey: 'allowCutOut' as const,
+      clearPayload: { allowCutOut: null },
       editor: (
         <Switch
           checked={resolvedRule.allowCutOut}
@@ -369,7 +400,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
       label: labels.cutInLabel ?? labels.fieldAllowCutIn ?? 'Cut in',
       value: resolvedRule.allowCutIn ? labels.allowCutIn : labels.denyCutIn,
       source: fieldSources.allowCutIn,
-      payloadKey: 'allowCutIn' as const,
+      clearPayload: { allowCutIn: null },
       editor: (
         <Switch
           checked={resolvedRule.allowCutIn}
@@ -384,7 +415,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
       label: labels.fieldPriority ?? 'Priority',
       value: priorityTierBadgeLabel(resolvedRule.priorityTier, labels),
       source: fieldSources.priorityTier,
-      payloadKey: 'priorityTier' as const,
+      clearPayload: { priorityTier: null },
       editor: (
         <InlineOptionGroup<TagPriorityTier>
           ariaLabel={labels.fieldPriority ?? 'Priority'}
@@ -404,7 +435,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
       label: labels.fieldFastMode ?? 'FAST mode',
       value: fastModeRewriteBadgeLabel(resolvedRule.fastModeRewriteMode, labels),
       source: fieldSources.fastModeRewriteMode,
-      payloadKey: 'fastModeRewriteMode' as const,
+      clearPayload: { fastModeRewriteMode: null },
       editor: (
         <InlineOptionGroup<TagFastModeRewriteMode>
           ariaLabel={labels.fieldFastMode ?? 'FAST mode'}
@@ -432,7 +463,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
               ? labels.imageToolForceRemove
               : labels.imageToolKeepOriginal,
       source: fieldSources.imageToolRewriteMode ?? 'root',
-      payloadKey: 'imageToolRewriteMode' as const,
+      clearPayload: { imageToolRewriteMode: null },
       editor: (
         <InlineOptionGroup<ImageToolRewriteMode>
           ariaLabel={labels.fieldImageToolRewriteMode ?? 'Image tools'}
@@ -455,7 +486,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
         ? labels.concurrencyLimit?.(resolvedRule.concurrencyLimit) ?? `Concurrency ${resolvedRule.concurrencyLimit}`
         : labels.concurrencyUnlimited ?? 'Concurrency unlimited',
       source: fieldSources.concurrencyLimit,
-      payloadKey: 'concurrencyLimit' as const,
+      clearPayload: { concurrencyLimit: null },
       editor: (
         <ConcurrencyInlineEditor
           value={resolvedRule.concurrencyLimit ?? 0}
@@ -469,23 +500,19 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
     {
       field: 'upstream429Retry' as const,
       label: labels.fieldUpstream429 ?? 'Upstream 429 retry',
-      value: resolvedRule.upstream429RetryEnabled
-        ? labels.upstream429Retry ?? `429 retry x${resolvedRule.upstream429MaxRetries ?? 1}`
-        : labels.upstream429RetryOff ?? '429 retry off',
+      value: formatUpstream429RetryCount(upstream429RetryCount, labels),
       source: fieldSources.upstream429Retry,
-      payloadKey: 'upstream429RetryEnabled' as const,
+      clearPayload: {
+        upstream429RetryEnabled: null,
+        upstream429MaxRetries: null,
+      },
       editor: (
         <RetryInlineEditor
-          enabled={resolvedRule.upstream429RetryEnabled === true}
-          retries={resolvedRule.upstream429MaxRetries ?? 0}
+          retries={upstream429RetryCount}
           disabled={isBusy('upstream429Retry')}
           labels={labels}
-          onEnabledChange={(checked) => changeField('upstream429Retry', {
-            upstream429RetryEnabled: checked,
-            upstream429MaxRetries: checked ? Math.max(1, resolvedRule.upstream429MaxRetries || 1) : 0,
-          })}
-          onRetriesChange={(count) => changeField('upstream429Retry', {
-            upstream429RetryEnabled: true,
+          onChange={(count) => changeField('upstream429Retry', {
+            upstream429RetryEnabled: count > 0,
             upstream429MaxRetries: count,
           })}
         />
@@ -503,12 +530,19 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
             ? labels.availableModelsNoneAllowed ?? 'No models allowed'
             : labels.availableModelsInherited ?? 'Inherited / unrestricted',
       source: fieldSources.availableModels ?? 'root',
-      payloadKey: 'availableModels' as const,
+      clearPayload: { availableModels: null },
       editor: (
         <AvailableModelsEditor
           value={availableModelsValue}
           options={availableModelOptions}
           inputValue={availableModelInput}
+          emptyValueLabel={
+            fieldSources.availableModels === 'account' ||
+            fieldSources.availableModels === 'group' ||
+            fieldSources.availableModels === 'tag'
+              ? labels.availableModelsNoneAllowed ?? 'No models allowed'
+              : labels.availableModelsInherited ?? 'Inherited / unrestricted'
+          }
           disabled={isBusy('availableModels')}
           labels={labels}
           onInputChange={setAvailableModelInput}
@@ -555,7 +589,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
             {fieldRows.map((row) => {
               const editable = row.field != null && editablePolicy != null
               const activeOverride = row.field != null && row.source === 'account'
-              const expanded = row.field != null && expandedField === row.field
+              const expanded = row.field != null && expandedFields.includes(row.field)
               const error = row.field != null ? editablePolicy?.errorByField?.[row.field] : null
               const busy = row.field != null && isBusy(row.field)
               return (
@@ -575,29 +609,30 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
                         disabled={busy}
                         aria-pressed={activeOverride || expanded}
                         aria-label={`${activeOverride ? labels.overrideClear ?? 'Clear override' : labels.overrideEdit ?? 'Edit override'}: ${row.label}`}
-                        onClick={() => toggleExpanded(row.field, row.payloadKey)}
+                        onClick={() => toggleExpanded(row.field, row.clearPayload)}
                       >
                         <AppIcon name={busy ? 'loading' : activeOverride || expanded ? 'check-decagram-outline' : 'pencil-outline'} className={cn('h-4 w-4', busy ? 'animate-spin' : '')} aria-hidden />
                       </Button>
-                    ) : (
+                  ) : (
                       <span aria-hidden />
                     )}
                   </div>
                   {expanded && row.field ? (
                     <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                        <div className="space-y-1">
-                          <p className="text-sm font-semibold text-base-content">
-                            {labels.overrideActive ?? 'Account override'}
+                      <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[minmax(7rem,1fr)_minmax(8rem,1.2fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
+                        <p className="text-sm font-semibold text-base-content">{row.label}</p>
+                        <div className="min-w-0 sm:col-span-3">{row.editor}</div>
+                        {busy ? (
+                          <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
+                            {labels.overrideSaving ?? 'Saving...'}
                           </p>
-                          <p className="text-xs leading-5 text-base-content/65">
-                            {labels.inheritValue ?? 'Default value is the inherited value.'}
+                        ) : null}
+                        {error ? (
+                          <p className="text-xs font-medium text-error sm:col-start-2 sm:col-span-3">
+                            {error}
                           </p>
-                        </div>
-                        <div className="min-w-0 md:max-w-[min(34rem,100%)]">{row.editor}</div>
+                        ) : null}
                       </div>
-                      {busy ? <p className="mt-2 text-xs text-base-content/60">{labels.overrideSaving ?? 'Saving...'}</p> : null}
-                      {error ? <p className="mt-2 text-xs font-medium text-error">{error}</p> : null}
                     </div>
                   ) : error ? (
                     <p className="px-3 pb-2 text-xs font-medium text-error">{error}</p>
@@ -687,32 +722,25 @@ function ConcurrencyInlineEditor({ value, disabled, currentLabel, unlimitedLabel
 }
 
 interface RetryInlineEditorProps {
-  enabled: boolean
   retries: number
   disabled?: boolean
   labels: EffectiveRoutingRuleCardProps['labels']
-  onEnabledChange: (checked: boolean) => void
-  onRetriesChange: (count: number) => void
+  onChange: (count: number) => void
 }
 
-function RetryInlineEditor({ enabled, retries, disabled, labels, onEnabledChange, onRetriesChange }: RetryInlineEditorProps) {
+function RetryInlineEditor({ retries, disabled, labels, onChange }: RetryInlineEditorProps) {
+  const value = Math.min(5, Math.max(0, Math.trunc(retries)))
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-      <Switch checked={enabled} disabled={disabled} onCheckedChange={onEnabledChange} aria-label={labels.fieldUpstream429 ?? 'Upstream 429 retry'} />
-      <InlineOptionGroup<number>
-        ariaLabel={labels.fieldUpstream429 ?? 'Upstream 429 retry'}
-        value={Math.max(1, retries || 1)}
-        disabled={disabled || !enabled}
-        options={[1, 2, 3, 4, 5].map((value) => ({
-          value,
-          label:
-            value === 1
-              ? labels.upstream429RetryCountOnce ?? '1 retry'
-              : labels.upstream429RetryCountMany?.(value) ?? `${value} retries`,
-        }))}
-        onChange={onRetriesChange}
-      />
-    </div>
+    <InlineOptionGroup<number>
+      ariaLabel={labels.fieldUpstream429 ?? 'Upstream 429 retry'}
+      value={value}
+      disabled={disabled}
+      options={[0, 1, 2, 3, 4, 5].map((option) => ({
+        value: option,
+        label: formatUpstream429RetryCount(option, labels),
+      }))}
+      onChange={onChange}
+    />
   )
 }
 
@@ -720,6 +748,7 @@ interface AvailableModelsEditorProps {
   value: string[]
   options: string[]
   inputValue: string
+  emptyValueLabel: string
   disabled?: boolean
   labels: EffectiveRoutingRuleCardProps['labels']
   onInputChange: (value: string) => void
@@ -727,67 +756,134 @@ interface AvailableModelsEditorProps {
   onChange: (value: string[]) => void
 }
 
-function AvailableModelsEditor({ value, options, inputValue, disabled, labels, onInputChange, onAdd, onChange }: AvailableModelsEditorProps) {
+function AvailableModelsEditor({
+  value,
+  options,
+  inputValue,
+  emptyValueLabel,
+  disabled,
+  labels,
+  onInputChange,
+  onAdd,
+  onChange,
+}: AvailableModelsEditorProps) {
   const trimmedInput = inputValue.trim()
   const canAdd = trimmedInput.length > 0 && !value.includes(trimmedInput)
+  const [open, setOpen] = useState(false)
+  const selectedValueSet = useMemo(() => new Set(value), [value])
+  const availableOptions = useMemo(
+    () => options.filter((option, index) => option.trim() && options.indexOf(option) === index),
+    [options],
+  )
+  const filteredOptions = useMemo(() => {
+    if (!trimmedInput) return availableOptions
+    const query = trimmedInput.toLocaleLowerCase()
+    return availableOptions.filter((option) => option.toLocaleLowerCase().includes(query))
+  }, [availableOptions, trimmedInput])
+
+  const commitCustomValue = () => {
+    if (!canAdd) return
+    onAdd(trimmedInput)
+    setOpen(false)
+  }
+
+  const triggerTitle = value.length > 0 ? value.join(', ') : emptyValueLabel
+
   return (
-    <div className="min-w-[18rem] space-y-3">
-      {options.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {options.map((model) => {
-            const active = value.includes(model)
-            return (
-              <button
-                key={model}
-                type="button"
-                disabled={disabled}
-                data-active={active}
-                className="rounded-full border border-base-300/80 bg-base-100/80 px-3 py-1.5 text-sm font-medium text-base-content/70 transition hover:border-primary/45 hover:text-primary data-[active=true]:border-primary/45 data-[active=true]:bg-primary/15 data-[active=true]:text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                onClick={() => onChange(active ? value.filter((item) => item !== model) : [...value, model])}
-              >
-                {labels.availableModelsCustomLabel?.(model) ?? model}
-              </button>
-            )
-          })}
-        </div>
-      ) : null}
-      <div className="flex gap-2">
-        <Input
-          value={inputValue}
-          disabled={disabled}
-          placeholder={labels.availableModelsPlaceholder ?? labels.availableModelsAddCustom ?? 'Add model'}
-          onChange={(event) => onInputChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' || !canAdd) return
-            event.preventDefault()
-            onAdd(trimmedInput)
-          }}
-        />
-        <Button type="button" variant="outline" disabled={disabled || !canAdd} onClick={() => onAdd(trimmedInput)}>
-          <AppIcon name="plus" className="mr-2 h-4 w-4" aria-hidden />
-          {labels.availableModelsAddCustom ?? 'Add'}
-        </Button>
-      </div>
-      {value.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {value.map((model) => (
-            <Badge key={model} variant="secondary" className="gap-1 pr-1">
-              <span>{labels.availableModelsCustomLabel?.(model) ?? model}</span>
-              <button
-                type="button"
-                disabled={disabled}
-                className="rounded-full p-0.5 text-base-content/55 transition hover:bg-base-300/70 hover:text-base-content disabled:cursor-not-allowed"
-                aria-label={`${labels.availableModelsRemove ?? 'Remove'} ${model}`}
-                onClick={() => onChange(value.filter((item) => item !== model))}
-              >
-                <AppIcon name="close" className="h-3 w-3" aria-hidden />
-              </button>
-            </Badge>
-          ))}
-        </div>
-      ) : (
-        <p className="text-xs leading-5 text-base-content/60">{labels.availableModelsNoneAllowed ?? 'No models allowed'}</p>
-      )}
+    <div className="min-w-[18rem]">
+      <Popover
+        open={disabled ? false : open}
+        onOpenChange={(nextOpen) => {
+          if (disabled) {
+            setOpen(false)
+            return
+          }
+          setOpen(nextOpen)
+          if (!nextOpen) {
+            onInputChange('')
+          }
+        }}
+      >
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            role="combobox"
+            aria-expanded={open}
+            aria-label={labels.fieldAvailableModels ?? 'Available models'}
+            disabled={disabled}
+            title={triggerTitle}
+            className={cn(
+              'flex w-full items-center gap-3 rounded-xl border border-base-300 bg-base-100 px-3 py-2.5 text-left shadow-sm transition-colors',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100',
+              'hover:border-primary/35',
+              disabled && 'cursor-not-allowed opacity-60',
+            )}
+          >
+            <AppIcon name="tag-outline" className="mt-0.5 h-4 w-4 shrink-0 text-base-content/55" aria-hidden />
+            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              {value.length > 0 ? (
+                value.map((model) => (
+                  <Badge key={model} variant="secondary" className="max-w-full rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-primary">
+                    <span className="truncate">{labels.availableModelsCustomLabel?.(model) ?? model}</span>
+                  </Badge>
+                ))
+              ) : (
+                <span className="text-sm text-base-content/55">{emptyValueLabel}</span>
+              )}
+            </span>
+            <AppIcon name="chevron-down" className="h-4 w-4 shrink-0 text-base-content/45" aria-hidden />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
+          <Command shouldFilter={false}>
+            <CommandInput
+              value={inputValue}
+              placeholder={labels.availableModelsPlaceholder ?? labels.availableModelsAddCustom ?? 'Add model'}
+              onValueChange={onInputChange}
+            />
+            <CommandList>
+              {canAdd ? (
+                <>
+                  <CommandGroup>
+                    <CommandItem value={trimmedInput} onSelect={commitCustomValue}>
+                      <AppIcon name="plus-circle-outline" className="mr-2 h-4 w-4 text-primary" aria-hidden />
+                      <span className="truncate">{trimmedInput}</span>
+                    </CommandItem>
+                  </CommandGroup>
+                  <CommandSeparator />
+                </>
+              ) : null}
+              {filteredOptions.length === 0 ? (
+                <CommandEmpty>{labels.availableModelsEmpty ?? 'No matching models'}</CommandEmpty>
+              ) : (
+                <CommandGroup>
+                  {filteredOptions.map((model) => {
+                    const active = selectedValueSet.has(model)
+                    return (
+                      <CommandItem
+                        key={model}
+                        value={model}
+                        disabled={disabled}
+                        onSelect={() => onChange(active ? value.filter((item) => item !== model) : [...value, model])}
+                      >
+                        <AppIcon
+                          name="check"
+                          className={cn(
+                            'mr-2 h-4 w-4 text-primary transition-opacity',
+                            active ? 'opacity-100' : 'opacity-0',
+                          )}
+                          aria-hidden
+                        />
+                        <span className="truncate">{labels.availableModelsCustomLabel?.(model) ?? model}</span>
+                      </CommandItem>
+                    )
+                  })}
+                </CommandGroup>
+              )}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
     </div>
   )
 }
