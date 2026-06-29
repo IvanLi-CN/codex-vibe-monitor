@@ -143,13 +143,17 @@ export function useDashboardUpstreamAccountActivity(
       }
       const resolvedRecentInvocationLimit =
         resolveUpstreamAccountRecentPreviewLimit(response.accounts);
+      const nextRecentInvocationLimit = Math.max(
+        requestedRecentLimit,
+        resolvedRecentInvocationLimit,
+      );
       const needsExpandedReload =
-        resolvedRecentInvocationLimit > requestedRecentLimit;
-      recentInvocationLimitRef.current = resolvedRecentInvocationLimit;
+        nextRecentInvocationLimit > requestedRecentLimit;
+      recentInvocationLimitRef.current = nextRecentInvocationLimit;
       setVisibleRecentInvocationLimit(
         needsExpandedReload
           ? requestedRecentLimit
-          : resolvedRecentInvocationLimit,
+          : nextRecentInvocationLimit,
       );
       setData(response);
       hasHydratedRef.current = true;

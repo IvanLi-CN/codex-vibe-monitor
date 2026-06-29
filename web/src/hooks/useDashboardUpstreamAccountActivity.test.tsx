@@ -328,6 +328,33 @@ describe("useDashboardUpstreamAccountActivity", () => {
     expect(text("visible-limit")).toBe("9");
   });
 
+  it("does not shrink below the requested seed limit when the response resolves smaller", async () => {
+    apiMocks.fetchUpstreamAccountActivity.mockResolvedValue(
+      createAccountResponse(
+        3,
+        Array.from({ length: 7 }, (_, index) =>
+          createPreview({
+            id: 350 + index,
+            invokeId: `seed-stable-${index + 1}`,
+            occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+            status: index < 3 ? "running" : "success",
+          }),
+        ),
+      ),
+    );
+
+    render(<Probe recentInvocationLimit={7} />);
+    await flushAsync();
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchUpstreamAccountActivity.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ recentLimit: 7 }),
+    );
+    expect(text("visible-limit")).toBe("7");
+    expect(text("recent-count")).toBe("7");
+  });
+
   it("ignores stale smaller responses after a larger limit reload is queued", async () => {
     const first = deferred<UpstreamAccountActivityResponse>();
     const second = deferred<UpstreamAccountActivityResponse>();
