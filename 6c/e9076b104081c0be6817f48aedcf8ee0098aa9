@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.4.7",
+  "base_stable_version": "2.4.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-29T20:12:19Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.4.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ffa9113aa8ffe0a88b9b4cc2cae16eb02a49447c",
+  "pr_number": 494,
+  "pr_title": "fix(web): correct upstream account identity chip colors",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.4.7",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.4.7",
+  "target_sha": "6ce9076b104081c0be6817f48aedcf8ee0098aa9",
+  "type_label": "type:patch"
+}
