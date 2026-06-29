@@ -28,25 +28,16 @@ pub(crate) fn push_snapshot_invocation_visibility_clause(
     if let Some(snapshot) = snapshot {
         let snapshot_upper_bound = snapshot.snapshot_upper_bound().to_string();
         if let Some(row_id_ceiling) = snapshot.snapshot_boundary_row_id_ceiling {
-            let boundary_occurred_at = parse_to_utc_datetime(&snapshot_upper_bound)
-                .map(|upper_bound| {
-                    db_occurred_at_lower_bound(upper_bound - ChronoDuration::seconds(1))
-                })
-                .unwrap_or_else(|| snapshot_upper_bound.clone());
             query
                 .push("((")
                 .push(occurred_at_expr)
                 .push(" < ")
-                .push_bind(boundary_occurred_at.clone())
-                .push(") OR (")
-                .push(occurred_at_expr)
-                .push(" = ")
-                .push_bind(boundary_occurred_at)
-                .push(" AND ")
+                .push_bind(snapshot_upper_bound)
+                .push(") AND ")
                 .push(id_expr)
                 .push(" <= ")
                 .push_bind(row_id_ceiling)
-                .push("))");
+                .push(")");
         } else {
             query
                 .push("(")
