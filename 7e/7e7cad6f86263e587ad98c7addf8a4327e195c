@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.4.6",
+  "base_stable_version": "2.4.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-29T17:44:52Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.4.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "4accb772e5a78c1968aefb797754bd3402778d2b",
+  "pr_number": 495,
+  "pr_title": "fix(dashboard): correct account first byte latency",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.4.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.4.6",
+  "target_sha": "7e7e7cad6f86263e587ad98c7addf8a4327e195c",
+  "type_label": "type:patch"
+}
