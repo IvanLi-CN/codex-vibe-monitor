@@ -119,13 +119,26 @@ const DASHBOARD_WORKING_CONVERSATION_ROW_GAP_PX = 16;
 const UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME =
   "min-h-5 border-transparent bg-base-200/82 px-2 py-0.5 text-[9px] font-semibold leading-none text-base-content/76 shadow-none";
 
-function resolveConversationMarkerStyle(seed: string) {
+const UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME =
+  "inline-flex h-[1.2rem] max-w-[4.8rem] shrink-0 items-center rounded-full border px-1.5 font-mono text-[10px] font-semibold leading-none tracking-[0.04em]";
+
+const UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES = [
+  "border-sky-300/55 bg-sky-50/92 text-sky-700 dark:border-sky-400/28 dark:bg-sky-400/10 dark:text-sky-200",
+  "border-cyan-300/55 bg-cyan-50/92 text-cyan-700 dark:border-cyan-400/28 dark:bg-cyan-400/10 dark:text-cyan-200",
+  "border-blue-300/55 bg-blue-50/92 text-blue-700 dark:border-blue-400/28 dark:bg-blue-400/10 dark:text-blue-200",
+  "border-violet-300/55 bg-violet-50/92 text-violet-700 dark:border-violet-400/28 dark:bg-violet-400/10 dark:text-violet-200",
+  "border-indigo-300/55 bg-indigo-50/92 text-indigo-700 dark:border-indigo-400/28 dark:bg-indigo-400/10 dark:text-indigo-200",
+  "border-fuchsia-300/55 bg-fuchsia-50/92 text-fuchsia-700 dark:border-fuchsia-400/28 dark:bg-fuchsia-400/10 dark:text-fuchsia-200",
+  "border-teal-300/55 bg-teal-50/92 text-teal-700 dark:border-teal-400/28 dark:bg-teal-400/10 dark:text-teal-200",
+  "border-emerald-300/55 bg-emerald-50/92 text-emerald-700 dark:border-emerald-400/28 dark:bg-emerald-400/10 dark:text-emerald-200",
+] as const;
+
+function resolveConversationIdentityToneClassName(seed: string) {
   const hash = hashDashboardWorkingConversationKey(seed);
-  const hue = Number.parseInt(hash.slice(0, 6), 16) % 360;
-  return {
-    backgroundColor: `oklch(74% 0.13 ${hue})`,
-    boxShadow: `0 0 0 3px oklch(74% 0.13 ${hue} / 0.16)`,
-  };
+  const toneIndex =
+    Number.parseInt(hash.slice(0, 6), 16) %
+    UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES.length;
+  return UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES[toneIndex];
 }
 
 const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
@@ -757,9 +770,9 @@ function AccountRecentInvocationRow({
         `WC-${hashDashboardWorkingConversationKey(displayPromptCacheKey).slice(0, 6)}`,
       )
     : "";
-  const conversationMarkerStyle = displayPromptCacheKey
-    ? resolveConversationMarkerStyle(displayPromptCacheKey)
-    : undefined;
+  const conversationIdentityToneClassName = displayPromptCacheKey
+    ? resolveConversationIdentityToneClassName(displayPromptCacheKey)
+    : null;
   const requestModelValue = viewModel.requestModelValue;
   const responseModelValue = viewModel.responseModelValue;
   const compactTimingSummary = `RQ ${formatCompactMilliseconds(invocation.record.tReqReadMs)}/${formatCompactMilliseconds(invocation.record.tReqParseMs)} · UP ${formatCompactMilliseconds(invocation.record.tUpstreamConnectMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamTtfbMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamStreamMs)} · ED ${formatCompactMilliseconds(invocation.record.tRespParseMs)}/${formatCompactMilliseconds(invocation.record.tPersistMs)} · TT ${typeof invocation.record.tTotalMs === "number" && Number.isFinite(invocation.record.tTotalMs) ? `${formatCompactMilliseconds(invocation.record.tTotalMs)}ms` : viewModel.totalLatencyValue}`;
@@ -811,16 +824,16 @@ function AccountRecentInvocationRow({
               {displayConversationSequenceId ? (
                 <>
                   <span
-                    className="h-2.5 w-2.5 shrink-0 rounded-full border border-base-100/70"
-                    style={conversationMarkerStyle}
-                    data-testid="dashboard-upstream-account-recent-conversation-marker"
-                    aria-hidden
-                  />
-                  <span
-                    className="truncate font-mono text-[12px] font-semibold text-base-content/70"
+                    data-testid="dashboard-upstream-account-recent-identity-chip"
+                    className={cn(
+                      UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME,
+                      conversationIdentityToneClassName,
+                    )}
                     title={displayConversationSequenceId}
                   >
-                    {displayConversationSequenceId}
+                    <span className="truncate whitespace-nowrap">
+                      {displayConversationSequenceId}
+                    </span>
                   </span>
                   <AppIcon
                     name="chevron-right"
