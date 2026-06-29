@@ -35,12 +35,16 @@ pub(crate) async fn query_prompt_cache_conversation_events(
     if let Some(snapshot) = snapshot {
         let snapshot_filter = PromptCacheConversationSnapshotFilter {
             snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+            snapshot_created_at_upper_bound: snapshot
+                .snapshot_created_at_upper_bound
+                .map(str::to_string),
             snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
         };
         push_snapshot_invocation_visibility_clause(
             &mut query,
             "occurred_at",
             "id",
+            "created_at",
             Some(&snapshot_filter),
         );
         query.push(" AND ");
@@ -160,6 +164,9 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
         if let Some(snapshot) = snapshot {
             let snapshot_filter = PromptCacheConversationSnapshotFilter {
                 snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+                snapshot_created_at_upper_bound: snapshot
+                    .snapshot_created_at_upper_bound
+                    .map(str::to_string),
                 snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
             };
             query.push(" AND ");
@@ -167,6 +174,7 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
                 &mut query,
                 "occurred_at",
                 "id",
+                "created_at",
                 Some(&snapshot_filter),
             );
         }
@@ -273,12 +281,16 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_a
         .push(" AND ");
     let snapshot_filter = PromptCacheConversationSnapshotFilter {
         snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+        snapshot_created_at_upper_bound: snapshot
+            .snapshot_created_at_upper_bound
+            .map(str::to_string),
         snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
     };
     push_snapshot_invocation_visibility_clause(
         &mut query,
         "occurred_at",
         "id",
+        "created_at",
         Some(&snapshot_filter),
     );
     query.push(" AND ").push(KEY_EXPR).push(" IN (");
@@ -442,12 +454,16 @@ pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries_at
     query.push(") AND ");
     let snapshot_filter = PromptCacheConversationSnapshotFilter {
         snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+        snapshot_created_at_upper_bound: snapshot
+            .snapshot_created_at_upper_bound
+            .map(str::to_string),
         snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
     };
     push_snapshot_invocation_visibility_clause(
         &mut query,
         "occurred_at",
         "id",
+        "created_at",
         Some(&snapshot_filter),
     );
     query

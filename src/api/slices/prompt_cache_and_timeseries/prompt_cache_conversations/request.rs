@@ -332,6 +332,7 @@ pub(crate) async fn resolve_prompt_cache_conversation_snapshot_filter(
     cursor_snapshot_boundary_row_id_ceiling: Option<i64>,
 ) -> Result<PromptCacheConversationSnapshotFilter> {
     let snapshot_upper_bound = db_occurred_at_lower_bound(snapshot_at + ChronoDuration::seconds(1));
+    let snapshot_created_at_upper_bound = Some(format_utc_iso_precise(snapshot_at));
     let snapshot_boundary_row_id_ceiling = Some(match cursor_snapshot_boundary_row_id_ceiling {
         Some(value) => value,
         None => {
@@ -342,6 +343,7 @@ pub(crate) async fn resolve_prompt_cache_conversation_snapshot_filter(
     });
     Ok(PromptCacheConversationSnapshotFilter {
         snapshot_upper_bound,
+        snapshot_created_at_upper_bound,
         snapshot_boundary_row_id_ceiling,
     })
 }

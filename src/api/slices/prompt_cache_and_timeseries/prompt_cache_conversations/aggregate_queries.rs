@@ -203,7 +203,13 @@ pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot(
         )
         .push_bind(range_start_bound)
         .push(" AND ");
-    push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
+    push_snapshot_invocation_visibility_clause(
+        &mut query,
+        "occurred_at",
+        "id",
+        "created_at",
+        Some(snapshot),
+    );
     query
         .push(" AND ")
         .push(KEY_EXPR)
@@ -227,7 +233,13 @@ pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot(
              FROM codex_invocations \
              WHERE ",
     );
-    push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
+    push_snapshot_invocation_visibility_clause(
+        &mut query,
+        "occurred_at",
+        "id",
+        "created_at",
+        Some(snapshot),
+    );
     query
         .push(" AND ")
         .push(KEY_EXPR)
@@ -460,7 +472,13 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
         )
         .push_bind(range_start_bound)
         .push(" AND ");
-    push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
+    push_snapshot_invocation_visibility_clause(
+        &mut query,
+        "occurred_at",
+        "id",
+        "created_at",
+        Some(snapshot),
+    );
     query
         .push(" AND ")
         .push(KEY_EXPR)
@@ -484,7 +502,13 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
              FROM codex_invocations \
              WHERE ",
     );
-    push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
+    push_snapshot_invocation_visibility_clause(
+        &mut query,
+        "occurred_at",
+        "id",
+        "created_at",
+        Some(snapshot),
+    );
     query
         .push(" AND ")
         .push(KEY_EXPR)
@@ -554,7 +578,13 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
         )
         .push_bind(snapshot_hour_start_bound)
         .push(" AND ");
-    push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
+    push_snapshot_invocation_visibility_clause(
+        &mut query,
+        "occurred_at",
+        "id",
+        "created_at",
+        Some(snapshot),
+    );
     query
         .push(" AND ")
         .push(KEY_EXPR)

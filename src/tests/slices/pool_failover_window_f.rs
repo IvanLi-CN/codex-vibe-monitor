@@ -818,6 +818,7 @@ async fn prompt_cache_recent_invocations_keep_per_key_limits_for_snapshot_and_pr
     let snapshot_hour_start_bound = format_utc_iso(current_hour_start);
     let snapshot = PromptCacheConversationHydrationSnapshot {
         snapshot_upper_bound: snapshot_upper_bound.as_str(),
+        snapshot_created_at_upper_bound: None,
         snapshot_hour_start_epoch: current_hour_start.timestamp(),
         snapshot_hour_start_bound: snapshot_hour_start_bound.as_str(),
         snapshot_boundary_row_id_ceiling: Some(alpha_boundary_id),
