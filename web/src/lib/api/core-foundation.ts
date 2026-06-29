@@ -606,6 +606,7 @@ export interface UpstreamAccountActivityAccount {
   tokensPerMinute?: number | null;
   spendRate?: number | null;
   firstByteAvgMs?: number | null;
+  firstResponseByteTotalAvgMs?: number | null;
   avgTotalMs?: number | null;
   inProgressInvocationCount?: number | null;
   retryInvocationCount?: number | null;
@@ -2498,6 +2499,9 @@ function normalizeUpstreamAccountActivityAccount(
     tokensPerMinute: normalizeFiniteNumber(payload.tokensPerMinute),
     spendRate: normalizeFiniteNumber(payload.spendRate),
     firstByteAvgMs: normalizeFiniteNumber(payload.firstByteAvgMs),
+    firstResponseByteTotalAvgMs: normalizeFiniteNumber(
+      payload.firstResponseByteTotalAvgMs,
+    ),
     avgTotalMs: normalizeFiniteNumber(payload.avgTotalMs),
     inProgressInvocationCount: normalizeFiniteNumber(
       payload.inProgressInvocationCount,

@@ -222,6 +222,7 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         tokensPerMinute: 640,
         spendRate: 0.12,
         firstByteAvgMs: 420,
+        firstResponseByteTotalAvgMs: 2_867.5,
         avgTotalMs: 860,
         inProgressInvocationCount: 3,
         retryInvocationCount: 1,
@@ -602,7 +603,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.textContent,
-    ).toContain("420");
+    ).toContain("2.87 s");
     expect(latencyBreakdown?.textContent).toContain("860");
 
     const requestBreakdown = host?.querySelector(

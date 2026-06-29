@@ -11651,6 +11651,9 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
         total_tokens,
         cost,
         cache_input_tokens,
+        t_req_read_ms,
+        t_req_parse_ms,
+        t_upstream_connect_ms,
         ttfb_ms,
         total_ms,
         payload,
@@ -11664,6 +11667,9 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             100_i64,
             0.10_f64,
             20_i64,
+            Some(80.0_f64),
+            Some(4.0_f64),
+            Some(2_100.0_f64),
             Some(410.0_f64),
             Some(1_000.0_f64),
             json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
@@ -11677,7 +11683,10 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             300_i64,
             0.30_f64,
             60_i64,
-            Some(430.0_f64),
+            Some(83.434948_f64),
+            Some(2.762219_f64),
+            Some(2_123.797426_f64),
+            Some(0.006021_f64),
             Some(2_000.0_f64),
             json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
             None,
@@ -11690,6 +11699,9 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             200_i64,
             0.20_f64,
             40_i64,
+            Some(51.0_f64),
+            Some(3.0_f64),
+            Some(1_500.0_f64),
             Some(450.0_f64),
             Some(3_000.0_f64),
             json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
@@ -11705,6 +11717,9 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             10_i64,
             None,
             None,
+            None,
+            None,
+            None,
             json!({ "promptCacheKey": "pck-upstream-a", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
             None,
             None,
@@ -11716,6 +11731,9 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             75_i64,
             0.07_f64,
             15_i64,
+            Some(74.0_f64),
+            Some(4.0_f64),
+            Some(1_800.0_f64),
             Some(405.0_f64),
             Some(1_500.0_f64),
             json!({ "promptCacheKey": "pck-upstream-b", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
@@ -11729,7 +11747,10 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             125_i64,
             0.12_f64,
             25_i64,
-            Some(415.0_f64),
+            Some(49.329286_f64),
+            Some(1.973188_f64),
+            Some(3_474.776073_f64),
+            Some(0.002344_f64),
             Some(2_000.0_f64),
             json!({ "promptCacheKey": "pck-upstream-c", "upstreamAccountId": 42, "upstreamAccountName": "Pool Alpha" }).to_string(),
             None,
@@ -11747,6 +11768,9 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
                 total_tokens,
                 cost,
                 cache_input_tokens,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
                 error_message,
                 failure_kind,
                 t_upstream_ttfb_ms,
@@ -11754,7 +11778,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
                 payload,
                 raw_response
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
             "#,
         )
         .bind(id)
@@ -11769,6 +11793,9 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
         .bind(total_tokens)
         .bind(cost)
         .bind(cache_input_tokens)
+        .bind(t_req_read_ms)
+        .bind(t_req_parse_ms)
+        .bind(t_upstream_connect_ms)
         .bind(error_message)
         .bind(failure_kind)
         .bind(ttfb_ms)
@@ -11806,6 +11833,14 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     assert_eq!(account.failure_tokens, 200);
     assert_f64_close(account.failure_cost, 0.20);
     assert_f64_close(account.total_cost, 0.84);
+    assert_f64_close(
+        account
+            .first_byte_avg_ms
+            .expect("first response byte total avg should exist"),
+        (83.434948_f64 + 2.762219_f64 + 2_123.797426_f64 + 0.006021_f64
+            + 49.329286_f64 + 1.973188_f64 + 3_474.776073_f64 + 0.002344_f64)
+            / 2.0,
+    );
     assert_f64_close(
         account
             .avg_total_ms

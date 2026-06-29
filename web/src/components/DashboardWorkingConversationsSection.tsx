@@ -1715,9 +1715,12 @@ function DashboardUpstreamAccountActivityCard({
     return segments;
   }, [locale, localeTag, recentSummary.failureCount, recentSummary.inFlightCount, recentSummary.nonSuccessCount, recentSummary.successCount]);
   const firstByteValue =
-    account.firstByteAvgMs == null
+    (account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs) == null
       ? FALLBACK_CELL
-      : formatAccountDurationValue(account.firstByteAvgMs, localeTag);
+      : formatAccountDurationValue(
+          account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs,
+          localeTag,
+        );
   const avgTotalValue = formatAccountDurationValue(account.avgTotalMs, localeTag);
   const totalRequestValue = formatAccountNumberValue(account.requestCount, localeTag, 0);
   const totalCostValue = formatAccountCurrencyValue(account.totalCost, localeTag, 2);

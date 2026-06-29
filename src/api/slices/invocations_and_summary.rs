@@ -2174,8 +2174,8 @@ struct UpstreamAccountActivityAccumulator {
     failure_cost: f64,
     cache_input_tokens: i64,
     total_cost: f64,
-    first_byte_sample_count: i64,
-    first_byte_sum_ms: f64,
+    first_response_byte_total_sample_count: i64,
+    first_response_byte_total_sum_ms: f64,
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
     last_occurred_at_epoch_ms: i64,
@@ -2480,9 +2480,16 @@ pub(crate) async fn fetch_upstream_account_activity(
         if is_success {
             entry.success_count += 1;
             entry.success_tokens += row.total_tokens.max(0);
-            if let Some(ttfb_ms) = row.t_upstream_ttfb_ms.filter(|value| value.is_finite() && *value > 0.0) {
-                entry.first_byte_sample_count += 1;
-                entry.first_byte_sum_ms += ttfb_ms;
+            if let Some(first_response_byte_total_ms) =
+                crate::stats::resolve_first_response_byte_total_ms(
+                    row.t_req_read_ms,
+                    row.t_req_parse_ms,
+                    row.t_upstream_connect_ms,
+                    row.t_upstream_ttfb_ms,
+                )
+            {
+                entry.first_response_byte_total_sample_count += 1;
+                entry.first_response_byte_total_sum_ms += first_response_byte_total_ms;
             }
             if let Some(total_ms) = row.t_total_ms.filter(|value| value.is_finite() && *value >= 0.0) {
                 entry.total_latency_sample_count += 1;
@@ -2574,9 +2581,18 @@ pub(crate) async fn fetch_upstream_account_activity(
                     .then_some(aggregate.cache_input_tokens as f64 / aggregate.total_tokens as f64),
                 tokens_per_minute,
                 spend_rate,
-                first_byte_avg_ms: (aggregate.first_byte_sample_count > 0).then_some(
-                    aggregate.first_byte_sum_ms / aggregate.first_byte_sample_count as f64,
-                ),
+                first_byte_avg_ms: (aggregate.first_response_byte_total_sample_count > 0)
+                    .then_some(
+                        aggregate.first_response_byte_total_sum_ms
+                            / aggregate.first_response_byte_total_sample_count as f64,
+                    ),
+                first_response_byte_total_avg_ms: (aggregate
+                    .first_response_byte_total_sample_count
+                    > 0)
+                    .then_some(
+                        aggregate.first_response_byte_total_sum_ms
+                            / aggregate.first_response_byte_total_sample_count as f64,
+                    ),
                 avg_total_ms: (aggregate.total_latency_sample_count > 0).then_some(
                     aggregate.total_latency_sum_ms / aggregate.total_latency_sample_count as f64,
                 ),
