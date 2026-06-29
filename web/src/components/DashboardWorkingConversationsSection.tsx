@@ -1984,6 +1984,7 @@ export function DashboardWorkingConversationsSection({
     data: upstreamAccountActivity,
     isLoading: upstreamAccountActivityLoading,
     error: upstreamAccountActivityError,
+    recentInvocationLimit: upstreamAccountRecentPreviewLimit,
   } = useDashboardUpstreamAccountActivity(
     activeRange,
     upstreamAccountActivityEnabled,
@@ -2354,7 +2355,7 @@ export function DashboardWorkingConversationsSection({
                     locale={locale}
                     localeTag={localeTag}
                     nowMs={nowMs}
-                    recentPreviewLimit={recentPreviewLimit}
+                    recentPreviewLimit={upstreamAccountRecentPreviewLimit}
                     onOpenUpstreamAccount={onOpenUpstreamAccount}
                     onOpenInvocation={onOpenInvocation}
                   />

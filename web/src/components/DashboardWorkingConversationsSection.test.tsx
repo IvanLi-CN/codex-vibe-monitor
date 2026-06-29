@@ -60,6 +60,7 @@ const upstreamAccountActivityMock = vi.hoisted(() => ({
   data: null as UpstreamAccountActivityResponse | null,
   isLoading: false,
   error: null as string | null,
+  resolvedRecentInvocationLimit: null as number | null,
   calls: [] as Array<{
     range: string;
     enabled: boolean;
@@ -82,6 +83,11 @@ vi.mock("../hooks/useDashboardUpstreamAccountActivity", () => ({
       data: upstreamAccountActivityMock.data,
       isLoading: upstreamAccountActivityMock.isLoading,
       error: upstreamAccountActivityMock.error,
+      recentInvocationLimit:
+        upstreamAccountActivityMock.resolvedRecentInvocationLimit ??
+        recentInvocationLimit ??
+        upstreamAccountActivityMock.data?.accounts[0]?.recentInvocations.length ??
+        4,
       hasActivated: enabled,
       reload: vi.fn(),
     };
@@ -295,6 +301,7 @@ afterEach(() => {
   upstreamAccountActivityMock.data = null;
   upstreamAccountActivityMock.isLoading = false;
   upstreamAccountActivityMock.error = null;
+  upstreamAccountActivityMock.resolvedRecentInvocationLimit = null;
   upstreamAccountActivityMock.calls = [];
   globalThis.ResizeObserver = originalResizeObserver;
   vi.restoreAllMocks();
@@ -672,6 +679,59 @@ describe("DashboardWorkingConversationsSection", () => {
       recentInvocationLimit: 7,
     });
     expect(host?.textContent).toContain("最近 7 条调用");
+  });
+
+  it("renders upstream account cards with their own resolved recent preview limit", () => {
+    upstreamAccountActivityMock.data = {
+      ...createUpstreamAccountActivityResponse(),
+      accounts: [
+        {
+          ...createUpstreamAccountActivityResponse().accounts[0]!,
+          inProgressInvocationCount: 9,
+          recentInvocations: Array.from({ length: 9 }, (_, index) =>
+            createPreview({
+              id: 9800 + index,
+              invokeId: `acct-expanded-${index + 1}`,
+              promptCacheKey: `pck-upstream-expanded-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: index < 7 ? "running" : "success",
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ),
+        },
+      ],
+    };
+    upstreamAccountActivityMock.resolvedRecentInvocationLimit = 9;
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-account-limit", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-account-limit",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+      { recentPreviewLimit: 4 },
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    expect(host?.textContent).toContain("最近 9 条调用");
+    expect(
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]'),
+    ).toHaveLength(9);
   });
 
   it("disables and falls back from the upstream account tab for usage range", () => {
