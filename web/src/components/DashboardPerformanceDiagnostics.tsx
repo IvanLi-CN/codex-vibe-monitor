@@ -49,6 +49,18 @@ function DashboardPerformanceDiagnosticsPanel() {
         updatedAt: snapshot.todaySummaryLastUpdatedAt,
       },
       {
+        key: "current-summary-refresh-count",
+        label: "Current summary HTTP reconciles",
+        value: String(snapshot.currentSummaryRefreshCount),
+        updatedAt: snapshot.currentSummaryLastUpdatedAt,
+      },
+      {
+        key: "current-summary-open-resync-count",
+        label: "Current summary open resyncs",
+        value: String(snapshot.currentSummaryOpenResyncCount),
+        updatedAt: snapshot.currentSummaryOpenResyncLastUpdatedAt,
+      },
+      {
         key: "today-summary-sse-commit-count",
         label: "Today summary SSE commits",
         value: String(snapshot.todaySummarySseCommitCount),
@@ -71,6 +83,18 @@ function DashboardPerformanceDiagnosticsPanel() {
         label: "Parallel-work full fetches",
         value: String(snapshot.parallelWorkFullFetchCount),
         updatedAt: snapshot.parallelWorkLastUpdatedAt,
+      },
+      {
+        key: "upstream-account-activity-refresh-count",
+        label: "Upstream account activity HTTP reconciles",
+        value: String(snapshot.upstreamAccountActivityRefreshCount),
+        updatedAt: snapshot.upstreamAccountActivityRefreshLastUpdatedAt,
+      },
+      {
+        key: "upstream-account-activity-open-resync-count",
+        label: "Upstream account activity open resyncs",
+        value: String(snapshot.upstreamAccountActivityOpenResyncCount),
+        updatedAt: snapshot.upstreamAccountActivityOpenResyncLastUpdatedAt,
       },
       {
         key: "parallel-work-not-modified-count",

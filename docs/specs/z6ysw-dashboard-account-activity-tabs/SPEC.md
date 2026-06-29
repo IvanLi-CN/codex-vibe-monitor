@@ -75,6 +75,7 @@
 ### SHOULD
 
 - 账号视图的刷新应沿用现有 Dashboard reconcile budget，在 tab 激活时才对 `records` / SSE open 做节流 refresh，不增加逐条本地 SSE patch。
+- 当前实现中，账号视图与 current summary 一样统一收口到 `5s` reconcile/open-resync 预算；任何更激进的 cadence 变更都必须先补充 slow-path 证据。
 - 共享 range 状态应继续使用现有 localStorage key，避免打断用户已保存的 Dashboard 偏好。
 - 账号卡内的最近调用记录应复用已有 invocation 语义 helper，保证状态、模型、耗时与账号 badge 文案一致。
 

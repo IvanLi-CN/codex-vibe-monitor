@@ -4,6 +4,7 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
     state: &AppState,
     selection: PromptCacheConversationSelection,
 ) -> Result<PromptCacheConversationsResponse> {
+    let started_at = Instant::now();
     loop {
         let mut wait_on: Option<watch::Receiver<bool>> = None;
         let mut flight_guard: Option<PromptCacheConversationFlightGuard> = None;
@@ -16,6 +17,19 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
                 && entry.cached_at.elapsed()
                     <= Duration::from_secs(PROMPT_CACHE_CONVERSATION_CACHE_TTL_SECS)
             {
+                let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                tracing::debug!(
+                    endpoint = "/api/prompt-cache/conversations",
+                    selection_mode = ?selection.selection_mode(),
+                    selected_limit = selection.selected_limit(),
+                    selected_activity_hours = selection.selected_activity_hours(),
+                    selected_activity_minutes = selection.selected_activity_minutes(),
+                    selected_key_count = entry.response.conversations.len() as i64,
+                    row_count = entry.response.conversations.len() as i64,
+                    cache_hit_or_miss = "cache_hit",
+                    elapsed_ms,
+                    "prompt cache conversations cache hit"
+                );
                 return Ok(entry.response.clone());
             }
 
@@ -56,6 +70,19 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
             if !*receiver.borrow() {
                 let _ = receiver.changed().await;
             }
+            let elapsed_ms = started_at.elapsed().as_millis() as u64;
+            tracing::debug!(
+                endpoint = "/api/prompt-cache/conversations",
+                selection_mode = ?selection.selection_mode(),
+                selected_limit = selection.selected_limit(),
+                selected_activity_hours = selection.selected_activity_hours(),
+                selected_activity_minutes = selection.selected_activity_minutes(),
+                selected_key_count = 0_i64,
+                row_count = 0_i64,
+                cache_hit_or_miss = "wait_on_in_flight",
+                elapsed_ms,
+                "prompt cache conversations waited on in-flight build"
+            );
             continue;
         }
 
@@ -91,6 +118,52 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
             let _ = in_flight.signal.send(true);
         }
 
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        match &result {
+            Ok(response) if elapsed_ms >= 250 => {
+                tracing::warn!(
+                    endpoint = "/api/prompt-cache/conversations",
+                    selection_mode = ?selection.selection_mode(),
+                    selected_limit = selection.selected_limit(),
+                    selected_activity_hours = selection.selected_activity_hours(),
+                    selected_activity_minutes = selection.selected_activity_minutes(),
+                    selected_key_count = response.conversations.len() as i64,
+                    row_count = response.conversations.len() as i64,
+                    cache_hit_or_miss = if stale_result { "cache_miss_stale" } else { "cache_miss_build" },
+                    elapsed_ms,
+                    "prompt cache conversations build exceeded slow-path threshold"
+                );
+            }
+            Ok(response) => {
+                tracing::debug!(
+                    endpoint = "/api/prompt-cache/conversations",
+                    selection_mode = ?selection.selection_mode(),
+                    selected_limit = selection.selected_limit(),
+                    selected_activity_hours = selection.selected_activity_hours(),
+                    selected_activity_minutes = selection.selected_activity_minutes(),
+                    selected_key_count = response.conversations.len() as i64,
+                    row_count = response.conversations.len() as i64,
+                    cache_hit_or_miss = if stale_result { "cache_miss_stale" } else { "cache_miss_build" },
+                    elapsed_ms,
+                    "prompt cache conversations build completed"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    endpoint = "/api/prompt-cache/conversations",
+                    selection_mode = ?selection.selection_mode(),
+                    selected_limit = selection.selected_limit(),
+                    selected_activity_hours = selection.selected_activity_hours(),
+                    selected_activity_minutes = selection.selected_activity_minutes(),
+                    selected_key_count = 0_i64,
+                    row_count = 0_i64,
+                    cache_hit_or_miss = "cache_miss_error",
+                    elapsed_ms,
+                    error = %err,
+                    "prompt cache conversations build failed"
+                );
+            }
+        }
         return result;
     }
 }

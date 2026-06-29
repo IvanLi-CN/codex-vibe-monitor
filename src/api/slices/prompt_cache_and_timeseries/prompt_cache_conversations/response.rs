@@ -102,6 +102,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
         .collect::<HashMap<_, _>>();
     let hydration_snapshot = PromptCacheConversationHydrationSnapshot {
         snapshot_upper_bound: snapshot_filter.snapshot_upper_bound(),
+        snapshot_created_at_upper_bound: snapshot_filter.snapshot_created_at_upper_bound(),
         snapshot_hour_start_epoch,
         snapshot_hour_start_bound: &snapshot_hour_start_bound,
         snapshot_boundary_row_id_ceiling: snapshot_filter.snapshot_boundary_row_id_ceiling,
