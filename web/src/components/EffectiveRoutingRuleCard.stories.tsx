@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect } from 'storybook/test'
 import type { UpdateGroupAccountRoutingRulePayload } from '../lib/api'
 import type { EffectiveRoutingRule } from '../lib/api'
 import { EffectiveRoutingRuleCard } from './EffectiveRoutingRuleCard'
@@ -26,10 +27,9 @@ const labels = {
   imageToolFillMissing: 'Fill when missing',
   imageToolForceAdd: 'Force add',
   imageToolForceRemove: 'Force remove',
-  upstream429Retry: '429 retry enabled',
-  upstream429RetryOff: '429 retry off',
   availableModelsInherited: 'Inherited / unrestricted',
   availableModelsNoneAllowed: 'No models allowed',
+  availableModelsEmpty: 'No matching models',
   systemDeniedModelsEmpty: 'None',
   concurrencyLimit: (count: number) => `Concurrency ${count}`,
   concurrencyUnlimited: 'Concurrency unlimited',
@@ -57,10 +57,9 @@ const labels = {
   newConversationLabel: 'New conversations',
   cutOutLabel: 'Cut out',
   cutInLabel: 'Cut in',
-  upstream429RetryCountOnce: 'Retry once',
-  upstream429RetryCountMany: (count: number) => `Retry ${count} times`,
+  upstream429RetryCountValue: (count: number) => String(count),
   availableModelsAddCustom: 'Add model',
-  availableModelsCustomLabel: (value: string) => `Add ${value}`,
+  availableModelsCustomLabel: (value: string) => value,
   availableModelsRemove: 'Remove model',
   availableModelsPlaceholder: 'Model id',
   currentValue: 'Current value',
@@ -145,6 +144,29 @@ const denyAllTagIntersectionRule: EffectiveRoutingRule = {
     ...strictFieldSources,
     availableModels: 'tag',
     systemDeniedModels: 'root',
+  },
+}
+
+const multipleAccountOverridesRule: EffectiveRoutingRule = {
+  ...strictRule,
+  allowCutOut: false,
+  allowCutIn: false,
+  priorityTier: 'primary',
+  fastModeRewriteMode: 'force_add',
+  concurrencyLimit: 3,
+  upstream429RetryEnabled: true,
+  upstream429MaxRetries: 5,
+  fieldSources: {
+    blockNewConversations: strictRule.fieldSources?.blockNewConversations ?? 'root',
+    allowCutOut: 'account',
+    allowCutIn: 'account',
+    priorityTier: 'account',
+    fastModeRewriteMode: 'account',
+    imageToolRewriteMode: strictRule.fieldSources?.imageToolRewriteMode ?? 'root',
+    concurrencyLimit: 'account',
+    upstream429Retry: 'account',
+    availableModels: strictRule.fieldSources?.availableModels ?? 'root',
+    systemDeniedModels: strictRule.fieldSources?.systemDeniedModels ?? 'root',
   },
 }
 
@@ -272,13 +294,25 @@ function applyPatchToRule(rule: EffectiveRoutingRule, patch: UpdateGroupAccountR
     nextSources.concurrencyLimit = sourceFor(patch.concurrencyLimit)
   }
   if ('upstream429RetryEnabled' in patch || 'upstream429MaxRetries' in patch) {
-    if (patch.upstream429RetryEnabled !== null && patch.upstream429RetryEnabled !== undefined) {
-      next.upstream429RetryEnabled = patch.upstream429RetryEnabled
+    const hasEnabled = Object.prototype.hasOwnProperty.call(patch, 'upstream429RetryEnabled')
+    const hasRetries = Object.prototype.hasOwnProperty.call(patch, 'upstream429MaxRetries')
+    const enabledValue = patch.upstream429RetryEnabled
+    const retryValue = patch.upstream429MaxRetries
+    if (enabledValue === null || retryValue === null) {
+      next.upstream429RetryEnabled = false
+      next.upstream429MaxRetries = 0
+      nextSources.upstream429Retry = 'root'
+    } else {
+      if (enabledValue !== undefined) {
+        next.upstream429RetryEnabled = enabledValue
+      }
+      if (retryValue !== undefined) {
+        next.upstream429MaxRetries = retryValue
+      }
+      if (hasEnabled || hasRetries) {
+        nextSources.upstream429Retry = 'account'
+      }
     }
-    if (patch.upstream429MaxRetries !== null && patch.upstream429MaxRetries !== undefined) {
-      next.upstream429MaxRetries = patch.upstream429MaxRetries
-    }
-    nextSources.upstream429Retry = sourceFor(patch.upstream429RetryEnabled ?? patch.upstream429MaxRetries)
   }
   if ('availableModels' in patch) {
     if (patch.availableModels !== null) next.availableModels = patch.availableModels ?? next.availableModels
@@ -317,6 +351,55 @@ export const EditableInherited: Story = {
 
 export const EditableAccountOverrides: Story = {
   render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
+  play: async ({ canvasElement }) => {
+    const rows = Array.from(
+      canvasElement.querySelectorAll('div.border-b.border-base-300\\/60'),
+    )
+
+    function assertExpandedRowAligned(labelText: string, valueText: string) {
+      const row = rows.find((candidate) => {
+        const text = candidate.textContent || ''
+        return text.includes(labelText) && text.includes(valueText) && text.includes('Account')
+      })
+      if (!row) {
+        throw new Error(`missing expanded row for ${labelText}`)
+      }
+
+      const expandedGrid = row.querySelector('.border-t .grid')
+      if (!(expandedGrid instanceof HTMLElement)) {
+        throw new Error(`missing expanded grid for ${labelText}`)
+      }
+
+      const label = expandedGrid.children.item(0)
+      const editor = expandedGrid.children.item(1)
+      if (!(label instanceof HTMLElement) || !(editor instanceof HTMLElement)) {
+        throw new Error(`missing expanded content for ${labelText}`)
+      }
+
+      const textNode = Array.from(label.childNodes).find(
+        (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim(),
+      )
+      if (!textNode) {
+        throw new Error(`missing label text node for ${labelText}`)
+      }
+
+      const range = document.createRange()
+      range.selectNodeContents(textNode)
+      const textRect = range.getBoundingClientRect()
+      const editorRect = editor.getBoundingClientRect()
+      const textCenterY = textRect.top + textRect.height / 2
+      const editorCenterY = editorRect.top + editorRect.height / 2
+
+      expect(Math.abs(textCenterY - editorCenterY)).toBeLessThanOrEqual(6)
+    }
+
+    assertExpandedRowAligned('FAST mode', 'Force remove')
+    assertExpandedRowAligned('Upstream 429 retry', '4')
+  },
+}
+
+export const EditableMultipleAccountOverrides: Story = {
+  render: () => <EditableRoutingRuleDemo initialRule={multipleAccountOverridesRule} />,
 }
 
 export const EditableSavingAndError: Story = {

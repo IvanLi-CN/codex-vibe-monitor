@@ -3353,13 +3353,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       cutInLabel: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldCutIn",
                       ),
-                      upstream429RetryCountOnce: t(
-                        "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce",
-                      ),
-                      upstream429RetryCountMany: (count) =>
-                        t("accountPool.upstreamAccounts.groupNotes.upstream429.countMany", {
-                          count,
-                        }),
+                      upstream429RetryCountValue: (count) => String(count),
                       availableModelsAddCustom: t(
                         "accountPool.tags.dialog.availableModelsAddCustom",
                       ),

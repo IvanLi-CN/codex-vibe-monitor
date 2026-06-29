@@ -57,10 +57,9 @@ const labels = {
   imageToolFillMissing: 'Fill when missing',
   imageToolForceAdd: 'Force add',
   imageToolForceRemove: 'Force remove',
-  upstream429Retry: '429 retry enabled',
-  upstream429RetryOff: '429 retry off',
   availableModelsInherited: 'Inherited / unrestricted',
   availableModelsNoneAllowed: 'No models allowed',
+  availableModelsEmpty: 'No matching models',
   systemDeniedModelsEmpty: 'None',
   concurrencyLimit: (count: number) => `Concurrency ${count}`,
   concurrencyUnlimited: 'Concurrency unlimited',
@@ -81,16 +80,15 @@ const labels = {
   sourceAccount: 'Account',
   sourceSystem: 'System',
   overrideEdit: 'Edit account override',
-  overrideActive: 'Account override',
   overrideClear: 'Clear account override',
   overrideSaving: 'Saving account override...',
-  inheritValue: 'Default value starts from the inherited value.',
   newConversationLabel: 'New conversations',
   cutOutLabel: 'Cut out',
   cutInLabel: 'Cut in',
+  upstream429RetryCountValue: (count: number) => String(count),
   currentValue: 'Current value',
   availableModelsAddCustom: 'Add model',
-  availableModelsCustomLabel: (value: string) => `Add ${value}`,
+  availableModelsCustomLabel: (value: string) => value,
   availableModelsRemove: 'Remove model',
   availableModelsPlaceholder: 'Model id',
 }
@@ -204,7 +202,8 @@ describe('EffectiveRoutingRuleCard', () => {
       editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(document.body.textContent).toContain('Default value starts from the inherited value.')
+    expect(document.body.textContent).not.toContain('Default value starts from the inherited value.')
+    expect(document.body.textContent).toContain('New conversationsNew conversations allowedRoot defaultNew conversations')
     const switchButton = document.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="New conversations"]')
     expect(switchButton).not.toBeNull()
 
@@ -258,12 +257,110 @@ describe('EffectiveRoutingRuleCard', () => {
       />,
     )
 
-    expect(document.body.textContent).toContain('Default value starts from the inherited value.')
+    expect(document.body.textContent).not.toContain('Default value starts from the inherited value.')
+    expect(document.body.textContent).toContain('FAST modeForce addAccountFAST mode')
     const activeButton = document.querySelector<HTMLButtonElement>(
       'button[aria-label="Clear account override: FAST mode"]',
     )
     expect(activeButton?.getAttribute('aria-pressed')).toBe('true')
     expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull()
+  })
+
+  it('expands every existing account override by default', () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          allowCutOut: false,
+          allowCutIn: false,
+          priorityTier: 'primary',
+          fastModeRewriteMode: 'force_add',
+          concurrencyLimit: 3,
+          upstream429RetryEnabled: true,
+          upstream429MaxRetries: 5,
+          fieldSources: {
+            ...buildRule().fieldSources,
+            allowCutOut: 'account',
+            allowCutIn: 'account',
+            priorityTier: 'account',
+            fastModeRewriteMode: 'account',
+            concurrencyLimit: 'account',
+            upstream429Retry: 'account',
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange: vi.fn() }}
+      />,
+    )
+
+    expect(document.querySelector('[role="switch"][aria-label="Cut out"]')).not.toBeNull()
+    expect(document.querySelector('[role="switch"][aria-label="Cut in"]')).not.toBeNull()
+    expect(document.querySelector('[role="radiogroup"][aria-label="Priority"]')).not.toBeNull()
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull()
+    expect(document.querySelector('[role="radiogroup"][aria-label="Upstream 429 retry"]')).not.toBeNull()
+    expect(document.querySelector('button[role="switch"][aria-label="Upstream 429 retry"]')).toBeNull()
+    expect(document.body.textContent).toContain('Concurrency 3')
+    expect(document.body.textContent).toContain('5')
+    expect(document.body.textContent).not.toContain('Account override')
+    expect(document.body.textContent).not.toContain('Default value starts from the inherited value.')
+    expect(document.body.textContent).toContain('Cut outCut-out blockedAccountCut out')
+    expect(document.body.textContent).toContain('FAST modeForce addAccountFAST mode')
+  })
+
+  it('saves 429 retry as a single 0..5 count selector', () => {
+    const onChange = vi.fn()
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          upstream429RetryEnabled: true,
+          upstream429MaxRetries: 4,
+          fieldSources: {
+            ...buildRule().fieldSources,
+            upstream429Retry: 'account',
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange }}
+      />,
+    )
+
+    const zeroButton = document.querySelector<HTMLButtonElement>(
+      '[role="radiogroup"][aria-label="Upstream 429 retry"] button[role="radio"]',
+    )
+    expect(zeroButton?.textContent).toBe('0')
+
+    act(() => {
+      zeroButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(onChange).toHaveBeenCalledWith('upstream429Retry', {
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
+    })
+  })
+
+  it('renders available models override as a tag selector trigger with selected chips', () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: ['gpt-5.5', 'gpt-5.4-mini'],
+          fieldSources: {
+            ...buildRule().fieldSources,
+            availableModels: 'account',
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange: vi.fn() }}
+      />,
+    )
+
+    const trigger = document.querySelector<HTMLButtonElement>(
+      'button[role="combobox"][aria-label="Available models"]',
+    )
+    expect(trigger).not.toBeNull()
+    expect(trigger?.textContent).toContain('gpt-5.5')
+    expect(trigger?.textContent).toContain('gpt-5.4-mini')
+    expect(document.body.textContent).not.toContain('Add gpt-5.5')
+    expect(document.body.textContent).not.toContain('Add gpt-5.4-mini')
   })
 
   it('keeps a user-opened inherited field when editable policy identity changes', () => {
@@ -313,7 +410,7 @@ describe('EffectiveRoutingRuleCard', () => {
     })
 
     expect(document.querySelector('[role="switch"][aria-label="Cut out"]')).not.toBeNull()
-    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).toBeNull()
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull()
 
     act(() => {
       root?.render(

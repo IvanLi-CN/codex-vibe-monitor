@@ -37,10 +37,12 @@ The account detail Routing tab exposes final effective rules as field-level inli
 
 - each editable effective-rule row has an icon-only account override control
 - activating a row expands a field-local editor; clearing an active account override sends `null` and collapses the row
+- existing account-level overrides render expanded by default when the account detail Routing tab opens
 - boolean fields use positive operator-facing labels: `new conversations`, `cut-out`, and `cut-in`
 - `new conversations` writes the positive `allowNewConversations` API payload and persists in `policy_allow_new_conversations`
 - discrete policy fields use inline radio groups with an animated selected-state indicator and reduced-motion fallback
-- concurrency and 429 retry controls reuse the existing account-policy value semantics inside the expanded row
+- `upstream 429 retry` is rendered as a single `0..5` inline count selector; `0` maps to disabled without a separate toggle control
+- concurrency stays embedded in the expanded row; available models render as a tag-selector style control instead of repeated add buttons
 - available-model overrides may store an empty list to explicitly allow no models
 - `systemDeniedModels` stays a read-only system result and has no account override control
 
@@ -73,3 +75,4 @@ Validation covers:
   - detail edit view keeps system tags read-only
   - roster filtering still works against system tags
   - inline account override rows show inherited, account override, expanded editor, saving/error, and empty-model override states
+  - existing account overrides auto-expand on load, available models use the tag-selector control, and upstream 429 retry uses the `0..5` count selector without a separate switch
