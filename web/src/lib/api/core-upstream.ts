@@ -98,10 +98,19 @@ export type EffectiveRoutingRuleSource =
   | "group"
   | "tag"
   | "account"
+  | "conversation"
   | string;
+
+export interface PoolRoutingTimeoutSettings {
+  responsesFirstByteTimeoutSecs: number;
+  compactFirstByteTimeoutSecs: number;
+  responsesStreamTimeoutSecs: number;
+  compactStreamTimeoutSecs: number;
+}
 
 export interface GroupAccountRoutingRule extends TagRoutingRule {
   imageToolRewriteMode?: ImageToolRewriteMode;
+  timeouts?: Partial<PoolRoutingTimeoutSettings>;
 }
 
 export interface EffectiveRoutingRuleFieldSources {
@@ -117,11 +126,20 @@ export interface EffectiveRoutingRuleFieldSources {
   systemDeniedModels?: EffectiveRoutingRuleSource;
 }
 
+export interface EffectiveRoutingTimeoutFieldSources {
+  responsesFirstByteTimeoutSecs: EffectiveRoutingRuleSource;
+  compactFirstByteTimeoutSecs: EffectiveRoutingRuleSource;
+  responsesStreamTimeoutSecs: EffectiveRoutingRuleSource;
+  compactStreamTimeoutSecs: EffectiveRoutingRuleSource;
+}
+
 export interface EffectiveRoutingRule extends GroupAccountRoutingRule {
   systemDeniedModels?: string[];
   sourceTagIds: number[];
   sourceTagNames: string[];
   fieldSources?: EffectiveRoutingRuleFieldSources;
+  timeouts?: PoolRoutingTimeoutSettings;
+  timeoutFieldSources?: EffectiveRoutingTimeoutFieldSources;
 }
 
 export interface AccountTagSummary {
@@ -275,6 +293,14 @@ export interface UpstreamAccountGroupSummary {
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   routingRule?: GroupAccountRoutingRule;
+  effectiveTimeouts?: PoolRoutingTimeoutSettings;
+  timeoutFieldSources?: EffectiveRoutingTimeoutFieldSources;
+}
+
+export interface UpdatePoolRoutingSettingsPayload {
+  apiKey?: string;
+  maintenance?: UpdatePoolRoutingMaintenanceSettingsPayload;
+  timeouts?: Partial<PoolRoutingTimeoutSettings>;
 }
 
 export interface PoolRoutingSettings {
@@ -295,19 +321,6 @@ export interface UpdatePoolRoutingMaintenanceSettingsPayload {
   primarySyncIntervalSecs?: number;
   secondarySyncIntervalSecs?: number;
   priorityAvailableAccountCap?: number;
-}
-
-export interface PoolRoutingTimeoutSettings {
-  responsesFirstByteTimeoutSecs: number;
-  compactFirstByteTimeoutSecs: number;
-  responsesStreamTimeoutSecs: number;
-  compactStreamTimeoutSecs: number;
-}
-
-export interface UpdatePoolRoutingSettingsPayload {
-  apiKey?: string;
-  maintenance?: UpdatePoolRoutingMaintenanceSettingsPayload;
-  timeouts?: Partial<PoolRoutingTimeoutSettings>;
 }
 
 export interface UpstreamAccountListResponse {
@@ -781,6 +794,12 @@ export interface UpdateGroupAccountRoutingRulePayload {
   upstream429RetryEnabled?: NullableRoutingRuleValue<boolean>;
   upstream429MaxRetries?: NullableRoutingRuleValue<number>;
   availableModels?: NullableRoutingRuleValue<string[]>;
+  timeouts?: {
+    responsesFirstByteTimeoutSecs?: NullableRoutingRuleValue<number>;
+    compactFirstByteTimeoutSecs?: NullableRoutingRuleValue<number>;
+    responsesStreamTimeoutSecs?: NullableRoutingRuleValue<number>;
+    compactStreamTimeoutSecs?: NullableRoutingRuleValue<number>;
+  };
 }
 
 function normalizeRateWindowActualUsage(
@@ -909,6 +928,79 @@ function normalizeImageToolCapability(raw: unknown): ImageToolCapability {
   return raw === "supported" || raw === "unsupported" ? raw : "unknown";
 }
 
+function normalizePoolRoutingTimeoutSettings(
+  raw: unknown,
+): PoolRoutingTimeoutSettings {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    responsesFirstByteTimeoutSecs:
+      normalizeFiniteNumber(payload.responsesFirstByteTimeoutSecs) ?? 120,
+    compactFirstByteTimeoutSecs:
+      normalizeFiniteNumber(payload.compactFirstByteTimeoutSecs) ??
+      normalizeFiniteNumber(payload.compactUpstreamHandshakeTimeoutSecs) ??
+      300,
+    responsesStreamTimeoutSecs:
+      normalizeFiniteNumber(payload.responsesStreamTimeoutSecs) ?? 300,
+    compactStreamTimeoutSecs:
+      normalizeFiniteNumber(payload.compactStreamTimeoutSecs) ?? 300,
+  };
+}
+
+function normalizeOptionalPoolRoutingTimeoutSettings(
+  raw: unknown,
+): Partial<PoolRoutingTimeoutSettings> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const payload = raw as Record<string, unknown>;
+  const next: Partial<PoolRoutingTimeoutSettings> = {};
+  const responsesFirstByteTimeoutSecs = normalizeFiniteNumber(
+    payload.responsesFirstByteTimeoutSecs,
+  );
+  const compactFirstByteTimeoutSecs = normalizeFiniteNumber(
+    payload.compactFirstByteTimeoutSecs,
+  );
+  const responsesStreamTimeoutSecs = normalizeFiniteNumber(
+    payload.responsesStreamTimeoutSecs,
+  );
+  const compactStreamTimeoutSecs = normalizeFiniteNumber(
+    payload.compactStreamTimeoutSecs,
+  );
+  if (responsesFirstByteTimeoutSecs != null) {
+    next.responsesFirstByteTimeoutSecs = responsesFirstByteTimeoutSecs;
+  }
+  if (compactFirstByteTimeoutSecs != null) {
+    next.compactFirstByteTimeoutSecs = compactFirstByteTimeoutSecs;
+  }
+  if (responsesStreamTimeoutSecs != null) {
+    next.responsesStreamTimeoutSecs = responsesStreamTimeoutSecs;
+  }
+  if (compactStreamTimeoutSecs != null) {
+    next.compactStreamTimeoutSecs = compactStreamTimeoutSecs;
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function normalizeRoutingTimeoutFieldSources(
+  raw: unknown,
+): EffectiveRoutingTimeoutFieldSources {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const normalizeSource = (value: unknown): EffectiveRoutingRuleSource =>
+    typeof value === "string" && value.trim() ? value : "root";
+  return {
+    responsesFirstByteTimeoutSecs: normalizeSource(
+      payload.responsesFirstByteTimeoutSecs,
+    ),
+    compactFirstByteTimeoutSecs: normalizeSource(
+      payload.compactFirstByteTimeoutSecs,
+    ),
+    responsesStreamTimeoutSecs: normalizeSource(
+      payload.responsesStreamTimeoutSecs,
+    ),
+    compactStreamTimeoutSecs: normalizeSource(
+      payload.compactStreamTimeoutSecs,
+    ),
+  };
+}
+
 function normalizeGroupAccountRoutingRule(
   raw: unknown,
 ): GroupAccountRoutingRule {
@@ -919,6 +1011,7 @@ function normalizeGroupAccountRoutingRule(
     imageToolRewriteMode: normalizeImageToolRewriteMode(
       rawPayload.imageToolRewriteMode,
     ),
+    timeouts: normalizeOptionalPoolRoutingTimeoutSettings(rawPayload.timeouts),
   };
 }
 
@@ -939,6 +1032,10 @@ function normalizeAccountTagSummary(raw: unknown): AccountTagSummary | null {
 function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const rawSources = (payload.fieldSources ?? {}) as Record<string, unknown>;
+  const rawTimeoutFieldSources = (payload.timeoutFieldSources ?? {}) as Record<
+    string,
+    unknown
+  >;
   const normalizeSource = (value: unknown): EffectiveRoutingRuleSource =>
     typeof value === "string" && value.trim() ? value : "root";
   const sourceTagIds = Array.isArray(payload.sourceTagIds)
@@ -958,6 +1055,7 @@ function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
       .filter((value) => value.length > 0),
     sourceTagIds,
     sourceTagNames,
+    timeouts: normalizePoolRoutingTimeoutSettings(payload.timeouts),
     fieldSources: {
       blockNewConversations: normalizeSource(rawSources.blockNewConversations),
       allowCutOut: normalizeSource(rawSources.allowCutOut),
@@ -969,6 +1067,20 @@ function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
       upstream429Retry: normalizeSource(rawSources.upstream429Retry),
       availableModels: normalizeSource(rawSources.availableModels),
       systemDeniedModels: normalizeSource(rawSources.systemDeniedModels),
+    },
+    timeoutFieldSources: {
+      responsesFirstByteTimeoutSecs: normalizeSource(
+        rawTimeoutFieldSources.responsesFirstByteTimeoutSecs,
+      ),
+      compactFirstByteTimeoutSecs: normalizeSource(
+        rawTimeoutFieldSources.compactFirstByteTimeoutSecs,
+      ),
+      responsesStreamTimeoutSecs: normalizeSource(
+        rawTimeoutFieldSources.responsesStreamTimeoutSecs,
+      ),
+      compactStreamTimeoutSecs: normalizeSource(
+        rawTimeoutFieldSources.compactStreamTimeoutSecs,
+      ),
     },
   };
 }
@@ -1334,6 +1446,12 @@ function normalizeUpstreamAccountGroupSummary(
       payload.upstream429MaxRetries,
     ),
     routingRule: normalizeGroupAccountRoutingRule(payload.routingRule),
+    effectiveTimeouts: normalizePoolRoutingTimeoutSettings(
+      payload.effectiveTimeouts,
+    ),
+    timeoutFieldSources: normalizeRoutingTimeoutFieldSources(
+      payload.timeoutFieldSources,
+    ),
   };
 }
 

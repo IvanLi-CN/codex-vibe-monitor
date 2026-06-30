@@ -482,6 +482,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         pool_account,
         t_upstream_connect_ms,
         prefetched_first_chunk,
+        prefetched_stream_timeout,
         prefetched_ttfb_ms,
         oauth_responses_debug,
         attempt_already_recorded,
@@ -519,6 +520,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 Some(response.account),
                 response.connect_latency_ms,
                 response.first_chunk,
+                response.stream_timeout,
                 response.first_byte_latency_ms,
                 response.oauth_responses_debug,
                 true,
@@ -740,6 +742,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 Some(response.selected_proxy),
                 None,
                 response.connect_latency_ms,
+                None,
                 None,
                 0.0,
                 None,
@@ -1174,6 +1177,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease;
     let pending_pool_attempt_summary_for_task = pending_pool_attempt_summary.clone();
     let prefetched_first_chunk_for_task = prefetched_first_chunk;
+    let prefetched_stream_timeout_for_task = prefetched_stream_timeout;
     let prefetched_ttfb_ms_for_task = prefetched_ttfb_ms;
     let upstream_attempt_started_at_for_task = upstream_attempt_started_at;
     let upstream_attempt_started_at_utc_for_task = upstream_attempt_started_at_utc;
@@ -1201,6 +1205,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let mut proxy_request_permit_for_task = Some(proxy_request_permit_for_task);
         let mut t_upstream_ttfb_ms = prefetched_ttfb_ms_for_task;
         let mut stream_started_at: Option<Instant> = None;
+        let mut active_stream_timeout =
+            prefetched_stream_timeout_for_task.or(stream_timeout_for_task);
         let mut response_preview = RawResponsePreviewBuffer::default();
         let mut response_raw_writer =
             AsyncStreamingRawPayloadWriter::new(
@@ -1236,7 +1242,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
 
         loop {
             let next_chunk = if let Some(stream_started_at) = stream_started_at {
-                if let Some(stream_timeout) = stream_timeout_for_task {
+                if let Some(stream_timeout) = active_stream_timeout {
                     let Some(timeout_budget) =
                         remaining_timeout_budget(stream_timeout, stream_started_at.elapsed())
                     else {
@@ -1316,6 +1322,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             .map(elapsed_ms)
                             .unwrap_or_else(|| elapsed_ms(ttfb_started));
                         stream_started_at = Some(Instant::now());
+                        active_stream_timeout =
+                            prefetched_stream_timeout_for_task.or(stream_timeout_for_task);
                         let running_record = build_running_proxy_capture_record(
                             &invoke_id_for_task,
                             &occurred_at_for_task,

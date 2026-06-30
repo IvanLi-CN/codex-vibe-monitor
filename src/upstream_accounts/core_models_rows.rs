@@ -71,6 +71,14 @@ pub(crate) struct UpstreamAccountRow {
     policy_upstream_429_max_retries: Option<i64>,
     #[sqlx(default)]
     policy_available_models_json: Option<String>,
+    #[sqlx(default)]
+    policy_responses_first_byte_timeout_secs: Option<i64>,
+    #[sqlx(default)]
+    policy_compact_first_byte_timeout_secs: Option<i64>,
+    #[sqlx(default)]
+    policy_responses_stream_timeout_secs: Option<i64>,
+    #[sqlx(default)]
+    policy_compact_stream_timeout_secs: Option<i64>,
     upstream_base_url: Option<String>,
     #[sqlx(default)]
     external_client_id: Option<String>,
@@ -166,7 +174,7 @@ pub(crate) struct MaintenanceDispatchPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-enum OptionalField<T> {
+pub(crate) enum OptionalField<T> {
     #[default]
     Missing,
     Null,
@@ -492,6 +500,14 @@ struct UpstreamAccountGroupListRow {
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<String>,
+    #[sqlx(default)]
+    policy_responses_first_byte_timeout_secs: Option<i64>,
+    #[sqlx(default)]
+    policy_compact_first_byte_timeout_secs: Option<i64>,
+    #[sqlx(default)]
+    policy_responses_stream_timeout_secs: Option<i64>,
+    #[sqlx(default)]
+    policy_compact_stream_timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, FromRow)]

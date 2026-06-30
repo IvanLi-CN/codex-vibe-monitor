@@ -1156,6 +1156,28 @@ pub(crate) struct EffectiveRoutingRuleFieldSources {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct RoutingTimeoutFieldSources {
+    pub(crate) responses_first_byte_timeout_secs: String,
+    pub(crate) compact_first_byte_timeout_secs: String,
+    pub(crate) responses_stream_timeout_secs: String,
+    pub(crate) compact_stream_timeout_secs: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoutingTimeoutSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) responses_first_byte_timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) compact_first_byte_timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) responses_stream_timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) compact_stream_timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct EffectiveRoutingRule {
     block_new_conversations: bool,
     allow_cut_out: bool,
@@ -1173,6 +1195,8 @@ pub(crate) struct EffectiveRoutingRule {
     source_tag_ids: Vec<i64>,
     source_tag_names: Vec<String>,
     field_sources: EffectiveRoutingRuleFieldSources,
+    timeouts: RoutingTimeoutSettings,
+    timeout_field_sources: RoutingTimeoutFieldSources,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1205,6 +1229,8 @@ pub(crate) struct GroupAccountRoutingRule {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     available_models: Vec<String>,
     available_models_defined: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeouts: Option<RoutingTimeoutSettings>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1247,6 +1273,8 @@ pub(crate) struct UpstreamAccountGroupSummary {
     upstream_429_max_retries: u8,
     concurrency_limit: i64,
     routing_rule: GroupAccountRoutingRule,
+    effective_timeouts: RoutingTimeoutSettings,
+    timeout_field_sources: RoutingTimeoutFieldSources,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1397,6 +1425,14 @@ pub(crate) struct PoolRoutingTimeoutSettingsResponse {
     pub(crate) compact_stream_timeout_secs: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RoutingTimeoutOverridesResolved {
+    pub(crate) responses_first_byte_timeout: Option<Duration>,
+    pub(crate) compact_first_byte_timeout: Option<Duration>,
+    pub(crate) responses_stream_timeout: Option<Duration>,
+    pub(crate) compact_stream_timeout: Option<Duration>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PoolRoutingTimeoutSettingsResolved {
     pub(crate) default_first_byte_timeout: Duration,
@@ -1406,6 +1442,31 @@ pub(crate) struct PoolRoutingTimeoutSettingsResolved {
     pub(crate) compact_first_byte_timeout: Duration,
     pub(crate) responses_stream_timeout: Duration,
     pub(crate) compact_stream_timeout: Duration,
+}
+
+impl PoolRoutingTimeoutSettingsResolved {
+    pub(crate) fn with_overrides(
+        self,
+        overrides: RoutingTimeoutOverridesResolved,
+    ) -> PoolRoutingTimeoutSettingsResolved {
+        PoolRoutingTimeoutSettingsResolved {
+            default_first_byte_timeout: self.default_first_byte_timeout,
+            default_send_timeout: self.default_send_timeout,
+            request_read_timeout: self.request_read_timeout,
+            responses_first_byte_timeout: overrides
+                .responses_first_byte_timeout
+                .unwrap_or(self.responses_first_byte_timeout),
+            compact_first_byte_timeout: overrides
+                .compact_first_byte_timeout
+                .unwrap_or(self.compact_first_byte_timeout),
+            responses_stream_timeout: overrides
+                .responses_stream_timeout
+                .unwrap_or(self.responses_stream_timeout),
+            compact_stream_timeout: overrides
+                .compact_stream_timeout
+                .unwrap_or(self.compact_stream_timeout),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1435,6 +1496,28 @@ pub(crate) struct UpdatePoolRoutingSettingsRequest {
     pub(crate) maintenance: Option<UpdatePoolRoutingMaintenanceSettingsRequest>,
     #[serde(default)]
     pub(crate) timeouts: Option<UpdatePoolRoutingTimeoutSettingsRequest>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateRoutingTimeoutSettingsRequest {
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) responses_first_byte_timeout_secs: OptionalField<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) compact_first_byte_timeout_secs: OptionalField<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) responses_stream_timeout_secs: OptionalField<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) compact_stream_timeout_secs: OptionalField<u64>,
+}
+
+impl UpdateRoutingTimeoutSettingsRequest {
+    pub(crate) fn is_empty(&self) -> bool {
+        matches!(self.responses_first_byte_timeout_secs, OptionalField::Missing)
+            && matches!(self.compact_first_byte_timeout_secs, OptionalField::Missing)
+            && matches!(self.responses_stream_timeout_secs, OptionalField::Missing)
+            && matches!(self.compact_stream_timeout_secs, OptionalField::Missing)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2293,6 +2376,8 @@ pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
     upstream_429_max_retries: OptionalField<u8>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     available_models: OptionalField<Vec<String>>,
+    #[serde(default)]
+    timeouts: Option<UpdateRoutingTimeoutSettingsRequest>,
 }
 
 impl UpdateGroupAccountRoutingRuleRequest {

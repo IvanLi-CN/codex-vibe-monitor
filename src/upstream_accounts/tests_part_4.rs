@@ -1194,15 +1194,17 @@ async fn bulk_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_nod
         .get_bulk_sync_job(&response.job_id)
         .await
         .expect("bulk sync job exists");
-    let mut terminal = None;
-    for _ in 0..400 {
-        terminal = job.terminal_event.lock().await.clone();
-        if terminal.is_some() {
-            break;
+    let terminal = timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(terminal) = job.terminal_event.lock().await.clone() {
+                return terminal;
+            }
+            tokio::task::yield_now().await;
         }
-        sleep(Duration::from_millis(10)).await;
-    }
-    let Some(BulkUpstreamAccountSyncTerminalEvent::Completed(payload)) = terminal else {
+    })
+    .await
+    .expect("bulk sync job should finish within timeout");
+    let BulkUpstreamAccountSyncTerminalEvent::Completed(payload) = terminal else {
         panic!("bulk sync job should complete successfully");
     };
     assert_eq!(payload.counts.total, 1);
@@ -1376,6 +1378,7 @@ async fn list_upstream_accounts_applies_node_shunt_idle_rewrite_before_filters()
 
     let mut all_items = load_upstream_account_summaries_for_query(
         &state.pool,
+        &state.config,
         &ListUpstreamAccountsQuery::default(),
     )
     .await

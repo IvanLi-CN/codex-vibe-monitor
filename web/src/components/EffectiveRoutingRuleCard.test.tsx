@@ -242,6 +242,22 @@ describe('EffectiveRoutingRuleCard', () => {
     expect(onChange).toHaveBeenCalledWith('allowCutIn', { allowCutIn: null })
   })
 
+  it('disables inherited timeout clear controls until the user adds an override', () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule()}
+        labels={labels}
+        editablePolicy={{ onChange: vi.fn() }}
+      />,
+    )
+
+    const timeoutButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) => button.textContent?.includes('Edit account override'))
+    expect(timeoutButton).not.toBeNull()
+    expect(timeoutButton?.disabled).toBe(true)
+  })
+
   it('expands the first account override by default', () => {
     render(
       <EffectiveRoutingRuleCard

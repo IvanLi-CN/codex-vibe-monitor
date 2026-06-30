@@ -598,6 +598,119 @@ fn pool_upstream_node_health_hourly_archive_create_sql(table_name: &str) -> Stri
     )
 }
 
+fn prompt_cache_conversation_bindings_create_sql(table_name: &str) -> String {
+    format!(
+        r#"
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            prompt_cache_key TEXT PRIMARY KEY,
+            binding_kind TEXT NOT NULL CHECK(binding_kind IN ('none', 'group', 'upstream_account')),
+            group_name TEXT,
+            upstream_account_id INTEGER,
+            responses_first_byte_timeout_secs INTEGER,
+            compact_first_byte_timeout_secs INTEGER,
+            responses_stream_timeout_secs INTEGER,
+            compact_stream_timeout_secs INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (
+                (binding_kind = 'none' AND group_name IS NULL AND upstream_account_id IS NULL)
+                OR
+                (binding_kind = 'group' AND group_name IS NOT NULL AND upstream_account_id IS NULL)
+                OR
+                (binding_kind = 'upstream_account' AND group_name IS NULL AND upstream_account_id IS NOT NULL)
+            )
+        )
+        "#
+    )
+}
+
+async fn migrate_prompt_cache_conversation_bindings_contract(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    const TEMP_TABLE: &str = "prompt_cache_conversation_bindings_v2";
+
+    let current_sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'prompt_cache_conversation_bindings' LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    let Some(current_sql) = current_sql else {
+        return Ok(());
+    };
+    let normalized_sql = current_sql.to_ascii_lowercase();
+    let already_compatible = normalized_sql.contains("'none'")
+        && normalized_sql.contains("responses_first_byte_timeout_secs")
+        && normalized_sql.contains("compact_first_byte_timeout_secs")
+        && normalized_sql.contains("responses_stream_timeout_secs")
+        && normalized_sql.contains("compact_stream_timeout_secs");
+    if already_compatible {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    let drop_temp_sql = format!("DROP TABLE IF EXISTS {TEMP_TABLE}");
+    sqlx::query(&drop_temp_sql)
+        .execute(tx.as_mut())
+        .await
+        .context(
+            "failed to clear stale prompt_cache_conversation_bindings migration temp table",
+        )?;
+
+    let create_temp_sql = prompt_cache_conversation_bindings_create_sql(TEMP_TABLE);
+    sqlx::query(&create_temp_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to create prompt_cache_conversation_bindings migration temp table")?;
+
+    let copy_sql = format!(
+        r#"
+        INSERT INTO {TEMP_TABLE} (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            responses_first_byte_timeout_secs,
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs,
+            created_at,
+            updated_at
+        )
+        SELECT
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            created_at,
+            updated_at
+        FROM prompt_cache_conversation_bindings
+        "#
+    );
+    sqlx::query(&copy_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to copy prompt_cache_conversation_bindings rows into migration temp table")?;
+
+    sqlx::query("DROP TABLE prompt_cache_conversation_bindings")
+        .execute(tx.as_mut())
+        .await
+        .context("failed to drop legacy prompt_cache_conversation_bindings table during migration")?;
+
+    let rename_sql =
+        format!("ALTER TABLE {TEMP_TABLE} RENAME TO prompt_cache_conversation_bindings");
+    sqlx::query(&rename_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to swap migrated prompt_cache_conversation_bindings table into place")?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
 async fn migrate_pool_upstream_node_health_hourly_archive_identity(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
@@ -2683,12 +2796,18 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         r#"
         CREATE TABLE IF NOT EXISTS prompt_cache_conversation_bindings (
             prompt_cache_key TEXT PRIMARY KEY,
-            binding_kind TEXT NOT NULL CHECK(binding_kind IN ('group', 'upstream_account')),
+            binding_kind TEXT NOT NULL CHECK(binding_kind IN ('none', 'group', 'upstream_account')),
             group_name TEXT,
             upstream_account_id INTEGER,
+            responses_first_byte_timeout_secs INTEGER,
+            compact_first_byte_timeout_secs INTEGER,
+            responses_stream_timeout_secs INTEGER,
+            compact_stream_timeout_secs INTEGER,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             CHECK (
+                (binding_kind = 'none' AND group_name IS NULL AND upstream_account_id IS NULL)
+                OR
                 (binding_kind = 'group' AND group_name IS NOT NULL AND upstream_account_id IS NULL)
                 OR
                 (binding_kind = 'upstream_account' AND group_name IS NULL AND upstream_account_id IS NOT NULL)
@@ -2699,6 +2818,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure prompt_cache_conversation_bindings table existence")?;
+    migrate_prompt_cache_conversation_bindings_contract(pool)
+        .await
+        .context("failed to migrate prompt_cache_conversation_bindings contract")?;
 
     sqlx::query(
         r#"

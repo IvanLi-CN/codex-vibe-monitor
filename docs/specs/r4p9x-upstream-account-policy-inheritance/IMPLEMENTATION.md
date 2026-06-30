@@ -45,6 +45,7 @@ The account detail Routing tab exposes final effective rules as field-level inli
 - concurrency stays embedded in the expanded row; available models render as a tag-selector style control instead of repeated add buttons
 - available-model overrides may store an empty list to explicitly allow no models
 - `systemDeniedModels` stays a read-only system result and has no account override control
+- timeout editors are shared across group/account surfaces and support field-level override, clear, and source-badge rendering
 
 ## API and Resolution
 
@@ -55,6 +56,12 @@ Account and group routing policy writes distinguish missing, `null`, and value f
 - value writes the override, including boolean `false`
 
 Effective routing resolution applies group policy, read-only system signals, then account policy. Account-level `new conversations`, `cut-out`, and `cut-in` values replace inherited values directly; they no longer use a most-conservative merge at the account layer.
+
+Request-path timeout resolution is evaluated after the final target account is known.
+
+- group and account storage now persist nullable timeout overrides for the existing four request-path timeout fields
+- runtime starts from the global/root pool timeout baseline, then applies `group -> account -> conversation` timeout overrides
+- failover, replay, live HTTP dispatch, capture-target resolution, and WebSocket selection recompute effective timeouts for each newly selected target account
 
 Local stale state is sanitized instead of preserved as a hidden write path.
 
@@ -76,3 +83,4 @@ Validation covers:
   - roster filtering still works against system tags
   - inline account override rows show inherited, account override, expanded editor, saving/error, and empty-model override states
   - existing account overrides auto-expand on load, available models use the tag-selector control, and upstream 429 retry uses the `0..5` count selector without a separate switch
+  - timeout source badges and clear-to-inherit controls work across group, account, and conversation layers without involving tags

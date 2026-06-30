@@ -3305,6 +3305,169 @@ async fn prompt_cache_conversation_binding_route_accepts_encoded_key() {
 }
 
 #[tokio::test]
+async fn prompt_cache_group_binding_timeout_response_ignores_account_overrides() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-group-timeout-sources";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let first_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Group Timeout First",
+        "sk-prompt-cache-group-timeout-first",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Group Timeout Second",
+        "sk-prompt-cache-group-timeout-second",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        UPDATE pool_routing_settings
+        SET responses_first_byte_timeout_secs = 21,
+            compact_first_byte_timeout_secs = 22,
+            responses_stream_timeout_secs = 23,
+            compact_stream_timeout_secs = 24
+        WHERE id = ?1
+        "#,
+    )
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed root timeout settings");
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_group_notes
+        SET policy_responses_first_byte_timeout_secs = 31,
+            policy_responses_stream_timeout_secs = 33
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind(group_name)
+    .execute(&state.pool)
+    .await
+    .expect("seed group timeout override");
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET policy_responses_first_byte_timeout_secs = 71,
+            policy_compact_first_byte_timeout_secs = 72
+        WHERE id = ?1
+        "#,
+    )
+    .bind(first_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed account timeout override");
+
+    let payload: UpdatePromptCacheConversationBindingRequest = serde_json::from_value(json!({
+        "bindingKind": "group",
+        "groupName": group_name,
+        "timeouts": {
+            "compactStreamTimeoutSecs": 91
+        }
+    }))
+    .expect("deserialize group timeout payload");
+    let prompt_cache_key = "prompt-cache-group-timeout-sources-key";
+    let Json(group_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(payload),
+    )
+    .await
+    .expect("save group timeout binding");
+
+    assert_eq!(group_response.binding_kind, "group");
+    assert_eq!(
+        group_response.timeouts.responses_first_byte_timeout_secs,
+        Some(31)
+    );
+    assert_eq!(
+        group_response.timeouts.compact_first_byte_timeout_secs,
+        Some(22)
+    );
+    assert_eq!(group_response.timeouts.responses_stream_timeout_secs, Some(33));
+    assert_eq!(group_response.timeouts.compact_stream_timeout_secs, Some(91));
+    assert_eq!(
+        group_response
+            .timeout_field_sources
+            .responses_first_byte_timeout_secs,
+        "group"
+    );
+    assert_eq!(
+        group_response
+            .timeout_field_sources
+            .compact_first_byte_timeout_secs,
+        "root"
+    );
+    assert_eq!(
+        group_response.timeout_field_sources.responses_stream_timeout_secs,
+        "group"
+    );
+    assert_eq!(
+        group_response.timeout_field_sources.compact_stream_timeout_secs,
+        "conversation"
+    );
+
+    let Json(get_response) = get_prompt_cache_conversation_binding(
+        State(state),
+        AxumPath(prompt_cache_key.to_string()),
+    )
+    .await
+    .expect("get group timeout binding");
+    assert_eq!(
+        get_response.timeouts.responses_first_byte_timeout_secs,
+        group_response.timeouts.responses_first_byte_timeout_secs
+    );
+    assert_eq!(
+        get_response.timeouts.compact_first_byte_timeout_secs,
+        group_response.timeouts.compact_first_byte_timeout_secs
+    );
+    assert_eq!(
+        get_response.timeouts.responses_stream_timeout_secs,
+        group_response.timeouts.responses_stream_timeout_secs
+    );
+    assert_eq!(
+        get_response.timeouts.compact_stream_timeout_secs,
+        group_response.timeouts.compact_stream_timeout_secs
+    );
+    assert_eq!(
+        get_response
+            .timeout_field_sources
+            .responses_first_byte_timeout_secs,
+        group_response
+            .timeout_field_sources
+            .responses_first_byte_timeout_secs
+    );
+    assert_eq!(
+        get_response
+            .timeout_field_sources
+            .compact_first_byte_timeout_secs,
+        group_response
+            .timeout_field_sources
+            .compact_first_byte_timeout_secs
+    );
+    assert_eq!(
+        get_response.timeout_field_sources.responses_stream_timeout_secs,
+        group_response.timeout_field_sources.responses_stream_timeout_secs
+    );
+    assert_eq!(
+        get_response.timeout_field_sources.compact_stream_timeout_secs,
+        group_response.timeout_field_sources.compact_stream_timeout_secs
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversation_binding_reports_encrypted_owner_and_clear_keeps_owner_lock() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

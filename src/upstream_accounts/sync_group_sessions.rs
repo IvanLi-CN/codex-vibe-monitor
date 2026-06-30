@@ -1203,6 +1203,11 @@ async fn save_group_metadata_record_conn(
             policy_concurrency_limit = pool_upstream_account_group_notes.policy_concurrency_limit,
             policy_upstream_429_retry_enabled = pool_upstream_account_group_notes.policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries = pool_upstream_account_group_notes.policy_upstream_429_max_retries,
+            policy_available_models_json = pool_upstream_account_group_notes.policy_available_models_json,
+            policy_responses_first_byte_timeout_secs = pool_upstream_account_group_notes.policy_responses_first_byte_timeout_secs,
+            policy_compact_first_byte_timeout_secs = pool_upstream_account_group_notes.policy_compact_first_byte_timeout_secs,
+            policy_responses_stream_timeout_secs = pool_upstream_account_group_notes.policy_responses_stream_timeout_secs,
+            policy_compact_stream_timeout_secs = pool_upstream_account_group_notes.policy_compact_stream_timeout_secs,
             updated_at = excluded.updated_at
         "#,
     )

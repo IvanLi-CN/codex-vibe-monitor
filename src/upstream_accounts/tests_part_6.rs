@@ -667,7 +667,10 @@
             Some([DuplicateReason::SharedChatgptAccountId])
         ));
 
-        let summaries = load_upstream_account_summaries(&pool)
+        let summaries = load_upstream_account_summaries(
+            &pool,
+            &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+        )
             .await
             .expect("load summaries");
         assert!(
@@ -836,7 +839,10 @@
             .expect("load duplicate info");
         assert!(duplicate_info.is_empty());
 
-        let summaries = load_upstream_account_summaries(&pool)
+        let summaries = load_upstream_account_summaries(
+            &pool,
+            &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+        )
             .await
             .expect("load summaries");
         assert!(
@@ -909,7 +915,10 @@
             inserted_ids.push(account_id);
         }
 
-        let summaries = load_upstream_account_summaries(&pool)
+        let summaries = load_upstream_account_summaries(
+            &pool,
+            &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+        )
             .await
             .expect("load summaries");
         let mother_ids = summaries
@@ -978,7 +987,10 @@
                 .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptUserId])
         );
 
-        let summaries = load_upstream_account_summaries(&pool)
+        let summaries = load_upstream_account_summaries(
+            &pool,
+            &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+        )
             .await
             .expect("load summaries");
         assert!(summaries.iter().all(|summary| matches!(
@@ -1043,7 +1055,10 @@
             .expect("load duplicate info");
         assert!(duplicate_info.is_empty());
 
-        let summaries = load_upstream_account_summaries(&pool)
+        let summaries = load_upstream_account_summaries(
+            &pool,
+            &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+        )
             .await
             .expect("load summaries");
         assert!(
@@ -1112,7 +1127,10 @@
             .expect("load duplicate info");
         assert!(duplicate_info.is_empty());
 
-        let summaries = load_upstream_account_summaries(&pool)
+        let summaries = load_upstream_account_summaries(
+            &pool,
+            &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+        )
             .await
             .expect("load summaries");
         assert!(
@@ -1206,7 +1224,10 @@
                 .all(|info| { info.reasons == vec![DuplicateReason::SharedChatgptAccountId] })
         );
 
-        let summaries = load_upstream_account_summaries(&pool)
+        let summaries = load_upstream_account_summaries(
+            &pool,
+            &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+        )
             .await
             .expect("load summaries");
         assert!(
@@ -2088,7 +2109,10 @@
                 .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
         );
 
-        let summaries = load_upstream_account_summaries(&pool)
+        let summaries = load_upstream_account_summaries(
+            &pool,
+            &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+        )
             .await
             .expect("load summaries");
         assert!(
@@ -2177,7 +2201,10 @@
                 .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
         );
 
-        let summaries = load_upstream_account_summaries(&pool)
+        let summaries = load_upstream_account_summaries(
+            &pool,
+            &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+        )
             .await
             .expect("load summaries");
         assert!(
@@ -2258,7 +2285,10 @@
                 .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
         );
 
-        let summaries = load_upstream_account_summaries(&pool)
+        let summaries = load_upstream_account_summaries(
+            &pool,
+            &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+        )
             .await
             .expect("load summaries");
         assert!(
@@ -2352,7 +2382,10 @@
                 .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
         );
 
-        let summaries = load_upstream_account_summaries(&pool)
+        let summaries = load_upstream_account_summaries(
+            &pool,
+            &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+        )
             .await
             .expect("load summaries");
         assert!(
@@ -3463,7 +3496,7 @@
         )
         .await;
 
-        let mut summaries = load_upstream_account_summaries(&state.pool)
+        let mut summaries = load_upstream_account_summaries(&state.pool, &state.config)
             .await
             .expect("load upstream account summaries");
         enrich_window_actual_usage_for_summaries(state.as_ref(), &mut summaries)

@@ -63,6 +63,13 @@ import { floatingSurfaceStyle, type FloatingSurfaceTheme } from "./ui/floating-s
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { SelectField } from "./ui/select-field";
 import { Spinner } from "./ui/spinner";
+import { RoutingTimeoutOverridesEditor } from "./RoutingTimeoutOverridesEditor";
+import {
+  buildRoutingTimeoutOverrideDraftForSource,
+  diffRoutingTimeoutOverrideDraft,
+  parseRoutingTimeoutOverrideDraft,
+  type RoutingTimeoutOverrideDraft,
+} from "../lib/poolRoutingTimeouts";
 
 interface PromptCacheConversationTableProps {
   stats: PromptCacheConversationsResponse | null;
@@ -1953,6 +1960,8 @@ export function PromptCacheConversationHistoryDrawer({
   const [bindingLoading, setBindingLoading] = useState(false);
   const [bindingSaving, setBindingSaving] = useState(false);
   const [bindingError, setBindingError] = useState<string | null>(null);
+  const [bindingTimeoutDraft, setBindingTimeoutDraft] =
+    useState<RoutingTimeoutOverrideDraft>({});
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return;
@@ -2215,7 +2224,14 @@ export function PromptCacheConversationHistoryDrawer({
         ).sort((left, right) => left.localeCompare(right));
         setBinding(nextBinding);
         setBindingKind(nextBinding.bindingKind);
-        setBindingGroupName(nextBinding.groupName ?? groups[0] ?? "");
+        setBindingTimeoutDraft(
+          buildRoutingTimeoutOverrideDraftForSource(
+            nextBinding.timeouts,
+            nextBinding.timeoutFieldSources,
+            "conversation",
+          ),
+        );
+      setBindingGroupName(nextBinding.groupName ?? groups[0] ?? "");
         setBindingAccountId(
           nextBinding.upstreamAccountId != null
             ? String(nextBinding.upstreamAccountId)
@@ -2337,6 +2353,24 @@ export function PromptCacheConversationHistoryDrawer({
     bindingSaving ||
     (bindingKind === "group" && !bindingGroupName) ||
     (bindingKind === "upstreamAccount" && !bindingAccountId);
+  const timeoutFieldLabels = useMemo(
+    () =>
+      ({
+        responsesFirstByteTimeoutSecs: t(
+          "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte",
+        ),
+        compactFirstByteTimeoutSecs: t(
+          "accountPool.upstreamAccounts.routing.timeout.compactFirstByte",
+        ),
+        responsesStreamTimeoutSecs: t(
+          "accountPool.upstreamAccounts.routing.timeout.responsesStream",
+        ),
+        compactStreamTimeoutSecs: t(
+          "accountPool.upstreamAccounts.routing.timeout.compactStream",
+        ),
+      }) as const,
+    [t],
+  );
   const bindingStatusLabel = currentBindingLabel(binding, t);
   const encryptedOwnerStatusLabel = encryptedOwnerLabel(binding);
   const bindingKindOptions = [
@@ -2374,19 +2408,55 @@ export function PromptCacheConversationHistoryDrawer({
     setBindingSaving(true);
     setBindingError(null);
     try {
+      const parsedTimeouts = parseRoutingTimeoutOverrideDraft(
+        bindingTimeoutDraft,
+        timeoutFieldLabels,
+      );
+      if (!parsedTimeouts.ok) {
+        setBindingError(parsedTimeouts.error);
+        setBindingSaving(false);
+        return;
+      }
+      const baseTimeoutDraft = buildRoutingTimeoutOverrideDraftForSource(
+        binding?.timeouts,
+        binding?.timeoutFieldSources,
+        "conversation",
+      );
+      const timeoutDiff = diffRoutingTimeoutOverrideDraft(
+        baseTimeoutDraft,
+        bindingTimeoutDraft,
+        timeoutFieldLabels,
+      );
+      if (!timeoutDiff.ok) {
+        setBindingError(timeoutDiff.error);
+        setBindingSaving(false);
+        return;
+      }
       const nextBinding = await updatePromptCacheConversationBinding(
         conversationKey,
         bindingKind === "group"
-          ? { bindingKind: "group", groupName: bindingGroupName }
+          ? {
+              bindingKind: "group",
+              groupName: bindingGroupName,
+              timeouts: timeoutDiff.patch,
+            }
           : bindingKind === "upstreamAccount"
             ? {
                 bindingKind: "upstreamAccount",
                 upstreamAccountId: Number(bindingAccountId),
+                timeouts: timeoutDiff.patch,
               }
-            : { bindingKind: "none" },
+            : { bindingKind: "none", timeouts: timeoutDiff.patch },
       );
       setBinding(nextBinding);
       setBindingKind(nextBinding.bindingKind);
+      setBindingTimeoutDraft(
+        buildRoutingTimeoutOverrideDraftForSource(
+          nextBinding.timeouts,
+          nextBinding.timeoutFieldSources,
+          "conversation",
+        ),
+      );
       setBindingGroupName(nextBinding.groupName ?? bindingGroups[0] ?? "");
       setBindingAccountId(
         nextBinding.upstreamAccountId != null
@@ -2408,7 +2478,9 @@ export function PromptCacheConversationHistoryDrawer({
     bindingGroups,
     bindingKind,
     bindingSubmitDisabled,
+    bindingTimeoutDraft,
     conversationKey,
+    timeoutFieldLabels,
   ]);
 
   return (
@@ -2527,6 +2599,58 @@ export function PromptCacheConversationHistoryDrawer({
                   : t("live.conversations.drawer.binding.save")}
               </Button>
             </div>
+            {binding ? (
+              <div className="mt-3">
+                <RoutingTimeoutOverridesEditor
+                  fields={[
+                    {
+                      key: "responsesFirstByteTimeoutSecs",
+                      label: timeoutFieldLabels.responsesFirstByteTimeoutSecs,
+                    },
+                    {
+                      key: "compactFirstByteTimeoutSecs",
+                      label: timeoutFieldLabels.compactFirstByteTimeoutSecs,
+                    },
+                    {
+                      key: "responsesStreamTimeoutSecs",
+                      label: timeoutFieldLabels.responsesStreamTimeoutSecs,
+                    },
+                    {
+                      key: "compactStreamTimeoutSecs",
+                      label: timeoutFieldLabels.compactStreamTimeoutSecs,
+                    },
+                  ]}
+                  effective={binding.timeouts}
+                  draft={bindingTimeoutDraft}
+                  sources={binding.timeoutFieldSources}
+                  busy={bindingSaving}
+                  disabled={bindingLoading || bindingSaving}
+                  labels={{
+                    sectionTitle: t("accountPool.upstreamAccounts.routing.timeout.sectionTitle"),
+                    inheritedValue: t("accountPool.upstreamAccounts.timeoutEditor.inherited"),
+                    overrideValue: t("accountPool.upstreamAccounts.timeoutEditor.conversationOverride"),
+                    clearField: t("accountPool.upstreamAccounts.effectiveRule.overrideClear"),
+                    inheritField: t("accountPool.tags.dialog.availableModelsInherited"),
+                    sourceRoot: t("accountPool.upstreamAccounts.effectiveRule.sourceRoot"),
+                    sourceGroup: t("accountPool.upstreamAccounts.effectiveRule.sourceGroup"),
+                    sourceAccount: t("accountPool.upstreamAccounts.effectiveRule.sourceAccount"),
+                    sourceConversation: t("accountPool.upstreamAccounts.effectiveRule.sourceConversation"),
+                  }}
+                  onDraftChange={(key, value) =>
+                    setBindingTimeoutDraft((current) => ({
+                      ...current,
+                      [key]: value,
+                    }))
+                  }
+                  onClearField={(key) =>
+                    setBindingTimeoutDraft((current) => ({
+                      ...current,
+                      [key]: "",
+                    }))
+                  }
+                />
+              </div>
+            ) : null}
             {bindingError ? (
               <p className="mt-2 text-xs text-error">{bindingError}</p>
             ) : null}

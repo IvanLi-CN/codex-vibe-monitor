@@ -6,6 +6,7 @@ import { I18nProvider } from "../i18n";
 import type {
   ApiInvocation,
   PromptCacheConversationInvocationPreview,
+  PromptCacheConversationBindingResponse,
   PromptCacheConversationsResponse,
   UpstreamAccountDetail,
   UpstreamAccountSummary,
@@ -44,6 +45,38 @@ const CONVERSATION_ONE_KEY = "019d2b8f-f8d0-72c3-bb67-a3f0d24a01f1";
 const CONVERSATION_TWO_KEY = "019d2b8a-2df4-7580-bffc-6b4b1d8207c2";
 const CONVERSATION_SHORT_KEY = "019e239a-038c-7860-a185-46a9d45553f7";
 const CONVERSATION_LARGE_HISTORY_KEY = "019f0d8c-91f2-7f25-b2b7-large-history";
+
+function buildBindingResponse(
+  overrides: Partial<PromptCacheConversationBindingResponse> & {
+    promptCacheKey: string;
+    bindingKind: PromptCacheConversationBindingResponse["bindingKind"];
+  },
+): PromptCacheConversationBindingResponse {
+  return {
+    promptCacheKey: overrides.promptCacheKey,
+    bindingKind: overrides.bindingKind,
+    groupName: overrides.groupName ?? null,
+    upstreamAccountId: overrides.upstreamAccountId ?? null,
+    upstreamAccountName: overrides.upstreamAccountName ?? null,
+    hasEncryptedSessionOwner: overrides.hasEncryptedSessionOwner ?? false,
+    encryptedOwnerAccountId: overrides.encryptedOwnerAccountId ?? null,
+    encryptedOwnerAccountName: overrides.encryptedOwnerAccountName ?? null,
+    encryptedOwnerGroupName: overrides.encryptedOwnerGroupName ?? null,
+    timeouts: overrides.timeouts ?? {
+      responsesFirstByteTimeoutSecs: 120,
+      compactFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 300,
+    },
+    timeoutFieldSources: overrides.timeoutFieldSources ?? {
+      responsesFirstByteTimeoutSecs: "root",
+      compactFirstByteTimeoutSecs: "root",
+      responsesStreamTimeoutSecs: "root",
+      compactStreamTimeoutSecs: "root",
+    },
+    updatedAt: overrides.updatedAt ?? null,
+  };
+}
 
 class MockEventSource implements EventTarget {
   static CONNECTING = 0;
@@ -246,51 +279,79 @@ const accountSummaries = Array.from(accountDetails.values()).map((detail, index)
   }),
 );
 
-const bindingByPromptCacheKey = new Map<string, unknown>([
+const bindingByPromptCacheKey = new Map<string, PromptCacheConversationBindingResponse>([
   [
     CONVERSATION_ONE_KEY,
-    {
+    buildBindingResponse({
       promptCacheKey: CONVERSATION_ONE_KEY,
       bindingKind: "group",
       groupName: "JOZ Team",
-      upstreamAccountId: null,
-      upstreamAccountName: null,
-      hasEncryptedSessionOwner: false,
-      encryptedOwnerAccountId: null,
-      encryptedOwnerAccountName: null,
-      encryptedOwnerGroupName: null,
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 90,
+        compactFirstByteTimeoutSecs: 300,
+        responsesStreamTimeoutSecs: 300,
+        compactStreamTimeoutSecs: 300,
+      },
+      timeoutFieldSources: {
+        responsesFirstByteTimeoutSecs: "group",
+        compactFirstByteTimeoutSecs: "root",
+        responsesStreamTimeoutSecs: "root",
+        compactStreamTimeoutSecs: "root",
+      },
       updatedAt: "2026-03-27T03:16:00.000Z",
-    },
+    }),
   ],
   [
     CONVERSATION_SHORT_KEY,
-    {
+    buildBindingResponse({
       promptCacheKey: CONVERSATION_SHORT_KEY,
       bindingKind: "upstreamAccount",
-      groupName: null,
       upstreamAccountId: 21,
       upstreamAccountName: "growth.6vv4@relay.example",
       hasEncryptedSessionOwner: true,
       encryptedOwnerAccountId: 21,
       encryptedOwnerAccountName: "growth.6vv4@relay.example",
       encryptedOwnerGroupName: "CIII",
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 45,
+        compactFirstByteTimeoutSecs: 180,
+        responsesStreamTimeoutSecs: 240,
+        compactStreamTimeoutSecs: 300,
+      },
+      timeoutFieldSources: {
+        responsesFirstByteTimeoutSecs: "conversation",
+        compactFirstByteTimeoutSecs: "account",
+        responsesStreamTimeoutSecs: "conversation",
+        compactStreamTimeoutSecs: "root",
+      },
       updatedAt: "2026-05-13T23:42:00.000Z",
-    },
+    }),
   ],
   [
     CONVERSATION_LARGE_HISTORY_KEY,
-    {
+    buildBindingResponse({
       promptCacheKey: CONVERSATION_LARGE_HISTORY_KEY,
       bindingKind: "upstreamAccount",
-      groupName: null,
       upstreamAccountId: 11,
       upstreamAccountName: "growth.6vv4@relay.example",
       hasEncryptedSessionOwner: true,
       encryptedOwnerAccountId: 11,
       encryptedOwnerAccountName: "growth.6vv4@relay.example",
       encryptedOwnerGroupName: "JOZ Team",
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 120,
+        compactFirstByteTimeoutSecs: 240,
+        responsesStreamTimeoutSecs: 300,
+        compactStreamTimeoutSecs: 300,
+      },
+      timeoutFieldSources: {
+        responsesFirstByteTimeoutSecs: "root",
+        compactFirstByteTimeoutSecs: "account",
+        responsesStreamTimeoutSecs: "root",
+        compactStreamTimeoutSecs: "root",
+      },
       updatedAt: "2026-05-28T04:10:00.000Z",
-    },
+    }),
   ],
 ] as const);
 
@@ -873,6 +934,18 @@ function StorybookPromptCacheAccountMock({
             encryptedOwnerAccountId: null,
             encryptedOwnerAccountName: null,
             encryptedOwnerGroupName: null,
+            timeouts: {
+              responsesFirstByteTimeoutSecs: 120,
+              compactFirstByteTimeoutSecs: 300,
+              responsesStreamTimeoutSecs: 300,
+              compactStreamTimeoutSecs: 300,
+            },
+            timeoutFieldSources: {
+              responsesFirstByteTimeoutSecs: "root",
+              compactFirstByteTimeoutSecs: "root",
+              responsesStreamTimeoutSecs: "root",
+              compactStreamTimeoutSecs: "root",
+            },
             updatedAt: null,
           },
         );
@@ -880,12 +953,58 @@ function StorybookPromptCacheAccountMock({
       if (bindingMatch && method === "PATCH") {
         const promptCacheKey = decodeURIComponent(bindingMatch[1] ?? "");
         const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        const timeoutPatch = payload.timeouts ?? {};
+        const current =
+          bindingByPromptCacheKey.get(promptCacheKey) ??
+          buildBindingResponse({
+            promptCacheKey,
+            bindingKind: "none",
+            hasEncryptedSessionOwner: true,
+            encryptedOwnerAccountId: 21,
+            encryptedOwnerAccountName: "growth.6vv4@relay.example",
+            encryptedOwnerGroupName: "CIII",
+          });
+        const nextTimeouts = {
+          ...current.timeouts,
+          ...Object.fromEntries(
+            Object.entries(timeoutPatch).map(([key, value]) => [
+              key,
+              value == null ? current.timeouts[key as keyof typeof current.timeouts] : value,
+            ]),
+          ),
+        };
+        const nextTimeoutSources = {
+          ...current.timeoutFieldSources,
+          responsesFirstByteTimeoutSecs:
+            timeoutPatch.responsesFirstByteTimeoutSecs === null
+              ? "account"
+              : timeoutPatch.responsesFirstByteTimeoutSecs != null
+                ? "conversation"
+                : current.timeoutFieldSources.responsesFirstByteTimeoutSecs,
+          compactFirstByteTimeoutSecs:
+            timeoutPatch.compactFirstByteTimeoutSecs === null
+              ? "account"
+              : timeoutPatch.compactFirstByteTimeoutSecs != null
+                ? "conversation"
+                : current.timeoutFieldSources.compactFirstByteTimeoutSecs,
+          responsesStreamTimeoutSecs:
+            timeoutPatch.responsesStreamTimeoutSecs === null
+              ? "account"
+              : timeoutPatch.responsesStreamTimeoutSecs != null
+                ? "conversation"
+                : current.timeoutFieldSources.responsesStreamTimeoutSecs,
+          compactStreamTimeoutSecs:
+            timeoutPatch.compactStreamTimeoutSecs === null
+              ? "root"
+              : timeoutPatch.compactStreamTimeoutSecs != null
+                ? "conversation"
+                : current.timeoutFieldSources.compactStreamTimeoutSecs,
+        };
         const response =
           payload.bindingKind === "upstreamAccount"
-            ? {
+            ? buildBindingResponse({
                 promptCacheKey,
                 bindingKind: "upstreamAccount",
-                groupName: null,
                 upstreamAccountId: Number(payload.upstreamAccountId),
                 upstreamAccountName:
                   accountSummaries.find(
@@ -895,33 +1014,38 @@ function StorybookPromptCacheAccountMock({
                 encryptedOwnerAccountId: 21,
                 encryptedOwnerAccountName: "growth.6vv4@relay.example",
                 encryptedOwnerGroupName: "CIII",
+                timeouts: nextTimeouts,
+                timeoutFieldSources: nextTimeoutSources,
                 updatedAt: new Date().toISOString(),
-              }
+              })
             : payload.bindingKind === "group"
-              ? {
+              ? buildBindingResponse({
                   promptCacheKey,
                   bindingKind: "group",
                   groupName: String(payload.groupName ?? ""),
-                  upstreamAccountId: null,
-                  upstreamAccountName: null,
                   hasEncryptedSessionOwner: true,
                   encryptedOwnerAccountId: 21,
                   encryptedOwnerAccountName: "growth.6vv4@relay.example",
                   encryptedOwnerGroupName: "CIII",
+                  timeouts: nextTimeouts,
+                  timeoutFieldSources: nextTimeoutSources,
                   updatedAt: new Date().toISOString(),
-                }
-              : {
+                })
+              : buildBindingResponse({
                   promptCacheKey,
                   bindingKind: "none",
-                  groupName: null,
-                  upstreamAccountId: null,
-                  upstreamAccountName: null,
                   hasEncryptedSessionOwner: true,
                   encryptedOwnerAccountId: 21,
                   encryptedOwnerAccountName: "growth.6vv4@relay.example",
                   encryptedOwnerGroupName: "CIII",
-                  updatedAt: null,
-                };
+                  timeouts: nextTimeouts,
+                  timeoutFieldSources: nextTimeoutSources,
+                  updatedAt:
+                    Object.values(timeoutPatch).some((value) => value !== undefined)
+                      ? new Date().toISOString()
+                      : null,
+                });
+        bindingByPromptCacheKey.set(promptCacheKey, response);
         return jsonResponse(response);
       }
 
@@ -1825,18 +1949,29 @@ export const DrawerOwnerLockWithoutManualBinding: Story = {
     },
   },
   play: async ({ canvasElement }) => {
-    bindingByPromptCacheKey.set(CONVERSATION_SHORT_KEY, {
-      promptCacheKey: CONVERSATION_SHORT_KEY,
-      bindingKind: "none",
-      groupName: null,
-      upstreamAccountId: null,
-      upstreamAccountName: null,
-      hasEncryptedSessionOwner: true,
-      encryptedOwnerAccountId: 21,
-      encryptedOwnerAccountName: "growth.6vv4@relay.example",
-      encryptedOwnerGroupName: "CIII",
-      updatedAt: null,
-    });
+    bindingByPromptCacheKey.set(
+      CONVERSATION_SHORT_KEY,
+      buildBindingResponse({
+        promptCacheKey: CONVERSATION_SHORT_KEY,
+        bindingKind: "none",
+        hasEncryptedSessionOwner: true,
+        encryptedOwnerAccountId: 21,
+        encryptedOwnerAccountName: "growth.6vv4@relay.example",
+        encryptedOwnerGroupName: "CIII",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 35,
+          compactFirstByteTimeoutSecs: 180,
+          responsesStreamTimeoutSecs: 210,
+          compactStreamTimeoutSecs: 300,
+        },
+        timeoutFieldSources: {
+          responsesFirstByteTimeoutSecs: "conversation",
+          compactFirstByteTimeoutSecs: "account",
+          responsesStreamTimeoutSecs: "conversation",
+          compactStreamTimeoutSecs: "root",
+        },
+      }),
+    );
     const documentScope = within(canvasElement.ownerDocument.body);
     const historyButton = documentScope.getAllByRole("button", {
       name: /打开全部调用记录|open full call history/i,
@@ -1854,6 +1989,69 @@ export const DrawerOwnerLockWithoutManualBinding: Story = {
         /清空手工绑定不会清除加密会话 owner 锁|Clearing the manual binding does not remove the encrypted session owner lock/i,
       ),
     ).toBeInTheDocument();
+  },
+};
+
+export const DrawerBindingAndTimeouts: Story = {
+  args: {
+    stats: shortSameDayStats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    themeMode: "dark",
+    viewport: { value: "desktop1280", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Prompt Cache drawer showing both a manual binding and conversation-level timeout overrides, including mixed source badges across conversation, account, and global layers.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    bindingByPromptCacheKey.set(
+      CONVERSATION_SHORT_KEY,
+      buildBindingResponse({
+        promptCacheKey: CONVERSATION_SHORT_KEY,
+        bindingKind: "upstreamAccount",
+        upstreamAccountId: 21,
+        upstreamAccountName: "growth.6vv4@relay.example",
+        hasEncryptedSessionOwner: true,
+        encryptedOwnerAccountId: 21,
+        encryptedOwnerAccountName: "growth.6vv4@relay.example",
+        encryptedOwnerGroupName: "CIII",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 40,
+          compactFirstByteTimeoutSecs: 180,
+          responsesStreamTimeoutSecs: 225,
+          compactStreamTimeoutSecs: 300,
+        },
+        timeoutFieldSources: {
+          responsesFirstByteTimeoutSecs: "conversation",
+          compactFirstByteTimeoutSecs: "account",
+          responsesStreamTimeoutSecs: "conversation",
+          compactStreamTimeoutSecs: "root",
+        },
+        updatedAt: "2026-05-13T23:42:00.000Z",
+      }),
+    );
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const historyButton = documentScope.getAllByRole("button", {
+      name: /打开全部调用记录|open full call history/i,
+    })[0];
+
+    await userEvent.click(historyButton);
+    await expect(
+      await documentScope.findByText(/路由绑定|Route binding/i),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(/40s/),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getAllByText(/Conversation/i).length,
+    ).toBeGreaterThan(0);
   },
 };
 

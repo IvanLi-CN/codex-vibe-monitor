@@ -9,6 +9,7 @@ Prompt Cache conversation detail currently explains retained invocations for a p
 ## Goals
 
 - Add a per-`promptCacheKey` binding contract for group binding, upstream account binding, and clearing the binding.
+- Add per-conversation request-path timeout overrides that can exist with or without a manual binding target.
 - Expose the binding on the Prompt Cache conversation detail drawer.
 - Apply the binding when the proxy can observe the same `promptCacheKey` before account-pool selection.
 - Keep group binding and upstream account binding mutually exclusive at both API and UI layers.
@@ -19,15 +20,23 @@ Prompt Cache conversation detail currently explains retained invocations for a p
 - Do not migrate existing sticky routes into conversation bindings.
 - Do not add tag-based, policy-based, or bulk binding workflows.
 - Do not change account-pool group, tag, forward-proxy, or policy inheritance semantics.
+- Do not make tags participate in timeout inheritance or timeout source display.
 
 ## Requirements
 
 - Bindings are keyed by the exact normalized `promptCacheKey` string.
 - Supported binding kinds are `group`, `upstream_account`, and `none`.
-- `none` clears the binding by deleting the persisted row.
+- `none` clears only the manual binding target; timeout-only rows may still persist.
 - `group` requires a non-empty existing group with at least one upstream account.
 - `upstream_account` requires an existing account that can participate in account-pool routing.
 - API payloads that try to set both `groupName` and `upstreamAccountId` are rejected.
+- Conversation timeout overrides reuse only the existing request-path timeout fields:
+  - `responsesFirstByteTimeoutSecs`
+  - `compactFirstByteTimeoutSecs`
+  - `responsesStreamTimeoutSecs`
+  - `compactStreamTimeoutSecs`
+- Timeout fields accept only positive integers when set.
+- Timeout inheritance for a conversation field is `global/root -> group -> account -> conversation`.
 - Runtime routing treats an observed binding as a hard constraint; if the bound target is unavailable, routing must fail through the existing no-selectable-account error path rather than falling back to the global pool.
 - Binding lookup does not change the existing live-first request-body streaming strategy; large or chunked requests whose body key is not visible before account selection keep the normal account-pool routing behavior.
 - Binding changes affect future requests only; in-flight requests are not rerouted.
@@ -41,23 +50,38 @@ Prompt Cache conversation detail currently explains retained invocations for a p
 `prompt_cache_conversation_bindings` stores one row per `prompt_cache_key`.
 
 - `prompt_cache_key TEXT PRIMARY KEY`
-- `binding_kind TEXT NOT NULL CHECK(binding_kind IN ('group', 'upstream_account'))`
+- `binding_kind TEXT NOT NULL CHECK(binding_kind IN ('group', 'upstream_account', 'none'))`
 - `group_name TEXT NULL`
 - `upstream_account_id INTEGER NULL`
+- `responses_first_byte_timeout_secs INTEGER NULL`
+- `compact_first_byte_timeout_secs INTEGER NULL`
+- `responses_stream_timeout_secs INTEGER NULL`
+- `compact_stream_timeout_secs INTEGER NULL`
 - `created_at TEXT NOT NULL`
 - `updated_at TEXT NOT NULL`
 
-Rows with `binding_kind='group'` must have `group_name` and no `upstream_account_id`; rows with `binding_kind='upstream_account'` must have `upstream_account_id` and no `group_name`.
+Rows with `binding_kind='group'` must have `group_name` and no `upstream_account_id`; rows with `binding_kind='upstream_account'` must have `upstream_account_id` and no `group_name`; rows with `binding_kind='none'` must have neither target field.
+
+The row is deleted only when there is no binding target and all four timeout override columns are `NULL`.
 
 ### HTTP API
 
 - `GET /api/stats/prompt-cache-conversation-bindings/{encodedPromptCacheKey}`
-  - Returns `{ promptCacheKey, bindingKind, groupName, upstreamAccountId, upstreamAccountName, updatedAt }`.
+  - Returns `{ promptCacheKey, bindingKind, groupName, upstreamAccountId, upstreamAccountName, timeouts, timeoutFieldSources, updatedAt }`.
   - `bindingKind` is `none`, `group`, or `upstreamAccount`.
 - `PATCH /api/stats/prompt-cache-conversation-bindings/{encodedPromptCacheKey}`
-  - `{ "bindingKind": "none" }` clears.
+  - `{ "bindingKind": "none" }` clears only the manual binding target when no timeout patch is present.
   - `{ "bindingKind": "group", "groupName": "prod" }` binds a group.
   - `{ "bindingKind": "upstreamAccount", "upstreamAccountId": 123 }` binds an account.
+  - All variants may also include `timeouts`.
+
+Timeout patch semantics are field-local:
+
+- omitted field: preserve that field's current conversation override
+- `null`: clear that field's conversation override
+- positive integer: store that field's conversation override
+
+Legacy binding-only PATCH payloads remain valid.
 
 The key segment is URL-encoded with normal component encoding; the server accepts encoded keys that decode to values containing `/`, trims the decoded key, and validates the result before use.
 
@@ -65,6 +89,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 
 - Proxy hot path extracts `promptCacheKey` using the existing header, prebuffered-body, and early live-body probe rules available before account-pool selection.
 - Before account-pool candidate selection, routing loads the current binding for the observed key.
+- After the target account is selected, runtime resolves request-path timeouts by starting from global defaults, applying the selected target's group/account overrides, and then applying any conversation override.
 - Group binding filters candidates to matching `group_name`.
 - Upstream account binding filters candidates to the bound account id and is treated as an operator-forced account assignment.
 - Existing sticky reuse is still allowed only when the sticky account satisfies the binding constraint.
@@ -73,6 +98,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Existing account eligibility, health, quota, guard, concurrency, retry, route-key, and forward-proxy readiness checks remain authoritative inside the constrained candidate set.
 - Saving an upstream account binding immediately updates `pool_sticky_routes` for that `promptCacheKey` to the bound account so future requests and operator views agree on the effective assignment.
 - Clearing a binding removes only the binding row; any existing sticky route remains ordinary sticky-routing state and is governed by the normal sticky reuse and cut-out policy.
+- `binding_kind='none'` timeout-only rows do not count as manual binding overrides for sticky cut-out or encrypted-session owner guard logic.
 - Group binding remains a hard target filter; it does not bypass target cut-in policy or target account eligibility.
 
 ## Acceptance Criteria
@@ -85,9 +111,12 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given a key bound to a group, target accounts in that group still honor normal cut-in policy.
 - Given an upstream account binding is saved, the key's sticky route is updated to the bound account.
 - Given a cleared binding, requests use normal account-pool routing behavior, including any sticky route that already exists for that key.
+- Given a timeout-only row with `bindingKind='none'`, requests still use the conversation timeout overrides while leaving target selection unconstrained.
+- Given failover from one target account to another, the request recomputes effective timeouts against the new target's group/account chain before applying conversation overrides.
 - Given a PATCH payload containing both `groupName` and `upstreamAccountId`, the API rejects it.
 - Given a bound target that is disabled or unavailable, the request fails through the existing no-selectable-account path without fallback.
 - Given the conversation detail drawer is open, the operator can see the current binding, change it, and clear it.
+- Given the conversation detail drawer is open, the operator can override or clear one timeout field without rewriting untouched timeout fields.
 - Given a conversation has thousands of retained records, opening the detail drawer loads only the first 50 records, keeps the binding controls interactive, and loads the next 50 records only after drawer scrolling reaches the load threshold.
 
 ## Visual Evidence
@@ -99,3 +128,8 @@ The Storybook `DrawerBindingControls` scenario renders the Prompt Cache conversa
 ![Large Prompt Cache history drawer with virtualized rows](./assets/large-history-virtualized-drawer.png)
 
 The Storybook `LargeHistoryVirtualizedDrawer` scenario renders a 15,000-record retained-history drawer. The evidence image shows the binding controls, summary chart, opened account binding target listbox, and virtualized invocation table after loading the second 50-record page (`已加载 100 / 15000 条保留调用记录`). Browser verification observed 28 mounted table rows and 4,248 total DOM elements, rather than mounting rows proportional to the 15,000-record total.
+
+PR: include
+![Prompt Cache drawer binding and timeout overrides](./assets/drawer-binding-timeouts-story.png)
+
+The Storybook `DrawerBindingAndTimeouts` scenario renders the conversation drawer with an upstream-account binding plus mixed conversation/account/root timeout sources. It is the stable mock-only evidence for the timeout subpanel contract and for timeout-only persistence semantics when manual binding is absent.

@@ -39,9 +39,10 @@ pub(crate) async fn list_upstream_accounts_from_params(
     let include_all = params.include_all.unwrap_or(false);
     let filters = normalize_upstream_account_list_filters(&params);
     let load_summaries_started_at = Instant::now();
-    let mut all_items = load_upstream_account_summaries_for_query(&state.pool, &params)
-        .await
-        .map_err(internal_error_tuple)?;
+    let mut all_items =
+        load_upstream_account_summaries_for_query(&state.pool, &state.config, &params)
+            .await
+            .map_err(internal_error_tuple)?;
     let load_summaries_ms = load_summaries_started_at.elapsed().as_millis() as u64;
     let load_groups_started_at = Instant::now();
     let groups = load_canonicalized_upstream_account_groups(state.as_ref())
@@ -263,9 +264,10 @@ pub(crate) async fn get_upstream_account_window_usage(
     }
 
     let load_summaries_started_at = Instant::now();
-    let mut summaries = load_upstream_account_window_usage_summaries(&state.pool, &account_ids)
-        .await
-        .map_err(internal_error_tuple)?;
+    let mut summaries =
+        load_upstream_account_window_usage_summaries(&state.pool, &state.config, &account_ids)
+            .await
+            .map_err(internal_error_tuple)?;
     let load_summaries_ms = load_summaries_started_at.elapsed().as_millis() as u64;
     let usage_batch_started_at = Instant::now();
     enrich_window_actual_usage_for_summaries(state.as_ref(), &mut summaries)
@@ -715,6 +717,23 @@ pub(crate) async fn update_upstream_account_group(
                 .map_err(internal_error_tuple)?,
             ),
         };
+        let timeout_patch = routing_rule.timeouts.clone().unwrap_or_default();
+        let responses_first_byte_timeout_secs = normalize_optional_timeout_override_secs(
+            &timeout_patch.responses_first_byte_timeout_secs,
+            "responsesFirstByteTimeoutSecs",
+        )?;
+        let compact_first_byte_timeout_secs = normalize_optional_timeout_override_secs(
+            &timeout_patch.compact_first_byte_timeout_secs,
+            "compactFirstByteTimeoutSecs",
+        )?;
+        let responses_stream_timeout_secs = normalize_optional_timeout_override_secs(
+            &timeout_patch.responses_stream_timeout_secs,
+            "responsesStreamTimeoutSecs",
+        )?;
+        let compact_stream_timeout_secs = normalize_optional_timeout_override_secs(
+            &timeout_patch.compact_stream_timeout_secs,
+            "compactStreamTimeoutSecs",
+        )?;
         sqlx::query(
             r#"
             UPDATE pool_upstream_account_group_notes
@@ -731,7 +750,11 @@ pub(crate) async fn update_upstream_account_group(
                 policy_available_models_json = CASE
                     WHEN ?22 != 0 THEN policy_available_models_json
                     ELSE ?23
-                END
+                END,
+                policy_responses_first_byte_timeout_secs = CASE WHEN ?24 != 0 THEN policy_responses_first_byte_timeout_secs ELSE ?25 END,
+                policy_compact_first_byte_timeout_secs = CASE WHEN ?26 != 0 THEN policy_compact_first_byte_timeout_secs ELSE ?27 END,
+                policy_responses_stream_timeout_secs = CASE WHEN ?28 != 0 THEN policy_responses_stream_timeout_secs ELSE ?29 END,
+                policy_compact_stream_timeout_secs = CASE WHEN ?30 != 0 THEN policy_compact_stream_timeout_secs ELSE ?31 END
             WHERE group_name = ?1
             "#,
         )
@@ -758,6 +781,14 @@ pub(crate) async fn update_upstream_account_group(
         .bind(optional_retry_count_to_i64(&routing_rule.upstream_429_max_retries))
         .bind(if matches!(routing_rule.available_models, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(available_models_json)
+        .bind(if responses_first_byte_timeout_secs.is_none() { 1_i64 } else { 0_i64 })
+        .bind(responses_first_byte_timeout_secs.flatten())
+        .bind(if compact_first_byte_timeout_secs.is_none() { 1_i64 } else { 0_i64 })
+        .bind(compact_first_byte_timeout_secs.flatten())
+        .bind(if responses_stream_timeout_secs.is_none() { 1_i64 } else { 0_i64 })
+        .bind(responses_stream_timeout_secs.flatten())
+        .bind(if compact_stream_timeout_secs.is_none() { 1_i64 } else { 0_i64 })
+        .bind(compact_stream_timeout_secs.flatten())
         .execute(tx.as_mut())
         .await
         .map_err(internal_error_tuple)?;
@@ -771,6 +802,18 @@ pub(crate) async fn update_upstream_account_group(
     let account_count = group_account_count_conn(&mut conn, &group_name)
         .await
         .map_err(internal_error_tuple)?;
+    let routing_rule = load_group_routing_rule(&state.pool, &group_name)
+        .await
+        .map_err(internal_error_tuple)?
+        .clone();
+    let (effective_timeouts, timeout_field_sources, _) =
+        load_effective_request_path_timeouts_for_group(
+            &state.pool,
+            &state.config,
+            Some(&group_name),
+        )
+        .await
+        .map_err(internal_error_tuple)?;
     Ok(Json(UpstreamAccountGroupSummary {
         group_name: group_name.clone(),
         account_count,
@@ -781,9 +824,9 @@ pub(crate) async fn update_upstream_account_group(
         upstream_429_retry_enabled: saved.upstream_429_retry_enabled,
         upstream_429_max_retries: saved.upstream_429_max_retries,
         concurrency_limit: saved.concurrency_limit,
-        routing_rule: load_group_routing_rule(&state.pool, &group_name)
-            .await
-            .map_err(internal_error_tuple)?,
+        routing_rule,
+        effective_timeouts,
+        timeout_field_sources,
     }))
 }
 

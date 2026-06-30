@@ -337,7 +337,7 @@ pub(crate) async fn prepare_upstream_websocket(
     proxy_request_id: u64,
     original_uri: &Uri,
     headers: &HeaderMap,
-    runtime_timeouts: &PoolRoutingTimeoutSettingsResolved,
+    _runtime_timeouts: &PoolRoutingTimeoutSettingsResolved,
     sticky_key: Option<&str>,
     requested_model: Option<&str>,
     prompt_cache_key: Option<&str>,
@@ -580,7 +580,18 @@ pub(crate) async fn prepare_upstream_websocket(
             proxy_request_id,
             original_uri,
             headers,
-            runtime_timeouts,
+            &load_effective_request_path_timeouts_for_account(
+                &state.pool,
+                &state.config,
+                account.account_id,
+                prompt_cache_key,
+            )
+            .await
+            .map_err(|err| WsPrepareError {
+                status: StatusCode::BAD_GATEWAY,
+                message: format!("failed to resolve effective request-path timeouts: {err}"),
+            })?
+            .2,
             trace,
             prompt_cache_key,
             account,

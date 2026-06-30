@@ -304,6 +304,18 @@
                 available_models: "root".to_string(),
                 system_denied_models: "root".to_string(),
             },
+            timeouts: RoutingTimeoutSettings {
+                responses_first_byte_timeout_secs: Some(120),
+                compact_first_byte_timeout_secs: Some(300),
+                responses_stream_timeout_secs: Some(300),
+                compact_stream_timeout_secs: Some(300),
+            },
+            timeout_field_sources: RoutingTimeoutFieldSources {
+                responses_first_byte_timeout_secs: "root".to_string(),
+                compact_first_byte_timeout_secs: "root".to_string(),
+                responses_stream_timeout_secs: "root".to_string(),
+                compact_stream_timeout_secs: "root".to_string(),
+            },
         }
     }
 
@@ -4199,6 +4211,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )
@@ -4258,6 +4271,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )
@@ -4334,6 +4348,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )
@@ -4391,6 +4406,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )
@@ -4467,6 +4483,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )
@@ -4524,6 +4541,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Value(vec![]),
+                        timeouts: None,
                     }),
                 },
             )
@@ -4579,6 +4597,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )
@@ -4671,6 +4690,47 @@
         assert!(rule.upstream_429_retry_enabled);
         assert_eq!(rule.upstream_429_max_retries, 2);
         assert_eq!(rule.field_sources.upstream_429_retry, "tag");
+    }
+
+    #[tokio::test]
+    async fn load_upstream_account_detail_with_actual_usage_populates_root_timeout_values() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Root Timeout Detail").await;
+        sqlx::query(
+            r#"
+            UPDATE pool_routing_settings
+            SET responses_first_byte_timeout_secs = 41,
+                compact_first_byte_timeout_secs = 42,
+                responses_stream_timeout_secs = 43,
+                compact_stream_timeout_secs = 44
+            WHERE id = ?1
+            "#,
+        )
+        .bind(POOL_SETTINGS_SINGLETON_ID)
+        .execute(&state.pool)
+        .await
+        .expect("save root timeout settings");
+
+        let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), account_id)
+            .await
+            .expect("load account detail")
+            .expect("detail exists");
+        let rule = detail.summary.effective_routing_rule;
+
+        assert_eq!(rule.timeouts.responses_first_byte_timeout_secs, Some(41));
+        assert_eq!(rule.timeouts.compact_first_byte_timeout_secs, Some(42));
+        assert_eq!(rule.timeouts.responses_stream_timeout_secs, Some(43));
+        assert_eq!(rule.timeouts.compact_stream_timeout_secs, Some(44));
+        assert_eq!(
+            rule.timeout_field_sources.responses_first_byte_timeout_secs,
+            "root"
+        );
+        assert_eq!(
+            rule.timeout_field_sources.compact_first_byte_timeout_secs,
+            "root"
+        );
+        assert_eq!(rule.timeout_field_sources.responses_stream_timeout_secs, "root");
+        assert_eq!(rule.timeout_field_sources.compact_stream_timeout_secs, "root");
     }
 
     #[tokio::test]

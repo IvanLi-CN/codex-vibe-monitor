@@ -92,6 +92,413 @@ pub(crate) fn pool_routing_timeouts_response(
     }
 }
 
+pub(crate) fn normalize_optional_timeout_override_secs(
+    value: &OptionalField<u64>,
+    field_name: &str,
+) -> Result<Option<Option<i64>>, (StatusCode, String)> {
+    match value {
+        OptionalField::Missing => Ok(None),
+        OptionalField::Null => Ok(Some(None)),
+        OptionalField::Value(value) => {
+            let normalized = normalize_pool_routing_timeout_secs(Some(*value), field_name)?
+                .and_then(|value| i64::try_from(value).ok());
+            Ok(Some(normalized))
+        }
+    }
+}
+
+pub(crate) fn normalize_timeout_override_secs_from_i64(value: Option<i64>) -> Option<u64> {
+    value.and_then(|value| u64::try_from(value).ok()).filter(|value| *value > 0)
+}
+
+pub(crate) fn routing_timeout_settings_from_columns(
+    responses_first_byte_timeout_secs: Option<i64>,
+    compact_first_byte_timeout_secs: Option<i64>,
+    responses_stream_timeout_secs: Option<i64>,
+    compact_stream_timeout_secs: Option<i64>,
+) -> Option<RoutingTimeoutSettings> {
+    let settings = RoutingTimeoutSettings {
+        responses_first_byte_timeout_secs: normalize_timeout_override_secs_from_i64(
+            responses_first_byte_timeout_secs,
+        ),
+        compact_first_byte_timeout_secs: normalize_timeout_override_secs_from_i64(
+            compact_first_byte_timeout_secs,
+        ),
+        responses_stream_timeout_secs: normalize_timeout_override_secs_from_i64(
+            responses_stream_timeout_secs,
+        ),
+        compact_stream_timeout_secs: normalize_timeout_override_secs_from_i64(
+            compact_stream_timeout_secs,
+        ),
+    };
+    if settings.responses_first_byte_timeout_secs.is_none()
+        && settings.compact_first_byte_timeout_secs.is_none()
+        && settings.responses_stream_timeout_secs.is_none()
+        && settings.compact_stream_timeout_secs.is_none()
+    {
+        None
+    } else {
+        Some(settings)
+    }
+}
+
+pub(crate) fn routing_timeout_overrides_from_settings(
+    settings: Option<&RoutingTimeoutSettings>,
+) -> RoutingTimeoutOverridesResolved {
+    let duration = |value: Option<u64>| value.map(Duration::from_secs);
+    let Some(settings) = settings else {
+        return RoutingTimeoutOverridesResolved::default();
+    };
+    RoutingTimeoutOverridesResolved {
+        responses_first_byte_timeout: duration(settings.responses_first_byte_timeout_secs),
+        compact_first_byte_timeout: duration(settings.compact_first_byte_timeout_secs),
+        responses_stream_timeout: duration(settings.responses_stream_timeout_secs),
+        compact_stream_timeout: duration(settings.compact_stream_timeout_secs),
+    }
+}
+
+pub(crate) fn resolve_effective_routing_timeout_settings(
+    root: PoolRoutingTimeoutSettingsResolved,
+    group: Option<&RoutingTimeoutSettings>,
+    account: Option<&RoutingTimeoutSettings>,
+    conversation: Option<&RoutingTimeoutSettings>,
+) -> (RoutingTimeoutSettings, RoutingTimeoutFieldSources, PoolRoutingTimeoutSettingsResolved) {
+    let mut overrides = RoutingTimeoutSettings::default();
+    let mut effective = RoutingTimeoutSettings {
+        responses_first_byte_timeout_secs: Some(root.responses_first_byte_timeout.as_secs()),
+        compact_first_byte_timeout_secs: Some(root.compact_first_byte_timeout.as_secs()),
+        responses_stream_timeout_secs: Some(root.responses_stream_timeout.as_secs()),
+        compact_stream_timeout_secs: Some(root.compact_stream_timeout.as_secs()),
+    };
+    let mut sources = RoutingTimeoutFieldSources {
+        responses_first_byte_timeout_secs: "root".to_string(),
+        compact_first_byte_timeout_secs: "root".to_string(),
+        responses_stream_timeout_secs: "root".to_string(),
+        compact_stream_timeout_secs: "root".to_string(),
+    };
+
+    let mut apply = |source: &str, settings: Option<&RoutingTimeoutSettings>| {
+        let Some(settings) = settings else {
+            return;
+        };
+        if let Some(value) = settings.responses_first_byte_timeout_secs {
+            overrides.responses_first_byte_timeout_secs = Some(value);
+            effective.responses_first_byte_timeout_secs = Some(value);
+            sources.responses_first_byte_timeout_secs = source.to_string();
+        }
+        if let Some(value) = settings.compact_first_byte_timeout_secs {
+            overrides.compact_first_byte_timeout_secs = Some(value);
+            effective.compact_first_byte_timeout_secs = Some(value);
+            sources.compact_first_byte_timeout_secs = source.to_string();
+        }
+        if let Some(value) = settings.responses_stream_timeout_secs {
+            overrides.responses_stream_timeout_secs = Some(value);
+            effective.responses_stream_timeout_secs = Some(value);
+            sources.responses_stream_timeout_secs = source.to_string();
+        }
+        if let Some(value) = settings.compact_stream_timeout_secs {
+            overrides.compact_stream_timeout_secs = Some(value);
+            effective.compact_stream_timeout_secs = Some(value);
+            sources.compact_stream_timeout_secs = source.to_string();
+        }
+    };
+
+    apply("group", group);
+    apply("account", account);
+    apply("conversation", conversation);
+    let resolved = root.with_overrides(routing_timeout_overrides_from_settings(Some(&overrides)));
+    (effective, sources, resolved)
+}
+
+pub(crate) async fn load_effective_request_path_timeouts_for_account(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    account_id: i64,
+    prompt_cache_key: Option<&str>,
+) -> Result<(
+    RoutingTimeoutSettings,
+    RoutingTimeoutFieldSources,
+    PoolRoutingTimeoutSettingsResolved,
+)> {
+    let root = resolve_pool_routing_timeouts(pool, config).await?;
+
+    #[derive(Debug, FromRow)]
+    struct AccountTimeoutRow {
+        group_name: Option<String>,
+        policy_responses_first_byte_timeout_secs: Option<i64>,
+        policy_compact_first_byte_timeout_secs: Option<i64>,
+        policy_responses_stream_timeout_secs: Option<i64>,
+        policy_compact_stream_timeout_secs: Option<i64>,
+    }
+
+    let account_row = sqlx::query_as::<_, AccountTimeoutRow>(
+        r#"
+        SELECT
+            group_name,
+            policy_responses_first_byte_timeout_secs,
+            policy_compact_first_byte_timeout_secs,
+            policy_responses_stream_timeout_secs,
+            policy_compact_stream_timeout_secs
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(account_row) = account_row else {
+        let (effective, sources, resolved) =
+            resolve_effective_routing_timeout_settings(root, None, None, None);
+        return Ok((effective, sources, resolved));
+    };
+
+    let group_settings = if let Some(group_name) = account_row
+        .group_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        #[derive(Debug, FromRow)]
+        struct GroupTimeoutRow {
+            policy_responses_first_byte_timeout_secs: Option<i64>,
+            policy_compact_first_byte_timeout_secs: Option<i64>,
+            policy_responses_stream_timeout_secs: Option<i64>,
+            policy_compact_stream_timeout_secs: Option<i64>,
+        }
+        sqlx::query_as::<_, GroupTimeoutRow>(
+            r#"
+            SELECT
+                policy_responses_first_byte_timeout_secs,
+                policy_compact_first_byte_timeout_secs,
+                policy_responses_stream_timeout_secs,
+                policy_compact_stream_timeout_secs
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(group_name)
+        .fetch_optional(pool)
+        .await?
+        .and_then(|row| {
+            routing_timeout_settings_from_columns(
+                row.policy_responses_first_byte_timeout_secs,
+                row.policy_compact_first_byte_timeout_secs,
+                row.policy_responses_stream_timeout_secs,
+                row.policy_compact_stream_timeout_secs,
+            )
+        })
+    } else {
+        None
+    };
+
+    let account_settings = routing_timeout_settings_from_columns(
+        account_row.policy_responses_first_byte_timeout_secs,
+        account_row.policy_compact_first_byte_timeout_secs,
+        account_row.policy_responses_stream_timeout_secs,
+        account_row.policy_compact_stream_timeout_secs,
+    );
+
+    let conversation_settings = if let Some(prompt_cache_key) = prompt_cache_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        #[derive(Debug, FromRow)]
+        struct ConversationTimeoutRow {
+            responses_first_byte_timeout_secs: Option<i64>,
+            compact_first_byte_timeout_secs: Option<i64>,
+            responses_stream_timeout_secs: Option<i64>,
+            compact_stream_timeout_secs: Option<i64>,
+        }
+        sqlx::query_as::<_, ConversationTimeoutRow>(
+            r#"
+            SELECT
+                responses_first_byte_timeout_secs,
+                compact_first_byte_timeout_secs,
+                responses_stream_timeout_secs,
+                compact_stream_timeout_secs
+            FROM prompt_cache_conversation_bindings
+            WHERE prompt_cache_key = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(prompt_cache_key)
+        .fetch_optional(pool)
+        .await?
+        .and_then(|row| {
+            routing_timeout_settings_from_columns(
+                row.responses_first_byte_timeout_secs,
+                row.compact_first_byte_timeout_secs,
+                row.responses_stream_timeout_secs,
+                row.compact_stream_timeout_secs,
+            )
+        })
+    } else {
+        None
+    };
+
+    let (effective, sources, resolved) = resolve_effective_routing_timeout_settings(
+        root,
+        group_settings.as_ref(),
+        account_settings.as_ref(),
+        conversation_settings.as_ref(),
+    );
+    Ok((effective, sources, resolved))
+}
+
+pub(crate) async fn load_effective_request_path_timeouts_for_group(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    group_name: Option<&str>,
+) -> Result<(
+    RoutingTimeoutSettings,
+    RoutingTimeoutFieldSources,
+    PoolRoutingTimeoutSettingsResolved,
+)> {
+    let root = resolve_pool_routing_timeouts(pool, config).await?;
+    let group_settings = if let Some(group_name) = group_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        #[derive(Debug, FromRow)]
+        struct GroupTimeoutRow {
+            policy_responses_first_byte_timeout_secs: Option<i64>,
+            policy_compact_first_byte_timeout_secs: Option<i64>,
+            policy_responses_stream_timeout_secs: Option<i64>,
+            policy_compact_stream_timeout_secs: Option<i64>,
+        }
+
+        sqlx::query_as::<_, GroupTimeoutRow>(
+            r#"
+            SELECT
+                policy_responses_first_byte_timeout_secs,
+                policy_compact_first_byte_timeout_secs,
+                policy_responses_stream_timeout_secs,
+                policy_compact_stream_timeout_secs
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(group_name)
+        .fetch_optional(pool)
+        .await?
+        .and_then(|row| {
+            routing_timeout_settings_from_columns(
+                row.policy_responses_first_byte_timeout_secs,
+                row.policy_compact_first_byte_timeout_secs,
+                row.policy_responses_stream_timeout_secs,
+                row.policy_compact_stream_timeout_secs,
+            )
+        })
+    } else {
+        None
+    };
+
+    let (effective, sources, resolved) =
+        resolve_effective_routing_timeout_settings(root, group_settings.as_ref(), None, None);
+    Ok((effective, sources, resolved))
+}
+
+pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversation(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    group_name: Option<&str>,
+    prompt_cache_key: Option<&str>,
+) -> Result<(
+    RoutingTimeoutSettings,
+    RoutingTimeoutFieldSources,
+    PoolRoutingTimeoutSettingsResolved,
+)> {
+    let root = resolve_pool_routing_timeouts(pool, config).await?;
+    let group_settings = if let Some(group_name) = group_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        #[derive(Debug, FromRow)]
+        struct GroupTimeoutRow {
+            policy_responses_first_byte_timeout_secs: Option<i64>,
+            policy_compact_first_byte_timeout_secs: Option<i64>,
+            policy_responses_stream_timeout_secs: Option<i64>,
+            policy_compact_stream_timeout_secs: Option<i64>,
+        }
+
+        sqlx::query_as::<_, GroupTimeoutRow>(
+            r#"
+            SELECT
+                policy_responses_first_byte_timeout_secs,
+                policy_compact_first_byte_timeout_secs,
+                policy_responses_stream_timeout_secs,
+                policy_compact_stream_timeout_secs
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(group_name)
+        .fetch_optional(pool)
+        .await?
+        .and_then(|row| {
+            routing_timeout_settings_from_columns(
+                row.policy_responses_first_byte_timeout_secs,
+                row.policy_compact_first_byte_timeout_secs,
+                row.policy_responses_stream_timeout_secs,
+                row.policy_compact_stream_timeout_secs,
+            )
+        })
+    } else {
+        None
+    };
+
+    let conversation_settings = if let Some(prompt_cache_key) = prompt_cache_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        #[derive(Debug, FromRow)]
+        struct ConversationTimeoutRow {
+            responses_first_byte_timeout_secs: Option<i64>,
+            compact_first_byte_timeout_secs: Option<i64>,
+            responses_stream_timeout_secs: Option<i64>,
+            compact_stream_timeout_secs: Option<i64>,
+        }
+
+        sqlx::query_as::<_, ConversationTimeoutRow>(
+            r#"
+            SELECT
+                responses_first_byte_timeout_secs,
+                compact_first_byte_timeout_secs,
+                responses_stream_timeout_secs,
+                compact_stream_timeout_secs
+            FROM prompt_cache_conversation_bindings
+            WHERE prompt_cache_key = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(prompt_cache_key)
+        .fetch_optional(pool)
+        .await?
+        .and_then(|row| {
+            routing_timeout_settings_from_columns(
+                row.responses_first_byte_timeout_secs,
+                row.compact_first_byte_timeout_secs,
+                row.responses_stream_timeout_secs,
+                row.compact_stream_timeout_secs,
+            )
+        })
+    } else {
+        None
+    };
+
+    let (effective, sources, resolved) = resolve_effective_routing_timeout_settings(
+        root,
+        group_settings.as_ref(),
+        None,
+        conversation_settings.as_ref(),
+    );
+    Ok((effective, sources, resolved))
+}
+
 pub(crate) async fn load_pool_routing_settings(pool: &Pool<Sqlite>) -> Result<PoolRoutingSettingsRow> {
     sqlx::query_as::<_, PoolRoutingSettingsRow>(
         r#"

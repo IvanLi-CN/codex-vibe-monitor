@@ -2,10 +2,13 @@ import { useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type {
   GroupAccountRoutingRule,
+  PoolRoutingTimeoutSettings,
+  EffectiveRoutingTimeoutFieldSources,
   UpdateGroupAccountRoutingRulePayload,
   UpdateUpstreamAccountGroupPayload,
 } from "../../lib/api";
 import { apiConcurrencyLimitToSliderValue, sliderConcurrencyLimitToApiValue } from "../../lib/concurrencyLimit";
+import { applyRoutingTimeoutOverridePatch } from "../../lib/poolRoutingTimeouts";
 import { normalizeGroupName } from "../../lib/upstreamAccountGroups";
 import { useTranslation } from "../../i18n";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
@@ -45,6 +48,8 @@ export type UpstreamAccountGroupSettingsSnapshot = {
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   routingRule?: GroupAccountRoutingRule;
+  effectiveTimeouts?: PoolRoutingTimeoutSettings | null;
+  timeoutFieldSources?: EffectiveRoutingTimeoutFieldSources | null;
 };
 
 const defaultRoutingRule: GroupAccountRoutingRule = {
@@ -80,6 +85,9 @@ export function mergeRoutingRulePatch(
     ...(patch.upstream429RetryEnabled == null ? {} : { upstream429RetryEnabled: patch.upstream429RetryEnabled }),
     ...(patch.upstream429MaxRetries == null ? {} : { upstream429MaxRetries: patch.upstream429MaxRetries }),
     ...(patch.availableModels == null ? {} : { availableModels: patch.availableModels }),
+    ...(patch.timeouts == null
+      ? {}
+      : { timeouts: applyRoutingTimeoutOverridePatch(base.timeouts, patch.timeouts) }),
   };
 }
 
@@ -182,6 +190,13 @@ export function useUpstreamAccountGroupSettingsDialog(
     enabled: editor.open,
     groupName: editor.groupName,
   });
+  const currentGroupSnapshot = useMemo(
+    () =>
+      editor.open && editor.groupName
+        ? resolveGroupState(editor.groupName)
+        : null,
+    [editor.groupName, editor.open, resolveGroupState],
+  );
 
   useGroupNoteCatalogAutoRefresh({
     open: editor.open,
@@ -489,6 +504,8 @@ export function useUpstreamAccountGroupSettingsDialog(
         )}
         submitLabel={t("accountPool.upstreamAccounts.groupNotes.routingPolicy.save")}
         rule={editor.routingRule}
+        effectiveTimeouts={currentGroupSnapshot?.effectiveTimeouts ?? null}
+        timeoutFieldSources={currentGroupSnapshot?.timeoutFieldSources ?? null}
         busy={busyAction != null}
         onClose={() =>
           setEditor((current) => ({ ...current, policyEditorOpen: false }))
@@ -568,6 +585,19 @@ export function useUpstreamAccountGroupSettingsDialog(
           availableModelsAddCustom: t("accountPool.tags.dialog.availableModelsAddCustom"),
           availableModelsInherited: t("accountPool.tags.dialog.availableModelsInherited"),
           availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
+          timeoutSectionTitle: t("accountPool.upstreamAccounts.routing.timeout.sectionTitle"),
+          timeoutSectionHint: t("accountPool.upstreamAccounts.groupNotes.routingPolicy.description"),
+          timeoutResponsesFirstByte: t("accountPool.upstreamAccounts.routing.timeout.responsesFirstByte"),
+          timeoutCompactFirstByte: t("accountPool.upstreamAccounts.routing.timeout.compactFirstByte"),
+          timeoutResponsesStream: t("accountPool.upstreamAccounts.routing.timeout.responsesStream"),
+          timeoutCompactStream: t("accountPool.upstreamAccounts.routing.timeout.compactStream"),
+          timeoutInheritedValue: t("accountPool.upstreamAccounts.timeoutEditor.inherited"),
+          timeoutOverrideValue: t("accountPool.upstreamAccounts.timeoutEditor.groupOverride"),
+          timeoutClearField: t("accountPool.upstreamAccounts.effectiveRule.overrideClear"),
+          timeoutInheritField: t("accountPool.tags.dialog.availableModelsInherited"),
+          timeoutSourceGlobal: t("accountPool.upstreamAccounts.effectiveRule.sourceRoot"),
+          timeoutSourceGroup: t("accountPool.upstreamAccounts.effectiveRule.sourceGroup"),
+          timeoutSourceAccount: t("accountPool.upstreamAccounts.effectiveRule.sourceAccount"),
           cancel: t("accountPool.tags.dialog.cancel"),
           validation: t("accountPool.tags.dialog.validation"),
         }}
@@ -594,6 +624,7 @@ export function useUpstreamAccountGroupSettingsDialog(
       editor.upstream429MaxRetries,
       editor.upstream429RetryEnabled,
       error,
+      currentGroupSnapshot,
       forwardProxyCatalogState.freshness,
       forwardProxyCatalogState.kind,
       forwardProxyNodes,

@@ -91,6 +91,18 @@ const relaxedRule: EffectiveRoutingRule = {
     availableModels: 'root',
     systemDeniedModels: 'root',
   },
+  timeouts: {
+    responsesFirstByteTimeoutSecs: 120,
+    compactFirstByteTimeoutSecs: 300,
+    responsesStreamTimeoutSecs: 300,
+    compactStreamTimeoutSecs: 300,
+  },
+  timeoutFieldSources: {
+    responsesFirstByteTimeoutSecs: 'root',
+    compactFirstByteTimeoutSecs: 'root',
+    responsesStreamTimeoutSecs: 'root',
+    compactStreamTimeoutSecs: 'root',
+  },
 }
 
 const strictRule: EffectiveRoutingRule = {
@@ -118,6 +130,18 @@ const strictRule: EffectiveRoutingRule = {
     upstream429Retry: 'account',
     availableModels: 'account',
     systemDeniedModels: 'system',
+  },
+  timeouts: {
+    responsesFirstByteTimeoutSecs: 45,
+    compactFirstByteTimeoutSecs: 300,
+    responsesStreamTimeoutSecs: 210,
+    compactStreamTimeoutSecs: 300,
+  },
+  timeoutFieldSources: {
+    responsesFirstByteTimeoutSecs: 'account',
+    compactFirstByteTimeoutSecs: 'root',
+    responsesStreamTimeoutSecs: 'account',
+    compactStreamTimeoutSecs: 'group',
   },
 }
 
@@ -167,6 +191,18 @@ const multipleAccountOverridesRule: EffectiveRoutingRule = {
     upstream429Retry: 'account',
     availableModels: strictRule.fieldSources?.availableModels ?? 'root',
     systemDeniedModels: strictRule.fieldSources?.systemDeniedModels ?? 'root',
+  },
+  timeouts: {
+    responsesFirstByteTimeoutSecs: 30,
+    compactFirstByteTimeoutSecs: 180,
+    responsesStreamTimeoutSecs: 180,
+    compactStreamTimeoutSecs: 240,
+  },
+  timeoutFieldSources: {
+    responsesFirstByteTimeoutSecs: 'account',
+    compactFirstByteTimeoutSecs: 'account',
+    responsesStreamTimeoutSecs: 'account',
+    compactStreamTimeoutSecs: 'group',
   },
 }
 
@@ -400,6 +436,18 @@ export const EditableAccountOverrides: Story = {
 
 export const EditableMultipleAccountOverrides: Story = {
   render: () => <EditableRoutingRuleDemo initialRule={multipleAccountOverridesRule} />,
+}
+
+export const EditableTimeoutOverrides: Story = {
+  render: () => <EditableRoutingRuleDemo initialRule={multipleAccountOverridesRule} />,
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Account effective rule with mixed timeout inheritance: account overrides on first-byte and stream fields, inherited group/default values on the remaining fields.',
+      },
+    },
+  },
 }
 
 export const EditableSavingAndError: Story = {

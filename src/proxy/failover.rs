@@ -317,31 +317,6 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let mut reservation_guard =
         PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.clone());
-    let runtime_timeouts = resolve_pool_routing_timeouts(&state.pool, &state.config)
-        .await
-        .map_err(|err| PoolUpstreamError {
-            account: preferred_account.clone(),
-            status: StatusCode::BAD_GATEWAY,
-            message: format!("failed to resolve pool routing timeouts: {err}"),
-            canonical_error_message: None,
-            failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
-            connect_latency_ms: 0.0,
-            upstream_error_code: None,
-            upstream_error_message: None,
-            downstream_error_message: None,
-            upstream_request_id: None,
-            proxy_binding_key_snapshot: None,
-            oauth_responses_debug: None,
-            attempt_summary: pool_attempt_summary(
-                failover_progress.attempt_count,
-                failover_progress.excluded_account_ids.len(),
-                Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
-            ),
-            requested_service_tier: None,
-            request_body_for_capture: None,
-        })?;
-    let pre_first_byte_timeout =
-        pool_upstream_first_chunk_timeout(&runtime_timeouts, original_uri, &method);
     let uses_timeout_route_failover =
         pool_uses_responses_timeout_failover_policy(original_uri, &method);
     let responses_total_timeout =
@@ -353,12 +328,6 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
         .map(|(total_timeout, deadline)| deadline - total_timeout);
     let mut responses_total_timeout_started_at =
         failover_progress.responses_total_timeout_started_at;
-    let send_timeout = pool_upstream_send_timeout(
-        original_uri,
-        &method,
-        handshake_timeout,
-        pre_first_byte_timeout,
-    );
     let mut excluded_ids = failover_progress.excluded_account_ids;
     let mut excluded_upstream_route_keys = failover_progress.excluded_upstream_route_keys;
     let mut last_error = failover_progress.last_error;
@@ -413,6 +382,9 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     let encrypted_session_owner_guard_active = runtime_snapshot_context
         .as_ref()
         .is_some_and(|ctx| ctx.owner_auto_guard_active);
+    let prompt_cache_key = runtime_snapshot_context
+        .as_ref()
+        .and_then(|ctx| ctx.prompt_cache_key.as_deref());
 
     'account_loop: loop {
         let mut distinct_account_count = attempted_account_ids.len();
@@ -1099,6 +1071,45 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
         }
         reserve_pool_routing_account(state.as_ref(), &reservation_key, &account);
         timeout_route_failover_pending = false;
+
+        let (_, _, runtime_timeouts) = load_effective_request_path_timeouts_for_account(
+            &state.pool,
+            &state.config,
+            account.account_id,
+            prompt_cache_key,
+        )
+        .await
+        .map_err(|err| PoolUpstreamError {
+            account: Some(account.clone()),
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("failed to resolve effective request-path timeouts: {err}"),
+            canonical_error_message: None,
+            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            connect_latency_ms: 0.0,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: None,
+            proxy_binding_key_snapshot: None,
+            oauth_responses_debug: None,
+            attempt_summary: pool_attempt_summary(
+                attempt_count,
+                distinct_account_count,
+                Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
+            ),
+            requested_service_tier: None,
+            request_body_for_capture: None,
+        })?;
+        let pre_first_byte_timeout =
+            pool_upstream_first_chunk_timeout(&runtime_timeouts, original_uri, &method);
+        let stream_timeout = capture_target_for_request(original_uri.path(), &method)
+            .and_then(|target| proxy_capture_target_stream_timeout(&runtime_timeouts, target));
+        let send_timeout = pool_upstream_send_timeout(
+            original_uri,
+            &method,
+            handshake_timeout,
+            pre_first_byte_timeout,
+        );
 
         excluded_ids.push(account.account_id);
         attempted_account_ids.insert(account.account_id);
@@ -2316,6 +2327,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     return Ok(PoolUpstreamResponse {
                         account: account.clone(),
                         response: ProxyUpstreamResponseBody::Axum(response),
+                        stream_timeout,
                         oauth_responses_debug,
                         connect_latency_ms,
                         attempt_started_at_utc,
@@ -3114,6 +3126,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             return Ok(PoolUpstreamResponse {
                 account: account.clone(),
                 response,
+                stream_timeout,
                 oauth_responses_debug,
                 connect_latency_ms,
                 attempt_started_at_utc,

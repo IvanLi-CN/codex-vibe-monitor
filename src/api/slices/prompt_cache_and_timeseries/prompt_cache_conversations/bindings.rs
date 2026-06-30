@@ -1,6 +1,7 @@
 use super::*;
 const PROMPT_CACHE_BINDING_KIND_GROUP: &str = "group";
 const PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT: &str = "upstream_account";
+const PROMPT_CACHE_BINDING_KIND_NONE: &str = "none";
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct PromptCacheConversationBindingRow {
@@ -9,6 +10,10 @@ pub(crate) struct PromptCacheConversationBindingRow {
     pub(crate) group_name: Option<String>,
     pub(crate) upstream_account_id: Option<i64>,
     pub(crate) upstream_account_name: Option<String>,
+    pub(crate) responses_first_byte_timeout_secs: Option<i64>,
+    pub(crate) compact_first_byte_timeout_secs: Option<i64>,
+    pub(crate) responses_stream_timeout_secs: Option<i64>,
+    pub(crate) compact_stream_timeout_secs: Option<i64>,
     pub(crate) updated_at: String,
 }
 
@@ -42,6 +47,8 @@ pub(crate) struct PromptCacheConversationBindingResponse {
     pub(crate) encrypted_owner_account_id: Option<i64>,
     pub(crate) encrypted_owner_account_name: Option<String>,
     pub(crate) encrypted_owner_group_name: Option<String>,
+    pub(crate) timeouts: RoutingTimeoutSettings,
+    pub(crate) timeout_field_sources: RoutingTimeoutFieldSources,
     pub(crate) updated_at: Option<String>,
 }
 
@@ -51,6 +58,8 @@ pub(crate) struct UpdatePromptCacheConversationBindingRequest {
     binding_kind: String,
     group_name: Option<String>,
     upstream_account_id: Option<i64>,
+    #[serde(default)]
+    timeouts: Option<UpdateRoutingTimeoutSettingsRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,8 +89,33 @@ pub(crate) fn normalize_prompt_cache_conversation_key(raw: &str) -> Result<Strin
     Ok(normalized.to_string())
 }
 
-fn binding_response_for_none(prompt_cache_key: String) -> PromptCacheConversationBindingResponse {
-    PromptCacheConversationBindingResponse {
+async fn binding_response_for_none(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    prompt_cache_key: String,
+    owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
+) -> Result<PromptCacheConversationBindingResponse> {
+    let (timeouts, timeout_field_sources) = if let Some(owner) = owner {
+        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
+            pool,
+            config,
+            owner.owner_upstream_account_id,
+            Some(prompt_cache_key.as_str()),
+        )
+        .await?;
+        (timeouts, sources)
+    } else {
+        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
+            pool,
+            config,
+            None,
+            Some(prompt_cache_key.as_str()),
+        )
+        .await?;
+        (timeouts, sources)
+    };
+
+    Ok(PromptCacheConversationBindingResponse {
         prompt_cache_key,
         binding_kind: "none".to_string(),
         group_name: None,
@@ -91,18 +125,72 @@ fn binding_response_for_none(prompt_cache_key: String) -> PromptCacheConversatio
         encrypted_owner_account_id: None,
         encrypted_owner_account_name: None,
         encrypted_owner_group_name: None,
+        timeouts,
+        timeout_field_sources,
         updated_at: None,
-    }
+    })
 }
 
-fn binding_response_from_row(
+async fn binding_response_from_row(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
     row: PromptCacheConversationBindingRow,
     owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
-) -> PromptCacheConversationBindingResponse {
-    PromptCacheConversationBindingResponse {
+) -> Result<PromptCacheConversationBindingResponse> {
+    let (timeouts, timeout_field_sources) = if row.binding_kind == PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT {
+        if let Some(account_id) = row.upstream_account_id {
+            let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
+                pool,
+                config,
+                account_id,
+                Some(row.prompt_cache_key.as_str()),
+            )
+            .await?;
+            (timeouts, sources)
+        } else {
+            let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
+                pool,
+                config,
+                None,
+                Some(row.prompt_cache_key.as_str()),
+            )
+            .await?;
+            (timeouts, sources)
+        }
+    } else if row.binding_kind == PROMPT_CACHE_BINDING_KIND_GROUP {
+        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
+            pool,
+            config,
+            row.group_name.as_deref(),
+            Some(row.prompt_cache_key.as_str()),
+        )
+        .await?;
+        (timeouts, sources)
+    } else if let Some(owner) = owner {
+        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
+            pool,
+            config,
+            owner.owner_upstream_account_id,
+            Some(row.prompt_cache_key.as_str()),
+        )
+        .await?;
+        (timeouts, sources)
+    } else {
+        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
+            pool,
+            config,
+            None,
+            Some(row.prompt_cache_key.as_str()),
+        )
+        .await?;
+        (timeouts, sources)
+    };
+
+    Ok(PromptCacheConversationBindingResponse {
         prompt_cache_key: row.prompt_cache_key,
         binding_kind: match row.binding_kind.as_str() {
             PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => "upstreamAccount".to_string(),
+            PROMPT_CACHE_BINDING_KIND_NONE => "none".to_string(),
             _ => "group".to_string(),
         },
         group_name: row.group_name,
@@ -113,8 +201,10 @@ fn binding_response_from_row(
         encrypted_owner_account_name: owner
             .and_then(|value| value.owner_upstream_account_name.clone()),
         encrypted_owner_group_name: owner.and_then(|value| value.owner_group_name.clone()),
+        timeouts,
+        timeout_field_sources,
         updated_at: Some(row.updated_at),
-    }
+    })
 }
 
 fn apply_owner_to_none_response(
@@ -145,6 +235,10 @@ where
             binding.group_name,
             binding.upstream_account_id,
             account.display_name AS upstream_account_name,
+            binding.responses_first_byte_timeout_secs,
+            binding.compact_first_byte_timeout_secs,
+            binding.responses_stream_timeout_secs,
+            binding.compact_stream_timeout_secs,
             binding.updated_at
         FROM prompt_cache_conversation_bindings AS binding
         LEFT JOIN pool_upstream_accounts AS account
@@ -222,6 +316,9 @@ fn manual_binding_override_is_newer_than_owner(
     binding_row: &PromptCacheConversationBindingRow,
     owner: &PromptCacheEncryptedSessionOwnerRow,
 ) -> bool {
+    if binding_row.binding_kind == PROMPT_CACHE_BINDING_KIND_NONE {
+        return false;
+    }
     match binding_row.updated_at.as_str().cmp(owner.updated_at.as_str()) {
         std::cmp::Ordering::Greater => match binding_row.binding_kind.as_str() {
             PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {
@@ -634,8 +731,11 @@ pub(crate) async fn get_prompt_cache_conversation_binding(
     let owner =
         load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key).await?;
     let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await? {
-        Some(row) => binding_response_from_row(row, owner.as_ref()),
-        None => apply_owner_to_none_response(binding_response_for_none(prompt_cache_key), owner.as_ref()),
+        Some(row) => binding_response_from_row(&state.pool, &state.config, row, owner.as_ref()).await?,
+        None => apply_owner_to_none_response(
+            binding_response_for_none(&state.pool, &state.config, prompt_cache_key, owner.as_ref()).await?,
+            owner.as_ref(),
+        ),
     };
     Ok(Json(response))
 }
@@ -657,20 +757,99 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             "groupName and upstreamAccountId are mutually exclusive"
         )));
     }
+    let timeout_patch = payload.timeouts.clone().unwrap_or_default();
+    let responses_first_byte_timeout_secs = normalize_optional_timeout_override_secs(
+        &timeout_patch.responses_first_byte_timeout_secs,
+        "responsesFirstByteTimeoutSecs",
+    )
+    .map_err(|(_, message)| ApiError::bad_request(anyhow!(message)))?;
+    let compact_first_byte_timeout_secs = normalize_optional_timeout_override_secs(
+        &timeout_patch.compact_first_byte_timeout_secs,
+        "compactFirstByteTimeoutSecs",
+    )
+    .map_err(|(_, message)| ApiError::bad_request(anyhow!(message)))?;
+    let responses_stream_timeout_secs = normalize_optional_timeout_override_secs(
+        &timeout_patch.responses_stream_timeout_secs,
+        "responsesStreamTimeoutSecs",
+    )
+    .map_err(|(_, message)| ApiError::bad_request(anyhow!(message)))?;
+    let compact_stream_timeout_secs = normalize_optional_timeout_override_secs(
+        &timeout_patch.compact_stream_timeout_secs,
+        "compactStreamTimeoutSecs",
+    )
+    .map_err(|(_, message)| ApiError::bad_request(anyhow!(message)))?;
+    let existing_row =
+        load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await?;
+    let next_timeout_value = |incoming: Option<Option<i64>>, current: Option<i64>| incoming.unwrap_or(current.map(Some).unwrap_or(None));
+    let next_responses_first_byte_timeout_secs =
+        next_timeout_value(responses_first_byte_timeout_secs, existing_row.as_ref().and_then(|row| row.responses_first_byte_timeout_secs));
+    let next_compact_first_byte_timeout_secs =
+        next_timeout_value(compact_first_byte_timeout_secs, existing_row.as_ref().and_then(|row| row.compact_first_byte_timeout_secs));
+    let next_responses_stream_timeout_secs =
+        next_timeout_value(responses_stream_timeout_secs, existing_row.as_ref().and_then(|row| row.responses_stream_timeout_secs));
+    let next_compact_stream_timeout_secs =
+        next_timeout_value(compact_stream_timeout_secs, existing_row.as_ref().and_then(|row| row.compact_stream_timeout_secs));
+    let next_timeouts_all_clear = next_responses_first_byte_timeout_secs.is_none()
+        && next_compact_first_byte_timeout_secs.is_none()
+        && next_responses_stream_timeout_secs.is_none()
+        && next_compact_stream_timeout_secs.is_none();
 
     match binding_kind {
         "none" => {
-            sqlx::query("DELETE FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1")
+            if next_timeouts_all_clear {
+                sqlx::query(
+                    "DELETE FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1",
+                )
                 .bind(&prompt_cache_key)
                 .execute(&state.pool)
                 .await?;
+            } else {
+                sqlx::query(
+                    r#"
+                    INSERT INTO prompt_cache_conversation_bindings (
+                        prompt_cache_key,
+                        binding_kind,
+                        group_name,
+                        upstream_account_id,
+                        responses_first_byte_timeout_secs,
+                        compact_first_byte_timeout_secs,
+                        responses_stream_timeout_secs,
+                        compact_stream_timeout_secs,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))
+                    ON CONFLICT(prompt_cache_key) DO UPDATE SET
+                        binding_kind = excluded.binding_kind,
+                        group_name = NULL,
+                        upstream_account_id = NULL,
+                        responses_first_byte_timeout_secs = excluded.responses_first_byte_timeout_secs,
+                        compact_first_byte_timeout_secs = excluded.compact_first_byte_timeout_secs,
+                        responses_stream_timeout_secs = excluded.responses_stream_timeout_secs,
+                        compact_stream_timeout_secs = excluded.compact_stream_timeout_secs,
+                        updated_at = excluded.updated_at
+                    "#,
+                )
+                .bind(&prompt_cache_key)
+                .bind(PROMPT_CACHE_BINDING_KIND_NONE)
+                .bind(next_responses_first_byte_timeout_secs)
+                .bind(next_compact_first_byte_timeout_secs)
+                .bind(next_responses_stream_timeout_secs)
+                .bind(next_compact_stream_timeout_secs)
+                .execute(&state.pool)
+                .await?;
+            }
             let owner =
                 load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
                     .await?;
-            Ok(Json(apply_owner_to_none_response(
-                binding_response_for_none(prompt_cache_key),
-                owner.as_ref(),
-            )))
+            let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await? {
+                Some(row) => binding_response_from_row(&state.pool, &state.config, row, owner.as_ref()).await?,
+                None => apply_owner_to_none_response(
+                    binding_response_for_none(&state.pool, &state.config, prompt_cache_key, owner.as_ref()).await?,
+                    owner.as_ref(),
+                ),
+            };
+            Ok(Json(response))
         }
         "group" => {
             let group_name = group_name.ok_or_else(|| {
@@ -684,31 +863,46 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     binding_kind,
                     group_name,
                     upstream_account_id,
+                    responses_first_byte_timeout_secs,
+                    compact_first_byte_timeout_secs,
+                    responses_stream_timeout_secs,
+                    compact_stream_timeout_secs,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, NULL, datetime('now'), datetime('now'))
+                VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))
                 ON CONFLICT(prompt_cache_key) DO UPDATE SET
                     binding_kind = excluded.binding_kind,
                     group_name = excluded.group_name,
                     upstream_account_id = NULL,
+                    responses_first_byte_timeout_secs = excluded.responses_first_byte_timeout_secs,
+                    compact_first_byte_timeout_secs = excluded.compact_first_byte_timeout_secs,
+                    responses_stream_timeout_secs = excluded.responses_stream_timeout_secs,
+                    compact_stream_timeout_secs = excluded.compact_stream_timeout_secs,
                     updated_at = excluded.updated_at
                 "#,
             )
             .bind(&prompt_cache_key)
             .bind(PROMPT_CACHE_BINDING_KIND_GROUP)
             .bind(&group_name)
+            .bind(next_responses_first_byte_timeout_secs)
+            .bind(next_compact_first_byte_timeout_secs)
+            .bind(next_responses_stream_timeout_secs)
+            .bind(next_compact_stream_timeout_secs)
             .execute(&state.pool)
             .await?;
             let owner =
                 load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
                     .await?;
             Ok(Json(binding_response_from_row(
+                &state.pool,
+                &state.config,
                 load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
                     .await?
                     .expect("saved prompt cache group binding should exist"),
                 owner.as_ref(),
-            )))
+            )
+            .await?))
         }
         "upstreamAccount" => {
             let upstream_account_id = upstream_account_id.ok_or_else(|| {
@@ -724,20 +918,32 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     binding_kind,
                     group_name,
                     upstream_account_id,
+                    responses_first_byte_timeout_secs,
+                    compact_first_byte_timeout_secs,
+                    responses_stream_timeout_secs,
+                    compact_stream_timeout_secs,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, NULL, ?3, datetime('now'), datetime('now'))
+                VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))
                 ON CONFLICT(prompt_cache_key) DO UPDATE SET
                     binding_kind = excluded.binding_kind,
                     group_name = NULL,
                     upstream_account_id = excluded.upstream_account_id,
+                    responses_first_byte_timeout_secs = excluded.responses_first_byte_timeout_secs,
+                    compact_first_byte_timeout_secs = excluded.compact_first_byte_timeout_secs,
+                    responses_stream_timeout_secs = excluded.responses_stream_timeout_secs,
+                    compact_stream_timeout_secs = excluded.compact_stream_timeout_secs,
                     updated_at = excluded.updated_at
                 "#,
             )
             .bind(&prompt_cache_key)
             .bind(PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT)
             .bind(upstream_account_id)
+            .bind(next_responses_first_byte_timeout_secs)
+            .bind(next_compact_first_byte_timeout_secs)
+            .bind(next_responses_stream_timeout_secs)
+            .bind(next_compact_stream_timeout_secs)
             .execute(&state.pool)
             .await?;
             let now_iso = format_utc_iso(Utc::now());
@@ -747,11 +953,14 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                 load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
                     .await?;
             Ok(Json(binding_response_from_row(
+                &state.pool,
+                &state.config,
                 load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
                     .await?
                     .expect("saved prompt cache account binding should exist"),
                 owner.as_ref(),
-            )))
+            )
+            .await?))
         }
         _ => Err(ApiError::bad_request(anyhow!(
             "bindingKind must be one of: none, group, upstreamAccount"
