@@ -113,6 +113,13 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
             available_models: available_models_source,
             system_denied_models: system_denied_models_source,
         },
+        timeouts: RoutingTimeoutSettings::default(),
+        timeout_field_sources: RoutingTimeoutFieldSources {
+            responses_first_byte_timeout_secs: "root".to_string(),
+            compact_first_byte_timeout_secs: "root".to_string(),
+            responses_stream_timeout_secs: "root".to_string(),
+            compact_stream_timeout_secs: "root".to_string(),
+        },
     }
 }
 
@@ -130,6 +137,10 @@ struct RoutingPolicyOverrideRow {
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<String>,
+    policy_responses_first_byte_timeout_secs: Option<i64>,
+    policy_compact_first_byte_timeout_secs: Option<i64>,
+    policy_responses_stream_timeout_secs: Option<i64>,
+    policy_compact_stream_timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -149,6 +160,36 @@ struct GroupRoutingPolicyOverrideRow {
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<String>,
+    policy_responses_first_byte_timeout_secs: Option<i64>,
+    policy_compact_first_byte_timeout_secs: Option<i64>,
+    policy_responses_stream_timeout_secs: Option<i64>,
+    policy_compact_stream_timeout_secs: Option<i64>,
+}
+
+fn apply_routing_timeout_override(
+    rule: &mut EffectiveRoutingRule,
+    source: &str,
+    settings: Option<RoutingTimeoutSettings>,
+) {
+    let Some(settings) = settings else {
+        return;
+    };
+    if let Some(value) = settings.responses_first_byte_timeout_secs {
+        rule.timeouts.responses_first_byte_timeout_secs = Some(value);
+        rule.timeout_field_sources.responses_first_byte_timeout_secs = source.to_string();
+    }
+    if let Some(value) = settings.compact_first_byte_timeout_secs {
+        rule.timeouts.compact_first_byte_timeout_secs = Some(value);
+        rule.timeout_field_sources.compact_first_byte_timeout_secs = source.to_string();
+    }
+    if let Some(value) = settings.responses_stream_timeout_secs {
+        rule.timeouts.responses_stream_timeout_secs = Some(value);
+        rule.timeout_field_sources.responses_stream_timeout_secs = source.to_string();
+    }
+    if let Some(value) = settings.compact_stream_timeout_secs {
+        rule.timeouts.compact_stream_timeout_secs = Some(value);
+        rule.timeout_field_sources.compact_stream_timeout_secs = source.to_string();
+    }
 }
 
 fn apply_routing_policy_override(
@@ -247,7 +288,11 @@ async fn load_group_routing_policy_override_map(
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
-            policy_available_models_json
+            policy_available_models_json,
+            policy_responses_first_byte_timeout_secs,
+            policy_compact_first_byte_timeout_secs,
+            policy_responses_stream_timeout_secs,
+            policy_compact_stream_timeout_secs
         FROM pool_upstream_account_group_notes
         WHERE group_name IN (
         "#,
@@ -290,7 +335,11 @@ async fn load_account_routing_policy_override_map(
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
-            policy_available_models_json
+            policy_available_models_json,
+            policy_responses_first_byte_timeout_secs,
+            policy_compact_first_byte_timeout_secs,
+            policy_responses_stream_timeout_secs,
+            policy_compact_stream_timeout_secs
         FROM pool_upstream_accounts
         WHERE id IN (
         "#,
@@ -344,6 +393,16 @@ fn apply_group_routing_policy_override(
             decode_group_upstream_429_max_retries(row.upstream_429_max_retries),
         );
     }
+    apply_routing_timeout_override(
+        rule,
+        "group",
+        routing_timeout_settings_from_columns(
+            row.policy_responses_first_byte_timeout_secs,
+            row.policy_compact_first_byte_timeout_secs,
+            row.policy_responses_stream_timeout_secs,
+            row.policy_compact_stream_timeout_secs,
+        ),
+    );
 }
 
 fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &EffectiveRoutingRule) {
@@ -412,6 +471,16 @@ fn apply_account_routing_policy_override(
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
         row.policy_available_models_json.as_deref(),
+    );
+    apply_routing_timeout_override(
+        rule,
+        "account",
+        routing_timeout_settings_from_columns(
+            row.policy_responses_first_byte_timeout_secs,
+            row.policy_compact_first_byte_timeout_secs,
+            row.policy_responses_stream_timeout_secs,
+            row.policy_compact_stream_timeout_secs,
+        ),
     );
 }
 

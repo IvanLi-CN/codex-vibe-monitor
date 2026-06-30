@@ -19,6 +19,21 @@
         time::timeout,
     };
 
+    async fn wait_for_imported_oauth_validation_job_terminal(
+        job: &Arc<ImportedOauthValidationJob>,
+    ) -> ImportedOauthValidationTerminalEvent {
+        timeout(Duration::from_secs(15), async {
+            loop {
+                if let Some(terminal) = job.terminal_event.lock().await.clone() {
+                    return terminal;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("validation job should finish within timeout")
+    }
+
     fn test_summary_with_statuses(
         work_status: &str,
         enable_status: &str,
@@ -102,6 +117,18 @@
                     upstream_429_retry: "root".to_string(),
                     available_models: "root".to_string(),
                     system_denied_models: "root".to_string(),
+                },
+                timeouts: RoutingTimeoutSettings {
+                    responses_first_byte_timeout_secs: Some(120),
+                    compact_first_byte_timeout_secs: Some(300),
+                    responses_stream_timeout_secs: Some(300),
+                    compact_stream_timeout_secs: Some(300),
+                },
+                timeout_field_sources: RoutingTimeoutFieldSources {
+                    responses_first_byte_timeout_secs: "root".to_string(),
+                    compact_first_byte_timeout_secs: "root".to_string(),
+                    responses_stream_timeout_secs: "root".to_string(),
+                    compact_stream_timeout_secs: "root".to_string(),
                 },
             },
             image_tool_capability: ImageToolCapability::Unknown,
@@ -1907,16 +1934,7 @@
             .get_validation_job(&response.job_id)
             .await
             .expect("validation job should exist");
-        timeout(Duration::from_secs(5), async {
-            loop {
-                if job.terminal_event.lock().await.is_some() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("validation job should finish");
+        let _terminal = wait_for_imported_oauth_validation_job_terminal(&job).await;
 
         let rows = job.snapshot.lock().await.rows.clone();
         let bad_row = rows
@@ -2049,16 +2067,7 @@
             .get_validation_job(&response.job_id)
             .await
             .expect("validation job should exist");
-        timeout(Duration::from_secs(5), async {
-            loop {
-                if job.terminal_event.lock().await.is_some() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("validation job should finish");
+        let _terminal = wait_for_imported_oauth_validation_job_terminal(&job).await;
 
         let rows = job.snapshot.lock().await.rows.clone();
         let row = rows.first().expect("validation row");
@@ -2255,16 +2264,7 @@
             .get_validation_job(&response.job_id)
             .await
             .expect("validation job should exist");
-        timeout(Duration::from_secs(5), async {
-            loop {
-                if job.terminal_event.lock().await.is_some() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("validation job should finish");
+        let _terminal = wait_for_imported_oauth_validation_job_terminal(&job).await;
 
         let rows = job.snapshot.lock().await.rows.clone();
         let row = rows.first().expect("validation row");
@@ -2451,6 +2451,7 @@
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
                     available_models: OptionalField::Missing,
+                    timeouts: None,
                 }),
             }),
         )
@@ -2522,6 +2523,7 @@
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
                     available_models: OptionalField::Null,
+                    timeouts: None,
                 }),
             }),
         )
@@ -2598,6 +2600,7 @@
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
                     available_models: OptionalField::Missing,
+                    timeouts: None,
                 }),
             }),
         )
@@ -3133,6 +3136,10 @@
                 last_action_source: None,
                 last_action_reason_code: None,
                 last_action_reason_message: None,
+                policy_responses_first_byte_timeout_secs: None,
+                policy_compact_first_byte_timeout_secs: None,
+                policy_responses_stream_timeout_secs: None,
+                policy_compact_stream_timeout_secs: None,
                 last_action_http_status: None,
                 last_action_invoke_id: None,
                 last_action_at: None,

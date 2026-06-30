@@ -285,7 +285,11 @@ type InlinePolicyField =
   | "imageToolRewriteMode"
   | "concurrencyLimit"
   | "upstream429Retry"
-  | "availableModels";
+  | "availableModels"
+  | "timeoutResponsesFirstByte"
+  | "timeoutCompactFirstByte"
+  | "timeoutResponsesStream"
+  | "timeoutCompactStream";
 
 function createBusyActionKey(type: AccountBusyActionType, accountId: number) {
   return `${type}:${accountId}`;
@@ -1439,6 +1443,8 @@ function SharedUpstreamAccountDetailDrawerInner({
             upstream429MaxRetries:
               resolveGroupUpstream429MaxRetriesForName(normalized),
             routingRule: existingGroup?.routingRule,
+            effectiveTimeouts: existingGroup?.effectiveTimeouts ?? null,
+            timeoutFieldSources: existingGroup?.timeoutFieldSources ?? null,
           };
         },
         [
@@ -3326,6 +3332,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                       sourceAccount: t(
                         "accountPool.upstreamAccounts.effectiveRule.sourceAccount",
                       ),
+                      sourceConversation: t(
+                        "accountPool.upstreamAccounts.effectiveRule.sourceConversation",
+                      ),
                       sourceSystem: t(
                         "accountPool.upstreamAccounts.effectiveRule.sourceSystem",
                       ),
@@ -3401,6 +3410,27 @@ function SharedUpstreamAccountDetailDrawerInner({
                       ),
                       fieldImageToolRewriteMode: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode",
+                      ),
+                      timeoutSectionTitle: t(
+                        "accountPool.upstreamAccounts.routing.timeout.sectionTitle",
+                      ),
+                      timeoutInheritedValue: t(
+                        "accountPool.upstreamAccounts.timeoutEditor.inherited",
+                      ),
+                      timeoutOverrideValue: t(
+                        "accountPool.upstreamAccounts.timeoutEditor.accountOverride",
+                      ),
+                      timeoutResponsesFirstByte: t(
+                        "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte",
+                      ),
+                      timeoutCompactFirstByte: t(
+                        "accountPool.upstreamAccounts.routing.timeout.compactFirstByte",
+                      ),
+                      timeoutResponsesStream: t(
+                        "accountPool.upstreamAccounts.routing.timeout.responsesStream",
+                      ),
+                      timeoutCompactStream: t(
+                        "accountPool.upstreamAccounts.routing.timeout.compactStream",
                       ),
                     }}
                   />
@@ -3768,6 +3798,8 @@ function SharedUpstreamAccountDetailDrawerInner({
         )}
         submitLabel={t("accountPool.upstreamAccounts.policyDialog.save")}
         rule={selectedDetail?.effectiveRoutingRule ?? null}
+        effectiveTimeouts={selectedDetail?.effectiveRoutingRule?.timeouts ?? DEFAULT_ROUTING_TIMEOUTS}
+        timeoutFieldSources={selectedDetail?.effectiveRoutingRule?.timeoutFieldSources}
         busy={
           selectedDetail
             ? hasBusyAccountAction(busyAction, selectedDetail.id)
@@ -3866,6 +3898,24 @@ function SharedUpstreamAccountDetailDrawerInner({
           availableModelsRemove: t(
             "accountPool.tags.dialog.availableModelsRemove",
           ),
+          timeoutSectionTitle: t("accountPool.upstreamAccounts.routing.timeout.sectionTitle"),
+          timeoutSectionHint: t("accountPool.upstreamAccounts.policyDialog.accountDescription"),
+          timeoutResponsesFirstByte: t("accountPool.upstreamAccounts.routing.timeout.responsesFirstByte"),
+          timeoutCompactFirstByte: t("accountPool.upstreamAccounts.routing.timeout.compactFirstByte"),
+          timeoutResponsesStream: t("accountPool.upstreamAccounts.routing.timeout.responsesStream"),
+          timeoutCompactStream: t("accountPool.upstreamAccounts.routing.timeout.compactStream"),
+          timeoutInheritedValue: t("accountPool.upstreamAccounts.timeoutEditor.inherited"),
+          timeoutOverrideValue: t(
+            "accountPool.upstreamAccounts.timeoutEditor.accountOverride",
+          ),
+          timeoutClearField: t(
+            "accountPool.upstreamAccounts.effectiveRule.overrideClear",
+          ),
+          timeoutInheritField: t("accountPool.tags.dialog.availableModelsInherited"),
+          timeoutSourceGlobal: t("accountPool.upstreamAccounts.effectiveRule.sourceRoot"),
+          timeoutSourceGroup: t("accountPool.upstreamAccounts.effectiveRule.sourceGroup"),
+          timeoutSourceAccount: t("accountPool.upstreamAccounts.effectiveRule.sourceAccount"),
+          timeoutSourceConversation: t("accountPool.upstreamAccounts.effectiveRule.sourceConversation"),
           cancel: t("accountPool.tags.dialog.cancel"),
           validation: t("accountPool.tags.dialog.validation"),
         }}

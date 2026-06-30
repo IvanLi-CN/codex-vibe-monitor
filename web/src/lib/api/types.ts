@@ -92,6 +92,8 @@ export type {
   TagRoutingRule,
   GroupAccountRoutingRule,
   EffectiveRoutingRule,
+  EffectiveRoutingRuleSource,
+  EffectiveRoutingTimeoutFieldSources,
   AccountTagSummary,
   TagSummary,
   TagListResponse,

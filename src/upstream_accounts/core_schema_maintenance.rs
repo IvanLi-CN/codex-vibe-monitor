@@ -58,6 +58,10 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
             policy_available_models_json TEXT,
+            policy_responses_first_byte_timeout_secs INTEGER,
+            policy_compact_first_byte_timeout_secs INTEGER,
+            policy_responses_stream_timeout_secs INTEGER,
+            policy_compact_stream_timeout_secs INTEGER,
             upstream_base_url TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -169,6 +173,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_accounts.policy_available_models_json")?;
+    for column in [
+        "policy_responses_first_byte_timeout_secs",
+        "policy_compact_first_byte_timeout_secs",
+        "policy_responses_stream_timeout_secs",
+        "policy_compact_stream_timeout_secs",
+    ] {
+        ensure_nullable_integer_column(pool, "pool_upstream_accounts", column)
+            .await
+            .with_context(|| format!("failed to ensure pool_upstream_accounts.{column}"))?;
+    }
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "external_client_id")
         .await
         .context("failed to ensure pool_upstream_accounts.external_client_id")?;
@@ -846,6 +860,10 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
             policy_available_models_json TEXT,
+            policy_responses_first_byte_timeout_secs INTEGER,
+            policy_compact_first_byte_timeout_secs INTEGER,
+            policy_responses_stream_timeout_secs INTEGER,
+            policy_compact_stream_timeout_secs INTEGER,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -970,6 +988,18 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_account_group_notes.policy_available_models_json")?;
+    for column in [
+        "policy_responses_first_byte_timeout_secs",
+        "policy_compact_first_byte_timeout_secs",
+        "policy_responses_stream_timeout_secs",
+        "policy_compact_stream_timeout_secs",
+    ] {
+        ensure_nullable_integer_column(pool, "pool_upstream_account_group_notes", column)
+            .await
+            .with_context(|| {
+                format!("failed to ensure pool_upstream_account_group_notes.{column}")
+            })?;
+    }
 
     sqlx::query(
         r#"

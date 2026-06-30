@@ -587,7 +587,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     original_uri: &Uri,
     headers: &HeaderMap,
     body: reqwest::Body,
-    runtime_timeouts: &PoolRoutingTimeoutSettingsResolved,
+    prompt_cache_key: Option<&str>,
     handshake_timeout: Duration,
     responses_total_timeout: Option<Duration>,
     responses_total_timeout_started_at: Option<Instant>,
@@ -596,8 +596,32 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
+    let (_, _, runtime_timeouts) = load_effective_request_path_timeouts_for_account(
+        &state.pool,
+        &state.config,
+        account.account_id,
+        prompt_cache_key,
+    )
+    .await
+    .map_err(|err| PoolUpstreamError {
+        account: Some(account.clone()),
+        status: StatusCode::BAD_GATEWAY,
+        message: format!("failed to resolve effective request-path timeouts: {err}"),
+        canonical_error_message: None,
+        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        connect_latency_ms: 0.0,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        downstream_error_message: None,
+        upstream_request_id: None,
+        proxy_binding_key_snapshot: None,
+        oauth_responses_debug: None,
+        attempt_summary: pool_attempt_summary(0, 1, Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string())),
+        requested_service_tier: None,
+        request_body_for_capture: None,
+    })?;
     let pre_first_byte_timeout =
-        pool_upstream_first_chunk_timeout(runtime_timeouts, original_uri, &method);
+        pool_upstream_first_chunk_timeout(&runtime_timeouts, original_uri, &method);
     let Some(attempt_send_timeout) = pool_timeout_budget_with_total_limit(
         pool_upstream_send_timeout(
             original_uri,
@@ -2852,7 +2876,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             original_uri,
                             &headers,
                             replayable_body.body,
-                            &runtime_timeouts,
+                            live_prompt_cache_key.as_deref(),
                             handshake_timeout,
                             responses_total_timeout,
                             live_responses_total_timeout_started_at,

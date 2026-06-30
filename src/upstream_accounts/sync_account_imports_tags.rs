@@ -2403,7 +2403,7 @@ async fn sync_account_tag_links(
 }
 
 async fn load_upstream_account_groups(
-    pool: &Pool<Sqlite>,
+    state: &AppState,
 ) -> Result<Vec<UpstreamAccountGroupSummary>> {
     let rows = sqlx::query_as::<_, UpstreamAccountGroupListRow>(
         r#"
@@ -2442,7 +2442,11 @@ async fn load_upstream_account_groups(
             notes.policy_concurrency_limit,
             notes.policy_upstream_429_retry_enabled,
             notes.policy_upstream_429_max_retries,
-            notes.policy_available_models_json
+            notes.policy_available_models_json,
+            notes.policy_responses_first_byte_timeout_secs,
+            notes.policy_compact_first_byte_timeout_secs,
+            notes.policy_responses_stream_timeout_secs,
+            notes.policy_compact_stream_timeout_secs
         FROM catalog_groups
         LEFT JOIN account_groups
             ON account_groups.group_name = catalog_groups.group_name
@@ -2451,12 +2455,11 @@ async fn load_upstream_account_groups(
         ORDER BY catalog_groups.group_name COLLATE NOCASE ASC
         "#,
     )
-    .fetch_all(pool)
+    .fetch_all(&state.pool)
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| {
+    let mut groups = Vec::with_capacity(rows.len());
+    for row in rows {
                 let node_shunt_enabled =
                     decode_group_node_shunt_enabled(row.node_shunt_enabled.unwrap_or_default());
                 let single_account_rotation_enabled =
@@ -2472,7 +2475,34 @@ async fn load_upstream_account_groups(
                         row.upstream_429_max_retries.unwrap_or_default(),
                     ),
                 );
-                UpstreamAccountGroupSummary {
+                let routing_rule = group_routing_rule_from_columns(
+                    row.concurrency_limit.unwrap_or_default(),
+                    upstream_429_retry_enabled,
+                    upstream_429_max_retries,
+                    row.policy_block_new_conversations,
+                    row.policy_allow_new_conversations,
+                    row.policy_allow_cut_out,
+                    row.policy_allow_cut_in,
+                    row.policy_priority_tier.as_deref(),
+                    row.policy_fast_mode_rewrite_mode.as_deref(),
+                    row.policy_image_tool_rewrite_mode.as_deref(),
+                    row.policy_concurrency_limit,
+                    row.policy_upstream_429_retry_enabled,
+                    row.policy_upstream_429_max_retries,
+                    row.policy_available_models_json.as_deref(),
+                    row.policy_responses_first_byte_timeout_secs,
+                    row.policy_compact_first_byte_timeout_secs,
+                    row.policy_responses_stream_timeout_secs,
+                    row.policy_compact_stream_timeout_secs,
+                );
+                let (effective_timeouts, timeout_field_sources, _) =
+                    load_effective_request_path_timeouts_for_group(
+                        &state.pool,
+                        &state.config,
+                        Some(row.group_name.as_str()),
+                    )
+                    .await?;
+                groups.push(UpstreamAccountGroupSummary {
                     group_name: row.group_name,
                     account_count: row.account_count,
                     note: normalize_optional_text(row.note),
@@ -2484,25 +2514,12 @@ async fn load_upstream_account_groups(
                     upstream_429_retry_enabled,
                     upstream_429_max_retries,
                     concurrency_limit: row.concurrency_limit.unwrap_or_default(),
-                    routing_rule: group_routing_rule_from_columns(
-                        row.concurrency_limit.unwrap_or_default(),
-                        upstream_429_retry_enabled,
-                        upstream_429_max_retries,
-                        row.policy_block_new_conversations,
-                        row.policy_allow_new_conversations,
-                        row.policy_allow_cut_out,
-                        row.policy_allow_cut_in,
-                        row.policy_priority_tier.as_deref(),
-                        row.policy_fast_mode_rewrite_mode.as_deref(),
-                        row.policy_image_tool_rewrite_mode.as_deref(),
-                        row.policy_concurrency_limit,
-                        row.policy_upstream_429_retry_enabled,
-                        row.policy_upstream_429_max_retries,
-                        row.policy_available_models_json.as_deref(),
-                    ),
-                }
-            })
-        .collect())
+                    effective_timeouts,
+                    timeout_field_sources,
+                    routing_rule,
+                });
+    }
+    Ok(groups)
 }
 async fn load_upstream_account_summaries(
     pool: &Pool<Sqlite>,
@@ -3425,7 +3442,7 @@ async fn enrich_node_shunt_routing_block_reasons(
 async fn load_canonicalized_upstream_account_groups(
     state: &AppState,
 ) -> Result<Vec<UpstreamAccountGroupSummary>> {
-    let mut groups = load_upstream_account_groups(&state.pool).await?;
+    let mut groups = load_upstream_account_groups(state).await?;
     for group in &mut groups {
         group.bound_proxy_keys =
             canonicalize_forward_proxy_bound_keys(state, &group.bound_proxy_keys).await?;
@@ -3445,6 +3462,12 @@ async fn load_canonicalized_upstream_account_group(
     };
     let metadata = load_group_metadata(&state.pool, Some(group_name)).await?;
     let routing_rule = group_routing_rule_from_group_metadata(&metadata);
+    let (effective_timeouts, timeout_field_sources, _) = load_effective_request_path_timeouts_for_group(
+        &state.pool,
+        &state.config,
+        Some(group_name),
+    )
+    .await?;
     Ok(Some(UpstreamAccountGroupSummary {
         group_name: group_name.to_string(),
         account_count: sqlx::query_scalar::<_, i64>(
@@ -3464,6 +3487,8 @@ async fn load_canonicalized_upstream_account_group(
         upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
         upstream_429_max_retries: metadata.upstream_429_max_retries,
         concurrency_limit: metadata.concurrency_limit,
+        effective_timeouts,
+        timeout_field_sources,
         routing_rule,
     }))
 }
@@ -3483,6 +3508,7 @@ fn group_routing_rule_from_group_metadata(
         upstream_429_max_retries: metadata.upstream_429_max_retries,
         available_models: Vec::new(),
         available_models_defined: false,
+        timeouts: None,
     }
 }
 

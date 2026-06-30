@@ -2,6 +2,7 @@ import { getBrowserTimeZone } from "../timeZone";
 import { normalizeForwardProxyProtocolLabel } from "../forwardProxyDisplay";
 import type {
   CompactSupportState,
+  EffectiveRoutingTimeoutFieldSources,
   PoolRoutingMaintenanceSettings,
   PoolRoutingSettings,
   PoolRoutingTimeoutSettings,
@@ -1206,13 +1207,33 @@ export interface PromptCacheConversationBindingResponse {
   encryptedOwnerAccountId: number | null;
   encryptedOwnerAccountName: string | null;
   encryptedOwnerGroupName: string | null;
+  timeouts: PoolRoutingTimeoutSettings;
+  timeoutFieldSources: EffectiveRoutingTimeoutFieldSources;
   updatedAt: string | null;
 }
 
+export type PromptCacheConversationBindingTimeoutPatch = {
+  responsesFirstByteTimeoutSecs?: number | null;
+  compactFirstByteTimeoutSecs?: number | null;
+  responsesStreamTimeoutSecs?: number | null;
+  compactStreamTimeoutSecs?: number | null;
+};
+
 export type UpdatePromptCacheConversationBindingPayload =
-  | { bindingKind: "none" }
-  | { bindingKind: "group"; groupName: string }
-  | { bindingKind: "upstreamAccount"; upstreamAccountId: number };
+  | {
+      bindingKind: "none";
+      timeouts?: PromptCacheConversationBindingTimeoutPatch;
+    }
+  | {
+      bindingKind: "group";
+      groupName: string;
+      timeouts?: PromptCacheConversationBindingTimeoutPatch;
+    }
+  | {
+      bindingKind: "upstreamAccount";
+      upstreamAccountId: number;
+      timeouts?: PromptCacheConversationBindingTimeoutPatch;
+    };
 
 export type PromptCacheConversationSelectionMode = "count" | "activityWindow";
 export type PromptCacheConversationDetailLevel = "full" | "compact";
@@ -2370,6 +2391,72 @@ function normalizePoolRoutingTimeoutSettings(
   };
 }
 
+function normalizeRoutingTimeoutFieldSources(
+  raw: unknown,
+): EffectiveRoutingTimeoutFieldSources {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const normalizeSource = (value: unknown) =>
+    typeof value === "string" && value.trim() ? value : "root";
+  return {
+    responsesFirstByteTimeoutSecs: normalizeSource(
+      payload.responsesFirstByteTimeoutSecs,
+    ),
+    compactFirstByteTimeoutSecs: normalizeSource(
+      payload.compactFirstByteTimeoutSecs,
+    ),
+    responsesStreamTimeoutSecs: normalizeSource(
+      payload.responsesStreamTimeoutSecs,
+    ),
+    compactStreamTimeoutSecs: normalizeSource(
+      payload.compactStreamTimeoutSecs,
+    ),
+  };
+}
+
+function normalizePromptCacheConversationBindingResponse(
+  raw: Record<string, unknown>,
+  promptCacheKey: string,
+): PromptCacheConversationBindingResponse {
+  return {
+    promptCacheKey:
+      typeof raw.promptCacheKey === "string" ? raw.promptCacheKey : promptCacheKey,
+    bindingKind:
+      raw.bindingKind === "group" || raw.bindingKind === "upstreamAccount"
+        ? raw.bindingKind
+        : "none",
+    groupName:
+      typeof raw.groupName === "string" && raw.groupName.trim()
+        ? raw.groupName.trim()
+        : null,
+    upstreamAccountId: normalizeFiniteNumber(raw.upstreamAccountId) ?? null,
+    upstreamAccountName:
+      typeof raw.upstreamAccountName === "string" && raw.upstreamAccountName.trim()
+        ? raw.upstreamAccountName.trim()
+        : null,
+    hasEncryptedSessionOwner:
+      typeof raw.hasEncryptedSessionOwner === "boolean"
+        ? raw.hasEncryptedSessionOwner
+        : false,
+    encryptedOwnerAccountId:
+      normalizeFiniteNumber(raw.encryptedOwnerAccountId) ?? null,
+    encryptedOwnerAccountName:
+      typeof raw.encryptedOwnerAccountName === "string" &&
+      raw.encryptedOwnerAccountName.trim()
+        ? raw.encryptedOwnerAccountName.trim()
+        : null,
+    encryptedOwnerGroupName:
+      typeof raw.encryptedOwnerGroupName === "string" &&
+      raw.encryptedOwnerGroupName.trim()
+        ? raw.encryptedOwnerGroupName.trim()
+        : null,
+    timeouts: normalizePoolRoutingTimeoutSettings(raw.timeouts),
+    timeoutFieldSources: normalizeRoutingTimeoutFieldSources(
+      raw.timeoutFieldSources,
+    ),
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
+  };
+}
+
 export function normalizeCompactSupportState(
   raw: unknown,
 ): CompactSupportState {
@@ -2921,40 +3008,7 @@ export async function fetchPromptCacheConversationBinding(
     )}`,
     { signal },
   );
-  return {
-    promptCacheKey:
-      typeof raw.promptCacheKey === "string" ? raw.promptCacheKey : promptCacheKey,
-    bindingKind:
-      raw.bindingKind === "group" || raw.bindingKind === "upstreamAccount"
-        ? raw.bindingKind
-        : "none",
-    groupName:
-      typeof raw.groupName === "string" && raw.groupName.trim()
-        ? raw.groupName.trim()
-        : null,
-    upstreamAccountId: normalizeFiniteNumber(raw.upstreamAccountId) ?? null,
-    upstreamAccountName:
-      typeof raw.upstreamAccountName === "string" && raw.upstreamAccountName.trim()
-        ? raw.upstreamAccountName.trim()
-        : null,
-    hasEncryptedSessionOwner:
-      typeof raw.hasEncryptedSessionOwner === "boolean"
-        ? raw.hasEncryptedSessionOwner
-        : false,
-    encryptedOwnerAccountId:
-      normalizeFiniteNumber(raw.encryptedOwnerAccountId) ?? null,
-    encryptedOwnerAccountName:
-      typeof raw.encryptedOwnerAccountName === "string" &&
-      raw.encryptedOwnerAccountName.trim()
-        ? raw.encryptedOwnerAccountName.trim()
-        : null,
-    encryptedOwnerGroupName:
-      typeof raw.encryptedOwnerGroupName === "string" &&
-      raw.encryptedOwnerGroupName.trim()
-        ? raw.encryptedOwnerGroupName.trim()
-        : null,
-    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
-  };
+  return normalizePromptCacheConversationBindingResponse(raw, promptCacheKey);
 }
 
 export async function updatePromptCacheConversationBinding(
@@ -2972,40 +3026,7 @@ export async function updatePromptCacheConversationBinding(
       signal,
     },
   );
-  return {
-    promptCacheKey:
-      typeof raw.promptCacheKey === "string" ? raw.promptCacheKey : promptCacheKey,
-    bindingKind:
-      raw.bindingKind === "group" || raw.bindingKind === "upstreamAccount"
-        ? raw.bindingKind
-        : "none",
-    groupName:
-      typeof raw.groupName === "string" && raw.groupName.trim()
-        ? raw.groupName.trim()
-        : null,
-    upstreamAccountId: normalizeFiniteNumber(raw.upstreamAccountId) ?? null,
-    upstreamAccountName:
-      typeof raw.upstreamAccountName === "string" && raw.upstreamAccountName.trim()
-        ? raw.upstreamAccountName.trim()
-        : null,
-    hasEncryptedSessionOwner:
-      typeof raw.hasEncryptedSessionOwner === "boolean"
-        ? raw.hasEncryptedSessionOwner
-        : false,
-    encryptedOwnerAccountId:
-      normalizeFiniteNumber(raw.encryptedOwnerAccountId) ?? null,
-    encryptedOwnerAccountName:
-      typeof raw.encryptedOwnerAccountName === "string" &&
-      raw.encryptedOwnerAccountName.trim()
-        ? raw.encryptedOwnerAccountName.trim()
-        : null,
-    encryptedOwnerGroupName:
-      typeof raw.encryptedOwnerGroupName === "string" &&
-      raw.encryptedOwnerGroupName.trim()
-        ? raw.encryptedOwnerGroupName.trim()
-        : null,
-    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
-  };
+  return normalizePromptCacheConversationBindingResponse(raw, promptCacheKey);
 }
 
 export async function fetchPromptCacheConversationsPage(

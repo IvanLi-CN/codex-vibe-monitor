@@ -13,10 +13,13 @@ import {
   CommandSeparator,
 } from './ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
+import { RoutingTimeoutOverridesEditor } from './RoutingTimeoutOverridesEditor'
 import { Switch } from './ui/switch'
 import type {
   EffectiveRoutingRule,
+  EffectiveRoutingTimeoutFieldSources,
   ImageToolRewriteMode,
+  PoolRoutingTimeoutSettings,
   TagFastModeRewriteMode,
   TagPriorityTier,
   UpdateGroupAccountRoutingRulePayload,
@@ -33,6 +36,11 @@ import {
   fastModeRewriteBadgeLabel,
   priorityTierBadgeLabel,
 } from '../lib/tagRoutingRule'
+import {
+  ROUTING_TIMEOUT_FIELD_ORDER,
+  buildRoutingTimeoutOverrideDraftForSource,
+  type RoutingTimeoutFieldKey,
+} from '../lib/poolRoutingTimeouts'
 import { cn } from '../lib/utils'
 
 type EditablePolicyField =
@@ -45,6 +53,10 @@ type EditablePolicyField =
   | 'concurrencyLimit'
   | 'upstream429Retry'
   | 'availableModels'
+  | 'timeoutResponsesFirstByte'
+  | 'timeoutCompactFirstByte'
+  | 'timeoutResponsesStream'
+  | 'timeoutCompactStream'
 
 type FieldSourceMap = NonNullable<EffectiveRoutingRule['fieldSources']>
 
@@ -165,10 +177,18 @@ interface EffectiveRoutingRuleCardProps {
     fieldUpstream429?: string
     fieldAvailableModels?: string
     fieldSystemDeniedModels?: string
+    timeoutSectionTitle?: string
+    timeoutInheritedValue?: string
+    timeoutOverrideValue?: string
+    timeoutResponsesFirstByte?: string
+    timeoutCompactFirstByte?: string
+    timeoutResponsesStream?: string
+    timeoutCompactStream?: string
     sourceRoot?: string
     sourceGroup?: string
     sourceTag?: string
     sourceAccount?: string
+    sourceConversation?: string
     sourceSystem?: string
     overrideEdit?: string
     overrideActive?: string
@@ -218,6 +238,18 @@ function defaultRule(rule?: EffectiveRoutingRule | null): EffectiveRoutingRule {
     availableModels: [],
     systemDeniedModels: [],
     fieldSources: defaultFieldSources,
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 120,
+      compactFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 300,
+    },
+    timeoutFieldSources: {
+      responsesFirstByteTimeoutSecs: 'root',
+      compactFirstByteTimeoutSecs: 'root',
+      responsesStreamTimeoutSecs: 'root',
+      compactStreamTimeoutSecs: 'root',
+    },
   }
 }
 
@@ -231,6 +263,8 @@ function sourceLabel(source: string, labels: EffectiveRoutingRuleCardProps['labe
       return labels.sourceTag ?? 'Tag'
     case 'account':
       return labels.sourceAccount ?? 'Account'
+    case 'conversation':
+      return labels.sourceConversation ?? 'Conversation'
     case 'system':
       return labels.sourceSystem ?? 'System'
     default:
@@ -239,13 +273,34 @@ function sourceLabel(source: string, labels: EffectiveRoutingRuleCardProps['labe
 }
 
 function sourceVariant(source: string) {
-  return source === 'account' ? 'default' : source === 'tag' ? 'accent' : source === 'group' ? 'info' : 'secondary'
+  return source === 'account' || source === 'conversation'
+    ? 'default'
+    : source === 'tag'
+      ? 'accent'
+      : source === 'group'
+        ? 'info'
+        : 'secondary'
 }
 
 function accountOverrideFields(fieldSources: FieldSourceMap): EditablePolicyField[] {
   return editableFieldSourceKeys
     .filter(([, sourceKey]) => fieldSources[sourceKey] === 'account')
     .map(([field]) => field)
+}
+
+const timeoutFieldToInlineField: Record<RoutingTimeoutFieldKey, EditablePolicyField> = {
+  responsesFirstByteTimeoutSecs: 'timeoutResponsesFirstByte',
+  compactFirstByteTimeoutSecs: 'timeoutCompactFirstByte',
+  responsesStreamTimeoutSecs: 'timeoutResponsesStream',
+  compactStreamTimeoutSecs: 'timeoutCompactStream',
+}
+
+function accountTimeoutOverrideFields(
+  timeoutSources: EffectiveRoutingTimeoutFieldSources,
+): EditablePolicyField[] {
+  return ROUTING_TIMEOUT_FIELD_ORDER.filter((key) => timeoutSources[key] === 'account').map(
+    (key) => timeoutFieldToInlineField[key],
+  )
 }
 
 function normalizeModelIds(values: string[]) {
@@ -275,7 +330,36 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
     () => ({ ...defaultFieldSources, ...(resolvedRule.fieldSources ?? {}) }),
     [resolvedRule.fieldSources],
   )
-  const defaultExpandedFields = isEditable ? accountOverrideFields(fieldSources) : []
+  const timeoutSources = useMemo<EffectiveRoutingTimeoutFieldSources>(
+    () =>
+      resolvedRule.timeoutFieldSources ?? {
+        responsesFirstByteTimeoutSecs: 'root',
+        compactFirstByteTimeoutSecs: 'root',
+        responsesStreamTimeoutSecs: 'root',
+        compactStreamTimeoutSecs: 'root',
+      },
+    [resolvedRule.timeoutFieldSources],
+  )
+  const timeoutValues = useMemo<PoolRoutingTimeoutSettings>(
+    () =>
+      resolvedRule.timeouts ?? {
+        responsesFirstByteTimeoutSecs: 120,
+        compactFirstByteTimeoutSecs: 300,
+        responsesStreamTimeoutSecs: 300,
+        compactStreamTimeoutSecs: 300,
+      },
+    [resolvedRule.timeouts],
+  )
+  const timeoutOverrideDraft = useMemo(
+    () => buildRoutingTimeoutOverrideDraftForSource(timeoutValues, timeoutSources, 'account'),
+    [timeoutSources, timeoutValues],
+  )
+  const defaultExpandedFields = isEditable
+    ? [
+        ...accountOverrideFields(fieldSources),
+        ...accountTimeoutOverrideFields(timeoutSources),
+      ]
+    : []
   const [expandedFields, setExpandedFields] = useState<EditablePolicyField[]>(defaultExpandedFields)
   const [availableModelInput, setAvailableModelInput] = useState('')
   const userTouchedExpansionRef = useRef(false)
@@ -294,7 +378,10 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
       return
     }
 
-    const nextDefaultExpandedFields = accountOverrideFields(fieldSources)
+    const nextDefaultExpandedFields = [
+      ...accountOverrideFields(fieldSources),
+      ...accountTimeoutOverrideFields(timeoutSources),
+    ]
     setExpandedFields((current) => {
       if (userTouchedExpansionRef.current) return current
       if (current.some((field) => fieldToSource(field, fieldSources) === 'account')) return current
@@ -312,7 +399,12 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
     fieldSources.concurrencyLimit,
     fieldSources.upstream429Retry,
     fieldSources.availableModels,
+    timeoutSources.responsesFirstByteTimeoutSecs,
+    timeoutSources.compactFirstByteTimeoutSecs,
+    timeoutSources.responsesStreamTimeoutSecs,
+    timeoutSources.compactStreamTimeoutSecs,
     fieldSources,
+    timeoutSources,
   ])
 
   const availableModelOptions = useMemo(
@@ -363,6 +455,9 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
     resolvedRule.upstream429RetryEnabled === true
       ? Math.min(5, Math.max(0, Math.trunc(resolvedRule.upstream429MaxRetries ?? 0)))
       : 0
+  const inlineTimeoutBusy = ROUTING_TIMEOUT_FIELD_ORDER.some(
+    (key) => editablePolicy?.busyField === timeoutFieldToInlineField[key],
+  )
 
   const fieldRows = [
     {
@@ -643,6 +738,64 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
           </div>
         </div>
 
+        <RoutingTimeoutOverridesEditor
+          fields={[
+            {
+              key: 'responsesFirstByteTimeoutSecs',
+              label:
+                labels.timeoutResponsesFirstByte ?? 'Standard response first byte timeout',
+            },
+            {
+              key: 'compactFirstByteTimeoutSecs',
+              label:
+                labels.timeoutCompactFirstByte ?? 'Compact response first byte timeout',
+            },
+            {
+              key: 'responsesStreamTimeoutSecs',
+              label:
+                labels.timeoutResponsesStream ?? 'Standard stream completion timeout',
+            },
+            {
+              key: 'compactStreamTimeoutSecs',
+              label:
+                labels.timeoutCompactStream ?? 'Compact stream completion timeout',
+            },
+          ]}
+          effective={timeoutValues}
+          draft={timeoutOverrideDraft}
+          sources={timeoutSources}
+          busy={inlineTimeoutBusy}
+          disabled={!isEditable}
+          labels={{
+            sectionTitle: labels.timeoutSectionTitle ?? 'Request path timeouts',
+            inheritedValue: labels.timeoutInheritedValue ?? 'Inherited',
+            overrideValue: labels.timeoutOverrideValue ?? 'Account override',
+            clearField: labels.overrideClear ?? 'Clear account override',
+            inheritField: labels.overrideEdit ?? 'Edit account override',
+            sourceRoot: labels.sourceRoot,
+            sourceGroup: labels.sourceGroup,
+            sourceAccount: labels.sourceAccount,
+            sourceConversation: labels.sourceConversation,
+          }}
+          onDraftChange={(key, value) => {
+            if (!editablePolicy) return
+            const parsed = value.trim()
+            void editablePolicy.onChange(timeoutFieldToInlineField[key], {
+              timeouts: {
+                [key]: parsed ? Number(parsed) : null,
+              },
+            })
+          }}
+          onClearField={(key) => {
+            if (!editablePolicy) return
+            void editablePolicy.onChange(timeoutFieldToInlineField[key], {
+              timeouts: {
+                [key]: null,
+              },
+            })
+          }}
+        />
+
         <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
           <p className="metric-label">{labels.sourceTags}</p>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -680,6 +833,14 @@ function fieldToSource(field: EditablePolicyField, sources: FieldSourceMap): str
       return sources.upstream429Retry
     case 'availableModels':
       return sources.availableModels ?? 'root'
+    case 'timeoutResponsesFirstByte':
+      return 'account'
+    case 'timeoutCompactFirstByte':
+      return 'account'
+    case 'timeoutResponsesStream':
+      return 'account'
+    case 'timeoutCompactStream':
+      return 'account'
   }
 }
 

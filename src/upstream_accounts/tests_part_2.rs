@@ -304,6 +304,18 @@
                 available_models: "root".to_string(),
                 system_denied_models: "root".to_string(),
             },
+            timeouts: RoutingTimeoutSettings {
+                responses_first_byte_timeout_secs: Some(120),
+                compact_first_byte_timeout_secs: Some(300),
+                responses_stream_timeout_secs: Some(300),
+                compact_stream_timeout_secs: Some(300),
+            },
+            timeout_field_sources: RoutingTimeoutFieldSources {
+                responses_first_byte_timeout_secs: "root".to_string(),
+                compact_first_byte_timeout_secs: "root".to_string(),
+                responses_stream_timeout_secs: "root".to_string(),
+                compact_stream_timeout_secs: "root".to_string(),
+            },
         }
     }
 
@@ -4199,6 +4211,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )
@@ -4258,6 +4271,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )
@@ -4334,6 +4348,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )
@@ -4391,6 +4406,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )
@@ -4467,6 +4483,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )
@@ -4524,6 +4541,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Value(vec![]),
+                        timeouts: None,
                     }),
                 },
             )
@@ -4579,6 +4597,7 @@
                         upstream_429_retry_enabled: OptionalField::Missing,
                         upstream_429_max_retries: OptionalField::Missing,
                         available_models: OptionalField::Missing,
+                        timeouts: None,
                     }),
                 },
             )

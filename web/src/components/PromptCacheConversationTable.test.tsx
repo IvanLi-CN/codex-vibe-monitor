@@ -1281,7 +1281,11 @@ describe("PromptCacheConversationTable", () => {
 
     expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
       "pck-binding",
-      { bindingKind: "upstreamAccount", upstreamAccountId: 77 },
+      {
+        bindingKind: "upstreamAccount",
+        upstreamAccountId: 77,
+        timeouts: {},
+      },
     );
     expect(document.body.textContent).toContain("当前：账号 Pool Beta");
   });
@@ -1706,7 +1710,7 @@ describe("PromptCacheConversationTable", () => {
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
       "pck-binding-clear",
-      { bindingKind: "none" },
+      { bindingKind: "none", timeouts: {} },
     );
 
     confirmSpy.mockRestore();

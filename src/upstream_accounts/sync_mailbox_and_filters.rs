@@ -1441,6 +1441,7 @@ fn normalize_group_account_routing_rule(
         upstream_429_max_retries,
         available_models: normalize_available_models(available_models, "availableModels")?,
         available_models_defined,
+        timeouts: None,
     })
 }
 
@@ -1661,6 +1662,10 @@ fn group_routing_rule_from_columns(
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<&str>,
+    policy_responses_first_byte_timeout_secs: Option<i64>,
+    policy_compact_first_byte_timeout_secs: Option<i64>,
+    policy_responses_stream_timeout_secs: Option<i64>,
+    policy_compact_stream_timeout_secs: Option<i64>,
 ) -> GroupAccountRoutingRule {
     let allow_new_conversations = policy_allow_new_conversations.or_else(|| {
         policy_block_new_conversations
@@ -1691,6 +1696,12 @@ fn group_routing_rule_from_columns(
         ),
         available_models: parse_string_array_json(policy_available_models_json),
         available_models_defined: policy_available_models_json.is_some(),
+        timeouts: routing_timeout_settings_from_columns(
+            policy_responses_first_byte_timeout_secs,
+            policy_compact_first_byte_timeout_secs,
+            policy_responses_stream_timeout_secs,
+            policy_compact_stream_timeout_secs,
+        ),
     }
 }
 
@@ -1698,24 +1709,30 @@ async fn load_group_routing_rule(
     pool: &Pool<Sqlite>,
     group_name: &str,
 ) -> Result<GroupAccountRoutingRule> {
+    #[derive(Debug, FromRow)]
+    struct GroupRoutingRuleRow {
+        concurrency_limit: Option<i64>,
+        upstream_429_retry_enabled: Option<i64>,
+        upstream_429_max_retries: Option<i64>,
+        policy_block_new_conversations: Option<i64>,
+        policy_allow_new_conversations: Option<i64>,
+        policy_allow_cut_out: Option<i64>,
+        policy_allow_cut_in: Option<i64>,
+        policy_priority_tier: Option<String>,
+        policy_fast_mode_rewrite_mode: Option<String>,
+        policy_image_tool_rewrite_mode: Option<String>,
+        policy_concurrency_limit: Option<i64>,
+        policy_upstream_429_retry_enabled: Option<i64>,
+        policy_upstream_429_max_retries: Option<i64>,
+        policy_available_models_json: Option<String>,
+        policy_responses_first_byte_timeout_secs: Option<i64>,
+        policy_compact_first_byte_timeout_secs: Option<i64>,
+        policy_responses_stream_timeout_secs: Option<i64>,
+        policy_compact_stream_timeout_secs: Option<i64>,
+    }
     let row = sqlx::query_as::<
         _,
-        (
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-        ),
+        GroupRoutingRuleRow,
     >(
         r#"
         SELECT
@@ -1732,7 +1749,11 @@ async fn load_group_routing_rule(
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
-            policy_available_models_json
+            policy_available_models_json,
+            policy_responses_first_byte_timeout_secs,
+            policy_compact_first_byte_timeout_secs,
+            policy_responses_stream_timeout_secs,
+            policy_compact_stream_timeout_secs
         FROM pool_upstream_account_group_notes
         WHERE group_name = ?1
         LIMIT 1
@@ -1741,47 +1762,53 @@ async fn load_group_routing_rule(
     .bind(group_name)
     .fetch_optional(pool)
     .await?;
-    let Some((
-            concurrency_limit,
-            upstream_429_retry_enabled,
-            upstream_429_max_retries,
-            policy_block_new_conversations,
-            policy_allow_new_conversations,
-            policy_allow_cut_out,
-            policy_allow_cut_in,
-            policy_priority_tier,
-            policy_fast_mode_rewrite_mode,
-            policy_image_tool_rewrite_mode,
-            policy_concurrency_limit,
-            policy_upstream_429_retry_enabled,
-            policy_upstream_429_max_retries,
-            policy_available_models_json,
-    )) = row
+    let Some(row) = row
     else {
         return Ok(group_routing_rule_from_columns(
-            0, false, 0, None, None, None, None, None, None, None, None, None, None, None,
+            0,
+            false,
+            0,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         ));
     };
     let upstream_429_retry_enabled =
-        decode_group_upstream_429_retry_enabled(upstream_429_retry_enabled.unwrap_or_default());
+        decode_group_upstream_429_retry_enabled(row.upstream_429_retry_enabled.unwrap_or_default());
     let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
         upstream_429_retry_enabled,
-        decode_group_upstream_429_max_retries(upstream_429_max_retries.unwrap_or_default()),
+        decode_group_upstream_429_max_retries(row.upstream_429_max_retries.unwrap_or_default()),
     );
     Ok(group_routing_rule_from_columns(
-        concurrency_limit.unwrap_or_default(),
+        row.concurrency_limit.unwrap_or_default(),
         upstream_429_retry_enabled,
         upstream_429_max_retries,
-        policy_block_new_conversations,
-        policy_allow_new_conversations,
-        policy_allow_cut_out,
-        policy_allow_cut_in,
-        policy_priority_tier.as_deref(),
-        policy_fast_mode_rewrite_mode.as_deref(),
-        policy_image_tool_rewrite_mode.as_deref(),
-        policy_concurrency_limit,
-        policy_upstream_429_retry_enabled,
-        policy_upstream_429_max_retries,
-        policy_available_models_json.as_deref(),
+        row.policy_block_new_conversations,
+        row.policy_allow_new_conversations,
+        row.policy_allow_cut_out,
+        row.policy_allow_cut_in,
+        row.policy_priority_tier.as_deref(),
+        row.policy_fast_mode_rewrite_mode.as_deref(),
+        row.policy_image_tool_rewrite_mode.as_deref(),
+        row.policy_concurrency_limit,
+        row.policy_upstream_429_retry_enabled,
+        row.policy_upstream_429_max_retries,
+        row.policy_available_models_json.as_deref(),
+        row.policy_responses_first_byte_timeout_secs,
+        row.policy_compact_first_byte_timeout_secs,
+        row.policy_responses_stream_timeout_secs,
+        row.policy_compact_stream_timeout_secs,
     ))
 }

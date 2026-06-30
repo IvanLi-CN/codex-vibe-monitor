@@ -848,6 +848,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.sourceGroup": "Group",
     "accountPool.upstreamAccounts.effectiveRule.sourceTag": "Tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceAccount": "Account",
+    "accountPool.upstreamAccounts.effectiveRule.sourceConversation":
+      "Conversation",
     "accountPool.upstreamAccounts.effectiveRule.sourceSystem": "System",
     "accountPool.upstreamAccounts.effectiveRule.overrideEdit":
       "Edit account override",
@@ -858,6 +860,13 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.overrideSaving": "Saving...",
     "accountPool.upstreamAccounts.effectiveRule.inheritValue":
       "The default control value matches the inherited value.",
+    "accountPool.upstreamAccounts.timeoutEditor.inherited": "Inherited",
+    "accountPool.upstreamAccounts.timeoutEditor.groupOverride":
+      "Group override",
+    "accountPool.upstreamAccounts.timeoutEditor.accountOverride":
+      "Account override",
+    "accountPool.upstreamAccounts.timeoutEditor.conversationOverride":
+      "Conversation override",
     "accountPool.upstreamAccounts.detailTitle": "Account details",
     "accountPool.upstreamAccounts.detailTabs.overview": "Overview",
     "accountPool.upstreamAccounts.detailTabs.records": "Records",
@@ -3198,6 +3207,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.sourceGroup": "分组",
     "accountPool.upstreamAccounts.effectiveRule.sourceTag": "Tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceAccount": "账号",
+    "accountPool.upstreamAccounts.effectiveRule.sourceConversation": "对话",
     "accountPool.upstreamAccounts.effectiveRule.sourceSystem": "系统",
     "accountPool.upstreamAccounts.effectiveRule.overrideEdit": "编辑账号覆盖",
     "accountPool.upstreamAccounts.effectiveRule.overrideActive": "账号覆盖",
@@ -3205,6 +3215,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.overrideSaving": "正在保存...",
     "accountPool.upstreamAccounts.effectiveRule.inheritValue":
       "默认控件值等于当前继承到的值。",
+    "accountPool.upstreamAccounts.timeoutEditor.inherited": "继承值",
+    "accountPool.upstreamAccounts.timeoutEditor.groupOverride": "分组覆盖",
+    "accountPool.upstreamAccounts.timeoutEditor.accountOverride": "账号覆盖",
+    "accountPool.upstreamAccounts.timeoutEditor.conversationOverride": "对话覆盖",
     "accountPool.upstreamAccounts.detailTitle": "账号详情",
     "accountPool.upstreamAccounts.detailTabs.overview": "概览",
     "accountPool.upstreamAccounts.detailTabs.records": "调用记录",

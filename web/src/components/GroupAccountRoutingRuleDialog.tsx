@@ -8,14 +8,25 @@ import { Switch } from "./ui/switch";
 import { Badge } from "./ui/badge";
 import { ConcurrencyLimitSlider } from "./ConcurrencyLimitSlider";
 import { MultiSelectFilterCombobox, type MultiSelectFilterOption } from "./MultiSelectFilterCombobox";
+import { RoutingTimeoutOverridesEditor } from "./RoutingTimeoutOverridesEditor";
 import type {
+  EffectiveRoutingTimeoutFieldSources,
   GroupAccountRoutingRule,
   ImageToolRewriteMode,
+  PoolRoutingTimeoutSettings,
   TagFastModeRewriteMode,
   TagPriorityTier,
   UpdateGroupAccountRoutingRulePayload,
 } from "../lib/api";
 import { apiConcurrencyLimitToSliderValue, sliderConcurrencyLimitToApiValue } from "../lib/concurrencyLimit";
+import {
+  buildRoutingTimeoutOverrideDraft,
+  buildRoutingTimeoutOverrideDraftForSource,
+  diffRoutingTimeoutOverrideDraft,
+  parseRoutingTimeoutOverrideDraft,
+  type RoutingTimeoutFieldKey,
+  type RoutingTimeoutOverrideDraft,
+} from "../lib/poolRoutingTimeouts";
 
 type GroupAccountRoutingRuleDraft = {
   allowNewConversations: boolean;
@@ -30,6 +41,7 @@ type GroupAccountRoutingRuleDraft = {
   availableModels: string[];
   availableModelInput: string;
   availableModelsTouched: boolean;
+  timeoutOverrides: RoutingTimeoutOverrideDraft;
 };
 
 function normalizeRetryCount(value?: number | null): number {
@@ -49,7 +61,23 @@ function normalizeModelIds(values: string[]) {
   return normalized;
 }
 
-function buildDraft(rule?: GroupAccountRoutingRule | null): GroupAccountRoutingRuleDraft {
+function buildDraft(
+  rule?: GroupAccountRoutingRule | null,
+  options?: {
+    changedFieldsOnly?: boolean;
+    effectiveTimeouts?: PoolRoutingTimeoutSettings | null;
+    timeoutFieldSources?: EffectiveRoutingTimeoutFieldSources | null;
+  },
+): GroupAccountRoutingRuleDraft {
+  const effectiveTimeouts = options?.effectiveTimeouts;
+  const timeoutFieldSources = options?.timeoutFieldSources;
+  const timeoutOverrides = options?.changedFieldsOnly
+    ? buildRoutingTimeoutOverrideDraftForSource(
+        effectiveTimeouts,
+        timeoutFieldSources,
+        "account",
+      )
+    : buildRoutingTimeoutOverrideDraft(rule?.timeouts);
   return {
     allowNewConversations: !(rule?.blockNewConversations ?? false),
     allowCutOut: rule?.allowCutOut ?? true,
@@ -63,6 +91,7 @@ function buildDraft(rule?: GroupAccountRoutingRule | null): GroupAccountRoutingR
     availableModels: normalizeModelIds(rule?.availableModels ?? []),
     availableModelInput: "",
     availableModelsTouched: false,
+    timeoutOverrides,
   };
 }
 
@@ -75,8 +104,20 @@ function buildPayload(
   options?: {
     changedFieldsOnly?: boolean;
     baseRule?: GroupAccountRoutingRule | null;
+    effectiveTimeouts?: PoolRoutingTimeoutSettings | null;
+    timeoutFieldSources?: EffectiveRoutingTimeoutFieldSources | null;
+    timeoutFieldLabels?: Record<RoutingTimeoutFieldKey, string>;
   },
 ): UpdateGroupAccountRoutingRulePayload | null {
+  const timeoutLabels = options?.timeoutFieldLabels;
+  if (!timeoutLabels) return null;
+  const parsedTimeouts = parseRoutingTimeoutOverrideDraft(
+    draft.timeoutOverrides,
+    timeoutLabels,
+  );
+  if (!parsedTimeouts.ok) {
+    return null;
+  }
   const payload: UpdateGroupAccountRoutingRulePayload = {
     allowNewConversations: draft.allowNewConversations,
     allowCutOut: draft.allowCutOut,
@@ -90,6 +131,16 @@ function buildPayload(
       ? Math.max(1, normalizeRetryCount(draft.upstream429MaxRetries) || 1)
       : 0,
     availableModels: normalizeModelIds(draft.availableModels),
+    timeouts: {
+      responsesFirstByteTimeoutSecs:
+        parsedTimeouts.patch.responsesFirstByteTimeoutSecs ?? null,
+      compactFirstByteTimeoutSecs:
+        parsedTimeouts.patch.compactFirstByteTimeoutSecs ?? null,
+      responsesStreamTimeoutSecs:
+        parsedTimeouts.patch.responsesStreamTimeoutSecs ?? null,
+      compactStreamTimeoutSecs:
+        parsedTimeouts.patch.compactStreamTimeoutSecs ?? null,
+    },
   };
 
   if (options?.changedFieldsOnly && options.baseRule) {
@@ -129,6 +180,22 @@ function buildPayload(
     ) {
       changedPayload.availableModels = payload.availableModels;
     }
+    const baseTimeoutDraft = buildDraft(base, {
+      changedFieldsOnly: true,
+      effectiveTimeouts: options.effectiveTimeouts,
+      timeoutFieldSources: options.timeoutFieldSources,
+    }).timeoutOverrides;
+    const timeoutDiff = diffRoutingTimeoutOverrideDraft(
+      baseTimeoutDraft,
+      draft.timeoutOverrides,
+      timeoutLabels,
+    );
+    if (!timeoutDiff.ok) {
+      return null;
+    }
+    if (timeoutDiff.changed) {
+      changedPayload.timeouts = timeoutDiff.patch;
+    }
     return changedPayload;
   }
 
@@ -152,6 +219,8 @@ interface GroupAccountRoutingRuleDialogProps {
   busy?: boolean;
   error?: string | null;
   changedFieldsOnly?: boolean;
+  effectiveTimeouts?: PoolRoutingTimeoutSettings | null;
+  timeoutFieldSources?: EffectiveRoutingTimeoutFieldSources | null;
   onClose: () => void;
   onSubmit: (payload: UpdateGroupAccountRoutingRulePayload) => Promise<void> | void;
   labels: {
@@ -195,6 +264,20 @@ interface GroupAccountRoutingRuleDialogProps {
     availableModelsAddCustom: string;
     availableModelsInherited: string;
     availableModelsRemove: string;
+    timeoutSectionTitle: string;
+    timeoutSectionHint?: string;
+    timeoutResponsesFirstByte: string;
+    timeoutCompactFirstByte: string;
+    timeoutResponsesStream: string;
+    timeoutCompactStream: string;
+    timeoutInheritedValue: string;
+    timeoutOverrideValue: string;
+    timeoutClearField: string;
+    timeoutInheritField: string;
+    timeoutSourceGlobal?: string;
+    timeoutSourceGroup?: string;
+    timeoutSourceAccount?: string;
+    timeoutSourceConversation?: string;
     cancel: string;
     validation: string;
   };
@@ -210,13 +293,19 @@ export function GroupAccountRoutingRuleDialog({
   busy = false,
   error,
   changedFieldsOnly = false,
+  effectiveTimeouts,
+  timeoutFieldSources,
   onClose,
   onSubmit,
   labels,
   availableModelOptions = [],
 }: GroupAccountRoutingRuleDialogProps) {
   const [draft, setDraft] = useState<GroupAccountRoutingRuleDraft>(() =>
-    buildDraft(rule),
+    buildDraft(rule, {
+      changedFieldsOnly,
+      effectiveTimeouts,
+      timeoutFieldSources,
+    }),
   );
   const [baseRule, setBaseRule] = useState<GroupAccountRoutingRule | null>(
     () => rule ?? null,
@@ -243,16 +332,57 @@ export function GroupAccountRoutingRuleDialog({
     const nextBaseRule = rule ?? null;
     activeResetKeyRef.current = resetKey;
     setBaseRule(nextBaseRule);
-    setDraft(buildDraft(nextBaseRule));
-  }, [open, resetKey, rule]);
+    setDraft(
+      buildDraft(nextBaseRule, {
+        changedFieldsOnly,
+        effectiveTimeouts,
+        timeoutFieldSources,
+      }),
+    );
+  }, [
+    changedFieldsOnly,
+    effectiveTimeouts,
+    open,
+    resetKey,
+    rule,
+    timeoutFieldSources,
+  ]);
+
+  const timeoutFieldLabels = useMemo(
+    () => ({
+      responsesFirstByteTimeoutSecs: labels.timeoutResponsesFirstByte,
+      compactFirstByteTimeoutSecs: labels.timeoutCompactFirstByte,
+      responsesStreamTimeoutSecs: labels.timeoutResponsesStream,
+      compactStreamTimeoutSecs: labels.timeoutCompactStream,
+    }),
+    [labels],
+  );
+
+  const timeoutValidationError = useMemo(() => {
+    const parsed = parseRoutingTimeoutOverrideDraft(
+      draft.timeoutOverrides,
+      timeoutFieldLabels,
+    );
+    return parsed.ok ? null : parsed.error;
+  }, [draft.timeoutOverrides, timeoutFieldLabels]);
 
   const payload = useMemo(
     () =>
       buildPayload(draft, {
         changedFieldsOnly,
         baseRule,
+        effectiveTimeouts,
+        timeoutFieldSources,
+        timeoutFieldLabels,
       }),
-    [baseRule, changedFieldsOnly, draft],
+    [
+      baseRule,
+      changedFieldsOnly,
+      draft,
+      effectiveTimeouts,
+      timeoutFieldLabels,
+      timeoutFieldSources,
+    ],
   );
   const disabled = !payload || busy;
   const availableModelComboboxOptions = useMemo<MultiSelectFilterOption[]>(
@@ -363,6 +493,64 @@ export function GroupAccountRoutingRuleDialog({
               }
             />
           </div>
+
+          {effectiveTimeouts ? (
+            <RoutingTimeoutOverridesEditor
+              fields={[
+                {
+                  key: "responsesFirstByteTimeoutSecs",
+                  label: labels.timeoutResponsesFirstByte,
+                },
+                {
+                  key: "compactFirstByteTimeoutSecs",
+                  label: labels.timeoutCompactFirstByte,
+                },
+                {
+                  key: "responsesStreamTimeoutSecs",
+                  label: labels.timeoutResponsesStream,
+                },
+                {
+                  key: "compactStreamTimeoutSecs",
+                  label: labels.timeoutCompactStream,
+                },
+              ]}
+              effective={effectiveTimeouts}
+              draft={draft.timeoutOverrides}
+              sources={timeoutFieldSources}
+              busy={busy}
+              disabled={busy}
+              labels={{
+                sectionTitle: labels.timeoutSectionTitle,
+                sectionHint: labels.timeoutSectionHint,
+                inheritedValue: labels.timeoutInheritedValue,
+                overrideValue: labels.timeoutOverrideValue,
+                sourceRoot: labels.timeoutSourceGlobal,
+                sourceGroup: labels.timeoutSourceGroup,
+                sourceAccount: labels.timeoutSourceAccount,
+                sourceConversation: labels.timeoutSourceConversation,
+                clearField: labels.timeoutClearField,
+                inheritField: labels.timeoutInheritField,
+              }}
+              onDraftChange={(key, value) =>
+                setDraft((current) => ({
+                  ...current,
+                  timeoutOverrides: {
+                    ...current.timeoutOverrides,
+                    [key]: value,
+                  },
+                }))
+              }
+              onClearField={(key) =>
+                setDraft((current) => ({
+                  ...current,
+                  timeoutOverrides: {
+                    ...current.timeoutOverrides,
+                    [key]: "",
+                  },
+                }))
+              }
+            />
+          ) : null}
 
           <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
             <div className="flex items-start justify-between gap-4">
@@ -569,7 +757,11 @@ export function GroupAccountRoutingRuleDialog({
           </div>
 
           {error ? <p className="text-sm text-error">{error}</p> : null}
-          {!payload ? <p className="text-sm text-warning">{labels.validation}</p> : null}
+          {timeoutValidationError ? (
+            <p className="text-sm text-error">{timeoutValidationError}</p>
+          ) : !payload ? (
+            <p className="text-sm text-warning">{labels.validation}</p>
+          ) : null}
         </div>
         <div className="border-t border-base-300/80 px-6 py-4">
           <DialogFooter>

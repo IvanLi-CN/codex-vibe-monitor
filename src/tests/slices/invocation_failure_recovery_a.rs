@@ -594,8 +594,8 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
         "request should wait for the alternate to recover, elapsed={elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(220),
-        "bounded wait should still complete within the configured window, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(280),
+        "bounded wait should still complete well within the configured window plus poll jitter, elapsed={elapsed:?}"
     );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await

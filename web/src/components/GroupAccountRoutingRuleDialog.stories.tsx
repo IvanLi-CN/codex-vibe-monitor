@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import type { GroupAccountRoutingRule } from '../lib/api'
+import type { GroupAccountRoutingRule, PoolRoutingTimeoutSettings } from '../lib/api'
 import { GroupAccountRoutingRuleDialog } from './GroupAccountRoutingRuleDialog'
 
 type DialogHarnessProps = {
@@ -24,6 +24,12 @@ function DialogHarness({
     'gpt-5.4-pro',
     'gpt-5.3-codex',
   ]
+  const effectiveTimeouts: PoolRoutingTimeoutSettings = {
+    responsesFirstByteTimeoutSecs: 120,
+    compactFirstByteTimeoutSecs: 300,
+    responsesStreamTimeoutSecs: 300,
+    compactStreamTimeoutSecs: 300,
+  }
 
   return (
     <div className="min-h-screen bg-base-200 px-6 py-10 text-base-content">
@@ -43,6 +49,17 @@ function DialogHarness({
           title={title}
           description={description}
           submitLabel={submitLabel}
+          effectiveTimeouts={effectiveTimeouts}
+          timeoutFieldSources={{
+            responsesFirstByteTimeoutSecs:
+              rule?.timeouts?.responsesFirstByteTimeoutSecs != null ? 'group' : 'root',
+            compactFirstByteTimeoutSecs:
+              rule?.timeouts?.compactFirstByteTimeoutSecs != null ? 'group' : 'root',
+            responsesStreamTimeoutSecs:
+              rule?.timeouts?.responsesStreamTimeoutSecs != null ? 'group' : 'root',
+            compactStreamTimeoutSecs:
+              rule?.timeouts?.compactStreamTimeoutSecs != null ? 'group' : 'root',
+          }}
           onClose={() => setOpen(false)}
           onSubmit={() => undefined}
           availableModelOptions={availableModelOptions}
@@ -89,6 +106,20 @@ function DialogHarness({
             upstream429RetryCount: 'Retry count',
             upstream429RetryCountOnce: '1 retry',
             upstream429RetryCountMany: (count) => `${count} retries`,
+            timeoutSectionTitle: 'Request path timeouts',
+            timeoutSectionHint: 'Leave a field empty to inherit the current upstream default.',
+            timeoutResponsesFirstByte: 'Standard response first byte timeout',
+            timeoutCompactFirstByte: 'Compact response first byte timeout',
+            timeoutResponsesStream: 'Standard stream completion timeout',
+            timeoutCompactStream: 'Compact stream completion timeout',
+            timeoutInheritedValue: 'Inherited',
+            timeoutOverrideValue: 'Group override',
+            timeoutClearField: 'Clear group override',
+            timeoutInheritField: 'Clear and inherit',
+            timeoutSourceGlobal: 'Global',
+            timeoutSourceGroup: 'Group',
+            timeoutSourceAccount: 'Account',
+            timeoutSourceConversation: 'Conversation',
             cancel: 'Cancel',
             validation: 'Review the routing policy before saving.',
           }}
@@ -116,6 +147,14 @@ const forceRemoveRule: GroupAccountRoutingRule = {
   imageToolRewriteMode: 'force_remove',
 }
 
+const mixedTimeoutRule: GroupAccountRoutingRule = {
+  ...defaultRule,
+  timeouts: {
+    responsesFirstByteTimeoutSecs: 75,
+    responsesStreamTimeoutSecs: 240,
+  },
+}
+
 const meta = {
   title: 'Account Pool/Components/Group Account Routing Rule Dialog',
   component: DialogHarness,
@@ -138,5 +177,15 @@ export const Default: Story = {}
 export const ForceRemoveImageTool: Story = {
   args: {
     rule: forceRemoveRule,
+  },
+}
+
+export const MixedTimeoutInheritance: Story = {
+  args: {
+    rule: mixedTimeoutRule,
+    title: 'Group timeout policy',
+    description:
+      'Preview of mixed inherited/global defaults and explicit group timeout overrides in the shared policy dialog.',
+    submitLabel: 'Apply timeout policy',
   },
 }

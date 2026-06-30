@@ -1655,7 +1655,11 @@ pub(crate) async fn update_upstream_account_inner(
             policy_upstream_429_retry_enabled = ?22,
             policy_upstream_429_max_retries = ?23,
             policy_available_models_json = ?24,
-            updated_at = ?25
+            policy_responses_first_byte_timeout_secs = ?25,
+            policy_compact_first_byte_timeout_secs = ?26,
+            policy_responses_stream_timeout_secs = ?27,
+            policy_compact_stream_timeout_secs = ?28,
+            updated_at = ?29
         WHERE id = ?1
         "#,
     )
@@ -1784,6 +1788,70 @@ pub(crate) async fn update_upstream_account_inner(
             ),
         },
         None => row.policy_available_models_json.clone(),
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .timeouts
+            .clone()
+            .unwrap_or_default()
+            .responses_first_byte_timeout_secs
+        {
+            OptionalField::Missing => row.policy_responses_first_byte_timeout_secs,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => {
+                normalize_pool_routing_timeout_secs(Some(value), "responsesFirstByteTimeoutSecs")?
+                    .and_then(|value| i64::try_from(value).ok())
+            }
+        },
+        None => row.policy_responses_first_byte_timeout_secs,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .timeouts
+            .clone()
+            .unwrap_or_default()
+            .compact_first_byte_timeout_secs
+        {
+            OptionalField::Missing => row.policy_compact_first_byte_timeout_secs,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => {
+                normalize_pool_routing_timeout_secs(Some(value), "compactFirstByteTimeoutSecs")?
+                    .and_then(|value| i64::try_from(value).ok())
+            }
+        },
+        None => row.policy_compact_first_byte_timeout_secs,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .timeouts
+            .clone()
+            .unwrap_or_default()
+            .responses_stream_timeout_secs
+        {
+            OptionalField::Missing => row.policy_responses_stream_timeout_secs,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => {
+                normalize_pool_routing_timeout_secs(Some(value), "responsesStreamTimeoutSecs")?
+                    .and_then(|value| i64::try_from(value).ok())
+            }
+        },
+        None => row.policy_responses_stream_timeout_secs,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .timeouts
+            .clone()
+            .unwrap_or_default()
+            .compact_stream_timeout_secs
+        {
+            OptionalField::Missing => row.policy_compact_stream_timeout_secs,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => {
+                normalize_pool_routing_timeout_secs(Some(value), "compactStreamTimeoutSecs")?
+                    .and_then(|value| i64::try_from(value).ok())
+            }
+        },
+        None => row.policy_compact_stream_timeout_secs,
     })
     .bind(&now_iso)
     .execute(tx.as_mut())

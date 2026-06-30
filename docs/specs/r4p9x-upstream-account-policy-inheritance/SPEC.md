@@ -25,6 +25,11 @@ The editable inherited policy covers:
 - concurrency limit
 - upstream 429 retry count (`0..5`)
 - available models
+- request-path timeout overrides for:
+  - `responsesFirstByteTimeoutSecs`
+  - `compactFirstByteTimeoutSecs`
+  - `responsesStreamTimeoutSecs`
+  - `compactStreamTimeoutSecs`
 
 Root defaults preserve existing behavior:
 
@@ -38,6 +43,7 @@ Root defaults preserve existing behavior:
 - upstream 429 max retries: 0
 - image tool rewrite mode: keep original
 - available models: unrestricted
+- request-path timeouts continue to use the existing global pool defaults
 
 Accounts also track read-only system signals alongside editable policy:
 
@@ -53,6 +59,21 @@ Effective account policy is computed in this order:
 2. Apply group policy.
 3. Merge system tag signals.
 4. Apply account policy.
+
+Request-path timeouts are resolved per field through a separate inheritance chain:
+
+1. Start with the global/root pool timeout defaults.
+2. Apply group timeout overrides.
+3. Apply account timeout overrides.
+4. Apply conversation timeout overrides.
+
+Timeout inheritance is field-local:
+
+- missing or unset means inherit
+- a positive integer stores an explicit override
+- clearing one timeout field only clears that field
+
+Tags and system-tag signals never contribute timeout values or timeout sources.
 
 System tags are not an editable routing authoring surface. Their current contract is:
 
@@ -123,6 +144,8 @@ Account summaries and detail responses expose:
 - read-only `tags` for system badge display
 - read-only `imageToolCapability`
 - effective-rule field sources including `systemDeniedModels`
+- effective request-path `timeouts`
+- request-path `timeoutFieldSources`
 
 Account update payloads accept `routingRule`. Missing `routingRule` preserves account-level overrides. Inside a present `routingRule`, every account-policy field is tri-state:
 
@@ -131,6 +154,14 @@ Account update payloads accept `routingRule`. Missing `routingRule` preserves ac
 - value: store that value as the account override
 
 The same tri-state semantics apply to group policy updates for nullable policy fields. Boolean `false` is a stored override value and must not be treated as absent.
+
+Timeout writes use the same preserve / clear / set contract, but per timeout field:
+
+- missing field: preserve the stored timeout override
+- `null`: clear that timeout override and inherit
+- positive integer: store that timeout override
+
+UI may render `root` as `global`, but the wire/source token remains `root`.
 
 `GET /api/pool/tags` returns only system tags and reports the directory as non-writable.
 
@@ -167,6 +198,8 @@ Visual evidence is captured from stable Storybook scenarios for:
 - effective routing rule card opening every existing account override panel by default
 - effective routing rule card rendering available-model overrides as a tag selector
 - effective routing rule card rendering upstream 429 retry as a `0..5` inline count selector without a separate toggle
+- group/account routing dialogs showing mixed inherited/global timeout defaults with field-level group overrides
+- account effective-rule card showing timeout source badges and inline account timeout override state
 
 PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)
@@ -191,3 +224,9 @@ PR: include
 
 PR: include
 ![Effective routing rule upstream 429 retry count selector](./assets/effective-rule-429-retry-count-selector.png)
+
+PR: include
+![Group timeout mixed inheritance dialog](./assets/group-timeout-mixed-inheritance-story.png)
+
+PR: include
+![Account timeout source badges and overrides](./assets/account-timeout-source-badges-story.png)
