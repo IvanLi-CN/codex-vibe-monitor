@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.4.8",
+  "base_stable_version": "2.4.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-30T10:31:54Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.4.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "35c4c606ab0f3d74bb58103205b30a1b79111885",
+  "pr_number": 496,
+  "pr_title": "fix(perf): cut sqlite write pressure on srv-101",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.4.8",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.4.8",
+  "target_sha": "749d5d9996bad682cd1837b6b58d2c82b736183e",
+  "type_label": "type:patch"
+}
