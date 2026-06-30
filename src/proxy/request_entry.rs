@@ -553,6 +553,7 @@ pub(crate) async fn read_pool_upstream_first_chunk_with_timeout(
 pub(crate) struct PoolUpstreamResponse {
     pub(crate) account: PoolResolvedAccount,
     pub(crate) response: ProxyUpstreamResponseBody,
+    pub(crate) stream_timeout: Option<Duration>,
     pub(crate) oauth_responses_debug: Option<oauth_bridge::OauthResponsesDebugInfo>,
     pub(crate) connect_latency_ms: f64,
     pub(crate) attempt_started_at_utc: DateTime<Utc>,

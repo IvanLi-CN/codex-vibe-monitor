@@ -622,6 +622,8 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     })?;
     let pre_first_byte_timeout =
         pool_upstream_first_chunk_timeout(&runtime_timeouts, original_uri, &method);
+    let stream_timeout = capture_target_for_request(original_uri.path(), &method)
+        .and_then(|target| proxy_capture_target_stream_timeout(&runtime_timeouts, target));
     let Some(attempt_send_timeout) = pool_timeout_budget_with_total_limit(
         pool_upstream_send_timeout(
             original_uri,
@@ -1135,6 +1137,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             return Ok(PoolUpstreamResponse {
                 account,
                 response: ProxyUpstreamResponseBody::Axum(response),
+                stream_timeout,
                 oauth_responses_debug,
                 connect_latency_ms,
                 attempt_started_at_utc,
@@ -1473,6 +1476,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     Ok(PoolUpstreamResponse {
         account,
         response,
+        stream_timeout,
         oauth_responses_debug,
         connect_latency_ms,
         attempt_started_at_utc,
@@ -2967,6 +2971,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
 
                         let mut upstream_stream = upstream_response.into_bytes_stream();
                         let first_chunk = upstream.first_chunk;
+                        let stream_timeout = upstream.stream_timeout;
                         if let Some(chunk) = first_chunk.as_ref() {
                             info!(
                                 proxy_request_id,
@@ -3095,7 +3100,23 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 if downstream_closed {
                                     break;
                                 }
-                                let Some(next_chunk) = upstream_stream.next().await else {
+                                let next_chunk = if let Some(stream_timeout) = stream_timeout {
+                                    match timeout(stream_timeout, upstream_stream.next()).await {
+                                        Ok(next_chunk) => next_chunk,
+                                        Err(_) => {
+                                            let message = pool_upstream_timeout_message(
+                                                stream_timeout,
+                                                "waiting for upstream stream completion",
+                                            );
+                                            stream_error_message = Some(message.clone());
+                                            let _ = tx.send(Err(io::Error::other(message))).await;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    upstream_stream.next().await
+                                };
+                                let Some(next_chunk) = next_chunk else {
                                     break;
                                 };
                                 match next_chunk {
@@ -3520,6 +3541,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
 
     let mut upstream_stream = upstream_response.into_bytes_stream();
     let first_chunk = upstream.first_chunk;
+    let stream_timeout = upstream.stream_timeout;
     if let Some(chunk) = first_chunk.as_ref() {
         info!(
             proxy_request_id,
@@ -3673,7 +3695,23 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             if downstream_closed {
                 break;
             }
-            let Some(next_chunk) = upstream_stream.next().await else {
+            let next_chunk = if let Some(stream_timeout) = stream_timeout {
+                match timeout(stream_timeout, upstream_stream.next()).await {
+                    Ok(next_chunk) => next_chunk,
+                    Err(_) => {
+                        let message = pool_upstream_timeout_message(
+                            stream_timeout,
+                            "waiting for upstream stream completion",
+                        );
+                        stream_error_message = Some(message.clone());
+                        let _ = tx.send(Err(io::Error::other(message))).await;
+                        break;
+                    }
+                }
+            } else {
+                upstream_stream.next().await
+            };
+            let Some(next_chunk) = next_chunk else {
                 break;
             };
             match next_chunk {

@@ -130,10 +130,14 @@ export function RoutingTimeoutOverridesEditor({
                       type="button"
                       size="sm"
                       variant="outline"
-                      disabled={busy || disabled}
-                      onClick={() =>
-                        onDraftChange(field.key, hasOverride ? "" : String(effectiveValue))
-                      }
+                      disabled={busy || disabled || !hasOverride}
+                      onClick={() => {
+                        if (onClearField) {
+                          onClearField(field.key)
+                          return
+                        }
+                        onDraftChange(field.key, '')
+                      }}
                     >
                       {hasOverride ? labels.clearField : labels.inheritField}
                     </Button>

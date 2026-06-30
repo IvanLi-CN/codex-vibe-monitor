@@ -1102,6 +1102,8 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
         })?;
         let pre_first_byte_timeout =
             pool_upstream_first_chunk_timeout(&runtime_timeouts, original_uri, &method);
+        let stream_timeout = capture_target_for_request(original_uri.path(), &method)
+            .and_then(|target| proxy_capture_target_stream_timeout(&runtime_timeouts, target));
         let send_timeout = pool_upstream_send_timeout(
             original_uri,
             &method,
@@ -2325,6 +2327,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     return Ok(PoolUpstreamResponse {
                         account: account.clone(),
                         response: ProxyUpstreamResponseBody::Axum(response),
+                        stream_timeout,
                         oauth_responses_debug,
                         connect_latency_ms,
                         attempt_started_at_utc,
@@ -3123,6 +3126,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             return Ok(PoolUpstreamResponse {
                 account: account.clone(),
                 response,
+                stream_timeout,
                 oauth_responses_debug,
                 connect_latency_ms,
                 attempt_started_at_utc,
