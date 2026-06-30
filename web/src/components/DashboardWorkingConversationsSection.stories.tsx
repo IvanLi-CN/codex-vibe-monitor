@@ -2482,6 +2482,16 @@ export const UpstreamAccountTab: Story = {
     await expect(
       canvas.queryByText("最近 4 条调用里仍有活动或异常，优先从下方最近记录继续排查。"),
     ).toBeNull();
+    const identityChip = canvas.getAllByTestId(
+      "dashboard-upstream-account-recent-identity-chip",
+    )[0];
+    if (!(identityChip instanceof HTMLButtonElement)) {
+      throw new Error("expected upstream identity chip button");
+    }
+    await expect(identityChip).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("打开对话详情"),
+    );
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
@@ -2489,6 +2499,77 @@ export const UpstreamAccountTab: Story = {
       description: {
         story:
           "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the dynamic recent invocation window in the selected range, including lightweight short conversation identity chips and request/response model mismatch rows.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountRecentIdentityChipOpensConversation: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation("pck-story-upstream-account", [
+          createPreview({
+            id: 9801,
+            invokeId: "story-working-invoke",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ]),
+      ])}
+      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse()}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+
+    const identityChip = canvas.getAllByTestId(
+      "dashboard-upstream-account-recent-identity-chip",
+    )[0];
+    if (!(identityChip instanceof HTMLButtonElement)) {
+      throw new Error("expected upstream identity chip button");
+    }
+
+    await userEvent.click(identityChip);
+    await waitFor(() => {
+      expect(
+        document.body.querySelector(
+          '[data-testid="story-drawer-state"]',
+        )?.textContent,
+      ).toContain("conversation:pck-upstream-running");
+    });
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
+      "conversation:pck-upstream-running",
+    );
+
+    const firstRow = canvas.getAllByTestId("dashboard-upstream-account-recent-row")[0];
+    if (!(firstRow instanceof HTMLButtonElement)) {
+      throw new Error("expected upstream recent row button");
+    }
+
+    await userEvent.click(firstRow);
+    await waitFor(() => {
+      expect(
+        document.body.querySelector(
+          '[data-testid="story-drawer-state"]',
+        )?.textContent,
+      ).toContain("invocation:acct-invoke-1");
+    });
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
+      "invocation:acct-invoke-1",
+    );
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Proves the upstream-account recent identity chip opens the conversation drawer while the surrounding recent row still opens the invocation drawer.",
       },
     },
   },
