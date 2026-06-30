@@ -39,9 +39,10 @@ pub(crate) async fn list_upstream_accounts_from_params(
     let include_all = params.include_all.unwrap_or(false);
     let filters = normalize_upstream_account_list_filters(&params);
     let load_summaries_started_at = Instant::now();
-    let mut all_items = load_upstream_account_summaries_for_query(&state.pool, &params)
-        .await
-        .map_err(internal_error_tuple)?;
+    let mut all_items =
+        load_upstream_account_summaries_for_query(&state.pool, &state.config, &params)
+            .await
+            .map_err(internal_error_tuple)?;
     let load_summaries_ms = load_summaries_started_at.elapsed().as_millis() as u64;
     let load_groups_started_at = Instant::now();
     let groups = load_canonicalized_upstream_account_groups(state.as_ref())
@@ -263,9 +264,10 @@ pub(crate) async fn get_upstream_account_window_usage(
     }
 
     let load_summaries_started_at = Instant::now();
-    let mut summaries = load_upstream_account_window_usage_summaries(&state.pool, &account_ids)
-        .await
-        .map_err(internal_error_tuple)?;
+    let mut summaries =
+        load_upstream_account_window_usage_summaries(&state.pool, &state.config, &account_ids)
+            .await
+            .map_err(internal_error_tuple)?;
     let load_summaries_ms = load_summaries_started_at.elapsed().as_millis() as u64;
     let usage_batch_started_at = Instant::now();
     enrich_window_actual_usage_for_summaries(state.as_ref(), &mut summaries)

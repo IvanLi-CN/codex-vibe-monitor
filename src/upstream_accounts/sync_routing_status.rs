@@ -192,6 +192,28 @@ fn apply_routing_timeout_override(
     }
 }
 
+pub(crate) fn apply_root_routing_timeout_defaults(
+    rule: &mut EffectiveRoutingRule,
+    root: &PoolRoutingTimeoutSettingsResolved,
+) {
+    if rule.timeouts.responses_first_byte_timeout_secs.is_none() {
+        rule.timeouts.responses_first_byte_timeout_secs = Some(root.responses_first_byte_timeout.as_secs());
+        rule.timeout_field_sources.responses_first_byte_timeout_secs = "root".to_string();
+    }
+    if rule.timeouts.compact_first_byte_timeout_secs.is_none() {
+        rule.timeouts.compact_first_byte_timeout_secs = Some(root.compact_first_byte_timeout.as_secs());
+        rule.timeout_field_sources.compact_first_byte_timeout_secs = "root".to_string();
+    }
+    if rule.timeouts.responses_stream_timeout_secs.is_none() {
+        rule.timeouts.responses_stream_timeout_secs = Some(root.responses_stream_timeout.as_secs());
+        rule.timeout_field_sources.responses_stream_timeout_secs = "root".to_string();
+    }
+    if rule.timeouts.compact_stream_timeout_secs.is_none() {
+        rule.timeouts.compact_stream_timeout_secs = Some(root.compact_stream_timeout.as_secs());
+        rule.timeout_field_sources.compact_stream_timeout_secs = "root".to_string();
+    }
+}
+
 fn apply_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     source: &str,

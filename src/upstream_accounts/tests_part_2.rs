@@ -4693,6 +4693,47 @@
     }
 
     #[tokio::test]
+    async fn load_upstream_account_detail_with_actual_usage_populates_root_timeout_values() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Root Timeout Detail").await;
+        sqlx::query(
+            r#"
+            UPDATE pool_routing_settings
+            SET responses_first_byte_timeout_secs = 41,
+                compact_first_byte_timeout_secs = 42,
+                responses_stream_timeout_secs = 43,
+                compact_stream_timeout_secs = 44
+            WHERE id = ?1
+            "#,
+        )
+        .bind(POOL_SETTINGS_SINGLETON_ID)
+        .execute(&state.pool)
+        .await
+        .expect("save root timeout settings");
+
+        let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), account_id)
+            .await
+            .expect("load account detail")
+            .expect("detail exists");
+        let rule = detail.summary.effective_routing_rule;
+
+        assert_eq!(rule.timeouts.responses_first_byte_timeout_secs, Some(41));
+        assert_eq!(rule.timeouts.compact_first_byte_timeout_secs, Some(42));
+        assert_eq!(rule.timeouts.responses_stream_timeout_secs, Some(43));
+        assert_eq!(rule.timeouts.compact_stream_timeout_secs, Some(44));
+        assert_eq!(
+            rule.timeout_field_sources.responses_first_byte_timeout_secs,
+            "root"
+        );
+        assert_eq!(
+            rule.timeout_field_sources.compact_first_byte_timeout_secs,
+            "root"
+        );
+        assert_eq!(rule.timeout_field_sources.responses_stream_timeout_secs, "root");
+        assert_eq!(rule.timeout_field_sources.compact_stream_timeout_secs, "root");
+    }
+
+    #[tokio::test]
     async fn load_effective_routing_rule_for_account_uses_most_conservative_tag_priority() {
         let pool = test_pool().await;
         let account_id = insert_api_key_account(&pool, "Priority Merge").await;

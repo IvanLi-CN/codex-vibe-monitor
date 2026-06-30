@@ -2523,12 +2523,15 @@ async fn load_upstream_account_groups(
 }
 async fn load_upstream_account_summaries(
     pool: &Pool<Sqlite>,
+    config: &AppConfig,
 ) -> Result<Vec<UpstreamAccountSummary>> {
-    load_upstream_account_summaries_for_query(pool, &ListUpstreamAccountsQuery::default()).await
+    load_upstream_account_summaries_for_query(pool, config, &ListUpstreamAccountsQuery::default())
+        .await
 }
 
 async fn load_upstream_account_summaries_for_query(
     pool: &Pool<Sqlite>,
+    config: &AppConfig,
     params: &ListUpstreamAccountsQuery,
 ) -> Result<Vec<UpstreamAccountSummary>> {
     let duplicate_info_map = load_duplicate_info_map(pool).await?;
@@ -2620,7 +2623,7 @@ async fn load_upstream_account_summaries_for_query(
             now.clone(),
         ));
     }
-    apply_effective_routing_rules_to_summaries(pool, &mut items).await?;
+    apply_effective_routing_rules_to_summaries(pool, config, &mut items).await?;
     Ok(items)
 }
 
@@ -2824,6 +2827,7 @@ async fn load_upstream_account_rows_by_ids(
 
 async fn load_upstream_account_window_usage_summaries(
     pool: &Pool<Sqlite>,
+    config: &AppConfig,
     account_ids: &[i64],
 ) -> Result<Vec<UpstreamAccountSummary>> {
     let rows = load_upstream_account_rows_by_ids(pool, account_ids).await?;
@@ -2846,7 +2850,7 @@ async fn load_upstream_account_window_usage_summaries(
             )
         })
         .collect::<Vec<_>>();
-    apply_effective_routing_rules_to_summaries(pool, &mut summaries).await?;
+    apply_effective_routing_rules_to_summaries(pool, config, &mut summaries).await?;
     Ok(summaries)
 }
 
@@ -3128,6 +3132,7 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
         .await?;
     apply_effective_routing_rules_to_summaries(
         &state.pool,
+        &state.config,
         std::slice::from_mut(&mut detail.summary),
     )
     .await?;
@@ -3159,6 +3164,7 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
 
 async fn apply_effective_routing_rules_to_summaries(
     pool: &Pool<Sqlite>,
+    config: &AppConfig,
     summaries: &mut [UpstreamAccountSummary],
 ) -> Result<()> {
     if summaries.is_empty() {
@@ -3166,9 +3172,12 @@ async fn apply_effective_routing_rules_to_summaries(
     }
     let account_ids = summaries.iter().map(|summary| summary.id).collect::<Vec<_>>();
     let rules = load_effective_routing_rules_for_accounts(pool, &account_ids).await?;
+    let root_timeouts = resolve_pool_routing_timeouts(pool, config).await?;
     for summary in summaries {
-        if let Some(rule) = rules.get(&summary.id) {
-            summary.effective_routing_rule = rule.clone();
+        if let Some(rule) = rules.get(&summary.id).cloned() {
+            let mut rule = rule;
+            apply_root_routing_timeout_defaults(&mut rule, &root_timeouts);
+            summary.effective_routing_rule = rule;
         }
     }
     Ok(())

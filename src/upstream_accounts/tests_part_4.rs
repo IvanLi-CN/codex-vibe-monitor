@@ -1378,6 +1378,7 @@ async fn list_upstream_accounts_applies_node_shunt_idle_rewrite_before_filters()
 
     let mut all_items = load_upstream_account_summaries_for_query(
         &state.pool,
+        &state.config,
         &ListUpstreamAccountsQuery::default(),
     )
     .await

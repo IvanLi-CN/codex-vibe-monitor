@@ -89,8 +89,33 @@ pub(crate) fn normalize_prompt_cache_conversation_key(raw: &str) -> Result<Strin
     Ok(normalized.to_string())
 }
 
-fn binding_response_for_none(prompt_cache_key: String) -> PromptCacheConversationBindingResponse {
-    PromptCacheConversationBindingResponse {
+async fn binding_response_for_none(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    prompt_cache_key: String,
+    owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
+) -> Result<PromptCacheConversationBindingResponse> {
+    let (timeouts, timeout_field_sources) = if let Some(owner) = owner {
+        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
+            pool,
+            config,
+            owner.owner_upstream_account_id,
+            Some(prompt_cache_key.as_str()),
+        )
+        .await?;
+        (timeouts, sources)
+    } else {
+        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
+            pool,
+            config,
+            None,
+            Some(prompt_cache_key.as_str()),
+        )
+        .await?;
+        (timeouts, sources)
+    };
+
+    Ok(PromptCacheConversationBindingResponse {
         prompt_cache_key,
         binding_kind: "none".to_string(),
         group_name: None,
@@ -100,15 +125,10 @@ fn binding_response_for_none(prompt_cache_key: String) -> PromptCacheConversatio
         encrypted_owner_account_id: None,
         encrypted_owner_account_name: None,
         encrypted_owner_group_name: None,
-        timeouts: RoutingTimeoutSettings::default(),
-        timeout_field_sources: RoutingTimeoutFieldSources {
-            responses_first_byte_timeout_secs: "root".to_string(),
-            compact_first_byte_timeout_secs: "root".to_string(),
-            responses_stream_timeout_secs: "root".to_string(),
-            compact_stream_timeout_secs: "root".to_string(),
-        },
+        timeouts,
+        timeout_field_sources,
         updated_at: None,
-    }
+    })
 }
 
 async fn binding_response_from_row(
@@ -117,52 +137,52 @@ async fn binding_response_from_row(
     row: PromptCacheConversationBindingRow,
     owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
 ) -> Result<PromptCacheConversationBindingResponse> {
-    let account_id = if row.binding_kind == PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT {
-        row.upstream_account_id
-    } else if row.binding_kind == PROMPT_CACHE_BINDING_KIND_GROUP {
-        #[derive(Debug, FromRow)]
-        struct GroupAccountIdRow {
-            id: i64,
-        }
-
-        let group_name = row
-            .group_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        match group_name {
-            Some(group_name) => sqlx::query_as::<_, GroupAccountIdRow>(
-                r#"
-                SELECT id
-                FROM pool_upstream_accounts
-                WHERE TRIM(COALESCE(group_name, '')) = ?1
-                ORDER BY id ASC
-                LIMIT 1
-                "#,
+    let (timeouts, timeout_field_sources) = if row.binding_kind == PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT {
+        if let Some(account_id) = row.upstream_account_id {
+            let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
+                pool,
+                config,
+                account_id,
+                Some(row.prompt_cache_key.as_str()),
             )
-            .bind(group_name)
-            .fetch_optional(pool)
-            .await?
-            .map(|value| value.id),
-            None => None,
+            .await?;
+            (timeouts, sources)
+        } else {
+            let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
+                pool,
+                config,
+                None,
+                Some(row.prompt_cache_key.as_str()),
+            )
+            .await?;
+            (timeouts, sources)
         }
-    } else {
-        owner.map(|value| value.owner_upstream_account_id)
-    };
-
-    let (timeouts, timeout_field_sources) = if let Some(account_id) = account_id {
+    } else if row.binding_kind == PROMPT_CACHE_BINDING_KIND_GROUP {
+        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
+            pool,
+            config,
+            row.group_name.as_deref(),
+            Some(row.prompt_cache_key.as_str()),
+        )
+        .await?;
+        (timeouts, sources)
+    } else if let Some(owner) = owner {
         let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
             pool,
             config,
-            account_id,
+            owner.owner_upstream_account_id,
             Some(row.prompt_cache_key.as_str()),
         )
         .await?;
         (timeouts, sources)
     } else {
-        let (timeouts, sources, _) =
-            load_effective_request_path_timeouts_for_group(pool, config, row.group_name.as_deref())
-                .await?;
+        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
+            pool,
+            config,
+            None,
+            Some(row.prompt_cache_key.as_str()),
+        )
+        .await?;
         (timeouts, sources)
     };
 
@@ -712,7 +732,10 @@ pub(crate) async fn get_prompt_cache_conversation_binding(
         load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key).await?;
     let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await? {
         Some(row) => binding_response_from_row(&state.pool, &state.config, row, owner.as_ref()).await?,
-        None => apply_owner_to_none_response(binding_response_for_none(prompt_cache_key), owner.as_ref()),
+        None => apply_owner_to_none_response(
+            binding_response_for_none(&state.pool, &state.config, prompt_cache_key, owner.as_ref()).await?,
+            owner.as_ref(),
+        ),
     };
     Ok(Json(response))
 }
@@ -821,7 +844,10 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     .await?;
             let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await? {
                 Some(row) => binding_response_from_row(&state.pool, &state.config, row, owner.as_ref()).await?,
-                None => apply_owner_to_none_response(binding_response_for_none(prompt_cache_key), owner.as_ref()),
+                None => apply_owner_to_none_response(
+                    binding_response_for_none(&state.pool, &state.config, prompt_cache_key, owner.as_ref()).await?,
+                    owner.as_ref(),
+                ),
             };
             Ok(Json(response))
         }
