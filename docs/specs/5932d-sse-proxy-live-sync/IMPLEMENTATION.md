@@ -5,6 +5,8 @@
 - Canonical spec: `docs/specs/5932d-sse-proxy-live-sync/SPEC.md`
 - Implementation summary: 已完成
 - Dashboard realtime consumption now separates SSE-fast KPI commits from 5s HTTP/chart reconcile budgets. Working conversations batch visible SSE patches for 1s and throttle head/snapshot reconcile to 5s. `/api/stats/parallel-work` keeps its response schema while supporting ETag / 304 conditional fetches.
+- Current-window summary reconcile now matches the same 5s budget as calendar windows and account-activity reconcile. The dashboard debug diagnostics also split out `current summary refresh/open-resync` and `upstream account activity refresh/open-resync`, so future regressions can distinguish SSE-fast-path churn from HTTP reconcile churn.
+- Dashboard working conversations live head/count now read from a write-side `prompt_cache_working_set_live` table that keeps the last 5 minutes of terminal activity plus any current in-flight keys. The public response shape stays unchanged, while the hot read path no longer rebuilds the working set from `codex_invocations` on every request.
 
 ## Migrated Implementation Notes
 
@@ -42,3 +44,5 @@
 ## Verification
 
 - `cd web && bun run test -- --run src/hooks/useInvocations.test.tsx src/hooks/useInvocationRecords.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`
+- `cd web && bun run test useStats.test.ts`
+- `cd web && bun run test useDashboardUpstreamAccountActivity.test.tsx`

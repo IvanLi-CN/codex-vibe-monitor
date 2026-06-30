@@ -407,6 +407,444 @@ async fn ensure_schema_migrates_codex_invocations_off_raw_expires_at_and_adds_re
 }
 
 #[tokio::test]
+async fn ensure_schema_rebuilds_invocation_in_progress_live_from_existing_invocations() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    for trigger_name in [
+        "trg_codex_invocations_live_insert",
+        "trg_codex_invocations_live_update",
+        "trg_codex_invocations_live_delete",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
+            .execute(&state.pool)
+            .await
+            .expect("drop live trigger before rebuild test");
+    }
+    sqlx::query("DROP TABLE IF EXISTS invocation_in_progress_live")
+        .execute(&state.pool)
+        .await
+        .expect("drop live table before rebuild test");
+
+    for (
+        invoke_id,
+        source,
+        status,
+        prompt_cache_key,
+        upstream_account_id,
+        ttfb_ms,
+        error_message,
+        failure_kind,
+    ) in [
+        (
+            "rebuild-live-failed",
+            SOURCE_PROXY,
+            "failed",
+            "rebuild-live-key-a",
+            Some(42_i64),
+            Some(810.0_f64),
+            Some("upstream response failed"),
+            Some("upstream_response_failed"),
+        ),
+        (
+            "rebuild-live-pending",
+            SOURCE_PROXY,
+            "pending",
+            "rebuild-live-key-a",
+            Some(42_i64),
+            None,
+            None,
+            None,
+        ),
+        (
+            "rebuild-live-interrupted",
+            SOURCE_PROXY,
+            "interrupted",
+            "rebuild-live-key-b",
+            Some(7_i64),
+            Some(620.0_f64),
+            Some("downstream closed while streaming upstream response"),
+            Some("downstream_closed"),
+        ),
+        (
+            "rebuild-live-running",
+            SOURCE_XY,
+            "running",
+            "rebuild-live-key-b",
+            Some(7_i64),
+            Some(1700.0_f64),
+            None,
+            None,
+        ),
+        (
+            "rebuild-live-unscoped",
+            SOURCE_PROXY,
+            "running",
+            "rebuild-live-key-c",
+            None,
+            Some(1100.0_f64),
+            None,
+            None,
+        ),
+    ] {
+        let mut payload = json!({ "promptCacheKey": prompt_cache_key });
+        if let Some(account_id) = upstream_account_id {
+            payload["upstreamAccountId"] = json!(account_id);
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                error_message,
+                failure_kind,
+                t_upstream_ttfb_ms,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(&occurred_at)
+        .bind(source)
+        .bind(status)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind(ttfb_ms)
+        .bind(payload.to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert rebuild source invocation row");
+    }
+
+    ensure_schema(&state.pool)
+        .await
+        .expect("rebuild invocation_in_progress_live on ensure_schema");
+
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            Option<i64>,
+            Option<String>,
+            i64,
+            i64,
+            i64,
+            i64,
+            Option<f64>,
+        ),
+    >(
+        r#"
+        SELECT
+            inv.invoke_id,
+            live.source,
+            live.upstream_account_id,
+            live.prompt_cache_key,
+            live.is_retry_after_failure_all,
+            live.is_retry_after_failure_proxy_only,
+            live.is_retry_after_failure_account_all,
+            live.is_retry_after_failure_account_proxy_only,
+            live.upstream_ttfb_ms
+        FROM invocation_in_progress_live AS live
+        JOIN codex_invocations AS inv ON inv.id = live.invocation_id
+        ORDER BY live.invocation_id
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load rebuilt live rows");
+
+    assert_eq!(rows.len(), 3, "only running/pending rows should survive rebuild");
+
+    let pending = rows
+        .iter()
+        .find(|row| row.0 == "rebuild-live-pending")
+        .expect("pending row should be rebuilt");
+    assert_eq!(pending.1, SOURCE_PROXY);
+    assert_eq!(pending.2, Some(42));
+    assert_eq!(pending.3.as_deref(), Some("rebuild-live-key-a"));
+    assert_eq!(pending.4, 1);
+    assert_eq!(pending.5, 1);
+    assert_eq!(pending.6, 1);
+    assert_eq!(pending.7, 1);
+    assert_eq!(pending.8, None);
+
+    let running = rows
+        .iter()
+        .find(|row| row.0 == "rebuild-live-running")
+        .expect("running row should be rebuilt");
+    assert_eq!(running.1, SOURCE_XY);
+    assert_eq!(running.2, Some(7));
+    assert_eq!(running.3.as_deref(), Some("rebuild-live-key-b"));
+    assert_eq!(running.4, 0);
+    assert_eq!(running.5, 0);
+    assert_eq!(running.6, 0);
+    assert_eq!(running.7, 0);
+    assert_eq!(running.8, Some(1700.0));
+
+    let unscoped = rows
+        .iter()
+        .find(|row| row.0 == "rebuild-live-unscoped")
+        .expect("unscoped row should be rebuilt");
+    assert_eq!(unscoped.1, SOURCE_PROXY);
+    assert_eq!(unscoped.2, None);
+    assert_eq!(unscoped.3.as_deref(), Some("rebuild-live-key-c"));
+    assert_eq!(unscoped.4, 0);
+    assert_eq!(unscoped.5, 0);
+    assert_eq!(unscoped.6, 0);
+    assert_eq!(unscoped.7, 0);
+    assert_eq!(unscoped.8, Some(1100.0));
+}
+
+#[tokio::test]
+async fn ensure_schema_serializes_live_trigger_rebuild_under_concurrent_reentry() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open concurrent schema migration pool");
+    ensure_schema(&pool).await.expect("seed current schema");
+
+    let worker_a = {
+        let pool = pool.clone();
+        tokio::spawn(async move { ensure_schema(&pool).await })
+    };
+    let worker_b = {
+        let pool = pool.clone();
+        tokio::spawn(async move { ensure_schema(&pool).await })
+    };
+
+    worker_a
+        .await
+        .expect("join first concurrent ensure_schema")
+        .expect("first concurrent ensure_schema should succeed");
+    worker_b
+        .await
+        .expect("join second concurrent ensure_schema")
+        .expect("second concurrent ensure_schema should succeed");
+
+    let trigger_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM sqlite_master
+        WHERE type = 'trigger'
+          AND name IN (
+              'trg_codex_invocations_live_insert',
+              'trg_codex_invocations_live_update',
+              'trg_codex_invocations_live_delete'
+          )
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count rebuilt live triggers");
+
+    assert_eq!(trigger_count, 3);
+}
+
+#[tokio::test]
+async fn ensure_schema_rebuilds_prompt_cache_working_set_live_from_existing_invocations() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    for trigger_name in [
+        "trg_codex_invocations_prompt_cache_working_set_insert",
+        "trg_codex_invocations_prompt_cache_working_set_update",
+        "trg_codex_invocations_prompt_cache_working_set_delete",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
+            .execute(&state.pool)
+            .await
+            .expect("drop prompt cache working-set trigger before rebuild test");
+    }
+    sqlx::query("DROP TABLE IF EXISTS prompt_cache_working_set_live")
+        .execute(&state.pool)
+        .await
+        .expect("drop prompt cache working-set table before rebuild test");
+
+    for (invoke_id, source, status, prompt_cache_key, seconds_ago, total_tokens, cost) in [
+        (
+            "working-live-recent-success",
+            SOURCE_PROXY,
+            "success",
+            "working-live-key-a",
+            30_i64,
+            120_i64,
+            0.12_f64,
+        ),
+        (
+            "working-live-recent-running",
+            SOURCE_PROXY,
+            "running",
+            "working-live-key-a",
+            15_i64,
+            140_i64,
+            0.14_f64,
+        ),
+        (
+            "working-live-recent-cross-source",
+            SOURCE_XY,
+            "success",
+            "working-live-key-b",
+            40_i64,
+            220_i64,
+            0.22_f64,
+        ),
+        (
+            "working-live-old-terminal",
+            SOURCE_PROXY,
+            "success",
+            "working-live-key-old",
+            720_i64,
+            320_i64,
+            0.32_f64,
+        ),
+    ] {
+        let occurred_at = format_naive((now - ChronoDuration::seconds(seconds_ago)).with_timezone(&Shanghai).naive_local());
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(source)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(json!({ "promptCacheKey": prompt_cache_key }).to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert prompt cache working-set rebuild source row");
+    }
+
+    ensure_schema(&state.pool)
+        .await
+        .expect("rebuild prompt_cache_working_set_live on ensure_schema");
+
+    let rows = sqlx::query_as::<
+        _,
+        (String, i64, i64, String, String, Option<String>, Option<String>, i64, i64, f64),
+    >(
+        r#"
+        SELECT
+            prompt_cache_key,
+            source_scope_all,
+            source_scope_proxy_only,
+            created_at,
+            last_activity_at,
+            last_terminal_at,
+            last_in_flight_at,
+            request_count,
+            total_tokens,
+            total_cost
+        FROM prompt_cache_working_set_live
+        ORDER BY prompt_cache_key
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load rebuilt working-set rows");
+
+    assert_eq!(rows.len(), 2, "only recent or in-flight keys should survive rebuild");
+
+    let key_a = rows
+        .iter()
+        .find(|row| row.0 == "working-live-key-a")
+        .expect("working-live-key-a should survive rebuild");
+    assert_eq!(key_a.1, 1);
+    assert_eq!(key_a.2, 1);
+    assert_eq!(key_a.7, 2);
+    assert_eq!(key_a.8, 260);
+    assert!((key_a.9 - 0.26).abs() < 1e-9);
+    assert!(key_a.5.is_some());
+    assert!(key_a.6.is_some());
+
+    let key_b = rows
+        .iter()
+        .find(|row| row.0 == "working-live-key-b")
+        .expect("working-live-key-b should survive rebuild");
+    assert_eq!(key_b.1, 1);
+    assert_eq!(key_b.2, 0);
+    assert_eq!(key_b.7, 1);
+    assert_eq!(key_b.8, 220);
+    assert!((key_b.9 - 0.22).abs() < 1e-9);
+    assert!(key_b.5.is_some());
+    assert!(key_b.6.is_none());
+}
+
+#[tokio::test]
+async fn proxy_only_working_conversation_live_aggregate_keeps_mixed_source_proxy_slice() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    for (invoke_id, source, seconds_ago, total_tokens, cost) in [
+        ("mixed-proxy", SOURCE_PROXY, 30_i64, 120_i64, 0.12_f64),
+        ("mixed-crs", SOURCE_CRS, 20_i64, 220_i64, 0.22_f64),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive((now - ChronoDuration::seconds(seconds_ago)).with_timezone(&Shanghai).naive_local()))
+        .bind(source)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(json!({ "promptCacheKey": "mixed-working-key" }).to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert mixed-source working conversation row");
+    }
+
+    let rows = query_prompt_cache_working_conversation_aggregates(
+        &state.pool,
+        &db_occurred_at_lower_bound(now - ChronoDuration::minutes(5)),
+        InvocationSourceScope::ProxyOnly,
+        10,
+    )
+    .await
+    .expect("proxy-only working conversation aggregate should succeed");
+
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.prompt_cache_key, "mixed-working-key");
+    assert_eq!(row.request_count, 1);
+    assert_eq!(row.total_tokens, 120);
+    assert!((row.total_cost - 0.12).abs() < 1e-9);
+}
+
+#[tokio::test]
 async fn health_check_reports_starting_until_startup_is_ready() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18080").expect("valid upstream url"),

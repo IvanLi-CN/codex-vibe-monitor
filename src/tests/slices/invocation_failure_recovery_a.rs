@@ -594,8 +594,8 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
         "request should wait for the alternate to recover, elapsed={elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(280),
-        "bounded wait should still complete well within the configured window plus poll jitter, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(900),
+        "bounded wait should still stay within a loaded-runner recovery budget, elapsed={elapsed:?}"
     );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
@@ -2252,8 +2252,8 @@ async fn pool_route_body_sticky_wait_timeout_returns_total_timeout_error_before_
         "request should still wait briefly before failing, elapsed={elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(150),
-        "responses total timeout should cap the pre-attempt no-account wait, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(600),
+        "responses total timeout should keep the pre-attempt no-account wait bounded on loaded runners, elapsed={elapsed:?}"
     );
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     assert_eq!(

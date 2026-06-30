@@ -3,6 +3,8 @@ import { fetchSummary } from '../lib/api'
 import type { ApiInvocation, StatsResponse } from '../lib/api'
 import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
 import {
+  recordCurrentSummaryOpenResync,
+  recordCurrentSummaryRefresh,
   recordTodaySummaryRefresh,
   recordTodaySummarySseCommit,
 } from '../lib/dashboardPerformanceDiagnostics'
@@ -17,8 +19,8 @@ const CALENDAR_SUMMARY_WINDOWS = new Set(['today', 'yesterday', 'thisWeek', 'thi
 const DAY_BOUNDARY_SUMMARY_WINDOWS = new Set(['today', 'yesterday', 'previous7d'])
 export const UNSUPPORTED_SSE_REFRESH_INTERVAL_MS = 60_000
 export const CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 5_000
-export const CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 600
-export const CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS = 3_000
+export const CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 5_000
+export const CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS = 5_000
 export const CURRENT_SUMMARY_REQUEST_TIMEOUT_MS = 10_000
 export const CURRENT_SUMMARY_RETRY_DELAY_MS = 2_000
 export const CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS = 3
@@ -332,6 +334,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         summaryContextRef.current.upstreamAccountId,
       )
       recordTodaySummaryRefresh(summaryContextRef.current.window)
+      recordCurrentSummaryRefresh(summaryContextRef.current.window)
       lastNaturalDayLoadStartEpochRef.current =
         isDayBoundarySummaryWindow(summaryContextRef.current.window)
           ? getLocalDayStartEpoch()
@@ -441,6 +444,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       return
     }
     lastOpenResyncAtRef.current = now
+    recordCurrentSummaryOpenResync()
     void load({ silent: true, force: true })
   }, [load])
 

@@ -477,6 +477,54 @@ body {
     color: color-mix(in oklab, oklch(var(--color-base-content)) 50%, oklch(var(--color-warning)) 50%);
   }
 
+  .dashboard-upstream-account-identity-chip--tone-sky {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #0ea5e9 82%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #e0f2fe 52%);
+    color: #0c4a6e;
+  }
+
+  .dashboard-upstream-account-identity-chip--tone-cyan {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #06b6d4 82%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #cffafe 52%);
+    color: #164e63;
+  }
+
+  .dashboard-upstream-account-identity-chip--tone-blue {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #3b82f6 82%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #dbeafe 52%);
+    color: #1e40af;
+  }
+
+  .dashboard-upstream-account-identity-chip--tone-violet {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #8b5cf6 82%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #ede9fe 52%);
+    color: #5b21b6;
+  }
+
+  .dashboard-upstream-account-identity-chip--tone-indigo {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #6366f1 82%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #e0e7ff 52%);
+    color: #3730a3;
+  }
+
+  .dashboard-upstream-account-identity-chip--tone-fuchsia {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #d946ef 82%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #fae8ff 52%);
+    color: #86198f;
+  }
+
+  .dashboard-upstream-account-identity-chip--tone-teal {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #14b8a6 82%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #ccfbf1 52%);
+    color: #115e59;
+  }
+
+  .dashboard-upstream-account-identity-chip--tone-emerald {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #22c55e 82%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #dcfce7 52%);
+    color: #166534;
+  }
+
   [data-theme='vibe-dark'] .invocation-endpoint-badge {
     background-image: none;
     box-shadow: none;
@@ -498,6 +546,54 @@ body {
     background-color: color-mix(in oklab, oklch(var(--color-base-200)) 83%, oklch(var(--color-warning)) 17%);
     border-color: color-mix(in oklab, oklch(var(--color-base-300)) 50%, oklch(var(--color-warning)) 50%);
     color: color-mix(in oklab, oklch(var(--color-base-content)) 46%, oklch(var(--color-warning)) 54%);
+  }
+
+  [data-theme='vibe-dark'] .dashboard-upstream-account-identity-chip--tone-sky {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #38bdf8 64%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #082f49 32%);
+    color: #7dd3fc;
+  }
+
+  [data-theme='vibe-dark'] .dashboard-upstream-account-identity-chip--tone-cyan {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #22d3ee 64%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #164e63 32%);
+    color: #67e8f9;
+  }
+
+  [data-theme='vibe-dark'] .dashboard-upstream-account-identity-chip--tone-blue {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #60a5fa 64%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #172554 32%);
+    color: #93c5fd;
+  }
+
+  [data-theme='vibe-dark'] .dashboard-upstream-account-identity-chip--tone-violet {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #a78bfa 64%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #2e1065 32%);
+    color: #c4b5fd;
+  }
+
+  [data-theme='vibe-dark'] .dashboard-upstream-account-identity-chip--tone-indigo {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #818cf8 64%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #1e1b4b 32%);
+    color: #a5b4fc;
+  }
+
+  [data-theme='vibe-dark'] .dashboard-upstream-account-identity-chip--tone-fuchsia {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #e879f9 64%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #4a044e 32%);
+    color: #f0abfc;
+  }
+
+  [data-theme='vibe-dark'] .dashboard-upstream-account-identity-chip--tone-teal {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #2dd4bf 64%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #134e4a 32%);
+    color: #5eead4;
+  }
+
+  [data-theme='vibe-dark'] .dashboard-upstream-account-identity-chip--tone-emerald {
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #4ade80 64%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #14532d 32%);
+    color: #86efac;
   }
 
   .field {

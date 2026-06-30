@@ -222,6 +222,7 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         tokensPerMinute: 640,
         spendRate: 0.12,
         firstByteAvgMs: 420,
+        firstResponseByteTotalAvgMs: 2_867.5,
         avgTotalMs: 860,
         inProgressInvocationCount: 3,
         retryInvocationCount: 1,
@@ -266,6 +267,14 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
     ],
   };
 }
+
+const UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS = [
+  "tone-seed-4",
+  "tone-seed-12",
+  "tone-seed-17",
+  "tone-seed-25",
+  "tone-seed-31",
+] as const;
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -594,7 +603,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.textContent,
-    ).toContain("420");
+    ).toContain("2.87 s");
     expect(latencyBreakdown?.textContent).toContain("860");
 
     const requestBreakdown = host?.querySelector(
@@ -896,6 +905,94 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenInvocation.mock.calls[0]?.[0]?.promptCacheKey).not.toBe(
       "acct-invoke-1",
     );
+  });
+
+  it("spreads identity chip tones for prompt cache keys that used to collide on the same low-bit slot", () => {
+    upstreamAccountActivityMock.data = {
+      range: "today",
+      rangeStart: "2026-04-04T10:00:00Z",
+      rangeEnd: "2026-04-04T10:05:00Z",
+      accounts: [
+        {
+          upstreamAccountId: 42,
+          displayName: "Pool Alpha",
+          groupName: "Primary",
+          planType: "enterprise",
+          requestCount: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
+          successCount: 0,
+          failureCount: 0,
+          nonSuccessCount: 0,
+          totalTokens: 1600,
+          successTokens: 0,
+          nonSuccessTokens: 0,
+          failureTokens: 0,
+          failureCost: 0,
+          totalCost: 0.12,
+          cacheHitRate: 0.25,
+          tokensPerMinute: 640,
+          spendRate: 0.12,
+          firstByteAvgMs: 420,
+          avgTotalMs: 860,
+          inProgressInvocationCount: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
+          retryInvocationCount: 0,
+          recentInvocations: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.map(
+            (promptCacheKey, index) =>
+              createPreview({
+                id: 9100 + index,
+                invokeId: `acct-tone-${index + 1}`,
+                promptCacheKey,
+                occurredAt: `2026-04-04T10:0${5 - index}:00Z`,
+                status: "running",
+                upstreamAccountName: "Pool Alpha",
+              }),
+          ),
+        },
+      ],
+    };
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-tone-anchor", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-tone-anchor",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+      { recentPreviewLimit: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length },
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const identityChips = Array.from(
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-identity-chip"]') ??
+        [],
+    );
+    expect(identityChips).toHaveLength(UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length);
+
+    const toneClassNames = identityChips.map((chip) => chip.className);
+    expect(new Set(toneClassNames).size).toBeGreaterThanOrEqual(4);
+
+    const renderedShortIds = identityChips.map((chip) =>
+      chip.textContent?.trim(),
+    );
+    for (const promptCacheKey of UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS) {
+      const expectedShortId = formatDashboardWorkingConversationSequenceId(
+        `WC-${hashDashboardWorkingConversationKey(promptCacheKey).slice(0, 6)}`,
+      ).replace(/^WC-/, "");
+      expect(renderedShortIds).toContain(expectedShortId);
+    }
   });
 
   it("renders the WS transport badge only in websocket invocation slots", () => {

@@ -1441,6 +1441,8 @@ pub(crate) struct UpstreamAccountActivityAccountResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) first_byte_avg_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) first_response_byte_total_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) avg_total_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_invocation_count: Option<i64>,

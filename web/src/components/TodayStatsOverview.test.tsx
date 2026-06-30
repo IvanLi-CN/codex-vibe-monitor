@@ -537,7 +537,58 @@ describe('TodayStatsOverview', () => {
 
     expect(tpmText).toContain('1,001')
     expect(tpmText).not.toContain('.')
-    expect(spendRateText).toContain('$0.1')
+    expect(spendRateText).toContain('$0.10')
+  })
+
+  it('keeps rate currency tiles on the shared two-decimal full candidate when width allows', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 42,
+          successCount: 40,
+          failureCount: 2,
+          totalCost: 1.48,
+          totalTokens: 9000,
+          inProgressConversationCount: 1,
+        }}
+        rate={{
+          tokensPerMinute: 1000,
+          spendRate: 1,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={{
+          rangeStart: '2026-04-10T00:00:00.000Z',
+          rangeEnd: '2026-04-10T00:01:00.000Z',
+          bucketSeconds: 60,
+          points: [
+            {
+              bucketStart: '2026-04-10T00:00:00.000Z',
+              bucketEnd: '2026-04-10T00:01:00.000Z',
+              totalCount: 1,
+              successCount: 1,
+              failureCount: 0,
+              totalTokens: 1000,
+              totalCost: 1,
+              avgTotalMs: 1200,
+              totalLatencySampleCount: 1,
+              firstResponseByteTotalSampleCount: 1,
+              firstResponseByteTotalAvgMs: 800,
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    expect(host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent).toContain('$1.00')
+    expect(
+      host?.querySelector('[data-testid="today-stats-secondary-spend-rate-day-average"]')?.textContent,
+    ).toContain('$1.48')
+    expect(
+      host?.querySelector('[data-testid="today-stats-secondary-spend-rate-per-conversation"]')?.textContent,
+    ).toContain('$1.00')
   })
 
   it('renders the new natural-day KPI helper semantics inline', () => {
@@ -633,7 +684,7 @@ describe('TodayStatsOverview', () => {
       '1.39 s',
     )
     expect(host?.querySelector('[data-testid="today-stats-secondary-cost-failed"]')?.textContent).toContain(
-      '$3.50',
+      '$3.5',
     )
     expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-failed"]')?.textContent).toContain(
       '420',

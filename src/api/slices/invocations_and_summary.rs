@@ -1823,87 +1823,37 @@ async fn load_in_progress_summary_snapshot(
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
 ) -> Result<(i64, i64, Option<f64>), ApiError> {
+    let retry_column = if upstream_account_id.is_some() {
+        match source_scope {
+            InvocationSourceScope::All => "is_retry_after_failure_account_all",
+            InvocationSourceScope::ProxyOnly => "is_retry_after_failure_account_proxy_only",
+        }
+    } else {
+        match source_scope {
+            InvocationSourceScope::All => "is_retry_after_failure_all",
+            InvocationSourceScope::ProxyOnly => "is_retry_after_failure_proxy_only",
+        }
+    };
     let mut query = QueryBuilder::<Sqlite>::new(
-        "WITH in_flight AS (\
-            SELECT id, ",
+        "SELECT \
+            COALESCE(COUNT(*), 0) AS in_progress_count, \
+            COALESCE(SUM(",
     );
-    query
-        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-        .push(
-            " AS upstream_account_id, \
-             ",
-        )
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(
-            " AS prompt_cache_key, \
-             t_upstream_ttfb_ms \
-             FROM codex_invocations \
-             WHERE LOWER(TRIM(",
-        )
-        .push(invocation_display_status_sql())
-        .push(")) IN ('running', 'pending')");
+    query.push(retry_column).push(
+        "), 0) AS retry_count, \
+         AVG(CASE WHEN upstream_ttfb_ms IS NOT NULL AND upstream_ttfb_ms >= 0 THEN upstream_ttfb_ms END) AS avg_wait_ms \
+         FROM invocation_in_progress_live \
+         WHERE 1 = 1",
+    );
 
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
     if let Some(upstream_account_id) = upstream_account_id {
         query
-            .push(" AND ")
-            .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-            .push(" = ")
+            .push(" AND upstream_account_id = ")
             .push_bind(upstream_account_id);
     }
-
-    query.push(
-        " ), retry_candidates AS (\
-            SELECT in_flight.id AS in_flight_id, \
-                   (SELECT previous_inner.display_status \
-                      FROM (\
-                        SELECT id, source, ",
-    );
-    query
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(
-            " AS prompt_cache_key, \
-             ",
-        )
-        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-        .push(
-            " AS upstream_account_id, \
-             LOWER(TRIM(",
-        )
-        .push(invocation_display_status_sql())
-        .push(
-            ")) AS display_status \
-                         FROM codex_invocations\
-                    ) previous_inner \
-                    WHERE previous_inner.prompt_cache_key = in_flight.prompt_cache_key",
-        );
-
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND previous_inner.source = ").push_bind(SOURCE_PROXY);
-    }
-    if let Some(upstream_account_id) = upstream_account_id {
-        query
-            .push(" AND previous_inner.upstream_account_id = ")
-            .push_bind(upstream_account_id);
-    }
-
-    query.push(
-        " AND previous_inner.id < in_flight.id \
-                    AND previous_inner.display_status NOT IN ('running', 'pending') \
-                    ORDER BY previous_inner.id DESC \
-                    LIMIT 1) AS previous_display_status \
-             FROM in_flight \
-             WHERE in_flight.prompt_cache_key IS NOT NULL \
-               AND in_flight.prompt_cache_key <> ''\
-         ) \
-         SELECT \
-            COALESCE(COUNT(*), 0) AS in_progress_count, \
-            COALESCE((SELECT SUM(CASE WHEN retry_candidates.previous_display_status = 'failed' THEN 1 ELSE 0 END) FROM retry_candidates), 0) AS retry_count, \
-            AVG(CASE WHEN in_flight.t_upstream_ttfb_ms IS NOT NULL AND in_flight.t_upstream_ttfb_ms >= 0 THEN in_flight.t_upstream_ttfb_ms END) AS avg_wait_ms \
-         FROM in_flight",
-    );
 
     let (in_progress_count, retry_count, avg_wait_ms) = query
         .build_query_as::<(i64, i64, Option<f64>)>()
@@ -1973,6 +1923,7 @@ async fn load_non_success_tokens_snapshot(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 ) -> Result<Option<i64>, ApiError> {
+    let started_at = Instant::now();
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
             COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS non_success_tokens \
@@ -2008,6 +1959,8 @@ async fn load_non_success_tokens_snapshot(
             let err = anyhow!(err);
             if crate::is_sqlite_lock_error(&err) {
                 tracing::warn!(
+                    endpoint = "/api/stats/summary",
+                    window = "range",
                     ?source_scope,
                     upstream_account_id,
                     start = %start,
@@ -2022,6 +1975,34 @@ async fn load_non_success_tokens_snapshot(
 
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     if start >= retention_cutoff {
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        if elapsed_ms >= 250 {
+            tracing::warn!(
+                endpoint = "/api/stats/summary",
+                window = "range",
+                ?source_scope,
+                upstream_account_id,
+                cache_hit_or_miss = "live_only",
+                elapsed_ms,
+                row_count = 0_i64,
+                start = %start,
+                end = %end,
+                "summary non-success token snapshot exceeded slow-path threshold"
+            );
+        } else {
+            tracing::debug!(
+                endpoint = "/api/stats/summary",
+                window = "range",
+                ?source_scope,
+                upstream_account_id,
+                cache_hit_or_miss = "live_only",
+                elapsed_ms,
+                row_count = 0_i64,
+                start = %start,
+                end = %end,
+                "summary non-success token snapshot completed"
+            );
+        }
         return Ok(Some(live_tokens));
     }
 
@@ -2037,6 +2018,8 @@ async fn load_non_success_tokens_snapshot(
         Ok(ids) => ids,
         Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
             tracing::warn!(
+                endpoint = "/api/stats/summary",
+                window = "range",
                 ?source_scope,
                 upstream_account_id,
                 start = %start,
@@ -2060,6 +2043,8 @@ async fn load_non_success_tokens_snapshot(
             Ok((_, tokens)) => tokens,
             Err(err) if crate::is_sqlite_lock_error(&err) => {
                 tracing::warn!(
+                    endpoint = "/api/stats/summary",
+                    window = "range",
                     ?source_scope,
                     upstream_account_id,
                     start = %start,
@@ -2082,6 +2067,8 @@ async fn load_non_success_tokens_snapshot(
             Ok((_, tokens)) => tokens,
             Err(err) if crate::is_sqlite_lock_error(&err) => {
                 tracing::warn!(
+                    endpoint = "/api/stats/summary",
+                    window = "range",
                     ?source_scope,
                     start = %start,
                     end = %end,
@@ -2092,6 +2079,35 @@ async fn load_non_success_tokens_snapshot(
             Err(err) => return Err(ApiError::from(err)),
         }
     };
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    let row_count = live_invocation_ids.len() as i64;
+    if elapsed_ms >= 250 {
+        tracing::warn!(
+            endpoint = "/api/stats/summary",
+            window = "range",
+            ?source_scope,
+            upstream_account_id,
+            cache_hit_or_miss = "live_plus_archive",
+            elapsed_ms,
+            row_count,
+            start = %start,
+            end = %end,
+            "summary non-success token snapshot exceeded slow-path threshold"
+        );
+    } else {
+        tracing::debug!(
+            endpoint = "/api/stats/summary",
+            window = "range",
+            ?source_scope,
+            upstream_account_id,
+            cache_hit_or_miss = "live_plus_archive",
+            elapsed_ms,
+            row_count,
+            start = %start,
+            end = %end,
+            "summary non-success token snapshot completed"
+        );
+    }
     Ok(Some(live_tokens + archived_tokens))
 }
 
@@ -2158,8 +2174,8 @@ struct UpstreamAccountActivityAccumulator {
     failure_cost: f64,
     cache_input_tokens: i64,
     total_cost: f64,
-    first_byte_sample_count: i64,
-    first_byte_sum_ms: f64,
+    first_response_byte_total_sample_count: i64,
+    first_response_byte_total_sum_ms: f64,
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
     last_occurred_at_epoch_ms: i64,
@@ -2331,59 +2347,24 @@ async fn query_upstream_account_in_progress_counts(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
 ) -> Result<HashMap<i64, (i64, i64)>, ApiError> {
-    let mut query = QueryBuilder::<Sqlite>::new("WITH in_flight AS (SELECT id, ");
-    query
-        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-        .push(" AS upstream_account_id, ")
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(
-            " AS prompt_cache_key \
-             FROM codex_invocations \
-             WHERE LOWER(TRIM(",
-        )
-        .push(invocation_display_status_sql())
-        .push(")) IN ('running', 'pending') AND ")
-        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-        .push(" IS NOT NULL");
+    let retry_column = match source_scope {
+        InvocationSourceScope::All => "is_retry_after_failure_account_all",
+        InvocationSourceScope::ProxyOnly => "is_retry_after_failure_account_proxy_only",
+    };
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT upstream_account_id, \
+                COUNT(*) AS in_progress_count, \
+                COALESCE(SUM(",
+    );
+    query.push(retry_column).push(
+        "), 0) AS retry_count \
+         FROM invocation_in_progress_live \
+         WHERE upstream_account_id IS NOT NULL",
+    );
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
-    query.push("), retry_candidates AS (SELECT in_flight.upstream_account_id AS upstream_account_id, (SELECT previous_inner.display_status FROM (SELECT id, source, ");
-    query
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(" AS prompt_cache_key, ")
-        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-        .push(" AS upstream_account_id, LOWER(TRIM(")
-        .push(invocation_display_status_sql())
-        .push(
-            ")) AS display_status FROM codex_invocations) previous_inner \
-             WHERE previous_inner.prompt_cache_key = in_flight.prompt_cache_key \
-               AND previous_inner.upstream_account_id = in_flight.upstream_account_id",
-        );
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND previous_inner.source = ").push_bind(SOURCE_PROXY);
-    }
-    query.push(
-        " AND previous_inner.id < in_flight.id \
-               AND previous_inner.display_status NOT IN ('running', 'pending') \
-             ORDER BY previous_inner.id DESC \
-             LIMIT 1) AS previous_display_status \
-           FROM in_flight \
-          WHERE in_flight.prompt_cache_key IS NOT NULL \
-            AND in_flight.prompt_cache_key <> ''), retry_counts AS (\
-            SELECT upstream_account_id, \
-                   SUM(CASE WHEN previous_display_status = 'failed' THEN 1 ELSE 0 END) AS retry_count \
-              FROM retry_candidates \
-             GROUP BY upstream_account_id \
-         ) \
-         SELECT in_flight.upstream_account_id AS upstream_account_id, \
-                COUNT(*) AS in_progress_count, \
-                COALESCE(retry_counts.retry_count, 0) AS retry_count \
-           FROM in_flight \
-           LEFT JOIN retry_counts \
-             ON retry_counts.upstream_account_id = in_flight.upstream_account_id \
-          GROUP BY in_flight.upstream_account_id, retry_counts.retry_count",
-    );
+    query.push(" GROUP BY upstream_account_id");
 
     Ok(query
         .build_query_as::<UpstreamAccountInProgressRow>()
@@ -2499,9 +2480,16 @@ pub(crate) async fn fetch_upstream_account_activity(
         if is_success {
             entry.success_count += 1;
             entry.success_tokens += row.total_tokens.max(0);
-            if let Some(ttfb_ms) = row.t_upstream_ttfb_ms.filter(|value| value.is_finite() && *value > 0.0) {
-                entry.first_byte_sample_count += 1;
-                entry.first_byte_sum_ms += ttfb_ms;
+            if let Some(first_response_byte_total_ms) =
+                crate::stats::resolve_first_response_byte_total_ms(
+                    row.t_req_read_ms,
+                    row.t_req_parse_ms,
+                    row.t_upstream_connect_ms,
+                    row.t_upstream_ttfb_ms,
+                )
+            {
+                entry.first_response_byte_total_sample_count += 1;
+                entry.first_response_byte_total_sum_ms += first_response_byte_total_ms;
             }
             if let Some(total_ms) = row.t_total_ms.filter(|value| value.is_finite() && *value >= 0.0) {
                 entry.total_latency_sample_count += 1;
@@ -2593,9 +2581,18 @@ pub(crate) async fn fetch_upstream_account_activity(
                     .then_some(aggregate.cache_input_tokens as f64 / aggregate.total_tokens as f64),
                 tokens_per_minute,
                 spend_rate,
-                first_byte_avg_ms: (aggregate.first_byte_sample_count > 0).then_some(
-                    aggregate.first_byte_sum_ms / aggregate.first_byte_sample_count as f64,
-                ),
+                first_byte_avg_ms: (aggregate.first_response_byte_total_sample_count > 0)
+                    .then_some(
+                        aggregate.first_response_byte_total_sum_ms
+                            / aggregate.first_response_byte_total_sample_count as f64,
+                    ),
+                first_response_byte_total_avg_ms: (aggregate
+                    .first_response_byte_total_sample_count
+                    > 0)
+                    .then_some(
+                        aggregate.first_response_byte_total_sum_ms
+                            / aggregate.first_response_byte_total_sample_count as f64,
+                    ),
                 avg_total_ms: (aggregate.total_latency_sample_count > 0).then_some(
                     aggregate.total_latency_sum_ms / aggregate.total_latency_sample_count as f64,
                 ),
