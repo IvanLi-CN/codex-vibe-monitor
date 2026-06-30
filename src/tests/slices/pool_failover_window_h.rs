@@ -376,8 +376,13 @@ async fn parallel_work_stats_returns_not_modified_for_matching_etag() {
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    let mut query_start = Utc::now();
+    if query_start.timestamp().rem_euclid(60) >= 58 {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        query_start = Utc::now();
+    }
     let current_minute_epoch =
-        align_reporting_bucket_epoch(Utc::now().timestamp(), 60, Shanghai).expect("align minute");
+        align_reporting_bucket_epoch(query_start.timestamp(), 60, Shanghai).expect("align minute");
     let minute = Utc
         .timestamp_opt(current_minute_epoch - 3 * 60, 0)
         .single()

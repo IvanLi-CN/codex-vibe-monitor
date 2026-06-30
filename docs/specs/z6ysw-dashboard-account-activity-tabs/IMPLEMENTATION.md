@@ -11,6 +11,7 @@
 ## Coverage / rollout summary
 
 - 已实现：Dashboard 页面提升并共享顶部 range 状态，工作区 section 接入 `对话 / 上游账号` 双 tabs，并保留既有对话 working-set 行为。
+- 已实现：Dashboard 工作区 tabs 额外持久化用户上次主动选择的视图；重新打开 Dashboard 或切回总览页时，在当前 range 允许的前提下恢复该视图；`usage` 仅临时强制回退到 `对话`，不会覆盖已记住的 `上游账号` 偏好。
 - 已实现：新增 `GET /api/stats/upstream-account-activity` 批量接口，返回账号级聚合摘要、recent 4 bounded query，以及 `yesterday` closed-range 的空 live count 语义。
 - 已实现：summary `inProgressConversationCount` / `inProgressRetryConversationCount` 改为 invocation-based 语义，Dashboard owner-facing 文案同步为“进行中调用 / 重试调用”。
 - 已实现：账号 tab 懒加载、`usage` disabled + 自动回退、独立账号卡布局、Storybook 交互场景、视觉证据与 targeted validation。
