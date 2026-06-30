@@ -12,6 +12,7 @@
 - 前台关键路径不应该和 rollup/backfill/retention/maintenance 使用同等重试预算。
 - 连接池等待超时本身就是 pressure signal，应触发后台 cooldown，而不是继续并发重试。
 - `proxy capture follow-up` 也必须遵守这个分级：没有 SSE 订阅者时，不得再消耗 summary/quota 或 hourly rollup refresh 预算。
+- 对请求收尾里的同一实体写入，要优先消除“重复唯一键探测 + 紧跟二次更新”“先重算 rollup 再补 timing 再重算一次”这类单请求内自我放大；SQLite 压力常常不是来自单条大 SQL，而是来自几条语义重复的写语句连发。
 
 ## 推荐模式
 
@@ -19,6 +20,7 @@
 
 - 前台关键写入：OAuth callback、请求路由状态、用户可见设置保存；优先拿连接，失败需返回明确业务错误。
 - 请求收尾写入：invocation 记录、usage、raw metadata；允许有界降级和异步旁路。
+- 请求收尾若已经存在对应 `running/pending` 行，优先原地更新而不是先 `INSERT OR IGNORE` 再走 repair/update；这样可以少一次唯一键冲突写尝试与后续锁竞争。
 - 后台维护写入：rollup、retention、account maintenance；pressure 下 fail-soft skip。
 - 历史回填写入：startup backfill、archive materialization；pressure 下延后，不阻塞 readiness。
 
@@ -47,6 +49,7 @@
 - 为每个后台入口单独做局部退避，容易遗漏同一压力窗口内的其他维护任务；进程级 gate 更容易统一行为。
 - `SELECT MAX(id) ... WHERE <稀疏条件>`、`NOT EXISTS` + 低选择性 phase 过滤这类查询，即使最终只返回 1 行，也可能在 SQLite 上吃掉秒级读锁预算；若它们会与前台 HTTP 共享同一数据库，必须先压成 cursor 读取或用 partial index 固定扫描面。
 - 对 proxy 收尾这类 SSE follow-up，`receiver_count()==0` 应该直接意味着“跳过 follow-up”，而不是继续排队 summary/quota 或 rollup refresh；否则会把没有任何订阅者的请求变成纯数据库放大器。
+- write-side live read model 只有在维护成本本身也受控时才值得做：前台请求内同步维护最小必要 working-set / in-progress truth，后台 rebuild 和补偿刷新则继续挂到统一 pressure gate/cooldown，避免为了止住读热点又新增一组不受控维护写入。
 
 ## 何时升级方案
 

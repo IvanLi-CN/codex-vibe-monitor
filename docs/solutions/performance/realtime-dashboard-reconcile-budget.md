@@ -46,6 +46,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - Add lightweight diagnostics counters for each path: visible patch count, head fetch count, SSE summary commit count, HTTP reconcile count, chart data commit count, and conditional fetch hit count.
 - Keep `current` summary and dashboard account-activity reconcile on the same 5 second budget. A faster current-window reconcile without a matching backend live read model simply turns SQLite scan cost into a tighter request loop.
 - When an endpoint still needs strict “currently in progress” truth, move that truth into a write-side live table or read model and let the 5 second reconcile read that bounded surface instead of rescanning the historical raw table.
+- Treat dashboard working-set surfaces the same way: the 5-minute working-conversations head/count can read a write-side bounded working-set table, while exact snapshot pagination stays on its slower snapshot path because it is not part of the hot open-tab reconcile loop.
 - For future regressions, slow-path evidence needs to identify the class of work, not just that something was slow: emit endpoint/window/source-scope plus key counts or cache-hit state so operators can tell apart request-time scans, maintenance-time rebuilds, and cache hydration misses.
 
 ## Guardrails / Reuse Notes
