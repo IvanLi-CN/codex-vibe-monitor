@@ -22,6 +22,7 @@
 - 2026-06-29：补充修正 identity chip 槽位算法，明确不能直接对展示短码片段做低位 `% 8` 取槽；改为混合完整 hash 后选离散槽位，避免线上真实短码因低位偏置出现大面积同色聚集。
 - 2026-06-30：Dashboard `Working Conversations` 的 5 分钟 head/count 改读 write-side `prompt_cache_working_set_live`，并为 mixed-source 对话保留独立 `ProxyOnly` 聚合槽位，避免 UI 为了代理视图再次回扫 `codex_invocations`。
 - 2026-06-30：修正上游账号 recent 行短 ID 的热区语义，明确 identity chip 独立打开对话详情，而整行其它区域继续保留调用详情入口，避免 operator 点短 ID 时误落到 invocation drawer。
+- 2026-06-30：补充冻结工作区 tabs 的浏览器侧记忆语义：只持久化用户主动选择的偏好视图；`usage` 下的 `对话` 回退仅为临时降级，不得覆盖上次选择的 `上游账号`，以保证重新进入 Dashboard 或切回支持 range 时能自动恢复。
 
 ## Key Reasons / Replacements
 

@@ -17,6 +17,10 @@ import {
   type DashboardWorkingConversationCardModel,
 } from "../lib/dashboardWorkingConversations";
 import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversationsSection";
+import {
+  DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY,
+  readPersistedDashboardWorkspaceView,
+} from "./dashboardActivityRange";
 
 const virtualizerMocks = vi.hoisted(() => ({
   rowIndexes: null as number[] | null,
@@ -279,6 +283,19 @@ const UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS = [
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 const originalResizeObserver = globalThis.ResizeObserver;
+const storage = new Map<string, string>();
+const localStorageMock = {
+  getItem: (key: string) => storage.get(key) ?? null,
+  setItem: (key: string, value: string) => {
+    storage.set(key, value);
+  },
+  removeItem: (key: string) => {
+    storage.delete(key);
+  },
+  clear: () => {
+    storage.clear();
+  },
+};
 
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
@@ -290,6 +307,10 @@ beforeAll(() => {
     configurable: true,
     writable: true,
     value: vi.fn(),
+  });
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: localStorageMock,
   });
 });
 
@@ -312,6 +333,7 @@ afterEach(() => {
   upstreamAccountActivityMock.error = null;
   upstreamAccountActivityMock.resolvedRecentInvocationLimit = null;
   upstreamAccountActivityMock.calls = [];
+  window.localStorage.clear();
   globalThis.ResizeObserver = originalResizeObserver;
   vi.restoreAllMocks();
 });
@@ -780,6 +802,91 @@ describe("DashboardWorkingConversationsSection", () => {
       (node) => node.textContent?.includes("上游账号"),
     );
     expect(accountTabAfter?.disabled).toBe(true);
+  });
+
+  it("persists the preferred workspace view and restores it on remount", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    const response = createResponse([
+      createConversation("pck-view-persist", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-view-persist",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+        }),
+      ]),
+    ]);
+
+    renderSection(response);
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    expect(
+      readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY),
+    ).toBe("upstreamAccounts");
+
+    act(() => {
+      root?.unmount();
+    });
+    host?.remove();
+    host = null;
+    root = null;
+
+    renderSection(response);
+
+    expect(host?.textContent).toContain("当前活动账号 1 个");
+    expect(accountTab.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("preserves the upstream-account preference when usage temporarily forces conversations", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    const response = createResponse([
+      createConversation("pck-usage-restore", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-usage-restore",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+        }),
+      ]),
+    ]);
+
+    renderSection(response);
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    rerenderSection(response, { activeRange: "usage" });
+    expect(host?.textContent).toContain("当前对话 1 条");
+    expect(
+      readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY),
+    ).toBe("upstreamAccounts");
+
+    rerenderSection(response, { activeRange: "today" });
+    expect(host?.textContent).toContain("当前活动账号 1 个");
+    const restoredAccountTab = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((node) => node.textContent?.includes("上游账号"));
+    expect(restoredAccountTab?.getAttribute("aria-selected")).toBe("true");
   });
 
   it("switches the section subtitle when the upstream account tab is active", () => {

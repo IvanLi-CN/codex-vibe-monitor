@@ -51,7 +51,13 @@ import {
 } from "./invocation-details-shared";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 import { useDashboardUpstreamAccountActivity } from "../hooks/useDashboardUpstreamAccountActivity";
-import type { DashboardActivityRangeKey } from "./dashboardActivityRange";
+import {
+  DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY,
+  readPersistedDashboardWorkspaceView,
+  persistDashboardWorkspaceView,
+  type DashboardActivityRangeKey,
+  type DashboardWorkspaceView,
+} from "./dashboardActivityRange";
 
 interface DashboardWorkingConversationsSectionProps {
   activeRange: DashboardActivityRangeKey;
@@ -70,8 +76,6 @@ interface DashboardWorkingConversationsSectionProps {
     selection: DashboardWorkingConversationInvocationSelection,
   ) => void;
 }
-
-type DashboardWorkspaceView = "conversations" | "upstreamAccounts";
 
 export interface DashboardWorkingConversationSelection {
   conversationSequenceId: string;
@@ -1971,8 +1975,9 @@ export function DashboardWorkingConversationsSection({
   onOpenInvocation,
 }: DashboardWorkingConversationsSectionProps) {
   const { t, locale } = useTranslation();
-  const [activeView, setActiveView] =
-    useState<DashboardWorkspaceView>("conversations");
+  const [preferredView, setPreferredView] = useState<DashboardWorkspaceView>(() =>
+    readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY),
+  );
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [containerWidth, setContainerWidth] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(() =>
@@ -2023,6 +2028,10 @@ export function DashboardWorkingConversationsSection({
     [localeTag],
   );
   const upstreamAccountsDisabled = activeRange === "usage";
+  const activeView: DashboardWorkspaceView =
+    upstreamAccountsDisabled && preferredView === "upstreamAccounts"
+      ? "conversations"
+      : preferredView;
   const upstreamAccountActivityEnabled =
     !upstreamAccountsDisabled && activeView === "upstreamAccounts";
   const {
@@ -2050,10 +2059,11 @@ export function DashboardWorkingConversationsSection({
     [upstreamAccountActivity],
   );
   useEffect(() => {
-    if (upstreamAccountsDisabled && activeView === "upstreamAccounts") {
-      setActiveView("conversations");
-    }
-  }, [activeView, upstreamAccountsDisabled]);
+    persistDashboardWorkspaceView(
+      DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY,
+      preferredView,
+    );
+  }, [preferredView]);
   const countBadgeValue = totalMatched ?? cards.length;
   const accountCountBadgeValue = upstreamAccounts.length;
   const countBadgeLabel =
@@ -2318,8 +2328,8 @@ export function DashboardWorkingConversationsSection({
       data-testid="dashboard-working-conversations"
     >
       <div className="surface-panel-body gap-5 !p-3 sm:!p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="section-heading">
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="section-heading min-w-0 flex-1">
             <h2 className="section-title">
               {t("dashboard.section.workingConversationsTitle")}
             </h2>
@@ -2327,7 +2337,13 @@ export function DashboardWorkingConversationsSection({
               {sectionSubtitle}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="ml-auto flex shrink-0 items-center justify-end gap-2 self-start">
+            <Badge
+              variant="default"
+              className="rounded-full px-3 py-1 font-mono text-xs font-semibold"
+            >
+              {countBadgeLabel}
+            </Badge>
             <SegmentedControl
               size="compact"
               role="tablist"
@@ -2338,7 +2354,7 @@ export function DashboardWorkingConversationsSection({
                 role="tab"
                 aria-selected={activeView === "conversations"}
                 className="h-11 px-3.5 text-[0.95rem]"
-                onClick={() => setActiveView("conversations")}
+                onClick={() => setPreferredView("conversations")}
               >
                 对话
               </SegmentedControlItem>
@@ -2348,17 +2364,11 @@ export function DashboardWorkingConversationsSection({
                 aria-selected={activeView === "upstreamAccounts"}
                 disabled={upstreamAccountsDisabled}
                 className="h-11 px-3.5 text-[0.95rem]"
-                onClick={() => setActiveView("upstreamAccounts")}
+                onClick={() => setPreferredView("upstreamAccounts")}
               >
                 上游账号
               </SegmentedControlItem>
             </SegmentedControl>
-            <Badge
-              variant="default"
-              className="rounded-full px-3 py-1 font-mono text-xs font-semibold"
-            >
-              {countBadgeLabel}
-            </Badge>
           </div>
         </div>
 

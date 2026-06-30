@@ -90,12 +90,14 @@
 ### Core flows
 
 - Dashboard 页面加载后，顶部总览和工作区 section 共享同一个 `activeRange` 状态；总览的已有行为、持久化 key 与渲染顺序保持不变。
+- Dashboard 工作区 `对话 / 上游账号` 视图必须记住用户上次主动选择的 tab；下次重新打开 Dashboard，或从其他页面切回总览页时，若该视图在当前 range 下仍可用，则默认恢复到该已记住的选择。
 - `对话` tab 继续显示最近 5 分钟内有终态调用，或当前仍处于运行中 / 排队中的对话卡片。
 - 用户首次切到 `上游账号` tab 时，前端发起一次账号活动批量请求；后续只在账号 tab 激活时，随共享 range 变化或节流 refresh 再次请求。
 - `上游账号` 视图中的 badge 显示“当前活动账号数”；`对话` 视图中的 badge 继续显示“当前对话数”。
 - 账号卡顶部显示 `displayName` 与必要 badge；主体显示账号级 KPI；底部显示最近 4 条调用记录。
 - 账号卡摘要区保持两行 KPI 栅格，底部 recent 列表优先压缩行内密度而不是继续增加卡片高度。
 - `yesterday` 账号视图中的 `进行中调用` 与 `重试调用` 显示 `—`，因为它是 closed range，不做 live augmentation。
+- 当当前 range 为 `usage` 时，工作区可以临时强制显示 `对话` 作为降级视图，但不得覆盖用户上次主动选择的 tab 偏好；一旦切回支持账号活动的 range，若用户上次偏好是 `上游账号`，则必须自动恢复该视图。
 
 ### Edge cases / errors
 
@@ -132,6 +134,8 @@
 - Given Dashboard 工作区加载完成，When 查看右上角，Then 可以看到 `对话 / 上游账号` tabs，默认激活 `对话`，且现有 working-conversation 卡片交互不变。
 - Given 共享 range 为 `today / yesterday / 1d / 7d`，When 切到 `上游账号`，Then 账号集合与汇总指标随范围变化，且只包含该范围内至少有一条调用的账号。
 - Given 当前在 `上游账号` tab，When 把共享 range 切到 `usage`，Then 账号 tab disabled，界面自动回退到 `对话`，且不会发账号活动请求。
+- Given 用户上次主动选择了 `上游账号`，When 刷新页面、重新打开 Dashboard，或从其他页面切回 Dashboard，Then 在当前 range 允许账号视图时，工作区默认恢复到 `上游账号`。
+- Given 用户上次主动选择了 `上游账号`，When 当前 range 临时切到 `usage` 后再切回 `today / yesterday / 1d / 7d`，Then 工作区应重新恢复到 `上游账号`，而不是把偏好永久改写成 `对话`。
 - Given 从未打开过账号 tab，When 停留在 `对话` tab，Then 前端不会请求账号活动接口。
 - Given 某账号有范围内调用，When 查看账号卡，Then 标题使用 `displayName`，顶部同一行包含文本型 `TPM`、`消费速率` 实时指标和账号 ID，且卡内不再出现 `渠道 xxx / 分组` 行或顶部 `调用` 指标。
 - Given 查看账号卡周期统计，When 卡片渲染完成，Then 可见四组统计：`首字用时 + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败比率(%)`、`Token + 缓存命中率 / 失败`，且所有数值使用滚动数字效果。
@@ -202,6 +206,13 @@
   evidence_note: 验证账号卡“首字用时”主值使用 owner-facing 的首字总耗时口径；当后端同时返回阶段级 `firstByteAvgMs` 与显式 `firstResponseByteTotalAvgMs` 时，卡面主值显示秒级总耗时而不是被极小的上游首字节时延误导成 `0ms`。
   image:
   ![Dashboard 上游账号首字总耗时证据](./assets/dashboard-upstream-account-first-byte-total.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
+  scenario: `remembered-workspace-view desktop`
+  evidence_note: 验证 Dashboard 工作区右上 tabs 右贴边呈现；当浏览器已记住用户上次主动切到 `上游账号` 时，重新进入总览页会恢复该视图，且 `usage` 下的临时回退不会抹掉该偏好。
+  image:
+  ![Dashboard 工作区视图记忆与右贴边证据](./assets/dashboard-workspace-view-memory.png)
 
 ## Related PRs
 
