@@ -6,6 +6,8 @@ const INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL: &str =
     "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
 const INVOCATION_UPSTREAM_ACCOUNT_ID_EXPR_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+const PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS: i64 = 300;
+const SHANGHAI_NOW_SQL: &str = "datetime('now', '+8 hours')";
 
 fn ensure_schema_lock_key(pool: &Pool<Sqlite>) -> String {
     let connect_options = pool.connect_options();
@@ -322,6 +324,258 @@ async fn rebuild_invocation_in_progress_live_triggers(pool: &Pool<Sqlite>) -> Re
     tx.commit()
         .await
         .context("failed to commit invocation_in_progress_live trigger rebuild")?;
+
+    Ok(())
+}
+
+fn prompt_cache_working_set_live_refresh_sql_for_key(key_expr: &str) -> String {
+    let display_status_sql = crate::api::invocation_display_status_sql();
+    format!(
+        r#"
+        INSERT INTO prompt_cache_working_set_live (
+            prompt_cache_key,
+            source_scope_all,
+            source_scope_proxy_only,
+            created_at,
+            last_activity_at,
+            last_terminal_at,
+            last_in_flight_at,
+            sort_anchor_at,
+            request_count,
+            total_tokens,
+            total_cost,
+            proxy_created_at,
+            proxy_last_activity_at,
+            proxy_last_terminal_at,
+            proxy_last_in_flight_at,
+            proxy_sort_anchor_at,
+            proxy_request_count,
+            proxy_total_tokens,
+            proxy_total_cost,
+            updated_at
+        )
+        SELECT
+            candidate.prompt_cache_key,
+            1,
+            candidate.source_scope_proxy_only,
+            candidate.created_at,
+            candidate.last_activity_at,
+            candidate.last_terminal_at,
+            candidate.last_in_flight_at,
+            candidate.sort_anchor_at,
+            candidate.request_count,
+            candidate.total_tokens,
+            candidate.total_cost,
+            candidate.proxy_created_at,
+            candidate.proxy_last_activity_at,
+            candidate.proxy_last_terminal_at,
+            candidate.proxy_last_in_flight_at,
+            candidate.proxy_sort_anchor_at,
+            candidate.proxy_request_count,
+            candidate.proxy_total_tokens,
+            candidate.proxy_total_cost,
+            datetime('now')
+        FROM (
+            SELECT
+                keyed.prompt_cache_key AS prompt_cache_key,
+                CASE WHEN MAX(CASE WHEN keyed.source = '{source_proxy}' THEN 1 ELSE 0 END) = 1 THEN 1 ELSE 0 END AS source_scope_proxy_only,
+                MIN(keyed.occurred_at) AS created_at,
+                MAX(keyed.occurred_at) AS last_activity_at,
+                MAX(CASE WHEN keyed.is_in_flight = 0 THEN keyed.occurred_at END) AS last_terminal_at,
+                MAX(CASE WHEN keyed.is_in_flight = 1 THEN keyed.occurred_at END) AS last_in_flight_at,
+                MAX(
+                    CASE
+                        WHEN keyed.is_in_flight = 1 THEN keyed.occurred_at
+                        WHEN keyed.occurred_at >= datetime('now', '+8 hours', '-{window_seconds} seconds') THEN keyed.occurred_at
+                        ELSE NULL
+                    END
+                ) AS sort_anchor_at,
+                COUNT(*) AS request_count,
+                COALESCE(SUM(COALESCE(keyed.total_tokens, 0)), 0) AS total_tokens,
+                COALESCE(SUM(COALESCE(keyed.cost, 0.0)), 0.0) AS total_cost,
+                MIN(CASE WHEN keyed.source = '{source_proxy}' THEN keyed.occurred_at END) AS proxy_created_at,
+                MAX(CASE WHEN keyed.source = '{source_proxy}' THEN keyed.occurred_at END) AS proxy_last_activity_at,
+                MAX(CASE WHEN keyed.source = '{source_proxy}' AND keyed.is_in_flight = 0 THEN keyed.occurred_at END) AS proxy_last_terminal_at,
+                MAX(CASE WHEN keyed.source = '{source_proxy}' AND keyed.is_in_flight = 1 THEN keyed.occurred_at END) AS proxy_last_in_flight_at,
+                MAX(
+                    CASE
+                        WHEN keyed.source = '{source_proxy}' AND keyed.is_in_flight = 1 THEN keyed.occurred_at
+                        WHEN keyed.source = '{source_proxy}' AND keyed.occurred_at >= datetime('now', '+8 hours', '-{window_seconds} seconds') THEN keyed.occurred_at
+                        ELSE NULL
+                    END
+                ) AS proxy_sort_anchor_at,
+                COALESCE(SUM(CASE WHEN keyed.source = '{source_proxy}' THEN 1 ELSE 0 END), 0) AS proxy_request_count,
+                COALESCE(SUM(CASE WHEN keyed.source = '{source_proxy}' THEN COALESCE(keyed.total_tokens, 0) ELSE 0 END), 0) AS proxy_total_tokens,
+                COALESCE(SUM(CASE WHEN keyed.source = '{source_proxy}' THEN COALESCE(keyed.cost, 0.0) ELSE 0.0 END), 0.0) AS proxy_total_cost
+            FROM (
+                SELECT
+                    {prompt_cache_key_sql} AS prompt_cache_key,
+                    source,
+                    occurred_at,
+                    total_tokens,
+                    cost,
+                    CASE
+                        WHEN LOWER(TRIM({display_status_sql})) IN ('running', 'pending') THEN 1
+                        ELSE 0
+                    END AS is_in_flight
+                FROM codex_invocations
+                WHERE {prompt_cache_key_sql} = {key_expr}
+                  AND {prompt_cache_key_sql} IS NOT NULL
+                  AND {prompt_cache_key_sql} <> ''
+                  AND (
+                        LOWER(TRIM({display_status_sql})) IN ('running', 'pending')
+                        OR occurred_at >= datetime('now', '+8 hours', '-{window_seconds} seconds')
+                  )
+            ) AS keyed
+            GROUP BY keyed.prompt_cache_key
+        ) AS candidate
+        WHERE candidate.sort_anchor_at IS NOT NULL
+        ON CONFLICT(prompt_cache_key) DO UPDATE SET
+            source_scope_all = excluded.source_scope_all,
+            source_scope_proxy_only = excluded.source_scope_proxy_only,
+            created_at = excluded.created_at,
+            last_activity_at = excluded.last_activity_at,
+            last_terminal_at = excluded.last_terminal_at,
+            last_in_flight_at = excluded.last_in_flight_at,
+            sort_anchor_at = excluded.sort_anchor_at,
+            request_count = excluded.request_count,
+            total_tokens = excluded.total_tokens,
+            total_cost = excluded.total_cost,
+            proxy_created_at = excluded.proxy_created_at,
+            proxy_last_activity_at = excluded.proxy_last_activity_at,
+            proxy_last_terminal_at = excluded.proxy_last_terminal_at,
+            proxy_last_in_flight_at = excluded.proxy_last_in_flight_at,
+            proxy_sort_anchor_at = excluded.proxy_sort_anchor_at,
+            proxy_request_count = excluded.proxy_request_count,
+            proxy_total_tokens = excluded.proxy_total_tokens,
+            proxy_total_cost = excluded.proxy_total_cost,
+            updated_at = excluded.updated_at;
+        DELETE FROM prompt_cache_working_set_live
+        WHERE prompt_cache_key = {key_expr}
+          AND prompt_cache_key IS NOT NULL
+          AND prompt_cache_key <> ''
+          AND NOT EXISTS (
+              SELECT 1
+              FROM codex_invocations
+              WHERE {prompt_cache_key_sql} = {key_expr}
+                AND {prompt_cache_key_sql} IS NOT NULL
+                AND {prompt_cache_key_sql} <> ''
+                AND (
+                    LOWER(TRIM({display_status_sql})) IN ('running', 'pending')
+                    OR occurred_at >= datetime('now', '+8 hours', '-{window_seconds} seconds')
+                )
+          )
+        "#,
+        prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL,
+        display_status_sql = display_status_sql,
+        key_expr = key_expr,
+        source_proxy = SOURCE_PROXY,
+        window_seconds = PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS,
+    )
+}
+
+async fn rebuild_prompt_cache_working_set_live_table(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query("DELETE FROM prompt_cache_working_set_live")
+        .execute(pool)
+        .await
+        .context("failed to clear prompt_cache_working_set_live before rebuild")?;
+
+    let display_status_sql = crate::api::invocation_display_status_sql();
+    let rebuild_sql = format!(
+        r#"
+        INSERT INTO prompt_cache_working_set_live (
+            prompt_cache_key,
+            source_scope_all,
+            source_scope_proxy_only,
+            created_at,
+            last_activity_at,
+            last_terminal_at,
+            last_in_flight_at,
+            sort_anchor_at,
+            request_count,
+            total_tokens,
+            total_cost,
+            proxy_created_at,
+            proxy_last_activity_at,
+            proxy_last_terminal_at,
+            proxy_last_in_flight_at,
+            proxy_sort_anchor_at,
+            proxy_request_count,
+            proxy_total_tokens,
+            proxy_total_cost,
+            updated_at
+        )
+        SELECT
+            keyed.prompt_cache_key,
+            1,
+            CASE WHEN MAX(CASE WHEN keyed.source = '{source_proxy}' THEN 1 ELSE 0 END) = 1 THEN 1 ELSE 0 END AS source_scope_proxy_only,
+            MIN(keyed.occurred_at) AS created_at,
+            MAX(keyed.occurred_at) AS last_activity_at,
+            MAX(CASE WHEN keyed.is_in_flight = 0 THEN keyed.occurred_at END) AS last_terminal_at,
+            MAX(CASE WHEN keyed.is_in_flight = 1 THEN keyed.occurred_at END) AS last_in_flight_at,
+            MAX(
+                CASE
+                    WHEN keyed.is_in_flight = 1 THEN keyed.occurred_at
+                    WHEN keyed.occurred_at >= datetime('now', '+8 hours', '-{window_seconds} seconds') THEN keyed.occurred_at
+                    ELSE NULL
+                END
+            ) AS sort_anchor_at,
+            COUNT(*) AS request_count,
+            COALESCE(SUM(COALESCE(keyed.total_tokens, 0)), 0) AS total_tokens,
+            COALESCE(SUM(COALESCE(keyed.cost, 0.0)), 0.0) AS total_cost,
+            MIN(CASE WHEN keyed.source = '{source_proxy}' THEN keyed.occurred_at END) AS proxy_created_at,
+            MAX(CASE WHEN keyed.source = '{source_proxy}' THEN keyed.occurred_at END) AS proxy_last_activity_at,
+            MAX(CASE WHEN keyed.source = '{source_proxy}' AND keyed.is_in_flight = 0 THEN keyed.occurred_at END) AS proxy_last_terminal_at,
+            MAX(CASE WHEN keyed.source = '{source_proxy}' AND keyed.is_in_flight = 1 THEN keyed.occurred_at END) AS proxy_last_in_flight_at,
+            MAX(
+                CASE
+                    WHEN keyed.source = '{source_proxy}' AND keyed.is_in_flight = 1 THEN keyed.occurred_at
+                    WHEN keyed.source = '{source_proxy}' AND keyed.occurred_at >= datetime('now', '+8 hours', '-{window_seconds} seconds') THEN keyed.occurred_at
+                    ELSE NULL
+                END
+            ) AS proxy_sort_anchor_at,
+            COALESCE(SUM(CASE WHEN keyed.source = '{source_proxy}' THEN 1 ELSE 0 END), 0) AS proxy_request_count,
+            COALESCE(SUM(CASE WHEN keyed.source = '{source_proxy}' THEN COALESCE(keyed.total_tokens, 0) ELSE 0 END), 0) AS proxy_total_tokens,
+            COALESCE(SUM(CASE WHEN keyed.source = '{source_proxy}' THEN COALESCE(keyed.cost, 0.0) ELSE 0.0 END), 0.0) AS proxy_total_cost,
+            {shanghai_now_sql}
+        FROM (
+            SELECT
+                {prompt_cache_key_sql} AS prompt_cache_key,
+                source,
+                occurred_at,
+                total_tokens,
+                cost,
+                CASE
+                    WHEN LOWER(TRIM({display_status_sql})) IN ('running', 'pending') THEN 1
+                    ELSE 0
+                END AS is_in_flight
+            FROM codex_invocations
+            WHERE {prompt_cache_key_sql} IS NOT NULL
+              AND {prompt_cache_key_sql} <> ''
+              AND (
+                    LOWER(TRIM({display_status_sql})) IN ('running', 'pending')
+                    OR occurred_at >= datetime('now', '+8 hours', '-{window_seconds} seconds')
+              )
+        ) AS keyed
+        GROUP BY keyed.prompt_cache_key
+        HAVING MAX(
+            CASE
+                WHEN keyed.is_in_flight = 1 THEN keyed.occurred_at
+                WHEN keyed.occurred_at >= datetime('now', '+8 hours', '-{window_seconds} seconds') THEN keyed.occurred_at
+                ELSE NULL
+            END
+        ) IS NOT NULL
+        "#,
+        prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL,
+        display_status_sql = display_status_sql,
+        source_proxy = SOURCE_PROXY,
+        window_seconds = PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS,
+        shanghai_now_sql = SHANGHAI_NOW_SQL,
+    );
+    sqlx::query(&rebuild_sql)
+        .execute(pool)
+        .await
+        .context("failed to rebuild prompt_cache_working_set_live rows")?;
 
     Ok(())
 }
@@ -1017,13 +1271,135 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_invocation_in_progress_live_prompt_cache_key")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS prompt_cache_working_set_live (
+            prompt_cache_key TEXT PRIMARY KEY,
+            source_scope_all INTEGER NOT NULL DEFAULT 1,
+            source_scope_proxy_only INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            last_activity_at TEXT NOT NULL,
+            last_terminal_at TEXT,
+            last_in_flight_at TEXT,
+            sort_anchor_at TEXT NOT NULL,
+            request_count INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cost REAL NOT NULL DEFAULT 0.0,
+            proxy_created_at TEXT,
+            proxy_last_activity_at TEXT,
+            proxy_last_terminal_at TEXT,
+            proxy_last_in_flight_at TEXT,
+            proxy_sort_anchor_at TEXT,
+            proxy_request_count INTEGER NOT NULL DEFAULT 0,
+            proxy_total_tokens INTEGER NOT NULL DEFAULT 0,
+            proxy_total_cost REAL NOT NULL DEFAULT 0.0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure prompt_cache_working_set_live table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_prompt_cache_working_set_live_sort_anchor
+        ON prompt_cache_working_set_live (sort_anchor_at DESC, created_at DESC, prompt_cache_key DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_prompt_cache_working_set_live_sort_anchor")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_prompt_cache_working_set_live_proxy_sort_anchor
+        ON prompt_cache_working_set_live (source_scope_proxy_only, sort_anchor_at DESC, created_at DESC, prompt_cache_key DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_prompt_cache_working_set_live_proxy_sort_anchor")?;
+
+    for trigger_name in [
+        "trg_codex_invocations_live_insert",
+        "trg_codex_invocations_live_update",
+        "trg_codex_invocations_live_delete",
+        "trg_codex_invocations_prompt_cache_working_set_insert",
+        "trg_codex_invocations_prompt_cache_working_set_update",
+        "trg_codex_invocations_prompt_cache_working_set_delete",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
+            .execute(pool)
+            .await
+            .with_context(|| format!("failed to drop stale trigger {trigger_name}"))?;
+    }
+
     rebuild_invocation_in_progress_live_triggers(pool)
         .await
         .context("failed to rebuild invocation_in_progress_live triggers at startup")?;
 
+    let prompt_cache_insert_trigger_sql = format!(
+        r#"
+        CREATE TRIGGER trg_codex_invocations_prompt_cache_working_set_insert
+        AFTER INSERT ON codex_invocations
+        BEGIN
+            {refresh_sql};
+        END
+        "#,
+        refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
+            &invocation_in_progress_live_prompt_cache_key_expr("NEW")
+        ),
+    );
+    sqlx::query(&prompt_cache_insert_trigger_sql)
+        .execute(pool)
+        .await
+        .context("failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_insert")?;
+
+    let prompt_cache_update_trigger_sql = format!(
+        r#"
+        CREATE TRIGGER trg_codex_invocations_prompt_cache_working_set_update
+        AFTER UPDATE ON codex_invocations
+        BEGIN
+            {refresh_old_sql};
+            {refresh_new_sql};
+        END
+        "#,
+        refresh_old_sql = prompt_cache_working_set_live_refresh_sql_for_key(
+            &invocation_in_progress_live_prompt_cache_key_expr("OLD")
+        ),
+        refresh_new_sql = prompt_cache_working_set_live_refresh_sql_for_key(
+            &invocation_in_progress_live_prompt_cache_key_expr("NEW")
+        ),
+    );
+    sqlx::query(&prompt_cache_update_trigger_sql)
+        .execute(pool)
+        .await
+        .context("failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_update")?;
+
+    let prompt_cache_delete_trigger_sql = format!(
+        r#"
+        CREATE TRIGGER trg_codex_invocations_prompt_cache_working_set_delete
+        AFTER DELETE ON codex_invocations
+        BEGIN
+            {refresh_sql};
+        END
+        "#,
+        refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
+            &invocation_in_progress_live_prompt_cache_key_expr("OLD")
+        ),
+    );
+    sqlx::query(&prompt_cache_delete_trigger_sql)
+        .execute(pool)
+        .await
+        .context("failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_delete")?;
+
     rebuild_invocation_in_progress_live_table(pool)
         .await
         .context("failed to rebuild invocation_in_progress_live table at startup")?;
+    rebuild_prompt_cache_working_set_live_table(pool)
+        .await
+        .context("failed to rebuild prompt_cache_working_set_live table at startup")?;
 
     sqlx::query(
         r#"

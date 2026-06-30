@@ -20,6 +20,7 @@
 - 2026-06-29：生产诊断确认账号卡“首字用时”误接成阶段级上游首字节时延，导致真实秒级总耗时在 owner-facing 卡面被渲染成 `0ms`；因此冻结该卡主值必须回到首字总耗时口径，并要求前后端同时保留显式字段用于平滑兼容。
 - 2026-06-29：线上热点复盘后，账号 tab 继续禁止逐条本地 SSE patch，并把 tab 激活态的 refresh/open-resync 统一锁到 `5s`；如果未来要恢复更高频 cadence，必须先拿到慢路径证据证明后端读路径不会再次退化成请求级热扫描。
 - 2026-06-29：补充修正 identity chip 槽位算法，明确不能直接对展示短码片段做低位 `% 8` 取槽；改为混合完整 hash 后选离散槽位，避免线上真实短码因低位偏置出现大面积同色聚集。
+- 2026-06-30：Dashboard `Working Conversations` 的 5 分钟 head/count 改读 write-side `prompt_cache_working_set_live`，并为 mixed-source 对话保留独立 `ProxyOnly` 聚合槽位，避免 UI 为了代理视图再次回扫 `codex_invocations`。
 
 ## Key Reasons / Replacements
 

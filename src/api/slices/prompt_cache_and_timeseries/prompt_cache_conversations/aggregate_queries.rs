@@ -74,67 +74,17 @@ pub(crate) async fn query_active_prompt_cache_conversation_count(
 
 pub(crate) async fn query_working_prompt_cache_conversation_count(
     pool: &Pool<Sqlite>,
-    range_start_bound: &str,
+    _range_start_bound: &str,
     source_scope: InvocationSourceScope,
 ) -> Result<i64> {
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
-
     let mut query = QueryBuilder::<Sqlite>::new(
-        "WITH recent_terminal AS (\
-            SELECT ",
+        "SELECT COUNT(*) AS count \
+         FROM prompt_cache_working_set_live \
+         WHERE source_scope_all = 1",
     );
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key \
-             FROM codex_invocations \
-             WHERE occurred_at >= ",
-        )
-        .push_bind(range_start_bound)
-        .push(" AND ")
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(" <> '' AND LOWER(TRIM(")
-        .push(invocation_display_status_sql())
-        .push(")) NOT IN ('running', 'pending')");
-
     if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        query.push(" AND source_scope_proxy_only = 1");
     }
-
-    query.push(
-        " GROUP BY prompt_cache_key\
-         ), in_flight AS (\
-            SELECT ",
-    );
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key \
-             FROM codex_invocations \
-             WHERE ",
-        )
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(" <> '' AND LOWER(TRIM(")
-        .push(invocation_display_status_sql())
-        .push(")) IN ('running', 'pending')");
-
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-
-    query.push(
-        " GROUP BY prompt_cache_key\
-         ), working AS (\
-            SELECT prompt_cache_key FROM recent_terminal \
-            UNION \
-            SELECT prompt_cache_key FROM in_flight\
-         ) \
-         SELECT COUNT(*) AS count FROM working",
-    );
 
     let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
     Ok(count)
@@ -145,38 +95,20 @@ pub(crate) async fn query_in_progress_prompt_cache_conversation_count(
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
 ) -> Result<i64> {
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
-
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT COUNT(DISTINCT prompt_cache_key) AS count \
-         FROM (\
-             SELECT ",
+         FROM invocation_in_progress_live \
+         WHERE prompt_cache_key IS NOT NULL \
+           AND prompt_cache_key <> ''",
     );
-    query.push(KEY_EXPR).push(
-        " AS prompt_cache_key \
-         FROM codex_invocations \
-         WHERE ",
-    );
-    query
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(" <> '' AND LOWER(TRIM(")
-        .push(invocation_display_status_sql())
-        .push(")) IN ('running', 'pending')");
-
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
     if let Some(upstream_account_id) = upstream_account_id {
         query
-            .push(" AND ")
-            .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-            .push(" = ")
+            .push(" AND upstream_account_id = ")
             .push_bind(upstream_account_id);
     }
-
-    query.push(")");
 
     let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
     Ok(count)
@@ -339,104 +271,47 @@ pub(crate) async fn query_prompt_cache_conversation_hidden_count(
 
 pub(crate) async fn query_prompt_cache_working_conversation_aggregates(
     pool: &Pool<Sqlite>,
-    range_start_bound: &str,
+    _range_start_bound: &str,
     source_scope: InvocationSourceScope,
     limit: i64,
 ) -> Result<Vec<PromptCacheConversationAggregateRow>> {
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
-
     let mut query = QueryBuilder::<Sqlite>::new(
-        "WITH recent_terminal AS (\
-            SELECT ",
+        "SELECT \
+            prompt_cache_key, \
+            ",
     );
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key, MAX(occurred_at) AS last_terminal_at \
-             FROM codex_invocations \
-             WHERE occurred_at >= ",
-        )
-        .push_bind(range_start_bound)
-        .push(" AND ")
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(" <> '' AND LOWER(TRIM(")
-        .push(invocation_display_status_sql())
-        .push(")) NOT IN ('running', 'pending')");
-
     if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        query.push(
+            "proxy_request_count AS request_count, \
+             proxy_total_tokens AS total_tokens, \
+             proxy_total_cost AS total_cost, \
+             COALESCE(proxy_created_at, created_at) AS created_at, \
+             COALESCE(proxy_last_activity_at, last_activity_at) AS last_activity_at, \
+             proxy_sort_anchor_at AS sort_anchor_at, \
+             proxy_last_terminal_at AS last_terminal_at, \
+             proxy_last_in_flight_at AS last_in_flight_at \
+         FROM prompt_cache_working_set_live \
+         WHERE source_scope_proxy_only = 1 \
+           AND proxy_sort_anchor_at IS NOT NULL",
+        );
+    } else {
+        query.push(
+            "request_count, \
+             total_tokens, \
+             total_cost, \
+             created_at, \
+             last_activity_at, \
+             sort_anchor_at, \
+             last_terminal_at, \
+             last_in_flight_at \
+         FROM prompt_cache_working_set_live \
+         WHERE source_scope_all = 1",
+        );
     }
-
-    query.push(
-        " GROUP BY prompt_cache_key\
-         ), in_flight AS (\
-            SELECT ",
-    );
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key, MAX(occurred_at) AS last_in_flight_at \
-             FROM codex_invocations \
-             WHERE ",
-        )
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(" <> '' AND LOWER(TRIM(")
-        .push(invocation_display_status_sql())
-        .push(")) IN ('running', 'pending')");
-
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-
-    query.push(
-        " GROUP BY prompt_cache_key\
-         ), working AS (\
-            SELECT prompt_cache_key, last_terminal_at, NULL AS last_in_flight_at \
-              FROM recent_terminal \
-            UNION ALL \
-            SELECT prompt_cache_key, NULL AS last_terminal_at, last_in_flight_at \
-              FROM in_flight \
-         ), collapsed_working AS (\
-            SELECT prompt_cache_key, \
-                   MAX(last_terminal_at) AS last_terminal_at, \
-                   MAX(last_in_flight_at) AS last_in_flight_at, \
-                   CASE \
-                       WHEN MAX(last_terminal_at) IS NULL THEN MAX(last_in_flight_at) \
-                       WHEN MAX(last_in_flight_at) IS NULL THEN MAX(last_terminal_at) \
-                       WHEN MAX(last_terminal_at) >= MAX(last_in_flight_at) THEN MAX(last_terminal_at) \
-                       ELSE MAX(last_in_flight_at) \
-                   END AS sort_anchor_at \
-              FROM working \
-              GROUP BY prompt_cache_key\
-         ), aggregates AS (\
-            SELECT prompt_cache_key, \
-                   SUM(request_count) AS request_count, \
-                   SUM(total_tokens) AS total_tokens, \
-                   SUM(total_cost) AS total_cost, \
-                   MIN(first_seen_at) AS created_at, \
-                   MAX(last_seen_at) AS last_activity_at \
-              FROM prompt_cache_rollup_hourly \
-             WHERE prompt_cache_key IN (SELECT prompt_cache_key FROM collapsed_working)",
-    );
-
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-
     query
         .push(
-            " GROUP BY prompt_cache_key\
-         ) \
-         SELECT aggregates.prompt_cache_key, aggregates.request_count, aggregates.total_tokens, \
-                aggregates.total_cost, aggregates.created_at, aggregates.last_activity_at \
-           FROM aggregates \
-           INNER JOIN collapsed_working ON collapsed_working.prompt_cache_key = aggregates.prompt_cache_key \
-          ORDER BY collapsed_working.sort_anchor_at DESC, aggregates.created_at DESC, aggregates.prompt_cache_key DESC \
-          LIMIT ",
+            " ORDER BY sort_anchor_at DESC, created_at DESC, prompt_cache_key DESC \
+              LIMIT ",
         )
         .push_bind(limit);
 

@@ -934,8 +934,8 @@ pub(crate) async fn persist_proxy_capture_record(
     .execute(tx.as_mut())
     .await?;
 
-    let (invocation_id, inserted_new_row) = if insert_result.rows_affected() > 0 {
-        (insert_result.last_insert_rowid(), true)
+    let invocation_id = if insert_result.rows_affected() > 0 {
+        insert_result.last_insert_rowid()
     } else {
         let Some(existing) = load_persisted_invocation_identity_tx(
             tx.as_mut(),
@@ -947,12 +947,11 @@ pub(crate) async fn persist_proxy_capture_record(
             tx.commit().await?;
             return Ok(None);
         };
-        let allow_terminal_repair = !invocation_status_is_in_flight(Some(record.status.as_str()))
-            && invocation_status_is_recoverable_proxy_interrupted(
-                existing.status.as_deref(),
-                existing.failure_kind.as_deref(),
-            );
-        if !invocation_status_is_in_flight(existing.status.as_deref()) && !allow_terminal_repair {
+        if !persisted_invocation_allows_proxy_record_update(
+            existing.status.as_deref(),
+            existing.failure_kind.as_deref(),
+            &record.status,
+        ) {
             tx.commit().await?;
             return Ok(None);
         }
@@ -1048,56 +1047,13 @@ pub(crate) async fn persist_proxy_capture_record(
             tx.commit().await?;
             return Ok(None);
         }
-
-        (existing.id, false)
+        existing.id
     };
 
     touch_invocation_upstream_account_last_activity_tx(
         tx.as_mut(),
         &record.occurred_at,
         record.payload.as_deref(),
-    )
-    .await?;
-
-    if inserted_new_row {
-        upsert_invocation_hourly_rollups_tx(
-            tx.as_mut(),
-            &[InvocationHourlySourceRecord {
-                id: invocation_id,
-                occurred_at: record.occurred_at.clone(),
-                source: SOURCE_PROXY.to_string(),
-                status: Some(record.status.clone()),
-                detail_level: DETAIL_LEVEL_FULL.to_string(),
-                input_tokens: record.usage.input_tokens,
-                output_tokens: record.usage.output_tokens,
-                cache_input_tokens: record.usage.cache_input_tokens,
-                total_tokens: record.usage.total_tokens,
-                cost: record.cost,
-                error_message: record.error_message.clone(),
-                failure_kind: failure_kind.clone(),
-                failure_class: Some(failure.failure_class.as_str().to_string()),
-                is_actionable: Some(failure.is_actionable as i64),
-                payload: record.payload.clone(),
-                t_total_ms: None,
-                t_req_read_ms: Some(record.timings.t_req_read_ms),
-                t_req_parse_ms: Some(record.timings.t_req_parse_ms),
-                t_upstream_connect_ms: Some(record.timings.t_upstream_connect_ms),
-                t_upstream_ttfb_ms: Some(record.timings.t_upstream_ttfb_ms),
-                t_upstream_stream_ms: Some(record.timings.t_upstream_stream_ms),
-                t_resp_parse_ms: Some(record.timings.t_resp_parse_ms),
-                t_persist_ms: None,
-            }],
-            &INVOCATION_HOURLY_ROLLUP_TARGETS,
-        )
-        .await?;
-    } else {
-        recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[invocation_id]).await?;
-    }
-
-    save_hourly_rollup_live_progress_tx(
-        tx.as_mut(),
-        HOURLY_ROLLUP_DATASET_INVOCATIONS,
-        invocation_id,
     )
     .await?;
 
@@ -1119,6 +1075,12 @@ pub(crate) async fn persist_proxy_capture_record(
     .await?;
 
     recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[invocation_id]).await?;
+    save_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        invocation_id,
+    )
+    .await?;
 
     let persisted =
         load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
