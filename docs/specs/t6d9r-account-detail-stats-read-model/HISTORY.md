@@ -19,3 +19,4 @@
 - 2026-06-25: records 顶部卡片字段调整后，account-scoped today summary 把 `nonSuccessCost` 拖回了 live augmentation 路径并丢失 live tail；现已恢复为 read-model totals + bounded tail，闭区间默认不做 live raw 重算。
 - 2026-06-25: `selectedId` 暂空时的 roster 级 `window-usage` 自动 hydrate 被彻底移除；详情首屏只允许当前账号发 `window-usage`，手动 hydrate 才能批量取数。
 - 2026-06-29: 101 线上 CPU 复盘确认，剩余 summary / account-activity 热点来自请求时对 `codex_invocations` 做 in-progress correlated scan / group scan；对应 live augmentation 已切到 write-side `invocation_in_progress_live` 小表，并保留 summary 全局 retry 与 account-scoped retry 的既有语义。
+- 2026-06-30: 第二轮止血继续把 summary publish 的 distinct in-progress conversation count 也切到 live truth source，避免 maintenance 发布链路把 account detail 已经省下来的 SQLite 扫描又带回来。

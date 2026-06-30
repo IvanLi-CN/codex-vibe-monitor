@@ -36,6 +36,7 @@
 - account-scoped summary 将 `nonSuccessCost` 固定纳入 rollup/read-model totals，并恢复带 `full_hour_range` 的 today live tail 精确补尾，避免新增字段后 today 卡片回退成 0 或强制 raw window 重扫。
 - `fetch_summary` / `fetch_stats` 按窗口类型区分 live augmentation：闭区间默认跳过 in-progress 与 non-success token live 补算；SQLite `database is locked` 时非成功 token live 增量允许受限降级，不再整排卡片长期 skeleton。
 - summary / account-activity 的 in-progress augmentation 已从请求时扫描 `codex_invocations` 改成 `invocation_in_progress_live` 小表读取。该 live read model 由 `codex_invocations` trigger 与 startup rebuild 同步维护，并分别保留 summary 全局 retry 与 account-scoped retry 语义，避免 Dashboard/account detail 的当前窗口 reconcile 把 read-model 节省下来的 CPU 再吃回去。
+- summary publish 当前窗口里的 `inProgressConversationCount` distinct-count 现在也直接复用 live table truth source，而不是在 maintenance 路径里对 `codex_invocations` 再做一次 `COUNT(DISTINCT prompt_cache_key)`；这让 summary 广播与账号详情共用同一份 bounded in-progress truth。
 - Storybook 现有详情抽屉 overlay stories 继续作为 page-fallback 证据面，新增 owner-facing 首屏概览态与 records 统计卡片完成态图片，覆盖这次性能回归修复后的默认打开路径。
 
 ## Verification

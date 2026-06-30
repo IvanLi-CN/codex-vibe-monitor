@@ -650,12 +650,14 @@ function AccountRecentInvocationRow({
   locale,
   nowMs,
   onOpenUpstreamAccount,
+  onOpenConversation,
   onOpenInvocation,
 }: {
   invocation: DashboardWorkingConversationInvocationModel;
   locale: "zh" | "en";
   nowMs: number;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  onOpenConversation?: (selection: DashboardWorkingConversationSelection) => void;
   onOpenInvocation?: (
     selection: DashboardWorkingConversationInvocationSelection,
   ) => void;
@@ -784,6 +786,9 @@ function AccountRecentInvocationRow({
   const responseModelValue = viewModel.responseModelValue;
   const compactTimingSummary = `RQ ${formatCompactMilliseconds(invocation.record.tReqReadMs)}/${formatCompactMilliseconds(invocation.record.tReqParseMs)} · UP ${formatCompactMilliseconds(invocation.record.tUpstreamConnectMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamTtfbMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamStreamMs)} · ED ${formatCompactMilliseconds(invocation.record.tRespParseMs)}/${formatCompactMilliseconds(invocation.record.tPersistMs)} · TT ${typeof invocation.record.tTotalMs === "number" && Number.isFinite(invocation.record.tTotalMs) ? `${formatCompactMilliseconds(invocation.record.tTotalMs)}ms` : viewModel.totalLatencyValue}`;
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${invocation.record.invokeId}`;
+  const conversationActionLabel = displayPromptCacheKey
+    ? `${t("dashboard.workingConversations.openConversation")} · ${displayConversationSequenceId} · ${displayPromptCacheKey}`
+    : null;
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
 
   const handleOpenInvocation = useCallback(() => {
@@ -798,6 +803,14 @@ function AccountRecentInvocationRow({
     });
   }, [invocation, onOpenInvocation]);
 
+  const handleOpenConversation = useCallback(() => {
+    if (!displayPromptCacheKey) return;
+    onOpenConversation?.({
+      conversationSequenceId: `WC-${hashDashboardWorkingConversationKey(displayPromptCacheKey).slice(0, 6)}`,
+      promptCacheKey: displayPromptCacheKey,
+    });
+  }, [displayPromptCacheKey, onOpenConversation]);
+
   const handleRowKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLButtonElement>) => {
       if (event.target !== event.currentTarget) return;
@@ -806,6 +819,24 @@ function AccountRecentInvocationRow({
       handleOpenInvocation();
     },
     [handleOpenInvocation],
+  );
+
+  const handleIdentityChipClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.stopPropagation();
+      handleOpenConversation();
+    },
+    [handleOpenConversation],
+  );
+
+  const handleIdentityChipKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      event.stopPropagation();
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      handleOpenConversation();
+    },
+    [handleOpenConversation],
   );
 
   return (
@@ -830,18 +861,23 @@ function AccountRecentInvocationRow({
             >
               {displayConversationSequenceId ? (
                 <>
-                  <span
+                  <button
+                    type="button"
                     data-testid="dashboard-upstream-account-recent-identity-chip"
                     className={cn(
                       UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME,
+                      "cursor-pointer transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
                       conversationIdentityToneClassName,
                     )}
-                    title={displayConversationSequenceId}
+                    aria-label={conversationActionLabel ?? undefined}
+                    title={conversationActionLabel ?? displayConversationSequenceId}
+                    onClick={handleIdentityChipClick}
+                    onKeyDown={handleIdentityChipKeyDown}
                   >
                     <span className="truncate whitespace-nowrap">
                       {displayConversationSequenceId}
                     </span>
-                  </span>
+                  </button>
                   <AppIcon
                     name="chevron-right"
                     className="h-3 w-3 shrink-0 text-base-content/45"
@@ -1597,6 +1633,7 @@ function DashboardUpstreamAccountActivityCard({
   nowMs,
   recentPreviewLimit,
   onOpenUpstreamAccount,
+  onOpenConversation,
   onOpenInvocation,
 }: {
   account: UpstreamAccountActivityAccount;
@@ -1605,6 +1642,7 @@ function DashboardUpstreamAccountActivityCard({
   nowMs: number;
   recentPreviewLimit: number;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  onOpenConversation?: (selection: DashboardWorkingConversationSelection) => void;
   onOpenInvocation?: (
     selection: DashboardWorkingConversationInvocationSelection,
   ) => void;
@@ -1865,6 +1903,7 @@ function DashboardUpstreamAccountActivityCard({
               locale={locale}
               nowMs={nowMs}
               onOpenUpstreamAccount={onOpenUpstreamAccount}
+              onOpenConversation={onOpenConversation}
               onOpenInvocation={onOpenInvocation}
             />
           ))}
@@ -2373,6 +2412,7 @@ export function DashboardWorkingConversationsSection({
                     nowMs={nowMs}
                     recentPreviewLimit={upstreamAccountRecentPreviewLimit}
                     onOpenUpstreamAccount={onOpenUpstreamAccount}
+                    onOpenConversation={onOpenConversation}
                     onOpenInvocation={onOpenInvocation}
                   />
                 ))}

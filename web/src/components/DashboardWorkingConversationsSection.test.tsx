@@ -931,6 +931,7 @@ describe("DashboardWorkingConversationsSection", () => {
   it("shows conversation short id, full request id, mismatch models, and real prompt cache key in upstream recent rows", () => {
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
     const onOpenInvocation = vi.fn();
+    const onOpenConversation = vi.fn();
 
     renderSection(
       createResponse([
@@ -943,7 +944,7 @@ describe("DashboardWorkingConversationsSection", () => {
           }),
         ]),
       ]),
-      { onOpenInvocation },
+      { onOpenConversation, onOpenInvocation },
     );
 
     const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
@@ -1012,6 +1013,83 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenInvocation.mock.calls[0]?.[0]?.promptCacheKey).not.toBe(
       "acct-invoke-1",
     );
+    expect(onOpenConversation).not.toHaveBeenCalled();
+  });
+
+  it("opens conversation detail from the upstream recent identity chip only", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    const onOpenInvocation = vi.fn();
+    const onOpenConversation = vi.fn();
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-anchor", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-anchor",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+      { onOpenConversation, onOpenInvocation },
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const identityChip = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-identity-chip"]',
+    );
+    if (!(identityChip instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream recent identity chip");
+    }
+
+    expect(identityChip.getAttribute("aria-label")).toContain("打开对话详情");
+    expect(identityChip.getAttribute("aria-label")).toContain(
+      "pck-upstream-running",
+    );
+
+    act(() => {
+      identityChip.click();
+    });
+
+    expect(onOpenConversation).toHaveBeenCalledWith({
+      conversationSequenceId: `WC-${hashDashboardWorkingConversationKey("pck-upstream-running").slice(0, 6)}`,
+      promptCacheKey: "pck-upstream-running",
+    });
+    expect(onOpenInvocation).not.toHaveBeenCalled();
+
+    onOpenConversation.mockClear();
+    onOpenInvocation.mockClear();
+
+    act(() => {
+      identityChip.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+
+    expect(onOpenConversation).toHaveBeenCalledTimes(1);
+    expect(onOpenInvocation).not.toHaveBeenCalled();
+
+    onOpenConversation.mockClear();
+
+    act(() => {
+      identityChip.dispatchEvent(
+        new KeyboardEvent("keydown", { key: " ", bubbles: true }),
+      );
+    });
+
+    expect(onOpenConversation).toHaveBeenCalledTimes(1);
+    expect(onOpenInvocation).not.toHaveBeenCalled();
   });
 
   it("spreads identity chip tones for prompt cache keys that used to collide on the same low-bit slot", () => {
