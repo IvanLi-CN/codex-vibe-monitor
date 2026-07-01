@@ -569,14 +569,6 @@ async fn flush_pending_batch_inner(pool: &Pool<Sqlite>, batch: &PendingBatch) ->
     if !batch.invocation_derived.is_empty() {
         let invocation_ids = batch.invocation_derived.keys().copied().collect::<Vec<_>>();
         recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &invocation_ids).await?;
-        if let Some(max_id) = invocation_ids.iter().copied().max() {
-            save_hourly_rollup_live_progress_tx(
-                tx.as_mut(),
-                HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                max_id,
-            )
-            .await?;
-        }
         for derived in batch.invocation_derived.values() {
             touch_invocation_upstream_account_last_activity_tx(
                 tx.as_mut(),
@@ -893,5 +885,34 @@ mod tests {
         assert_eq!(row.1.as_deref(), Some("completed"));
         assert_eq!(row.2.as_deref(), Some("2026-07-01T10:00:05Z"));
         assert_eq!(row.3, Some(125));
+    }
+
+    #[tokio::test]
+    async fn invocation_derived_batch_does_not_advance_live_progress_cursor() {
+        let pool = test_pool().await;
+        save_hourly_rollup_live_progress_tx(
+            pool.acquire().await.expect("acquire").as_mut(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            41,
+        )
+        .await
+        .expect("seed live progress");
+
+        SqliteBatchWriter::flush_for_test(
+            &pool,
+            vec![SqliteBatchWrite::InvocationDerived(
+                BatchedInvocationDerivedWrites {
+                    invocation_id: 100,
+                    occurred_at: "2026-07-01 10:00:00".to_string(),
+                    payload: None,
+                },
+            )],
+        )
+        .await;
+
+        let cursor = load_hourly_rollup_live_progress(&pool, HOURLY_ROLLUP_DATASET_INVOCATIONS)
+            .await
+            .expect("load live progress");
+        assert_eq!(cursor, 41);
     }
 }
