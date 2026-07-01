@@ -2050,7 +2050,7 @@ export const DrawerBindingAndTimeouts: Story = {
       documentScope.getByText(/40s/),
     ).toBeInTheDocument();
     await expect(
-      documentScope.getAllByText(/Conversation/i).length,
+      documentScope.getAllByText(/对话|Conversation/i).length,
     ).toBeGreaterThan(0);
   },
 };

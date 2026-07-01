@@ -3791,6 +3791,7 @@ function SharedUpstreamAccountDetailDrawerInner({
       <GroupAccountRoutingRuleDialog
         open={accountPolicyEditorOpen && selectedDetail != null}
         changedFieldsOnly
+        timeoutOverrideSource="account"
         availableModelOptions={availableModelOptions}
         title={t("accountPool.upstreamAccounts.policyDialog.accountTitle")}
         description={t(

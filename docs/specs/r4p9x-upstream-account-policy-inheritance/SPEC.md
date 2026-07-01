@@ -198,8 +198,8 @@ Visual evidence is captured from stable Storybook scenarios for:
 - effective routing rule card opening every existing account override panel by default
 - effective routing rule card rendering available-model overrides as a tag selector
 - effective routing rule card rendering upstream 429 retry as a `0..5` inline count selector without a separate toggle
-- group/account routing dialogs showing mixed inherited/global timeout defaults with field-level group overrides
-- account effective-rule card showing timeout source badges and inline account timeout override state
+- group/account routing dialogs showing mixed inherited/global timeout defaults with timeout rows collapsed until the current layer explicitly overrides a field
+- account effective-rule card showing timeout source badges, inherited timeout rows collapsed by default, account-owned timeout rows expanded by default, and single-field clear-to-inherit rollback
 
 PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)

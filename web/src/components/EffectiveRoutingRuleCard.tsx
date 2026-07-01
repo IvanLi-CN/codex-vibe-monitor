@@ -12,8 +12,8 @@ import {
   CommandList,
   CommandSeparator,
 } from './ui/command'
+import { Input } from './ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
-import { RoutingTimeoutOverridesEditor } from './RoutingTimeoutOverridesEditor'
 import { Switch } from './ui/switch'
 import type {
   EffectiveRoutingRule,
@@ -38,7 +38,6 @@ import {
 } from '../lib/tagRoutingRule'
 import {
   ROUTING_TIMEOUT_FIELD_ORDER,
-  buildRoutingTimeoutOverrideDraftForSource,
   type RoutingTimeoutFieldKey,
 } from '../lib/poolRoutingTimeouts'
 import { cn } from '../lib/utils'
@@ -350,10 +349,6 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
       },
     [resolvedRule.timeouts],
   )
-  const timeoutOverrideDraft = useMemo(
-    () => buildRoutingTimeoutOverrideDraftForSource(timeoutValues, timeoutSources, 'account'),
-    [timeoutSources, timeoutValues],
-  )
   const defaultExpandedFields = isEditable
     ? [
         ...accountOverrideFields(fieldSources),
@@ -458,6 +453,30 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
   const inlineTimeoutBusy = ROUTING_TIMEOUT_FIELD_ORDER.some(
     (key) => editablePolicy?.busyField === timeoutFieldToInlineField[key],
   )
+  const timeoutRows = ROUTING_TIMEOUT_FIELD_ORDER.map((key) => {
+    const field = timeoutFieldToInlineField[key]
+    const source = timeoutSources[key]
+    const label =
+      key === 'responsesFirstByteTimeoutSecs'
+        ? labels.timeoutResponsesFirstByte ?? 'Standard response first byte timeout'
+        : key === 'compactFirstByteTimeoutSecs'
+          ? labels.timeoutCompactFirstByte ?? 'Compact response first byte timeout'
+          : key === 'responsesStreamTimeoutSecs'
+            ? labels.timeoutResponsesStream ?? 'Standard stream completion timeout'
+            : labels.timeoutCompactStream ?? 'Compact stream completion timeout'
+    return {
+      key,
+      field,
+      label,
+      source,
+      value: `${timeoutValues[key]}s`,
+      clearPayload: {
+        timeouts: {
+          [key]: null,
+        },
+      } satisfies UpdateGroupAccountRoutingRulePayload,
+    }
+  })
 
   const fieldRows = [
     {
@@ -738,63 +757,93 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
           </div>
         </div>
 
-        <RoutingTimeoutOverridesEditor
-          fields={[
-            {
-              key: 'responsesFirstByteTimeoutSecs',
-              label:
-                labels.timeoutResponsesFirstByte ?? 'Standard response first byte timeout',
-            },
-            {
-              key: 'compactFirstByteTimeoutSecs',
-              label:
-                labels.timeoutCompactFirstByte ?? 'Compact response first byte timeout',
-            },
-            {
-              key: 'responsesStreamTimeoutSecs',
-              label:
-                labels.timeoutResponsesStream ?? 'Standard stream completion timeout',
-            },
-            {
-              key: 'compactStreamTimeoutSecs',
-              label:
-                labels.timeoutCompactStream ?? 'Compact stream completion timeout',
-            },
-          ]}
-          effective={timeoutValues}
-          draft={timeoutOverrideDraft}
-          sources={timeoutSources}
-          busy={inlineTimeoutBusy}
-          disabled={!isEditable}
-          labels={{
-            sectionTitle: labels.timeoutSectionTitle ?? 'Request path timeouts',
-            inheritedValue: labels.timeoutInheritedValue ?? 'Inherited',
-            overrideValue: labels.timeoutOverrideValue ?? 'Account override',
-            clearField: labels.overrideClear ?? 'Clear account override',
-            inheritField: labels.overrideEdit ?? 'Edit account override',
-            sourceRoot: labels.sourceRoot,
-            sourceGroup: labels.sourceGroup,
-            sourceAccount: labels.sourceAccount,
-            sourceConversation: labels.sourceConversation,
-          }}
-          onDraftChange={(key, value) => {
-            if (!editablePolicy) return
-            const parsed = value.trim()
-            void editablePolicy.onChange(timeoutFieldToInlineField[key], {
-              timeouts: {
-                [key]: parsed ? Number(parsed) : null,
-              },
-            })
-          }}
-          onClearField={(key) => {
-            if (!editablePolicy) return
-            void editablePolicy.onChange(timeoutFieldToInlineField[key], {
-              timeouts: {
-                [key]: null,
-              },
-            })
-          }}
-        />
+        <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
+          <p className="metric-label">{labels.timeoutSectionTitle ?? 'Request path timeouts'}</p>
+          <div className="mt-3 overflow-hidden rounded-xl border border-base-300/70">
+            {timeoutRows.map((row) => {
+              const activeOverride = row.source === 'account'
+              const expanded = expandedFields.includes(row.field)
+              const busy = isBusy(row.field)
+              const error = editablePolicy?.errorByField?.[row.field] ?? null
+              return (
+                <div key={row.key} className="border-b border-base-300/60 last:border-b-0">
+                  <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:items-center sm:gap-3">
+                    <span className="min-w-0 font-medium text-base-content/80">{row.label}</span>
+                    <span className="whitespace-nowrap text-base-content">{row.value}</span>
+                    <div className="min-w-0 flex flex-wrap items-center gap-2">
+                      <span className="text-xs text-base-content/65">
+                        {activeOverride ? labels.timeoutOverrideValue ?? 'Account override' : labels.timeoutInheritedValue ?? 'Inherited'}
+                      </span>
+                      <Badge className="w-fit" variant={sourceVariant(row.source)}>
+                        {sourceLabel(row.source, labels)}
+                      </Badge>
+                    </div>
+                    {isEditable ? (
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant={activeOverride || expanded ? 'default' : 'ghost'}
+                        className={cn('h-8 w-8 justify-self-start rounded-full sm:justify-self-end', activeOverride || expanded ? 'text-primary-content' : 'text-base-content/65')}
+                        disabled={busy}
+                        aria-pressed={activeOverride || expanded}
+                        aria-label={`${activeOverride ? labels.overrideClear ?? 'Clear override' : labels.overrideEdit ?? 'Edit override'}: ${row.label}`}
+                        onClick={() => toggleExpanded(row.field, row.clearPayload)}
+                      >
+                        <AppIcon name={busy ? 'loading' : activeOverride || expanded ? 'check-decagram-outline' : 'pencil-outline'} className={cn('h-4 w-4', busy ? 'animate-spin' : '')} aria-hidden />
+                      </Button>
+                    ) : (
+                      <span aria-hidden />
+                    )}
+                  </div>
+                  {expanded ? (
+                    <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
+                      <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:items-center sm:gap-x-3">
+                        <p className="min-w-0 text-sm font-semibold text-base-content">{row.label}</p>
+                        <div className="min-w-0 sm:col-span-3">
+                          <Input
+                            name={row.key}
+                            type="number"
+                            min="1"
+                            step="1"
+                            defaultValue={String(timeoutValues[row.key])}
+                            disabled={busy}
+                            className="h-11 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
+                            onBlur={(event: React.FocusEvent<HTMLInputElement>) => {
+                              const parsed = event.currentTarget.value.trim()
+                              if (!parsed || !editablePolicy) return
+                              void editablePolicy.onChange(row.field, {
+                                timeouts: {
+                                  [row.key]: Number(parsed),
+                                },
+                              })
+                            }}
+                          />
+                        </div>
+                        {busy ? (
+                          <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
+                            {labels.overrideSaving ?? 'Saving...'}
+                          </p>
+                        ) : null}
+                        {error ? (
+                          <p className="text-xs font-medium text-error sm:col-start-2 sm:col-span-3">
+                            {error}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : error ? (
+                    <p className="px-3 pb-2 text-xs font-medium text-error">{error}</p>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+          {inlineTimeoutBusy ? (
+            <p className="mt-3 text-xs text-base-content/60">
+              {labels.overrideSaving ?? 'Saving...'}
+            </p>
+          ) : null}
+        </div>
 
         <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
           <p className="metric-label">{labels.sourceTags}</p>

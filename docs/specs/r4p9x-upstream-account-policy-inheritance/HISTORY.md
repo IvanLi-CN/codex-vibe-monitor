@@ -5,6 +5,7 @@
 Account-pool routing policy moved from isolated group/tag behavior to a layered effective policy model. The resolver now computes one effective policy per account and downstream routing code reads that policy instead of separate group or tag fragments.
 
 2026-06-29: Added field-level request-path timeout inheritance for the existing four timeout fields. Group and account policy now persist nullable timeout overrides, UI surfaces expose timeout source badges and clear-to-inherit controls, and runtime recomputes effective timeouts for each newly selected target account during failover.
+2026-07-01: Reworked owner-facing timeout editing to match the effective-rule interaction model. Group/account dialogs and the account effective-rule card now render timeout rows as collapsed summaries by default, treat field expansion as the local override affordance, auto-expand existing local timeout overrides, and preserve explicit overrides even when the entered value matches the inherited number.
 
 2026-06-27: Removed user-defined upstream-account tags. Startup now deletes legacy custom tags and pending session references, `/api/pool/tags` is read-only system-only, and the account-pool UI no longer exposes tag management or manual tag mutation.
 

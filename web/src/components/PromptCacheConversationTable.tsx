@@ -66,9 +66,11 @@ import { Spinner } from "./ui/spinner";
 import { RoutingTimeoutOverridesEditor } from "./RoutingTimeoutOverridesEditor";
 import {
   buildRoutingTimeoutOverrideDraftForSource,
-  diffRoutingTimeoutOverrideDraft,
-  parseRoutingTimeoutOverrideDraft,
+  buildRoutingTimeoutOverrideEnabledStateForSource,
+  diffRoutingTimeoutOverrideDraftWithEnabledState,
+  parseRoutingTimeoutOverrideDraftWithEnabledState,
   type RoutingTimeoutOverrideDraft,
+  type RoutingTimeoutOverrideEnabledState,
 } from "../lib/poolRoutingTimeouts";
 
 interface PromptCacheConversationTableProps {
@@ -1962,6 +1964,8 @@ export function PromptCacheConversationHistoryDrawer({
   const [bindingError, setBindingError] = useState<string | null>(null);
   const [bindingTimeoutDraft, setBindingTimeoutDraft] =
     useState<RoutingTimeoutOverrideDraft>({});
+  const [bindingTimeoutEnabledFields, setBindingTimeoutEnabledFields] =
+    useState<RoutingTimeoutOverrideEnabledState>({});
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return;
@@ -2199,6 +2203,8 @@ export function PromptCacheConversationHistoryDrawer({
       setBindingLoading(false);
       setBindingSaving(false);
       setBindingError(null);
+      setBindingTimeoutDraft({});
+      setBindingTimeoutEnabledFields({});
       return;
     }
 
@@ -2231,7 +2237,13 @@ export function PromptCacheConversationHistoryDrawer({
             "conversation",
           ),
         );
-      setBindingGroupName(nextBinding.groupName ?? groups[0] ?? "");
+        setBindingTimeoutEnabledFields(
+          buildRoutingTimeoutOverrideEnabledStateForSource(
+            nextBinding.timeoutFieldSources,
+            "conversation",
+          ),
+        );
+        setBindingGroupName(nextBinding.groupName ?? groups[0] ?? "");
         setBindingAccountId(
           nextBinding.upstreamAccountId != null
             ? String(nextBinding.upstreamAccountId)
@@ -2408,8 +2420,9 @@ export function PromptCacheConversationHistoryDrawer({
     setBindingSaving(true);
     setBindingError(null);
     try {
-      const parsedTimeouts = parseRoutingTimeoutOverrideDraft(
+      const parsedTimeouts = parseRoutingTimeoutOverrideDraftWithEnabledState(
         bindingTimeoutDraft,
+        bindingTimeoutEnabledFields,
         timeoutFieldLabels,
       );
       if (!parsedTimeouts.ok) {
@@ -2422,9 +2435,15 @@ export function PromptCacheConversationHistoryDrawer({
         binding?.timeoutFieldSources,
         "conversation",
       );
-      const timeoutDiff = diffRoutingTimeoutOverrideDraft(
+      const baseTimeoutEnabledFields = buildRoutingTimeoutOverrideEnabledStateForSource(
+        binding?.timeoutFieldSources,
+        "conversation",
+      );
+      const timeoutDiff = diffRoutingTimeoutOverrideDraftWithEnabledState(
         baseTimeoutDraft,
+        baseTimeoutEnabledFields,
         bindingTimeoutDraft,
+        bindingTimeoutEnabledFields,
         timeoutFieldLabels,
       );
       if (!timeoutDiff.ok) {
@@ -2457,6 +2476,12 @@ export function PromptCacheConversationHistoryDrawer({
           "conversation",
         ),
       );
+      setBindingTimeoutEnabledFields(
+        buildRoutingTimeoutOverrideEnabledStateForSource(
+          nextBinding.timeoutFieldSources,
+          "conversation",
+        ),
+      );
       setBindingGroupName(nextBinding.groupName ?? bindingGroups[0] ?? "");
       setBindingAccountId(
         nextBinding.upstreamAccountId != null
@@ -2479,6 +2504,7 @@ export function PromptCacheConversationHistoryDrawer({
     bindingKind,
     bindingSubmitDisabled,
     bindingTimeoutDraft,
+    bindingTimeoutEnabledFields,
     conversationKey,
     timeoutFieldLabels,
   ]);
@@ -2622,6 +2648,7 @@ export function PromptCacheConversationHistoryDrawer({
                   ]}
                   effective={binding.timeouts}
                   draft={bindingTimeoutDraft}
+                  enabledFields={bindingTimeoutEnabledFields}
                   sources={binding.timeoutFieldSources}
                   busy={bindingSaving}
                   disabled={bindingLoading || bindingSaving}
@@ -2635,6 +2662,7 @@ export function PromptCacheConversationHistoryDrawer({
                     sourceGroup: t("accountPool.upstreamAccounts.effectiveRule.sourceGroup"),
                     sourceAccount: t("accountPool.upstreamAccounts.effectiveRule.sourceAccount"),
                     sourceConversation: t("accountPool.upstreamAccounts.effectiveRule.sourceConversation"),
+                    savingField: t("live.conversations.drawer.binding.saving"),
                   }}
                   onDraftChange={(key, value) =>
                     setBindingTimeoutDraft((current) => ({
@@ -2642,12 +2670,26 @@ export function PromptCacheConversationHistoryDrawer({
                       [key]: value,
                     }))
                   }
-                  onClearField={(key) =>
-                    setBindingTimeoutDraft((current) => ({
+                  onFieldEnabledChange={(key, enabled) => {
+                    setBindingTimeoutEnabledFields((current) => ({
                       ...current,
-                      [key]: "",
-                    }))
-                  }
+                      [key]: enabled,
+                    }));
+                    if (!enabled) {
+                      return;
+                    }
+                    setBindingTimeoutDraft((current) =>
+                      (current[key] ?? "").trim() !== ""
+                        ? current
+                        : {
+                            ...current,
+                            [key]:
+                              binding.timeouts?.[key] != null
+                                ? String(binding.timeouts[key])
+                                : "",
+                          },
+                    );
+                  }}
                 />
               </div>
             ) : null}
