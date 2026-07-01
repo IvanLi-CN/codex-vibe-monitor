@@ -1790,6 +1790,7 @@ async fn file_backed_test_state_with_busy_timeout(
 
     let state = Arc::new(AppState {
         config: config.clone(),
+        sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,
@@ -1940,7 +1941,7 @@ async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
 }
 
 #[tokio::test]
-async fn runtime_snapshot_keeps_prompt_cache_rollups_inline_without_background_follow_up() {
+async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow_up() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -1987,6 +1988,10 @@ async fn runtime_snapshot_keeps_prompt_cache_rollups_inline_without_background_f
         runtime_snapshot_follow_up_handles, 0,
         "runtime snapshots should not schedule the summary/quota follow-up worker"
     );
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let prompt_cache_requests: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_rollup_hourly WHERE prompt_cache_key = ?1",
@@ -1997,7 +2002,7 @@ async fn runtime_snapshot_keeps_prompt_cache_rollups_inline_without_background_f
     .expect("load prompt cache rollup count after runtime snapshot");
     assert_eq!(
         prompt_cache_requests, 1,
-        "runtime snapshots should still keep prompt-cache rollups queryable inline"
+        "runtime snapshots should keep prompt-cache rollups queryable after the bounded batch flush"
     );
 
     let Json(conversations) = fetch_prompt_cache_conversations(
@@ -2021,7 +2026,7 @@ async fn runtime_snapshot_keeps_prompt_cache_rollups_inline_without_background_f
             .iter()
             .any(|conversation| conversation.prompt_cache_key == "pck-follow-up-refresh"
                 && conversation.request_count >= 1),
-        "runtime snapshots should keep the new prompt-cache key visible without any GET-triggered sync"
+        "runtime snapshots should keep the new prompt-cache key visible after the bounded batch flush"
     );
 
     let mut terminal_record = test_proxy_capture_record("follow-up-refresh-running", &occurred_at);
@@ -2341,6 +2346,7 @@ async fn quota_latest_returns_degraded_when_empty() {
     let (broadcaster, _rx) = broadcast::channel(16);
     let state = Arc::new(AppState {
         config: config.clone(),
+        sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,

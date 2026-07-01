@@ -832,6 +832,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
     let (broadcaster, _rx) = broadcast::channel(16);
     let state = Arc::new(AppState {
         config: config.clone(),
+        sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,

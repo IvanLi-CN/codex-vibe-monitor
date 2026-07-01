@@ -697,8 +697,8 @@ async fn run_data_retention_maintenance_best_effort(
             Ok(permit) => permit,
             Err(reason) => {
                 if let Some(handle) = task_run.as_ref() {
-                    finish_system_task_run(
-                        &state.pool,
+                    finish_system_task_run_batched(
+                        state.as_ref(),
                         handle,
                         SystemTaskStatus::Skipped,
                         Some("retention skipped by db pressure gate".to_string()),
@@ -719,8 +719,8 @@ async fn run_data_retention_maintenance_best_effort(
             Ok(summary) => {
                 if let Some(handle) = task_run.as_ref() {
                     let (brief, detail) = summarize_retention_run_for_system_task(&summary);
-                    finish_system_task_run(
-                        &state.pool,
+                    finish_system_task_run_batched(
+                        state.as_ref(),
                         handle,
                         SystemTaskStatus::Success,
                         Some(brief),
@@ -734,8 +734,8 @@ async fn run_data_retention_maintenance_best_effort(
             Err(err) => {
                 let pressure_error = gate.record_error("data_retention_maintenance", &err);
                 if let Some(handle) = task_run.as_ref() {
-                    finish_system_task_run(
-                        &state.pool,
+                    finish_system_task_run_batched(
+                        state.as_ref(),
                         handle,
                         SystemTaskStatus::Failed,
                         Some("retention maintenance failed".to_string()),

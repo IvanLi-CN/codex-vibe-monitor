@@ -2346,8 +2346,8 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
 
     if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), true, None).await {
         if let Some(run) = task_run.as_ref() {
-            finish_system_task_run(
-                &state.pool,
+            finish_system_task_run_batched(
+                state.as_ref(),
                 run,
                 SystemTaskStatus::Failed,
                 Some("forward proxy manual refresh failed".to_string()),
@@ -2373,8 +2373,8 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     if let Some(run) = task_run.as_ref() {
-        finish_system_task_run(
-            &state.pool,
+        finish_system_task_run_batched(
+            state.as_ref(),
             run,
             SystemTaskStatus::Success,
             Some(format!(

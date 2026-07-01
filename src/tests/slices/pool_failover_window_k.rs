@@ -2583,7 +2583,8 @@ async fn broadcast_pool_upstream_attempts_snapshot_emits_pending_attempts() {
 }
 
 #[tokio::test]
-async fn advance_pool_upstream_request_attempt_phase_updates_and_broadcasts_snapshot() {
+async fn advance_pool_upstream_request_attempt_phase_buffers_progress_without_immediate_broadcast()
+{
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2615,30 +2616,46 @@ async fn advance_pool_upstream_request_attempt_phase_updates_and_broadcasts_snap
         POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST,
     )
     .await
-    .expect("advance phase and broadcast snapshot");
+    .expect("enqueue phase progress");
 
-    let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-        .await
-        .expect("timed out waiting for advanced phase snapshot")
-        .expect("broadcast channel should stay open");
-    match payload {
-        BroadcastPayload::PoolAttempts {
-            invoke_id,
-            attempts,
-        } => {
-            assert_eq!(invoke_id, "pending-attempt-phase-advance");
-            assert_eq!(attempts.len(), 1);
-            assert_eq!(
-                attempts[0].phase,
-                POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST
-            );
-            assert_eq!(
-                attempts[0].status,
-                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
-            );
-        }
-        other => panic!("expected phase-advance pool-attempt snapshot, got {other:?}"),
-    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .is_err(),
+        "buffered phase progress should not broadcast a stale DB snapshot"
+    );
+
+    SqliteBatchWriter::flush_for_test(
+        &state.pool,
+        vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
+            attempt_id: pending.attempt_id.expect("pending attempt id"),
+            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+            phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST.to_string(),
+            connect_latency_ms: None,
+            first_byte_latency_ms: None,
+            compact_support_status: None,
+            compact_support_reason: None,
+        })],
+    )
+    .await;
+
+    let row = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, phase
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("pending-attempt-phase-advance")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load buffered phase progress");
+
+    assert_eq!(row.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
+    assert_eq!(
+        row.1.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST)
+    );
 }
 
 #[tokio::test]
@@ -4792,7 +4809,11 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
             .and_then(|pending| pending.attempt_id)
             .is_some()
     );
-    assert!(upstream.deferred_early_phase_cleanup_guard.is_none());
+    assert!(upstream.deferred_early_phase_cleanup_guard.is_some());
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let attempt = sqlx::query_as::<_, (String, Option<String>)>(
         r#"
@@ -4813,6 +4834,8 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
         attempt.1.as_deref(),
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
     );
+    let mut upstream = upstream;
+    disarm_pool_early_phase_cleanup_guard(&mut upstream.deferred_early_phase_cleanup_guard);
     upstream_handle.abort();
 }
 
@@ -6120,6 +6143,19 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_rechecks_phase_b
     .await
     .expect("move attempt out of early phase before guarded update");
 
+    SqliteBatchWriter::flush_for_test(
+        &state.pool,
+        vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
+            attempt_id,
+            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+            phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string(),
+            connect_latency_ms: None,
+            first_byte_latency_ms: None,
+            compact_support_status: None,
+            compact_support_reason: None,
+        })],
+    )
+    .await;
     let finished_at = shanghai_now_string();
     let recovered = recover_stale_pool_upstream_request_attempt_candidates(
         &state.pool,
@@ -6226,6 +6262,19 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_rechecks_attempt
     .expect("advance attempt into waiting-first-byte");
 
     let attempt_id = pending.attempt_id.expect("pending attempt id");
+    SqliteBatchWriter::flush_for_test(
+        &state.pool,
+        vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
+            attempt_id,
+            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+            phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE.to_string(),
+            connect_latency_ms: None,
+            first_byte_latency_ms: None,
+            compact_support_status: None,
+            compact_support_reason: None,
+        })],
+    )
+    .await;
     sqlx::query(
         r#"
         UPDATE pool_upstream_request_attempts
@@ -6345,6 +6394,19 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_rechecks_invocat
     .expect("advance attempt into waiting-first-byte");
 
     let attempt_id = pending.attempt_id.expect("pending attempt id");
+    SqliteBatchWriter::flush_for_test(
+        &state.pool,
+        vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
+            attempt_id,
+            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+            phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE.to_string(),
+            connect_latency_ms: None,
+            first_byte_latency_ms: None,
+            compact_support_status: None,
+            compact_support_reason: None,
+        })],
+    )
+    .await;
     sqlx::query(
         r#"
         UPDATE codex_invocations

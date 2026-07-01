@@ -461,6 +461,38 @@ pub(crate) async fn finish_system_task_run(
     }
 }
 
+pub(crate) async fn finish_system_task_run_batched(
+    state: &AppState,
+    handle: &SystemTaskRunHandle,
+    status: SystemTaskStatus,
+    summary: Option<String>,
+    detail: Option<String>,
+) {
+    let finished_at = format_utc_iso(Utc::now());
+    let duration_ms = handle
+        .started_at
+        .elapsed()
+        .as_millis()
+        .min(i64::MAX as u128) as i64;
+    if state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::SystemTaskFinish(BatchedSystemTaskFinish {
+            run_id: handle.id,
+            task_kind: handle.task_kind,
+            trigger_kind: handle.trigger_kind.clone(),
+            status,
+            summary: summary.clone(),
+            detail: detail.clone(),
+            finished_at,
+            duration_ms,
+        }))
+    {
+        return;
+    }
+
+    finish_system_task_run(&state.pool, handle, status, summary, detail).await;
+}
+
 pub(crate) async fn fetch_system_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SystemStatusResponse>, ApiError> {

@@ -85,6 +85,7 @@ mod forward_proxy;
 mod maintenance;
 mod oauth_bridge;
 mod proxy;
+mod sqlite_batch_writer;
 mod stats;
 #[cfg(test)]
 mod tests;
@@ -94,6 +95,7 @@ use api::*;
 use external_api::*;
 use forward_proxy::*;
 use proxy::*;
+use sqlite_batch_writer::*;
 use stats::*;
 use upstream_accounts::*;
 

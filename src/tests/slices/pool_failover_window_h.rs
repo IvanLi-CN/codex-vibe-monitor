@@ -11485,6 +11485,12 @@ async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
         .expect("insert natural-day summary augmentation row");
     }
 
+    let mut tx = state.pool.begin().await.expect("begin rollup rebuild tx");
+    recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[501, 502, 503, 504, 505, 506, 507])
+        .await
+        .expect("rebuild summary rollups for direct test rows");
+    tx.commit().await.expect("commit rollup rebuild tx");
+
     let Json(summary) = fetch_summary(
         State(state),
         Query(SummaryQuery {

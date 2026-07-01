@@ -2203,58 +2203,34 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         if pending_attempt_record.attempt_id.is_none() {
                             deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
                         }
-                        match update_pool_upstream_request_attempt_progress(
-                            &state.pool,
+                        let phase_enqueued = enqueue_pool_upstream_request_attempt_progress(
+                            state.as_ref(),
                             pending_attempt_record,
                             POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
                             Some(connect_latency_ms),
                             Some(first_byte_latency_ms),
                             None,
                             None,
-                        )
-                        .await
-                        {
-                            Ok(phase_persisted) => {
-                                if phase_persisted
-                                    && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
-                                        state.as_ref(),
-                                        &pending_attempt_record.invoke_id,
-                                    )
-                                    .await
-                                {
-                                    warn!(
-                                        invoke_id = %pending_attempt_record.invoke_id,
-                                        error = %err,
-                                        "failed to broadcast pool attempt streaming phase snapshot"
-                                    );
-                                }
-                                if !phase_persisted {
-                                    info!(
-                                        invoke_id = %pending_attempt_record.invoke_id,
-                                        attempt_id = pending_attempt_record.attempt_id,
-                                        "streaming phase was not persisted; relying on invocation cleanup guards for post-first-byte recovery"
-                                    );
-                                    if pending_attempt_record.attempt_id.is_some() {
-                                        deferred_early_phase_cleanup_guard =
-                                            early_phase_cleanup_guard.take();
-                                    }
-                                }
-                                if phase_persisted && pending_attempt_record.attempt_id.is_some() {
-                                    disarm_pool_early_phase_cleanup_guard(
-                                        &mut early_phase_cleanup_guard,
-                                    );
-                                }
+                        );
+                        if phase_enqueued {
+                            debug!(
+                                invoke_id = %pending_attempt_record.invoke_id,
+                                attempt_id = pending_attempt_record.attempt_id,
+                                "queued pool attempt streaming phase progress"
+                            );
+                            if pending_attempt_record.attempt_id.is_some() {
+                                deferred_early_phase_cleanup_guard =
+                                    early_phase_cleanup_guard.take();
                             }
-                            Err(err) => {
-                                warn!(
-                                    invoke_id = %pending_attempt_record.invoke_id,
-                                    error = %err,
-                                    "failed to persist pool attempt streaming phase; relying on invocation cleanup guards for post-first-byte recovery"
-                                );
-                                if pending_attempt_record.attempt_id.is_some() {
-                                    deferred_early_phase_cleanup_guard =
-                                        early_phase_cleanup_guard.take();
-                                }
+                        } else {
+                            info!(
+                                invoke_id = %pending_attempt_record.invoke_id,
+                                attempt_id = pending_attempt_record.attempt_id,
+                                "streaming phase was not enqueued; relying on invocation cleanup guards for post-first-byte recovery"
+                            );
+                            if pending_attempt_record.attempt_id.is_some() {
+                                deferred_early_phase_cleanup_guard =
+                                    early_phase_cleanup_guard.take();
                             }
                         }
                     } else {
@@ -3017,56 +2993,32 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 if pending_attempt_record.attempt_id.is_none() {
                     deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
                 }
-                match update_pool_upstream_request_attempt_progress(
-                    &state.pool,
+                let phase_enqueued = enqueue_pool_upstream_request_attempt_progress(
+                    state.as_ref(),
                     pending_attempt_record,
                     POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
                     Some(connect_latency_ms),
                     Some(first_byte_latency_ms),
                     None,
                     None,
-                )
-                .await
-                    {
-                        Ok(phase_persisted) => {
-                            if phase_persisted
-                                && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
-                                    state.as_ref(),
-                                &pending_attempt_record.invoke_id,
-                            )
-                            .await
-                        {
-                            warn!(
-                                invoke_id = %pending_attempt_record.invoke_id,
-                                error = %err,
-                                "failed to broadcast pool attempt streaming phase snapshot"
-                            );
-                        }
-                        if !phase_persisted {
-                            info!(
-                                invoke_id = %pending_attempt_record.invoke_id,
-                                attempt_id = pending_attempt_record.attempt_id,
-                                "streaming phase was not persisted; relying on invocation cleanup guards for post-first-byte recovery"
-                            );
-                            if pending_attempt_record.attempt_id.is_some() {
-                                deferred_early_phase_cleanup_guard =
-                                    early_phase_cleanup_guard.take();
-                            }
-                        }
-                        if phase_persisted && pending_attempt_record.attempt_id.is_some() {
-                            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                        }
+                );
+                if phase_enqueued {
+                    debug!(
+                        invoke_id = %pending_attempt_record.invoke_id,
+                        attempt_id = pending_attempt_record.attempt_id,
+                        "queued pool attempt streaming phase progress"
+                    );
+                    if pending_attempt_record.attempt_id.is_some() {
+                        deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
                     }
-                    Err(err) => {
-                        warn!(
-                            invoke_id = %pending_attempt_record.invoke_id,
-                            error = %err,
-                            "failed to persist pool attempt streaming phase; relying on invocation cleanup guards for post-first-byte recovery"
-                        );
-                        if pending_attempt_record.attempt_id.is_some() {
-                            deferred_early_phase_cleanup_guard =
-                                early_phase_cleanup_guard.take();
-                        }
+                } else {
+                    info!(
+                        invoke_id = %pending_attempt_record.invoke_id,
+                        attempt_id = pending_attempt_record.attempt_id,
+                        "streaming phase was not enqueued; relying on invocation cleanup guards for post-first-byte recovery"
+                    );
+                    if pending_attempt_record.attempt_id.is_some() {
+                        deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
                     }
                 }
             } else {

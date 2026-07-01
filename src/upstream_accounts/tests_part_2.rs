@@ -149,9 +149,11 @@
         let http_clients = HttpClients::build(&config).expect("build http clients");
         let (broadcaster, _) = broadcast::channel(8);
         let proxy_raw_async_writer_limit = proxy_raw_async_writer_limit(&config);
+        let pool = test_pool().await;
         let state = Arc::new(AppState {
             config,
-            pool: test_pool().await,
+            sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
+            pool,
             oauth_installation_seed: [0_u8; 32],
             http_clients,
             broadcaster,
