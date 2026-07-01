@@ -11347,9 +11347,16 @@ async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
     .await;
     let now_local = Utc::now().with_timezone(&Shanghai).naive_local();
     let occurred_at = format_naive(now_local);
+    let local_start_of_day = now_local
+        .date()
+        .and_hms_opt(0, 0, 0)
+        .expect("valid local midnight");
+    // Keep the older terminal row on the same Shanghai calendar day even when
+    // the suite happens to run within the first two minutes after midnight.
     let earlier_today = format_naive(
         now_local
             .checked_sub_signed(ChronoDuration::minutes(2))
+            .map(|candidate| candidate.max(local_start_of_day))
             .expect("valid earlier local time"),
     );
 
