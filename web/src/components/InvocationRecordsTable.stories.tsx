@@ -249,6 +249,15 @@ export const ModelRoutingMismatch: Story = {
     isLoading: false,
     error: null,
   },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getAllByRole('button', { name: /展开详情|show details/i })[0]!)
+    await waitFor(() => {
+      expect(canvasElement.querySelector('[data-testid="invocation-model-route-summary"]')).not.toBeNull()
+      expect(document.body.textContent ?? '').toContain('gpt-5.4')
+      expect(document.body.textContent ?? '').toContain('gpt-5.5')
+    })
+  },
 }
 
 export const LegacyModelOnly: Story = {
@@ -430,6 +439,122 @@ export const SplitProxyErrorSemantics: Story = {
       expect(
         document.querySelector('[data-testid="pool-attempt-downstream-error"]')?.textContent ?? '',
       ).toContain('pool upstream responded with 502')
+    })
+  },
+}
+
+const DETAIL_LAYOUT_GALLERY_RECORDS = [
+  STORYBOOK_INVOCATION_RECORDS[0]!,
+  STORYBOOK_INVOCATION_RECORDS.find((record) => record.invokeId === 'inv_story_6106')!,
+  STORYBOOK_INVOCATION_RECORDS.find((record) => record.invokeId === 'inv_story_6110')!,
+]
+
+export const DetailLayoutStateGallery: Story = {
+  args: {
+    focus: 'exception',
+    records: DETAIL_LAYOUT_GALLERY_RECORDS,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Curated state gallery for the reorganized shared invocation detail panel. It covers a successful call, an in-flight call, and a failed pool-terminal call using the same `InvocationExpandedDetails` component shared by Live and Dashboard drawers.',
+      },
+    },
+    viewport: { defaultViewport: 'desktop1280' },
+  },
+  render: () => (
+    <div className="space-y-5">
+      {DETAIL_LAYOUT_GALLERY_RECORDS.map((record) => (
+        <div key={record.invokeId} className="rounded-xl border border-base-300/70 bg-base-100/62 p-3">
+          <InvocationRecordsTable
+            focus={record.status === 'failed' ? 'exception' : 'network'}
+            records={[record]}
+            isLoading={false}
+            error={null}
+          />
+        </div>
+      ))}
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const toggles = await canvas.findAllByRole('button', { name: /展开详情|show details/i })
+
+    await userEvent.click(toggles[0]!)
+
+    await waitFor(() => {
+      const text = document.body.textContent ?? ''
+      expect(text).toContain('路由与模型')
+      expect(text).toContain('失败信号')
+      expect(text).toContain('细节保留')
+    })
+  },
+}
+
+export const DetailLayoutMobileLongFields: Story = {
+  args: {
+    focus: 'network',
+    records: [
+      {
+        ...STORYBOOK_INVOCATION_RECORDS[0]!,
+        invokeId: 'inv_story_long_detail_fields',
+        promptCacheKey:
+          '019f1832-8956-7d73-9e4e-7cba6f9cd8c2-extra-long-cache-key-for-mobile-wrap-proof',
+        endpoint:
+          '/v1/responses/with/a/very/long/path/that/should/wrap/without/forcing-horizontal-overflow',
+        requesterIp: '2001:db8:85a3:0000:0000:8a2e:0370:7334',
+      },
+    ],
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Mobile-width regression surface for long IDs, prompt cache keys, endpoint paths, and IPv6 values inside the reorganized detail sections.',
+      },
+    },
+    viewport: { defaultViewport: 'mobile430' },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: /展开详情|show details/i }))
+    await waitFor(() => {
+      expect(document.body.textContent ?? '').toContain('019f1832-8956-7d73')
+      expect(document.body.textContent ?? '').toContain('路由与模型')
+    })
+  },
+}
+
+export const DetailLayoutDarkPoolTerminal: Story = {
+  args: {
+    focus: 'exception',
+    records: STORYBOOK_INVOCATION_RECORDS.filter((record) => record.invokeId === 'inv_story_6110'),
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    themeMode: 'dark',
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Dark-theme focused state for the reorganized detail hierarchy and pool terminal record boundary.',
+      },
+    },
+    viewport: { defaultViewport: 'desktop1280' },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: /展开详情|show details/i }))
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="pool-attempt-terminal-record"]')).not.toBeNull()
+      expect(document.body.textContent ?? '').toContain('号池终态')
     })
   },
 }
