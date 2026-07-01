@@ -389,16 +389,19 @@ async fn run_sqlite_batch_writer(
             }
             _ = ticker.tick() => {
                 if !pending.is_empty() {
-                    if pending.age() >= SQLITE_BATCH_MAX_AGE {
+                    let force_flush = pending.age() >= SQLITE_BATCH_MAX_AGE;
+                    if force_flush {
                         warn!(
                             logical_rows = pending.logical_rows(),
                             enqueued_rows = pending.enqueued_rows,
                             coalesced_rows = pending.coalesced_rows,
                             oldest_age_ms = pending.age().as_millis() as u64,
-                            "sqlite batch writer pending derived writes exceeded freshness budget"
+                            "sqlite batch writer pending derived writes reached max age; forcing flush"
                         );
                     }
-                    if let Some(retained) = flush_pending_batch(&pool, pending.take(), false).await {
+                    if let Some(retained) =
+                        flush_pending_batch(&pool, pending.take(), force_flush).await
+                    {
                         pending = retained;
                     }
                 }
