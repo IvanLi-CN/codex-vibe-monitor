@@ -126,6 +126,8 @@ interface InvocationExpandedDetailsProps {
   t: Translator;
 }
 
+type DetailPair = { key: string; label: string; value: ReactNode };
+
 function isZhLocale(locale: string) {
   return locale.trim().toLowerCase().startsWith("zh");
 }
@@ -403,11 +405,66 @@ export function renderInvocationModelBadge(
   );
 }
 
+export function renderInvocationModelRoutingSummary({
+  requestModelValue,
+  responseModelValue,
+  hasMismatch,
+  t,
+  adornments,
+  className,
+}: {
+  requestModelValue: string;
+  responseModelValue: string;
+  hasMismatch: boolean;
+  t: Translator;
+  adornments?: ReactNode;
+  className?: string;
+}) {
+  if (!hasMismatch) return null;
+
+  return (
+    <div
+      className={cn("min-w-0", className)}
+      data-testid="invocation-model-route-summary"
+      title={`${t("table.details.requestModel")}: ${requestModelValue} · ${t(
+        "table.details.responseModel",
+      )}: ${responseModelValue}`}
+      aria-label={`${t("table.model.routingMismatchAria")}: ${requestModelValue} -> ${responseModelValue}`}
+    >
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span
+            className="min-w-0 truncate font-mono text-sm font-medium leading-6 text-base-content/58 line-through decoration-base-content/30 decoration-1"
+            title={requestModelValue}
+          >
+            {requestModelValue}
+          </span>
+          <span
+            className="inline-flex h-5 w-5 flex-none items-center justify-center rounded-full bg-warning/12 text-warning"
+            aria-hidden
+          >
+            <AppIcon name="arrow-right-bold" className="h-3.5 w-3.5" />
+          </span>
+          <span
+            className="min-w-0 truncate font-mono text-sm font-semibold leading-6 text-base-content/95"
+            title={responseModelValue}
+          >
+            {responseModelValue}
+          </span>
+        </div>
+        {adornments ? (
+          <div className="flex flex-none items-center gap-1">{adornments}</div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function renderEndpointRawPath(endpointValue: string, className?: string) {
   return (
     <span
       className={cn(
-        "block truncate whitespace-nowrap font-mono text-base-content/70",
+        "block max-w-full break-all font-mono text-base-content/70",
         className,
       )}
       title={endpointValue}
@@ -1592,22 +1649,35 @@ function renderPoolAttemptsContent(
       : [];
 
   return (
-    <div className="flex flex-col gap-3" data-testid="pool-attempts-section">
-      <div className="space-y-1">
-        <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-          {t("table.poolAttempts.title")}
-        </span>
-        <div className="text-xs text-base-content/60">
-          {summaryParts.join(" · ")}
+    <div
+      className="rounded-xl border border-base-300/70 bg-base-100/52 p-3"
+      data-testid="pool-attempts-section"
+    >
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div className="space-y-1">
+          <span className="text-xs font-semibold text-base-content/82">
+            {t("table.poolAttempts.title")}
+          </span>
+          <div className="text-xs leading-5 text-base-content/62">
+            {summaryParts.join(" · ")}
+          </div>
         </div>
         {loadedSummaryParts.length > 0 ? (
-          <div className="text-xs text-base-content/60">
-            {loadedSummaryParts.join(" · ")}
+          <div className="flex flex-wrap gap-1.5 md:justify-end">
+            {loadedSummaryParts.map((part) => (
+              <span
+                key={part}
+                className="rounded-full border border-base-300/70 bg-base-200/58 px-2 py-1 text-[11px] font-medium text-base-content/70"
+              >
+                {part}
+              </span>
+            ))}
           </div>
         ) : null}
       </div>
 
-      {attemptsError ? (
+      <div className="mt-3">
+        {attemptsError ? (
         <div
           className="rounded-lg border border-error/25 bg-error/8 px-3 py-2 text-sm text-error"
           data-testid="pool-attempts-error"
@@ -1907,6 +1977,7 @@ function renderPoolAttemptsContent(
           {t("table.poolAttempts.empty")}
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -1929,6 +2000,187 @@ function resolveUnavailableResponseBodyMessage(
   if (normalized.startsWith("missing_body"))
     return t("table.responseBody.unavailable.missingBody");
   return t("table.responseBody.unavailable.generic");
+}
+
+function getDetailPair(pairByKey: Map<string, DetailPair>, key: string) {
+  return pairByKey.get(key);
+}
+
+function collectDetailPairs(
+  pairByKey: Map<string, DetailPair>,
+  keys: string[],
+) {
+  return keys
+    .map((key) => getDetailPair(pairByKey, key))
+    .filter((pair): pair is DetailPair => pair != null);
+}
+
+function DetailSection({
+  title,
+  children,
+  className,
+  testId,
+}: {
+  title: string;
+  children: ReactNode;
+  className?: string;
+  testId?: string;
+}) {
+  return (
+    <section
+      className={cn(
+        "rounded-xl border border-base-300/70 bg-base-100/52 p-3",
+        className,
+      )}
+      data-testid={testId}
+    >
+      <h4 className="text-xs font-semibold text-base-content/82">{title}</h4>
+      <div className="mt-3">{children}</div>
+    </section>
+  );
+}
+
+function DetailFields({
+  pairs,
+  columns = "md:grid-cols-2",
+}: {
+  pairs: DetailPair[];
+  columns?: string;
+}) {
+  if (pairs.length === 0) return null;
+  return (
+    <dl className={cn("grid gap-x-5 gap-y-3", columns)}>
+      {pairs.map((entry) => (
+        <DetailField key={entry.key} entry={entry} />
+      ))}
+    </dl>
+  );
+}
+
+function DetailField({ entry }: { entry: DetailPair }) {
+  return (
+    <div className="grid min-w-0 gap-1 sm:grid-cols-[8.75rem_minmax(0,1fr)] sm:gap-3">
+      <dt className="text-xs leading-5 text-base-content/58">{entry.label}</dt>
+      <dd className="min-w-0 break-words font-mono text-sm leading-5 text-base-content/88">
+        {entry.value}
+      </dd>
+    </div>
+  );
+}
+
+function DetailHeroFields({ pairs }: { pairs: DetailPair[] }) {
+  if (pairs.length === 0) return null;
+  return (
+    <dl className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+      {pairs.map((entry) => (
+        <div
+          key={entry.key}
+          className="min-w-0 rounded-lg border border-base-300/60 bg-base-200/42 px-3 py-2"
+        >
+          <dt className="text-[11px] leading-4 text-base-content/58">
+            {entry.label}
+          </dt>
+          <dd className="mt-1 min-w-0 break-words font-mono text-sm font-semibold leading-5 text-base-content/90">
+            {entry.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function TimingRail({
+  timingPairs,
+}: {
+  timingPairs: Array<{ label: string; value: string }>;
+}) {
+  return (
+    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+      {timingPairs.map((entry, index) => {
+        const isTotal = index === timingPairs.length - 1;
+        return (
+          <div
+            key={entry.label}
+            className={cn(
+              "rounded-lg border px-3 py-2",
+              isTotal
+                ? "border-primary/24 bg-primary/8"
+                : "border-base-300/60 bg-base-200/42",
+            )}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  isTotal ? "bg-primary" : "bg-base-content/36",
+                )}
+                aria-hidden
+              />
+              <span className="min-w-0 truncate text-xs text-base-content/60">
+                {entry.label}
+              </span>
+            </div>
+            <div
+              className={cn(
+                "mt-1 font-mono text-sm leading-5",
+                isTotal
+                  ? "font-semibold text-primary"
+                  : "text-base-content/88",
+              )}
+            >
+              {entry.value}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ErrorDetailBlock({
+  title,
+  children,
+  testId,
+  tone = "neutral",
+}: {
+  title: string;
+  children: ReactNode;
+  testId?: string;
+  tone?: "neutral" | "error";
+}) {
+  return (
+    <section
+      className={cn(
+        "rounded-xl border p-3",
+        tone === "error"
+          ? "border-error/25 bg-error/8"
+          : "border-base-300/70 bg-base-100/52",
+      )}
+      data-testid={testId}
+    >
+      <h4 className="text-xs font-semibold text-base-content/82">{title}</h4>
+      <div className="mt-3 space-y-3">{children}</div>
+    </section>
+  );
+}
+
+function DetailErrorText({
+  label,
+  children,
+}: {
+  label: string;
+  children: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
+        {label}
+      </span>
+      <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-5 text-base-content/84">
+        {children}
+      </pre>
+    </div>
+  );
 }
 
 export function InvocationExpandedDetails({
@@ -1978,11 +2230,57 @@ export function InvocationExpandedDetails({
     abnormalResponseBodyLoading ||
     Boolean(abnormalResponseBodyError) ||
     showFullDetailsAction;
+  const detailPairByKey = useMemo(
+    () => new Map(detailPairs.map((entry) => [entry.key, entry])),
+    [detailPairs],
+  );
+  const identityPairs = collectDetailPairs(detailPairByKey, [
+    "invokeId",
+    "account",
+    "requesterIp",
+    "promptCacheKey",
+  ]);
+  const routingPairs = collectDetailPairs(detailPairByKey, [
+    "proxy",
+    "endpoint",
+    "requestModel",
+    "responseModel",
+    "compactionRequest",
+    "compactionResponse",
+    "imageIntent",
+    "responseContentEncoding",
+    "requestedServiceTier",
+    "serviceTier",
+    "billingServiceTier",
+    "reasoningEffort",
+    "reasoningTokens",
+    "proxyWeightDelta",
+  ]);
+  const failurePairs = collectDetailPairs(detailPairByKey, [
+    "poolAttemptCount",
+    "poolDistinctAccountCount",
+    "poolAttemptTerminalReason",
+    "failureClass",
+    "failureKind",
+    "actionable",
+    "streamTerminalEvent",
+    "upstreamErrorCode",
+    "downstreamStatusCode",
+    "upstreamRequestId",
+  ]);
+  const retentionPairs = collectDetailPairs(detailPairByKey, [
+    "detailLevel",
+    "detailPrunedAt",
+    "detailPruneReason",
+  ]);
 
   return (
     <div
       id={detailId}
-      className={cn("flex flex-col gap-4", size === "compact" ? "p-3" : "p-4")}
+      className={cn(
+        "flex flex-col gap-3",
+        size === "compact" ? "p-3" : "p-4",
+      )}
     >
       {detailNotice ? (
         <div
@@ -1993,47 +2291,76 @@ export function InvocationExpandedDetails({
         </div>
       ) : null}
 
-      <div className="flex flex-col gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-          {t("table.detailsTitle")}
-        </span>
-        <div className="grid gap-2 md:grid-cols-2">
-          {detailPairs.map((entry) => (
-            <div key={entry.key} className="flex items-start gap-2">
-              <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60 md:min-w-36">
-                {entry.label}
-              </span>
-              <div className="min-w-0 break-all font-mono text-sm">
-                {entry.value}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      <DetailSection title={t("table.detailsTitle")}>
+        <DetailHeroFields pairs={identityPairs} />
+      </DetailSection>
 
-      <div className="flex flex-col gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-          {t("table.details.timingsTitle")}
-        </span>
-        <div className="grid gap-2 md:grid-cols-2">
-          {timingPairs.map((entry) => (
-            <div key={entry.label} className="flex items-start gap-2">
-              <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60 md:min-w-36">
-                {entry.label}
-              </span>
-              <span className="font-mono text-sm">{entry.value}</span>
+      <DetailSection title={t("table.details.routingTitle")}>
+        <DetailFields pairs={routingPairs} />
+      </DetailSection>
+
+      <DetailSection title={t("table.details.failureTitle")}>
+        <DetailFields pairs={failurePairs} />
+      </DetailSection>
+
+      <DetailSection title={t("table.details.retentionTitle")}>
+        <DetailFields pairs={retentionPairs} />
+      </DetailSection>
+
+      <DetailSection title={t("table.details.timingsTitle")}>
+        <TimingRail timingPairs={timingPairs} />
+      </DetailSection>
+
+      {showUpstreamErrorSection ? (
+        <ErrorDetailBlock
+          title={t("table.upstreamErrorDetailsTitle")}
+          tone="error"
+        >
+          {canonicalUpstreamError ? (
+            <div data-testid="invocation-upstream-error-section">
+              <DetailErrorText label={t("table.upstreamCanonicalErrorLabel")}>
+                {canonicalUpstreamError}
+              </DetailErrorText>
             </div>
-          ))}
-        </div>
-      </div>
+          ) : null}
+          {upstreamRawError && upstreamRawError !== canonicalUpstreamError ? (
+            <DetailErrorText label={t("table.details.upstreamErrorMessage")}>
+              {upstreamRawError}
+            </DetailErrorText>
+          ) : null}
+        </ErrorDetailBlock>
+      ) : null}
+
+      {showDownstreamErrorSection ? (
+        <ErrorDetailBlock
+          title={t("table.downstreamErrorDetailsTitle")}
+          testId="invocation-downstream-error-section"
+        >
+          <DetailFields
+            pairs={[
+              {
+                key: "downstreamStatusCode-inline",
+                label: t("table.details.downstreamStatusCode"),
+                value: formatOptionalStatusCode(record.downstreamStatusCode),
+              },
+            ]}
+            columns="md:grid-cols-1"
+          />
+          {downstreamErrorMessage ? (
+            <DetailErrorText label={t("table.details.downstreamErrorMessage")}>
+              {downstreamErrorMessage}
+            </DetailErrorText>
+          ) : null}
+        </ErrorDetailBlock>
+      ) : null}
 
       {showResponseBodySection ? (
-        <div
-          className="flex flex-col gap-2"
-          data-testid="invocation-response-body-section"
+        <DetailSection
+          title={t("table.responseBody.title")}
+          testId="invocation-response-body-section"
         >
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
+            <span className="text-xs text-base-content/62">
               {t("table.responseBody.title")}
             </span>
             {showFullDetailsAction && onOpenFullDetails ? (
@@ -2091,7 +2418,7 @@ export function InvocationExpandedDetails({
               )}
             </div>
           ) : null}
-        </div>
+        </DetailSection>
       ) : null}
 
       {renderPoolAttemptsContent(
@@ -2101,67 +2428,6 @@ export function InvocationExpandedDetails({
         t,
       )}
 
-      {showUpstreamErrorSection ? (
-        <div className="flex flex-col gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-            {t("table.upstreamErrorDetailsTitle")}
-          </span>
-          {canonicalUpstreamError ? (
-            <div
-              className="flex flex-col gap-1"
-              data-testid="invocation-upstream-error-section"
-            >
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
-                {t("table.upstreamCanonicalErrorLabel")}
-              </span>
-              <pre className="whitespace-pre-wrap break-words font-mono text-sm">
-                {canonicalUpstreamError}
-              </pre>
-            </div>
-          ) : null}
-          {upstreamRawError && upstreamRawError !== canonicalUpstreamError ? (
-            <div className="flex flex-col gap-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
-                {t("table.details.upstreamErrorMessage")}
-              </span>
-              <pre className="whitespace-pre-wrap break-words font-mono text-sm">
-                {upstreamRawError}
-              </pre>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      {showDownstreamErrorSection ? (
-        <div
-          className="flex flex-col gap-2"
-          data-testid="invocation-downstream-error-section"
-        >
-          <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-            {t("table.downstreamErrorDetailsTitle")}
-          </span>
-          <div className="grid gap-2 md:grid-cols-2">
-            <div className="flex items-start gap-2">
-              <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60 md:min-w-36">
-                {t("table.details.downstreamStatusCode")}
-              </span>
-              <span className="font-mono text-sm">
-                {formatOptionalStatusCode(record.downstreamStatusCode)}
-              </span>
-            </div>
-          </div>
-          {downstreamErrorMessage ? (
-            <div className="flex flex-col gap-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
-                {t("table.details.downstreamErrorMessage")}
-              </span>
-              <pre className="whitespace-pre-wrap break-words font-mono text-sm">
-                {downstreamErrorMessage}
-              </pre>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
     </div>
   );
 }

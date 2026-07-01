@@ -31,3 +31,4 @@
 - 2026-06-26: 将 `requestModel` / `responseModel` 扩展到 `/api/invocations`、SSE `records`、Prompt Cache preview 与 Dashboard working conversations，并统一主模型显示为 `responseModel ?? model ?? requestModel`。
 - 2026-06-26: 调用详情拆分为“请求模型 / 响应模型”双字段；当规范化后的请求/响应模型不一致时，仅响应模型 badge 显示上游路由差异图标，旧 `model` 记录继续作为响应模型回填。
 - 2026-06-28: 将共享 invocation preview 的 `promptCacheKey` 明确打通到 Dashboard 上游账号活动 recent 行，修复详情抽屉 selection 误把 `invokeId` 当对话键的问题。
+- 2026-06-30: 重组共享调用详情组件的信息架构，按快速排障路径分组展示请求身份、路由与模型、失败信号、细节保留和阶段耗时，并补齐 Storybook 视觉证据。

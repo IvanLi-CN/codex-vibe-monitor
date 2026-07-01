@@ -33,6 +33,7 @@ import {
   renderFastIndicator,
   renderImageIntentBadge,
   renderInvocationModelBadge,
+  renderInvocationModelRoutingSummary,
   renderReasoningEffortBadge,
   useInvocationPoolAttempts,
 } from "./invocation-details-shared";
@@ -107,6 +108,8 @@ interface InvocationRowViewModel {
   proxyDisplayName: string;
   modelValue: string;
   modelHasMismatch: boolean;
+  requestModelValue: string;
+  responseModelValue: string;
   requestedServiceTierValue: string;
   serviceTierValue: string;
   billingServiceTierValue: string;
@@ -678,19 +681,34 @@ export function InvocationTable({
                   {t("table.column.model")}
                 </dt>
                 <dd className="min-w-0">
-                  <div
-                    className="flex items-center justify-end gap-1 text-right"
-                    title={row.modelValue}
-                  >
-                    {renderInvocationModelBadge(row.modelValue, {
+                  {row.modelHasMismatch ? (
+                    renderInvocationModelRoutingSummary({
+                      requestModelValue: row.requestModelValue,
+                      responseModelValue: row.responseModelValue,
+                      hasMismatch: true,
                       t,
-                      hasMismatch: row.modelHasMismatch,
-                      textClassName: "text-right",
-                      testId: "invocation-table-model",
-                    })}
-                    {renderInvocationTransportBadge(row.record)}
-                    {renderFastIndicator(row.fastIndicatorState, t)}
-                  </div>
+                      adornments: (
+                        <>
+                          {renderInvocationTransportBadge(row.record)}
+                          {renderFastIndicator(row.fastIndicatorState, t)}
+                        </>
+                      ),
+                    })
+                  ) : (
+                    <div
+                      className="flex items-center justify-end gap-1 text-right"
+                      title={row.modelValue}
+                    >
+                      {renderInvocationModelBadge(row.modelValue, {
+                        t,
+                        hasMismatch: false,
+                        textClassName: "text-right",
+                        testId: "invocation-table-model",
+                      })}
+                      {renderInvocationTransportBadge(row.record)}
+                      {renderFastIndicator(row.fastIndicatorState, t)}
+                    </div>
+                  )}
                 </dd>
                 <dt className="text-base-content/65">
                   {t("table.column.costUsd")}

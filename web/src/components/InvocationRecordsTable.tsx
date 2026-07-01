@@ -16,6 +16,7 @@ import {
   renderEndpointSummary,
   renderFastIndicator,
   renderInvocationModelBadge,
+  renderInvocationModelRoutingSummary,
   useInvocationPoolAttempts,
 } from "./invocation-details-shared";
 import {
@@ -61,6 +62,8 @@ interface InvocationRecordsRowViewModel {
   proxyDisplayName: string;
   modelValue: string;
   modelHasMismatch: boolean;
+  requestModelValue: string;
+  responseModelValue: string;
   requestedServiceTierValue: string;
   serviceTierValue: string;
   billingServiceTierValue: string;
@@ -337,27 +340,33 @@ function renderDetailSummaryStrip(
         <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
           {t("table.column.model")}
         </div>
-        <div
-          className="flex items-center gap-1 text-sm font-medium"
-          title={row.modelValue}
-        >
-          {renderInvocationModelBadge(row.modelValue, {
+        {row.modelHasMismatch ? (
+          renderInvocationModelRoutingSummary({
+            requestModelValue: row.requestModelValue,
+            responseModelValue: row.responseModelValue,
+            hasMismatch: true,
             t,
-            hasMismatch: row.modelHasMismatch,
-            testId: "invocation-records-model",
-          })}
-          {renderInvocationTransportBadge(row.record)}
-          {renderFastIndicator(row.fastIndicatorState, t)}
-        </div>
-        <div className="mt-2 w-fit max-w-full">
-          {renderEndpointSummary(row.endpointDisplay, t, "text-[10px]")}
-        </div>
-        <div
-          className="mt-1 truncate font-mono text-xs text-base-content/70"
-          title={row.endpointValue}
-        >
-          {row.endpointValue}
-        </div>
+            adornments: (
+              <>
+                {renderInvocationTransportBadge(row.record)}
+                {renderFastIndicator(row.fastIndicatorState, t)}
+              </>
+            ),
+          })
+        ) : (
+          <div
+            className="flex min-w-0 flex-wrap items-center gap-1 text-sm font-medium"
+            title={row.modelValue}
+          >
+            {renderInvocationModelBadge(row.modelValue, {
+              t,
+              hasMismatch: false,
+              testId: "invocation-records-model",
+            })}
+            {renderInvocationTransportBadge(row.record)}
+            {renderFastIndicator(row.fastIndicatorState, t)}
+          </div>
+        )}
       </div>
 
       <div className="rounded-xl border border-base-300/70 bg-base-100/65 p-3">
@@ -816,25 +825,29 @@ export function InvocationRecordsTable({
       case "network":
         return (
           <>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.network.endpoint")}</dt>
-              <dd className="flex justify-end">
+              <dd className="flex min-w-0 justify-end">
                 {renderEndpointSummary(row.endpointDisplay, t, "text-[10px]")}
               </dd>
             </div>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.network.requesterIp")}</dt>
-              <dd className="truncate font-mono">
+              <dd className="min-w-0 break-all text-right font-mono">
                 {formatOptionalText(row.record.requesterIp)}
               </dd>
             </div>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.network.firstResponseByteTotal")}</dt>
-              <dd className="font-mono">{row.firstResponseByteTotalValue}</dd>
+              <dd className="min-w-0 text-right font-mono">
+                {row.firstResponseByteTotalValue}
+              </dd>
             </div>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.network.totalMs")}</dt>
-              <dd className="font-mono">{row.totalLatencyValue}</dd>
+              <dd className="min-w-0 text-right font-mono">
+                {row.totalLatencyValue}
+              </dd>
             </div>
           </>
         );
@@ -954,18 +967,33 @@ export function InvocationRecordsTable({
                 </button>
               </div>
               <div className="mt-3">
-                <div
-                  className="flex items-center gap-1 text-sm font-medium"
-                  title={row.modelValue}
-                >
-                  {renderInvocationModelBadge(row.modelValue, {
+                {row.modelHasMismatch ? (
+                  renderInvocationModelRoutingSummary({
+                    requestModelValue: row.requestModelValue,
+                    responseModelValue: row.responseModelValue,
+                    hasMismatch: true,
                     t,
-                    hasMismatch: row.modelHasMismatch,
-                    testId: "invocation-records-model",
-                  })}
-                  {renderInvocationTransportBadge(row.record)}
-                  {renderFastIndicator(row.fastIndicatorState, t)}
-                </div>
+                    adornments: (
+                      <>
+                        {renderInvocationTransportBadge(row.record)}
+                        {renderFastIndicator(row.fastIndicatorState, t)}
+                      </>
+                    ),
+                  })
+                ) : (
+                  <div
+                    className="flex items-center gap-1 text-sm font-medium"
+                    title={row.modelValue}
+                  >
+                    {renderInvocationModelBadge(row.modelValue, {
+                      t,
+                      hasMismatch: false,
+                      testId: "invocation-records-model",
+                    })}
+                    {renderInvocationTransportBadge(row.record)}
+                    {renderFastIndicator(row.fastIndicatorState, t)}
+                  </div>
+                )}
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-mono text-base-content/70">
                   <span
                     title={row.totalLatencyValue}
@@ -1114,7 +1142,10 @@ export function InvocationRecordsTable({
                   {isExpanded ? (
                     <tr className="bg-base-200/55">
                       <td colSpan={detailColSpan} className="px-4 py-4">
-                        <div className="space-y-3 rounded-xl border border-base-300/70 bg-base-200/45 p-3">
+                        <div
+                          className="space-y-3 rounded-xl border border-base-300/70 bg-base-200/45 p-3"
+                          data-testid="records-expanded-detail-panel"
+                        >
                           {renderDetailSummaryStrip(
                             row,
                             focus,
