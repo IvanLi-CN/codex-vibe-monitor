@@ -2158,21 +2158,6 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     if let Some(guard) = early_phase_cleanup_guard.as_mut() {
                         guard.mark_first_byte_observed(first_byte_latency_ms);
                     }
-                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                        && let Err(err) = persist_pool_upstream_request_attempt_first_byte_progress(
-                            &state.pool,
-                            pending_attempt_record,
-                            connect_latency_ms,
-                            first_byte_latency_ms,
-                        )
-                        .await
-                    {
-                        warn!(
-                            invoke_id = %pending_attempt_record.invoke_id,
-                            error = %err,
-                            "failed to persist pool first-byte progress for passthrough bad request"
-                        );
-                    }
                     let proxy_binding_key_snapshot = if let Some((_, selected_proxy)) =
                         forward_proxy_selection.as_ref()
                     {
@@ -2218,10 +2203,14 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         if pending_attempt_record.attempt_id.is_none() {
                             deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
                         }
-                        match update_pool_upstream_request_attempt_phase(
+                        match update_pool_upstream_request_attempt_progress(
                             &state.pool,
                             pending_attempt_record,
                             POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
+                            Some(connect_latency_ms),
+                            Some(first_byte_latency_ms),
+                            None,
+                            None,
                         )
                         .await
                         {
@@ -2789,21 +2778,6 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             if let Some(guard) = early_phase_cleanup_guard.as_mut() {
                 guard.mark_first_byte_observed(first_byte_latency_ms);
             }
-            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                && let Err(err) = persist_pool_upstream_request_attempt_first_byte_progress(
-                    &state.pool,
-                    pending_attempt_record,
-                    connect_latency_ms,
-                    first_byte_latency_ms,
-                )
-                .await
-            {
-                warn!(
-                    invoke_id = %pending_attempt_record.invoke_id,
-                    error = %err,
-                    "failed to persist pool first-byte attempt progress"
-                );
-            }
             let response_is_event_stream = response
                 .headers()
                 .get(header::CONTENT_TYPE)
@@ -3043,10 +3017,14 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 if pending_attempt_record.attempt_id.is_none() {
                     deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
                 }
-                match update_pool_upstream_request_attempt_phase(
+                match update_pool_upstream_request_attempt_progress(
                     &state.pool,
                     pending_attempt_record,
                     POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
+                    Some(connect_latency_ms),
+                    Some(first_byte_latency_ms),
+                    None,
+                    None,
                 )
                 .await
                     {

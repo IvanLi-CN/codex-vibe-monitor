@@ -21,6 +21,7 @@
 - 前台关键写入：OAuth callback、请求路由状态、用户可见设置保存；优先拿连接，失败需返回明确业务错误。
 - 请求收尾写入：invocation 记录、usage、raw metadata；允许有界降级和异步旁路。
 - 请求收尾若已经存在对应 `running/pending` 行，优先原地更新而不是先 `INSERT OR IGNORE` 再走 repair/update；这样可以少一次唯一键冲突写尝试与后续锁竞争。
+- 对同一 attempt 的 phase、latency、capability/compact-support 等进度字段，优先并入同一条前台更新，而不是拆成 `phase bump -> latency patch -> finalize` 的多段慢写；减少单请求尾部把 SQLite 单写者预算切碎。
 - 后台维护写入：rollup、retention、account maintenance；pressure 下 fail-soft skip。
 - 历史回填写入：startup backfill、archive materialization；pressure 下延后，不阻塞 readiness。
 
