@@ -2320,9 +2320,12 @@ fn compute_upstream_account_activity_tail_rate(
         })
         .min();
 
-    let Some(active_start_epoch_ms) = first_active_epoch_ms else {
+    let Some(first_active_epoch_ms) = first_active_epoch_ms else {
         return Some(0.0);
     };
+    let active_bucket_start_epoch_ms =
+        first_active_epoch_ms.div_euclid(MINUTE_MILLIS) * MINUTE_MILLIS;
+    let active_start_epoch_ms = window_start_epoch_ms.max(active_bucket_start_epoch_ms);
     let active_millis = (anchor_epoch_ms - active_start_epoch_ms).max(0);
     if active_millis == 0 {
         return Some(0.0);
@@ -2842,8 +2845,32 @@ mod upstream_account_activity_rate_tests {
         let (tokens_per_minute, spend_rate) =
             compute_upstream_account_activity_rates(&usage, range_start, range_end);
 
-        assert!((tokens_per_minute.expect("token rate") - (100.0 / (299.0 / 60.0))).abs() < 1e-9);
-        assert!((spend_rate.expect("spend rate") - (0.10 / (299.0 / 60.0))).abs() < 1e-9);
+        assert!((tokens_per_minute.expect("token rate") - (100.0 / 5.0)).abs() < 1e-9);
+        assert!((spend_rate.expect("spend rate") - (0.10 / 5.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rates_floor_first_active_event_to_minute_boundary() {
+        let range_start = utc_at(0);
+        let range_end = Utc
+            .with_ymd_and_hms(2026, 7, 1, 12, 5, 0)
+            .single()
+            .expect("valid range end");
+        let usage = vec![UpstreamAccountRateUsageEvent {
+            occurred_at_epoch_ms: Utc
+                .with_ymd_and_hms(2026, 7, 1, 12, 4, 59)
+                .single()
+                .expect("valid late-minute event time")
+                .timestamp_millis(),
+            total_tokens: 600,
+            total_cost: 0.60,
+        }];
+
+        let (tokens_per_minute, spend_rate) =
+            compute_upstream_account_activity_rates(&usage, range_start, range_end);
+
+        assert!((tokens_per_minute.expect("token rate") - 600.0).abs() < 1e-9);
+        assert!((spend_rate.expect("spend rate") - 0.60).abs() < 1e-9);
     }
 
     #[test]
