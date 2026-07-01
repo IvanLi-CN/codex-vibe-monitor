@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.6.2",
+  "base_stable_version": "2.6.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-01T17:07:19Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.6.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f88f2c041d37d0cbb0c6569d66ee7b3f74eb4acc",
+  "pr_number": 503,
+  "pr_title": "fix(web): reorganize conversation drawer tabs",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.6.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.6.2",
+  "target_sha": "1575c30b2fb2274aee04dd76056e65d3a10c3b68",
+  "type_label": "type:patch"
+}
