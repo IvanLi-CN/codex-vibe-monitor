@@ -1825,15 +1825,15 @@ async fn load_in_progress_summary_snapshot(
 ) -> Result<(i64, i64, Option<f64>), ApiError> {
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("inv");
-    let retry_column = if upstream_account_id.is_some() {
-        match source_scope {
-            InvocationSourceScope::All => "live.is_retry_after_failure_account_all",
-            InvocationSourceScope::ProxyOnly => "live.is_retry_after_failure_account_proxy_only",
-        }
+    let retry_sql = if upstream_account_id.is_some() {
+        invocation_account_retry_after_failure_with_attempt_fallback_sql(
+            resolved_upstream_account_id_sql.as_str(),
+            source_scope,
+        )
     } else {
         match source_scope {
-            InvocationSourceScope::All => "live.is_retry_after_failure_all",
-            InvocationSourceScope::ProxyOnly => "live.is_retry_after_failure_proxy_only",
+            InvocationSourceScope::All => "live.is_retry_after_failure_all".to_string(),
+            InvocationSourceScope::ProxyOnly => "live.is_retry_after_failure_proxy_only".to_string(),
         }
     };
     let mut query = QueryBuilder::<Sqlite>::new(
@@ -1841,7 +1841,7 @@ async fn load_in_progress_summary_snapshot(
             COALESCE(COUNT(*), 0) AS in_progress_count, \
             COALESCE(SUM(",
     );
-    query.push(retry_column).push(
+    query.push(retry_sql.as_str()).push(
         "), 0) AS retry_count, \
          AVG(CASE WHEN live.upstream_ttfb_ms IS NOT NULL AND live.upstream_ttfb_ms >= 0 THEN live.upstream_ttfb_ms END) AS avg_wait_ms \
          FROM invocation_in_progress_live live \
@@ -2239,6 +2239,36 @@ fn invocation_upstream_account_id_with_attempt_fallback_sql(invocation_ref: &str
     )
 }
 
+fn invocation_account_retry_after_failure_with_attempt_fallback_sql(
+    current_upstream_account_id_sql: &str,
+    source_scope: InvocationSourceScope,
+) -> String {
+    let previous_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let display_status_sql = invocation_display_status_sql();
+    let source_filter = match source_scope {
+        InvocationSourceScope::All => "",
+        InvocationSourceScope::ProxyOnly => "AND source = 'proxy'",
+    };
+    format!(
+        "COALESCE((
+            SELECT CASE WHEN previous_terminal.display_status = 'failed' THEN 1 ELSE 0 END
+            FROM (
+                SELECT LOWER(TRIM({display_status_sql})) AS display_status
+                FROM codex_invocations
+                WHERE {prompt_cache_key_sql} = live.prompt_cache_key
+                  AND {previous_upstream_account_id_sql} = {current_upstream_account_id_sql}
+                  AND id < live.invocation_id
+                  {source_filter}
+                  AND LOWER(TRIM({display_status_sql})) NOT IN ('running', 'pending')
+                ORDER BY id DESC
+                LIMIT 1
+            ) AS previous_terminal
+        ), 0)",
+        prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_SQL,
+    )
+}
+
 fn compute_upstream_account_activity_rates(
     rate_minute_usage: &BTreeMap<i64, UpstreamAccountRateMinuteUsage>,
     range_start: DateTime<Utc>,
@@ -2432,10 +2462,10 @@ async fn query_upstream_account_in_progress_counts(
 ) -> Result<HashMap<i64, (i64, i64)>, ApiError> {
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("inv");
-    let retry_column = match source_scope {
-        InvocationSourceScope::All => "live.is_retry_after_failure_account_all",
-        InvocationSourceScope::ProxyOnly => "live.is_retry_after_failure_account_proxy_only",
-    };
+    let retry_sql = invocation_account_retry_after_failure_with_attempt_fallback_sql(
+        resolved_upstream_account_id_sql.as_str(),
+        source_scope,
+    );
     let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
     query
         .push(resolved_upstream_account_id_sql.as_str())
@@ -2444,7 +2474,7 @@ async fn query_upstream_account_in_progress_counts(
                 COUNT(*) AS in_progress_count, \
                 COALESCE(SUM(",
         );
-    query.push(retry_column).push(
+    query.push(retry_sql.as_str()).push(
         "), 0) AS retry_count \
          FROM invocation_in_progress_live live \
          JOIN codex_invocations inv ON inv.id = live.invocation_id \

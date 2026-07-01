@@ -11989,6 +11989,42 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         "#,
     )
+    .bind(7_700_i64)
+    .bind("pool-running-selected-before-payload-update-previous-failed")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("failed")
+    .bind(0_i64)
+    .bind(0.0_f64)
+    .bind(
+        json!({
+            "promptCacheKey": "pck-pool-fallback",
+            "routeMode": "pool",
+            "upstreamAccountId": 77
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert previous failed fallback account invocation");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
     .bind(7_701_i64)
     .bind("pool-running-selected-before-payload-update")
     .bind(&occurred_at)
@@ -12048,12 +12084,14 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
     let account = activity.accounts.first().expect("fallback activity account");
     assert_eq!(account.upstream_account_id, 77);
     assert_eq!(account.display_name, "Pool Fallback");
-    assert_eq!(account.request_count, 1);
+    assert_eq!(account.request_count, 2);
+    assert_eq!(account.failure_count, 1);
     assert_eq!(account.total_tokens, 0);
     assert_f64_close(account.total_cost, 0.0);
     assert_eq!(account.tokens_per_minute, Some(0.0));
     assert_eq!(account.spend_rate, Some(0.0));
     assert_eq!(account.in_progress_invocation_count, Some(1));
+    assert_eq!(account.retry_invocation_count, Some(1));
     assert_eq!(
         account
             .recent_invocations
@@ -12075,6 +12113,7 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
     .await
     .expect("fetch fallback account summary");
     assert_eq!(account_summary.in_progress_conversation_count, Some(1));
+    assert_eq!(account_summary.in_progress_retry_conversation_count, Some(1));
 }
 
 #[tokio::test]
