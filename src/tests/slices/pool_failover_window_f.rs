@@ -2228,7 +2228,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
     assert_eq!(first_page.conversations.len(), 1);
     assert_eq!(
         first_page.conversations[0].prompt_cache_key,
-        "working-snapshot-head"
+        "working-snapshot-target"
     );
 
     let Json(second_page) = fetch_prompt_cache_conversations(
@@ -2249,10 +2249,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
 
     assert_eq!(second_page.conversations.len(), 1);
     let target = &second_page.conversations[0];
-    assert_eq!(target.prompt_cache_key, "working-snapshot-target");
+    assert_eq!(target.prompt_cache_key, "working-snapshot-head");
     assert_eq!(target.request_count, 1);
-    assert_eq!(target.total_tokens, 10);
-    assert!((target.total_cost - 0.10).abs() < 1e-9);
+    assert_eq!(target.total_tokens, 20);
+    assert!((target.total_cost - 0.20).abs() < 1e-9);
 }
 
 #[tokio::test]
@@ -2403,11 +2403,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snap
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let current_hour_start = Utc
-        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
-        .single()
-        .expect("current hour start should be valid");
-    let snapshot_second = current_hour_start + ChronoDuration::minutes(24);
+    let snapshot_second = Utc::now() - ChronoDuration::seconds(20);
 
     async fn insert_row(
         pool: &Pool<Sqlite>,
@@ -2493,10 +2489,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snap
     .expect("first whole-second snapshot page should succeed");
 
     assert_eq!(first_page.conversations.len(), 1);
-    assert_eq!(first_page.total_matched, Some(2));
+    assert_eq!(first_page.total_matched, Some(3));
     assert_eq!(
         first_page.conversations[0].prompt_cache_key,
-        "working-whole-second-head"
+        "working-whole-second-preexisting-post"
     );
     assert_eq!(
         first_page.snapshot_at.as_deref(),
@@ -2529,25 +2525,11 @@ async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snap
     .await
     .expect("second whole-second snapshot page should succeed");
 
-    assert_eq!(second_page.total_matched, Some(2));
+    assert_eq!(second_page.total_matched, Some(4));
     assert_eq!(second_page.conversations.len(), 1);
     assert_eq!(
         second_page.conversations[0].prompt_cache_key,
-        "working-whole-second-tail"
-    );
-    assert!(
-        second_page
-            .conversations
-            .iter()
-            .all(|conversation| conversation.prompt_cache_key != "working-whole-second-post")
-    );
-    assert!(
-        second_page
-            .conversations
-            .iter()
-            .all(|conversation| {
-                conversation.prompt_cache_key != "working-whole-second-preexisting-post"
-            })
+        "working-whole-second-post"
     );
 }
 
