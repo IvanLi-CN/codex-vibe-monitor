@@ -216,10 +216,10 @@ impl SqliteBatchWriter {
         }
     }
 
-    pub(crate) async fn flush_now(&self, pool: &Pool<Sqlite>) -> Result<()> {
+    pub(crate) async fn flush_now(&self, _pool: &Pool<Sqlite>) -> Result<()> {
         #[cfg(test)]
         if self.buffered_writes.is_some() {
-            self.flush_buffered_for_test(pool).await;
+            self.flush_buffered_for_test(_pool).await;
             return Ok(());
         }
 
@@ -375,12 +375,10 @@ async fn run_sqlite_batch_writer(
                     SqliteBatchWriterMessage::Shutdown(sender) => {
                         let result = match flush_pending_batch(&pool, pending.take(), true).await {
                             Some(retained) => {
-                                let message = format!(
+                                Err(format!(
                                     "sqlite batch writer retained {} logical rows after shutdown flush",
                                     retained.logical_rows()
-                                );
-                                pending = retained;
-                                Err(message)
+                                ))
                             }
                             None => Ok(()),
                         };
