@@ -2184,12 +2184,13 @@ struct UpstreamAccountActivityAccumulator {
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
     last_occurred_at_epoch_ms: i64,
-    rate_minute_usage: BTreeMap<i64, UpstreamAccountRateMinuteUsage>,
+    rate_usage_events: Vec<UpstreamAccountRateUsageEvent>,
     recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-struct UpstreamAccountRateMinuteUsage {
+#[derive(Debug, Clone, Copy)]
+struct UpstreamAccountRateUsageEvent {
+    occurred_at_epoch_ms: i64,
     total_tokens: i64,
     total_cost: f64,
 }
@@ -2270,19 +2271,19 @@ fn invocation_account_retry_after_failure_with_attempt_fallback_sql(
 }
 
 fn compute_upstream_account_activity_rates(
-    rate_minute_usage: &BTreeMap<i64, UpstreamAccountRateMinuteUsage>,
+    rate_usage_events: &[UpstreamAccountRateUsageEvent],
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
 ) -> (Option<f64>, Option<f64>) {
     (
         compute_upstream_account_activity_tail_rate(
-            rate_minute_usage,
+            rate_usage_events,
             range_start,
             range_end,
             |usage| usage.total_tokens.max(0) as f64,
         ),
         compute_upstream_account_activity_tail_rate(
-            rate_minute_usage,
+            rate_usage_events,
             range_start,
             range_end,
             |usage| usage.total_cost.max(0.0),
@@ -2291,47 +2292,47 @@ fn compute_upstream_account_activity_rates(
 }
 
 fn compute_upstream_account_activity_tail_rate(
-    rate_minute_usage: &BTreeMap<i64, UpstreamAccountRateMinuteUsage>,
+    rate_usage_events: &[UpstreamAccountRateUsageEvent],
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
-    value_of: impl Fn(&UpstreamAccountRateMinuteUsage) -> f64,
+    value_of: impl Fn(&UpstreamAccountRateUsageEvent) -> f64,
 ) -> Option<f64> {
-    const RATE_WINDOW_SECONDS: i64 = 5 * 60;
-    const BUCKET_SECONDS: i64 = 60;
+    const RATE_WINDOW_MILLIS: i64 = 5 * 60 * 1_000;
+    const MINUTE_MILLIS: i64 = 60 * 1_000;
 
-    let anchor_epoch = range_end.timestamp();
-    let range_start_epoch = range_start.timestamp();
-    if anchor_epoch <= range_start_epoch {
+    let anchor_epoch_ms = range_end.timestamp_millis();
+    let range_start_epoch_ms = range_start.timestamp_millis();
+    if anchor_epoch_ms <= range_start_epoch_ms {
         return Some(0.0);
     }
-    let window_start_epoch = range_start_epoch.max(anchor_epoch - RATE_WINDOW_SECONDS);
+    let window_start_epoch_ms = range_start_epoch_ms.max(anchor_epoch_ms - RATE_WINDOW_MILLIS);
 
-    let first_active_epoch = rate_minute_usage
+    let first_active_epoch_ms = rate_usage_events
         .iter()
-        .filter_map(|(bucket_epoch, usage)| {
-            let bucket_start = *bucket_epoch;
-            let bucket_end = bucket_start + BUCKET_SECONDS;
-            if bucket_start >= anchor_epoch || bucket_end <= window_start_epoch {
+        .filter_map(|usage| {
+            if usage.occurred_at_epoch_ms < window_start_epoch_ms
+                || usage.occurred_at_epoch_ms >= anchor_epoch_ms
+            {
                 return None;
             }
             let value = value_of(usage);
-            (value.is_finite() && value > 0.0).then_some(bucket_start.max(window_start_epoch))
+            (value.is_finite() && value > 0.0).then_some(usage.occurred_at_epoch_ms)
         })
         .next();
 
-    let Some(active_start_epoch) = first_active_epoch else {
+    let Some(active_start_epoch_ms) = first_active_epoch_ms else {
         return Some(0.0);
     };
-    let active_seconds = (anchor_epoch - active_start_epoch).max(0);
-    if active_seconds == 0 {
+    let active_millis = (anchor_epoch_ms - active_start_epoch_ms).max(0);
+    if active_millis == 0 {
         return Some(0.0);
     }
-    let total_value = rate_minute_usage
+    let total_value = rate_usage_events
         .iter()
-        .filter_map(|(bucket_epoch, usage)| {
-            let bucket_start = *bucket_epoch;
-            let bucket_end = bucket_start + BUCKET_SECONDS;
-            if bucket_start >= anchor_epoch || bucket_end <= active_start_epoch {
+        .filter_map(|usage| {
+            if usage.occurred_at_epoch_ms < active_start_epoch_ms
+                || usage.occurred_at_epoch_ms >= anchor_epoch_ms
+            {
                 return None;
             }
             let value = value_of(usage);
@@ -2339,7 +2340,7 @@ fn compute_upstream_account_activity_tail_rate(
         })
         .sum::<f64>();
 
-    Some(total_value / (active_seconds as f64 / BUCKET_SECONDS as f64))
+    Some(total_value / (active_millis as f64 / MINUTE_MILLIS as f64))
 }
 
 async fn query_live_upstream_account_activity_preview_rows(
@@ -2628,13 +2629,11 @@ pub(crate) async fn fetch_upstream_account_activity(
             entry.non_success_count += 1;
             entry.non_success_tokens += row.total_tokens.max(0);
         }
-        let minute_bucket_epoch = occurred_at.timestamp().div_euclid(60) * 60;
-        let usage = entry
-            .rate_minute_usage
-            .entry(minute_bucket_epoch)
-            .or_default();
-        usage.total_tokens += row.total_tokens.max(0);
-        usage.total_cost += row.cost.unwrap_or_default().max(0.0);
+        entry.rate_usage_events.push(UpstreamAccountRateUsageEvent {
+            occurred_at_epoch_ms: occurred_at.timestamp_millis(),
+            total_tokens: row.total_tokens.max(0),
+            total_cost: row.cost.unwrap_or_default().max(0.0),
+        });
         if entry.recent_invocations.len() < recent_limit {
             entry.recent_invocations.push(
                 upstream_account_invocation_preview_from_row(row.clone()),
@@ -2664,7 +2663,7 @@ pub(crate) async fn fetch_upstream_account_activity(
         .map(|(upstream_account_id, aggregate)| {
             let meta = account_meta.get(&upstream_account_id);
             let (tokens_per_minute, spend_rate) = compute_upstream_account_activity_rates(
-                &aggregate.rate_minute_usage,
+                &aggregate.rate_usage_events,
                 range.start,
                 range.end,
             );
@@ -2765,35 +2764,28 @@ mod upstream_account_activity_rate_tests {
     fn rates_use_recent_five_minute_active_tail() {
         let range_start = utc_at(600);
         let range_end = utc_at(1_000);
-        let mut usage = BTreeMap::new();
-        usage.insert(
-            600,
-            UpstreamAccountRateMinuteUsage {
+        let usage = vec![
+            UpstreamAccountRateUsageEvent {
+                occurred_at_epoch_ms: 600_000,
                 total_tokens: 10_000,
                 total_cost: 10.0,
             },
-        );
-        usage.insert(
-            720,
-            UpstreamAccountRateMinuteUsage {
+            UpstreamAccountRateUsageEvent {
+                occurred_at_epoch_ms: 720_000,
                 total_tokens: 0,
                 total_cost: 0.0,
             },
-        );
-        usage.insert(
-            780,
-            UpstreamAccountRateMinuteUsage {
+            UpstreamAccountRateUsageEvent {
+                occurred_at_epoch_ms: 780_000,
                 total_tokens: 300,
                 total_cost: 0.30,
             },
-        );
-        usage.insert(
-            840,
-            UpstreamAccountRateMinuteUsage {
+            UpstreamAccountRateUsageEvent {
+                occurred_at_epoch_ms: 840_000,
                 total_tokens: 100,
                 total_cost: 0.10,
             },
-        );
+        ];
 
         let (tokens_per_minute, spend_rate) =
             compute_upstream_account_activity_rates(&usage, range_start, range_end);
@@ -2806,20 +2798,52 @@ mod upstream_account_activity_rate_tests {
     fn rates_return_zero_when_recent_window_has_no_usage() {
         let range_start = utc_at(600);
         let range_end = utc_at(1_000);
-        let mut usage = BTreeMap::new();
-        usage.insert(
-            600,
-            UpstreamAccountRateMinuteUsage {
-                total_tokens: 10_000,
-                total_cost: 10.0,
-            },
-        );
+        let usage = vec![UpstreamAccountRateUsageEvent {
+            occurred_at_epoch_ms: 600_000,
+            total_tokens: 10_000,
+            total_cost: 10.0,
+        }];
 
         let (tokens_per_minute, spend_rate) =
             compute_upstream_account_activity_rates(&usage, range_start, range_end);
 
         assert_eq!(tokens_per_minute, Some(0.0));
         assert_eq!(spend_rate, Some(0.0));
+    }
+
+    #[test]
+    fn rates_exclude_events_before_mid_minute_tail_window() {
+        let range_start = utc_at(0);
+        let range_end = Utc
+            .with_ymd_and_hms(2026, 7, 1, 12, 5, 30)
+            .single()
+            .expect("valid range end");
+        let usage = vec![
+            UpstreamAccountRateUsageEvent {
+                occurred_at_epoch_ms: Utc
+                    .with_ymd_and_hms(2026, 7, 1, 12, 0, 1)
+                    .single()
+                    .expect("valid excluded event time")
+                    .timestamp_millis(),
+                total_tokens: 10_000,
+                total_cost: 10.0,
+            },
+            UpstreamAccountRateUsageEvent {
+                occurred_at_epoch_ms: Utc
+                    .with_ymd_and_hms(2026, 7, 1, 12, 0, 31)
+                    .single()
+                    .expect("valid included event time")
+                    .timestamp_millis(),
+                total_tokens: 100,
+                total_cost: 0.10,
+            },
+        ];
+
+        let (tokens_per_minute, spend_rate) =
+            compute_upstream_account_activity_rates(&usage, range_start, range_end);
+
+        assert!((tokens_per_minute.expect("token rate") - (100.0 / (299.0 / 60.0))).abs() < 1e-9);
+        assert!((spend_rate.expect("spend rate") - (0.10 / (299.0 / 60.0))).abs() < 1e-9);
     }
 }
 
