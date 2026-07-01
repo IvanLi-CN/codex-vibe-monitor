@@ -25,6 +25,7 @@
 - `/api/invocations`、SSE `records`、Prompt Cache preview 与 Dashboard working conversations 在不改 schema 的前提下额外返回 `requestModel` / `responseModel`，用于区分请求模型与实际响应模型。
 - 复用 invocation preview wire shape 的 owner-facing 列表在需要稳定对话关联时，必须继续返回真实 `promptCacheKey`；Dashboard 上游账号活动 recent 行不得再把 `invokeId` 当成对话键替代。
 - Records 与 Dashboard 两个 owner-facing 列表同时显示独立“图片工具”徽标，避免同一条 invocation 在不同列表面出现语义漂移。
+- Live 展开详情与 Dashboard 调用详情抽屉必须共用同一套调用详情组件，并按“快速排障”组织信息：请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示。
 
 ### Non-goals
 
@@ -167,6 +168,8 @@
 - Given 调用详情打开，When 记录存在双模型字段，Then 页面始终分别展示“请求模型 / 响应模型”，且 mismatch 时仅响应模型带差异图标。
 - Given 历史记录仅存在 `model`，When 调用详情打开，Then 请求模型显示 `—`，响应模型显示该历史 `model` 值。
 - Given Dashboard 上游账号 recent 行来源于共享 invocation preview，When 用户点击调用打开详情，Then selection 使用真实 `promptCacheKey` 建立对话关联，而不是退化成 `invokeId`。
+- Given Live 表格展开详情或 Dashboard 调用详情抽屉打开，When 记录包含调用 ID、账号、端点、请求/响应模型、请求方 IP、重试和失败字段，Then 首屏按请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示，不再以无差别双列字段平铺呈现。
+- Given 调用详情包含长 `invokeId`、`promptCacheKey`、endpoint、IPv6 或错误消息，When 页面在桌面和窄屏渲染，Then 文本在容器内换行或截断，不造成横向滚动或相邻内容遮挡。
 
 ### Manual verification
 
@@ -237,6 +240,14 @@
   image:
   PR: include
   ![Invocation routed model mismatch](./assets/invocation-model-routing-mismatch.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Records/InvocationRecordsTable/ModelRoutingMismatch
+  state: expanded invocation detail with routed model summary
+  evidence_note: verifies the expanded Records detail presents quick-triage cards, shows routed models as a visual chain, keeps endpoint information in the routing/model detail section, and preserves timing and pool-attempt boundaries.
+  image:
+  PR: include
+  ![Invocation expanded detail routing evidence](./assets/invocation-detail-expanded-routing-pr.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Records/InvocationRecordsTable/LegacyModelOnly
