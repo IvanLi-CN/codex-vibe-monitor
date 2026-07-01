@@ -37,6 +37,8 @@
 - `fetch_summary` / `fetch_stats` 按窗口类型区分 live augmentation：闭区间默认跳过 in-progress 与 non-success token live 补算；SQLite `database is locked` 时非成功 token live 增量允许受限降级，不再整排卡片长期 skeleton。
 - summary / account-activity 的 in-progress augmentation 已从请求时扫描 `codex_invocations` 改成 `invocation_in_progress_live` 小表读取。该 live read model 由 `codex_invocations` trigger 与 startup rebuild 同步维护，并分别保留 summary 全局 retry 与 account-scoped retry 语义，避免 Dashboard/account detail 的当前窗口 reconcile 把 read-model 节省下来的 CPU 再吃回去。
 - summary publish 当前窗口里的 `inProgressConversationCount` distinct-count 现在也直接复用 live table truth source，而不是在 maintenance 路径里对 `codex_invocations` 再做一次 `COUNT(DISTINCT prompt_cache_key)`；这让 summary 广播与账号详情共用同一份 bounded in-progress truth。
+- 第三轮 SQLite 止血进一步把 prompt cache working-conversation 的 snapshot count/page 从 `codex_invocations` 热表扫描切到 write-side working-set truth；虽然公开 API shape 不变，但相关详情/工作区入口现在统一接受 `<=5s` bounded freshness，而不再为严格 snapshot membership 付出请求级扫表代价。
+- proxy capture 请求尾写路径也继续收敛：`codex_invocations` 终态持久化改为单路径 upsert/finalize，`pool_upstream_request_attempts` 的 phase / latency / compact-support 进度尽量并入同一条更新，减少账号详情和 Dashboard 与请求尾写争用 SQLite 单写者预算。
 - Storybook 现有详情抽屉 overlay stories 继续作为 page-fallback 证据面，新增 owner-facing 首屏概览态与 records 统计卡片完成态图片，覆盖这次性能回归修复后的默认打开路径。
 
 ## Verification
