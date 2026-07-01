@@ -1063,21 +1063,6 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             if let Some(guard) = deferred_early_phase_cleanup_guard.as_mut() {
                 guard.mark_first_byte_observed(first_byte_latency_ms);
             }
-            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                && let Err(err) = persist_pool_upstream_request_attempt_first_byte_progress(
-                    &state.pool,
-                    pending_attempt_record,
-                    connect_latency_ms,
-                    first_byte_latency_ms,
-                )
-                .await
-            {
-                warn!(
-                    invoke_id = %pending_attempt_record.invoke_id,
-                    error = %err,
-                    "failed to persist live-first pool first-byte progress for passthrough bad request"
-                );
-            }
             release_pool_routing_reservation(state.as_ref(), &reservation_key);
             finalize_tracked_live_first_pool_attempt(
                 state.as_ref(),
@@ -1357,21 +1342,6 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     if let Some(guard) = deferred_early_phase_cleanup_guard.as_mut() {
         guard.mark_first_byte_observed(first_byte_latency_ms);
     }
-    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-        && let Err(err) = persist_pool_upstream_request_attempt_first_byte_progress(
-            &state.pool,
-            pending_attempt_record,
-            connect_latency_ms,
-            first_byte_latency_ms,
-        )
-        .await
-    {
-        warn!(
-            invoke_id = %pending_attempt_record.invoke_id,
-            error = %err,
-            "failed to persist live-first pool first-byte progress"
-        );
-    }
     let compact_support_observation =
         classify_compact_support_observation(original_uri, Some(status), None);
     if let Some(observation) = compact_support_observation.as_ref()
@@ -1398,10 +1368,14 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         pending_attempt_record.compact_support_reason = compact_support_observation
             .as_ref()
             .and_then(|value| value.reason.clone());
-        match update_pool_upstream_request_attempt_phase(
+        match update_pool_upstream_request_attempt_progress(
             &state.pool,
             pending_attempt_record,
             POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
+            Some(connect_latency_ms),
+            Some(first_byte_latency_ms),
+            pending_attempt_record.compact_support_status.as_deref(),
+            pending_attempt_record.compact_support_reason.as_deref(),
         )
         .await
         {
