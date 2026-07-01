@@ -567,8 +567,7 @@ async fn flush_pending_batch_inner(pool: &Pool<Sqlite>, batch: &PendingBatch) ->
     }
 
     if !batch.invocation_derived.is_empty() {
-        let invocation_ids = batch.invocation_derived.keys().copied().collect::<Vec<_>>();
-        recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &invocation_ids).await?;
+        replay_live_invocation_hourly_rollups_tx(tx.as_mut()).await?;
         for derived in batch.invocation_derived.values() {
             touch_invocation_upstream_account_last_activity_tx(
                 tx.as_mut(),
@@ -888,21 +887,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invocation_derived_batch_does_not_advance_live_progress_cursor() {
+    async fn invocation_derived_batch_advances_live_progress_cursor_with_replay() {
         let pool = test_pool().await;
         save_hourly_rollup_live_progress_tx(
             pool.acquire().await.expect("acquire").as_mut(),
             HOURLY_ROLLUP_DATASET_INVOCATIONS,
-            41,
+            0,
         )
         .await
         .expect("seed live progress");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                total_tokens,
+                cost,
+                status,
+                raw_response,
+                detail_level
+            )
+            VALUES
+                ('batch-derived-1', '2026-07-01 10:00:00', 'proxy', 1, 2, 0, 3, 0.01, 'success', '', 'full'),
+                ('batch-derived-2', '2026-07-01 10:00:01', 'proxy', 4, 5, 0, 9, 0.02, 'success', '', 'full')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed invocations");
+
+        let ids = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM codex_invocations ORDER BY id ASC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load first invocation id");
 
         SqliteBatchWriter::flush_for_test(
             &pool,
             vec![SqliteBatchWrite::InvocationDerived(
                 BatchedInvocationDerivedWrites {
-                    invocation_id: 100,
+                    invocation_id: ids,
                     occurred_at: "2026-07-01 10:00:00".to_string(),
                     payload: None,
                 },
@@ -913,6 +943,10 @@ mod tests {
         let cursor = load_hourly_rollup_live_progress(&pool, HOURLY_ROLLUP_DATASET_INVOCATIONS)
             .await
             .expect("load live progress");
-        assert_eq!(cursor, 41);
+        let max_id = sqlx::query_scalar::<_, i64>("SELECT MAX(id) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("load max invocation id");
+        assert_eq!(cursor, max_id);
     }
 }
