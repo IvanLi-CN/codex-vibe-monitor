@@ -46,6 +46,7 @@ interface RoutingTimeoutOverridesEditorProps {
   sources?: EffectiveRoutingTimeoutFieldSources | null;
   busy?: boolean;
   disabled?: boolean;
+  surface?: "framed" | "plain";
   labels: RoutingTimeoutEditorLabels;
   onDraftChange: (key: RoutingTimeoutFieldKey, value: string) => void;
   onFieldEnabledChange: (key: RoutingTimeoutFieldKey, enabled: boolean) => void;
@@ -69,6 +70,7 @@ export function RoutingTimeoutOverridesEditor({
   sources,
   busy = false,
   disabled = false,
+  surface = "framed",
   labels,
   onDraftChange,
   onFieldEnabledChange,
@@ -86,7 +88,14 @@ export function RoutingTimeoutOverridesEditor({
   };
 
   return (
-    <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
+    <div
+      className={cn(
+        "space-y-4",
+        surface === "framed"
+          ? "rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4"
+          : "",
+      )}
+    >
       <div className="space-y-1">
         <p className="font-medium text-base-content">{labels.sectionTitle}</p>
         {labels.sectionHint ? (
