@@ -1823,15 +1823,17 @@ async fn load_in_progress_summary_snapshot(
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
 ) -> Result<(i64, i64, Option<f64>), ApiError> {
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("inv");
     let retry_column = if upstream_account_id.is_some() {
         match source_scope {
-            InvocationSourceScope::All => "is_retry_after_failure_account_all",
-            InvocationSourceScope::ProxyOnly => "is_retry_after_failure_account_proxy_only",
+            InvocationSourceScope::All => "live.is_retry_after_failure_account_all",
+            InvocationSourceScope::ProxyOnly => "live.is_retry_after_failure_account_proxy_only",
         }
     } else {
         match source_scope {
-            InvocationSourceScope::All => "is_retry_after_failure_all",
-            InvocationSourceScope::ProxyOnly => "is_retry_after_failure_proxy_only",
+            InvocationSourceScope::All => "live.is_retry_after_failure_all",
+            InvocationSourceScope::ProxyOnly => "live.is_retry_after_failure_proxy_only",
         }
     };
     let mut query = QueryBuilder::<Sqlite>::new(
@@ -1841,17 +1843,20 @@ async fn load_in_progress_summary_snapshot(
     );
     query.push(retry_column).push(
         "), 0) AS retry_count, \
-         AVG(CASE WHEN upstream_ttfb_ms IS NOT NULL AND upstream_ttfb_ms >= 0 THEN upstream_ttfb_ms END) AS avg_wait_ms \
-         FROM invocation_in_progress_live \
+         AVG(CASE WHEN live.upstream_ttfb_ms IS NOT NULL AND live.upstream_ttfb_ms >= 0 THEN live.upstream_ttfb_ms END) AS avg_wait_ms \
+         FROM invocation_in_progress_live live \
+         JOIN codex_invocations inv ON inv.id = live.invocation_id \
          WHERE 1 = 1",
     );
 
     if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        query.push(" AND live.source = ").push_bind(SOURCE_PROXY);
     }
     if let Some(upstream_account_id) = upstream_account_id {
         query
-            .push(" AND upstream_account_id = ")
+            .push(" AND ")
+            .push(resolved_upstream_account_id_sql.as_str())
+            .push(" = ")
             .push_bind(upstream_account_id);
     }
 
@@ -2179,8 +2184,14 @@ struct UpstreamAccountActivityAccumulator {
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
     last_occurred_at_epoch_ms: i64,
-    active_minute_request_count: BTreeMap<i64, i64>,
+    rate_minute_usage: BTreeMap<i64, UpstreamAccountRateMinuteUsage>,
     recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct UpstreamAccountRateMinuteUsage {
+    total_tokens: i64,
+    total_cost: f64,
 }
 
 fn normalize_trimmed_optional_string_local(raw: Option<String>) -> Option<String> {
@@ -2212,23 +2223,93 @@ fn resolve_upstream_account_activity_display_name(
     format!("账号 #{account_id}")
 }
 
-fn compute_upstream_account_activity_rates(
-    active_minute_request_count: &BTreeMap<i64, i64>,
-    total_tokens: i64,
-    total_cost: f64,
-) -> (Option<f64>, Option<f64>) {
-    let active_minutes = active_minute_request_count
-        .values()
-        .filter(|count| **count > 0)
-        .count();
-    if active_minutes == 0 {
-        return (None, None);
-    }
-    let active_minutes = active_minutes as f64;
-    (
-        Some(total_tokens as f64 / active_minutes),
-        Some(total_cost / active_minutes),
+fn invocation_upstream_account_id_with_attempt_fallback_sql(invocation_ref: &str) -> String {
+    format!(
+        "COALESCE(\
+           CASE WHEN json_valid({invocation_ref}.payload) \
+             THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) \
+           END, \
+           (SELECT attempt.upstream_account_id \
+              FROM pool_upstream_request_attempts attempt \
+             WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
+               AND attempt.upstream_account_id IS NOT NULL \
+             ORDER BY attempt.attempt_index DESC, attempt.id DESC \
+             LIMIT 1)\
+         )"
     )
+}
+
+fn compute_upstream_account_activity_rates(
+    rate_minute_usage: &BTreeMap<i64, UpstreamAccountRateMinuteUsage>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+) -> (Option<f64>, Option<f64>) {
+    (
+        compute_upstream_account_activity_tail_rate(
+            rate_minute_usage,
+            range_start,
+            range_end,
+            |usage| usage.total_tokens.max(0) as f64,
+        ),
+        compute_upstream_account_activity_tail_rate(
+            rate_minute_usage,
+            range_start,
+            range_end,
+            |usage| usage.total_cost.max(0.0),
+        ),
+    )
+}
+
+fn compute_upstream_account_activity_tail_rate(
+    rate_minute_usage: &BTreeMap<i64, UpstreamAccountRateMinuteUsage>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    value_of: impl Fn(&UpstreamAccountRateMinuteUsage) -> f64,
+) -> Option<f64> {
+    const RATE_WINDOW_SECONDS: i64 = 5 * 60;
+    const BUCKET_SECONDS: i64 = 60;
+
+    let anchor_epoch = range_end.timestamp();
+    let range_start_epoch = range_start.timestamp();
+    if anchor_epoch <= range_start_epoch {
+        return Some(0.0);
+    }
+    let window_start_epoch = range_start_epoch.max(anchor_epoch - RATE_WINDOW_SECONDS);
+
+    let first_active_epoch = rate_minute_usage
+        .iter()
+        .filter_map(|(bucket_epoch, usage)| {
+            let bucket_start = *bucket_epoch;
+            let bucket_end = bucket_start + BUCKET_SECONDS;
+            if bucket_start >= anchor_epoch || bucket_end <= window_start_epoch {
+                return None;
+            }
+            let value = value_of(usage);
+            (value.is_finite() && value > 0.0).then_some(bucket_start.max(window_start_epoch))
+        })
+        .next();
+
+    let Some(active_start_epoch) = first_active_epoch else {
+        return Some(0.0);
+    };
+    let active_seconds = (anchor_epoch - active_start_epoch).max(0);
+    if active_seconds == 0 {
+        return Some(0.0);
+    }
+    let total_value = rate_minute_usage
+        .iter()
+        .filter_map(|(bucket_epoch, usage)| {
+            let bucket_start = *bucket_epoch;
+            let bucket_end = bucket_start + BUCKET_SECONDS;
+            if bucket_start >= anchor_epoch || bucket_end <= active_start_epoch {
+                return None;
+            }
+            let value = value_of(usage);
+            (value.is_finite() && value > 0.0).then_some(value)
+        })
+        .sum::<f64>();
+
+    Some(total_value / (active_seconds as f64 / BUCKET_SECONDS as f64))
 }
 
 async fn query_live_upstream_account_activity_preview_rows(
@@ -2236,6 +2317,8 @@ async fn query_live_upstream_account_activity_preview_rows(
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
 ) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
     let mut query =
         QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
     query
@@ -2259,7 +2342,7 @@ async fn query_live_upstream_account_activity_preview_rows(
         .push(" = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, ")
         .push(INVOCATION_PROXY_DISPLAY_SQL)
         .push(" AS proxy_display_name, ")
-        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(resolved_upstream_account_id_sql.as_str())
         .push(" AS upstream_account_id, ")
         .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
         .push(" AS upstream_account_name, ")
@@ -2304,7 +2387,7 @@ async fn query_live_upstream_account_activity_preview_rows(
         .push(" AND occurred_at < ")
         .push_bind(db_occurred_at_upper_bound(range.end))
         .push(" AND ")
-        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(resolved_upstream_account_id_sql.as_str())
         .push(" IS NOT NULL");
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
@@ -2347,24 +2430,35 @@ async fn query_upstream_account_in_progress_counts(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
 ) -> Result<HashMap<i64, (i64, i64)>, ApiError> {
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("inv");
     let retry_column = match source_scope {
-        InvocationSourceScope::All => "is_retry_after_failure_account_all",
-        InvocationSourceScope::ProxyOnly => "is_retry_after_failure_account_proxy_only",
+        InvocationSourceScope::All => "live.is_retry_after_failure_account_all",
+        InvocationSourceScope::ProxyOnly => "live.is_retry_after_failure_account_proxy_only",
     };
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT upstream_account_id, \
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query
+        .push(resolved_upstream_account_id_sql.as_str())
+        .push(
+            " AS upstream_account_id, \
                 COUNT(*) AS in_progress_count, \
                 COALESCE(SUM(",
-    );
+        );
     query.push(retry_column).push(
         "), 0) AS retry_count \
-         FROM invocation_in_progress_live \
-         WHERE upstream_account_id IS NOT NULL",
+         FROM invocation_in_progress_live live \
+         JOIN codex_invocations inv ON inv.id = live.invocation_id \
+         WHERE ",
     );
+    query
+        .push(resolved_upstream_account_id_sql.as_str())
+        .push(" IS NOT NULL");
     if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        query.push(" AND live.source = ").push_bind(SOURCE_PROXY);
     }
-    query.push(" GROUP BY upstream_account_id");
+    query
+        .push(" GROUP BY ")
+        .push(resolved_upstream_account_id_sql.as_str());
 
     Ok(query
         .build_query_as::<UpstreamAccountInProgressRow>()
@@ -2505,10 +2599,12 @@ pub(crate) async fn fetch_upstream_account_activity(
             entry.non_success_tokens += row.total_tokens.max(0);
         }
         let minute_bucket_epoch = occurred_at.timestamp().div_euclid(60) * 60;
-        *entry
-            .active_minute_request_count
+        let usage = entry
+            .rate_minute_usage
             .entry(minute_bucket_epoch)
-            .or_default() += 1;
+            .or_default();
+        usage.total_tokens += row.total_tokens.max(0);
+        usage.total_cost += row.cost.unwrap_or_default().max(0.0);
         if entry.recent_invocations.len() < recent_limit {
             entry.recent_invocations.push(
                 upstream_account_invocation_preview_from_row(row.clone()),
@@ -2538,9 +2634,9 @@ pub(crate) async fn fetch_upstream_account_activity(
         .map(|(upstream_account_id, aggregate)| {
             let meta = account_meta.get(&upstream_account_id);
             let (tokens_per_minute, spend_rate) = compute_upstream_account_activity_rates(
-                &aggregate.active_minute_request_count,
-                aggregate.total_tokens,
-                aggregate.total_cost,
+                &aggregate.rate_minute_usage,
+                range.start,
+                range.end,
             );
             let (in_progress_invocation_count, retry_invocation_count) =
                 if params.range == "yesterday" {
@@ -2623,6 +2719,78 @@ pub(crate) async fn fetch_upstream_account_activity(
         range_end: format_utc_iso(range.end),
         accounts,
     }))
+}
+
+#[cfg(test)]
+mod upstream_account_activity_rate_tests {
+    use super::*;
+
+    fn utc_at(epoch: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(epoch, 0)
+            .single()
+            .expect("valid test epoch")
+    }
+
+    #[test]
+    fn rates_use_recent_five_minute_active_tail() {
+        let range_start = utc_at(600);
+        let range_end = utc_at(1_000);
+        let mut usage = BTreeMap::new();
+        usage.insert(
+            600,
+            UpstreamAccountRateMinuteUsage {
+                total_tokens: 10_000,
+                total_cost: 10.0,
+            },
+        );
+        usage.insert(
+            720,
+            UpstreamAccountRateMinuteUsage {
+                total_tokens: 0,
+                total_cost: 0.0,
+            },
+        );
+        usage.insert(
+            780,
+            UpstreamAccountRateMinuteUsage {
+                total_tokens: 300,
+                total_cost: 0.30,
+            },
+        );
+        usage.insert(
+            840,
+            UpstreamAccountRateMinuteUsage {
+                total_tokens: 100,
+                total_cost: 0.10,
+            },
+        );
+
+        let (tokens_per_minute, spend_rate) =
+            compute_upstream_account_activity_rates(&usage, range_start, range_end);
+
+        assert!((tokens_per_minute.expect("token rate") - (400.0 / (220.0 / 60.0))).abs() < 1e-9);
+        assert!((spend_rate.expect("spend rate") - (0.40 / (220.0 / 60.0))).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rates_return_zero_when_recent_window_has_no_usage() {
+        let range_start = utc_at(600);
+        let range_end = utc_at(1_000);
+        let mut usage = BTreeMap::new();
+        usage.insert(
+            600,
+            UpstreamAccountRateMinuteUsage {
+                total_tokens: 10_000,
+                total_cost: 10.0,
+            },
+        );
+
+        let (tokens_per_minute, spend_rate) =
+            compute_upstream_account_activity_rates(&usage, range_start, range_end);
+
+        assert_eq!(tokens_per_minute, Some(0.0));
+        assert_eq!(spend_rate, Some(0.0));
+    }
 }
 
 pub(crate) async fn fetch_summary(

@@ -11944,6 +11944,140 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
 }
 
 #[tokio::test]
+async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(77_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Pool Fallback")
+    .bind("Primary")
+    .bind("pro")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert fallback upstream account");
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(7_701_i64)
+    .bind("pool-running-selected-before-payload-update")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("running")
+    .bind(0_i64)
+    .bind(0.0_f64)
+    .bind(json!({ "promptCacheKey": "pck-pool-fallback", "routeMode": "pool" }).to_string())
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert running invocation without payload upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            sticky_key,
+            upstream_account_id,
+            upstream_route_key,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            requester_ip,
+            started_at,
+            status,
+            phase,
+            created_at
+        )
+        VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, ?5, 1, 1, 0, '127.0.0.1', ?2, 'running', 'streaming', datetime('now'))
+        "#,
+    )
+    .bind("pool-running-selected-before-payload-update")
+    .bind(&occurred_at)
+    .bind("pck-pool-fallback")
+    .bind(77_i64)
+    .bind("route-pool-fallback")
+    .execute(&state.pool)
+    .await
+    .expect("insert selected pool attempt for running invocation");
+
+    let Json(activity) = fetch_upstream_account_activity(
+        State(state.clone()),
+        Query(UpstreamAccountActivityQuery {
+            range: "today".to_string(),
+            recent_limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch upstream activity with running fallback");
+
+    assert_eq!(activity.accounts.len(), 1);
+    let account = activity.accounts.first().expect("fallback activity account");
+    assert_eq!(account.upstream_account_id, 77);
+    assert_eq!(account.display_name, "Pool Fallback");
+    assert_eq!(account.request_count, 1);
+    assert_eq!(account.total_tokens, 0);
+    assert_f64_close(account.total_cost, 0.0);
+    assert_eq!(account.tokens_per_minute, Some(0.0));
+    assert_eq!(account.spend_rate, Some(0.0));
+    assert_eq!(account.in_progress_invocation_count, Some(1));
+    assert_eq!(
+        account
+            .recent_invocations
+            .first()
+            .expect("fallback recent invocation")
+            .invoke_id,
+        "pool-running-selected-before-payload-update"
+    );
+
+    let Json(account_summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(77),
+        }),
+    )
+    .await
+    .expect("fetch fallback account summary");
+    assert_eq!(account_summary.in_progress_conversation_count, Some(1));
+}
+
+#[tokio::test]
 async fn account_scoped_historical_stats_include_unmaterialized_archived_hours() {
     let mut config = test_config();
     config.openai_upstream_base_url =

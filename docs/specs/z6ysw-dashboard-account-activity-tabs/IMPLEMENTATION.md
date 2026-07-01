@@ -27,6 +27,8 @@
 - 已实现：上游账号 recent 行的 endpoint、reasoning effort 与双模型 badge 统一复用 compact 尺寸 recipe，消除同一行内 badge 高度不一致问题。
 - 已实现：上游账号卡片标题区改为账号名 + 文本型实时 `TPM / 消费速率` 指标，删除卡内 `渠道 / 分组` 行和顶部 `调用` 指标；周期统计重排为首字用时、请求数、成本、Token 四组，并沿用滚动数字效果。
 - 已实现：账号活动接口补出 `avgTotalMs`、`totalCost`、严格失败 `failureCost` 与 `failureTokens`；失败比率由前端按 `failureCount / requestCount` 计算，`其他` 按 `nonSuccessCount - failureCount` 下限归零。
+- 已实现：账号活动接口中的 `tokensPerMinute` / `spendRate` 改为按每个账号最近 5 分钟活跃尾段计算；账号卡今日总量、recent 调用与排序仍使用所选 range 总量口径。
+- 已实现：账号活动 live rows、账号卡 `inProgressInvocationCount` 与 account-scoped summary 对 pool running 调用使用同 `invokeId` 的 pool attempt 账号作为 fallback，避免已选账号但 payload 尚未写入 `upstreamAccountId` 时形成未归属 running 行。
 - 已实现：账号卡列表按 `totalTokens` 倒序排列，并用最近调用时间与账号 ID 作稳定排序兜底。
 - 已实现：账号卡“首字用时”从阶段级 `t_upstream_ttfb_ms` 纠偏为 owner-facing 的首字总耗时口径；后端聚合现在复用 `resolve_first_response_byte_total_ms(...)`，并额外暴露显式 `firstResponseByteTotalAvgMs` 供前端优先消费，避免真实秒级总耗时被渲染成 `0ms`。
 - 已实现：工作区 `对话` tab 当前 5 分钟 working-set 的 head/count 改读 write-side `prompt_cache_working_set_live`，并为 mixed-source key 保留 `All / ProxyOnly` 两套聚合列，避免换源后 `ProxyOnly` 视角丢 key 或排序漂移。
