@@ -2318,7 +2318,7 @@ fn compute_upstream_account_activity_tail_rate(
             let value = value_of(usage);
             (value.is_finite() && value > 0.0).then_some(usage.occurred_at_epoch_ms)
         })
-        .next();
+        .min();
 
     let Some(active_start_epoch_ms) = first_active_epoch_ms else {
         return Some(0.0);
@@ -2844,6 +2844,30 @@ mod upstream_account_activity_rate_tests {
 
         assert!((tokens_per_minute.expect("token rate") - (100.0 / (299.0 / 60.0))).abs() < 1e-9);
         assert!((spend_rate.expect("spend rate") - (0.10 / (299.0 / 60.0))).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rates_use_earliest_active_event_when_events_are_newest_first() {
+        let range_start = utc_at(600);
+        let range_end = utc_at(1_000);
+        let usage = vec![
+            UpstreamAccountRateUsageEvent {
+                occurred_at_epoch_ms: 900_000,
+                total_tokens: 100,
+                total_cost: 0.10,
+            },
+            UpstreamAccountRateUsageEvent {
+                occurred_at_epoch_ms: 780_000,
+                total_tokens: 300,
+                total_cost: 0.30,
+            },
+        ];
+
+        let (tokens_per_minute, spend_rate) =
+            compute_upstream_account_activity_rates(&usage, range_start, range_end);
+
+        assert!((tokens_per_minute.expect("token rate") - (400.0 / (220.0 / 60.0))).abs() < 1e-9);
+        assert!((spend_rate.expect("spend rate") - (0.40 / (220.0 / 60.0))).abs() < 1e-9);
     }
 }
 
