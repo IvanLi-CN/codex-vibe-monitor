@@ -354,6 +354,32 @@ function applyPatchToRule(rule: EffectiveRoutingRule, patch: UpdateGroupAccountR
     if (patch.availableModels !== null) next.availableModels = patch.availableModels ?? next.availableModels
     nextSources.availableModels = sourceFor(patch.availableModels)
   }
+  if ('timeouts' in patch && patch.timeouts) {
+    const nextTimeoutSources = {
+      responsesFirstByteTimeoutSecs: next.timeoutFieldSources?.responsesFirstByteTimeoutSecs ?? 'root',
+      compactFirstByteTimeoutSecs: next.timeoutFieldSources?.compactFirstByteTimeoutSecs ?? 'root',
+      responsesStreamTimeoutSecs: next.timeoutFieldSources?.responsesStreamTimeoutSecs ?? 'root',
+      compactStreamTimeoutSecs: next.timeoutFieldSources?.compactStreamTimeoutSecs ?? 'root',
+    }
+    const nextTimeoutValues = {
+      responsesFirstByteTimeoutSecs: next.timeouts?.responsesFirstByteTimeoutSecs ?? relaxedRule.timeouts!.responsesFirstByteTimeoutSecs,
+      compactFirstByteTimeoutSecs: next.timeouts?.compactFirstByteTimeoutSecs ?? relaxedRule.timeouts!.compactFirstByteTimeoutSecs,
+      responsesStreamTimeoutSecs: next.timeouts?.responsesStreamTimeoutSecs ?? relaxedRule.timeouts!.responsesStreamTimeoutSecs,
+      compactStreamTimeoutSecs: next.timeouts?.compactStreamTimeoutSecs ?? relaxedRule.timeouts!.compactStreamTimeoutSecs,
+    }
+    for (const [key, value] of Object.entries(patch.timeouts)) {
+      const timeoutKey = key as keyof typeof nextTimeoutValues
+      if (value === null) {
+        nextTimeoutValues[timeoutKey] = relaxedRule.timeouts![timeoutKey]
+        nextTimeoutSources[timeoutKey] = 'root'
+      } else if (typeof value === 'number') {
+        nextTimeoutValues[timeoutKey] = value
+        nextTimeoutSources[timeoutKey] = 'account'
+      }
+    }
+    next.timeouts = nextTimeoutValues
+    next.timeoutFieldSources = nextTimeoutSources
+  }
   return next
 }
 

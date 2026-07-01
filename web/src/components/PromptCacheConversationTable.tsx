@@ -66,9 +66,11 @@ import { Spinner } from "./ui/spinner";
 import { RoutingTimeoutOverridesEditor } from "./RoutingTimeoutOverridesEditor";
 import {
   buildRoutingTimeoutOverrideDraftForSource,
-  diffRoutingTimeoutOverrideDraft,
-  parseRoutingTimeoutOverrideDraft,
+  buildRoutingTimeoutOverrideEnabledStateForSource,
+  diffRoutingTimeoutOverrideDraftWithEnabledState,
+  parseRoutingTimeoutOverrideDraftWithEnabledState,
   type RoutingTimeoutOverrideDraft,
+  type RoutingTimeoutOverrideEnabledState,
 } from "../lib/poolRoutingTimeouts";
 
 interface PromptCacheConversationTableProps {
@@ -115,6 +117,7 @@ type ConversationActivityRange = "today" | "yesterday" | "1d" | "7d" | "history"
 type ConversationActivityMetric = "totalCount" | "totalCost" | "totalTokens";
 type ConversationActivityDragAxis = "pending" | "horizontal" | "vertical" | "free";
 type ConversationBindingDraftKind = PromptCacheConversationBindingKind;
+type PromptCacheConversationDrawerTab = "overview" | "calls" | "settings";
 
 const CONVERSATION_ACTIVITY_METRICS: Array<{
   key: ConversationActivityMetric;
@@ -1962,6 +1965,10 @@ export function PromptCacheConversationHistoryDrawer({
   const [bindingError, setBindingError] = useState<string | null>(null);
   const [bindingTimeoutDraft, setBindingTimeoutDraft] =
     useState<RoutingTimeoutOverrideDraft>({});
+  const [bindingTimeoutEnabledFields, setBindingTimeoutEnabledFields] =
+    useState<RoutingTimeoutOverrideEnabledState>({});
+  const [activeTab, setActiveTab] =
+    useState<PromptCacheConversationDrawerTab>("overview");
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return;
@@ -2190,6 +2197,7 @@ export function PromptCacheConversationHistoryDrawer({
 
   useEffect(() => {
     if (!open || !conversationKey) {
+      setActiveTab("overview");
       setBinding(null);
       setBindingKind("none");
       setBindingGroupName("");
@@ -2199,6 +2207,8 @@ export function PromptCacheConversationHistoryDrawer({
       setBindingLoading(false);
       setBindingSaving(false);
       setBindingError(null);
+      setBindingTimeoutDraft({});
+      setBindingTimeoutEnabledFields({});
       return;
     }
 
@@ -2231,7 +2241,13 @@ export function PromptCacheConversationHistoryDrawer({
             "conversation",
           ),
         );
-      setBindingGroupName(nextBinding.groupName ?? groups[0] ?? "");
+        setBindingTimeoutEnabledFields(
+          buildRoutingTimeoutOverrideEnabledStateForSource(
+            nextBinding.timeoutFieldSources,
+            "conversation",
+          ),
+        );
+        setBindingGroupName(nextBinding.groupName ?? groups[0] ?? "");
         setBindingAccountId(
           nextBinding.upstreamAccountId != null
             ? String(nextBinding.upstreamAccountId)
@@ -2301,7 +2317,7 @@ export function PromptCacheConversationHistoryDrawer({
   );
 
   useEffect(() => {
-    if (!open || !drawerBodyElement) return;
+    if (!open || activeTab !== "calls" || !drawerBodyElement) return;
     const maybeLoadMore = () => {
       if (
         isLoading ||
@@ -2325,7 +2341,15 @@ export function PromptCacheConversationHistoryDrawer({
     return () => {
       drawerBodyElement.removeEventListener("scroll", maybeLoadMore);
     };
-  }, [drawerBodyElement, isLoading, isLoadingMore, load, open, records.length]);
+  }, [
+    activeTab,
+    drawerBodyElement,
+    isLoading,
+    isLoadingMore,
+    load,
+    open,
+    records.length,
+  ]);
 
   const visibleRecords = useMemo(
     () => mergeInvocationRecordCollections(liveRecords, records),
@@ -2389,6 +2413,176 @@ export function PromptCacheConversationHistoryDrawer({
       disabled: bindingAccounts.length === 0,
     },
   ];
+  const tabListLabel = t("live.conversations.drawer.tabs.label");
+  const bindingPanel = (
+    <section className="rounded-xl border border-base-content/10 bg-base-200/50 p-4 text-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-semibold text-base-content">
+            {t("live.conversations.drawer.binding.title")}
+          </p>
+        </div>
+        {bindingLoading ? (
+          <Spinner
+            size="sm"
+            aria-label={t("live.conversations.drawer.binding.loading")}
+          />
+        ) : null}
+      </div>
+      <p className="mt-2 text-xs text-base-content/70">{bindingStatusLabel}</p>
+      {encryptedOwnerStatusLabel ? (
+        <p className="mt-1 text-xs text-warning">
+          {t("live.conversations.drawer.binding.encryptedOwner", {
+            owner: encryptedOwnerStatusLabel,
+          })}
+        </p>
+      ) : null}
+      {binding?.hasEncryptedSessionOwner && binding.bindingKind === "none" ? (
+        <p className="mt-1 text-xs text-base-content/60">
+          {t("live.conversations.drawer.binding.encryptedOwnerHint")}
+        </p>
+      ) : null}
+      <div className="mt-3 grid gap-2 sm:grid-cols-[8.5rem_minmax(0,1fr)_auto]">
+        <SelectField
+          value={bindingKind}
+          disabled={bindingLoading || bindingSaving}
+          aria-label={t("live.conversations.drawer.binding.kind")}
+          size="sm"
+          options={bindingKindOptions}
+          onValueChange={(value) =>
+            setBindingKind(value as ConversationBindingDraftKind)
+          }
+        />
+        {bindingKind === "group" ? (
+          <SelectField
+            value={bindingGroupName}
+            disabled={bindingLoading || bindingSaving}
+            aria-label={t("live.conversations.drawer.binding.group")}
+            size="sm"
+            options={bindingGroups.map((groupName) => ({
+              value: groupName,
+              label: groupName,
+            }))}
+            onValueChange={setBindingGroupName}
+          />
+        ) : bindingKind === "upstreamAccount" ? (
+          <SelectField
+            value={bindingAccountId}
+            disabled={bindingLoading || bindingSaving}
+            aria-label={t("live.conversations.drawer.binding.account")}
+            size="sm"
+            options={bindingAccounts.map((account) => ({
+              value: String(account.id),
+              label: conversationBindingAccountLabel(account),
+            }))}
+            onValueChange={setBindingAccountId}
+          />
+        ) : (
+          <div className="hidden sm:block" aria-hidden="true" />
+        )}
+        <Button
+          type="button"
+          size="sm"
+          disabled={bindingSubmitDisabled}
+          onClick={() => void saveBinding()}
+        >
+          {bindingSaving
+            ? t("live.conversations.drawer.binding.saving")
+            : t("live.conversations.drawer.binding.save")}
+        </Button>
+      </div>
+      {binding ? (
+        <div className="mt-4 border-t border-base-300/60 pt-4">
+          <RoutingTimeoutOverridesEditor
+            fields={[
+              {
+                key: "responsesFirstByteTimeoutSecs",
+                label: timeoutFieldLabels.responsesFirstByteTimeoutSecs,
+              },
+              {
+                key: "compactFirstByteTimeoutSecs",
+                label: timeoutFieldLabels.compactFirstByteTimeoutSecs,
+              },
+              {
+                key: "responsesStreamTimeoutSecs",
+                label: timeoutFieldLabels.responsesStreamTimeoutSecs,
+              },
+              {
+                key: "compactStreamTimeoutSecs",
+                label: timeoutFieldLabels.compactStreamTimeoutSecs,
+              },
+            ]}
+            effective={binding.timeouts}
+            draft={bindingTimeoutDraft}
+            enabledFields={bindingTimeoutEnabledFields}
+            sources={binding.timeoutFieldSources}
+            busy={bindingSaving}
+            disabled={bindingLoading || bindingSaving}
+            surface="plain"
+            labels={{
+              sectionTitle: t(
+                "accountPool.upstreamAccounts.routing.timeout.sectionTitle",
+              ),
+              inheritedValue: t(
+                "accountPool.upstreamAccounts.timeoutEditor.inherited",
+              ),
+              overrideValue: t(
+                "accountPool.upstreamAccounts.timeoutEditor.conversationOverride",
+              ),
+              clearField: t(
+                "accountPool.upstreamAccounts.effectiveRule.overrideClear",
+              ),
+              inheritField: t(
+                "accountPool.tags.dialog.availableModelsInherited",
+              ),
+              sourceRoot: t(
+                "accountPool.upstreamAccounts.effectiveRule.sourceRoot",
+              ),
+              sourceGroup: t(
+                "accountPool.upstreamAccounts.effectiveRule.sourceGroup",
+              ),
+              sourceAccount: t(
+                "accountPool.upstreamAccounts.effectiveRule.sourceAccount",
+              ),
+              sourceConversation: t(
+                "accountPool.upstreamAccounts.effectiveRule.sourceConversation",
+              ),
+              savingField: t("live.conversations.drawer.binding.saving"),
+            }}
+            onDraftChange={(key, value) =>
+              setBindingTimeoutDraft((current) => ({
+                ...current,
+                [key]: value,
+              }))
+            }
+            onFieldEnabledChange={(key, enabled) => {
+              setBindingTimeoutEnabledFields((current) => ({
+                ...current,
+                [key]: enabled,
+              }));
+              if (!enabled) {
+                return;
+              }
+              setBindingTimeoutDraft((current) =>
+                (current[key] ?? "").trim() !== ""
+                  ? current
+                  : {
+                      ...current,
+                      [key]:
+                        binding.timeouts?.[key] != null
+                          ? String(binding.timeouts[key])
+                          : "",
+                    },
+              );
+            }}
+          />
+        </div>
+      ) : null}
+      {bindingError ? (
+        <p className="mt-2 text-xs text-error">{bindingError}</p>
+      ) : null}
+    </section>
+  );
   const saveBinding = useCallback(async () => {
     if (!conversationKey || bindingSubmitDisabled) return;
     if (
@@ -2408,8 +2602,9 @@ export function PromptCacheConversationHistoryDrawer({
     setBindingSaving(true);
     setBindingError(null);
     try {
-      const parsedTimeouts = parseRoutingTimeoutOverrideDraft(
+      const parsedTimeouts = parseRoutingTimeoutOverrideDraftWithEnabledState(
         bindingTimeoutDraft,
+        bindingTimeoutEnabledFields,
         timeoutFieldLabels,
       );
       if (!parsedTimeouts.ok) {
@@ -2422,9 +2617,15 @@ export function PromptCacheConversationHistoryDrawer({
         binding?.timeoutFieldSources,
         "conversation",
       );
-      const timeoutDiff = diffRoutingTimeoutOverrideDraft(
+      const baseTimeoutEnabledFields = buildRoutingTimeoutOverrideEnabledStateForSource(
+        binding?.timeoutFieldSources,
+        "conversation",
+      );
+      const timeoutDiff = diffRoutingTimeoutOverrideDraftWithEnabledState(
         baseTimeoutDraft,
+        baseTimeoutEnabledFields,
         bindingTimeoutDraft,
+        bindingTimeoutEnabledFields,
         timeoutFieldLabels,
       );
       if (!timeoutDiff.ok) {
@@ -2457,6 +2658,12 @@ export function PromptCacheConversationHistoryDrawer({
           "conversation",
         ),
       );
+      setBindingTimeoutEnabledFields(
+        buildRoutingTimeoutOverrideEnabledStateForSource(
+          nextBinding.timeoutFieldSources,
+          "conversation",
+        ),
+      );
       setBindingGroupName(nextBinding.groupName ?? bindingGroups[0] ?? "");
       setBindingAccountId(
         nextBinding.upstreamAccountId != null
@@ -2479,6 +2686,7 @@ export function PromptCacheConversationHistoryDrawer({
     bindingKind,
     bindingSubmitDisabled,
     bindingTimeoutDraft,
+    bindingTimeoutEnabledFields,
     conversationKey,
     timeoutFieldLabels,
   ]);
@@ -2492,7 +2700,7 @@ export function PromptCacheConversationHistoryDrawer({
       onBodyElementChange={setDrawerBodyElement}
       shellClassName="max-w-[78rem]"
       header={
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(25rem,30rem)]">
+        <div className="space-y-4">
           <div className="space-y-3">
             <div className="section-heading">
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
@@ -2521,169 +2729,96 @@ export function PromptCacheConversationHistoryDrawer({
                   })}
             </div>
           </div>
-          <div className="rounded border border-base-content/10 bg-base-200/50 p-3 text-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="font-semibold text-base-content">
-                  {t("live.conversations.drawer.binding.title")}
-                </p>
-              </div>
-              {bindingLoading ? (
-                <Spinner
-                  size="sm"
-                  aria-label={t("live.conversations.drawer.binding.loading")}
-                />
-              ) : null}
-            </div>
-            <p className="mt-2 text-xs text-base-content/70">
-              {bindingStatusLabel}
-            </p>
-            {encryptedOwnerStatusLabel ? (
-              <p className="mt-1 text-xs text-warning">
-                {t("live.conversations.drawer.binding.encryptedOwner", {
-                  owner: encryptedOwnerStatusLabel,
-                })}
-              </p>
-            ) : null}
-            {binding?.hasEncryptedSessionOwner && binding.bindingKind === "none" ? (
-              <p className="mt-1 text-xs text-base-content/60">
-                {t("live.conversations.drawer.binding.encryptedOwnerHint")}
-              </p>
-            ) : null}
-            <div className="mt-3 grid gap-2 sm:grid-cols-[8.5rem_minmax(0,1fr)_auto]">
-              <SelectField
-                value={bindingKind}
-                disabled={bindingLoading || bindingSaving}
-                aria-label={t("live.conversations.drawer.binding.kind")}
-                size="sm"
-                options={bindingKindOptions}
-                onValueChange={(value) =>
-                  setBindingKind(value as ConversationBindingDraftKind)
-                }
-              />
-              {bindingKind === "group" ? (
-                <SelectField
-                  value={bindingGroupName}
-                  disabled={bindingLoading || bindingSaving}
-                  aria-label={t("live.conversations.drawer.binding.group")}
-                  size="sm"
-                  options={bindingGroups.map((groupName) => ({
-                    value: groupName,
-                    label: groupName,
-                  }))}
-                  onValueChange={setBindingGroupName}
-                />
-              ) : bindingKind === "upstreamAccount" ? (
-                <SelectField
-                  value={bindingAccountId}
-                  disabled={bindingLoading || bindingSaving}
-                  aria-label={t("live.conversations.drawer.binding.account")}
-                  size="sm"
-                  options={bindingAccounts.map((account) => ({
-                    value: String(account.id),
-                    label: conversationBindingAccountLabel(account),
-                  }))}
-                  onValueChange={setBindingAccountId}
-                />
-              ) : (
-                <div className="hidden sm:block" aria-hidden="true" />
-              )}
-              <Button
-                type="button"
-                size="sm"
-                disabled={bindingSubmitDisabled}
-                onClick={() => void saveBinding()}
-              >
-                {bindingSaving
-                  ? t("live.conversations.drawer.binding.saving")
-                  : t("live.conversations.drawer.binding.save")}
-              </Button>
-            </div>
-            {binding ? (
-              <div className="mt-3">
-                <RoutingTimeoutOverridesEditor
-                  fields={[
-                    {
-                      key: "responsesFirstByteTimeoutSecs",
-                      label: timeoutFieldLabels.responsesFirstByteTimeoutSecs,
-                    },
-                    {
-                      key: "compactFirstByteTimeoutSecs",
-                      label: timeoutFieldLabels.compactFirstByteTimeoutSecs,
-                    },
-                    {
-                      key: "responsesStreamTimeoutSecs",
-                      label: timeoutFieldLabels.responsesStreamTimeoutSecs,
-                    },
-                    {
-                      key: "compactStreamTimeoutSecs",
-                      label: timeoutFieldLabels.compactStreamTimeoutSecs,
-                    },
-                  ]}
-                  effective={binding.timeouts}
-                  draft={bindingTimeoutDraft}
-                  sources={binding.timeoutFieldSources}
-                  busy={bindingSaving}
-                  disabled={bindingLoading || bindingSaving}
-                  labels={{
-                    sectionTitle: t("accountPool.upstreamAccounts.routing.timeout.sectionTitle"),
-                    inheritedValue: t("accountPool.upstreamAccounts.timeoutEditor.inherited"),
-                    overrideValue: t("accountPool.upstreamAccounts.timeoutEditor.conversationOverride"),
-                    clearField: t("accountPool.upstreamAccounts.effectiveRule.overrideClear"),
-                    inheritField: t("accountPool.tags.dialog.availableModelsInherited"),
-                    sourceRoot: t("accountPool.upstreamAccounts.effectiveRule.sourceRoot"),
-                    sourceGroup: t("accountPool.upstreamAccounts.effectiveRule.sourceGroup"),
-                    sourceAccount: t("accountPool.upstreamAccounts.effectiveRule.sourceAccount"),
-                    sourceConversation: t("accountPool.upstreamAccounts.effectiveRule.sourceConversation"),
-                  }}
-                  onDraftChange={(key, value) =>
-                    setBindingTimeoutDraft((current) => ({
-                      ...current,
-                      [key]: value,
-                    }))
-                  }
-                  onClearField={(key) =>
-                    setBindingTimeoutDraft((current) => ({
-                      ...current,
-                      [key]: "",
-                    }))
-                  }
-                />
-              </div>
-            ) : null}
-            {bindingError ? (
-              <p className="mt-2 text-xs text-error">{bindingError}</p>
-            ) : null}
-          </div>
+          <SegmentedControl
+            size="compact"
+            role="tablist"
+            aria-label={tabListLabel}
+            className="w-fit max-w-full overflow-x-auto"
+          >
+            <SegmentedControlItem
+              active={activeTab === "overview"}
+              role="tab"
+              aria-selected={activeTab === "overview"}
+              aria-controls={`${titleId}-panel-overview`}
+              id={`${titleId}-tab-overview`}
+              onClick={() => setActiveTab("overview")}
+            >
+              {t("live.conversations.drawer.tabs.overview")}
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              active={activeTab === "calls"}
+              role="tab"
+              aria-selected={activeTab === "calls"}
+              aria-controls={`${titleId}-panel-calls`}
+              id={`${titleId}-tab-calls`}
+              onClick={() => setActiveTab("calls")}
+            >
+              {t("live.conversations.drawer.tabs.calls")}
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              active={activeTab === "settings"}
+              role="tab"
+              aria-selected={activeTab === "settings"}
+              aria-controls={`${titleId}-panel-settings`}
+              id={`${titleId}-tab-settings`}
+              onClick={() => setActiveTab("settings")}
+            >
+              {t("live.conversations.drawer.tabs.settings")}
+            </SegmentedControlItem>
+          </SegmentedControl>
         </div>
       }
     >
-      <div className="space-y-3">
-        <PromptCacheConversationActivityOverview
-          open={open}
-          conversationKey={conversationKey}
-          disableLiveUpdates={disableLiveUpdates}
-          historyQueryForConversationKey={historyQueryForConversationKey}
-          historyRecordMatchesConversationKey={
-            historyRecordMatchesConversationKey
-          }
-          t={t}
-        />
-        <PromptCacheConversationInvocationTable
-          records={visibleRecords}
-          isLoading={isLoading}
-          error={error}
-          emptyLabel={t("live.conversations.drawer.empty")}
-          onOpenUpstreamAccount={onOpenUpstreamAccount}
-          scrollElement={drawerBodyElement}
-        />
-        {isLoadingMore ? (
-          <div className="flex items-center justify-center gap-2 py-2 text-sm text-base-content/60">
-            <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
-            <span>{t("live.conversations.drawer.loadingMore")}</span>
-          </div>
-        ) : null}
-      </div>
+      {activeTab === "overview" ? (
+        <div
+          id={`${titleId}-panel-overview`}
+          role="tabpanel"
+          aria-labelledby={`${titleId}-tab-overview`}
+        >
+          <PromptCacheConversationActivityOverview
+            open={open}
+            conversationKey={conversationKey}
+            disableLiveUpdates={disableLiveUpdates}
+            historyQueryForConversationKey={historyQueryForConversationKey}
+            historyRecordMatchesConversationKey={
+              historyRecordMatchesConversationKey
+            }
+            t={t}
+          />
+        </div>
+      ) : null}
+      {activeTab === "calls" ? (
+        <div
+          id={`${titleId}-panel-calls`}
+          role="tabpanel"
+          aria-labelledby={`${titleId}-tab-calls`}
+          className="space-y-3"
+        >
+          <PromptCacheConversationInvocationTable
+            records={visibleRecords}
+            isLoading={isLoading}
+            error={error}
+            emptyLabel={t("live.conversations.drawer.empty")}
+            onOpenUpstreamAccount={onOpenUpstreamAccount}
+            scrollElement={drawerBodyElement}
+          />
+          {isLoadingMore ? (
+            <div className="flex items-center justify-center gap-2 py-2 text-sm text-base-content/60">
+              <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
+              <span>{t("live.conversations.drawer.loadingMore")}</span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {activeTab === "settings" ? (
+        <div
+          id={`${titleId}-panel-settings`}
+          role="tabpanel"
+          aria-labelledby={`${titleId}-tab-settings`}
+        >
+          {bindingPanel}
+        </div>
+      ) : null}
     </AccountDetailDrawerShell>
   );
 }

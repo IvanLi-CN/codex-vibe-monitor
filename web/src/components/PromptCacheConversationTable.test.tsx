@@ -325,6 +325,16 @@ describe("PromptCacheConversationTable", () => {
     );
   }
 
+  async function clickDrawerTab(label: string) {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const tab = Array.from(document.querySelectorAll('[role="tab"]')).find(
+      (node) => node.textContent?.includes(label),
+    ) as HTMLElement | undefined;
+    expect(tab).toBeTruthy();
+    await user.click(tab!);
+    await flushInteractive();
+  }
+
   function emitSseRecords(payload: BroadcastPayload) {
     act(() => {
       sseMocks.listeners.forEach((listener) => listener(payload));
@@ -1100,6 +1110,16 @@ describe("PromptCacheConversationTable", () => {
     });
     await flushInteractive();
 
+    expect(document.body.textContent).toContain("全部保留调用记录");
+    expect(document.body.textContent).toContain("对话调用总览");
+    expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        promptCacheKey: "pck-history",
+      }),
+    );
+
+    await clickDrawerTab("调用");
+
     expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
       promptCacheKey: "pck-history",
       page: 1,
@@ -1137,13 +1157,6 @@ describe("PromptCacheConversationTable", () => {
       snapshotId: 901,
       signal: expect.any(AbortSignal),
     });
-    expect(document.body.textContent).toContain("全部保留调用记录");
-    expect(document.body.textContent).toContain("对话调用总览");
-    expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledWith(
-      expect.objectContaining({
-        promptCacheKey: "pck-history",
-      }),
-    );
     expect(
       document.querySelector('[data-testid="invocation-table-scroll"]'),
     ).toBeTruthy();
@@ -1243,6 +1256,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
+    await clickDrawerTab("设置");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const kindSelect = document.querySelector(
@@ -1354,6 +1368,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
+    await clickDrawerTab("设置");
 
     const saveButton = findButtonByAriaLabel("保存");
     await act(async () => {
@@ -1410,6 +1425,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
+    await clickDrawerTab("设置");
 
     expect(document.body.textContent).toContain("binding load failed");
     const saveButton = findButtonByAriaLabel("保存");
@@ -1420,6 +1436,62 @@ describe("PromptCacheConversationTable", () => {
     await flushInteractive();
 
     expect(apiMocks.updatePromptCacheConversationBinding).not.toHaveBeenCalled();
+  });
+
+  it("defaults the drawer to overview and resets tabs after reopening", async () => {
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-tab-reset",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("对话调用总览");
+    expect(document.body.textContent).not.toContain("路由绑定");
+
+    await clickDrawerTab("设置");
+    expect(document.body.textContent).toContain("路由绑定");
+
+    const closeButton = findButtonByAriaLabel("关闭调用记录抽屉");
+    await act(async () => {
+      closeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("对话调用总览");
+    expect(document.body.textContent).not.toContain("路由绑定");
   });
 
   it("keeps a single historical invocation visible in the activity chart", async () => {
@@ -1503,6 +1575,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
+    await clickDrawerTab("概览");
 
     const chart = document.querySelector(
       '[data-testid="conversation-activity-chart"]',
@@ -1515,6 +1588,8 @@ describe("PromptCacheConversationTable", () => {
     expect(chart?.getAttribute("data-chart-range-end")).toBe(
       "2026-02-01T12:31:00.000Z",
     );
+
+    await clickDrawerTab("调用");
     expect(document.body.textContent).toContain("Proxy West");
   });
 
@@ -1583,6 +1658,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
+    await clickDrawerTab("设置");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const kindSelect = document.querySelector(
@@ -1691,6 +1767,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
+    await clickDrawerTab("设置");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const kindSelect = document.querySelector(
@@ -1700,6 +1777,7 @@ describe("PromptCacheConversationTable", () => {
     await user.click(kindSelect!);
     await user.click(findSelectOption("清空")!);
     await flushInteractive();
+    await clickDrawerTab("设置");
 
     const saveButton = findButtonByAriaLabel("保存");
     await act(async () => {
@@ -1842,6 +1920,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
+    await clickDrawerTab("概览");
 
     const chart = document.querySelector(
       '[data-testid="conversation-activity-chart"]',
@@ -1941,6 +2020,7 @@ describe("PromptCacheConversationTable", () => {
     await flushInteractive();
 
     expect(document.body.textContent).toContain("中性");
+    await clickDrawerTab("调用");
     expect(document.body.textContent).toContain("Proxy Neutral");
   });
 
@@ -2204,6 +2284,7 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
+    await clickDrawerTab("调用");
     expect(document.body.textContent).toContain("Proxy Base");
 
     emitSseRecords({
@@ -2396,6 +2477,7 @@ describe("PromptCacheConversationTable", () => {
     });
     await flushInteractive();
 
+    await clickDrawerTab("调用");
     expect(document.body.textContent).toContain("Proxy Snapshot 902");
 
     const drawerBody = document.querySelector(".drawer-body");

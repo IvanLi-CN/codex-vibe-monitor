@@ -242,7 +242,7 @@ describe('EffectiveRoutingRuleCard', () => {
     expect(onChange).toHaveBeenCalledWith('allowCutIn', { allowCutIn: null })
   })
 
-  it('disables inherited timeout clear controls until the user adds an override', () => {
+  it('keeps inherited timeout rows collapsed until the user expands one', () => {
     render(
       <EffectiveRoutingRuleCard
         rule={buildRule()}
@@ -251,11 +251,17 @@ describe('EffectiveRoutingRuleCard', () => {
       />,
     )
 
-    const timeoutButton = Array.from(
-      document.querySelectorAll<HTMLButtonElement>('button'),
-    ).find((button) => button.textContent?.includes('Edit account override'))
+    expect(
+      document.querySelector<HTMLInputElement>(
+        'input[name="responsesFirstByteTimeoutSecs"]',
+      ),
+    ).toBeNull()
+
+    const timeoutButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit account override: Standard response first byte timeout"]',
+    )
     expect(timeoutButton).not.toBeNull()
-    expect(timeoutButton?.disabled).toBe(true)
+    expect(timeoutButton?.disabled).toBe(false)
   })
 
   it('expands the first account override by default', () => {

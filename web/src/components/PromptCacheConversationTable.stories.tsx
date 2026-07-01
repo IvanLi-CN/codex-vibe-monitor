@@ -1753,7 +1753,7 @@ export const ShortSameDayDrawerOpen: Story = {
     error: null,
   },
   globals: {
-    themeMode: "dark",
+    themeMode: "light",
     viewport: { value: "desktop1280", isRotated: false },
   },
   parameters: {
@@ -1839,6 +1839,9 @@ export const DrawerBindingControls: Story = {
     })[0];
 
     await userEvent.click(historyButton);
+    await userEvent.click(
+      await documentScope.findByRole("tab", { name: /设置|Settings/i }),
+    );
     await expect(
       await documentScope.findByText(/路由绑定|Route binding/i),
     ).toBeInTheDocument();
@@ -1896,6 +1899,9 @@ export const DrawerEncryptedOwnerDangerConfirm: Story = {
 
     try {
       await userEvent.click(historyButton);
+      await userEvent.click(
+        await documentScope.findByRole("tab", { name: /设置|Settings/i }),
+      );
       await expect(
         await documentScope.findByText(
           /加密会话 owner：growth\.6vv4@relay\.example · CIII|Encrypted session owner: growth\.6vv4@relay\.example · CIII/i,
@@ -1978,6 +1984,9 @@ export const DrawerOwnerLockWithoutManualBinding: Story = {
     })[0];
 
     await userEvent.click(historyButton);
+    await userEvent.click(
+      await documentScope.findByRole("tab", { name: /设置|Settings/i }),
+    );
     await expect(
       await documentScope.findByText(/路由绑定|Route binding/i),
     ).toBeInTheDocument();
@@ -1999,7 +2008,7 @@ export const DrawerBindingAndTimeouts: Story = {
     error: null,
   },
   globals: {
-    themeMode: "dark",
+    themeMode: "light",
     viewport: { value: "desktop1280", isRotated: false },
   },
   parameters: {
@@ -2043,6 +2052,9 @@ export const DrawerBindingAndTimeouts: Story = {
     })[0];
 
     await userEvent.click(historyButton);
+    await userEvent.click(
+      await documentScope.findByRole("tab", { name: /设置|Settings/i }),
+    );
     await expect(
       await documentScope.findByText(/路由绑定|Route binding/i),
     ).toBeInTheDocument();
@@ -2050,7 +2062,7 @@ export const DrawerBindingAndTimeouts: Story = {
       documentScope.getByText(/40s/),
     ).toBeInTheDocument();
     await expect(
-      documentScope.getAllByText(/Conversation/i).length,
+      documentScope.getAllByText(/对话|Conversation/i).length,
     ).toBeGreaterThan(0);
   },
 };
@@ -2080,11 +2092,13 @@ export const LargeHistoryVirtualizedDrawer: Story = {
     })[0];
 
     await userEvent.click(historyButton);
+    await userEvent.click(
+      await documentScope.findByRole("tab", { name: /调用|Calls/i }),
+    );
     await expect(
-      await documentScope.findByText(/路由绑定|Route binding/i),
-    ).toBeInTheDocument();
-    await expect(
-      await documentScope.findByText(/已加载 50 \/ 15,?000 条保留调用记录|Loaded 50 \/ 15,?000 retained record\(s\)/i),
+      await documentScope.findByText(
+        /已加载 50 \/ 15,?000 条保留调用记录|Loaded 50 \/ 15,?000 retained record\(s\)/i,
+      ),
     ).toBeInTheDocument();
     expect(
       canvasElement.ownerDocument.body.querySelectorAll("tbody tr").length,

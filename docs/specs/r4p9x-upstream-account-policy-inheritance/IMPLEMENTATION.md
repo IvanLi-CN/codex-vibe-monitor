@@ -45,7 +45,7 @@ The account detail Routing tab exposes final effective rules as field-level inli
 - concurrency stays embedded in the expanded row; available models render as a tag-selector style control instead of repeated add buttons
 - available-model overrides may store an empty list to explicitly allow no models
 - `systemDeniedModels` stays a read-only system result and has no account override control
-- timeout editors are shared across group/account surfaces and support field-level override, clear, and source-badge rendering
+- timeout editors are shared across group/account surfaces and now use the same summary-row + source-badge + field-local expand interaction model as the effective routing rule card
 
 ## API and Resolution
 
@@ -83,4 +83,5 @@ Validation covers:
   - roster filtering still works against system tags
   - inline account override rows show inherited, account override, expanded editor, saving/error, and empty-model override states
   - existing account overrides auto-expand on load, available models use the tag-selector control, and upstream 429 retry uses the `0..5` count selector without a separate switch
-  - timeout source badges and clear-to-inherit controls work across group, account, and conversation layers without involving tags
+- timeout source badges and clear-to-inherit controls work across group, account, and conversation layers without involving tags
+- timeout rows stay collapsed when the current layer does not override them; current-layer timeout overrides expand by default and can be cleared one field at a time without affecting untouched fields

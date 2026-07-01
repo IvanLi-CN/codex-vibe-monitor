@@ -497,6 +497,7 @@ export function useUpstreamAccountGroupSettingsDialog(
       />
       <GroupAccountRoutingRuleDialog
         open={editor.open && editor.policyEditorOpen}
+        timeoutOverrideSource="group"
         availableModelOptions={availableModelOptions}
         title={t("accountPool.upstreamAccounts.groupNotes.routingPolicy.title")}
         description={t(

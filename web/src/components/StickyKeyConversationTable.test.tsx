@@ -172,6 +172,20 @@ function findButton(labels: string[]) {
   ) ?? null
 }
 
+async function clickDrawerTab(labels: string[]) {
+  const tab = Array.from(document.querySelectorAll('[role="tab"]')).find(
+    (candidate): candidate is HTMLElement =>
+      labels.some((label) => candidate.textContent?.includes(label) === true),
+  ) ?? null
+
+  expect(tab).not.toBeNull()
+
+  await act(async () => {
+    tab?.click()
+  })
+  await flushAsync()
+}
+
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve()
@@ -272,6 +286,7 @@ describe('StickyKeyConversationTable', () => {
     expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1)
 
     expect(document.body.textContent).toContain('sticky-chat-001')
+    await clickDrawerTab(['Calls', '调用'])
     expect(document.body.textContent).toContain('gpt-5.4')
   })
 })

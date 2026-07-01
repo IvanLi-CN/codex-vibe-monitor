@@ -12,6 +12,10 @@ export type RoutingTimeoutOverridePatch = Partial<
   Record<RoutingTimeoutFieldKey, number | null>
 >;
 
+export type RoutingTimeoutOverrideEnabledState = Partial<
+  Record<RoutingTimeoutFieldKey, boolean>
+>;
+
 export const ROUTING_TIMEOUT_FIELD_ORDER: RoutingTimeoutFieldKey[] = [
   "responsesFirstByteTimeoutSecs",
   "compactFirstByteTimeoutSecs",
@@ -75,6 +79,26 @@ export function trimRoutingTimeoutOverrideDraft(
   return next;
 }
 
+export function buildRoutingTimeoutOverrideEnabledState(
+  draft: RoutingTimeoutOverrideDraft,
+): RoutingTimeoutOverrideEnabledState {
+  return Object.fromEntries(
+    ROUTING_TIMEOUT_FIELD_ORDER.map((key) => [key, (draft[key] ?? "").trim() !== ""]),
+  ) as RoutingTimeoutOverrideEnabledState;
+}
+
+export function buildRoutingTimeoutOverrideEnabledStateForSource(
+  sources: EffectiveRoutingTimeoutFieldSources | null | undefined,
+  targetSource: EffectiveRoutingRuleSource,
+): RoutingTimeoutOverrideEnabledState {
+  return Object.fromEntries(
+    ROUTING_TIMEOUT_FIELD_ORDER.map((key) => [
+      key,
+      getRoutingTimeoutFieldSource(sources, key) === targetSource,
+    ]),
+  ) as RoutingTimeoutOverrideEnabledState;
+}
+
 export function routingTimeoutOverrideDraftHasAnyValue(
   draft: RoutingTimeoutOverrideDraft,
 ): boolean {
@@ -90,6 +114,35 @@ export function parseRoutingTimeoutOverrideDraft(
   for (const key of ROUTING_TIMEOUT_FIELD_ORDER) {
     const raw = trimmed[key] ?? "";
     if (!raw) continue;
+    if (!/^[1-9]\d*$/.test(raw)) {
+      return { ok: false, error: `${labels[key]} must be a positive integer.` };
+    }
+    const parsed = Number(raw);
+    if (!Number.isSafeInteger(parsed)) {
+      return { ok: false, error: `${labels[key]} must be a positive integer.` };
+    }
+    patch[key] = parsed;
+  }
+  return { ok: true, patch };
+}
+
+export function parseRoutingTimeoutOverrideDraftWithEnabledState(
+  draft: RoutingTimeoutOverrideDraft,
+  enabled: RoutingTimeoutOverrideEnabledState,
+  labels: Record<RoutingTimeoutFieldKey, string>,
+): { ok: true; patch: RoutingTimeoutOverridePatch } | { ok: false; error: string } {
+  const trimmed = trimRoutingTimeoutOverrideDraft(draft);
+  const patch: RoutingTimeoutOverridePatch = {};
+  for (const key of ROUTING_TIMEOUT_FIELD_ORDER) {
+    const isEnabled = enabled[key] === true;
+    const raw = trimmed[key] ?? "";
+    if (!isEnabled) {
+      patch[key] = null;
+      continue;
+    }
+    if (!raw) {
+      return { ok: false, error: `${labels[key]} must be a positive integer.` };
+    }
     if (!/^[1-9]\d*$/.test(raw)) {
       return { ok: false, error: `${labels[key]} must be a positive integer.` };
     }
@@ -121,6 +174,39 @@ export function diffRoutingTimeoutOverrideDraft(
       continue;
     }
     patch[key] = trimmedDraft[key] ? parsed.patch[key] ?? null : null;
+  }
+  return {
+    ok: true,
+    patch,
+    changed: Object.keys(patch).length > 0,
+  };
+}
+
+export function diffRoutingTimeoutOverrideDraftWithEnabledState(
+  baseDraft: RoutingTimeoutOverrideDraft,
+  baseEnabled: RoutingTimeoutOverrideEnabledState,
+  draft: RoutingTimeoutOverrideDraft,
+  enabled: RoutingTimeoutOverrideEnabledState,
+  labels: Record<RoutingTimeoutFieldKey, string>,
+):
+  | { ok: true; patch: RoutingTimeoutOverridePatch; changed: boolean }
+  | { ok: false; error: string } {
+  const parsed = parseRoutingTimeoutOverrideDraftWithEnabledState(draft, enabled, labels);
+  if (!parsed.ok) {
+    return parsed;
+  }
+  const trimmedBase = trimRoutingTimeoutOverrideDraft(baseDraft);
+  const trimmedDraft = trimRoutingTimeoutOverrideDraft(draft);
+  const patch: RoutingTimeoutOverridePatch = {};
+  for (const key of ROUTING_TIMEOUT_FIELD_ORDER) {
+    const nextEnabled = enabled[key] === true;
+    const previousEnabled = baseEnabled[key] === true;
+    const nextValue = nextEnabled ? trimmedDraft[key] ?? "" : "";
+    const previousValue = previousEnabled ? trimmedBase[key] ?? "" : "";
+    if (nextEnabled === previousEnabled && nextValue === previousValue) {
+      continue;
+    }
+    patch[key] = nextEnabled ? parsed.patch[key] ?? null : null;
   }
   return {
     ok: true,

@@ -132,4 +132,4 @@ The Storybook `LargeHistoryVirtualizedDrawer` scenario renders a 15,000-record r
 PR: include
 ![Prompt Cache drawer binding and timeout overrides](./assets/drawer-binding-timeouts-story.png)
 
-The Storybook `DrawerBindingAndTimeouts` scenario renders the conversation drawer with an upstream-account binding plus mixed conversation/account/root timeout sources. It is the stable mock-only evidence for the timeout subpanel contract and for timeout-only persistence semantics when manual binding is absent.
+The Storybook `DrawerBindingAndTimeouts` scenario renders the conversation drawer with an upstream-account binding plus mixed conversation/account/root timeout sources. The timeout subpanel now follows the same summary-row + field-local expansion contract as the effective routing rule card: inherited rows stay collapsed, conversation-owned timeout rows expand when edited, and timeout-only persistence remains visible even when `bindingKind='none'`.
