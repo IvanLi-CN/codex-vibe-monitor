@@ -3183,7 +3183,7 @@ async fn apply_effective_routing_rules_to_summaries(
     Ok(())
 }
 
-async fn load_upstream_account_row(
+pub(crate) async fn load_upstream_account_row(
     pool: &Pool<Sqlite>,
     id: i64,
 ) -> Result<Option<UpstreamAccountRow>> {

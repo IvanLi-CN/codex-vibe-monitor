@@ -221,6 +221,13 @@ describe("PromptCacheConversationTable", () => {
       groupName: null,
       upstreamAccountId: null,
       upstreamAccountName: null,
+      policyFieldSources: {
+        allowSwitchUpstream: "account",
+        fastModeRewriteMode: "account",
+        imageToolRewriteMode: "account",
+        availableModels: "account",
+        forwardProxyKey: "account",
+      },
       updatedAt: null,
     });
     apiMocks.fetchUpstreamAccounts.mockResolvedValue({
@@ -1110,7 +1117,7 @@ describe("PromptCacheConversationTable", () => {
     });
     await flushInteractive();
 
-    expect(document.body.textContent).toContain("全部保留调用记录");
+    expect(document.body.textContent).toContain("对话详情");
     expect(document.body.textContent).toContain("对话调用总览");
     expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1386,6 +1393,206 @@ describe("PromptCacheConversationTable", () => {
 
     expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(2);
     expect(document.body.textContent).toContain("当前：分组 prod");
+  });
+
+  it("saves conversation routing policy overrides from the settings tab", async () => {
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-policy",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      allowSwitchUpstream: null,
+      fastModeRewriteMode: "keep_original",
+      imageToolRewriteMode: null,
+      availableModels: null,
+      forwardProxyKey: null,
+      policyFieldSources: {
+        allowSwitchUpstream: "account",
+        fastModeRewriteMode: "account",
+        imageToolRewriteMode: "account",
+        availableModels: "account",
+        forwardProxyKey: "account",
+      },
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+      writesEnabled: true,
+      items: [createUpstreamAccountSummary(42, "Pool Alpha", "prod")],
+      groups: [{ groupName: "prod", accountCount: 1 }],
+      forwardProxyNodes: [
+        {
+          key: "__direct__",
+          aliasKeys: [],
+          source: "direct",
+          displayName: "直连",
+          protocolLabel: "DIRECT",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+      ],
+      hasUngroupedAccounts: false,
+      total: 1,
+      page: 1,
+      pageSize: 500,
+      metrics: { total: 1, oauth: 0, apiKey: 1, attention: 0 },
+      routing: null,
+    });
+    apiMocks.updatePromptCacheConversationBinding.mockImplementation(
+      async (_promptCacheKey, payload) => ({
+        promptCacheKey: "pck-policy",
+        bindingKind: "none",
+        groupName: null,
+        upstreamAccountId: null,
+        upstreamAccountName: null,
+        allowSwitchUpstream:
+          "allowSwitchUpstream" in payload ? payload.allowSwitchUpstream : null,
+        fastModeRewriteMode:
+          "fastModeRewriteMode" in payload
+            ? payload.fastModeRewriteMode
+            : "keep_original",
+        imageToolRewriteMode:
+          "imageToolRewriteMode" in payload ? payload.imageToolRewriteMode : null,
+        availableModels:
+          "availableModels" in payload ? payload.availableModels : null,
+        forwardProxyKey:
+          "forwardProxyKey" in payload ? payload.forwardProxyKey : null,
+        policyFieldSources: {
+          allowSwitchUpstream:
+            "allowSwitchUpstream" in payload ? "conversation" : "account",
+          fastModeRewriteMode:
+            "fastModeRewriteMode" in payload ? "conversation" : "account",
+          imageToolRewriteMode:
+            "imageToolRewriteMode" in payload ? "conversation" : "account",
+          availableModels:
+            "availableModels" in payload ? "conversation" : "account",
+          forwardProxyKey:
+            "forwardProxyKey" in payload ? "conversation" : "account",
+        },
+        updatedAt: "2026-03-02T12:01:00Z",
+      }),
+    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-policy",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+    await clickDrawerTab("设置");
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 切出")!);
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="切出"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("允许换上游")!);
+    await flushInteractive();
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
+    );
+    await vi.waitFor(() =>
+      expect(findButtonByAriaLabel("编辑对话覆盖: FAST 模式")?.disabled).toBe(
+        false,
+      ),
+    );
+    await user.click(
+      findButtonByAriaLabel("编辑对话覆盖: FAST 模式")!,
+    );
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="FAST 模式"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("强制添加")!);
+    await flushInteractive();
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(2),
+    );
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 图片工具")!);
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="图片工具"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("强制移除")!);
+    await flushInteractive();
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(3),
+    );
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 代理")!);
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="代理"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("直连 · DIRECT")!);
+    await flushInteractive();
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(4),
+    );
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 可用模型")!);
+    await user.clear(
+      document.querySelector('input[aria-label="可用模型"]') as HTMLInputElement,
+    );
+    await user.type(
+      document.querySelector('input[aria-label="可用模型"]') as HTMLInputElement,
+      "gpt-5.1-codex-max, gpt-5.1-codex-mini",
+    );
+    await user.click(findButtonByAriaLabel("应用覆盖")!);
+    await flushInteractive();
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(5),
+    );
+
+    const policyPatchCalls = apiMocks.updatePromptCacheConversationBinding.mock.calls
+      .filter(([key]) => key === "pck-policy")
+      .map(([, payload]) => payload);
+    expect(policyPatchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          allowSwitchUpstream: true,
+          bindingKind: "none",
+        }),
+        expect.objectContaining({
+          bindingKind: "none",
+          fastModeRewriteMode: "force_add",
+        }),
+        expect.objectContaining({
+          bindingKind: "none",
+          imageToolRewriteMode: "force_remove",
+        }),
+        expect.objectContaining({
+          bindingKind: "none",
+          forwardProxyKey: "__direct__",
+        }),
+        expect.objectContaining({
+          availableModels: ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
+          bindingKind: "none",
+        }),
+      ]),
+    );
   });
 
   it("does not allow saving a default binding draft after load failure", async () => {
@@ -1788,7 +1995,10 @@ describe("PromptCacheConversationTable", () => {
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
       "pck-binding-clear",
-      { bindingKind: "none", timeouts: {} },
+      {
+        bindingKind: "none",
+        timeouts: {},
+      },
     );
 
     confirmSpy.mockRestore();

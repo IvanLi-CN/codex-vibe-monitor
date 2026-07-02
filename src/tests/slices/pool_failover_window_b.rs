@@ -1625,6 +1625,7 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
         Some("gpt-5-realtime"),
         Some(prompt_cache_key),
         binding_constraint,
+        None,
         owner_auto_guard_active,
         &PoolUpstreamAttemptTraceContext {
             invoke_id: "pool-ws-5351".to_string(),
@@ -1746,6 +1747,7 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
         Some("gpt-5-realtime"),
         Some(prompt_cache_key),
         binding_constraint,
+        None,
         owner_auto_guard_active,
         &PoolUpstreamAttemptTraceContext {
             invoke_id: "pool-ws-5352".to_string(),
@@ -2126,6 +2128,7 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
         Some("gpt-5-realtime"),
         websocket_effective_prompt_cache_key(prompt_cache_key.as_deref()),
         binding_constraint,
+        None,
         owner_auto_guard_active,
         &PoolUpstreamAttemptTraceContext {
             invoke_id: "pool-ws-5353".to_string(),

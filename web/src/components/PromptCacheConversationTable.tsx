@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
 import {
   Bar,
@@ -27,9 +28,11 @@ import type {
   PromptCacheConversation,
   PromptCacheConversationBindingResponse,
   PromptCacheConversationBindingKind,
+  PromptCacheConversationRewriteMode,
   PromptCacheConversationUpstreamAccount,
   PromptCacheConversationsResponse,
   UpstreamAccountSummary,
+  ForwardProxyBindingNode,
 } from "../lib/api";
 import {
   fetchInvocationRecords,
@@ -54,6 +57,7 @@ import { AppIcon } from "./AppIcon";
 import { InvocationTable } from "./InvocationTable";
 import { ConversationSparkline } from "./KeyedConversationTable";
 import { Button } from "./ui/button";
+import { Badge } from "./ui/badge";
 import {
   FALLBACK_CELL,
   findVisibleConversationChartMax,
@@ -61,9 +65,11 @@ import {
 import { Alert } from "./ui/alert";
 import { floatingSurfaceStyle, type FloatingSurfaceTheme } from "./ui/floating-surface";
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
+import { Input } from "./ui/input";
 import { SelectField } from "./ui/select-field";
 import { Spinner } from "./ui/spinner";
 import { RoutingTimeoutOverridesEditor } from "./RoutingTimeoutOverridesEditor";
+import { cn } from "../lib/utils";
 import {
   buildRoutingTimeoutOverrideDraftForSource,
   buildRoutingTimeoutOverrideEnabledStateForSource,
@@ -118,6 +124,14 @@ type ConversationActivityMetric = "totalCount" | "totalCost" | "totalTokens";
 type ConversationActivityDragAxis = "pending" | "horizontal" | "vertical" | "free";
 type ConversationBindingDraftKind = PromptCacheConversationBindingKind;
 type PromptCacheConversationDrawerTab = "overview" | "calls" | "settings";
+type OptionalBooleanDraft = "inherit" | "true" | "false";
+type RewriteModeDraft = "inherit" | PromptCacheConversationRewriteMode;
+type ConversationPolicyField =
+  | "allowSwitchUpstream"
+  | "fastModeRewriteMode"
+  | "imageToolRewriteMode"
+  | "availableModels"
+  | "forwardProxyKey";
 
 const CONVERSATION_ACTIVITY_METRICS: Array<{
   key: ConversationActivityMetric;
@@ -162,6 +176,100 @@ function conversationBindingAccountLabel(account: UpstreamAccountSummary) {
   const identity = account.email?.trim() || account.displayName.trim();
   const group = account.groupName?.trim();
   return group ? `${identity} · ${group}` : identity;
+}
+
+function conversationForwardProxyLabel(node: ForwardProxyBindingNode) {
+  return node.protocolLabel
+    ? `${node.displayName} · ${node.protocolLabel}`
+    : node.displayName;
+}
+
+function splitConversationModelsDraft(value: string) {
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter((item, index, all) => item.length > 0 && all.indexOf(item) === index);
+}
+
+function applyBindingPolicyDraft(
+  nextBinding: PromptCacheConversationBindingResponse,
+  setters: {
+    setAllowSwitchUpstreamDraft: (value: OptionalBooleanDraft) => void;
+    setFastModeDraft: (value: RewriteModeDraft) => void;
+    setImageToolDraft: (value: RewriteModeDraft) => void;
+    setAvailableModelsMode: (value: "inherit" | "override") => void;
+    setAvailableModelsDraft: (value: string) => void;
+    setForwardProxyKeyDraft: (value: string) => void;
+  },
+) {
+  setters.setAllowSwitchUpstreamDraft(
+    nextBinding.allowSwitchUpstream == null
+      ? "inherit"
+      : nextBinding.allowSwitchUpstream
+        ? "true"
+        : "false",
+  );
+  setters.setFastModeDraft(nextBinding.fastModeRewriteMode ?? "inherit");
+  setters.setImageToolDraft(nextBinding.imageToolRewriteMode ?? "inherit");
+  setters.setAvailableModelsMode(
+    nextBinding.availableModels == null ? "inherit" : "override",
+  );
+  setters.setAvailableModelsDraft((nextBinding.availableModels ?? []).join(", "));
+  setters.setForwardProxyKeyDraft(nextBinding.forwardProxyKey ?? "inherit");
+}
+
+function conversationPolicySourceLabel(
+  source: string | null | undefined,
+  t: (key: string) => string,
+) {
+  switch (source) {
+    case "conversation":
+      return t("accountPool.upstreamAccounts.effectiveRule.sourceConversation");
+    case "account":
+      return t("accountPool.upstreamAccounts.effectiveRule.sourceAccount");
+    case "group":
+      return t("accountPool.upstreamAccounts.effectiveRule.sourceGroup");
+    case "root":
+      return t("accountPool.upstreamAccounts.effectiveRule.sourceRoot");
+    default:
+      return source?.trim() || t("accountPool.upstreamAccounts.effectiveRule.sourceAccount");
+  }
+}
+
+function conversationPolicySourceVariant(source: string | null | undefined) {
+  return source === "conversation"
+    ? "default"
+    : source === "group"
+      ? "info"
+      : "secondary";
+}
+
+function conversationRewriteModeLabel(
+  value: PromptCacheConversationRewriteMode | null | undefined,
+  t: (key: string) => string,
+) {
+  switch (value) {
+    case "force_remove":
+      return t("live.conversations.drawer.policy.rewrite.forceRemove");
+    case "fill_missing":
+      return t("live.conversations.drawer.policy.rewrite.fillMissing");
+    case "force_add":
+      return t("live.conversations.drawer.policy.rewrite.forceAdd");
+    case "keep_original":
+      return t("live.conversations.drawer.policy.rewrite.keepOriginal");
+    default:
+      return t("live.conversations.drawer.policy.rewriteInherited");
+  }
+}
+
+function conversationProxyValueLabel(
+  forwardProxyKey: string | null | undefined,
+  nodes: ForwardProxyBindingNode[],
+  t: (key: string) => string,
+) {
+  if (!forwardProxyKey) return t("live.conversations.drawer.policy.proxyInherited");
+  const node = nodes.find((candidate) => candidate.key === forwardProxyKey);
+  return node ? conversationForwardProxyLabel(node) : forwardProxyKey;
 }
 
 function accountCanBePromptCacheBindingTarget(account: UpstreamAccountSummary) {
@@ -1960,6 +2068,9 @@ export function PromptCacheConversationHistoryDrawer({
     UpstreamAccountSummary[]
   >([]);
   const [bindingGroups, setBindingGroups] = useState<string[]>([]);
+  const [bindingProxyNodes, setBindingProxyNodes] = useState<
+    ForwardProxyBindingNode[]
+  >([]);
   const [bindingLoading, setBindingLoading] = useState(false);
   const [bindingSaving, setBindingSaving] = useState(false);
   const [bindingError, setBindingError] = useState<string | null>(null);
@@ -1967,6 +2078,20 @@ export function PromptCacheConversationHistoryDrawer({
     useState<RoutingTimeoutOverrideDraft>({});
   const [bindingTimeoutEnabledFields, setBindingTimeoutEnabledFields] =
     useState<RoutingTimeoutOverrideEnabledState>({});
+  const [allowSwitchUpstreamDraft, setAllowSwitchUpstreamDraft] =
+    useState<OptionalBooleanDraft>("inherit");
+  const [fastModeDraft, setFastModeDraft] =
+    useState<RewriteModeDraft>("inherit");
+  const [imageToolDraft, setImageToolDraft] =
+    useState<RewriteModeDraft>("inherit");
+  const [availableModelsMode, setAvailableModelsMode] =
+    useState<"inherit" | "override">("inherit");
+  const [availableModelsDraft, setAvailableModelsDraft] = useState("");
+  const [forwardProxyKeyDraft, setForwardProxyKeyDraft] = useState("inherit");
+  const [expandedPolicyField, setExpandedPolicyField] =
+    useState<ConversationPolicyField | null>(null);
+  const [policySavingField, setPolicySavingField] =
+    useState<ConversationPolicyField | null>(null);
   const [activeTab, setActiveTab] =
     useState<PromptCacheConversationDrawerTab>("overview");
 
@@ -2204,11 +2329,20 @@ export function PromptCacheConversationHistoryDrawer({
       setBindingAccountId("");
       setBindingAccounts([]);
       setBindingGroups([]);
+      setBindingProxyNodes([]);
       setBindingLoading(false);
       setBindingSaving(false);
       setBindingError(null);
       setBindingTimeoutDraft({});
       setBindingTimeoutEnabledFields({});
+      setAllowSwitchUpstreamDraft("inherit");
+      setFastModeDraft("inherit");
+      setImageToolDraft("inherit");
+      setAvailableModelsMode("inherit");
+      setAvailableModelsDraft("");
+      setForwardProxyKeyDraft("inherit");
+      setExpandedPolicyField(null);
+      setPolicySavingField(null);
       return;
     }
 
@@ -2234,6 +2368,14 @@ export function PromptCacheConversationHistoryDrawer({
         ).sort((left, right) => left.localeCompare(right));
         setBinding(nextBinding);
         setBindingKind(nextBinding.bindingKind);
+        applyBindingPolicyDraft(nextBinding, {
+          setAllowSwitchUpstreamDraft,
+          setFastModeDraft,
+          setImageToolDraft,
+          setAvailableModelsMode,
+          setAvailableModelsDraft,
+          setForwardProxyKeyDraft,
+        });
         setBindingTimeoutDraft(
           buildRoutingTimeoutOverrideDraftForSource(
             nextBinding.timeouts,
@@ -2257,6 +2399,9 @@ export function PromptCacheConversationHistoryDrawer({
         );
         setBindingAccounts(accounts);
         setBindingGroups(groups);
+        setBindingProxyNodes(
+          (accountList.forwardProxyNodes ?? []).filter((node) => node.selectable),
+        );
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
@@ -2370,6 +2515,12 @@ export function PromptCacheConversationHistoryDrawer({
     return total + optimisticCount;
   }, [liveRecords, records, total]);
   const loadedCount = visibleRecords.length;
+  const availableModelsOverrideList = useMemo(
+    () => splitConversationModelsDraft(availableModelsDraft),
+    [availableModelsDraft],
+  );
+  const availableModelsOverrideEmpty =
+    availableModelsMode === "override" && availableModelsOverrideList.length === 0;
   const bindingSubmitDisabled =
     !conversationKey ||
     !binding ||
@@ -2397,6 +2548,36 @@ export function PromptCacheConversationHistoryDrawer({
   );
   const bindingStatusLabel = currentBindingLabel(binding, t);
   const encryptedOwnerStatusLabel = encryptedOwnerLabel(binding);
+  const policyFieldSources = binding?.policyFieldSources ?? {
+    allowSwitchUpstream: "account",
+    fastModeRewriteMode: "account",
+    imageToolRewriteMode: "account",
+    availableModels: "account",
+    forwardProxyKey: "account",
+  };
+  const effectiveAllowSwitchUpstream =
+    binding?.allowSwitchUpstream == null
+      ? t("live.conversations.drawer.policy.cutOutInherited")
+      : binding.allowSwitchUpstream
+        ? t("live.conversations.drawer.policy.cutOutAllow")
+        : t("live.conversations.drawer.policy.cutOutDeny");
+  const effectiveFastMode = conversationRewriteModeLabel(
+    binding?.fastModeRewriteMode,
+    t,
+  );
+  const effectiveImageTool = conversationRewriteModeLabel(
+    binding?.imageToolRewriteMode,
+    t,
+  );
+  const effectiveAvailableModels =
+    binding?.availableModels && binding.availableModels.length > 0
+      ? binding.availableModels.join(", ")
+      : t("accountPool.upstreamAccounts.effectiveRule.availableModelsInherited");
+  const effectiveForwardProxy = conversationProxyValueLabel(
+    binding?.forwardProxyKey ?? null,
+    bindingProxyNodes,
+    t,
+  );
   const bindingKindOptions = [
     {
       value: "none",
@@ -2413,6 +2594,169 @@ export function PromptCacheConversationHistoryDrawer({
       disabled: bindingAccounts.length === 0,
     },
   ];
+  const rewriteModeOptions = [
+    {
+      value: "inherit",
+      label: t("live.conversations.drawer.policy.inherit"),
+    },
+    {
+      value: "force_remove",
+      label: t("live.conversations.drawer.policy.rewrite.forceRemove"),
+    },
+    {
+      value: "keep_original",
+      label: t("live.conversations.drawer.policy.rewrite.keepOriginal"),
+    },
+    {
+      value: "fill_missing",
+      label: t("live.conversations.drawer.policy.rewrite.fillMissing"),
+    },
+    {
+      value: "force_add",
+      label: t("live.conversations.drawer.policy.rewrite.forceAdd"),
+    },
+  ];
+  const forwardProxyOptions = [
+    {
+      value: "inherit",
+      label: t("live.conversations.drawer.policy.inherit"),
+    },
+    ...bindingProxyNodes.map((node) => ({
+      value: node.key,
+      label: conversationForwardProxyLabel(node),
+    })),
+  ];
+  const savePolicyField = useCallback(
+    async (
+      field: ConversationPolicyField,
+      value:
+        | boolean
+        | PromptCacheConversationRewriteMode
+        | string
+        | string[]
+        | null,
+    ) => {
+      if (!conversationKey || !binding || policySavingField) return;
+      if (field === "availableModels" && Array.isArray(value) && value.length === 0) {
+        setBindingError(
+          t("live.conversations.drawer.policy.availableModelsRequired"),
+        );
+        return;
+      }
+      setPolicySavingField(field);
+      setBindingError(null);
+      try {
+        const nextBinding = await updatePromptCacheConversationBinding(
+          conversationKey,
+          binding.bindingKind === "group" && binding.groupName
+            ? {
+                bindingKind: "group",
+                groupName: binding.groupName,
+                [field]: value,
+              }
+            : binding.bindingKind === "upstreamAccount" &&
+                binding.upstreamAccountId != null
+              ? {
+                  bindingKind: "upstreamAccount",
+                  upstreamAccountId: binding.upstreamAccountId,
+                  [field]: value,
+                }
+              : {
+                  bindingKind: "none",
+                  [field]: value,
+                },
+        );
+        setBinding(nextBinding);
+        applyBindingPolicyDraft(nextBinding, {
+          setAllowSwitchUpstreamDraft,
+          setFastModeDraft,
+          setImageToolDraft,
+          setAvailableModelsMode,
+          setAvailableModelsDraft,
+          setForwardProxyKeyDraft,
+        });
+        setExpandedPolicyField(null);
+      } catch (err) {
+        setBindingError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setPolicySavingField(null);
+      }
+    },
+    [binding, conversationKey, policySavingField, t],
+  );
+  const renderPolicyRow = (
+    field: ConversationPolicyField,
+    label: string,
+    value: string,
+    source: string,
+    editor: ReactNode,
+  ) => {
+    const activeOverride = source === "conversation";
+    const expanded = expandedPolicyField === field;
+    const busy = policySavingField === field;
+    return (
+      <div key={field} className="border-b border-base-300/60 last:border-b-0">
+        <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[minmax(8rem,1fr)_minmax(10rem,1.4fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
+          <span className="font-medium text-base-content/80">{label}</span>
+          <span className="min-w-0 truncate text-base-content" title={value}>
+            {value}
+          </span>
+          <Badge
+            className="w-fit sm:justify-self-end"
+            variant={conversationPolicySourceVariant(source)}
+          >
+            {conversationPolicySourceLabel(source, t)}
+          </Badge>
+          <Button
+            type="button"
+            size="icon"
+            variant={activeOverride || expanded ? "default" : "ghost"}
+            className={cn(
+              "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
+              activeOverride || expanded
+                ? "text-primary-content"
+                : "text-base-content/65",
+            )}
+            disabled={bindingLoading || bindingSaving || policySavingField != null}
+            aria-pressed={activeOverride || expanded}
+            aria-label={`${activeOverride ? t("live.conversations.drawer.policy.clearField") : t("live.conversations.drawer.policy.editField")}: ${label}`}
+            onClick={() => {
+              if (activeOverride) {
+                void savePolicyField(field, null);
+                return;
+              }
+              setExpandedPolicyField((current) => (current === field ? null : field));
+            }}
+          >
+            <AppIcon
+              name={
+                busy
+                  ? "loading"
+                  : activeOverride || expanded
+                    ? "check-decagram-outline"
+                    : "pencil-outline"
+              }
+              className={cn("h-4 w-4", busy ? "animate-spin" : "")}
+              aria-hidden
+            />
+          </Button>
+        </div>
+        {expanded ? (
+          <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
+            <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[minmax(8rem,1fr)_minmax(10rem,1.4fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
+              <p className="text-sm font-semibold text-base-content">{label}</p>
+              <div className="min-w-0 sm:col-span-3">{editor}</div>
+              {busy ? (
+                <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
+                  {t("live.conversations.drawer.binding.saving")}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
   const tabListLabel = t("live.conversations.drawer.tabs.label");
   const bindingPanel = (
     <section className="rounded-xl border border-base-content/10 bg-base-200/50 p-4 text-sm">
@@ -2493,6 +2837,140 @@ export function PromptCacheConversationHistoryDrawer({
       </div>
       {binding ? (
         <div className="mt-4 border-t border-base-300/60 pt-4">
+          <div className="mb-4 space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-base-content/60">
+              {t("live.conversations.drawer.policy.title")}
+            </p>
+            <div className="overflow-hidden rounded-xl border border-base-300/70">
+              {renderPolicyRow(
+                "allowSwitchUpstream",
+                t("live.conversations.drawer.policy.cutOut"),
+                effectiveAllowSwitchUpstream,
+                policyFieldSources.allowSwitchUpstream,
+                <SelectField
+                  value={allowSwitchUpstreamDraft}
+                  disabled={policySavingField != null}
+                  aria-label={t("live.conversations.drawer.policy.cutOut")}
+                  size="sm"
+                  options={[
+                    {
+                      value: "true",
+                      label: t("live.conversations.drawer.policy.cutOutAllow"),
+                    },
+                    {
+                      value: "false",
+                      label: t("live.conversations.drawer.policy.cutOutDeny"),
+                    },
+                  ]}
+                  onValueChange={(value) => {
+                    setAllowSwitchUpstreamDraft(value as OptionalBooleanDraft);
+                    void savePolicyField("allowSwitchUpstream", value === "true");
+                  }}
+                />,
+              )}
+              {renderPolicyRow(
+                "fastModeRewriteMode",
+                t("live.conversations.drawer.policy.fastMode"),
+                effectiveFastMode,
+                policyFieldSources.fastModeRewriteMode,
+                <SelectField
+                  value={fastModeDraft}
+                  disabled={policySavingField != null}
+                  aria-label={t("live.conversations.drawer.policy.fastMode")}
+                  size="sm"
+                  options={rewriteModeOptions}
+                  onValueChange={(value) => {
+                    if (value === "inherit") return;
+                    setFastModeDraft(value as RewriteModeDraft);
+                    void savePolicyField(
+                      "fastModeRewriteMode",
+                      value as PromptCacheConversationRewriteMode,
+                    );
+                  }}
+                />,
+              )}
+              {renderPolicyRow(
+                "imageToolRewriteMode",
+                t("live.conversations.drawer.policy.imageTool"),
+                effectiveImageTool,
+                policyFieldSources.imageToolRewriteMode,
+                <SelectField
+                  value={imageToolDraft}
+                  disabled={policySavingField != null}
+                  aria-label={t("live.conversations.drawer.policy.imageTool")}
+                  size="sm"
+                  options={rewriteModeOptions}
+                  onValueChange={(value) => {
+                    if (value === "inherit") return;
+                    setImageToolDraft(value as RewriteModeDraft);
+                    void savePolicyField(
+                      "imageToolRewriteMode",
+                      value as PromptCacheConversationRewriteMode,
+                    );
+                  }}
+                />,
+              )}
+              {renderPolicyRow(
+                "forwardProxyKey",
+                t("live.conversations.drawer.policy.proxy"),
+                effectiveForwardProxy,
+                policyFieldSources.forwardProxyKey,
+                <SelectField
+                  value={forwardProxyKeyDraft === "inherit" ? "" : forwardProxyKeyDraft}
+                  disabled={policySavingField != null}
+                  aria-label={t("live.conversations.drawer.policy.proxy")}
+                  size="sm"
+                  options={forwardProxyOptions.filter((option) => option.value !== "inherit")}
+                  onValueChange={(value) => {
+                    setForwardProxyKeyDraft(value);
+                    void savePolicyField("forwardProxyKey", value);
+                  }}
+                />,
+              )}
+              {renderPolicyRow(
+                "availableModels",
+                t("live.conversations.drawer.policy.availableModels"),
+                effectiveAvailableModels,
+                policyFieldSources.availableModels,
+                <div className="space-y-2">
+                  <Input
+                    value={availableModelsDraft}
+                    disabled={policySavingField != null}
+                    aria-label={t("live.conversations.drawer.policy.availableModels")}
+                    placeholder={t(
+                      "live.conversations.drawer.policy.availableModelsPlaceholder",
+                    )}
+                    className="h-9"
+                    onChange={(event) => {
+                      setAvailableModelsMode("override");
+                      setAvailableModelsDraft(event.target.value);
+                    }}
+                  />
+                  {availableModelsOverrideEmpty ? (
+                    <p className="text-xs text-error">
+                      {t("live.conversations.drawer.policy.availableModelsRequired")}
+                    </p>
+                  ) : null}
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={
+                      policySavingField != null ||
+                      availableModelsOverrideList.length === 0
+                    }
+                    onClick={() =>
+                      void savePolicyField(
+                        "availableModels",
+                        availableModelsOverrideList,
+                      )
+                    }
+                  >
+                    {t("live.conversations.drawer.policy.applyField")}
+                  </Button>
+                </div>,
+              )}
+            </div>
+          </div>
           <RoutingTimeoutOverridesEditor
             fields={[
               {
@@ -2651,6 +3129,14 @@ export function PromptCacheConversationHistoryDrawer({
       );
       setBinding(nextBinding);
       setBindingKind(nextBinding.bindingKind);
+      applyBindingPolicyDraft(nextBinding, {
+        setAllowSwitchUpstreamDraft,
+        setFastModeDraft,
+        setImageToolDraft,
+        setAvailableModelsMode,
+        setAvailableModelsDraft,
+        setForwardProxyKeyDraft,
+      });
       setBindingTimeoutDraft(
         buildRoutingTimeoutOverrideDraftForSource(
           nextBinding.timeouts,

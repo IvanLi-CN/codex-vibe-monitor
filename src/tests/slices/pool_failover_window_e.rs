@@ -226,6 +226,160 @@ async fn resolve_default_source_scope_always_all() {
     assert_eq!(scope_after, InvocationSourceScope::All);
 }
 
+#[derive(sqlx::FromRow)]
+struct PromptCacheBindingTimeoutMigrationRow {
+    responses_first_byte_timeout_secs: Option<i64>,
+    compact_first_byte_timeout_secs: Option<i64>,
+    responses_stream_timeout_secs: Option<i64>,
+    compact_stream_timeout_secs: Option<i64>,
+    allow_switch_upstream: Option<i64>,
+}
+
+#[tokio::test]
+async fn ensure_schema_preserves_prompt_cache_binding_timeouts_when_adding_policy_columns() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    sqlx::query(
+        r#"
+        CREATE TABLE prompt_cache_conversation_bindings (
+            prompt_cache_key TEXT PRIMARY KEY,
+            binding_kind TEXT NOT NULL,
+            group_name TEXT,
+            upstream_account_id INTEGER,
+            responses_first_byte_timeout_secs INTEGER,
+            compact_first_byte_timeout_secs INTEGER,
+            responses_stream_timeout_secs INTEGER,
+            compact_stream_timeout_secs INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy prompt cache conversation bindings table");
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            responses_first_byte_timeout_secs,
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind("pck-timeout-policy-migration")
+    .bind("none")
+    .bind(181_i64)
+    .bind(182_i64)
+    .bind(183_i64)
+    .bind(184_i64)
+    .execute(&pool)
+    .await
+    .expect("insert legacy timeout override row");
+
+    ensure_schema(&pool)
+        .await
+        .expect("schema migration should preserve timeout overrides");
+
+    let row = sqlx::query_as::<_, PromptCacheBindingTimeoutMigrationRow>(
+        r#"
+        SELECT
+            responses_first_byte_timeout_secs,
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs,
+            allow_switch_upstream
+        FROM prompt_cache_conversation_bindings
+        WHERE prompt_cache_key = ?1
+        "#,
+    )
+    .bind("pck-timeout-policy-migration")
+    .fetch_one(&pool)
+    .await
+    .expect("load migrated prompt cache binding row");
+    assert_eq!(row.responses_first_byte_timeout_secs, Some(181));
+    assert_eq!(row.compact_first_byte_timeout_secs, Some(182));
+    assert_eq!(row.responses_stream_timeout_secs, Some(183));
+    assert_eq!(row.compact_stream_timeout_secs, Some(184));
+    assert_eq!(row.allow_switch_upstream, None);
+}
+
+#[tokio::test]
+async fn ensure_schema_migrates_pre_timeout_prompt_cache_binding_table() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    sqlx::query(
+        r#"
+        CREATE TABLE prompt_cache_conversation_bindings (
+            prompt_cache_key TEXT PRIMARY KEY,
+            binding_kind TEXT NOT NULL,
+            group_name TEXT,
+            upstream_account_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create pre-timeout prompt cache conversation bindings table");
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, NULL, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind("pck-pre-timeout-policy-migration")
+    .bind("group")
+    .bind("team-a")
+    .execute(&pool)
+    .await
+    .expect("insert pre-timeout binding row");
+
+    ensure_schema(&pool)
+        .await
+        .expect("schema migration should support pre-timeout binding tables");
+
+    let row = sqlx::query_as::<_, PromptCacheBindingTimeoutMigrationRow>(
+        r#"
+        SELECT
+            responses_first_byte_timeout_secs,
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs,
+            allow_switch_upstream
+        FROM prompt_cache_conversation_bindings
+        WHERE prompt_cache_key = ?1
+        "#,
+    )
+    .bind("pck-pre-timeout-policy-migration")
+    .fetch_one(&pool)
+    .await
+    .expect("load migrated pre-timeout prompt cache binding row");
+    assert_eq!(row.responses_first_byte_timeout_secs, None);
+    assert_eq!(row.compact_first_byte_timeout_secs, None);
+    assert_eq!(row.responses_stream_timeout_secs, None);
+    assert_eq!(row.compact_stream_timeout_secs, None);
+    assert_eq!(row.allow_switch_upstream, None);
+}
+
 #[tokio::test]
 async fn list_invocations_projects_payload_context_fields() {
     let state = test_state_with_openai_base(
@@ -3117,6 +3271,20 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     .execute(&state.pool)
     .await
     .expect("make prompt cache binding target unselectable");
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET policy_allow_cut_out = 0,
+            policy_fast_mode_rewrite_mode = 'force_remove',
+            policy_image_tool_rewrite_mode = 'fill_missing',
+            policy_available_models_json = '["gpt-5.1-codex-mini"]'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed account policy for inherited conversation response");
 
     let both_payload: UpdatePromptCacheConversationBindingRequest =
         serde_json::from_value(json!({
@@ -3153,6 +3321,57 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     assert_eq!(group_response.group_name.as_deref(), Some(group_name));
     assert_eq!(group_response.upstream_account_id, None);
 
+    let inherited_account_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+        }))
+        .expect("deserialize inherited account binding payload");
+    let Json(inherited_account_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(inherited_account_payload),
+    )
+    .await
+    .expect("account binding without policy override should save");
+    assert_eq!(inherited_account_response.allow_switch_upstream, Some(false));
+    assert_eq!(
+        inherited_account_response.fast_mode_rewrite_mode,
+        Some(TagFastModeRewriteMode::ForceRemove)
+    );
+    assert_eq!(
+        inherited_account_response.image_tool_rewrite_mode,
+        Some(ImageToolRewriteMode::FillMissing)
+    );
+    assert_eq!(
+        inherited_account_response.available_models,
+        Some(vec!["gpt-5.1-codex-mini".to_string()])
+    );
+    assert_eq!(
+        inherited_account_response
+            .policy_field_sources
+            .allow_switch_upstream,
+        "account"
+    );
+    assert_eq!(
+        inherited_account_response
+            .policy_field_sources
+            .fast_mode_rewrite_mode,
+        "account"
+    );
+    assert_eq!(
+        inherited_account_response
+            .policy_field_sources
+            .image_tool_rewrite_mode,
+        "account"
+    );
+    assert_eq!(
+        inherited_account_response
+            .policy_field_sources
+            .available_models,
+        "account"
+    );
+
     let unselectable_payload: UpdatePromptCacheConversationBindingRequest =
         serde_json::from_value(json!({
             "bindingKind": "upstreamAccount",
@@ -3172,6 +3391,11 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
         serde_json::from_value(json!({
             "bindingKind": "upstreamAccount",
             "upstreamAccountId": account_id,
+            "allowSwitchUpstream": true,
+            "fastModeRewriteMode": "force_add",
+            "imageToolRewriteMode": "force_remove",
+            "availableModels": ["gpt-5.1-codex-max", "gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
+            "forwardProxyKey": "__direct__",
         }))
         .expect("deserialize account binding payload");
     let Json(account_response) = patch_prompt_cache_conversation_binding(
@@ -3184,6 +3408,63 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     assert_eq!(account_response.binding_kind, "upstreamAccount");
     assert_eq!(account_response.group_name, None);
     assert_eq!(account_response.upstream_account_id, Some(account_id));
+    assert_eq!(account_response.allow_switch_upstream, Some(true));
+    assert_eq!(
+        account_response.fast_mode_rewrite_mode,
+        Some(TagFastModeRewriteMode::ForceAdd)
+    );
+    assert_eq!(
+        account_response.image_tool_rewrite_mode,
+        Some(ImageToolRewriteMode::ForceRemove)
+    );
+    assert_eq!(
+        account_response.available_models,
+        Some(vec![
+            "gpt-5.1-codex-max".to_string(),
+            "gpt-5.1-codex-mini".to_string()
+        ])
+    );
+    assert_eq!(account_response.forward_proxy_key.as_deref(), Some("__direct__"));
+    let conversation_override =
+        load_prompt_cache_conversation_routing_override(&state.pool, Some(prompt_cache_key))
+            .await
+            .expect("conversation override should load")
+            .expect("conversation override should exist");
+    assert_eq!(conversation_override.allow_switch_upstream, Some(true));
+    assert_eq!(
+        conversation_override.fast_mode_rewrite_mode,
+        Some(TagFastModeRewriteMode::ForceAdd)
+    );
+    assert_eq!(
+        conversation_override.image_tool_rewrite_mode,
+        Some(ImageToolRewriteMode::ForceRemove)
+    );
+    assert_eq!(
+        conversation_override.available_models,
+        Some(vec![
+            "gpt-5.1-codex-max".to_string(),
+            "gpt-5.1-codex-mini".to_string()
+        ])
+    );
+    assert_eq!(
+        conversation_override.forward_proxy_key.as_deref(),
+        Some("__direct__")
+    );
+    let empty_models_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+            "availableModels": [],
+        }))
+        .expect("deserialize empty available models payload");
+    let empty_models_err = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(empty_models_payload),
+    )
+    .await
+    .expect_err("empty available models override should fail");
+    assert!(matches!(empty_models_err, ApiError::BadRequest(_)));
     let sticky_account_id: i64 =
         sqlx::query_scalar("SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1")
             .bind(prompt_cache_key)
@@ -3193,7 +3474,14 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     assert_eq!(sticky_account_id, account_id);
 
     let clear_payload: UpdatePromptCacheConversationBindingRequest =
-        serde_json::from_value(json!({ "bindingKind": "none" }))
+        serde_json::from_value(json!({
+            "bindingKind": "none",
+            "allowSwitchUpstream": null,
+            "fastModeRewriteMode": null,
+            "imageToolRewriteMode": null,
+            "availableModels": null,
+            "forwardProxyKey": null,
+        }))
             .expect("deserialize clear binding payload");
     let Json(clear_response) = patch_prompt_cache_conversation_binding(
         State(state.clone()),
@@ -3203,6 +3491,47 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     .await
     .expect("clear binding should delete row");
     assert_eq!(clear_response.binding_kind, "none");
+    assert_eq!(clear_response.allow_switch_upstream, Some(false));
+    assert_eq!(
+        clear_response.fast_mode_rewrite_mode,
+        Some(TagFastModeRewriteMode::ForceRemove)
+    );
+    assert_eq!(
+        clear_response.image_tool_rewrite_mode,
+        Some(ImageToolRewriteMode::FillMissing)
+    );
+    assert_eq!(
+        clear_response.available_models,
+        Some(vec!["gpt-5.1-codex-mini".to_string()])
+    );
+    assert_eq!(
+        clear_response.forward_proxy_key.as_deref(),
+        Some("__direct__")
+    );
+    assert_eq!(
+        clear_response.policy_field_sources.allow_switch_upstream,
+        "account"
+    );
+    assert_eq!(
+        clear_response.policy_field_sources.fast_mode_rewrite_mode,
+        "account"
+    );
+    assert_eq!(
+        clear_response.policy_field_sources.image_tool_rewrite_mode,
+        "account"
+    );
+    assert_eq!(
+        clear_response.policy_field_sources.available_models,
+        "account"
+    );
+    let cleared_conversation_override =
+        load_prompt_cache_conversation_routing_override(&state.pool, Some(prompt_cache_key))
+            .await
+            .expect("cleared conversation override should load");
+    assert!(
+        cleared_conversation_override.is_none(),
+        "null policy fields should clear stored conversation overrides"
+    );
     let sticky_account_id_after_clear: i64 =
         sqlx::query_scalar("SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1")
             .bind(prompt_cache_key)
@@ -3217,6 +3546,81 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     .await
     .expect("get cleared binding");
     assert_eq!(get_response.binding_kind, "none");
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-proxy-override-node-shunt";
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Proxy Override",
+        "sk-prompt-cache-proxy-override",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_group_notes
+        SET bound_proxy_keys_json = '[]',
+            node_shunt_enabled = 1
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind(group_name)
+    .execute(&state.pool)
+    .await
+    .expect("enable node shunt group with no selectable slot proxies");
+
+    let prompt_cache_key = "prompt-cache-proxy-override-node-shunt";
+    let payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+            "forwardProxyKey": "__direct__",
+        }))
+        .expect("deserialize proxy override payload");
+    let Json(_) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(payload),
+    )
+    .await
+    .expect("proxy override binding should save");
+
+    let conversation_override =
+        load_prompt_cache_conversation_routing_override(&state.pool, Some(prompt_cache_key))
+            .await
+            .expect("load conversation routing override");
+    let resolution =
+        resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override(
+            state.as_ref(),
+            Some(prompt_cache_key),
+            Some("gpt-5.1-codex-max"),
+            &[],
+            &HashSet::new(),
+            None,
+            None,
+            conversation_override.as_ref(),
+            ImageIntent::Unknown,
+        )
+        .await
+        .expect("resolve account with conversation proxy override");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("conversation proxy override should resolve through direct node");
+    };
+    assert_eq!(account.account_id, account_id);
+    match account.forward_proxy_scope {
+        ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => {
+            assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+        }
+        other => panic!("expected pinned direct proxy scope, got {other:?}"),
+    }
 }
 
 #[tokio::test]

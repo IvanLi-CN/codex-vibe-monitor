@@ -2003,7 +2003,7 @@ const baseTranslations = {
     "live.conversations.invocations.endpoint": "Endpoint",
     "live.conversations.invocations.identityUnavailable": "Unknown identity",
     "live.conversations.drawer.close": "Close history drawer",
-    "live.conversations.drawer.eyebrow": "All retained calls",
+    "live.conversations.drawer.eyebrow": "Conversation details",
     "live.conversations.drawer.description":
       "Shows every retained raw invocation for this Prompt Cache Key, newest first.",
     "live.conversations.drawer.progress":
@@ -2036,6 +2036,32 @@ const baseTranslations = {
       "Current: account {{account}}",
     "live.conversations.drawer.binding.encryptedOwner":
       "Encrypted session owner: {{owner}}",
+    "live.conversations.drawer.policy.title": "Conversation overrides",
+    "live.conversations.drawer.policy.inherit": "Inherit",
+    "live.conversations.drawer.policy.override": "Override",
+    "live.conversations.drawer.policy.cutOut": "Switch out",
+    "live.conversations.drawer.policy.cutOutInherited":
+      "Inherited switching policy",
+    "live.conversations.drawer.policy.cutOutAllow": "Allow switching upstream",
+    "live.conversations.drawer.policy.cutOutDeny": "Keep current upstream",
+    "live.conversations.drawer.policy.fastMode": "FAST mode",
+    "live.conversations.drawer.policy.imageTool": "Image tool",
+    "live.conversations.drawer.policy.proxy": "Proxy",
+    "live.conversations.drawer.policy.proxyInherited": "Inherited proxy policy",
+    "live.conversations.drawer.policy.availableModels": "Available models",
+    "live.conversations.drawer.policy.availableModelsPlaceholder":
+      "Comma-separated model names",
+    "live.conversations.drawer.policy.availableModelsRequired":
+      "Available models override cannot be empty.",
+    "live.conversations.drawer.policy.editField": "Edit conversation override",
+    "live.conversations.drawer.policy.clearField": "Clear conversation override",
+    "live.conversations.drawer.policy.applyField": "Apply override",
+    "live.conversations.drawer.policy.rewrite.forceRemove": "Force remove",
+    "live.conversations.drawer.policy.rewrite.keepOriginal": "Keep original",
+    "live.conversations.drawer.policy.rewrite.fillMissing": "Fill missing",
+    "live.conversations.drawer.policy.rewrite.forceAdd": "Force add",
+    "live.conversations.drawer.policy.rewriteInherited":
+      "Inherited rewrite policy",
     "live.conversations.drawer.binding.encryptedOwnerHint":
       "Clearing the manual binding does not clear the encrypted-session owner lock.",
     "live.conversations.activity.title": "Conversation activity overview",
@@ -4293,7 +4319,7 @@ const baseTranslations = {
     "live.conversations.invocations.endpoint": "接口",
     "live.conversations.invocations.identityUnavailable": "未知来源",
     "live.conversations.drawer.close": "关闭调用记录抽屉",
-    "live.conversations.drawer.eyebrow": "全部保留调用记录",
+    "live.conversations.drawer.eyebrow": "对话详情",
     "live.conversations.drawer.description":
       "覆盖从首条到最新一条当前仍可回放的原始调用记录。",
     "live.conversations.drawer.progress":
@@ -4322,6 +4348,30 @@ const baseTranslations = {
       "当前：账号 {{account}}",
     "live.conversations.drawer.binding.encryptedOwner":
       "加密会话 owner：{{owner}}",
+    "live.conversations.drawer.policy.title": "当前对话覆盖",
+    "live.conversations.drawer.policy.inherit": "继承",
+    "live.conversations.drawer.policy.override": "覆盖",
+    "live.conversations.drawer.policy.cutOut": "切出",
+    "live.conversations.drawer.policy.cutOutInherited": "继承切出策略",
+    "live.conversations.drawer.policy.cutOutAllow": "允许换上游",
+    "live.conversations.drawer.policy.cutOutDeny": "保持当前上游",
+    "live.conversations.drawer.policy.fastMode": "FAST 模式",
+    "live.conversations.drawer.policy.imageTool": "图片工具",
+    "live.conversations.drawer.policy.proxy": "代理",
+    "live.conversations.drawer.policy.proxyInherited": "继承代理策略",
+    "live.conversations.drawer.policy.availableModels": "可用模型",
+    "live.conversations.drawer.policy.availableModelsPlaceholder":
+      "用逗号分隔模型名",
+    "live.conversations.drawer.policy.availableModelsRequired":
+      "可用模型覆盖不能为空。",
+    "live.conversations.drawer.policy.editField": "编辑对话覆盖",
+    "live.conversations.drawer.policy.clearField": "清除对话覆盖",
+    "live.conversations.drawer.policy.applyField": "应用覆盖",
+    "live.conversations.drawer.policy.rewrite.forceRemove": "强制移除",
+    "live.conversations.drawer.policy.rewrite.keepOriginal": "保留原值",
+    "live.conversations.drawer.policy.rewrite.fillMissing": "缺失时补齐",
+    "live.conversations.drawer.policy.rewrite.forceAdd": "强制添加",
+    "live.conversations.drawer.policy.rewriteInherited": "继承改写策略",
     "live.conversations.drawer.binding.encryptedOwnerHint":
       "清空手工绑定不会清除加密会话 owner 锁。",
     "live.conversations.activity.title": "对话调用总览",

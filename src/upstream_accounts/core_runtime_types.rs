@@ -1199,6 +1199,52 @@ pub(crate) struct EffectiveRoutingRule {
     timeout_field_sources: RoutingTimeoutFieldSources,
 }
 
+impl EffectiveRoutingRule {
+    pub(crate) fn allow_cut_out(&self) -> bool {
+        self.allow_cut_out
+    }
+
+    pub(crate) fn allow_cut_out_source(&self) -> &str {
+        &self.field_sources.allow_cut_out
+    }
+
+    pub(crate) fn fast_mode_rewrite_mode_source(&self) -> &str {
+        &self.field_sources.fast_mode_rewrite_mode
+    }
+
+    pub(crate) fn image_tool_rewrite_mode_source(&self) -> &str {
+        &self.field_sources.image_tool_rewrite_mode
+    }
+
+    pub(crate) fn available_models(&self) -> Option<&[String]> {
+        self.available_models_defined
+            .then_some(self.available_models.as_slice())
+    }
+
+    pub(crate) fn available_models_source(&self) -> &str {
+        &self.field_sources.available_models
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConversationRoutingOverride {
+    pub(crate) allow_switch_upstream: Option<bool>,
+    pub(crate) fast_mode_rewrite_mode: Option<TagFastModeRewriteMode>,
+    pub(crate) image_tool_rewrite_mode: Option<ImageToolRewriteMode>,
+    pub(crate) available_models: Option<Vec<String>>,
+    pub(crate) forward_proxy_key: Option<String>,
+}
+
+impl ConversationRoutingOverride {
+    pub(crate) fn has_policy_override(&self) -> bool {
+        self.allow_switch_upstream.is_some()
+            || self.fast_mode_rewrite_mode.is_some()
+            || self.image_tool_rewrite_mode.is_some()
+            || self.available_models.is_some()
+            || self.forward_proxy_key.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TagRoutingRule {

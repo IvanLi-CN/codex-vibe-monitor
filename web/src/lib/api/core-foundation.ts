@@ -3,6 +3,7 @@ import { normalizeForwardProxyProtocolLabel } from "../forwardProxyDisplay";
 import type {
   CompactSupportState,
   EffectiveRoutingRule,
+  EffectiveRoutingRuleSource,
   EffectiveRoutingTimeoutFieldSources,
   PoolRoutingMaintenanceSettings,
   PoolRoutingSettings,
@@ -1200,6 +1201,11 @@ export type PromptCacheConversationBindingKind =
   | "none"
   | "group"
   | "upstreamAccount";
+export type PromptCacheConversationRewriteMode =
+  | "force_remove"
+  | "keep_original"
+  | "fill_missing"
+  | "force_add";
 
 export interface PromptCacheConversationBindingResponse {
   promptCacheKey: string;
@@ -1213,6 +1219,18 @@ export interface PromptCacheConversationBindingResponse {
   encryptedOwnerGroupName: string | null;
   timeouts: PoolRoutingTimeoutSettings;
   timeoutFieldSources: EffectiveRoutingTimeoutFieldSources;
+  allowSwitchUpstream?: boolean | null;
+  fastModeRewriteMode?: PromptCacheConversationRewriteMode | null;
+  imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
+  availableModels?: string[] | null;
+  forwardProxyKey?: string | null;
+  policyFieldSources?: {
+    allowSwitchUpstream: EffectiveRoutingRuleSource;
+    fastModeRewriteMode: EffectiveRoutingRuleSource;
+    imageToolRewriteMode: EffectiveRoutingRuleSource;
+    availableModels: EffectiveRoutingRuleSource;
+    forwardProxyKey: EffectiveRoutingRuleSource;
+  };
   updatedAt: string | null;
 }
 
@@ -1227,16 +1245,31 @@ export type UpdatePromptCacheConversationBindingPayload =
   | {
       bindingKind: "none";
       timeouts?: PromptCacheConversationBindingTimeoutPatch;
+      allowSwitchUpstream?: boolean | null;
+      fastModeRewriteMode?: PromptCacheConversationRewriteMode | null;
+      imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
+      availableModels?: string[] | null;
+      forwardProxyKey?: string | null;
     }
   | {
       bindingKind: "group";
       groupName: string;
       timeouts?: PromptCacheConversationBindingTimeoutPatch;
+      allowSwitchUpstream?: boolean | null;
+      fastModeRewriteMode?: PromptCacheConversationRewriteMode | null;
+      imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
+      availableModels?: string[] | null;
+      forwardProxyKey?: string | null;
     }
   | {
       bindingKind: "upstreamAccount";
       upstreamAccountId: number;
       timeouts?: PromptCacheConversationBindingTimeoutPatch;
+      allowSwitchUpstream?: boolean | null;
+      fastModeRewriteMode?: PromptCacheConversationRewriteMode | null;
+      imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
+      availableModels?: string[] | null;
+      forwardProxyKey?: string | null;
     };
 
 export type PromptCacheConversationSelectionMode = "count" | "activityWindow";
@@ -2421,6 +2454,21 @@ function normalizePromptCacheConversationBindingResponse(
   raw: Record<string, unknown>,
   promptCacheKey: string,
 ): PromptCacheConversationBindingResponse {
+  const normalizeRewriteMode = (
+    value: unknown,
+  ): PromptCacheConversationRewriteMode | null =>
+    value === "force_remove" ||
+    value === "keep_original" ||
+    value === "fill_missing" ||
+    value === "force_add"
+      ? value
+      : null;
+  const normalizePolicySource = (value: unknown): EffectiveRoutingRuleSource =>
+    typeof value === "string" && value.trim() ? value.trim() : "account";
+  const rawPolicySources =
+    raw.policyFieldSources && typeof raw.policyFieldSources === "object"
+      ? (raw.policyFieldSources as Record<string, unknown>)
+      : {};
   return {
     promptCacheKey:
       typeof raw.promptCacheKey === "string" ? raw.promptCacheKey : promptCacheKey,
@@ -2457,6 +2505,35 @@ function normalizePromptCacheConversationBindingResponse(
     timeoutFieldSources: normalizeRoutingTimeoutFieldSources(
       raw.timeoutFieldSources,
     ),
+    allowSwitchUpstream:
+      typeof raw.allowSwitchUpstream === "boolean"
+        ? raw.allowSwitchUpstream
+        : null,
+    fastModeRewriteMode: normalizeRewriteMode(raw.fastModeRewriteMode),
+    imageToolRewriteMode: normalizeRewriteMode(raw.imageToolRewriteMode),
+    availableModels: Array.isArray(raw.availableModels)
+      ? raw.availableModels
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : null,
+    forwardProxyKey:
+      typeof raw.forwardProxyKey === "string" && raw.forwardProxyKey.trim()
+        ? raw.forwardProxyKey.trim()
+        : null,
+    policyFieldSources: {
+      allowSwitchUpstream: normalizePolicySource(
+        rawPolicySources.allowSwitchUpstream,
+      ),
+      fastModeRewriteMode: normalizePolicySource(
+        rawPolicySources.fastModeRewriteMode,
+      ),
+      imageToolRewriteMode: normalizePolicySource(
+        rawPolicySources.imageToolRewriteMode,
+      ),
+      availableModels: normalizePolicySource(rawPolicySources.availableModels),
+      forwardProxyKey: normalizePolicySource(rawPolicySources.forwardProxyKey),
+    },
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
   };
 }

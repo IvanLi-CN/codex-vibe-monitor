@@ -405,6 +405,21 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         } else {
             (None, false)
         };
+    let prompt_cache_conversation_override = if pool_route_active {
+        match load_prompt_cache_conversation_routing_override(&state.pool, prompt_cache_key.as_deref())
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    format!("failed to resolve prompt cache conversation overrides: {err}"),
+                ));
+            }
+        }
+    } else {
+        None
+    };
     let pool_attempt_trace_context = pool_route_active.then(|| PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.clone(),
         occurred_at: occurred_at.clone(),
@@ -509,6 +524,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             pool_attempt_runtime_snapshot.clone(),
             sticky_key.as_deref(),
             prompt_cache_binding_constraint.clone(),
+            prompt_cache_conversation_override.clone(),
             None,
             PoolFailoverProgress::default(),
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
