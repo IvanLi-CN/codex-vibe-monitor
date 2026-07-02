@@ -1384,7 +1384,7 @@ describe("settings normalization", () => {
   it("fetches forward proxy binding nodes through the dedicated endpoint", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       expect(String(input)).toContain(
-        "/api/pool/forward-proxy-binding-nodes?includeCurrent=1&key=fpb_jp_edge_01&key=fpb_sg_edge_02",
+        "/api/pool/forward-proxy-binding-nodes?includeCurrent=true&key=fpb_jp_edge_01&key=fpb_sg_edge_02",
       );
       return new Response(
         JSON.stringify([
@@ -1423,7 +1423,7 @@ describe("settings normalization", () => {
   it("includes groupName when requesting group-scoped binding node stats", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       expect(String(input)).toContain(
-        "/api/pool/forward-proxy-binding-nodes?includeCurrent=1&groupName=prod&key=fpb_jp_edge_01",
+        "/api/pool/forward-proxy-binding-nodes?includeCurrent=true&groupName=prod&key=fpb_jp_edge_01",
       );
       return new Response(JSON.stringify([]), {
         status: 200,
@@ -1753,7 +1753,7 @@ describe("account pool frontend API helpers", () => {
     await fetchUpstreamAccountDetail(9, { includeRecentActions: true });
 
     expect(requestedUrl).toContain(
-      "/api/pool/upstream-accounts/9?includeRecentActions=1",
+      "/api/pool/upstream-accounts/9?includeRecentActions=true",
     );
   });
 

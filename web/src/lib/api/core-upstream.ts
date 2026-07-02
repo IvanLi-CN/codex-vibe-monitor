@@ -2145,7 +2145,7 @@ export async function fetchForwardProxyBindingNodes(
 ): Promise<ForwardProxyBindingNode[]> {
   const search = new URLSearchParams();
   if (options?.includeCurrent) {
-    search.set("includeCurrent", "1");
+    search.set("includeCurrent", "true");
   }
   const normalizedGroupName = options?.groupName?.trim();
   if (normalizedGroupName) {
@@ -2262,7 +2262,7 @@ export async function fetchUpstreamAccountDetail(
   }
   const search = new URLSearchParams();
   if (detailOptions.includeRecentActions) {
-    search.set("includeRecentActions", "1");
+    search.set("includeRecentActions", "true");
   }
   const response = await fetchJson<unknown>(
     search.size > 0

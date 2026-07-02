@@ -94,6 +94,7 @@ const baseTranslations = {
     "accountPool.groups.loadingTitle": "Loading group overview",
     "accountPool.groups.loadingDescription":
       "Collecting the latest account roster, shared group settings, and proxy bindings.",
+    "accountPool.groups.loadError": "Failed to load account groups.",
     "accountPool.groups.emptyTitle": "No account groups yet",
     "accountPool.groups.emptyDescription":
       "Create or import upstream accounts first. Once accounts carry a group name, the shared group overview will appear here automatically.",
@@ -1292,6 +1293,8 @@ const baseTranslations = {
       "Non-model call execution records",
     "accountPool.upstreamAccounts.maintenanceEvents.description":
       "Recent account maintenance calls, syncs, and proxy-bound checks.",
+    "accountPool.upstreamAccounts.maintenanceEvents.loadError":
+      "Failed to load maintenance records.",
     "accountPool.upstreamAccounts.maintenanceEvents.resetFilters":
       "Reset filters",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.account":
@@ -2523,6 +2526,7 @@ const baseTranslations = {
     "accountPool.groups.loadingTitle": "正在加载分组总览",
     "accountPool.groups.loadingDescription":
       "正在汇总最新账号列表、共享分组设置与绑定代理信息。",
+    "accountPool.groups.loadError": "加载账号分组失败。",
     "accountPool.groups.emptyTitle": "还没有可展示的分组",
     "accountPool.groups.emptyDescription":
       "先创建或导入上游账号吧；当账号带上分组后，这里会自动汇总共享分组信息。",
@@ -3623,6 +3627,8 @@ const baseTranslations = {
       "非模型调用执行记录",
     "accountPool.upstreamAccounts.maintenanceEvents.description":
       "展示最近的账号维护调用、同步与代理探测。",
+    "accountPool.upstreamAccounts.maintenanceEvents.loadError":
+      "加载维护记录失败。",
     "accountPool.upstreamAccounts.maintenanceEvents.resetFilters":
       "重置筛选",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.account":

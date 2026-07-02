@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
 import { AppIcon } from "../../components/AppIcon";
+import { ListBodyState } from "../../components/ListBodyState";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -160,6 +161,8 @@ export default function MaintenanceRecordsPage() {
     [forwardProxyNodes],
   );
   const pageCount = Math.max(1, Math.ceil(total / Math.max(pageSize, 1)));
+  const isInitialLoading = loading && events.length === 0;
+  const isInitialError = Boolean(error) && events.length === 0;
 
   const resetFilters = () => {
     setAccountFilter("");
@@ -343,7 +346,7 @@ export default function MaintenanceRecordsPage() {
           </label>
         </div>
 
-        {error ? (
+        {error && events.length > 0 ? (
           <Alert variant="error">
             <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             <div>{error}</div>
@@ -351,7 +354,25 @@ export default function MaintenanceRecordsPage() {
         ) : null}
 
         <div className="overflow-hidden rounded-[1rem] border border-base-300/80 bg-base-100/70">
-          <div className="overflow-x-auto">
+          {isInitialLoading ? (
+            <div className="p-4">
+              <ListBodyState
+                variant="loading"
+                title={t("accountPool.upstreamAccounts.loadingTitle")}
+                testId="maintenance-records-loading"
+              />
+            </div>
+          ) : isInitialError ? (
+            <div className="p-4">
+              <ListBodyState
+                variant="error"
+                title={t("accountPool.upstreamAccounts.maintenanceEvents.loadError")}
+                description={error}
+                testId="maintenance-records-error"
+              />
+            </div>
+          ) : null}
+          <div className={isInitialLoading || isInitialError ? "hidden" : "overflow-x-auto"}>
             <table className="min-w-[60rem] table-fixed divide-y divide-base-300/70 text-sm lg:min-w-full">
               <thead className="bg-base-100/80">
                 <tr className="text-left text-xs font-semibold uppercase tracking-[0.12em] text-base-content/55">
@@ -373,16 +394,14 @@ export default function MaintenanceRecordsPage() {
                 </tr>
               </thead>
               <tbody>
-                {loading ? (
+                {events.length === 0 ? (
                   <tr>
                     <td className="px-4 py-8 text-center text-sm text-base-content/60" colSpan={5}>
-                      {t("accountPool.upstreamAccounts.loadingTitle")}
-                    </td>
-                  </tr>
-                ) : events.length === 0 ? (
-                  <tr>
-                    <td className="px-4 py-8 text-center text-sm text-base-content/60" colSpan={5}>
-                      {t("accountPool.upstreamAccounts.maintenanceEvents.empty")}
+                      <ListBodyState
+                        variant="empty"
+                        title={t("accountPool.upstreamAccounts.maintenanceEvents.empty")}
+                        testId="maintenance-records-empty"
+                      />
                     </td>
                   </tr>
                 ) : (

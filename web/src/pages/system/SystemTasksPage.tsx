@@ -3,6 +3,7 @@ import { Alert } from '../../components/ui/alert'
 import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
+import { ListBodyState } from '../../components/ListBodyState'
 import { SelectField } from '../../components/ui/select-field'
 import { fetchSystemTaskRuns, type SystemTaskRun } from '../../lib/api'
 import { useTranslation } from '../../i18n'
@@ -151,10 +152,22 @@ export default function SystemTasksPage() {
           </div>
         </div>
 
-        {error ? <Alert variant="error">{t('system.tasks.loadError', { error })}</Alert> : null}
-        {isLoading ? <Alert variant="info">{t('system.tasks.loading')}</Alert> : null}
+        {error && items.length > 0 ? <Alert variant="error">{t('system.tasks.loadError', { error })}</Alert> : null}
 
         <div className="grid gap-4" data-testid="system-tasks-list">
+          {isLoading && items.length === 0 ? (
+            <ListBodyState
+              variant="loading"
+              title={t('system.tasks.loading')}
+              testId="system-tasks-loading"
+            />
+          ) : error && items.length === 0 ? (
+            <ListBodyState
+              variant="error"
+              title={t('system.tasks.loadError', { error })}
+              testId="system-tasks-error"
+            />
+          ) : null}
           {items.map((item) => (
             <Card key={item.id} className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
               <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
@@ -180,8 +193,12 @@ export default function SystemTasksPage() {
               </CardContent>
             </Card>
           ))}
-          {!isLoading && items.length === 0 ? (
-            <Alert variant="info">{t('system.tasks.empty')}</Alert>
+          {!isLoading && !error && items.length === 0 ? (
+            <ListBodyState
+              variant="empty"
+              title={t('system.tasks.empty')}
+              testId="system-tasks-empty"
+            />
           ) : null}
         </div>
 
