@@ -379,7 +379,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
     ]
     setExpandedFields((current) => {
       if (userTouchedExpansionRef.current) return current
-      if (current.some((field) => fieldToSource(field, fieldSources) === 'account')) return current
+      if (current.some((field) => fieldToSource(field, fieldSources, timeoutSources) === 'account')) return current
       return nextDefaultExpandedFields
     })
   }, [
@@ -424,7 +424,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
     clearPayload: UpdateGroupAccountRoutingRulePayload,
   ) => {
     userTouchedExpansionRef.current = true
-    const active = fieldToSource(field, fieldSources) === 'account'
+    const active = fieldToSource(field, fieldSources, timeoutSources) === 'account'
     if (active) {
       clearField(field, clearPayload)
       return
@@ -862,7 +862,11 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
   )
 }
 
-function fieldToSource(field: EditablePolicyField, sources: FieldSourceMap): string {
+function fieldToSource(
+  field: EditablePolicyField,
+  sources: FieldSourceMap,
+  timeoutSources: EffectiveRoutingTimeoutFieldSources,
+): string {
   switch (field) {
     case 'allowNewConversations':
       return sources.blockNewConversations
@@ -883,13 +887,13 @@ function fieldToSource(field: EditablePolicyField, sources: FieldSourceMap): str
     case 'availableModels':
       return sources.availableModels ?? 'root'
     case 'timeoutResponsesFirstByte':
-      return 'account'
+      return timeoutSources.responsesFirstByteTimeoutSecs
     case 'timeoutCompactFirstByte':
-      return 'account'
+      return timeoutSources.compactFirstByteTimeoutSecs
     case 'timeoutResponsesStream':
-      return 'account'
+      return timeoutSources.responsesStreamTimeoutSecs
     case 'timeoutCompactStream':
-      return 'account'
+      return timeoutSources.compactStreamTimeoutSecs
   }
 }
 

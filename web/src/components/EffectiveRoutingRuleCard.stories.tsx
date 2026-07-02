@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect } from 'storybook/test'
+import { expect, userEvent } from 'storybook/test'
 import type { UpdateGroupAccountRoutingRulePayload } from '../lib/api'
 import type { EffectiveRoutingRule } from '../lib/api'
 import { EffectiveRoutingRuleCard } from './EffectiveRoutingRuleCard'
@@ -409,6 +409,22 @@ function EditableRoutingRuleDemo({
 
 export const EditableInherited: Story = {
   render: () => <EditableRoutingRuleDemo initialRule={relaxedRule} />,
+  play: async ({ canvasElement }) => {
+    const timeoutButton = canvasElement.querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit account override: Standard response first byte timeout"]',
+    )
+    if (!timeoutButton) {
+      throw new Error('missing inherited timeout edit button')
+    }
+
+    await userEvent.click(timeoutButton)
+
+    expect(
+      canvasElement.querySelector<HTMLInputElement>(
+        'input[name="responsesFirstByteTimeoutSecs"]',
+      ),
+    ).not.toBeNull()
+  },
 }
 
 export const EditableAccountOverrides: Story = {
