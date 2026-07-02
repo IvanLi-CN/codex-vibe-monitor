@@ -4115,6 +4115,152 @@ async fn prompt_cache_same_account_binding_newer_than_owner_keeps_owner_guard_ac
 }
 
 #[tokio::test]
+async fn prompt_cache_same_group_binding_overrides_owner_guard() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-same-group-owner-override-group";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Same Group Owner",
+        "sk-prompt-cache-same-group-owner",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-same-group-owner-override-key";
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_encrypted_session_owners (
+            prompt_cache_key,
+            owner_upstream_account_id,
+            first_locked_at,
+            last_confirmed_at,
+            updated_at
+        )
+        VALUES (?1, ?2, '2026-06-14 12:00:00', '2026-06-14 12:10:00', '2026-06-14 12:10:00')
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(owner_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed encrypted owner in target group");
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, 'group', ?2, NULL, '2026-06-14 12:05:00', '2026-06-14 12:05:00')
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(group_name)
+    .execute(&state.pool)
+    .await
+    .expect("seed manual same-group override older than reconfirmed owner");
+
+    let (constraint, owner_auto_guard_active) = resolve_prompt_cache_effective_routing_constraint(
+        &state.pool,
+        Some(prompt_cache_key),
+        true,
+    )
+    .await
+    .expect("resolve same-group manual override after owner reconfirmation");
+
+    assert!(!owner_auto_guard_active);
+    match constraint {
+        Some(PromptCacheConversationBindingConstraint::Group(bound_group_name)) => {
+            assert_eq!(bound_group_name, group_name);
+        }
+        other => panic!("expected explicit group override, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn prompt_cache_pre_owner_group_binding_keeps_owner_guard_active() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-pre-owner-group-binding";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Pre Owner Group Owner",
+        "sk-prompt-cache-pre-owner-group-owner",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-pre-owner-group-binding-key";
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, 'group', ?2, NULL, '2026-06-14 11:55:00', '2026-06-14 11:55:00')
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(group_name)
+    .execute(&state.pool)
+    .await
+    .expect("seed group binding before encrypted owner lock");
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_encrypted_session_owners (
+            prompt_cache_key,
+            owner_upstream_account_id,
+            first_locked_at,
+            last_confirmed_at,
+            updated_at
+        )
+        VALUES (?1, ?2, '2026-06-14 12:00:00', '2026-06-14 12:00:00', '2026-06-14 12:00:00')
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(owner_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed encrypted owner after group binding");
+
+    let (constraint, owner_auto_guard_active) = resolve_prompt_cache_effective_routing_constraint(
+        &state.pool,
+        Some(prompt_cache_key),
+        true,
+    )
+    .await
+    .expect("resolve pre-owner group binding");
+
+    assert!(owner_auto_guard_active);
+    match constraint {
+        Some(PromptCacheConversationBindingConstraint::UpstreamAccount(bound_id)) => {
+            assert_eq!(bound_id, owner_account_id);
+        }
+        other => panic!("expected encrypted owner constraint, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn prompt_cache_manual_override_wins_when_binding_and_owner_share_same_second() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -4186,6 +4332,88 @@ async fn prompt_cache_manual_override_wins_when_binding_and_owner_share_same_sec
     )
     .await
     .expect("resolve same-second manual override");
+
+    assert!(!owner_auto_guard_active);
+    match constraint {
+        Some(PromptCacheConversationBindingConstraint::UpstreamAccount(bound_id)) => {
+            assert_eq!(bound_id, override_account_id);
+        }
+        other => panic!("expected explicit upstream account override, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn prompt_cache_manual_override_wins_even_after_owner_reconfirmation() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-manual-override-owner-newer-group";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Owner Reconfirmed",
+        "sk-prompt-cache-owner-reconfirmed",
+        Some("prompt-cache-original-owner-group"),
+        None,
+        None,
+    )
+    .await;
+    let override_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Override Owner Newer",
+        "sk-prompt-cache-override-owner-newer",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-manual-override-owner-newer-key";
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_encrypted_session_owners (
+            prompt_cache_key,
+            owner_upstream_account_id,
+            first_locked_at,
+            last_confirmed_at,
+            updated_at
+        )
+        VALUES (?1, ?2, '2026-06-14 12:00:00', '2026-06-14 12:10:00', '2026-06-14 12:10:00')
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(owner_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed reconfirmed encrypted owner");
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, 'upstream_account', NULL, ?2, '2026-06-14 12:05:00', '2026-06-14 12:05:00')
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(override_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed manual override older than reconfirmed owner");
+
+    let (constraint, owner_auto_guard_active) = resolve_prompt_cache_effective_routing_constraint(
+        &state.pool,
+        Some(prompt_cache_key),
+        true,
+    )
+    .await
+    .expect("resolve manual override after owner reconfirmation");
 
     assert!(!owner_auto_guard_active);
     match constraint {
