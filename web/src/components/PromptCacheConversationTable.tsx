@@ -63,6 +63,14 @@ import {
   findVisibleConversationChartMax,
 } from "./keyedConversationChart";
 import { Alert } from "./ui/alert";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
 import { floatingSurfaceStyle, type FloatingSurfaceTheme } from "./ui/floating-surface";
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Input } from "./ui/input";
@@ -2092,8 +2100,19 @@ export function PromptCacheConversationHistoryDrawer({
     useState<ConversationPolicyField | null>(null);
   const [policySavingField, setPolicySavingField] =
     useState<ConversationPolicyField | null>(null);
+  const [bindingOwnerConfirmOpen, setBindingOwnerConfirmOpen] = useState(false);
   const [activeTab, setActiveTab] =
     useState<PromptCacheConversationDrawerTab>("overview");
+
+  useEffect(() => {
+    if (!open) {
+      setBindingOwnerConfirmOpen(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    setBindingOwnerConfirmOpen(false);
+  }, [conversationKey]);
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return;
@@ -2578,6 +2597,9 @@ export function PromptCacheConversationHistoryDrawer({
     bindingProxyNodes,
     t,
   );
+  const bindingOwnerConfirmLabel =
+    encryptedOwnerStatusLabel ??
+    t("live.conversations.drawer.binding.ownerConfirm.unknownOwner");
   const bindingKindOptions = [
     {
       value: "none",
@@ -3061,9 +3083,10 @@ export function PromptCacheConversationHistoryDrawer({
       ) : null}
     </section>
   );
-  const saveBinding = useCallback(async () => {
+  const saveBinding = useCallback(async (options?: { skipOwnerWarning?: boolean }) => {
     if (!conversationKey || bindingSubmitDisabled) return;
     if (
+      !options?.skipOwnerWarning &&
       nextBindingWouldOverrideEncryptedOwner(
         binding,
         bindingKind,
@@ -3071,11 +3094,8 @@ export function PromptCacheConversationHistoryDrawer({
         bindingAccountId,
       )
     ) {
-      const ownerLabel = encryptedOwnerLabel(binding) ?? "unknown owner";
-      const confirmed = window.confirm(
-        `This conversation already has encrypted session owner ${ownerLabel}. Changing the binding may make future requests fail with invalid_encrypted_content. Continue?`,
-      );
-      if (!confirmed) return;
+      setBindingOwnerConfirmOpen(true);
+      return;
     }
     setBindingSaving(true);
     setBindingError(null);
@@ -3178,11 +3198,13 @@ export function PromptCacheConversationHistoryDrawer({
   ]);
 
   return (
+    <>
     <AccountDetailDrawerShell
       open={open}
       labelledBy={titleId}
       closeLabel={t("live.conversations.drawer.close")}
       onClose={onClose}
+      closeDisabled={bindingOwnerConfirmOpen}
       onBodyElementChange={setDrawerBodyElement}
       shellClassName="max-w-[78rem]"
       header={
@@ -3306,6 +3328,56 @@ export function PromptCacheConversationHistoryDrawer({
         </div>
       ) : null}
     </AccountDetailDrawerShell>
+    <Dialog
+      open={open && bindingOwnerConfirmOpen}
+      onOpenChange={(nextOpen) => {
+        if (!bindingSaving) setBindingOwnerConfirmOpen(nextOpen);
+      }}
+    >
+      <DialogContent
+        role="alertdialog"
+        container={drawerBodyElement}
+        className="space-y-5 p-5 sm:p-6"
+      >
+        <DialogHeader>
+          <DialogTitle>
+            {t("live.conversations.drawer.binding.ownerConfirm.title")}
+          </DialogTitle>
+          <DialogDescription>
+            {t("live.conversations.drawer.binding.ownerConfirm.description", {
+              owner: bindingOwnerConfirmLabel,
+            })}
+          </DialogDescription>
+        </DialogHeader>
+        <p className="rounded-xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm leading-6 text-base-content/82">
+          {t("live.conversations.drawer.binding.ownerConfirm.risk")}
+        </p>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={bindingSaving}
+            onClick={() => setBindingOwnerConfirmOpen(false)}
+          >
+            {t("live.conversations.drawer.binding.ownerConfirm.cancel")}
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={bindingSaving}
+            onClick={() => {
+              setBindingOwnerConfirmOpen(false);
+              void saveBinding({ skipOwnerWarning: true });
+            }}
+          >
+            {bindingSaving
+              ? t("live.conversations.drawer.binding.saving")
+              : t("live.conversations.drawer.binding.ownerConfirm.confirm")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
 

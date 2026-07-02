@@ -26,6 +26,7 @@ Prompt Cache conversation binding currently models operator routing intent only.
 - Automatic routing and failover must treat the owner as the hard routing target.
 - If the owner cannot be selected automatically, the proxy returns `503` with code `encrypted_session_owner_unavailable`.
 - Manual rebinding remains available through the existing binding PATCH endpoint and payload shape.
+- Manual rebinding that would route an owned encrypted session away from its current owner must use the product UI dialog system for confirmation; browser-native dialogs are not acceptable.
 - Clearing a manual binding on an owned encrypted session removes only the override intent; it does not clear the encrypted-session owner lock.
 - Manual rebinding does not move owner state immediately; owner moves only after the newly bound target succeeds.
 - Group binding used as a dangerous override must auto-promote to an account binding after the first encrypted-session success on a concrete account.
@@ -67,6 +68,7 @@ Prompt Cache conversation binding currently models operator routing intent only.
 - A successful encrypted-session request on an unowned conversation writes the current account as owner.
 - A group override that succeeds on account `B` upgrades the binding to `upstreamAccount=B`.
 - Binding read APIs and Prompt Cache conversation detail responses expose encrypted owner metadata.
+- The dangerous manual-rebinding confirmation renders as an accessible product `alertdialog` and does not invoke browser-native `confirm` / `alert` / `prompt`.
 
 ## Visual Evidence
 
@@ -82,6 +84,19 @@ Prompt Cache conversation binding currently models operator routing intent only.
   PR: include
   image:
   ![Prompt cache encrypted owner lock card](./assets/prompt-cache-owner-lock-card.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1280
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  story_id_or_title: Monitoring/PromptCacheConversationTable/DrawerEncryptedOwnerDangerDialogOpen
+  state: dangerous route-binding confirmation dialog
+  evidence_note: verifies an encrypted-owner route-binding change uses the project Dialog surface, with localized risk copy and no browser-native confirm dialog
+  PR: include
+  image:
+  ![Prompt cache owner binding confirmation dialog](./assets/prompt-cache-owner-binding-confirm-dialog.png)
 
 - source_type: storybook_canvas
   target_program: mock-only

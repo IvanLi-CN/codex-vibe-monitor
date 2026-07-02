@@ -1836,10 +1836,6 @@ describe("PromptCacheConversationTable", () => {
       records: [],
     });
 
-    const confirmSpy = vi
-      .spyOn(window, "confirm")
-      .mockImplementation(() => false);
-
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",
       rangeEnd: "2026-03-03T00:00:00Z",
@@ -1887,14 +1883,55 @@ describe("PromptCacheConversationTable", () => {
     });
     await flushInteractive();
 
-    expect(confirmSpy).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "encrypted session owner Pool Alpha · prod",
-      ),
+    const confirmDialog = document.body.querySelector('[role="alertdialog"]');
+    expect(confirmDialog?.textContent).toContain(
+      "这个对话已经绑定加密会话 owner：Pool Alpha · prod",
     );
+    expect(confirmDialog?.textContent).toContain("invalid_encrypted_content");
     expect(apiMocks.updatePromptCacheConversationBinding).not.toHaveBeenCalled();
 
-    confirmSpy.mockRestore();
+    const cancelButton = Array.from(confirmDialog?.querySelectorAll("button") ?? [])
+      .find((button) => button.textContent?.includes("取消"));
+    await act(async () => {
+      cancelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(apiMocks.updatePromptCacheConversationBinding).not.toHaveBeenCalled();
+
+    apiMocks.updatePromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-binding",
+      bindingKind: "group",
+      groupName: "prod",
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 42,
+      encryptedOwnerAccountName: "Pool Alpha",
+      encryptedOwnerGroupName: "prod",
+      updatedAt: "2026-03-02T12:05:00Z",
+    });
+
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+    const reopenedDialog = document.body.querySelector('[role="alertdialog"]');
+    const continueButton = Array.from(reopenedDialog?.querySelectorAll("button") ?? [])
+      .find((button) => button.textContent?.includes("继续更改"));
+    await act(async () => {
+      continueButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
+      "pck-binding",
+      {
+        bindingKind: "group",
+        groupName: "prod",
+        timeouts: {},
+      },
+    );
   });
 
   it("does not confirm when clearing a manual override back to the encrypted owner lock", async () => {
@@ -1945,10 +1982,6 @@ describe("PromptCacheConversationTable", () => {
       updatedAt: "2026-03-02T12:05:00Z",
     });
 
-    const confirmSpy = vi
-      .spyOn(window, "confirm")
-      .mockImplementation(() => true);
-
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",
       rangeEnd: "2026-03-03T00:00:00Z",
@@ -1992,7 +2025,7 @@ describe("PromptCacheConversationTable", () => {
     });
     await flushInteractive();
 
-    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull();
     expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
       "pck-binding-clear",
       {
@@ -2000,8 +2033,6 @@ describe("PromptCacheConversationTable", () => {
         timeouts: {},
       },
     );
-
-    confirmSpy.mockRestore();
   });
 
   it("uses the first and latest same-day invocation timestamps as the history chart range", async () => {
