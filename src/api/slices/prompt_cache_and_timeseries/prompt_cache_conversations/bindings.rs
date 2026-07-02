@@ -735,29 +735,23 @@ pub(crate) async fn load_prompt_cache_encrypted_session_owner_account_id(
         .map(|row| row.owner_upstream_account_id))
 }
 
-fn manual_binding_override_is_newer_than_owner(
+fn manual_binding_overrides_encrypted_owner(
     binding_row: &PromptCacheConversationBindingRow,
     owner: &PromptCacheEncryptedSessionOwnerRow,
 ) -> bool {
-    if binding_row.binding_kind == PROMPT_CACHE_BINDING_KIND_NONE {
-        return false;
-    }
-    match binding_row.updated_at.as_str().cmp(owner.updated_at.as_str()) {
-        std::cmp::Ordering::Greater => match binding_row.binding_kind.as_str() {
-            PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {
-                binding_row.upstream_account_id != Some(owner.owner_upstream_account_id)
-            }
-            PROMPT_CACHE_BINDING_KIND_GROUP => true,
-            _ => true,
-        },
-        std::cmp::Ordering::Less => false,
-        std::cmp::Ordering::Equal => match binding_row.binding_kind.as_str() {
-            PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {
-                binding_row.upstream_account_id != Some(owner.owner_upstream_account_id)
-            }
-            PROMPT_CACHE_BINDING_KIND_GROUP => true,
-            _ => true,
-        },
+    match binding_row.binding_kind.as_str() {
+        PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {
+            binding_row.upstream_account_id != Some(owner.owner_upstream_account_id)
+        }
+        PROMPT_CACHE_BINDING_KIND_GROUP => {
+            binding_row
+                .group_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_some()
+        }
+        _ => false,
     }
 }
 
@@ -795,7 +789,7 @@ pub(crate) async fn resolve_prompt_cache_encrypted_session_routing_context(
         Some(owner) => {
             let override_constraint = if binding_row
                 .as_ref()
-                .is_some_and(|row| manual_binding_override_is_newer_than_owner(row, &owner))
+                .is_some_and(|row| manual_binding_overrides_encrypted_owner(row, &owner))
             {
                 load_prompt_cache_conversation_binding_constraint(pool, Some(prompt_cache_key))
                     .await?
@@ -889,7 +883,7 @@ pub(crate) async fn confirm_prompt_cache_encrypted_session_owner_success(
             Some(owner) if owner.owner_upstream_account_id == owner_upstream_account_id => true,
             Some(owner) => {
                 let override_constraint = binding_row.as_ref().and_then(|row| {
-                    manual_binding_override_is_newer_than_owner(row, owner).then_some(row)
+                    manual_binding_overrides_encrypted_owner(row, owner).then_some(row)
                 });
                 match override_constraint {
                     Some(row) => match row.binding_kind.as_str() {
