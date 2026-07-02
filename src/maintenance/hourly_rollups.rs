@@ -1610,8 +1610,8 @@ async fn schedule_poll(
                 }
 
                 if let Some(run) = system_task_run.as_ref() {
-                    finish_system_task_run(
-                        &state_clone.pool,
+                    finish_system_task_run_batched(
+                        state_clone.as_ref(),
                         run,
                         SystemTaskStatus::Success,
                         Some(summarize_scheduler_poll_outcome(
@@ -1625,8 +1625,8 @@ async fn schedule_poll(
             }
             Ok(Err(err)) => {
                 if let Some(run) = system_task_run.as_ref() {
-                    finish_system_task_run(
-                        &state_clone.pool,
+                    finish_system_task_run_batched(
+                        state_clone.as_ref(),
                         run,
                         SystemTaskStatus::Failed,
                         Some("scheduler poll failed".to_string()),
@@ -1638,8 +1638,8 @@ async fn schedule_poll(
             }
             Err(_) => {
                 if let Some(run) = system_task_run.as_ref() {
-                    finish_system_task_run(
-                        &state_clone.pool,
+                    finish_system_task_run_batched(
+                        state_clone.as_ref(),
                         run,
                         SystemTaskStatus::Failed,
                         Some("scheduler poll timed out".to_string()),

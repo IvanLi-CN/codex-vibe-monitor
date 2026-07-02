@@ -8,6 +8,7 @@
 - Current-window summary reconcile now matches the same 5s budget as calendar windows and account-activity reconcile. The dashboard debug diagnostics also split out `current summary refresh/open-resync` and `upstream account activity refresh/open-resync`, so future regressions can distinguish SSE-fast-path churn from HTTP reconcile churn.
 - Dashboard working conversations live head/count now read from a write-side `prompt_cache_working_set_live` table that keeps the last 5 minutes of terminal activity plus any current in-flight keys. The public response shape stays unchanged, while the hot read path no longer rebuilds the working set from `codex_invocations` on every request.
 - Working-conversations snapshot count/page now also accept the same `<=5s` bounded-freshness contract. Instead of strict historical recomputation from `codex_invocations`, snapshot aggregates read the live working-set truth directly and keep the existing response fields, cursor shape, and main ordering semantics.
+- Proxy capture request completion now keeps terminal `codex_invocations` as the synchronous source of truth, but moves bounded derived writes through a process-local SQLite batch writer. Attempt phase/latency progress, invocation hourly rollup/live progress, upstream account activity touch, and background system-task finish updates coalesce on short windows before touching SQLite. Terminal attempt finalize remains synchronous and overwrites any unflushed progress.
 
 ## Migrated Implementation Notes
 
@@ -34,6 +35,7 @@
 - [x] M4: 完成验证、提交、PR、checks 与 review-loop 收敛（fast-track）。
 - [x] M5: Dashboard realtime consumers split visible patch, KPI, chart commit, head reconcile, and parallel-work conditional-fetch budgets.
 - [x] M6: 活动调用记录列表统一接入 `records` SSE：`Live`、`/records` 与账号详情抽屉 records tab 现在共用一套记录过滤、去重、终态优选与 SSE open 静默回源逻辑。
+- [x] M7: Proxy capture 派生写与 attempt 中间进度进入 SQLite batch writer；保持代理并发与 terminal 主事实同步落盘不变。
 
 ## 2026-06-21 Follow-up
 
@@ -47,3 +49,5 @@
 - `cd web && bun run test -- --run src/hooks/useInvocations.test.tsx src/hooks/useInvocationRecords.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`
 - `cd web && bun run test useStats.test.ts`
 - `cd web && bun run test useDashboardUpstreamAccountActivity.test.tsx`
+- `cargo test sqlite_batch_writer`
+- `cargo test pool_upstream_request_attempt -- --test-threads=1`

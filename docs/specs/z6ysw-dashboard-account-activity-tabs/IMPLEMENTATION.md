@@ -33,6 +33,7 @@
 - 已实现：账号卡“首字用时”从阶段级 `t_upstream_ttfb_ms` 纠偏为 owner-facing 的首字总耗时口径；后端聚合现在复用 `resolve_first_response_byte_total_ms(...)`，并额外暴露显式 `firstResponseByteTotalAvgMs` 供前端优先消费，避免真实秒级总耗时被渲染成 `0ms`。
 - 已实现：工作区 `对话` tab 当前 5 分钟 working-set 的 head/count 改读 write-side `prompt_cache_working_set_live`，并为 mixed-source key 保留 `All / ProxyOnly` 两套聚合列，避免换源后 `ProxyOnly` 视角丢 key 或排序漂移。
 - 已实现：工作区 `对话` tab 的 snapshot count/page 也收口到同一份 live working-set truth，不再通过 `WITH recent_terminal` 对 `codex_invocations` 做严格历史重算。公开字段、cursor 形态、recent preview 与主排序语义保持不变，但 snapshot membership 明确接受 `<=5s` bounded freshness。
+- 已实现：Dashboard 相关的 working-set / account-activity 派生维护继续遵守 `<=5s` bounded freshness；proxy capture 请求尾的 rollup/live progress、upstream account touch 与 attempt 中间进度已迁入 SQLite batch writer，避免 Dashboard reconcile 与请求收尾派生写在 SQLite 单写者上持续争用。
 
 ## Remaining Gaps
 

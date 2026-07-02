@@ -790,7 +790,9 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
     capture_started: Instant,
     record: ProxyCaptureRecord,
 ) -> Result<()> {
-    let inserted = persist_proxy_capture_record(&state.pool, capture_started, record).await?;
+    let derived_payload = record.payload.clone();
+    let inserted =
+        persist_proxy_capture_record_core(&state.pool, capture_started, record, false).await?;
     let Some(inserted_record) = inserted else {
         return Ok(());
     };
@@ -803,6 +805,23 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
     }
 
     let invoke_id = inserted_record.invoke_id.clone();
+    let derived = BatchedInvocationDerivedWrites {
+        invocation_id: inserted_record.id,
+        occurred_at: inserted_record.occurred_at.clone(),
+        payload: derived_payload,
+    };
+    if !state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::InvocationDerived(derived.clone()))
+        && let Err(err) =
+            SqliteBatchWriter::flush_invocation_derived_inline(&state.pool, derived).await
+    {
+        warn!(
+            error = %err,
+            invoke_id = %invoke_id,
+            "failed to synchronously compensate dropped raw proxy derived write"
+        );
+    }
     if state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
             records: vec![inserted_record],
@@ -820,7 +839,16 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
 pub(crate) async fn persist_proxy_capture_record(
     pool: &Pool<Sqlite>,
     capture_started: Instant,
+    record: ProxyCaptureRecord,
+) -> Result<Option<ApiInvocation>> {
+    persist_proxy_capture_record_core(pool, capture_started, record, true).await
+}
+
+async fn persist_proxy_capture_record_core(
+    pool: &Pool<Sqlite>,
+    capture_started: Instant,
     mut record: ProxyCaptureRecord,
+    write_derived_inline: bool,
 ) -> Result<Option<ApiInvocation>> {
     let raw_response = if record.response_body_preview_enabled {
         record.raw_response.clone()
@@ -1050,12 +1078,14 @@ pub(crate) async fn persist_proxy_capture_record(
         existing.id
     };
 
-    touch_invocation_upstream_account_last_activity_tx(
-        tx.as_mut(),
-        &record.occurred_at,
-        record.payload.as_deref(),
-    )
-    .await?;
+    if write_derived_inline {
+        touch_invocation_upstream_account_last_activity_tx(
+            tx.as_mut(),
+            &record.occurred_at,
+            record.payload.as_deref(),
+        )
+        .await?;
+    }
 
     record.timings.t_persist_ms = elapsed_ms(persist_started);
     record.timings.t_total_ms = elapsed_ms(capture_started);
@@ -1074,13 +1104,15 @@ pub(crate) async fn persist_proxy_capture_record(
     .execute(tx.as_mut())
     .await?;
 
-    recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[invocation_id]).await?;
-    save_hourly_rollup_live_progress_tx(
-        tx.as_mut(),
-        HOURLY_ROLLUP_DATASET_INVOCATIONS,
-        invocation_id,
-    )
-    .await?;
+    if write_derived_inline {
+        recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[invocation_id]).await?;
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            invocation_id,
+        )
+        .await?;
+    }
 
     let persisted =
         load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)

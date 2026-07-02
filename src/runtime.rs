@@ -113,9 +113,12 @@ pub(crate) async fn run() -> Result<()> {
         Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
     let shutdown = CancellationToken::new();
 
+    let sqlite_batch_writer = SqliteBatchWriter::spawn(pool.clone(), shutdown.clone());
+
     let state = Arc::new(AppState {
         config: config.clone(),
         pool,
+        sqlite_batch_writer,
         oauth_installation_seed,
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         http_clients,
@@ -812,6 +815,8 @@ async fn drain_runtime_after_shutdown(
         );
     }
 
+    state.sqlite_batch_writer.shutdown_and_drain().await;
+
     let broadcast_handles = {
         let mut guard = state.proxy_summary_quota_broadcast_handle.lock().await;
         std::mem::take(&mut *guard)
@@ -928,8 +933,8 @@ fn spawn_forward_proxy_maintenance(
         .await
         {
             if let Some(run) = startup_run.as_ref() {
-                finish_system_task_run(
-                    &state.pool,
+                finish_system_task_run_batched(
+                    state.as_ref(),
                     run,
                     SystemTaskStatus::Failed,
                     Some("forward proxy startup refresh failed".to_string()),
@@ -939,8 +944,8 @@ fn spawn_forward_proxy_maintenance(
             }
             warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
         } else if let Some(run) = startup_run.as_ref() {
-            finish_system_task_run(
-                &state.pool,
+            finish_system_task_run_batched(
+                    state.as_ref(),
                 run,
                 SystemTaskStatus::Success,
                 Some("forward proxy startup refresh completed".to_string()),
@@ -968,8 +973,8 @@ fn spawn_forward_proxy_maintenance(
                     .ok();
                     if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false, None).await {
                         if let Some(run) = task_run.as_ref() {
-                            finish_system_task_run(
-                                &state.pool,
+                            finish_system_task_run_batched(
+                    state.as_ref(),
                                 run,
                                 SystemTaskStatus::Failed,
                                 Some("forward proxy interval refresh failed".to_string()),
@@ -979,8 +984,8 @@ fn spawn_forward_proxy_maintenance(
                         }
                         warn!(error = %err, "failed to refresh forward proxy subscriptions");
                     } else if let Some(run) = task_run.as_ref() {
-                        finish_system_task_run(
-                            &state.pool,
+                        finish_system_task_run_batched(
+                    state.as_ref(),
                             run,
                             SystemTaskStatus::Success,
                             Some("forward proxy interval refresh completed".to_string()),

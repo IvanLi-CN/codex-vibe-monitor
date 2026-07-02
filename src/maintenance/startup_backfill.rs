@@ -411,8 +411,8 @@ async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &Ca
     .await;
 
     if let Some(run) = task_run.as_ref() {
-        finish_system_task_run(
-            &state.pool,
+        finish_system_task_run_batched(
+            state.as_ref(),
             run,
             if had_failure {
                 SystemTaskStatus::Failed

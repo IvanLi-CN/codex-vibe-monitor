@@ -1368,46 +1368,27 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         pending_attempt_record.compact_support_reason = compact_support_observation
             .as_ref()
             .and_then(|value| value.reason.clone());
-        match update_pool_upstream_request_attempt_progress(
-            &state.pool,
+        let phase_enqueued = enqueue_pool_upstream_request_attempt_progress(
+            state.as_ref(),
             pending_attempt_record,
             POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
             Some(connect_latency_ms),
             Some(first_byte_latency_ms),
             pending_attempt_record.compact_support_status.as_deref(),
             pending_attempt_record.compact_support_reason.as_deref(),
-        )
-        .await
-        {
-            Ok(phase_persisted) => {
-                if phase_persisted
-                    && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
-                        state.as_ref(),
-                        &pending_attempt_record.invoke_id,
-                    )
-                    .await
-                {
-                    warn!(
-                        invoke_id = %pending_attempt_record.invoke_id,
-                        error = %err,
-                        "failed to broadcast live-first pool attempt streaming phase snapshot"
-                    );
-                }
-                if !phase_persisted {
-                    info!(
-                        invoke_id = %pending_attempt_record.invoke_id,
-                        attempt_id = pending_attempt_record.attempt_id,
-                        "streaming phase was not persisted for live-first pool attempt; relying on invocation cleanup guards for post-first-byte recovery"
-                    );
-                }
-            }
-            Err(err) => {
-                warn!(
-                    invoke_id = %pending_attempt_record.invoke_id,
-                    error = %err,
-                    "failed to persist live-first pool attempt streaming phase; relying on invocation cleanup guards for post-first-byte recovery"
-                );
-            }
+        );
+        if phase_enqueued {
+            debug!(
+                invoke_id = %pending_attempt_record.invoke_id,
+                attempt_id = pending_attempt_record.attempt_id,
+                "queued live-first pool attempt streaming phase progress"
+            );
+        } else {
+            info!(
+                invoke_id = %pending_attempt_record.invoke_id,
+                attempt_id = pending_attempt_record.attempt_id,
+                "streaming phase was not enqueued for live-first pool attempt; relying on invocation cleanup guards for post-first-byte recovery"
+            );
         }
     } else {
         disarm_pool_early_phase_cleanup_guard(&mut deferred_early_phase_cleanup_guard);

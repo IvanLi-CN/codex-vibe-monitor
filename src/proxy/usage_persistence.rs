@@ -396,11 +396,33 @@ pub(crate) async fn advance_pool_upstream_request_attempt_phase(
     pending: &PendingPoolAttemptRecord,
     phase: &str,
 ) -> Result<()> {
-    if !update_pool_upstream_request_attempt_phase(&state.pool, pending, phase).await? {
-        return Ok(());
-    }
+    enqueue_pool_upstream_request_attempt_progress(state, pending, phase, None, None, None, None);
+    Ok(())
+}
 
-    broadcast_pool_upstream_attempts_snapshot(state, &pending.invoke_id).await
+pub(crate) fn enqueue_pool_upstream_request_attempt_progress(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+    phase: &str,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
+) -> bool {
+    let Some(attempt_id) = pending.attempt_id else {
+        return false;
+    };
+    state.sqlite_batch_writer.enqueue(SqliteBatchWrite::AttemptProgress(
+        BatchedAttemptProgress {
+            attempt_id,
+            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+            phase: phase.to_string(),
+            connect_latency_ms,
+            first_byte_latency_ms,
+            compact_support_status: compact_support_status.map(ToOwned::to_owned),
+            compact_support_reason: compact_support_reason.map(ToOwned::to_owned),
+        },
+    ))
 }
 
 pub(crate) enum PoolAttemptRecoveryScope<'a> {
@@ -1004,6 +1026,8 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
     first_byte_observed: bool,
     terminal_outcome_observed: bool,
 ) -> Result<()> {
+    state.sqlite_batch_writer.flush_now(&state.pool).await?;
+
     if first_byte_observed && terminal_outcome_observed {
         info!(
             invoke_id = %pending_attempt_record.invoke_id,
@@ -1130,6 +1154,8 @@ pub(crate) async fn recover_guard_dropped_pool_terminal_invocation_orphan(
 pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
     state: &AppState,
 ) -> Result<PoolOrphanRecoveryOutcome> {
+    state.sqlite_batch_writer.flush_now(&state.pool).await?;
+
     let timeouts = resolve_pool_routing_timeouts(&state.pool, &state.config).await?;
     let responses_started_before = stale_started_before_string(
         timeouts.responses_first_byte_timeout,
@@ -2018,7 +2044,8 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
     state: &AppState,
     record: ProxyCaptureRecord,
 ) -> Result<()> {
-    let persisted = persist_proxy_capture_runtime_record(&state.pool, record).await?;
+    let derived_payload = record.payload.clone();
+    let persisted = persist_proxy_capture_runtime_record_core(&state.pool, record, false).await?;
     let Some(persisted_record) = persisted else {
         return Ok(());
     };
@@ -2032,6 +2059,23 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
     }
 
     let invoke_id = persisted_record.invoke_id.clone();
+    let derived = BatchedInvocationDerivedWrites {
+        invocation_id: persisted_record.id,
+        occurred_at: persisted_record.occurred_at.clone(),
+        payload: derived_payload,
+    };
+    if !state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::InvocationDerived(derived.clone()))
+        && let Err(err) =
+            SqliteBatchWriter::flush_invocation_derived_inline(&state.pool, derived).await
+    {
+        warn!(
+            error = %err,
+            invoke_id = %invoke_id,
+            "failed to synchronously compensate dropped runtime proxy derived write"
+        );
+    }
     if state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
             records: vec![persisted_record],
@@ -2050,6 +2094,14 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
 pub(crate) async fn persist_proxy_capture_runtime_record(
     pool: &Pool<Sqlite>,
     record: ProxyCaptureRecord,
+) -> Result<Option<ApiInvocation>> {
+    persist_proxy_capture_runtime_record_core(pool, record, true).await
+}
+
+async fn persist_proxy_capture_runtime_record_core(
+    pool: &Pool<Sqlite>,
+    record: ProxyCaptureRecord,
+    write_derived_inline: bool,
 ) -> Result<Option<ApiInvocation>> {
     let raw_response = if record.response_body_preview_enabled {
         record.raw_response.clone()
@@ -2225,48 +2277,50 @@ pub(crate) async fn persist_proxy_capture_runtime_record(
     )
     .await?
     .ok_or_else(|| anyhow!("persisted proxy runtime invocation row disappeared after upsert"))?;
-    upsert_invocation_hourly_rollups_tx(
-        tx.as_mut(),
-        &[InvocationHourlySourceRecord {
-            id: persisted_identity.id,
-            occurred_at: record.occurred_at.clone(),
-            source: SOURCE_PROXY.to_string(),
-            status: Some(record.status.clone()),
-            detail_level: DETAIL_LEVEL_FULL.to_string(),
-            input_tokens: record.usage.input_tokens,
-            output_tokens: record.usage.output_tokens,
-            cache_input_tokens: record.usage.cache_input_tokens,
-            total_tokens: record.usage.total_tokens,
-            cost: record.cost,
-            error_message: record.error_message.clone(),
-            failure_kind: failure_kind.clone(),
-            failure_class: Some(failure.failure_class.as_str().to_string()),
-            is_actionable: Some(failure.is_actionable as i64),
-            payload: record.payload.clone(),
-            t_total_ms: None,
-            t_req_read_ms,
-            t_req_parse_ms,
-            t_upstream_connect_ms,
-            t_upstream_ttfb_ms,
-            t_upstream_stream_ms: None,
-            t_resp_parse_ms: None,
-            t_persist_ms: None,
-        }],
-        &INVOCATION_HOURLY_ROLLUP_TARGETS,
-    )
-    .await?;
-    save_hourly_rollup_live_progress_tx(
-        tx.as_mut(),
-        HOURLY_ROLLUP_DATASET_INVOCATIONS,
-        persisted_identity.id,
-    )
-    .await?;
-    touch_invocation_upstream_account_last_activity_tx(
-        tx.as_mut(),
-        &record.occurred_at,
-        record.payload.as_deref(),
-    )
-    .await?;
+    if write_derived_inline {
+        upsert_invocation_hourly_rollups_tx(
+            tx.as_mut(),
+            &[InvocationHourlySourceRecord {
+                id: persisted_identity.id,
+                occurred_at: record.occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                status: Some(record.status.clone()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                input_tokens: record.usage.input_tokens,
+                output_tokens: record.usage.output_tokens,
+                cache_input_tokens: record.usage.cache_input_tokens,
+                total_tokens: record.usage.total_tokens,
+                cost: record.cost,
+                error_message: record.error_message.clone(),
+                failure_kind: failure_kind.clone(),
+                failure_class: Some(failure.failure_class.as_str().to_string()),
+                is_actionable: Some(failure.is_actionable as i64),
+                payload: record.payload.clone(),
+                t_total_ms: None,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
+                t_upstream_ttfb_ms,
+                t_upstream_stream_ms: None,
+                t_resp_parse_ms: None,
+                t_persist_ms: None,
+            }],
+            &INVOCATION_HOURLY_ROLLUP_TARGETS,
+        )
+        .await?;
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            persisted_identity.id,
+        )
+        .await?;
+        touch_invocation_upstream_account_last_activity_tx(
+            tx.as_mut(),
+            &record.occurred_at,
+            record.payload.as_deref(),
+        )
+        .await?;
+    }
 
     let persisted = load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
         .await?;

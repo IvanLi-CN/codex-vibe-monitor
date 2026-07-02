@@ -4009,6 +4009,10 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
     )
     .await
     .expect("persist+broadcast should invalidate prompt cache conversation cache");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let Json(second) = fetch_prompt_cache_conversations(
         State(state),
