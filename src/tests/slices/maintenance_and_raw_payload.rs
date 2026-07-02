@@ -816,7 +816,6 @@ async fn test_state_from_config_with_pool_no_available_wait(
     Arc::new(AppState {
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
-        runtime_proxy_snapshots: Arc::new(RuntimeProxySnapshotCache::default()),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
@@ -867,7 +866,6 @@ fn clone_state_with_upstream_accounts(
     Arc::new(AppState {
         config: state.config.clone(),
         sqlite_batch_writer: state.sqlite_batch_writer.clone(),
-        runtime_proxy_snapshots: state.runtime_proxy_snapshots.clone(),
         pool_account_selection_runtime: state.pool_account_selection_runtime.clone(),
         pool: state.pool.clone(),
         oauth_installation_seed: state.oauth_installation_seed,
@@ -912,7 +910,6 @@ fn clone_state_with_pool_group_429_retry_delay_override(
     Arc::new(AppState {
         config: state.config.clone(),
         sqlite_batch_writer: state.sqlite_batch_writer.clone(),
-        runtime_proxy_snapshots: state.runtime_proxy_snapshots.clone(),
         pool_account_selection_runtime: state.pool_account_selection_runtime.clone(),
         pool: state.pool.clone(),
         oauth_installation_seed: state.oauth_installation_seed,
@@ -969,7 +966,6 @@ async fn test_state_from_existing_pool(
     Arc::new(AppState {
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
-        runtime_proxy_snapshots: Arc::new(RuntimeProxySnapshotCache::default()),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],

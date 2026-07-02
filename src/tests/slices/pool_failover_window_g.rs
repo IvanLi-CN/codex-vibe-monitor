@@ -1791,7 +1791,6 @@ async fn file_backed_test_state_with_busy_timeout(
     let state = Arc::new(AppState {
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
-        runtime_proxy_snapshots: Arc::new(RuntimeProxySnapshotCache::default()),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
@@ -2376,7 +2375,6 @@ async fn quota_latest_returns_degraded_when_empty() {
     let state = Arc::new(AppState {
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
-        runtime_proxy_snapshots: Arc::new(RuntimeProxySnapshotCache::default()),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],

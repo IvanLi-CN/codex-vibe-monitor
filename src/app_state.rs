@@ -5,29 +5,6 @@ struct PoolRoutingRuntimeCache {
 }
 
 #[derive(Debug, Default)]
-struct RuntimeProxySnapshotCache {
-    records: std::sync::Mutex<HashMap<String, ApiInvocation>>,
-}
-
-impl RuntimeProxySnapshotCache {
-    fn key(invoke_id: &str, occurred_at: &str) -> String {
-        format!("{invoke_id}\n{occurred_at}")
-    }
-
-    fn upsert(&self, record: ApiInvocation) {
-        if let Ok(mut guard) = self.records.lock() {
-            guard.insert(Self::key(&record.invoke_id, &record.occurred_at), record);
-        }
-    }
-
-    fn remove(&self, invoke_id: &str, occurred_at: &str) {
-        if let Ok(mut guard) = self.records.lock() {
-            guard.remove(&Self::key(invoke_id, occurred_at));
-        }
-    }
-}
-
-#[derive(Debug, Default)]
 struct PoolAccountSelectionRuntime {
     selected_at: std::sync::Mutex<HashMap<i64, String>>,
 }
@@ -66,7 +43,6 @@ struct AppState {
     config: AppConfig,
     pool: Pool<Sqlite>,
     sqlite_batch_writer: Arc<SqliteBatchWriter>,
-    runtime_proxy_snapshots: Arc<RuntimeProxySnapshotCache>,
     pool_account_selection_runtime: Arc<PoolAccountSelectionRuntime>,
     oauth_installation_seed: [u8; 32],
     hourly_rollup_sync_lock: Arc<Mutex<()>>,

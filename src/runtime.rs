@@ -114,14 +114,12 @@ pub(crate) async fn run() -> Result<()> {
     let shutdown = CancellationToken::new();
 
     let sqlite_batch_writer = SqliteBatchWriter::spawn(pool.clone(), shutdown.clone());
-    let runtime_proxy_snapshots = Arc::new(RuntimeProxySnapshotCache::default());
     let pool_account_selection_runtime = Arc::new(PoolAccountSelectionRuntime::default());
 
     let state = Arc::new(AppState {
         config: config.clone(),
         pool,
         sqlite_batch_writer,
-        runtime_proxy_snapshots,
         pool_account_selection_runtime,
         oauth_installation_seed,
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),

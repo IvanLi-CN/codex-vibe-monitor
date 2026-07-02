@@ -2404,9 +2404,6 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
         occurred_at: record.occurred_at.clone(),
         record: record.clone(),
     };
-    state
-        .runtime_proxy_snapshots
-        .upsert(persisted_record.clone());
 
     if prompt_cache_key_from_payload(record.payload.as_deref())
         .as_deref()
