@@ -10,6 +10,7 @@ import {
 } from "react";
 import { useVirtualizer, useWindowVirtualizer } from "@tanstack/react-virtual";
 import { AppIcon } from "./AppIcon";
+import { ListBodyState } from "./ListBodyState";
 import type { ApiInvocation } from "../lib/api";
 import {
   invocationStableKey,
@@ -21,9 +22,7 @@ import {
 import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
 import { useTranslation } from "../i18n";
 import type { TranslationKey } from "../i18n";
-import { Alert } from "./ui/alert";
 import { Badge } from "./ui/badge";
-import { Spinner } from "./ui/spinner";
 import { cn } from "../lib/utils";
 import {
   FALLBACK_CELL,
@@ -548,22 +547,32 @@ export function InvocationTable({
 
   if (error) {
     return (
-      <Alert variant="error">
-        <span>{t("table.loadError", { error })}</span>
-      </Alert>
+      <ListBodyState
+        variant="error"
+        title={t("table.loadError", { error })}
+        testId="invocation-table-error"
+      />
     );
   }
 
   if (isLoading) {
     return (
-      <div className="flex justify-center py-10">
-        <Spinner size="lg" aria-label={t("table.loadingRecordsAria")} />
-      </div>
+      <ListBodyState
+        variant="loading"
+        title={t("table.loadingRecordsAria")}
+        testId="invocation-table-loading"
+      />
     );
   }
 
   if (records.length === 0) {
-    return <Alert>{emptyLabel ?? t("table.noRecords")}</Alert>;
+    return (
+      <ListBodyState
+        variant="empty"
+        title={emptyLabel ?? t("table.noRecords")}
+        testId="invocation-table-empty"
+      />
+    );
   }
 
   const firstVirtualRow = fallbackVirtualRows[0] ?? null;

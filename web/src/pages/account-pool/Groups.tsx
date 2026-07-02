@@ -1,13 +1,13 @@
 import { useCallback, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { AppIcon } from "../../components/AppIcon";
+import { ListBodyState } from "../../components/ListBodyState";
 import {
   AccountPoolGroupSummary,
   type AccountPoolGroupSummaryLabels,
 } from "../../components/AccountPoolGroupSummary";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
-import { Spinner } from "../../components/ui/spinner";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useTranslation } from "../../i18n";
@@ -251,7 +251,7 @@ export default function GroupsPage() {
             </div>
           </div>
 
-          {listError ? (
+          {listError && groupSummaries.length > 0 ? (
             <Alert variant="error">
               <AppIcon
                 name="alert-circle-outline"
@@ -273,18 +273,21 @@ export default function GroupsPage() {
           ) : null}
 
           {isLoading && groupSummaries.length === 0 ? (
-            <div
-              data-testid="account-pool-groups-loading"
-              className="flex min-h-[14rem] flex-col items-center justify-center rounded-[1.4rem] border border-dashed border-base-300/80 bg-base-100/60 px-6 py-10 text-center"
-            >
-              <Spinner className="h-6 w-6 text-primary" />
-              <p className="mt-4 text-base font-semibold text-base-content">
-                {t("accountPool.groups.loadingTitle")}
-              </p>
-              <p className="mt-2 max-w-md text-sm leading-6 text-base-content/65">
-                {t("accountPool.groups.loadingDescription")}
-              </p>
-            </div>
+            <ListBodyState
+              variant="loading"
+              title={t("accountPool.groups.loadingTitle")}
+              description={t("accountPool.groups.loadingDescription")}
+              testId="account-pool-groups-loading"
+            />
+          ) : listError && groupSummaries.length === 0 ? (
+            <ListBodyState
+              variant="error"
+              title={t("accountPool.groups.loadError")}
+              description={listError}
+              retryLabel={t("accountPool.groups.retry")}
+              onRetry={() => void refresh()}
+              testId="account-pool-groups-error"
+            />
           ) : null}
 
           {showEmptyState ? (
