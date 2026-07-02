@@ -11345,19 +11345,19 @@ async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let now_local = Utc::now().with_timezone(&Shanghai).naive_local();
-    let occurred_at = format_naive(now_local);
-    let local_start_of_day = now_local
-        .date()
-        .and_hms_opt(0, 0, 0)
-        .expect("valid local midnight");
-    // Keep the older terminal row on the same Shanghai calendar day even when
-    // the suite happens to run within the first two minutes after midnight.
+    let now_utc = Utc::now();
+    let today_start_utc = start_of_local_day(now_utc, Shanghai);
+    let current_hour_utc = Utc
+        .timestamp_opt(align_bucket_epoch(now_utc.timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("valid current hour");
+    let previous_complete_hour_utc =
+        (current_hour_utc - ChronoDuration::hours(1)).max(today_start_utc);
+    let occurred_at = format_naive(now_utc.with_timezone(&Shanghai).naive_local());
     let earlier_today = format_naive(
-        now_local
-            .checked_sub_signed(ChronoDuration::minutes(2))
-            .map(|candidate| candidate.max(local_start_of_day))
-            .expect("valid earlier local time"),
+        (previous_complete_hour_utc + ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
     );
 
     for (
@@ -11489,6 +11489,9 @@ async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
     recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[501, 502, 503, 504, 505, 506, 507])
         .await
         .expect("rebuild summary rollups for direct test rows");
+    save_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS, 507)
+        .await
+        .expect("mark directly rebuilt summary rollups as live cursor covered");
     tx.commit().await.expect("commit rollup rebuild tx");
 
     let Json(summary) = fetch_summary(
