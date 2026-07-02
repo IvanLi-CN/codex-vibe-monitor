@@ -11660,6 +11660,23 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     .execute(&state.pool)
     .await
     .expect("insert upstream activity account");
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET policy_block_new_conversations = 1,
+            policy_allow_cut_in = 0,
+            policy_priority_tier = 'primary',
+            policy_fast_mode_rewrite_mode = 'force_add',
+            policy_concurrency_limit = 3,
+            policy_upstream_429_retry_enabled = 1,
+            policy_upstream_429_max_retries = 2
+        WHERE id = ?1
+        "#,
+    )
+    .bind(42_i64)
+    .execute(&state.pool)
+    .await
+    .expect("set upstream activity routing policy");
 
     let base_local = Utc::now().with_timezone(&Shanghai).naive_local();
     for (
@@ -11867,6 +11884,24 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     );
     assert_eq!(account.in_progress_invocation_count, Some(3));
     assert_eq!(account.retry_invocation_count, Some(1));
+    let effective_routing_rule =
+        serde_json::to_value(&account.effective_routing_rule).expect("serialize routing rule");
+    assert_eq!(
+        effective_routing_rule["blockNewConversations"],
+        serde_json::Value::Bool(true)
+    );
+    assert_eq!(
+        effective_routing_rule["allowCutIn"],
+        serde_json::Value::Bool(false)
+    );
+    assert_eq!(effective_routing_rule["priorityTier"], "primary");
+    assert_eq!(effective_routing_rule["fastModeRewriteMode"], "force_add");
+    assert_eq!(effective_routing_rule["concurrencyLimit"], 3);
+    assert_eq!(
+        effective_routing_rule["upstream429RetryEnabled"],
+        serde_json::Value::Bool(true)
+    );
+    assert_eq!(effective_routing_rule["upstream429MaxRetries"], 2);
     assert_eq!(account.recent_invocations.len(), 4);
     assert_eq!(
         account.recent_invocations[0].invoke_id,

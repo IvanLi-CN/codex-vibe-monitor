@@ -344,6 +344,46 @@ function createUpstreamAccountActivityStoryResponse(
           Math.min(recentInvocationCount, 16),
         ),
         retryInvocationCount: 1,
+        effectiveRoutingRule: {
+          blockNewConversations: true,
+          allowCutOut: true,
+          allowCutIn: false,
+          priorityTier: "primary",
+          fastModeRewriteMode: "force_add",
+          imageToolRewriteMode: "keep_original",
+          concurrencyLimit: 3,
+          upstream429RetryEnabled: true,
+          upstream429MaxRetries: 2,
+          availableModels: [],
+          availableModelsDefined: false,
+          systemDeniedModels: [],
+          sourceTagIds: [],
+          sourceTagNames: [],
+          fieldSources: {
+            blockNewConversations: "account",
+            allowCutOut: "root",
+            allowCutIn: "account",
+            priorityTier: "group",
+            fastModeRewriteMode: "account",
+            imageToolRewriteMode: "root",
+            concurrencyLimit: "group",
+            upstream429Retry: "group",
+            availableModels: "root",
+            systemDeniedModels: "root",
+          },
+          timeouts: {
+            responsesFirstByteTimeoutSecs: 120,
+            compactFirstByteTimeoutSecs: 120,
+            responsesStreamTimeoutSecs: 600,
+            compactStreamTimeoutSecs: 600,
+          },
+          timeoutFieldSources: {
+            responsesFirstByteTimeoutSecs: "root",
+            compactFirstByteTimeoutSecs: "root",
+            responsesStreamTimeoutSecs: "root",
+            compactStreamTimeoutSecs: "root",
+          },
+        },
         recentInvocations,
       },
     ],
@@ -2467,6 +2507,12 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
     await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
     await expect(canvas.getByText("繁忙")).toBeInTheDocument();
+    await expect(canvas.getByText("主力")).toBeInTheDocument();
+    await expect(canvas.getByText("禁入")).toBeInTheDocument();
+    await expect(canvas.getByText("禁新对话")).toBeInTheDocument();
+    await expect(canvas.getByTestId("dashboard-upstream-account-policy-badges")).toHaveTextContent(
+      "Fast",
+    );
     await expect(canvas.getByText("story-account-1")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5-mini")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5")).toBeInTheDocument();
