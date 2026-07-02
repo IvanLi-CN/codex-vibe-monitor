@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.6.3",
+  "base_stable_version": "2.6.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-02T00:34:02Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.6.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2c4f7f2f5587283f3f97b3007ed89756d379edbc",
+  "pr_number": 504,
+  "pr_title": "fix: batch sqlite derived writes",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.6.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.6.3",
+  "target_sha": "7658b8afbebb1c641d6db0f606e65741dc37cce7",
+  "type_label": "type:patch"
+}
