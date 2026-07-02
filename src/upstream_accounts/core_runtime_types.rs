@@ -1199,6 +1199,25 @@ pub(crate) struct EffectiveRoutingRule {
     timeout_field_sources: RoutingTimeoutFieldSources,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConversationRoutingOverride {
+    pub(crate) allow_switch_upstream: Option<bool>,
+    pub(crate) fast_mode_rewrite_mode: Option<TagFastModeRewriteMode>,
+    pub(crate) image_tool_rewrite_mode: Option<ImageToolRewriteMode>,
+    pub(crate) available_models: Option<Vec<String>>,
+    pub(crate) forward_proxy_key: Option<String>,
+}
+
+impl ConversationRoutingOverride {
+    pub(crate) fn has_policy_override(&self) -> bool {
+        self.allow_switch_upstream.is_some()
+            || self.fast_mode_rewrite_mode.is_some()
+            || self.image_tool_rewrite_mode.is_some()
+            || self.available_models.is_some()
+            || self.forward_proxy_key.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TagRoutingRule {

@@ -2368,7 +2368,7 @@ export const SequenceButtonOpensConversationHistory: Story = {
       "pck-dashboard-history-realistic",
     );
     await expect(
-      within(document.body).getByText(/全部保留调用记录|All retained calls/i),
+      within(document.body).getByText(/对话详情|Conversation details/i),
     ).toBeInTheDocument();
     await waitFor(() => {
       expect(document.body.textContent ?? "").toMatch(

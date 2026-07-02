@@ -1667,6 +1667,7 @@ async fn prepare_pool_account_with_node_shunt_refresh(
         effective_rule,
         group_metadata.clone(),
         node_shunt_assignments,
+        None,
     )
     .await;
     if group_metadata.node_shunt_enabled
@@ -1682,6 +1683,7 @@ async fn prepare_pool_account_with_node_shunt_refresh(
             effective_rule,
             group_metadata.clone(),
             node_shunt_assignments,
+            None,
         )
         .await;
     }

@@ -39,6 +39,28 @@ pub(crate) fn account_accepts_requested_model(
         .any(|candidate| requested_model_matches_constraint(requested_model, candidate))
 }
 
+pub(crate) fn apply_conversation_routing_override(
+    rule: &mut EffectiveRoutingRule,
+    override_policy: Option<&ConversationRoutingOverride>,
+) {
+    let Some(override_policy) = override_policy else {
+        return;
+    };
+    if let Some(fast_mode_rewrite_mode) = override_policy.fast_mode_rewrite_mode {
+        rule.fast_mode_rewrite_mode = fast_mode_rewrite_mode;
+        rule.field_sources.fast_mode_rewrite_mode = "conversation".to_string();
+    }
+    if let Some(image_tool_rewrite_mode) = override_policy.image_tool_rewrite_mode {
+        rule.image_tool_rewrite_mode = image_tool_rewrite_mode;
+        rule.field_sources.image_tool_rewrite_mode = "conversation".to_string();
+    }
+    if let Some(available_models) = override_policy.available_models.as_ref() {
+        rule.available_models = available_models.clone();
+        rule.available_models_defined = true;
+        rule.field_sources.available_models = "conversation".to_string();
+    }
+}
+
 pub(crate) fn account_is_image_compatible(
     rewrite_mode: ImageToolRewriteMode,
     capability: ImageToolCapability,
@@ -302,6 +324,16 @@ fn build_pool_resolved_account(
         upstream_base_url,
         routing_source,
     }
+}
+
+pub(crate) fn conversation_forward_proxy_scope(
+    override_policy: Option<&ConversationRoutingOverride>,
+) -> Option<ForwardProxyRouteScope> {
+    override_policy
+        .and_then(|policy| policy.forward_proxy_key.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|proxy_key| ForwardProxyRouteScope::pinned(proxy_key.to_string()))
 }
 
 async fn prepare_pool_account_with_scopes(
@@ -571,17 +603,19 @@ pub(crate) async fn prepare_pool_account(
     effective_rule: &EffectiveRoutingRule,
     group_metadata: UpstreamAccountGroupMetadata,
     node_shunt_assignments: &UpstreamAccountNodeShuntAssignments,
+    conversation_override: Option<&ConversationRoutingOverride>,
 ) -> Result<Option<PoolResolvedAccount>> {
     let refresh_proxy_scope = required_account_forward_proxy_scope(
         row.group_name.as_deref(),
         group_metadata.bound_proxy_keys.clone(),
     )?;
-    let forward_proxy_scope = resolve_account_forward_proxy_scope_from_assignments(
-        row.id,
-        row.group_name.as_deref(),
-        &group_metadata,
-        node_shunt_assignments,
-    )?;
+    let forward_proxy_scope = conversation_forward_proxy_scope(conversation_override)
+        .unwrap_or(resolve_account_forward_proxy_scope_from_assignments(
+            row.id,
+            row.group_name.as_deref(),
+            &group_metadata,
+            node_shunt_assignments,
+        )?);
     prepare_pool_account_with_scopes(
         state,
         row,

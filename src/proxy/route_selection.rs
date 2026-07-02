@@ -206,6 +206,36 @@ pub(crate) async fn load_via_pool_effective_routing_constraint(
     })
 }
 
+async fn load_via_pool_effective_routing(
+    state: &AppState,
+    prompt_cache_key: Option<&str>,
+    request_contains_encrypted_content: bool,
+) -> Result<
+    (
+        Option<PromptCacheConversationBindingConstraint>,
+        bool,
+        Option<ConversationRoutingOverride>,
+    ),
+    (StatusCode, String),
+> {
+    let (constraint, owner_auto_guard_active) = load_via_pool_effective_routing_constraint(
+        state,
+        prompt_cache_key,
+        request_contains_encrypted_content,
+    )
+    .await?;
+    let conversation_override =
+        load_prompt_cache_conversation_routing_override(&state.pool, prompt_cache_key)
+            .await
+            .map_err(|err| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("failed to resolve prompt cache conversation overrides: {err}"),
+                )
+            })?;
+    Ok((constraint, owner_auto_guard_active, conversation_override))
+}
+
 pub(crate) fn pool_account_supports_live_request_body(
     account: &PoolResolvedAccount,
     original_uri: &Uri,
@@ -1615,8 +1645,11 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 .or(prompt_cache_key);
             let replay_contains_encrypted_content =
                 replay_snapshot_contains_encrypted_content(&snapshot).await;
-            let (replay_prompt_cache_binding_constraint, replay_owner_auto_guard_active) =
-                load_via_pool_effective_routing_constraint(
+            let (
+                replay_prompt_cache_binding_constraint,
+                replay_owner_auto_guard_active,
+                replay_conversation_override,
+            ) = load_via_pool_effective_routing(
                     state.as_ref(),
                     replay_prompt_cache_key.as_deref(),
                     replay_contains_encrypted_content,
@@ -1764,6 +1797,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 }),
                 replay_sticky_key.as_deref(),
                 replay_prompt_cache_binding_constraint,
+                replay_conversation_override,
                 preferred_account,
                 failover_progress,
                 same_account_attempts,
@@ -1983,13 +2017,16 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 .is_some_and(value_contains_encrypted_content);
             let effective_prompt_cache_key =
                 body_prompt_cache_key.clone().or(header_prompt_cache_key.clone());
-            let (prompt_cache_binding_constraint, owner_auto_guard_active) =
-                load_via_pool_effective_routing_constraint(
-                    state.as_ref(),
-                    effective_prompt_cache_key.as_deref(),
-                    request_contains_encrypted_content,
-                )
-                .await?;
+            let (
+                prompt_cache_binding_constraint,
+                owner_auto_guard_active,
+                conversation_override,
+            ) = load_via_pool_effective_routing(
+                state.as_ref(),
+                effective_prompt_cache_key.as_deref(),
+                request_contains_encrypted_content,
+            )
+            .await?;
             let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
                 proxy_request_id,
                 original_uri.path(),
@@ -2021,6 +2058,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     }),
                     body_sticky_key.as_deref(),
                     prompt_cache_binding_constraint,
+                    conversation_override,
                     None,
                     PoolFailoverProgress {
                         responses_total_timeout_started_at:
@@ -2043,6 +2081,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 no_available_wait_deadline,
                 prompt_cache_binding_constraint,
                 body_prompt_cache_key,
+                conversation_override,
                 request_body_model,
                 request_contains_encrypted_content,
                 owner_auto_guard_active,
@@ -2333,8 +2372,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 && let Some(terminal_error) =
                                     pending_header_sticky_terminal_error.clone()
                             {
-                                let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
-                                    load_via_pool_effective_routing_constraint(
+                                let (prompt_cache_binding_constraint, _, conversation_override) =
+                                    load_via_pool_effective_routing(
                                         state.as_ref(),
                                         observed_body_prompt_cache_key
                                             .as_deref()
@@ -2342,7 +2381,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                         false,
                                     )
                                     .await?;
-                                if prompt_cache_binding_constraint.is_none() {
+                                if prompt_cache_binding_constraint.is_none()
+                                    && conversation_override.is_none()
+                                {
                                     let trace_context = build_via_pool_attempt_trace_context(
                                         proxy_request_id,
                                         original_uri.path(),
@@ -2429,8 +2470,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 && let Some(terminal_error) =
                                     pending_header_sticky_terminal_error.clone()
                             {
-                                let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
-                                    load_via_pool_effective_routing_constraint(
+                                let (prompt_cache_binding_constraint, _, conversation_override) =
+                                    load_via_pool_effective_routing(
                                         state.as_ref(),
                                         observed_body_prompt_cache_key
                                             .as_deref()
@@ -2438,7 +2479,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                         false,
                                     )
                                     .await?;
-                                if prompt_cache_binding_constraint.is_none() {
+                                if prompt_cache_binding_constraint.is_none()
+                                    && conversation_override.is_none()
+                                {
                                     let trace_context = build_via_pool_attempt_trace_context(
                                         proxy_request_id,
                                         original_uri.path(),
@@ -2549,18 +2592,22 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         }),
                     Err(_) => infer_request_compaction_kind(capture_target, None),
                 };
-                let (prompt_cache_binding_constraint, owner_auto_guard_active) =
-                    load_via_pool_effective_routing_constraint(
-                        state.as_ref(),
-                        body_prompt_cache_key
-                            .as_deref()
-                            .or(header_prompt_cache_key.as_deref()),
-                        request_contains_encrypted_content,
-                    )
-                    .await?;
+                let (
+                    prompt_cache_binding_constraint,
+                    owner_auto_guard_active,
+                    conversation_override,
+                ) = load_via_pool_effective_routing(
+                    state.as_ref(),
+                    body_prompt_cache_key
+                        .as_deref()
+                        .or(header_prompt_cache_key.as_deref()),
+                    request_contains_encrypted_content,
+                )
+                .await?;
                 let requested_model =
                     extract_model_from_replay_snapshot(&request_body_snapshot).await;
                 if prompt_cache_binding_constraint.is_none()
+                    && conversation_override.is_none()
                     && body_sticky_key.as_deref() == Some(sticky_key.as_str())
                     && let Some(terminal_error) = pending_header_sticky_terminal_error
                 {
@@ -2578,8 +2625,10 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     header_sticky_wait_deadline.or(*shared_wait_deadline
                         .lock()
                         .expect("lock shared header wait deadline"));
-                let initial_account = if prompt_cache_binding_constraint.is_some() {
-                    let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent(
+                let initial_account = if prompt_cache_binding_constraint.is_some()
+                    || conversation_override.is_some()
+                {
+                    let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
                         state.as_ref(),
                         body_sticky_key.as_deref(),
                         requested_model.as_deref(),
@@ -2587,6 +2636,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         &HashSet::new(),
                         None,
                         prompt_cache_binding_constraint.as_ref(),
+                        conversation_override.as_ref(),
                         true,
                         &mut no_available_wait_deadline,
                         pre_attempt_total_timeout_deadline,
@@ -2723,6 +2773,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     no_available_wait_deadline,
                     prompt_cache_binding_constraint,
                     body_prompt_cache_key,
+                    conversation_override,
                     requested_model,
                     request_contains_encrypted_content,
                     owner_auto_guard_active,
@@ -2765,20 +2816,25 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     live_body_key_probe.contains_encrypted_content;
                 let live_responses_total_timeout_started_at =
                     responses_total_timeout_started_at_from_request;
-                let (prompt_cache_binding_constraint, owner_auto_guard_active) =
-                    load_via_pool_effective_routing_constraint(
-                        state.as_ref(),
-                        live_prompt_cache_key.as_deref(),
-                        live_request_contains_encrypted_content,
-                    )
-                    .await?;
+                let (
+                    prompt_cache_binding_constraint,
+                    owner_auto_guard_active,
+                    conversation_override,
+                ) = load_via_pool_effective_routing(
+                    state.as_ref(),
+                    live_prompt_cache_key.as_deref(),
+                    live_request_contains_encrypted_content,
+                )
+                .await?;
                 let live_first_requirements_known =
                     live_first_image_intent_known(capture_target, request_image_intent)
                         && (live_requested_model.is_some()
                             || prompt_cache_binding_constraint.is_some());
                 if live_first_requirements_known {
-                    let resolution = if prompt_cache_binding_constraint.is_some() {
-                        resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent(
+                    let resolution = if prompt_cache_binding_constraint.is_some()
+                        || conversation_override.is_some()
+                    {
+                        resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
                             state.as_ref(),
                             live_body_sticky_key.as_deref(),
                             live_requested_model.as_deref(),
@@ -2786,6 +2842,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             &HashSet::new(),
                             None,
                             prompt_cache_binding_constraint.as_ref(),
+                            conversation_override.as_ref(),
                             true,
                             &mut no_available_wait_deadline,
                             pre_attempt_total_timeout_deadline,
@@ -3287,17 +3344,20 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         .unwrap_or_else(|| infer_request_image_intent(capture_target, None)),
                     Err(_) => infer_request_image_intent(capture_target, None),
                 };
-                let (prompt_cache_binding_constraint, owner_auto_guard_active) =
-                    load_via_pool_effective_routing_constraint(
-                        state.as_ref(),
-                        body_prompt_cache_key
-                            .as_deref()
-                            .or(header_prompt_cache_key.as_deref()),
-                        request_contains_encrypted_content,
-                    )
-                    .await?;
+                let (
+                    prompt_cache_binding_constraint,
+                    owner_auto_guard_active,
+                    conversation_override,
+                ) = load_via_pool_effective_routing(
+                    state.as_ref(),
+                    body_prompt_cache_key
+                        .as_deref()
+                        .or(header_prompt_cache_key.as_deref()),
+                    request_contains_encrypted_content,
+                )
+                .await?;
                 let mut no_available_wait_deadline = None;
-                let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent(
+                let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
                     state.as_ref(),
                     body_sticky_key.as_deref(),
                     requested_model.as_deref(),
@@ -3305,6 +3365,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     &HashSet::new(),
                     None,
                     prompt_cache_binding_constraint.as_ref(),
+                    conversation_override.as_ref(),
                     true,
                     &mut no_available_wait_deadline,
                     pre_attempt_total_timeout_deadline,
@@ -3336,6 +3397,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     no_available_wait_deadline,
                     prompt_cache_binding_constraint,
                     effective_prompt_cache_key,
+                    conversation_override,
                     request_body_model,
                     request_contains_encrypted_content,
                     owner_auto_guard_active,
@@ -3371,6 +3433,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     }),
                     body_sticky_key.as_deref(),
                     prompt_cache_binding_constraint,
+                    conversation_override,
                     Some(initial_account),
                     PoolFailoverProgress {
                         responses_total_timeout_started_at:
@@ -3393,8 +3456,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         } else {
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS
         };
-        let (prompt_cache_binding_constraint, owner_auto_guard_active) =
-            load_via_pool_effective_routing_constraint(
+        let (prompt_cache_binding_constraint, owner_auto_guard_active, conversation_override) =
+            load_via_pool_effective_routing(
                 state.as_ref(),
                 header_prompt_cache_key.as_deref(),
                 false,
@@ -3427,6 +3490,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 }),
                 header_sticky_key.as_deref(),
                 prompt_cache_binding_constraint,
+                conversation_override,
                 None,
                 PoolFailoverProgress {
                     responses_total_timeout_started_at,
