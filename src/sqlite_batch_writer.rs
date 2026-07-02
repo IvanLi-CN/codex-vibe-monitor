@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Result;
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Sqlite, SqliteConnection};
 use tokio::{
     sync::{Mutex, mpsc, oneshot},
     task::JoinHandle,
@@ -61,10 +61,15 @@ pub(crate) enum SqliteBatchWrite {
     SystemTaskFinish(BatchedSystemTaskFinish),
 }
 
-enum SqliteBatchWriterMessage {
-    Write(SqliteBatchWrite),
-    FlushNow(oneshot::Sender<Result<(), String>>),
-    Shutdown(oneshot::Sender<Result<(), String>>),
+enum SqliteBatchWriterControl {
+    FlushNow {
+        queued_depth_snapshot: usize,
+        responder: oneshot::Sender<Result<(), String>>,
+    },
+    Shutdown {
+        queued_depth_snapshot: usize,
+        responder: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -138,7 +143,8 @@ impl PendingBatch {
 
 #[derive(Debug)]
 pub(crate) struct SqliteBatchWriter {
-    sender: mpsc::Sender<SqliteBatchWriterMessage>,
+    write_sender: mpsc::Sender<SqliteBatchWrite>,
+    control_sender: mpsc::Sender<SqliteBatchWriterControl>,
     pending_depth: Arc<AtomicUsize>,
     dropped_writes: Arc<AtomicU64>,
     handle: Mutex<Option<JoinHandle<()>>>,
@@ -148,16 +154,19 @@ pub(crate) struct SqliteBatchWriter {
 
 impl SqliteBatchWriter {
     pub(crate) fn spawn(pool: Pool<Sqlite>, _shutdown: CancellationToken) -> Arc<Self> {
-        let (sender, receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
+        let (write_sender, write_receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
+        let (control_sender, control_receiver) = mpsc::channel(128);
         let pending_depth = Arc::new(AtomicUsize::new(0));
         let dropped_writes = Arc::new(AtomicU64::new(0));
         let handle = tokio::spawn(run_sqlite_batch_writer(
             pool,
-            receiver,
+            write_receiver,
+            control_receiver,
             pending_depth.clone(),
         ));
         Arc::new(Self {
-            sender,
+            write_sender,
+            control_sender,
             pending_depth,
             dropped_writes,
             handle: Mutex::new(Some(handle)),
@@ -168,9 +177,11 @@ impl SqliteBatchWriter {
 
     #[cfg(test)]
     pub(crate) fn spawn_for_test() -> Arc<Self> {
-        let (sender, _receiver) = mpsc::channel(1);
+        let (write_sender, _write_receiver) = mpsc::channel(1);
+        let (control_sender, _control_receiver) = mpsc::channel(1);
         Arc::new(Self {
-            sender,
+            write_sender,
+            control_sender,
             pending_depth: Arc::new(AtomicUsize::new(0)),
             dropped_writes: Arc::new(AtomicU64::new(0)),
             handle: Mutex::new(None),
@@ -200,7 +211,7 @@ impl SqliteBatchWriter {
         }
 
         self.pending_depth.fetch_add(1, Ordering::Relaxed);
-        match self.sender.try_send(SqliteBatchWriterMessage::Write(write)) {
+        match self.write_sender.try_send(write) {
             Ok(()) => true,
             Err(err) => {
                 self.pending_depth.fetch_sub(1, Ordering::Relaxed);
@@ -224,9 +235,13 @@ impl SqliteBatchWriter {
         }
 
         let (sender, receiver) = oneshot::channel();
+        let queued_depth_snapshot = self.pending_depth.load(Ordering::Relaxed);
         if let Err(err) = self
-            .sender
-            .try_send(SqliteBatchWriterMessage::FlushNow(sender))
+            .control_sender
+            .try_send(SqliteBatchWriterControl::FlushNow {
+                queued_depth_snapshot,
+                responder: sender,
+            })
         {
             self.dropped_writes.fetch_add(1, Ordering::Relaxed);
             warn!(
@@ -268,9 +283,13 @@ impl SqliteBatchWriter {
             return;
         };
         let (sender, receiver) = oneshot::channel();
+        let queued_depth_snapshot = self.pending_depth.load(Ordering::Relaxed);
         if let Err(err) = self
-            .sender
-            .send(SqliteBatchWriterMessage::Shutdown(sender))
+            .control_sender
+            .send(SqliteBatchWriterControl::Shutdown {
+                queued_depth_snapshot,
+                responder: sender,
+            })
             .await
         {
             warn!(error = %err, "sqlite batch writer shutdown barrier could not be queued");
@@ -333,32 +352,31 @@ impl SqliteBatchWriter {
 
 async fn run_sqlite_batch_writer(
     pool: Pool<Sqlite>,
-    mut receiver: mpsc::Receiver<SqliteBatchWriterMessage>,
+    mut write_receiver: mpsc::Receiver<SqliteBatchWrite>,
+    mut control_receiver: mpsc::Receiver<SqliteBatchWriterControl>,
     pending_depth: Arc<AtomicUsize>,
 ) {
     let mut ticker = interval(SQLITE_BATCH_FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut pending = PendingBatch::default();
+    let mut control_closed = false;
 
     loop {
         tokio::select! {
             biased;
-            maybe_message = receiver.recv() => {
-                let Some(message) = maybe_message else {
-                    let _ = flush_pending_batch(&pool, pending.take(), true).await;
-                    return;
-                };
-                match message {
-                    SqliteBatchWriterMessage::Write(write) => {
-                        pending_depth.fetch_sub(1, Ordering::Relaxed);
-                        pending.push(write);
-                        if pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS {
-                            if let Some(retained) = flush_pending_batch(&pool, pending.take(), false).await {
-                                pending = retained;
-                            }
-                        }
-                    }
-                    SqliteBatchWriterMessage::FlushNow(sender) => {
+            maybe_control = control_receiver.recv(), if !control_closed => {
+                if let Some(control) = maybe_control {
+                    match control {
+                    SqliteBatchWriterControl::FlushNow {
+                        queued_depth_snapshot,
+                        responder,
+                    } => {
+                        drain_queued_batch_writes(
+                            &mut write_receiver,
+                            &mut pending,
+                            &pending_depth,
+                            queued_depth_snapshot,
+                        );
                         let result = match flush_pending_batch(&pool, pending.take(), true).await {
                             Some(retained) => {
                                 let message = format!(
@@ -370,9 +388,18 @@ async fn run_sqlite_batch_writer(
                             }
                             None => Ok(()),
                         };
-                        let _ = sender.send(result);
+                        let _ = responder.send(result);
                     }
-                    SqliteBatchWriterMessage::Shutdown(sender) => {
+                    SqliteBatchWriterControl::Shutdown {
+                        queued_depth_snapshot,
+                        responder,
+                    } => {
+                        drain_queued_batch_writes(
+                            &mut write_receiver,
+                            &mut pending,
+                            &pending_depth,
+                            queued_depth_snapshot,
+                        );
                         let result = match flush_pending_batch(&pool, pending.take(), true).await {
                             Some(retained) => {
                                 Err(format!(
@@ -382,8 +409,24 @@ async fn run_sqlite_batch_writer(
                             }
                             None => Ok(()),
                         };
-                        let _ = sender.send(result);
+                        let _ = responder.send(result);
                         return;
+                    }
+                    }
+                } else {
+                    control_closed = true;
+                }
+            }
+            maybe_write = write_receiver.recv() => {
+                let Some(write) = maybe_write else {
+                    let _ = flush_pending_batch(&pool, pending.take(), true).await;
+                    return;
+                };
+                pending_depth.fetch_sub(1, Ordering::Relaxed);
+                pending.push(write);
+                if pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS {
+                    if let Some(retained) = flush_pending_batch(&pool, pending.take(), false).await {
+                        pending = retained;
                     }
                 }
             }
@@ -405,6 +448,25 @@ async fn run_sqlite_batch_writer(
                         pending = retained;
                     }
                 }
+            }
+        }
+    }
+}
+
+fn drain_queued_batch_writes(
+    write_receiver: &mut mpsc::Receiver<SqliteBatchWrite>,
+    pending: &mut PendingBatch,
+    pending_depth: &Arc<AtomicUsize>,
+    max_messages: usize,
+) {
+    for _ in 0..max_messages {
+        match write_receiver.try_recv() {
+            Ok(write) => {
+                pending_depth.fetch_sub(1, Ordering::Relaxed);
+                pending.push(write);
+            }
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                break;
             }
         }
     }
@@ -567,7 +629,13 @@ async fn flush_pending_batch_inner(pool: &Pool<Sqlite>, batch: &PendingBatch) ->
     }
 
     if !batch.invocation_derived.is_empty() {
-        replay_live_invocation_hourly_rollups_tx(tx.as_mut()).await?;
+        let target_invocation_id = batch
+            .invocation_derived
+            .keys()
+            .next_back()
+            .copied()
+            .unwrap_or_default();
+        replay_live_invocation_hourly_rollups_until_tx(tx.as_mut(), target_invocation_id).await?;
         for derived in batch.invocation_derived.values() {
             touch_invocation_upstream_account_last_activity_tx(
                 tx.as_mut(),
@@ -602,6 +670,25 @@ async fn flush_pending_batch_inner(pool: &Pool<Sqlite>, batch: &PendingBatch) ->
 
     tx.commit().await?;
     Ok(())
+}
+
+async fn replay_live_invocation_hourly_rollups_until_tx(
+    tx: &mut SqliteConnection,
+    target_invocation_id: i64,
+) -> Result<u64> {
+    let mut total_updated = 0;
+    loop {
+        let cursor =
+            load_hourly_rollup_live_progress_tx(tx, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+        if cursor >= target_invocation_id {
+            return Ok(total_updated);
+        }
+        let updated = replay_live_invocation_hourly_rollups_tx(tx).await?;
+        total_updated += updated;
+        if updated == 0 {
+            return Ok(total_updated);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -840,6 +927,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn flush_now_applies_pending_writes_through_control_path() {
+        let pool = test_pool().await;
+        let pending = pending_attempt(&pool, "batch-progress-flush-now").await;
+        let attempt_id = pending.attempt_id.expect("attempt id");
+        let shutdown = CancellationToken::new();
+        let writer = SqliteBatchWriter::spawn(pool.clone(), shutdown.clone());
+
+        assert!(
+            writer.enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
+                attempt_id,
+                pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+                phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string(),
+                connect_latency_ms: Some(23.0),
+                first_byte_latency_ms: Some(37.0),
+                compact_support_status: None,
+                compact_support_reason: None,
+            }))
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), writer.flush_now(&pool))
+            .await
+            .expect("flush_now should not be starved by normal write traffic")
+            .expect("flush pending write");
+
+        let row = sqlx::query_as::<_, (Option<String>, Option<f64>, Option<f64>)>(
+            r#"
+            SELECT phase, connect_latency_ms, first_byte_latency_ms
+            FROM pool_upstream_request_attempts
+            WHERE id = ?1
+            "#,
+        )
+        .bind(attempt_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load flushed attempt progress");
+
+        assert_eq!(
+            row.0.as_deref(),
+            Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
+        );
+        assert_eq!(row.1, Some(23.0));
+        assert_eq!(row.2, Some(37.0));
+        writer.shutdown_and_drain().await;
+    }
+
+    #[tokio::test]
     async fn system_task_finish_batch_marks_running_task_terminal() {
         let pool = test_pool().await;
         let handle = begin_system_task_run(
@@ -897,42 +1030,43 @@ mod tests {
         .await
         .expect("seed live progress");
 
-        sqlx::query(
-            r#"
-            INSERT INTO codex_invocations (
-                invoke_id,
-                occurred_at,
-                source,
-                input_tokens,
-                output_tokens,
-                cache_input_tokens,
-                total_tokens,
-                cost,
-                status,
-                raw_response,
-                detail_level
+        let row_count = BACKFILL_BATCH_SIZE + 5;
+        for index in 0..row_count {
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    invoke_id,
+                    occurred_at,
+                    source,
+                    input_tokens,
+                    output_tokens,
+                    cache_input_tokens,
+                    total_tokens,
+                    cost,
+                    status,
+                    raw_response,
+                    detail_level
+                )
+                VALUES (?1, ?2, 'proxy', 1, 2, 0, 3, 0.01, 'success', '', 'full')
+                "#,
             )
-            VALUES
-                ('batch-derived-1', '2026-07-01 10:00:00', 'proxy', 1, 2, 0, 3, 0.01, 'success', '', 'full'),
-                ('batch-derived-2', '2026-07-01 10:00:01', 'proxy', 4, 5, 0, 9, 0.02, 'success', '', 'full')
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("seed invocations");
+            .bind(format!("batch-derived-{index}"))
+            .bind(format!("2026-07-01 10:{:02}:00", index % 60))
+            .execute(&pool)
+            .await
+            .expect("seed invocation");
+        }
 
-        let ids = sqlx::query_scalar::<_, i64>(
-            "SELECT id FROM codex_invocations ORDER BY id ASC LIMIT 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("load first invocation id");
+        let max_id = sqlx::query_scalar::<_, i64>("SELECT MAX(id) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("load max invocation id");
 
         SqliteBatchWriter::flush_for_test(
             &pool,
             vec![SqliteBatchWrite::InvocationDerived(
                 BatchedInvocationDerivedWrites {
-                    invocation_id: ids,
+                    invocation_id: max_id,
                     occurred_at: "2026-07-01 10:00:00".to_string(),
                     payload: None,
                 },
@@ -943,10 +1077,6 @@ mod tests {
         let cursor = load_hourly_rollup_live_progress(&pool, HOURLY_ROLLUP_DATASET_INVOCATIONS)
             .await
             .expect("load live progress");
-        let max_id = sqlx::query_scalar::<_, i64>("SELECT MAX(id) FROM codex_invocations")
-            .fetch_one(&pool)
-            .await
-            .expect("load max invocation id");
         assert_eq!(cursor, max_id);
     }
 }
