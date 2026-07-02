@@ -133,4 +133,31 @@ describe("MaintenanceRecordsPage", () => {
     expect(host?.querySelector('[data-testid="maintenance-records-refreshing"]')).not.toBeNull();
     expect(host?.textContent ?? "").toContain("Existing OAuth");
   });
+
+  it("keeps stale rows visible and shows an inline warning when refetching fails", async () => {
+    apiMocks.fetchUpstreamAccountActionEvents
+      .mockResolvedValueOnce(buildResponse("Existing OAuth"))
+      .mockRejectedValueOnce(new Error("Network failed"));
+
+    renderPage();
+    await flushAsync();
+
+    expect(host?.textContent ?? "").toContain("Existing OAuth");
+
+    const accountInput = host?.querySelector(
+      'input[placeholder="搜索账号名或 ID"]',
+    ) as HTMLInputElement | null;
+    expect(accountInput).not.toBeNull();
+
+    await act(async () => {
+      inputValueSetter?.call(accountInput, "new filter");
+      accountInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountActionEvents).toHaveBeenCalledTimes(2);
+    expect(host?.textContent ?? "").toContain("Network failed");
+    expect(host?.textContent ?? "").toContain("Existing OAuth");
+    expect(host?.querySelector('[data-testid="maintenance-records-error"]')).toBeNull();
+  });
 });

@@ -110,8 +110,11 @@ export default function MaintenanceRecordsPage() {
       .catch((nextError: unknown) => {
         if (controller.signal.aborted) return;
         setError(nextError instanceof Error ? nextError.message : String(nextError));
-        setEvents([]);
-        setTotal(0);
+        setEvents((currentEvents) => {
+          if (currentEvents.length > 0) return currentEvents;
+          setTotal(0);
+          return [];
+        });
       })
       .finally(() => {
         if (controller.signal.aborted) return;
