@@ -264,6 +264,70 @@ describe('EffectiveRoutingRuleCard', () => {
     expect(timeoutButton?.disabled).toBe(false)
   })
 
+  it('expands an inherited timeout row instead of clearing it', () => {
+    const onChange = vi.fn()
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule()}
+        labels={labels}
+        editablePolicy={{ onChange }}
+      />,
+    )
+
+    const timeoutButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit account override: Standard response first byte timeout"]',
+    )
+
+    act(() => {
+      timeoutButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(onChange).not.toHaveBeenCalled()
+    expect(
+      document.querySelector<HTMLInputElement>(
+        'input[name="responsesFirstByteTimeoutSecs"]',
+      ),
+    ).not.toBeNull()
+  })
+
+  it('clears an account timeout override when its active override button is clicked', () => {
+    const onChange = vi.fn()
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          timeouts: {
+            responsesFirstByteTimeoutSecs: 180,
+            compactFirstByteTimeoutSecs: 300,
+            responsesStreamTimeoutSecs: 300,
+            compactStreamTimeoutSecs: 300,
+          },
+          timeoutFieldSources: {
+            responsesFirstByteTimeoutSecs: 'account',
+            compactFirstByteTimeoutSecs: 'root',
+            responsesStreamTimeoutSecs: 'root',
+            compactStreamTimeoutSecs: 'root',
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange }}
+      />,
+    )
+
+    const timeoutButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Clear account override: Standard response first byte timeout"]',
+    )
+
+    act(() => {
+      timeoutButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(onChange).toHaveBeenCalledWith('timeoutResponsesFirstByte', {
+      timeouts: {
+        responsesFirstByteTimeoutSecs: null,
+      },
+    })
+  })
+
   it('expands the first account override by default', () => {
     render(
       <EffectiveRoutingRuleCard
