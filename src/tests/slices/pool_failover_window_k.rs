@@ -2901,6 +2901,14 @@ async fn recover_orphaned_pool_upstream_request_attempts_keeps_startup_sequence_
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -3023,6 +3031,10 @@ async fn recover_orphaned_pool_upstream_request_attempts_recovers_terminal_invoc
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist success candidate invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -3263,6 +3275,10 @@ async fn pool_early_phase_orphan_cleanup_guard_recovers_dropped_sending_request_
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -3380,6 +3396,10 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let pending = PendingPoolAttemptRecord {
         attempt_id: None,
@@ -3469,6 +3489,10 @@ async fn recover_guard_dropped_pool_early_phase_orphan_skips_streaming_response_
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -3577,6 +3601,10 @@ async fn recover_guard_dropped_pool_early_phase_orphan_recovers_attempt_after_in
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -3707,6 +3735,10 @@ async fn recover_guard_dropped_pool_early_phase_orphan_skips_post_first_byte_ter
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -4461,6 +4493,10 @@ async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_w
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let pending = PendingPoolAttemptRecord {
         attempt_id: None,
@@ -5142,6 +5178,10 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
         persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
             .await
             .expect("persist running invocation");
+        state
+            .sqlite_batch_writer
+            .flush_buffered_for_test(&state.pool)
+            .await;
         let trace = PoolUpstreamAttemptTraceContext {
             invoke_id: invoke_id.to_string(),
             occurred_at: occurred_at.to_string(),
@@ -5428,6 +5468,10 @@ async fn recover_stale_pool_early_phase_orphans_runtime_skips_active_live_attemp
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -5681,6 +5725,10 @@ async fn recover_stale_pool_early_phase_orphans_runtime_recovers_stale_attempts_
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -6366,6 +6414,10 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_rechecks_invocat
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),

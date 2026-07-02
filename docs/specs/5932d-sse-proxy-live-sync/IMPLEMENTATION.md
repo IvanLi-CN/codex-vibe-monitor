@@ -10,6 +10,8 @@
 - Working-conversations snapshot count/page now also accept the same `<=5s` bounded-freshness contract. Instead of strict historical recomputation from `codex_invocations`, snapshot aggregates read the live working-set truth directly and keep the existing response fields, cursor shape, and main ordering semantics.
 - Proxy capture request completion now keeps terminal `codex_invocations` as the synchronous source of truth, but moves bounded derived writes through a process-local SQLite batch writer. Attempt phase/latency progress, invocation hourly rollup/live progress, upstream account activity touch, and background system-task finish updates coalesce on short windows before touching SQLite. Terminal attempt finalize remains synchronous and overwrites any unflushed progress.
 - Proxy capture terminal persistence now prefers a narrow update of an existing `running/pending` invocation row and only falls back to guarded `INSERT OR IGNORE` for missing rows. Snapshot/broadcast follow-up treats SQLite locked errors as fail-soft skips with structured evidence, relying on SSE and the normal reconcile loop to catch up instead of blocking proxy completion.
+- Runtime proxy snapshots no longer synchronously write the `codex_invocations` main table on each `running` update. They broadcast an in-memory `records` payload immediately, enqueue a bounded `running` placeholder through the SQLite batch writer, and let terminal proxy capture synchronously overwrite the final main fact. The public SSE/API record shape stays unchanged; only DB-backed reconcile accepts the existing `<=5s` freshness budget.
+- Pool account `last_selected_at` selection touches now use an in-process routing fairness anchor plus a coalesced batch write. Candidate sorting overlays the runtime timestamp on top of persisted account rows, while status/cooldown/failure writes remain synchronous because they affect routing correctness.
 
 ## Migrated Implementation Notes
 
@@ -38,6 +40,7 @@
 - [x] M6: 活动调用记录列表统一接入 `records` SSE：`Live`、`/records` 与账号详情抽屉 records tab 现在共用一套记录过滤、去重、终态优选与 SSE open 静默回源逻辑。
 - [x] M7: Proxy capture 派生写与 attempt 中间进度进入 SQLite batch writer；保持代理并发与 terminal 主事实同步落盘不变。
 - [x] M8: Proxy capture terminal 主事实写入改为 existing-row 窄更新优先，DB locked snapshot/broadcast 改为 fail-soft skip；公开 SSE/API shape 不变。
+- [x] M9: Runtime running snapshot 去同步主表写；账号选择 touch 去耦到内存公平性锚点 + batch writer，terminal 主事实与路由状态正确性保持同步可靠。
 
 ## 2026-06-21 Follow-up
 
@@ -52,4 +55,7 @@
 - `cd web && bun run test useStats.test.ts`
 - `cd web && bun run test useDashboardUpstreamAccountActivity.test.tsx`
 - `cargo test sqlite_batch_writer`
+- `cargo test persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_running_record -- --nocapture`
+- `cargo test runtime_snapshot_batches_prompt_cache_rollups_without_background_follow_up -- --nocapture`
+- `cargo test resolver_ -- --nocapture`
 - `cargo test pool_upstream_request_attempt -- --test-threads=1`

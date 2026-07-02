@@ -4,11 +4,70 @@ struct PoolRoutingRuntimeCache {
     timeouts: PoolRoutingTimeoutSettingsResolved,
 }
 
+#[derive(Debug, Default)]
+struct RuntimeProxySnapshotCache {
+    records: std::sync::Mutex<HashMap<String, ApiInvocation>>,
+}
+
+impl RuntimeProxySnapshotCache {
+    fn key(invoke_id: &str, occurred_at: &str) -> String {
+        format!("{invoke_id}\n{occurred_at}")
+    }
+
+    fn upsert(&self, record: ApiInvocation) {
+        if let Ok(mut guard) = self.records.lock() {
+            guard.insert(Self::key(&record.invoke_id, &record.occurred_at), record);
+        }
+    }
+
+    fn remove(&self, invoke_id: &str, occurred_at: &str) {
+        if let Ok(mut guard) = self.records.lock() {
+            guard.remove(&Self::key(invoke_id, occurred_at));
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct PoolAccountSelectionRuntime {
+    selected_at: std::sync::Mutex<HashMap<i64, String>>,
+}
+
+impl PoolAccountSelectionRuntime {
+    fn record_selected(&self, account_id: i64, selected_at: String) {
+        if let Ok(mut guard) = self.selected_at.lock() {
+            match guard.get(&account_id) {
+                Some(existing) if existing >= &selected_at => {}
+                _ => {
+                    guard.insert(account_id, selected_at);
+                }
+            }
+        }
+    }
+
+    fn latest_selected_at(&self, account_id: i64, persisted: Option<&str>) -> Option<String> {
+        let runtime = self
+            .selected_at
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&account_id).cloned());
+        match (runtime, persisted) {
+            (Some(runtime), Some(persisted)) if runtime.as_str() < persisted => {
+                Some(persisted.to_string())
+            }
+            (Some(runtime), _) => Some(runtime),
+            (None, Some(persisted)) => Some(persisted.to_string()),
+            (None, None) => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct AppState {
     config: AppConfig,
     pool: Pool<Sqlite>,
     sqlite_batch_writer: Arc<SqliteBatchWriter>,
+    runtime_proxy_snapshots: Arc<RuntimeProxySnapshotCache>,
+    pool_account_selection_runtime: Arc<PoolAccountSelectionRuntime>,
     oauth_installation_seed: [u8; 32],
     hourly_rollup_sync_lock: Arc<Mutex<()>>,
     http_clients: HttpClients,

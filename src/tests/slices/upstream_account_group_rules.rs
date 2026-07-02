@@ -323,9 +323,9 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
         other => panic!("expected records payload, got {other:?}"),
     };
 
-    assert!(
-        broadcast_record.id > 0,
-        "running snapshot should use persisted row id"
+    assert_eq!(
+        broadcast_record.id, 0,
+        "running snapshot should broadcast from memory before the bounded sqlite flush"
     );
     assert_eq!(broadcast_record.status.as_deref(), Some("running"));
     assert_eq!(broadcast_record.model.as_deref(), Some("gpt-5.4"));
@@ -362,6 +362,24 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
     assert_eq!(broadcast_record.t_upstream_connect_ms, Some(330.0));
     assert_eq!(broadcast_record.t_upstream_ttfb_ms, Some(120.0));
 
+    let Json(pre_flush_response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("running invocation should not require synchronous db persistence");
+
+    assert_eq!(pre_flush_response.total, 0);
+
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+
     let Json(response) = list_invocations(
         State(state),
         Query(ListQuery {
@@ -371,11 +389,11 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
         }),
     )
     .await
-    .expect("running invocation should be queryable immediately");
+    .expect("running invocation should be queryable after bounded sqlite flush");
 
     assert_eq!(response.total, 1);
     assert_eq!(response.records.len(), 1);
-    assert_eq!(response.records[0].id, broadcast_record.id);
+    assert!(response.records[0].id > 0);
     assert_eq!(response.records[0].status.as_deref(), Some("running"));
     assert_eq!(
         response.records[0].compaction_request_kind.as_deref(),

@@ -69,6 +69,25 @@ pub(crate) struct BatchedInvocationDerivedWrites {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct BatchedRunningProxySnapshot {
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
+    pub(crate) record: ProxyCaptureRecord,
+}
+
+impl BatchedRunningProxySnapshot {
+    fn key(&self) -> String {
+        format!("{}\n{}", self.invoke_id, self.occurred_at)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BatchedAccountSelectedTouch {
+    pub(crate) account_id: i64,
+    pub(crate) selected_at: String,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct BatchedSystemTaskFinish {
     pub(crate) run_id: i64,
     pub(crate) task_kind: SystemTaskKind,
@@ -84,6 +103,8 @@ pub(crate) struct BatchedSystemTaskFinish {
 pub(crate) enum SqliteBatchWrite {
     AttemptProgress(BatchedAttemptProgress),
     InvocationDerived(BatchedInvocationDerivedWrites),
+    RunningProxySnapshot(BatchedRunningProxySnapshot),
+    AccountSelectedTouch(BatchedAccountSelectedTouch),
     SystemTaskFinish(BatchedSystemTaskFinish),
 }
 
@@ -102,6 +123,8 @@ enum SqliteBatchWriterControl {
 struct PendingBatch {
     attempt_progress: HashMap<i64, BatchedAttemptProgress>,
     invocation_derived: BTreeMap<i64, BatchedInvocationDerivedWrites>,
+    running_proxy_snapshots: HashMap<String, BatchedRunningProxySnapshot>,
+    account_selected_touches: HashMap<i64, BatchedAccountSelectedTouch>,
     system_task_finishes: HashMap<i64, BatchedSystemTaskFinish>,
     enqueued_rows: usize,
     coalesced_rows: usize,
@@ -112,12 +135,16 @@ impl PendingBatch {
     fn is_empty(&self) -> bool {
         self.attempt_progress.is_empty()
             && self.invocation_derived.is_empty()
+            && self.running_proxy_snapshots.is_empty()
+            && self.account_selected_touches.is_empty()
             && self.system_task_finishes.is_empty()
     }
 
     fn logical_rows(&self) -> usize {
         self.attempt_progress.len()
             + self.invocation_derived.len()
+            + self.running_proxy_snapshots.len()
+            + self.account_selected_touches.len()
             + self.system_task_finishes.len()
     }
 
@@ -145,6 +172,24 @@ impl PendingBatch {
                 if self
                     .invocation_derived
                     .insert(derived.invocation_id, derived)
+                    .is_some()
+                {
+                    self.coalesced_rows += 1;
+                }
+            }
+            SqliteBatchWrite::RunningProxySnapshot(snapshot) => {
+                if self
+                    .running_proxy_snapshots
+                    .insert(snapshot.key(), snapshot)
+                    .is_some()
+                {
+                    self.coalesced_rows += 1;
+                }
+            }
+            SqliteBatchWrite::AccountSelectedTouch(touch) => {
+                if self
+                    .account_selected_touches
+                    .insert(touch.account_id, touch)
                     .is_some()
                 {
                     self.coalesced_rows += 1;
@@ -540,6 +585,8 @@ async fn flush_pending_batch(
     let coalesced_rows = batch.coalesced_rows;
     let attempt_count = batch.attempt_progress.len();
     let invocation_count = batch.invocation_derived.len();
+    let running_snapshot_count = batch.running_proxy_snapshots.len();
+    let account_touch_count = batch.account_selected_touches.len();
     let system_task_count = batch.system_task_finishes.len();
     let system_task_scope = summarize_system_task_batch_scope(&batch);
     let oldest_age_ms = batch.age().as_millis() as u64;
@@ -559,6 +606,8 @@ async fn flush_pending_batch(
                     coalesced_rows,
                     attempt_count,
                     invocation_count,
+                    running_snapshot_count,
+                    account_touch_count,
                     system_task_count,
                     system_task_scope = %system_task_scope,
                     oldest_age_ms,
@@ -578,6 +627,8 @@ async fn flush_pending_batch(
             coalesced_rows,
             attempt_count,
             invocation_count,
+            running_snapshot_count,
+            account_touch_count,
             system_task_count,
             system_task_scope = %system_task_scope,
             oldest_age_ms,
@@ -597,6 +648,8 @@ async fn flush_pending_batch(
             coalesced_rows,
             attempt_count,
             invocation_count,
+            running_snapshot_count,
+            account_touch_count,
             system_task_count,
             system_task_scope = %system_task_scope,
             oldest_age_ms,
@@ -610,6 +663,8 @@ async fn flush_pending_batch(
             coalesced_rows,
             attempt_count,
             invocation_count,
+            running_snapshot_count,
+            account_touch_count,
             system_task_count,
             system_task_scope = %system_task_scope,
             oldest_age_ms,
@@ -704,6 +759,31 @@ async fn flush_pending_batch_inner(pool: &Pool<Sqlite>, batch: &PendingBatch) ->
             )
             .await?;
         }
+    }
+
+    for snapshot in batch.running_proxy_snapshots.values() {
+        let _ = insert_running_proxy_snapshot_placeholder_tx(tx.as_mut(), &snapshot.record).await?;
+    }
+
+    for touch in batch.account_selected_touches.values() {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_selected_at = CASE
+                    WHEN last_selected_at IS NULL OR last_selected_at < ?2 THEN ?2
+                    ELSE last_selected_at
+                END,
+                updated_at = CASE
+                    WHEN updated_at IS NULL OR updated_at < ?2 THEN ?2
+                    ELSE updated_at
+                END
+            WHERE id = ?1
+            "#,
+        )
+        .bind(touch.account_id)
+        .bind(&touch.selected_at)
+        .execute(tx.as_mut())
+        .await?;
     }
 
     for finish in batch.system_task_finishes.values() {
@@ -1138,5 +1218,145 @@ mod tests {
             .await
             .expect("load live progress");
         assert_eq!(cursor, max_id);
+    }
+
+    #[tokio::test]
+    async fn running_proxy_snapshot_batch_inserts_placeholder_once() {
+        let pool = test_pool().await;
+        let request_info = RequestCaptureInfo {
+            model: Some("gpt-5.5".to_string()),
+            is_stream: true,
+            ..RequestCaptureInfo::default()
+        };
+        let first = build_running_proxy_capture_record(
+            "batch-running-placeholder",
+            "2026-07-01 10:00:00",
+            ProxyCaptureTarget::Responses,
+            &request_info,
+            Some("192.0.2.44"),
+            Some("sticky-a"),
+            Some("pck-a"),
+            true,
+            Some(42),
+            Some("Primary"),
+            Some("api_key_codex"),
+            Some("api.openai.com"),
+            None,
+            Some(1),
+            Some(1),
+            None,
+            None,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+        );
+        let second = build_running_proxy_capture_record(
+            "batch-running-placeholder",
+            "2026-07-01 10:00:00",
+            ProxyCaptureTarget::Responses,
+            &request_info,
+            Some("192.0.2.44"),
+            Some("sticky-a"),
+            Some("pck-a"),
+            true,
+            Some(43),
+            Some("Secondary"),
+            Some("api_key_codex"),
+            Some("api.openai.com"),
+            None,
+            Some(2),
+            Some(2),
+            None,
+            None,
+            3.0,
+            4.0,
+            8.0,
+            9.0,
+        );
+
+        SqliteBatchWriter::flush_for_test(
+            &pool,
+            vec![
+                SqliteBatchWrite::RunningProxySnapshot(BatchedRunningProxySnapshot {
+                    invoke_id: first.invoke_id.clone(),
+                    occurred_at: first.occurred_at.clone(),
+                    record: first,
+                }),
+                SqliteBatchWrite::RunningProxySnapshot(BatchedRunningProxySnapshot {
+                    invoke_id: second.invoke_id.clone(),
+                    occurred_at: second.occurred_at.clone(),
+                    record: second,
+                }),
+            ],
+        )
+        .await;
+
+        let count = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM codex_invocations
+            WHERE invoke_id = 'batch-running-placeholder'
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count running placeholder");
+        let row = sqlx::query_as::<_, (String, Option<i64>)>(
+            r#"
+            SELECT status, CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountId') END
+            FROM codex_invocations
+            WHERE invoke_id = 'batch-running-placeholder'
+            LIMIT 1
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load running placeholder");
+
+        assert_eq!(count, 1);
+        assert_eq!(row.0, "running");
+        assert_eq!(row.1, Some(43));
+    }
+
+    #[tokio::test]
+    async fn account_selected_touch_batch_coalesces_by_account_id() {
+        let pool = test_pool().await;
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                id, kind, provider, display_name, status, enabled, last_selected_at, created_at, updated_at
+            )
+            VALUES (77, 'api_key', 'codex', 'Primary', 'active', 1, NULL, '2026-07-01T09:59:00Z', '2026-07-01T09:59:00Z')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed account");
+
+        SqliteBatchWriter::flush_for_test(
+            &pool,
+            vec![
+                SqliteBatchWrite::AccountSelectedTouch(BatchedAccountSelectedTouch {
+                    account_id: 77,
+                    selected_at: "2026-07-01T10:00:00Z".to_string(),
+                }),
+                SqliteBatchWrite::AccountSelectedTouch(BatchedAccountSelectedTouch {
+                    account_id: 77,
+                    selected_at: "2026-07-01T10:00:05Z".to_string(),
+                }),
+            ],
+        )
+        .await;
+
+        let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT last_selected_at, updated_at FROM pool_upstream_accounts WHERE id = 77",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load selected account");
+
+        assert_eq!(row.0.as_deref(), Some("2026-07-01T10:00:05Z"));
+        assert_eq!(row.1.as_deref(), Some("2026-07-01T10:00:05Z"));
     }
 }
