@@ -9,6 +9,7 @@
 - Dashboard working conversations live head/count now read from a write-side `prompt_cache_working_set_live` table that keeps the last 5 minutes of terminal activity plus any current in-flight keys. The public response shape stays unchanged, while the hot read path no longer rebuilds the working set from `codex_invocations` on every request.
 - Working-conversations snapshot count/page now also accept the same `<=5s` bounded-freshness contract. Instead of strict historical recomputation from `codex_invocations`, snapshot aggregates read the live working-set truth directly and keep the existing response fields, cursor shape, and main ordering semantics.
 - Proxy capture request completion now keeps terminal `codex_invocations` as the synchronous source of truth, but moves bounded derived writes through a process-local SQLite batch writer. Attempt phase/latency progress, invocation hourly rollup/live progress, upstream account activity touch, and background system-task finish updates coalesce on short windows before touching SQLite. Terminal attempt finalize remains synchronous and overwrites any unflushed progress.
+- Proxy capture terminal persistence now prefers a narrow update of an existing `running/pending` invocation row and only falls back to guarded `INSERT OR IGNORE` for missing rows. Snapshot/broadcast follow-up treats SQLite locked errors as fail-soft skips with structured evidence, relying on SSE and the normal reconcile loop to catch up instead of blocking proxy completion.
 
 ## Migrated Implementation Notes
 
@@ -36,6 +37,7 @@
 - [x] M5: Dashboard realtime consumers split visible patch, KPI, chart commit, head reconcile, and parallel-work conditional-fetch budgets.
 - [x] M6: 活动调用记录列表统一接入 `records` SSE：`Live`、`/records` 与账号详情抽屉 records tab 现在共用一套记录过滤、去重、终态优选与 SSE open 静默回源逻辑。
 - [x] M7: Proxy capture 派生写与 attempt 中间进度进入 SQLite batch writer；保持代理并发与 terminal 主事实同步落盘不变。
+- [x] M8: Proxy capture terminal 主事实写入改为 existing-row 窄更新优先，DB locked snapshot/broadcast 改为 fail-soft skip；公开 SSE/API shape 不变。
 
 ## 2026-06-21 Follow-up
 

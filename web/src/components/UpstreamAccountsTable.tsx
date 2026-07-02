@@ -1,8 +1,8 @@
 /* eslint-disable react-refresh/only-export-components -- grouped/grid roster reuses the row rendering helpers from this module */
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { AppIcon } from './AppIcon'
+import { ListBodyState } from './ListBodyState'
 import { MotherAccountBadge } from './MotherAccountToggle'
-import { Button } from './ui/button'
 import { Spinner } from './ui/spinner'
 import { Badge } from './ui/badge'
 import { Tooltip } from './ui/tooltip'
@@ -954,65 +954,39 @@ export function UpstreamAccountsTable({
 
   if (isLoading && items.length === 0) {
     return (
-      <div
-        data-testid="upstream-accounts-table-loading"
-        className="sticky top-6 z-10 flex min-h-[16rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/90 px-6 py-10 text-center shadow-sm backdrop-blur-sm"
-        aria-live="polite"
-      >
-        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-          <Spinner className="h-6 w-6" />
-        </div>
-        <h3 className="text-lg font-semibold text-base-content">
-          {loadingTitle ?? emptyTitle}
-        </h3>
-        {loadingDescription ? (
-          <p className="mt-2 max-w-sm text-sm leading-6 text-base-content/65">
-            {loadingDescription}
-          </p>
-        ) : null}
-      </div>
+      <ListBodyState
+        variant="loading"
+        title={loadingTitle ?? emptyTitle}
+        description={loadingDescription}
+        testId="upstream-accounts-table-loading"
+        className="sticky top-6 z-10 min-h-[16rem] bg-base-100/90 shadow-sm backdrop-blur-sm"
+      />
     )
   }
 
   if (error && items.length === 0) {
     return (
-      <div
-        data-testid="upstream-accounts-table-error"
-        className="sticky top-6 z-10 flex min-h-[16rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-error/30 bg-error/10 px-6 py-10 text-center shadow-sm backdrop-blur-sm"
-        aria-live="polite"
-      >
-        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-error/10 text-error">
-          <AppIcon name="alert-circle-outline" className="h-7 w-7" aria-hidden />
-        </div>
-        <h3 className="text-lg font-semibold text-base-content">
-          {errorTitle ?? emptyTitle}
-        </h3>
-        <p className="mt-2 max-w-md text-sm leading-6 text-base-content/70">
-          {error}
-        </p>
-        {onRetry && retryLabel ? (
-          <Button type="button" variant="secondary" className="mt-4" onClick={onRetry}>
-            <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
-            {retryLabel}
-          </Button>
-        ) : null}
-      </div>
+      <ListBodyState
+        variant="error"
+        title={errorTitle ?? emptyTitle}
+        description={error}
+        retryLabel={retryLabel}
+        onRetry={onRetry}
+        testId="upstream-accounts-table-error"
+        className="sticky top-6 z-10 min-h-[16rem] shadow-sm backdrop-blur-sm"
+      />
     )
   }
 
   if (items.length === 0) {
     return (
-      <div className="flex min-h-[16rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 py-10 text-center">
-        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-          <AppIcon name="server-network-outline" className="h-7 w-7" aria-hidden />
-        </div>
-        <h3 className="text-lg font-semibold text-base-content">
-          {emptyTitle}
-        </h3>
-        <p className="mt-2 max-w-sm text-sm leading-6 text-base-content/65">
-          {emptyDescription}
-        </p>
-      </div>
+      <ListBodyState
+        variant="empty"
+        title={emptyTitle}
+        description={emptyDescription}
+        testId="upstream-accounts-table-empty"
+        className="min-h-[16rem]"
+      />
     )
   }
 

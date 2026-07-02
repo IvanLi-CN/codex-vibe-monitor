@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { AppIcon } from "./AppIcon";
+import { ListBodyState } from "./ListBodyState";
 import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
 import {
   FALLBACK_CELL,
@@ -32,7 +33,6 @@ import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
 import { useTranslation } from "../i18n";
 import { Alert } from "./ui/alert";
 import { Badge } from "./ui/badge";
-import { Spinner } from "./ui/spinner";
 import { cn } from "../lib/utils";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 
@@ -690,22 +690,32 @@ export function InvocationRecordsTable({
 
   if (showBlockingError) {
     return (
-      <Alert variant="error">
-        {t("records.table.loadError", { error: error ?? "" })}
-      </Alert>
+      <ListBodyState
+        variant="error"
+        title={t("records.table.loadError", { error: error ?? "" })}
+        testId="invocation-records-table-error"
+      />
     );
   }
 
   if (isLoading && !hasRecords) {
     return (
-      <div className="flex justify-center py-10">
-        <Spinner size="lg" aria-label={t("records.table.loadingAria")} />
-      </div>
+      <ListBodyState
+        variant="loading"
+        title={t("records.table.loadingAria")}
+        testId="invocation-records-table-loading"
+      />
     );
   }
 
   if (!hasRecords) {
-    return <Alert>{t("records.table.empty")}</Alert>;
+    return (
+      <ListBodyState
+        variant="empty"
+        title={t("records.table.empty")}
+        testId="invocation-records-table-empty"
+      />
+    );
   }
 
   const headers = (() => {

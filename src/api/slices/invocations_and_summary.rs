@@ -2655,6 +2655,12 @@ pub(crate) async fn fetch_upstream_account_activity(
 
     let account_ids = account_activity.keys().copied().collect::<Vec<_>>();
     let account_meta = query_upstream_account_activity_meta(&state.pool, &account_ids).await?;
+    let effective_routing_rules =
+        crate::upstream_accounts::load_effective_routing_rules_for_accounts(
+            &state.pool,
+            &account_ids,
+        )
+        .await?;
     let in_progress_counts = if params.range == "yesterday" {
         HashMap::new()
     } else {
@@ -2726,6 +2732,10 @@ pub(crate) async fn fetch_upstream_account_activity(
                 ),
                 in_progress_invocation_count,
                 retry_invocation_count,
+                effective_routing_rule: effective_routing_rules
+                    .get(&upstream_account_id)
+                    .cloned()
+                    .unwrap_or_else(crate::upstream_accounts::default_effective_routing_rule),
                 recent_invocations: aggregate.recent_invocations,
             }
         })

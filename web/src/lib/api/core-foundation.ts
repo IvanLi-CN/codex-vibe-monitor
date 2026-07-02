@@ -2,12 +2,14 @@ import { getBrowserTimeZone } from "../timeZone";
 import { normalizeForwardProxyProtocolLabel } from "../forwardProxyDisplay";
 import type {
   CompactSupportState,
+  EffectiveRoutingRule,
   EffectiveRoutingRuleSource,
   EffectiveRoutingTimeoutFieldSources,
   PoolRoutingMaintenanceSettings,
   PoolRoutingSettings,
   PoolRoutingTimeoutSettings,
 } from "./core-upstream";
+import { normalizeEffectiveRoutingRule } from "./core-upstream";
 
 const rawBase = import.meta.env.VITE_API_BASE_URL ?? "";
 const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
@@ -612,6 +614,7 @@ export interface UpstreamAccountActivityAccount {
   avgTotalMs?: number | null;
   inProgressInvocationCount?: number | null;
   retryInvocationCount?: number | null;
+  effectiveRoutingRule: EffectiveRoutingRule;
   recentInvocations: PromptCacheConversationInvocationPreview[];
 }
 
@@ -2671,6 +2674,9 @@ function normalizeUpstreamAccountActivityAccount(
       payload.inProgressInvocationCount,
     ),
     retryInvocationCount: normalizeFiniteNumber(payload.retryInvocationCount),
+    effectiveRoutingRule: normalizeEffectiveRoutingRule(
+      payload.effectiveRoutingRule,
+    ),
     recentInvocations,
   };
 }
