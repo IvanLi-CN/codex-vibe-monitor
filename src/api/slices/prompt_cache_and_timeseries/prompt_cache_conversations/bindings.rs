@@ -153,14 +153,23 @@ pub(crate) fn normalize_prompt_cache_conversation_key(raw: &str) -> Result<Strin
 }
 
 async fn binding_response_for_none(
-    pool: &Pool<Sqlite>,
+    state: &AppState,
     config: &AppConfig,
     prompt_cache_key: String,
     owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
 ) -> Result<PromptCacheConversationBindingResponse> {
+    let sticky_account_id = load_sticky_account_id(&state.pool, &prompt_cache_key).await?;
+    let effective_account_id = owner
+        .map(|owner| owner.owner_upstream_account_id)
+        .or(sticky_account_id);
+    let effective_policy = if let Some(account_id) = effective_account_id {
+        load_effective_routing_rule_for_account(&state.pool, account_id).await?
+    } else {
+        load_effective_routing_rule_for_group(&state.pool, None).await?
+    };
     let (timeouts, timeout_field_sources) = if let Some(owner) = owner {
         let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
-            pool,
+            &state.pool,
             config,
             owner.owner_upstream_account_id,
             Some(prompt_cache_key.as_str()),
@@ -169,7 +178,7 @@ async fn binding_response_for_none(
         (timeouts, sources)
     } else {
         let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
-            pool,
+            &state.pool,
             config,
             None,
             Some(prompt_cache_key.as_str()),
@@ -177,6 +186,8 @@ async fn binding_response_for_none(
         .await?;
         (timeouts, sources)
     };
+    let forward_proxy_key =
+        resolve_effective_forward_proxy_key_for_account(state, effective_account_id).await;
 
     Ok(PromptCacheConversationBindingResponse {
         prompt_cache_key,
@@ -190,27 +201,63 @@ async fn binding_response_for_none(
         encrypted_owner_group_name: None,
         timeouts,
         timeout_field_sources,
-        allow_switch_upstream: None,
-        fast_mode_rewrite_mode: None,
-        image_tool_rewrite_mode: None,
-        available_models: None,
-        forward_proxy_key: None,
-        policy_field_sources: PromptCacheConversationPolicyFieldSources::inherited(),
+        allow_switch_upstream: Some(effective_policy.allow_cut_out()),
+        fast_mode_rewrite_mode: Some(effective_policy.fast_mode_rewrite_mode),
+        image_tool_rewrite_mode: Some(effective_policy.image_tool_rewrite_mode),
+        available_models: effective_policy
+            .available_models()
+            .map(|models| models.to_vec()),
+        forward_proxy_key,
+        policy_field_sources: PromptCacheConversationPolicyFieldSources::inherited(
+            Some(&effective_policy),
+        ),
         updated_at: None,
     })
 }
 
 async fn binding_response_from_row(
-    pool: &Pool<Sqlite>,
+    state: &AppState,
     config: &AppConfig,
     row: PromptCacheConversationBindingRow,
     owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
 ) -> Result<PromptCacheConversationBindingResponse> {
-    let policy_field_sources = PromptCacheConversationPolicyFieldSources::from_row(&row);
+    let sticky_account_id = if row.binding_kind == PROMPT_CACHE_BINDING_KIND_NONE {
+        load_sticky_account_id(&state.pool, &row.prompt_cache_key).await?
+    } else {
+        None
+    };
+    let effective_policy = if row.binding_kind == PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT {
+        if let Some(account_id) = row.upstream_account_id {
+            Some(load_effective_routing_rule_for_account(&state.pool, account_id).await?)
+        } else {
+            None
+        }
+    } else if row.binding_kind == PROMPT_CACHE_BINDING_KIND_GROUP {
+        Some(load_effective_routing_rule_for_group(&state.pool, row.group_name.as_deref()).await?)
+    } else if row.binding_kind == PROMPT_CACHE_BINDING_KIND_NONE {
+        if let Some(owner) = owner {
+            Some(load_effective_routing_rule_for_account(
+                &state.pool,
+                owner.owner_upstream_account_id,
+            )
+            .await?)
+        } else if let Some(account_id) = sticky_account_id {
+            Some(load_effective_routing_rule_for_account(&state.pool, account_id).await?)
+        } else {
+            Some(load_effective_routing_rule_for_group(&state.pool, None).await?)
+        }
+    } else {
+        None
+    };
+    let policy_field_sources =
+        PromptCacheConversationPolicyFieldSources::from_row(&row, effective_policy.as_ref());
+    let effective_available_models = effective_policy
+        .as_ref()
+        .and_then(|rule| rule.available_models().map(|models| models.to_vec()));
     let (timeouts, timeout_field_sources) = if row.binding_kind == PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT {
         if let Some(account_id) = row.upstream_account_id {
             let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
-                pool,
+                &state.pool,
                 config,
                 account_id,
                 Some(row.prompt_cache_key.as_str()),
@@ -219,7 +266,7 @@ async fn binding_response_from_row(
             (timeouts, sources)
         } else {
             let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
-                pool,
+                &state.pool,
                 config,
                 None,
                 Some(row.prompt_cache_key.as_str()),
@@ -229,7 +276,7 @@ async fn binding_response_from_row(
         }
     } else if row.binding_kind == PROMPT_CACHE_BINDING_KIND_GROUP {
         let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
-            pool,
+            &state.pool,
             config,
             row.group_name.as_deref(),
             Some(row.prompt_cache_key.as_str()),
@@ -238,7 +285,7 @@ async fn binding_response_from_row(
         (timeouts, sources)
     } else if let Some(owner) = owner {
         let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
-            pool,
+            &state.pool,
             config,
             owner.owner_upstream_account_id,
             Some(row.prompt_cache_key.as_str()),
@@ -247,7 +294,7 @@ async fn binding_response_from_row(
         (timeouts, sources)
     } else {
         let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
-            pool,
+            &state.pool,
             config,
             None,
             Some(row.prompt_cache_key.as_str()),
@@ -255,6 +302,9 @@ async fn binding_response_from_row(
         .await?;
         (timeouts, sources)
     };
+    let forward_proxy_key = row.forward_proxy_key.clone().or(
+        resolve_effective_forward_proxy_key_for_row(state, &row, owner, sticky_account_id).await,
+    );
 
     Ok(PromptCacheConversationBindingResponse {
         prompt_cache_key: row.prompt_cache_key,
@@ -273,42 +323,75 @@ async fn binding_response_from_row(
         encrypted_owner_group_name: owner.and_then(|value| value.owner_group_name.clone()),
         timeouts,
         timeout_field_sources,
-        allow_switch_upstream: row.allow_switch_upstream.map(|value| value != 0),
+        allow_switch_upstream: row
+            .allow_switch_upstream
+            .map(|value| value != 0)
+            .or_else(|| effective_policy.as_ref().map(|rule| rule.allow_cut_out())),
         fast_mode_rewrite_mode: row
             .fast_mode_rewrite_mode
             .as_deref()
-            .map(parse_fast_mode_rewrite_mode_lossy),
+            .map(parse_fast_mode_rewrite_mode_lossy)
+            .or_else(|| effective_policy.as_ref().map(|rule| rule.fast_mode_rewrite_mode)),
         image_tool_rewrite_mode: row
             .image_tool_rewrite_mode
             .as_deref()
-            .map(ImageToolRewriteMode::from_str),
+            .map(ImageToolRewriteMode::from_str)
+            .or_else(|| effective_policy.as_ref().map(|rule| rule.image_tool_rewrite_mode)),
         available_models: row
             .available_models_json
             .as_deref()
-            .and_then(parse_available_models_json),
-        forward_proxy_key: row.forward_proxy_key.clone(),
+            .and_then(parse_available_models_json)
+            .or(effective_available_models),
+        forward_proxy_key,
         policy_field_sources,
         updated_at: Some(row.updated_at),
     })
 }
 
 impl PromptCacheConversationPolicyFieldSources {
-    fn inherited() -> Self {
+    fn inherited(effective_policy: Option<&EffectiveRoutingRule>) -> Self {
         Self {
-            allow_switch_upstream: "account".to_string(),
-            fast_mode_rewrite_mode: "account".to_string(),
-            image_tool_rewrite_mode: "account".to_string(),
-            available_models: "account".to_string(),
+            allow_switch_upstream: effective_policy
+                .map(|rule| rule.allow_cut_out_source())
+                .unwrap_or("root")
+                .to_string(),
+            fast_mode_rewrite_mode: effective_policy
+                .map(|rule| rule.fast_mode_rewrite_mode_source())
+                .unwrap_or("root")
+                .to_string(),
+            image_tool_rewrite_mode: effective_policy
+                .map(|rule| rule.image_tool_rewrite_mode_source())
+                .unwrap_or("root")
+                .to_string(),
+            available_models: effective_policy
+                .map(|rule| rule.available_models_source())
+                .unwrap_or("root")
+                .to_string(),
             forward_proxy_key: "account".to_string(),
         }
     }
 
-    fn from_row(row: &PromptCacheConversationBindingRow) -> Self {
+    fn from_row(
+        row: &PromptCacheConversationBindingRow,
+        effective_policy: Option<&EffectiveRoutingRule>,
+    ) -> Self {
         Self {
-            allow_switch_upstream: source_for_optional(row.allow_switch_upstream.as_ref()),
-            fast_mode_rewrite_mode: source_for_optional(row.fast_mode_rewrite_mode.as_ref()),
-            image_tool_rewrite_mode: source_for_optional(row.image_tool_rewrite_mode.as_ref()),
-            available_models: source_for_optional(row.available_models_json.as_ref()),
+            allow_switch_upstream: source_for_optional_or_effective(
+                row.allow_switch_upstream.as_ref(),
+                effective_policy.map(|rule| rule.allow_cut_out_source()),
+            ),
+            fast_mode_rewrite_mode: source_for_optional_or_effective(
+                row.fast_mode_rewrite_mode.as_ref(),
+                effective_policy.map(|rule| rule.fast_mode_rewrite_mode_source()),
+            ),
+            image_tool_rewrite_mode: source_for_optional_or_effective(
+                row.image_tool_rewrite_mode.as_ref(),
+                effective_policy.map(|rule| rule.image_tool_rewrite_mode_source()),
+            ),
+            available_models: source_for_optional_or_effective(
+                row.available_models_json.as_ref(),
+                effective_policy.map(|rule| rule.available_models_source()),
+            ),
             forward_proxy_key: source_for_optional(row.forward_proxy_key.as_ref()),
         }
     }
@@ -321,6 +404,99 @@ fn source_for_optional<T>(value: Option<&T>) -> String {
         "account"
     }
     .to_string()
+}
+
+fn source_for_optional_or_effective<T>(value: Option<&T>, effective_source: Option<&str>) -> String {
+    if value.is_some() {
+        "conversation"
+    } else {
+        effective_source.unwrap_or("root")
+    }
+    .to_string()
+}
+
+async fn load_sticky_account_id(pool: &Pool<Sqlite>, prompt_cache_key: &str) -> Result<Option<i64>> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1 LIMIT 1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn resolve_effective_forward_proxy_key_for_account(
+    state: &AppState,
+    account_id: Option<i64>,
+) -> Option<String> {
+    let account_id = account_id?;
+    let row = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .ok()??;
+    let scope = resolve_account_forward_proxy_scope(state, &row, None)
+    .await
+    .ok()?;
+    forward_proxy_key_for_scope(state, &scope).await
+}
+
+async fn load_first_group_account_id_for_forward_proxy(
+    pool: &Pool<Sqlite>,
+    group_name: &str,
+) -> Result<Option<i64>> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT id
+        FROM pool_upstream_accounts
+        WHERE TRIM(COALESCE(group_name, '')) = ?1
+          AND provider = 'codex'
+          AND enabled != 0
+          AND status = 'active'
+          AND encrypted_credentials IS NOT NULL
+        ORDER BY id ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(group_name)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn resolve_effective_forward_proxy_key_for_row(
+    state: &AppState,
+    row: &PromptCacheConversationBindingRow,
+    owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
+    sticky_account_id: Option<i64>,
+) -> Option<String> {
+    if row.binding_kind == PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT {
+        return resolve_effective_forward_proxy_key_for_account(state, row.upstream_account_id).await;
+    }
+    if row.binding_kind == PROMPT_CACHE_BINDING_KIND_GROUP {
+        let account_id =
+            load_first_group_account_id_for_forward_proxy(&state.pool, row.group_name.as_deref()?)
+                .await
+                .ok()?;
+        return resolve_effective_forward_proxy_key_for_account(state, account_id).await;
+    }
+    let effective_account_id = owner
+        .map(|owner| owner.owner_upstream_account_id)
+        .or(sticky_account_id);
+    resolve_effective_forward_proxy_key_for_account(state, effective_account_id).await
+}
+
+async fn forward_proxy_key_for_scope(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+) -> Option<String> {
+    match scope {
+        ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => Some(proxy_key.clone()),
+        ForwardProxyRouteScope::Automatic | ForwardProxyRouteScope::BoundGroup { .. } => {
+            select_forward_proxy_for_scope(state, scope)
+                .await
+                .ok()
+                .map(|selected| selected.key)
+        }
+    }
 }
 
 fn apply_owner_to_none_response(
@@ -1027,9 +1203,9 @@ pub(crate) async fn get_prompt_cache_conversation_binding(
     let owner =
         load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key).await?;
     let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await? {
-        Some(row) => binding_response_from_row(&state.pool, &state.config, row, owner.as_ref()).await?,
+        Some(row) => binding_response_from_row(state.as_ref(), &state.config, row, owner.as_ref()).await?,
         None => apply_owner_to_none_response(
-            binding_response_for_none(&state.pool, &state.config, prompt_cache_key, owner.as_ref()).await?,
+            binding_response_for_none(state.as_ref(), &state.config, prompt_cache_key, owner.as_ref()).await?,
             owner.as_ref(),
         ),
     };
@@ -1184,9 +1360,9 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                 load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
                     .await?;
             let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await? {
-                Some(row) => binding_response_from_row(&state.pool, &state.config, row, owner.as_ref()).await?,
+                Some(row) => binding_response_from_row(state.as_ref(), &state.config, row, owner.as_ref()).await?,
                 None => apply_owner_to_none_response(
-                    binding_response_for_none(&state.pool, &state.config, prompt_cache_key, owner.as_ref()).await?,
+                    binding_response_for_none(state.as_ref(), &state.config, prompt_cache_key, owner.as_ref()).await?,
                     owner.as_ref(),
                 ),
             };
@@ -1251,7 +1427,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                 load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
                     .await?;
             Ok(Json(binding_response_from_row(
-                &state.pool,
+                state.as_ref(),
                 &state.config,
                 load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
                     .await?
@@ -1324,7 +1500,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                 load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
                     .await?;
             Ok(Json(binding_response_from_row(
-                &state.pool,
+                state.as_ref(),
                 &state.config,
                 load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
                     .await?

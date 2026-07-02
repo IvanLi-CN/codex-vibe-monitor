@@ -1719,7 +1719,7 @@ fn resolve_account_forward_proxy_scope_from_assignments(
     Ok(ForwardProxyRouteScope::pinned(proxy_key.clone()))
 }
 
-async fn resolve_account_forward_proxy_scope(
+pub(crate) async fn resolve_account_forward_proxy_scope(
     state: &AppState,
     row: &UpstreamAccountRow,
     group_metadata: Option<UpstreamAccountGroupMetadata>,

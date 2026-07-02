@@ -206,7 +206,7 @@ pub(crate) async fn load_via_pool_effective_routing_constraint(
     })
 }
 
-async fn load_via_pool_effective_routing(
+pub(crate) async fn load_via_pool_effective_routing(
     state: &AppState,
     prompt_cache_key: Option<&str>,
     request_contains_encrypted_content: bool,

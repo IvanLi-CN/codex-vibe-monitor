@@ -283,7 +283,7 @@ async fn evaluate_live_pool_candidate(
                 row,
                 effective_rule,
                 group_metadata.clone(),
-                conversation_proxy_scope.clone(),
+                ForwardProxyRouteScope::Automatic,
                 conversation_proxy_scope,
                 routing_source,
             )
@@ -714,6 +714,8 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
         _ => None,
     };
     let bypass_requested_model_filter = binding_constraint.is_some();
+    let conversation_available_models_override =
+        conversation_override.is_some_and(|policy| policy.available_models.is_some());
 
     if let Some(route) = sticky_route.as_ref() {
         let sticky_route_is_forced_binding_target =
@@ -780,7 +782,8 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
                 }
             } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
                     if sticky_source_rule.as_ref().is_none_or(|rule| {
-                        bypass_requested_model_filter
+                        (bypass_requested_model_filter
+                            && !conversation_available_models_override)
                             || account_accepts_requested_model(requested_model, rule)
                     }) && account_accepts_requested_image_intent(
                         image_intent,
@@ -1045,7 +1048,7 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
         let Some(effective_rule) = candidate_effective_rules.get(&row.id) else {
             continue;
         };
-        if !bypass_requested_model_filter
+        if (!bypass_requested_model_filter || conversation_available_models_override)
             && !account_accepts_requested_model(requested_model, effective_rule)
         {
             saw_other_non_rate_limited_routing_candidate = true;

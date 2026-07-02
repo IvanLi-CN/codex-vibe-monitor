@@ -2341,6 +2341,8 @@ export function PromptCacheConversationHistoryDrawer({
       setAvailableModelsMode("inherit");
       setAvailableModelsDraft("");
       setForwardProxyKeyDraft("inherit");
+      setExpandedPolicyField(null);
+      setPolicySavingField(null);
       return;
     }
 
@@ -2872,12 +2874,13 @@ export function PromptCacheConversationHistoryDrawer({
                 effectiveFastMode,
                 policyFieldSources.fastModeRewriteMode,
                 <SelectField
-                  value={fastModeDraft === "inherit" ? "keep_original" : fastModeDraft}
+                  value={fastModeDraft}
                   disabled={policySavingField != null}
                   aria-label={t("live.conversations.drawer.policy.fastMode")}
                   size="sm"
-                  options={rewriteModeOptions.filter((option) => option.value !== "inherit")}
+                  options={rewriteModeOptions}
                   onValueChange={(value) => {
+                    if (value === "inherit") return;
                     setFastModeDraft(value as RewriteModeDraft);
                     void savePolicyField(
                       "fastModeRewriteMode",
@@ -2892,12 +2895,13 @@ export function PromptCacheConversationHistoryDrawer({
                 effectiveImageTool,
                 policyFieldSources.imageToolRewriteMode,
                 <SelectField
-                  value={imageToolDraft === "inherit" ? "keep_original" : imageToolDraft}
+                  value={imageToolDraft}
                   disabled={policySavingField != null}
                   aria-label={t("live.conversations.drawer.policy.imageTool")}
                   size="sm"
-                  options={rewriteModeOptions.filter((option) => option.value !== "inherit")}
+                  options={rewriteModeOptions}
                   onValueChange={(value) => {
+                    if (value === "inherit") return;
                     setImageToolDraft(value as RewriteModeDraft);
                     void savePolicyField(
                       "imageToolRewriteMode",

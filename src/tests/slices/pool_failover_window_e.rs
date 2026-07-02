@@ -3271,6 +3271,20 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     .execute(&state.pool)
     .await
     .expect("make prompt cache binding target unselectable");
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET policy_allow_cut_out = 0,
+            policy_fast_mode_rewrite_mode = 'force_remove',
+            policy_image_tool_rewrite_mode = 'fill_missing',
+            policy_available_models_json = '["gpt-5.1-codex-mini"]'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed account policy for inherited conversation response");
 
     let both_payload: UpdatePromptCacheConversationBindingRequest =
         serde_json::from_value(json!({
@@ -3306,6 +3320,57 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     assert_eq!(group_response.binding_kind, "group");
     assert_eq!(group_response.group_name.as_deref(), Some(group_name));
     assert_eq!(group_response.upstream_account_id, None);
+
+    let inherited_account_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+        }))
+        .expect("deserialize inherited account binding payload");
+    let Json(inherited_account_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(inherited_account_payload),
+    )
+    .await
+    .expect("account binding without policy override should save");
+    assert_eq!(inherited_account_response.allow_switch_upstream, Some(false));
+    assert_eq!(
+        inherited_account_response.fast_mode_rewrite_mode,
+        Some(TagFastModeRewriteMode::ForceRemove)
+    );
+    assert_eq!(
+        inherited_account_response.image_tool_rewrite_mode,
+        Some(ImageToolRewriteMode::FillMissing)
+    );
+    assert_eq!(
+        inherited_account_response.available_models,
+        Some(vec!["gpt-5.1-codex-mini".to_string()])
+    );
+    assert_eq!(
+        inherited_account_response
+            .policy_field_sources
+            .allow_switch_upstream,
+        "account"
+    );
+    assert_eq!(
+        inherited_account_response
+            .policy_field_sources
+            .fast_mode_rewrite_mode,
+        "account"
+    );
+    assert_eq!(
+        inherited_account_response
+            .policy_field_sources
+            .image_tool_rewrite_mode,
+        "account"
+    );
+    assert_eq!(
+        inherited_account_response
+            .policy_field_sources
+            .available_models,
+        "account"
+    );
 
     let unselectable_payload: UpdatePromptCacheConversationBindingRequest =
         serde_json::from_value(json!({
@@ -3426,11 +3491,39 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     .await
     .expect("clear binding should delete row");
     assert_eq!(clear_response.binding_kind, "none");
-    assert_eq!(clear_response.allow_switch_upstream, None);
-    assert_eq!(clear_response.fast_mode_rewrite_mode, None);
-    assert_eq!(clear_response.image_tool_rewrite_mode, None);
-    assert_eq!(clear_response.available_models, None);
-    assert_eq!(clear_response.forward_proxy_key, None);
+    assert_eq!(clear_response.allow_switch_upstream, Some(false));
+    assert_eq!(
+        clear_response.fast_mode_rewrite_mode,
+        Some(TagFastModeRewriteMode::ForceRemove)
+    );
+    assert_eq!(
+        clear_response.image_tool_rewrite_mode,
+        Some(ImageToolRewriteMode::FillMissing)
+    );
+    assert_eq!(
+        clear_response.available_models,
+        Some(vec!["gpt-5.1-codex-mini".to_string()])
+    );
+    assert_eq!(
+        clear_response.forward_proxy_key.as_deref(),
+        Some("__direct__")
+    );
+    assert_eq!(
+        clear_response.policy_field_sources.allow_switch_upstream,
+        "account"
+    );
+    assert_eq!(
+        clear_response.policy_field_sources.fast_mode_rewrite_mode,
+        "account"
+    );
+    assert_eq!(
+        clear_response.policy_field_sources.image_tool_rewrite_mode,
+        "account"
+    );
+    assert_eq!(
+        clear_response.policy_field_sources.available_models,
+        "account"
+    );
     let cleared_conversation_override =
         load_prompt_cache_conversation_routing_override(&state.pool, Some(prompt_cache_key))
             .await

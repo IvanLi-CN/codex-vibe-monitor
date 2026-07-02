@@ -1403,10 +1403,17 @@ describe("PromptCacheConversationTable", () => {
       upstreamAccountId: null,
       upstreamAccountName: null,
       allowSwitchUpstream: null,
-      fastModeRewriteMode: null,
+      fastModeRewriteMode: "keep_original",
       imageToolRewriteMode: null,
       availableModels: null,
       forwardProxyKey: null,
+      policyFieldSources: {
+        allowSwitchUpstream: "account",
+        fastModeRewriteMode: "account",
+        imageToolRewriteMode: "account",
+        availableModels: "account",
+        forwardProxyKey: "account",
+      },
       updatedAt: "2026-03-02T12:00:00Z",
     });
     apiMocks.fetchUpstreamAccounts.mockResolvedValue({
@@ -1442,7 +1449,9 @@ describe("PromptCacheConversationTable", () => {
         allowSwitchUpstream:
           "allowSwitchUpstream" in payload ? payload.allowSwitchUpstream : null,
         fastModeRewriteMode:
-          "fastModeRewriteMode" in payload ? payload.fastModeRewriteMode : null,
+          "fastModeRewriteMode" in payload
+            ? payload.fastModeRewriteMode
+            : "keep_original",
         imageToolRewriteMode:
           "imageToolRewriteMode" in payload ? payload.imageToolRewriteMode : null,
         availableModels:
@@ -1508,6 +1517,11 @@ describe("PromptCacheConversationTable", () => {
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
+    );
+    await vi.waitFor(() =>
+      expect(findButtonByAriaLabel("编辑对话覆盖: FAST 模式")?.disabled).toBe(
+        false,
+      ),
     );
     await user.click(
       findButtonByAriaLabel("编辑对话覆盖: FAST 模式")!,

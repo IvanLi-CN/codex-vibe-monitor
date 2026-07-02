@@ -204,8 +204,8 @@ pub(crate) async fn proxy_openai_v1_ws_common(
             .await;
         });
     }
-    let (prompt_cache_binding_constraint, owner_auto_guard_active) =
-        match load_via_pool_effective_routing_constraint(
+    let (prompt_cache_binding_constraint, owner_auto_guard_active, conversation_override) =
+        match load_via_pool_effective_routing(
             state.as_ref(),
             prompt_cache_key.as_deref(),
             false,
@@ -237,6 +237,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         requested_model.as_deref(),
         prompt_cache_key.as_deref(),
         prompt_cache_binding_constraint,
+        conversation_override,
         owner_auto_guard_active,
         &trace,
     )
@@ -342,6 +343,7 @@ pub(crate) async fn prepare_upstream_websocket(
     requested_model: Option<&str>,
     prompt_cache_key: Option<&str>,
     binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<ConversationRoutingOverride>,
     owner_auto_guard_active: bool,
     trace: &PoolUpstreamAttemptTraceContext,
 ) -> Result<PreparedUpstreamWebSocket, WsPrepareError> {
@@ -379,7 +381,7 @@ pub(crate) async fn prepare_upstream_websocket(
         }
 
         let mut no_available_wait_deadline = None;
-        let account = match resolve_pool_account_for_request_with_wait_and_binding_constraint(
+        let account = match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
             state.as_ref(),
             sticky_key,
             requested_model,
@@ -387,9 +389,11 @@ pub(crate) async fn prepare_upstream_websocket(
             &excluded_upstream_route_keys,
             None,
             binding_constraint.as_ref(),
+            conversation_override.as_ref(),
             false,
             &mut no_available_wait_deadline,
             None,
+            crate::ImageIntent::Unknown,
         )
         .await
         {
@@ -1275,8 +1279,8 @@ async fn proxy_websocket_tunnel_deferred_prepare(
     let request_contains_encrypted_content = payload_inspection
         .as_ref()
         .is_some_and(|value| value.contains_encrypted_content);
-    let (binding_constraint, owner_auto_guard_active) =
-        match load_via_pool_effective_routing_constraint(
+    let (binding_constraint, owner_auto_guard_active, conversation_override) =
+        match load_via_pool_effective_routing(
             state.as_ref(),
             prompt_cache_key.as_deref(),
             request_contains_encrypted_content,
@@ -1304,6 +1308,7 @@ async fn proxy_websocket_tunnel_deferred_prepare(
         requested_model.as_deref(),
         prompt_cache_key.as_deref(),
         binding_constraint,
+        conversation_override,
         owner_auto_guard_active,
         &trace,
     )
