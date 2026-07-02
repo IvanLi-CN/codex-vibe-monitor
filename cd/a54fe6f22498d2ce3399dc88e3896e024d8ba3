@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.6.4",
+  "base_stable_version": "2.6.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-02T03:49:25Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.6.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d467c0ddd22d35aafbb020715f3472ce2268ff8f",
+  "pr_number": 505,
+  "pr_title": "fix: reduce sqlite proxy write pressure",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.6.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.6.4",
+  "target_sha": "cda54fe6f22498d2ce3399dc88e3896e024d8ba3",
+  "type_label": "type:patch"
+}
