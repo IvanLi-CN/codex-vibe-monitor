@@ -431,14 +431,23 @@ async fn persist_proxy_capture_record_finalizes_existing_running_row_in_place() 
     assert!(running.id > 0);
     assert_eq!(running.status.as_deref(), Some("running"));
 
-    let finalized = persist_proxy_capture_record(
-        &state.pool,
-        Instant::now(),
-        test_proxy_capture_record(invoke_id, occurred_at),
-    )
-    .await
-    .expect("finalize record")
-    .expect("terminal update should reuse running row");
+    let mut terminal_record = test_proxy_capture_record(invoke_id, occurred_at);
+    terminal_record.req_raw = RawPayloadMeta {
+        path: Some("proxy_raw_payloads/invoke-runtime-broadcast-request.bin".to_string()),
+        size_bytes: 128,
+        truncated: false,
+        truncated_reason: None,
+    };
+    terminal_record.resp_raw = RawPayloadMeta {
+        path: Some("proxy_raw_payloads/invoke-runtime-broadcast-response.bin.gz".to_string()),
+        size_bytes: 256,
+        truncated: false,
+        truncated_reason: None,
+    };
+    let finalized = persist_proxy_capture_record(&state.pool, Instant::now(), terminal_record)
+        .await
+        .expect("finalize record")
+        .expect("terminal update should reuse running row");
 
     assert_eq!(finalized.id, running.id);
     assert_eq!(finalized.status.as_deref(), Some("success"));
@@ -455,6 +464,46 @@ async fn persist_proxy_capture_record_finalizes_existing_running_row_in_place() 
     .await
     .expect("count invocation rows");
     assert_eq!(duplicate_count, 1);
+
+    let raw_row = sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        ),
+    >(
+        r#"
+        SELECT
+            request_raw_path,
+            request_raw_codec,
+            request_raw_size,
+            response_raw_path,
+            response_raw_codec,
+            response_raw_size
+        FROM codex_invocations
+        WHERE id = ?1
+        "#,
+    )
+    .bind(finalized.id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load finalized raw metadata");
+    assert_eq!(
+        raw_row.0.as_deref(),
+        Some("proxy_raw_payloads/invoke-runtime-broadcast-request.bin")
+    );
+    assert_eq!(raw_row.1.as_deref(), Some(RAW_CODEC_IDENTITY));
+    assert_eq!(raw_row.2, Some(128));
+    assert_eq!(
+        raw_row.3.as_deref(),
+        Some("proxy_raw_payloads/invoke-runtime-broadcast-response.bin.gz")
+    );
+    assert_eq!(raw_row.4.as_deref(), Some(RAW_CODEC_GZIP));
+    assert_eq!(raw_row.5, Some(256));
 }
 
 #[tokio::test]
