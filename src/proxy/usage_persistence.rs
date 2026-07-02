@@ -32,6 +32,23 @@ pub(crate) fn sticky_key_from_payload(payload: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn payload_text(payload: Option<&str>, key: &str) -> Option<String> {
+    let payload = payload?;
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn payload_i64(payload: Option<&str>, key: &str) -> Option<i64> {
+    let payload = payload?;
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    value.get(key).and_then(Value::as_i64)
+}
+
 pub(crate) fn shanghai_now_string() -> String {
     format_naive(Utc::now().with_timezone(&Shanghai).naive_local())
 }
@@ -1118,6 +1135,8 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
     selector: InvocationRecoverySelector,
     recovery_trigger: &'static str,
 ) -> Result<()> {
+    state.sqlite_batch_writer.flush_now(&state.pool).await?;
+
     let recovered_invocations = recover_proxy_invocations_with_scope(
         &state.pool,
         ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
@@ -2016,6 +2035,220 @@ async fn update_existing_proxy_invocation_record_tx(
     Ok(result.rows_affected() > 0)
 }
 
+pub(crate) async fn insert_running_proxy_snapshot_placeholder_tx(
+    tx: &mut SqliteConnection,
+    record: &ProxyCaptureRecord,
+) -> Result<u64> {
+    let created_at = format_utc_iso_millis(Utc::now());
+    let insert_result = sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            reasoning_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            status,
+            error_message,
+            failure_kind,
+            failure_class,
+            is_actionable,
+            payload,
+            raw_response,
+            request_raw_path,
+            request_raw_codec,
+            request_raw_size,
+            request_raw_truncated,
+            request_raw_truncated_reason,
+            response_raw_path,
+            response_raw_codec,
+            response_raw_size,
+            response_raw_truncated,
+            response_raw_truncated_reason,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            t_resp_parse_ms,
+            t_persist_ms,
+            created_at
+        )
+        VALUES (
+            ?1, ?2, ?3, ?4, 0, 0, 0, 0, 0, NULL, 0, NULL, ?5, NULL, NULL, 'none', 0, ?6, '{}',
+            ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17, ?18, ?19, ?20, NULL,
+            NULL, NULL, ?21
+        )
+        "#,
+    )
+    .bind(&record.invoke_id)
+    .bind(&record.occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(&record.model)
+    .bind(&record.status)
+    .bind(record.payload.as_deref())
+    .bind(record.req_raw.path.as_deref())
+    .bind(raw_payload_meta_codec(&record.req_raw))
+    .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
+    .bind(record.req_raw.truncated as i64)
+    .bind(record.req_raw.truncated_reason.as_deref())
+    .bind(record.resp_raw.path.as_deref())
+    .bind(raw_payload_meta_codec(&record.resp_raw))
+    .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
+    .bind(record.resp_raw.truncated as i64)
+    .bind(record.resp_raw.truncated_reason.as_deref())
+    .bind(nullable_runtime_timing_value(record.timings.t_req_read_ms))
+    .bind(nullable_runtime_timing_value(record.timings.t_req_parse_ms))
+    .bind(nullable_runtime_timing_value(record.timings.t_upstream_connect_ms))
+    .bind(nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms))
+    .bind(created_at)
+    .execute(&mut *tx)
+    .await?;
+    let updated_rows = if insert_result.rows_affected() == 0 {
+        sqlx::query(
+            r#"
+            UPDATE codex_invocations
+            SET
+                source = ?3,
+                model = ?4,
+                status = ?5,
+                payload = ?6,
+                request_raw_path = ?7,
+                request_raw_codec = ?8,
+                request_raw_size = ?9,
+                request_raw_truncated = ?10,
+                request_raw_truncated_reason = ?11,
+                response_raw_path = ?12,
+                response_raw_codec = ?13,
+                response_raw_size = ?14,
+                response_raw_truncated = ?15,
+                response_raw_truncated_reason = ?16,
+                t_req_read_ms = ?17,
+                t_req_parse_ms = ?18,
+                t_upstream_connect_ms = ?19,
+                t_upstream_ttfb_ms = ?20
+            WHERE invoke_id = ?1
+              AND occurred_at = ?2
+              AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+            "#,
+        )
+        .bind(&record.invoke_id)
+        .bind(&record.occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(&record.model)
+        .bind(&record.status)
+        .bind(record.payload.as_deref())
+        .bind(record.req_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&record.req_raw))
+        .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
+        .bind(record.req_raw.truncated as i64)
+        .bind(record.req_raw.truncated_reason.as_deref())
+        .bind(record.resp_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&record.resp_raw))
+        .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
+        .bind(record.resp_raw.truncated as i64)
+        .bind(record.resp_raw.truncated_reason.as_deref())
+        .bind(nullable_runtime_timing_value(record.timings.t_req_read_ms))
+        .bind(nullable_runtime_timing_value(record.timings.t_req_parse_ms))
+        .bind(nullable_runtime_timing_value(record.timings.t_upstream_connect_ms))
+        .bind(nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+    } else {
+        0
+    };
+    debug!(
+        invoke_id = %record.invoke_id,
+        occurred_at = %record.occurred_at,
+        status = %record.status,
+        rows_affected = insert_result.rows_affected(),
+        updated_rows,
+        "running proxy capture snapshot placeholder flushed"
+    );
+    Ok(insert_result.rows_affected() + updated_rows)
+}
+
+pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) -> ApiInvocation {
+    let payload = record.payload.as_deref();
+    ApiInvocation {
+        id: 0,
+        invoke_id: record.invoke_id.clone(),
+        occurred_at: record.occurred_at.clone(),
+        source: SOURCE_PROXY.to_string(),
+        proxy_display_name: payload_text(payload, "proxyDisplayName"),
+        model: record.model.clone(),
+        request_model: payload_text(payload, "requestModel"),
+        response_model: None,
+        input_tokens: record.usage.input_tokens,
+        output_tokens: record.usage.output_tokens,
+        cache_input_tokens: record.usage.cache_input_tokens,
+        reasoning_tokens: record.usage.reasoning_tokens,
+        reasoning_effort: payload_text(payload, "reasoningEffort"),
+        total_tokens: record.usage.total_tokens,
+        cost: record.cost,
+        status: Some(record.status.clone()),
+        error_message: record.error_message.clone(),
+        downstream_status_code: None,
+        failure_kind: record.failure_kind.clone(),
+        stream_terminal_event: None,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        downstream_error_message: None,
+        upstream_request_id: None,
+        failure_class: Some("none".to_string()),
+        is_actionable: Some(false),
+        endpoint: payload_text(payload, "endpoint"),
+        compaction_request_kind: payload_text(payload, "compactionRequestKind"),
+        compaction_response_kind: None,
+        image_intent: payload_text(payload, "imageIntent"),
+        requester_ip: payload_text(payload, "requesterIp"),
+        prompt_cache_key: prompt_cache_key_from_payload(payload),
+        route_mode: payload_text(payload, "routeMode"),
+        upstream_account_id: upstream_account_id_from_payload(payload),
+        upstream_account_name: upstream_account_name_from_payload(payload),
+        response_content_encoding: payload_text(payload, "responseContentEncoding"),
+        transport: None,
+        pool_attempt_count: payload_i64(payload, "poolAttemptCount"),
+        pool_distinct_account_count: payload_i64(payload, "poolDistinctAccountCount"),
+        pool_attempt_terminal_reason: payload_text(payload, "poolAttemptTerminalReason"),
+        requested_service_tier: payload_text(payload, "requestedServiceTier"),
+        service_tier: None,
+        billing_service_tier: None,
+        proxy_weight_delta: None,
+        cost_estimated: Some(record.cost_estimated as i64),
+        price_version: record.price_version.clone(),
+        request_raw_path: record.req_raw.path.clone(),
+        request_raw_size: record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes),
+        request_raw_truncated: Some(record.req_raw.truncated as i64),
+        request_raw_truncated_reason: record.req_raw.truncated_reason.clone(),
+        response_raw_path: record.resp_raw.path.clone(),
+        response_raw_size: record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes),
+        response_raw_truncated: Some(record.resp_raw.truncated as i64),
+        response_raw_truncated_reason: record.resp_raw.truncated_reason.clone(),
+        detail_level: DETAIL_LEVEL_FULL.to_string(),
+        detail_pruned_at: None,
+        detail_prune_reason: None,
+        t_total_ms: None,
+        t_req_read_ms: nullable_runtime_timing_value(record.timings.t_req_read_ms),
+        t_req_parse_ms: nullable_runtime_timing_value(record.timings.t_req_parse_ms),
+        t_upstream_connect_ms: nullable_runtime_timing_value(record.timings.t_upstream_connect_ms),
+        t_upstream_ttfb_ms: nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms),
+        t_upstream_stream_ms: None,
+        t_resp_parse_ms: None,
+        t_persist_ms: None,
+        created_at: format_utc_iso_millis(Utc::now()),
+    }
+}
+
 pub(crate) fn persisted_invocation_allows_proxy_record_update(
     existing_status: Option<&str>,
     existing_failure_kind: Option<&str>,
@@ -2166,6 +2399,61 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
     state: &AppState,
     record: ProxyCaptureRecord,
 ) -> Result<()> {
+    let started = Instant::now();
+    let persisted_record = api_invocation_from_runtime_record(&record);
+    let snapshot = BatchedRunningProxySnapshot {
+        invoke_id: record.invoke_id.clone(),
+        occurred_at: record.occurred_at.clone(),
+        record: record.clone(),
+    };
+
+    let invoke_id = persisted_record.invoke_id.clone();
+    if !state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::RunningProxySnapshot(snapshot.clone()))
+    {
+        warn!(
+            invoke_id = %invoke_id,
+            "running proxy capture snapshot placeholder dropped by sqlite batch writer; flushing inline fallback"
+        );
+        if let Err(err) = state
+            .sqlite_batch_writer
+            .flush_running_proxy_snapshot_inline(&state.pool, snapshot)
+            .await
+        {
+            warn!(
+                ?err,
+                invoke_id = %invoke_id,
+                "running proxy capture snapshot inline fallback failed"
+            );
+        }
+    }
+    if state.broadcaster.receiver_count() > 0
+        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
+            records: vec![persisted_record],
+        })
+    {
+        warn!(
+            ?err,
+            invoke_id = %invoke_id,
+            "failed to broadcast runtime proxy capture snapshot"
+        );
+    }
+
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    debug!(
+        invoke_id = %invoke_id,
+        elapsed_ms,
+        "running proxy capture snapshot deferred from synchronous sqlite write"
+    );
+
+    Ok(())
+}
+
+pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
+    state: &AppState,
+    record: ProxyCaptureRecord,
+) -> Result<()> {
     let derived_payload = record.payload.clone();
     let persisted = persist_proxy_capture_runtime_record_core(&state.pool, record, false).await?;
     let Some(persisted_record) = persisted else {
@@ -2195,7 +2483,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
         warn!(
             error = %err,
             invoke_id = %invoke_id,
-            "failed to synchronously compensate dropped runtime proxy derived write"
+            "failed to synchronously compensate dropped terminal proxy derived write"
         );
     }
     if state.broadcaster.receiver_count() > 0
@@ -2206,7 +2494,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
         warn!(
             ?err,
             invoke_id = %invoke_id,
-            "failed to broadcast runtime proxy capture snapshot"
+            "failed to broadcast terminal proxy capture record"
         );
     }
 

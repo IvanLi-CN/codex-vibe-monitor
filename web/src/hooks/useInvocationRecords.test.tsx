@@ -642,6 +642,162 @@ describe('useInvocationRecords', () => {
     expect(reconcileQuery?.snapshotId).toBeUndefined()
   })
 
+  it('drops visible transient running SSE records across an authoritative SSE-open resync', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-10T02:00:00Z'))
+
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce(
+        createListResponse({
+          snapshotId: 42,
+          total: 1,
+          records: [
+            createRecord({
+              id: 1,
+              invokeId: 'invoke-existing',
+              occurredAt: '2026-03-10T00:00:00Z',
+              createdAt: '2026-03-10T00:00:00Z',
+              status: 'success',
+              model: 'baseline-model',
+            }),
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        createListResponse({
+          snapshotId: 84,
+          total: 1,
+          records: [
+            createRecord({
+              id: 1,
+              invokeId: 'invoke-existing',
+              occurredAt: '2026-03-10T00:00:00Z',
+              createdAt: '2026-03-10T00:00:00Z',
+              status: 'success',
+              model: 'baseline-model',
+            }),
+          ],
+        }),
+      )
+
+    apiMocks.fetchInvocationRecordsSummary
+      .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 42, totalCount: 1 }))
+      .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 84, totalCount: 1 }))
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+      createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
+    )
+
+    render(<Probe />)
+    await flushAsync()
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          createRecord({
+            id: 0,
+            invokeId: 'invoke-running-transient',
+            occurredAt: '2026-03-10T00:01:00Z',
+            createdAt: '2026-03-10T00:01:00Z',
+            status: 'running',
+            model: 'live-running-model',
+          }),
+        ],
+      })
+    })
+    await flushAsync()
+
+    expect(text('model')).toBe('live-running-model')
+    expect(text('total')).toBe('2')
+
+    act(() => {
+      sseMocks.onOpen?.()
+    })
+    await waitFor(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2)
+      expect(text('snapshot')).toBe('84')
+      expect(text('model')).toBe('baseline-model')
+      expect(text('total')).toBe('1')
+    })
+
+    const reconcileQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0]
+    expect(reconcileQuery?.snapshotId).toBeUndefined()
+  })
+
+  it('keeps visible transient running SSE records across page fetches before DB flush catches up', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-10T02:00:00Z'))
+
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce(
+        createListResponse({
+          snapshotId: 42,
+          total: 1,
+          page: 1,
+          records: [
+            createRecord({
+              id: 1,
+              invokeId: 'invoke-existing',
+              occurredAt: '2026-03-10T00:00:00Z',
+              createdAt: '2026-03-10T00:00:00Z',
+              status: 'success',
+              model: 'baseline-model',
+            }),
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        createListResponse({
+          snapshotId: 42,
+          total: 1,
+          page: 2,
+          records: [],
+        }),
+      )
+
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
+      createSummaryResponse({ snapshotId: 42, totalCount: 1 }),
+    )
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+      createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
+    )
+
+    render(<Probe />)
+    await flushAsync()
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          createRecord({
+            id: 0,
+            invokeId: 'invoke-running-transient',
+            occurredAt: '2026-03-10T00:01:00Z',
+            createdAt: '2026-03-10T00:01:00Z',
+            status: 'running',
+            model: 'live-running-model',
+          }),
+        ],
+      })
+    })
+    await flushAsync()
+
+    expect(text('model')).toBe('live-running-model')
+    expect(text('total')).toBe('2')
+
+    click('page-2')
+    await waitFor(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2)
+      expect(text('page')).toBe('2')
+      expect(text('model')).toBe('live-running-model')
+      expect(text('total')).toBe('1')
+    })
+
+    const pageQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0]
+    expect(pageQuery?.snapshotId).toBe(42)
+    expect(pageQuery?.page).toBe(2)
+  })
+
   it('coalesces repeated SSE-open reconciles within the cooldown window', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-03-10T02:00:00Z'))

@@ -16,3 +16,4 @@
 - 2026-06-30: 第三轮 CPU 止血继续把 working conversations 的 snapshot count/page 从 `WITH recent_terminal` 历史重算收口到 live working-set truth。接口继续保留 `snapshot_at`、cursor 与字段 shape，但 snapshot 聚合不再承诺严格历史时点重算，只承诺 `<=5s` bounded freshness。
 - 2026-07-01: 第四轮 SQLite 止血明确不降低代理并发，也不把 terminal `codex_invocations` 主事实改成 write-behind；仅把 attempt 中间进度、invocation rollup/live progress、upstream account touch 与 system task finish 这类可接受 `<=5s` 新鲜度的派生写放入有界 batch writer。
 - 2026-07-02: 第五轮 SQLite 止血继续保持代理并发与 terminal 主事实同步落盘，terminal invocation 写入改为 existing-row 窄更新优先、缺行 guarded insert，summary/attempt snapshot broadcast 在 `database is locked` 下 fail-soft skip 并由 SSE / HTTP reconcile 补齐。
+- 2026-07-02: 第六轮 SQLite 止血把高频 `running` runtime snapshot 从同步主表写改成内存/SSE 立即广播 + batch writer 有界占位落库；账号选择 `last_selected_at` 从路由前台同步写锁中移出，改由进程内公平性锚点叠加排序并批量 coalesce 落库。terminal 主事实、usage、失败分类、raw metadata 与账号 status/cooldown/failure 继续同步可靠写入。

@@ -90,6 +90,7 @@ fn build_pool_routing_candidate_score(
     eligibility: PoolRoutingCandidateEligibility,
     dispatch_state: PoolRoutingCandidateDispatchState,
     single_account_rotation_enabled: bool,
+    runtime_last_selected_at: Option<String>,
     now: DateTime<Utc>,
 ) -> PoolRoutingCandidateScore {
     let capacity_lane = if candidate.effective_load() <= candidate.capacity_profile().soft_limit {
@@ -114,7 +115,7 @@ fn build_pool_routing_candidate_score(
         ),
         scarcity_score: candidate.scarcity_score(now),
         effective_load: candidate.effective_load(),
-        last_selected_at: candidate.last_selected_at.clone(),
+        last_selected_at: runtime_last_selected_at.or_else(|| candidate.last_selected_at.clone()),
         account_id: candidate.id,
     }
 }
@@ -261,6 +262,9 @@ async fn evaluate_live_pool_candidate(
     let conversation_proxy_scope = conversation_forward_proxy_scope(conversation_override);
     let build_evaluation =
         |eligibility, dispatch_state, resolved_account, assigned_blocked, blocked_message| {
+            let runtime_last_selected_at = state
+                .pool_account_selection_runtime
+                .latest_selected_at(candidate.id, candidate.last_selected_at.as_deref());
             LivePoolCandidateEvaluation {
                 score: build_pool_routing_candidate_score(
                     candidate,
@@ -268,6 +272,7 @@ async fn evaluate_live_pool_candidate(
                     eligibility,
                     dispatch_state,
                     group_metadata.single_account_rotation_enabled,
+                    runtime_last_selected_at,
                     now,
                 ),
                 resolved_account,

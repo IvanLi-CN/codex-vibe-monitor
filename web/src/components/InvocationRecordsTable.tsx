@@ -598,7 +598,7 @@ export function InvocationRecordsTable({
 
   const ensureRecordDetail = useCallback(
     async (record: ApiInvocation) => {
-      if (!isAbnormalRecord(record)) return;
+      if (!isAbnormalRecord(record) || record.id <= 0) return;
       if (
         detailByRecordId[record.id] !== undefined ||
         detailLoadingByRecordId[record.id]
@@ -635,7 +635,7 @@ export function InvocationRecordsTable({
 
   const ensureResponseBody = useCallback(
     async (record: ApiInvocation) => {
-      if (!isAbnormalRecord(record)) return;
+      if (!isAbnormalRecord(record) || record.id <= 0) return;
       if (
         responseBodyByRecordId[record.id] !== undefined ||
         responseBodyLoadingByRecordId[record.id]
@@ -1037,11 +1037,11 @@ export function InvocationRecordsTable({
                     abnormalResponseBodyLoading={detailLoading}
                     abnormalResponseBodyError={detailError}
                     onOpenFullDetails={
-                      isAbnormalRecord(row.record)
+                      isAbnormalRecord(row.record) && row.record.id > 0
                         ? () => setDrawerRecordId(row.record.id)
                         : null
                     }
-                    showFullDetailsAction={isAbnormalRecord(row.record)}
+                    showFullDetailsAction={isAbnormalRecord(row.record) && row.record.id > 0}
                     t={t}
                   />
                 </div>
@@ -1175,11 +1175,11 @@ export function InvocationRecordsTable({
                             abnormalResponseBodyLoading={detailLoading}
                             abnormalResponseBodyError={detailError}
                             onOpenFullDetails={
-                              isAbnormalRecord(row.record)
+                              isAbnormalRecord(row.record) && row.record.id > 0
                                 ? () => setDrawerRecordId(row.record.id)
                                 : null
                             }
-                            showFullDetailsAction={isAbnormalRecord(row.record)}
+                            showFullDetailsAction={isAbnormalRecord(row.record) && row.record.id > 0}
                             t={t}
                           />
                         </div>

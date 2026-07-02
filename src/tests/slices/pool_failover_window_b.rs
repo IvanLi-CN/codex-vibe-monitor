@@ -4000,6 +4000,10 @@ async fn proxy_openai_v1_responses_pool_runtime_and_terminal_records_persist_rem
         Some("remote_v2")
     );
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let Json(response) = list_invocations(
         State(state),
@@ -4093,6 +4097,10 @@ async fn proxy_openai_v1_responses_pool_remote_v2_request_kind_survives_disabled
         .expect("read remote v2 via-pool response");
 
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
     let Json(response) = list_invocations(
         State(state.clone()),
         Query(ListQuery {
@@ -4163,6 +4171,10 @@ async fn proxy_openai_v1_responses_pool_persists_image_intent_for_image_model_re
         .expect("read responses image response");
 
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let Json(response) = list_invocations(
         State(state),
@@ -4265,6 +4277,10 @@ async fn proxy_openai_v1_direct_image_pool_persists_direct_image_intent() {
         .expect("read direct image response");
 
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
     let Json(response) = list_invocations(
         State(state.clone()),
         Query(ListQuery {
@@ -4352,6 +4368,10 @@ async fn proxy_openai_v1_responses_pool_image_intent_survives_disabled_request_b
         .expect("read responses image response");
 
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
     let Json(response) = list_invocations(
         State(state.clone()),
         Query(ListQuery {

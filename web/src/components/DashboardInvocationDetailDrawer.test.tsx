@@ -529,4 +529,29 @@ describe("DashboardInvocationDetailDrawer", () => {
       '{"error":"preview","trace":"full"}',
     );
   });
+
+  it("does not request DB-backed abnormal details for transient live records", async () => {
+    const liveRecord = createRecord({
+      id: 0,
+      status: "failed",
+      failureClass: "service_failure",
+      errorMessage: "upstream exploded before placeholder flush",
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue(
+      createRecordsResponse([liveRecord]),
+    );
+
+    render(
+      <DashboardInvocationDetailDrawer
+        open
+        selection={createSelection(liveRecord)}
+        onClose={() => undefined}
+      />,
+    );
+
+    await waitFor(() => (document.body.textContent ?? "").includes("tokyo-edge-01"));
+
+    expect(apiMocks.fetchInvocationRecordDetail).not.toHaveBeenCalled();
+    expect(apiMocks.fetchInvocationResponseBody).not.toHaveBeenCalled();
+  });
 });

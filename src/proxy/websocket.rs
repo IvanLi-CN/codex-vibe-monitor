@@ -1669,7 +1669,7 @@ async fn persist_ws_usage_event(
             .await?;
         }
     }
-    persist_and_broadcast_proxy_capture_runtime_snapshot(
+    persist_and_broadcast_proxy_capture_terminal_record(
         state,
         ProxyCaptureRecord {
             invoke_id,

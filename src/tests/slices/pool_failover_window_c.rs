@@ -1795,6 +1795,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
     let state = Arc::new(AppState {
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
+        pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,

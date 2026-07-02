@@ -19,6 +19,7 @@ import {
   getTimeseriesRemountCacheKey,
   getTimeseriesRecordsResyncDelay,
   getVisibilityOpenResyncMode,
+  mergeFreshResponseLiveRecordDeltas,
   mergePendingTimeseriesSilentOption,
   readTimeseriesRemountCache,
   resolveTimeseriesSyncPolicy,
@@ -1838,5 +1839,71 @@ describe("useTimeseries refresh coordination helpers", () => {
     expect(
       liveRecordDeltas.has(`settled-${MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS}`),
     ).toBe(true);
+  });
+
+  it("drops in-flight transient id zero deltas after a fresh snapshot", () => {
+    const key = "anonymous-running-2026-04-08T00:00:10Z";
+    const previousLiveRecordDeltas = new Map([
+      [
+        key,
+        {
+          bucketStart: "2026-04-08T00:00:00Z",
+          bucketEnd: "2026-04-08T00:01:00Z",
+          bucketStartEpoch: 1_744_070_400,
+          bucketEndEpoch: 1_744_070_460,
+          totalCount: 1,
+          successCount: 0,
+          failureCount: 0,
+          inFlightCount: 1,
+          totalTokens: 0,
+          totalCost: 0,
+          totalLatencyMs: 0,
+          totalLatencySampleCount: 0,
+          recordId: 0,
+        },
+      ],
+    ]);
+
+    const result = mergeFreshResponseLiveRecordDeltas(
+      new Map(),
+      previousLiveRecordDeltas,
+      new Map(),
+      100,
+    );
+
+    expect(result.liveRecordDeltas.has(key)).toBe(false);
+  });
+
+  it("drops settled orphaned transient id zero deltas after a fresh snapshot", () => {
+    const key = "anonymous-finished-2026-04-08T00:00:10Z";
+    const previousLiveRecordDeltas = new Map([
+      [
+        key,
+        {
+          bucketStart: "2026-04-08T00:00:00Z",
+          bucketEnd: "2026-04-08T00:01:00Z",
+          bucketStartEpoch: 1_744_070_400,
+          bucketEndEpoch: 1_744_070_460,
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          inFlightCount: 0,
+          totalTokens: 42,
+          totalCost: 0.01,
+          totalLatencyMs: 1200,
+          totalLatencySampleCount: 1,
+          recordId: 0,
+        },
+      ],
+    ]);
+
+    const result = mergeFreshResponseLiveRecordDeltas(
+      new Map(),
+      previousLiveRecordDeltas,
+      new Map(),
+      100,
+    );
+
+    expect(result.liveRecordDeltas.has(key)).toBe(false);
   });
 });

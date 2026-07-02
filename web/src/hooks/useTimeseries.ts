@@ -561,6 +561,13 @@ function claimUntrackedInFlightDelta(
   if (
     claimSnapshotId != null &&
     Number.isFinite(record.id) &&
+    record.id <= 0
+  ) {
+    return null;
+  }
+  if (
+    claimSnapshotId != null &&
+    Number.isFinite(record.id) &&
     record.id > claimSnapshotId
   ) {
     return null;
@@ -884,7 +891,7 @@ export function trackTimeseriesLiveRecordDelta(
   );
 }
 
-function mergeFreshResponseLiveRecordDeltas(
+export function mergeFreshResponseLiveRecordDeltas(
   seededLiveRecordDeltas: Map<string, LiveRecordDelta>,
   previousLiveRecordDeltas: ReadonlyMap<string, LiveRecordDelta>,
   previousSettledLiveRecordUpdatedAt: ReadonlyMap<string, number>,
@@ -918,7 +925,8 @@ function mergeFreshResponseLiveRecordDeltas(
     if (
       typeof snapshotId === "number" &&
       typeof delta.recordId === "number" &&
-      delta.recordId > snapshotId
+      delta.recordId > snapshotId &&
+      !nextLiveRecordDeltas.has(key)
     ) {
       nextLiveRecordDeltas.set(key, cloneLiveRecordDelta(delta));
       continue;

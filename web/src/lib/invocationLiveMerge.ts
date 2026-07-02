@@ -195,6 +195,16 @@ export function mergeInvocationRecordDetails(
   if (!fallback) return preferred;
 
   const merged: ApiInvocation = { ...preferred };
+  if (
+    typeof merged.id === "number" &&
+    Number.isFinite(merged.id) &&
+    merged.id <= 0 &&
+    typeof fallback.id === "number" &&
+    Number.isFinite(fallback.id) &&
+    fallback.id > 0
+  ) {
+    merged.id = fallback.id;
+  }
 
   const fillStringFields: Array<keyof ApiInvocation> = [
     "source",

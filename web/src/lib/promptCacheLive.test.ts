@@ -950,6 +950,61 @@ describe("reconcilePromptCacheLiveRecordMap", () => {
     expect(reconciled).toEqual({});
   });
 
+  it("keeps transient running records when preview tie-break IDs are still database-only", () => {
+    const liveRecord = createLiveRecord({
+      id: 0,
+      invokeId: "invoke-preview-transient-running",
+      occurredAt: "2026-03-10T02:25:00Z",
+      promptCacheKey: "pck-preview-full",
+      status: "running",
+      totalTokens: 0,
+    });
+
+    const reconciled = reconcilePromptCacheLiveRecordMap(
+      { "pck-preview-full": [liveRecord] },
+      createResponse([
+        createConversation("pck-preview-full", {
+          recentInvocations: [
+            createLiveRecord({
+              id: 2105,
+              invokeId: "invoke-preview-5",
+              occurredAt: "2026-03-10T02:29:00Z",
+              promptCacheKey: "pck-preview-full",
+            }),
+            createLiveRecord({
+              id: 2104,
+              invokeId: "invoke-preview-4",
+              occurredAt: "2026-03-10T02:28:00Z",
+              promptCacheKey: "pck-preview-full",
+            }),
+            createLiveRecord({
+              id: 2103,
+              invokeId: "invoke-preview-3",
+              occurredAt: "2026-03-10T02:27:00Z",
+              promptCacheKey: "pck-preview-full",
+            }),
+            createLiveRecord({
+              id: 2102,
+              invokeId: "invoke-preview-2",
+              occurredAt: "2026-03-10T02:26:00Z",
+              promptCacheKey: "pck-preview-full",
+            }),
+            createLiveRecord({
+              id: 2101,
+              invokeId: "invoke-preview-tail",
+              occurredAt: "2026-03-10T02:25:00Z",
+              promptCacheKey: "pck-preview-full",
+            }),
+          ].map(buildPromptCachePreviewFromInvocation),
+        }),
+      ]),
+    );
+
+    expect(reconciled).toEqual({
+      "pck-preview-full": [liveRecord],
+    });
+  });
+
   it("keeps live records until authoritative previews include downstream diagnostics", () => {
     const liveRecord = createLiveRecord({
       id: 2301,

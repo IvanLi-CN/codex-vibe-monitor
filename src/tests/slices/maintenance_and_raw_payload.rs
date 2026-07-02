@@ -812,10 +812,15 @@ async fn test_state_from_config_with_pool_no_available_wait(
     let pricing_catalog = load_pricing_catalog(&pool)
         .await
         .expect("pricing catalog should initialize");
+    let prompt_cache_conversation_cache =
+        Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
 
     Arc::new(AppState {
         config: config.clone(),
-        sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
+        sqlite_batch_writer: SqliteBatchWriter::spawn_for_test_with_prompt_cache(
+            prompt_cache_conversation_cache.clone(),
+        ),
+        pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,
@@ -843,9 +848,7 @@ async fn test_state_from_config_with_pool_no_available_wait(
         forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
         pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
-        prompt_cache_conversation_cache: Arc::new(Mutex::new(
-            PromptCacheConversationsCacheState::default(),
-        )),
+        prompt_cache_conversation_cache,
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
@@ -865,6 +868,7 @@ fn clone_state_with_upstream_accounts(
     Arc::new(AppState {
         config: state.config.clone(),
         sqlite_batch_writer: state.sqlite_batch_writer.clone(),
+        pool_account_selection_runtime: state.pool_account_selection_runtime.clone(),
         pool: state.pool.clone(),
         oauth_installation_seed: state.oauth_installation_seed,
         hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.clone(),
@@ -908,6 +912,7 @@ fn clone_state_with_pool_group_429_retry_delay_override(
     Arc::new(AppState {
         config: state.config.clone(),
         sqlite_batch_writer: state.sqlite_batch_writer.clone(),
+        pool_account_selection_runtime: state.pool_account_selection_runtime.clone(),
         pool: state.pool.clone(),
         oauth_installation_seed: state.oauth_installation_seed,
         hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.clone(),
@@ -963,6 +968,7 @@ async fn test_state_from_existing_pool(
     Arc::new(AppState {
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
+        pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,

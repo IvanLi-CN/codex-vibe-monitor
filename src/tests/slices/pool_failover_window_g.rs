@@ -1788,9 +1788,14 @@ async fn file_backed_test_state_with_busy_timeout(
         .await
         .expect("pricing catalog should initialize");
 
+    let prompt_cache_conversation_cache =
+        Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
     let state = Arc::new(AppState {
         config: config.clone(),
-        sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
+        sqlite_batch_writer: SqliteBatchWriter::spawn_for_test_with_prompt_cache(
+            prompt_cache_conversation_cache.clone(),
+        ),
+        pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,
@@ -1818,9 +1823,7 @@ async fn file_backed_test_state_with_busy_timeout(
         forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
         pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
-        prompt_cache_conversation_cache: Arc::new(Mutex::new(
-            PromptCacheConversationsCacheState::default(),
-        )),
+        prompt_cache_conversation_cache,
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
@@ -1955,6 +1958,26 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
         ..RequestCaptureInfo::default()
     };
     let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, upstream_base_url, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(17_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("pool-account-17")
+    .bind("https://api-keys.vendor.invalid/")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&occurred_at)
+    .bind(&occurred_at)
+    .execute(&state.pool)
+    .await
+    .expect("seed upstream account for runtime snapshot activity touch");
     let running_record = build_running_proxy_capture_record(
         "follow-up-refresh-running",
         &occurred_at,
@@ -1983,6 +2006,15 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
         .await
         .expect("runtime snapshot should persist");
 
+    let cache_generation_before_flush = {
+        let cache = state.prompt_cache_conversation_cache.lock().await;
+        cache.generation
+    };
+    assert_eq!(
+        cache_generation_before_flush, 0,
+        "runtime snapshots should not invalidate prompt-cache conversations before the placeholder lands"
+    );
+
     let runtime_snapshot_follow_up_handles = state.proxy_summary_quota_broadcast_handle.lock().await.len();
     assert_eq!(
         runtime_snapshot_follow_up_handles, 0,
@@ -1993,6 +2025,18 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
         .flush_buffered_for_test(&state.pool)
         .await;
 
+    let running_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1 AND status = 'running'",
+    )
+    .bind("follow-up-refresh-running")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load running placeholder after runtime snapshot flush");
+    assert_eq!(
+        running_rows, 1,
+        "runtime snapshots should flush a bounded running placeholder"
+    );
+
     let prompt_cache_requests: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_rollup_hourly WHERE prompt_cache_key = ?1",
     )
@@ -2001,8 +2045,29 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
     .await
     .expect("load prompt cache rollup count after runtime snapshot");
     assert_eq!(
-        prompt_cache_requests, 1,
-        "runtime snapshots should keep prompt-cache rollups queryable after the bounded batch flush"
+        prompt_cache_requests, 0,
+        "runtime snapshots should not advance hourly rollups before terminal persistence"
+    );
+
+    let cache_generation_after_flush = {
+        let cache = state.prompt_cache_conversation_cache.lock().await;
+        cache.generation
+    };
+    assert!(
+        cache_generation_after_flush >= 1,
+        "running snapshot batch flush should invalidate prompt-cache conversations after the placeholder lands"
+    );
+
+    let account_last_activity_at: Option<String> =
+        sqlx::query_scalar("SELECT last_activity_at FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(17_i64)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load upstream account last activity after runtime snapshot flush");
+    assert_eq!(
+        account_last_activity_at.as_deref(),
+        Some(occurred_at.as_str()),
+        "runtime snapshots should batch upstream account activity touches before terminal persistence"
     );
 
     let Json(conversations) = fetch_prompt_cache_conversations(
@@ -2038,6 +2103,21 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
     persist_and_broadcast_proxy_capture(&state, Instant::now(), terminal_record)
         .await
         .expect("terminal proxy capture should persist");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+    let terminal_prompt_cache_requests: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_rollup_hourly WHERE prompt_cache_key = ?1",
+    )
+    .bind("pck-follow-up-refresh")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load prompt cache rollup count after terminal snapshot");
+    assert_eq!(
+        terminal_prompt_cache_requests, 1,
+        "terminal proxy captures should keep prompt-cache rollups queryable"
+    );
     let terminal_follow_up_handles = state.proxy_summary_quota_broadcast_handle.lock().await.len();
     assert!(
         terminal_follow_up_handles == 0,
@@ -2347,6 +2427,7 @@ async fn quota_latest_returns_degraded_when_empty() {
     let state = Arc::new(AppState {
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
+        pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,
