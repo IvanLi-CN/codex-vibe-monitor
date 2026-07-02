@@ -3847,6 +3847,10 @@ async fn recover_guard_dropped_pool_early_phase_orphan_recovers_post_first_byte_
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -3964,6 +3968,10 @@ async fn recover_guard_dropped_pool_terminal_invocation_orphan_repairs_running_i
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -4110,6 +4118,10 @@ async fn pool_invocation_cleanup_guard_recovers_running_invocation_during_retry_
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -4736,6 +4748,10 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
             .as_ref()
             .is_some_and(|guard| guard.first_byte_observed)
     );
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let invocation = sqlx::query_as::<_, (String, Option<String>)>(
         r#"
