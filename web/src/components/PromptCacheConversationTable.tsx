@@ -3204,6 +3204,7 @@ export function PromptCacheConversationHistoryDrawer({
       labelledBy={titleId}
       closeLabel={t("live.conversations.drawer.close")}
       onClose={onClose}
+      closeDisabled={bindingOwnerConfirmOpen}
       onBodyElementChange={setDrawerBodyElement}
       shellClassName="max-w-[78rem]"
       header={
