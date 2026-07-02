@@ -372,6 +372,16 @@ export default function MaintenanceRecordsPage() {
               />
             </div>
           ) : null}
+          {loading && events.length > 0 ? (
+            <Alert
+              variant="info"
+              className="m-4"
+              data-testid="maintenance-records-refreshing"
+            >
+              <AppIcon name="loading" className="mt-0.5 h-4 w-4 shrink-0 animate-spin" aria-hidden />
+              <div>{t("accountPool.upstreamAccounts.loadingTitle")}</div>
+            </Alert>
+          ) : null}
           <div className={isInitialLoading || isInitialError ? "hidden" : "overflow-x-auto"}>
             <table className="min-w-[60rem] table-fixed divide-y divide-base-300/70 text-sm lg:min-w-full">
               <thead className="bg-base-100/80">
