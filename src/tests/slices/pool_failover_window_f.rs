@@ -1914,6 +1914,128 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_exclude_stale_terminal_rows_from_totals() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        status: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(42_i64)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert working row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-in-flight",
+        now - ChronoDuration::minutes(20),
+        "working-in-flight",
+        "running",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-recent-terminal",
+        now - ChronoDuration::seconds(45),
+        "working-recent-terminal",
+        "success",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-stale-terminal",
+        now - ChronoDuration::minutes(11),
+        "working-stale-terminal",
+        "success",
+    )
+    .await;
+
+    let Json(non_paginated) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+            recent_invocation_limit: None,
+        }),
+    )
+    .await
+    .expect("non-paginated working conversations should succeed");
+
+    assert_eq!(non_paginated.conversations.len(), 2);
+    assert_eq!(
+        non_paginated
+            .conversations
+            .iter()
+            .map(|conversation| conversation.prompt_cache_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["working-recent-terminal", "working-in-flight"]
+    );
+
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+            recent_invocation_limit: None,
+        }),
+    )
+    .await
+    .expect("paginated working conversations should succeed");
+
+    assert_eq!(
+        first_page.total_matched,
+        Some(2),
+        "snapshot totals must exclude stale terminal rows",
+    );
+    assert_eq!(first_page.conversations.len(), 2);
+    assert!(!first_page.has_more);
+    assert!(first_page.next_cursor.is_none());
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_with_pipes() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

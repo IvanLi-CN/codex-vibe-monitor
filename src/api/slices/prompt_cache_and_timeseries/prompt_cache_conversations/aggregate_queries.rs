@@ -1,5 +1,30 @@
 use super::*;
 
+fn append_working_set_freshness_filter<'a>(
+    query: &mut QueryBuilder<'a, Sqlite>,
+    range_start_bound: &'a str,
+    last_activity_column: &str,
+    last_terminal_column: &str,
+    last_in_flight_column: &str,
+) {
+    query
+        .push(" AND (")
+        .push(last_in_flight_column)
+        .push(" IS NOT NULL OR ")
+        .push(last_terminal_column)
+        .push(" >= ")
+        .push_bind(range_start_bound)
+        .push(" OR (")
+        .push(last_in_flight_column)
+        .push(" IS NULL AND ")
+        .push(last_terminal_column)
+        .push(" IS NULL AND ")
+        .push(last_activity_column)
+        .push(" >= ")
+        .push_bind(range_start_bound)
+        .push("))");
+}
+
 pub(crate) async fn query_prompt_cache_conversation_aggregates(
     pool: &Pool<Sqlite>,
     range_start_bound: &str,
@@ -74,16 +99,36 @@ pub(crate) async fn query_active_prompt_cache_conversation_count(
 
 pub(crate) async fn query_working_prompt_cache_conversation_count(
     pool: &Pool<Sqlite>,
-    _range_start_bound: &str,
+    range_start_bound: &str,
     source_scope: InvocationSourceScope,
 ) -> Result<i64> {
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT COUNT(*) AS count \
-         FROM prompt_cache_working_set_live \
-         WHERE source_scope_all = 1",
-    );
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source_scope_proxy_only = 1");
+    let mut query = QueryBuilder::<Sqlite>::new(match source_scope {
+        InvocationSourceScope::All => {
+            "SELECT COUNT(*) AS count \
+             FROM prompt_cache_working_set_live \
+             WHERE source_scope_all = 1"
+        }
+        InvocationSourceScope::ProxyOnly => {
+            "SELECT COUNT(*) AS count \
+             FROM prompt_cache_working_set_live \
+             WHERE source_scope_proxy_only = 1"
+        }
+    });
+    match source_scope {
+        InvocationSourceScope::All => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "last_activity_at",
+            "last_terminal_at",
+            "last_in_flight_at",
+        ),
+        InvocationSourceScope::ProxyOnly => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "proxy_last_activity_at",
+            "proxy_last_terminal_at",
+            "proxy_last_in_flight_at",
+        ),
     }
 
     let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
@@ -116,14 +161,37 @@ pub(crate) async fn query_in_progress_prompt_cache_conversation_count(
 
 pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot(
     pool: &Pool<Sqlite>,
-    _range_start_bound: &str,
+    range_start_bound: &str,
     _snapshot: &PromptCacheConversationSnapshotFilter,
     source_scope: InvocationSourceScope,
 ) -> Result<i64> {
-    let mut query =
-        QueryBuilder::<Sqlite>::new("SELECT COUNT(*) AS count FROM prompt_cache_working_set_live");
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" WHERE source_scope_proxy_only = 1");
+    let mut query = QueryBuilder::<Sqlite>::new(match source_scope {
+        InvocationSourceScope::All => {
+            "SELECT COUNT(*) AS count \
+             FROM prompt_cache_working_set_live \
+             WHERE source_scope_all = 1"
+        }
+        InvocationSourceScope::ProxyOnly => {
+            "SELECT COUNT(*) AS count \
+             FROM prompt_cache_working_set_live \
+             WHERE source_scope_proxy_only = 1"
+        }
+    });
+    match source_scope {
+        InvocationSourceScope::All => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "last_activity_at",
+            "last_terminal_at",
+            "last_in_flight_at",
+        ),
+        InvocationSourceScope::ProxyOnly => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "proxy_last_activity_at",
+            "proxy_last_terminal_at",
+            "proxy_last_in_flight_at",
+        ),
     }
 
     let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
@@ -202,7 +270,7 @@ pub(crate) async fn query_prompt_cache_conversation_hidden_count(
 
 pub(crate) async fn query_prompt_cache_working_conversation_aggregates(
     pool: &Pool<Sqlite>,
-    _range_start_bound: &str,
+    range_start_bound: &str,
     source_scope: InvocationSourceScope,
     limit: i64,
 ) -> Result<Vec<PromptCacheConversationAggregateRow>> {
@@ -239,6 +307,22 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates(
          WHERE source_scope_all = 1",
         );
     }
+    match source_scope {
+        InvocationSourceScope::All => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "last_activity_at",
+            "last_terminal_at",
+            "last_in_flight_at",
+        ),
+        InvocationSourceScope::ProxyOnly => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "proxy_last_activity_at",
+            "proxy_last_terminal_at",
+            "proxy_last_in_flight_at",
+        ),
+    }
     query
         .push(
             " ORDER BY sort_anchor_at DESC, created_at DESC, prompt_cache_key DESC \
@@ -255,7 +339,7 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates(
 
 pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
     pool: &Pool<Sqlite>,
-    _range_start_bound: &str,
+    range_start_bound: &str,
     _snapshot: &PromptCacheConversationSnapshotFilter,
     _snapshot_hour_start_epoch: i64,
     _snapshot_hour_start_bound: &str,
@@ -291,6 +375,22 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
          FROM prompt_cache_working_set_live \
          WHERE source_scope_all = 1",
         );
+    }
+    match source_scope {
+        InvocationSourceScope::All => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "last_activity_at",
+            "last_terminal_at",
+            "last_in_flight_at",
+        ),
+        InvocationSourceScope::ProxyOnly => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "proxy_last_activity_at",
+            "proxy_last_terminal_at",
+            "proxy_last_in_flight_at",
+        ),
     }
 
     if let Some((cursor_sort_anchor_at, cursor_created_at, cursor_prompt_cache_key, _)) = cursor {
