@@ -416,6 +416,7 @@ pub(crate) async fn store_raw_payload_file(
     kind: &str,
     bytes: Bytes,
 ) -> RawPayloadMeta {
+    let started = Instant::now();
     let mut meta = RawPayloadMeta {
         path: None,
         size_bytes: bytes.len() as i64,
@@ -441,6 +442,12 @@ pub(crate) async fn store_raw_payload_file(
     let born_gzip = config
         .proxy_raw_immediate_gzip_threshold()
         .is_some_and(|threshold| content.len() >= threshold);
+    let file_bytes = content.len();
+    let codec = if born_gzip {
+        RAW_CODEC_GZIP
+    } else {
+        RAW_CODEC_IDENTITY
+    };
     let path = raw_payload_path_for_kind(&raw_dir, invoke_id, kind, born_gzip);
     let write_result = if born_gzip {
         let write_path = path.clone();
@@ -470,6 +477,32 @@ pub(crate) async fn store_raw_payload_file(
             meta.truncated = true;
             meta.truncated_reason = Some(format!("write_failed:{err}"));
         }
+    }
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    if elapsed_ms >= 1_000 {
+        warn!(
+            invoke_id,
+            raw_kind = kind,
+            codec,
+            file_bytes,
+            observed_bytes = meta.size_bytes,
+            truncated = meta.truncated,
+            has_path = meta.path.is_some(),
+            elapsed_ms,
+            "proxy raw payload file write was slow"
+        );
+    } else {
+        debug!(
+            invoke_id,
+            raw_kind = kind,
+            codec,
+            file_bytes,
+            observed_bytes = meta.size_bytes,
+            truncated = meta.truncated,
+            has_path = meta.path.is_some(),
+            elapsed_ms,
+            "proxy raw payload file write completed"
+        );
     }
     meta
 }
@@ -517,6 +550,15 @@ pub(crate) async fn broadcast_proxy_capture_follow_up(
             }
         }
         Err(err) => {
+            if crate::is_sqlite_lock_error(&err) {
+                warn!(
+                    invoke_id = %invoke_id,
+                    mode = ?mode,
+                    sqlite_locked = true,
+                    "proxy capture follow-up summary broadcast skipped because sqlite is locked"
+                );
+                return;
+            }
             warn!(
                 ?err,
                 invoke_id = %invoke_id,
@@ -872,109 +914,15 @@ async fn persist_proxy_capture_record_core(
     let created_at = format_utc_iso_millis(Utc::now());
 
     let mut tx = pool.begin().await?;
-    let insert_result = sqlx::query(
-        r#"
-        INSERT OR IGNORE INTO codex_invocations (
-            invoke_id,
-            occurred_at,
-            source,
-            model,
-            input_tokens,
-            output_tokens,
-            cache_input_tokens,
-            reasoning_tokens,
-            total_tokens,
-            cost,
-            cost_estimated,
-            price_version,
-            status,
-            error_message,
-            failure_kind,
-            failure_class,
-            is_actionable,
-            payload,
-            raw_response,
-            request_raw_path,
-            request_raw_codec,
-            request_raw_size,
-            request_raw_truncated,
-            request_raw_truncated_reason,
-            response_raw_path,
-            response_raw_codec,
-            response_raw_size,
-            response_raw_truncated,
-            response_raw_truncated_reason,
-            t_total_ms,
-            t_req_read_ms,
-            t_req_parse_ms,
-            t_upstream_connect_ms,
-            t_upstream_ttfb_ms,
-            t_upstream_stream_ms,
-            t_resp_parse_ms,
-            t_persist_ms,
-            created_at
-        )
-        VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
-            ?37, ?38
-        )
-        "#,
+    let mut core_write_path = "insert_missing";
+    let existing_identity = load_persisted_invocation_identity_tx(
+        tx.as_mut(),
+        &record.invoke_id,
+        &record.occurred_at,
     )
-    .bind(&record.invoke_id)
-    .bind(&record.occurred_at)
-    .bind(SOURCE_PROXY)
-    .bind(&record.model)
-    .bind(record.usage.input_tokens)
-    .bind(record.usage.output_tokens)
-    .bind(record.usage.cache_input_tokens)
-    .bind(record.usage.reasoning_tokens)
-    .bind(record.usage.total_tokens)
-    .bind(record.cost)
-    .bind(record.cost_estimated as i64)
-    .bind(record.price_version.as_deref())
-    .bind(&record.status)
-    .bind(record.error_message.as_deref())
-    .bind(failure_kind.as_deref())
-    .bind(failure.failure_class.as_str())
-    .bind(failure.is_actionable as i64)
-    .bind(record.payload.as_deref())
-    .bind(&raw_response)
-    .bind(record.req_raw.path.as_deref())
-    .bind(raw_payload_meta_codec(&record.req_raw))
-    .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
-    .bind(record.req_raw.truncated as i64)
-    .bind(record.req_raw.truncated_reason.as_deref())
-    .bind(resp_raw.path.as_deref())
-    .bind(raw_payload_meta_codec(&resp_raw))
-    .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
-    .bind(resp_raw.truncated as i64)
-    .bind(resp_raw.truncated_reason.as_deref())
-    .bind(None::<f64>)
-    .bind(record.timings.t_req_read_ms)
-    .bind(record.timings.t_req_parse_ms)
-    .bind(record.timings.t_upstream_connect_ms)
-    .bind(record.timings.t_upstream_ttfb_ms)
-    .bind(record.timings.t_upstream_stream_ms)
-    .bind(record.timings.t_resp_parse_ms)
-    .bind(None::<f64>)
-    .bind(created_at)
-    .execute(tx.as_mut())
     .await?;
 
-    let invocation_id = if insert_result.rows_affected() > 0 {
-        insert_result.last_insert_rowid()
-    } else {
-        let Some(existing) = load_persisted_invocation_identity_tx(
-            tx.as_mut(),
-            &record.invoke_id,
-            &record.occurred_at,
-        )
-        .await?
-        else {
-            tx.commit().await?;
-            return Ok(None);
-        };
+    let invocation_id = if let Some(existing) = existing_identity {
         if !persisted_invocation_allows_proxy_record_update(
             existing.status.as_deref(),
             existing.failure_kind.as_deref(),
@@ -983,56 +931,83 @@ async fn persist_proxy_capture_record_core(
             tx.commit().await?;
             return Ok(None);
         }
-
-        let affected = sqlx::query(
+        let updated = update_existing_proxy_invocation_record_tx(
+            tx.as_mut(),
+            existing.id,
+            &record,
+            &raw_response,
+            &resp_raw,
+            failure_kind.as_deref(),
+            failure.failure_class.as_str(),
+            failure.is_actionable,
+            None,
+            Some(record.timings.t_req_read_ms),
+            Some(record.timings.t_req_parse_ms),
+            Some(record.timings.t_upstream_connect_ms),
+            Some(record.timings.t_upstream_ttfb_ms),
+            Some(record.timings.t_upstream_stream_ms),
+            Some(record.timings.t_resp_parse_ms),
+            None,
+        )
+        .await?;
+        if !updated {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        core_write_path = "update_existing";
+        existing.id
+    } else {
+        let insert_result = sqlx::query(
             r#"
-            UPDATE codex_invocations
-            SET source = ?2,
-                model = ?3,
-                input_tokens = ?4,
-                output_tokens = ?5,
-                cache_input_tokens = ?6,
-                reasoning_tokens = ?7,
-                total_tokens = ?8,
-                cost = ?9,
-                cost_estimated = ?10,
-                price_version = ?11,
-                status = ?12,
-                error_message = ?13,
-                failure_kind = ?14,
-                failure_class = ?15,
-                is_actionable = ?16,
-                payload = ?17,
-                raw_response = ?18,
-                request_raw_path = ?19,
-                request_raw_codec = ?20,
-                request_raw_size = ?21,
-                request_raw_truncated = ?22,
-                request_raw_truncated_reason = ?23,
-                response_raw_path = ?24,
-                response_raw_codec = ?25,
-                response_raw_size = ?26,
-                response_raw_truncated = ?27,
-                response_raw_truncated_reason = ?28,
-                t_total_ms = ?29,
-                t_req_read_ms = ?30,
-                t_req_parse_ms = ?31,
-                t_upstream_connect_ms = ?32,
-                t_upstream_ttfb_ms = ?33,
-                t_upstream_stream_ms = ?34,
-                t_resp_parse_ms = ?35,
-                t_persist_ms = ?36
-            WHERE id = ?1
-              AND (
-                    LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
-                    OR (
-                        LOWER(TRIM(COALESCE(status, ''))) = 'interrupted'
-                        AND LOWER(TRIM(COALESCE(failure_kind, ''))) = 'proxy_interrupted'
-                    )
-              )
+            INSERT OR IGNORE INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                reasoning_tokens,
+                total_tokens,
+                cost,
+                cost_estimated,
+                price_version,
+                status,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                payload,
+                raw_response,
+                request_raw_path,
+                request_raw_codec,
+                request_raw_size,
+                request_raw_truncated,
+                request_raw_truncated_reason,
+                response_raw_path,
+                response_raw_codec,
+                response_raw_size,
+                response_raw_truncated,
+                response_raw_truncated_reason,
+                t_total_ms,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
+                t_upstream_ttfb_ms,
+                t_upstream_stream_ms,
+                t_resp_parse_ms,
+                t_persist_ms,
+                created_at
+            )
+            VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
+                ?37, ?38
+            )
             "#,
         )
-        .bind(existing.id)
+        .bind(&record.invoke_id)
+        .bind(&record.occurred_at)
         .bind(SOURCE_PROXY)
         .bind(&record.model)
         .bind(record.usage.input_tokens)
@@ -1068,14 +1043,56 @@ async fn persist_proxy_capture_record_core(
         .bind(record.timings.t_upstream_stream_ms)
         .bind(record.timings.t_resp_parse_ms)
         .bind(None::<f64>)
+        .bind(created_at)
         .execute(tx.as_mut())
-        .await?
-        .rows_affected();
-        if affected == 0 {
-            tx.commit().await?;
-            return Ok(None);
+        .await?;
+        if insert_result.rows_affected() > 0 {
+            insert_result.last_insert_rowid()
+        } else {
+            let Some(existing) = load_persisted_invocation_identity_tx(
+                tx.as_mut(),
+                &record.invoke_id,
+                &record.occurred_at,
+            )
+            .await?
+            else {
+                tx.commit().await?;
+                return Ok(None);
+            };
+            if !persisted_invocation_allows_proxy_record_update(
+                existing.status.as_deref(),
+                existing.failure_kind.as_deref(),
+                &record.status,
+            ) {
+                tx.commit().await?;
+                return Ok(None);
+            }
+            let updated = update_existing_proxy_invocation_record_tx(
+                tx.as_mut(),
+                existing.id,
+                &record,
+                &raw_response,
+                &resp_raw,
+                failure_kind.as_deref(),
+                failure.failure_class.as_str(),
+                failure.is_actionable,
+                None,
+                Some(record.timings.t_req_read_ms),
+                Some(record.timings.t_req_parse_ms),
+                Some(record.timings.t_upstream_connect_ms),
+                Some(record.timings.t_upstream_ttfb_ms),
+                Some(record.timings.t_upstream_stream_ms),
+                Some(record.timings.t_resp_parse_ms),
+                None,
+            )
+            .await?;
+            if !updated {
+                tx.commit().await?;
+                return Ok(None);
+            }
+            core_write_path = "update_race";
+            existing.id
         }
-        existing.id
     };
 
     if write_derived_inline {
@@ -1118,6 +1135,33 @@ async fn persist_proxy_capture_record_core(
         load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
             .await?;
     tx.commit().await?;
+
+    let core_write_elapsed_ms = persist_started.elapsed().as_millis() as u64;
+    if core_write_elapsed_ms >= 1_000 {
+        warn!(
+            invoke_id = %record.invoke_id,
+            status = %record.status,
+            core_write_path,
+            request_raw_bytes = record.req_raw.size_bytes,
+            response_raw_bytes = resp_raw.size_bytes,
+            has_request_raw_path = record.req_raw.path.is_some(),
+            has_response_raw_path = resp_raw.path.is_some(),
+            elapsed_ms = core_write_elapsed_ms,
+            "proxy capture raw core invocation write was slow"
+        );
+    } else {
+        debug!(
+            invoke_id = %record.invoke_id,
+            status = %record.status,
+            core_write_path,
+            request_raw_bytes = record.req_raw.size_bytes,
+            response_raw_bytes = resp_raw.size_bytes,
+            has_request_raw_path = record.req_raw.path.is_some(),
+            has_response_raw_path = resp_raw.path.is_some(),
+            elapsed_ms = core_write_elapsed_ms,
+            "proxy capture raw core invocation write completed"
+        );
+    }
 
     Ok(Some(persisted))
 }

@@ -22,7 +22,33 @@ use crate::*;
 const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
 const SQLITE_BATCH_MAX_ROWS: usize = 100;
 const SQLITE_BATCH_MAX_AGE: Duration = Duration::from_secs(5);
+const SQLITE_BATCH_STALE_WARN_AGE: Duration = Duration::from_secs(30);
 const SQLITE_BATCH_CHANNEL_CAPACITY: usize = 10_000;
+
+#[derive(Debug, Clone, Copy)]
+enum FlushReason {
+    RowLimit,
+    Interval,
+    MaxAge,
+    Barrier,
+    Shutdown,
+}
+
+impl FlushReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RowLimit => "row_limit",
+            Self::Interval => "interval",
+            Self::MaxAge => "max_age",
+            Self::Barrier => "barrier",
+            Self::Shutdown => "shutdown",
+        }
+    }
+
+    fn bypass_pressure_gate(self) -> bool {
+        matches!(self, Self::Barrier | Self::Shutdown)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct BatchedAttemptProgress {
@@ -377,7 +403,13 @@ async fn run_sqlite_batch_writer(
                             &pending_depth,
                             queued_depth_snapshot,
                         );
-                        let result = match flush_pending_batch(&pool, pending.take(), true).await {
+                        let result = match flush_pending_batch(
+                            &pool,
+                            pending.take(),
+                            FlushReason::Barrier,
+                        )
+                        .await
+                        {
                             Some(retained) => {
                                 let message = format!(
                                     "sqlite batch writer retained {} logical rows after forced flush",
@@ -400,7 +432,13 @@ async fn run_sqlite_batch_writer(
                             &pending_depth,
                             queued_depth_snapshot,
                         );
-                        let result = match flush_pending_batch(&pool, pending.take(), true).await {
+                        let result = match flush_pending_batch(
+                            &pool,
+                            pending.take(),
+                            FlushReason::Shutdown,
+                        )
+                        .await
+                        {
                             Some(retained) => {
                                 Err(format!(
                                     "sqlite batch writer retained {} logical rows after shutdown flush",
@@ -419,31 +457,48 @@ async fn run_sqlite_batch_writer(
             }
             maybe_write = write_receiver.recv() => {
                 let Some(write) = maybe_write else {
-                    let _ = flush_pending_batch(&pool, pending.take(), true).await;
+                    let _ =
+                        flush_pending_batch(&pool, pending.take(), FlushReason::Shutdown).await;
                     return;
                 };
                 pending_depth.fetch_sub(1, Ordering::Relaxed);
                 pending.push(write);
                 if pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS {
-                    if let Some(retained) = flush_pending_batch(&pool, pending.take(), false).await {
+                    if let Some(retained) =
+                        flush_pending_batch(&pool, pending.take(), FlushReason::RowLimit).await
+                    {
                         pending = retained;
                     }
                 }
             }
             _ = ticker.tick() => {
                 if !pending.is_empty() {
-                    let force_flush = pending.age() >= SQLITE_BATCH_MAX_AGE;
-                    if force_flush {
-                        warn!(
-                            logical_rows = pending.logical_rows(),
-                            enqueued_rows = pending.enqueued_rows,
-                            coalesced_rows = pending.coalesced_rows,
-                            oldest_age_ms = pending.age().as_millis() as u64,
-                            "sqlite batch writer pending derived writes reached max age; forcing flush"
-                        );
-                    }
+                    let flush_reason = if pending.age() >= SQLITE_BATCH_MAX_AGE {
+                        if pending.age() >= SQLITE_BATCH_STALE_WARN_AGE {
+                            warn!(
+                                logical_rows = pending.logical_rows(),
+                                enqueued_rows = pending.enqueued_rows,
+                                coalesced_rows = pending.coalesced_rows,
+                                oldest_age_ms = pending.age().as_millis() as u64,
+                                flush_reason = FlushReason::MaxAge.as_str(),
+                                "sqlite batch writer pending derived writes are stale under database pressure"
+                            );
+                        } else {
+                            debug!(
+                                logical_rows = pending.logical_rows(),
+                                enqueued_rows = pending.enqueued_rows,
+                                coalesced_rows = pending.coalesced_rows,
+                                oldest_age_ms = pending.age().as_millis() as u64,
+                                flush_reason = FlushReason::MaxAge.as_str(),
+                                "sqlite batch writer pending derived writes reached max age"
+                            );
+                        }
+                        FlushReason::MaxAge
+                    } else {
+                        FlushReason::Interval
+                    };
                     if let Some(retained) =
-                        flush_pending_batch(&pool, pending.take(), force_flush).await
+                        flush_pending_batch(&pool, pending.take(), flush_reason).await
                     {
                         pending = retained;
                     }
@@ -475,7 +530,7 @@ fn drain_queued_batch_writes(
 async fn flush_pending_batch(
     pool: &Pool<Sqlite>,
     batch: PendingBatch,
-    force: bool,
+    reason: FlushReason,
 ) -> Option<PendingBatch> {
     if batch.is_empty() {
         return None;
@@ -489,7 +544,8 @@ async fn flush_pending_batch(
     let system_task_scope = summarize_system_task_batch_scope(&batch);
     let oldest_age_ms = batch.age().as_millis() as u64;
 
-    let permit = if force {
+    let flush_reason = reason.as_str();
+    let permit = if reason.bypass_pressure_gate() {
         None
     } else {
         match crate::db_pressure::global_db_pressure_gate()
@@ -506,6 +562,7 @@ async fn flush_pending_batch(
                     system_task_count,
                     system_task_scope = %system_task_scope,
                     oldest_age_ms,
+                    flush_reason,
                     "sqlite batch writer deferred flush because pressure gate is closed"
                 );
                 return Some(batch);
@@ -525,6 +582,7 @@ async fn flush_pending_batch(
             system_task_scope = %system_task_scope,
             oldest_age_ms,
             elapsed_ms = started.elapsed().as_millis() as u64,
+            flush_reason,
             "sqlite batch writer flush failed"
         );
         drop(permit);
@@ -543,6 +601,7 @@ async fn flush_pending_batch(
             system_task_scope = %system_task_scope,
             oldest_age_ms,
             elapsed_ms,
+            flush_reason,
             "sqlite batch writer flush was slow"
         );
     } else {
@@ -555,6 +614,7 @@ async fn flush_pending_batch(
             system_task_scope = %system_task_scope,
             oldest_age_ms,
             elapsed_ms,
+            flush_reason,
             "sqlite batch writer flushed derived writes"
         );
     }
