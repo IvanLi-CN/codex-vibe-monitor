@@ -139,7 +139,7 @@ jobs:
           fi
 
           if [ -n "${base_branch}" ]; then
-            git fetch --no-tags --depth=1 origin "${base_branch}"
+            git fetch --no-tags origin "${base_branch}"
             source_ref="origin/${base_branch}"
             source_kind="base-branch"
             if [ "${{ github.event_name }}" = "merge_group" ]; then
