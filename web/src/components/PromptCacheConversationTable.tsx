@@ -2104,6 +2104,16 @@ export function PromptCacheConversationHistoryDrawer({
   const [activeTab, setActiveTab] =
     useState<PromptCacheConversationDrawerTab>("overview");
 
+  useEffect(() => {
+    if (!open) {
+      setBindingOwnerConfirmOpen(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    setBindingOwnerConfirmOpen(false);
+  }, [conversationKey]);
+
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return;
     clearTimeout(refreshTimerRef.current);
@@ -3318,7 +3328,7 @@ export function PromptCacheConversationHistoryDrawer({
       ) : null}
     </AccountDetailDrawerShell>
     <Dialog
-      open={bindingOwnerConfirmOpen}
+      open={open && bindingOwnerConfirmOpen}
       onOpenChange={(nextOpen) => {
         if (!bindingSaving) setBindingOwnerConfirmOpen(nextOpen);
       }}
