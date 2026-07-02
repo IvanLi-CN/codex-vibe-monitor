@@ -187,12 +187,17 @@ impl PendingBatch {
                 }
             }
             SqliteBatchWrite::AccountSelectedTouch(touch) => {
-                if self
-                    .account_selected_touches
-                    .insert(touch.account_id, touch)
-                    .is_some()
-                {
-                    self.coalesced_rows += 1;
+                match self.account_selected_touches.get_mut(&touch.account_id) {
+                    Some(existing) => {
+                        if existing.selected_at < touch.selected_at {
+                            *existing = touch;
+                        }
+                        self.coalesced_rows += 1;
+                    }
+                    None => {
+                        self.account_selected_touches
+                            .insert(touch.account_id, touch);
+                    }
                 }
             }
             SqliteBatchWrite::SystemTaskFinish(finish) => {
@@ -1320,6 +1325,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn running_proxy_snapshot_batch_refreshes_existing_running_placeholder() {
+        let pool = test_pool().await;
+        let request_info = RequestCaptureInfo {
+            model: Some("gpt-5.5".to_string()),
+            is_stream: true,
+            ..RequestCaptureInfo::default()
+        };
+        let first = build_running_proxy_capture_record(
+            "batch-running-placeholder-refresh",
+            "2026-07-01 10:00:00",
+            ProxyCaptureTarget::Responses,
+            &request_info,
+            Some("192.0.2.44"),
+            Some("sticky-a"),
+            Some("pck-a"),
+            true,
+            Some(42),
+            Some("Primary"),
+            Some("api_key_codex"),
+            Some("api.openai.com"),
+            None,
+            Some(1),
+            Some(1),
+            None,
+            None,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+        );
+        let second = build_running_proxy_capture_record(
+            "batch-running-placeholder-refresh",
+            "2026-07-01 10:00:00",
+            ProxyCaptureTarget::Responses,
+            &request_info,
+            Some("192.0.2.44"),
+            Some("sticky-a"),
+            Some("pck-a"),
+            true,
+            Some(99),
+            Some("Secondary"),
+            Some("api_key_codex"),
+            Some("api.openai.com"),
+            None,
+            Some(3),
+            Some(2),
+            None,
+            None,
+            3.0,
+            4.0,
+            12.0,
+            13.0,
+        );
+
+        SqliteBatchWriter::flush_for_test(
+            &pool,
+            vec![SqliteBatchWrite::RunningProxySnapshot(
+                BatchedRunningProxySnapshot {
+                    invoke_id: first.invoke_id.clone(),
+                    occurred_at: first.occurred_at.clone(),
+                    record: first,
+                },
+            )],
+        )
+        .await;
+        SqliteBatchWriter::flush_for_test(
+            &pool,
+            vec![SqliteBatchWrite::RunningProxySnapshot(
+                BatchedRunningProxySnapshot {
+                    invoke_id: second.invoke_id.clone(),
+                    occurred_at: second.occurred_at.clone(),
+                    record: second,
+                },
+            )],
+        )
+        .await;
+
+        let row = sqlx::query_as::<_, (String, Option<i64>, Option<i64>, Option<f64>)>(
+            r#"
+            SELECT
+                status,
+                CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountId') END,
+                CASE WHEN json_valid(payload) THEN json_extract(payload, '$.poolAttemptCount') END,
+                t_upstream_ttfb_ms
+            FROM codex_invocations
+            WHERE invoke_id = 'batch-running-placeholder-refresh'
+            LIMIT 1
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load refreshed running placeholder");
+
+        assert_eq!(row.0, "running");
+        assert_eq!(row.1, Some(99));
+        assert_eq!(row.2, Some(3));
+        assert_eq!(row.3, Some(13.0));
+    }
+
+    #[tokio::test]
     async fn account_selected_touch_batch_coalesces_by_account_id() {
         let pool = test_pool().await;
         sqlx::query(
@@ -1344,6 +1449,10 @@ mod tests {
                 SqliteBatchWrite::AccountSelectedTouch(BatchedAccountSelectedTouch {
                     account_id: 77,
                     selected_at: "2026-07-01T10:00:05Z".to_string(),
+                }),
+                SqliteBatchWrite::AccountSelectedTouch(BatchedAccountSelectedTouch {
+                    account_id: 77,
+                    selected_at: "2026-07-01T10:00:02Z".to_string(),
                 }),
             ],
         )

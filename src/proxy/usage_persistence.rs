@@ -2110,14 +2110,69 @@ pub(crate) async fn insert_running_proxy_snapshot_placeholder_tx(
     .bind(created_at)
     .execute(&mut *tx)
     .await?;
+    let updated_rows = if insert_result.rows_affected() == 0 {
+        sqlx::query(
+            r#"
+            UPDATE codex_invocations
+            SET
+                source = ?3,
+                model = ?4,
+                status = ?5,
+                payload = ?6,
+                request_raw_path = ?7,
+                request_raw_codec = ?8,
+                request_raw_size = ?9,
+                request_raw_truncated = ?10,
+                request_raw_truncated_reason = ?11,
+                response_raw_path = ?12,
+                response_raw_codec = ?13,
+                response_raw_size = ?14,
+                response_raw_truncated = ?15,
+                response_raw_truncated_reason = ?16,
+                t_req_read_ms = ?17,
+                t_req_parse_ms = ?18,
+                t_upstream_connect_ms = ?19,
+                t_upstream_ttfb_ms = ?20
+            WHERE invoke_id = ?1
+              AND occurred_at = ?2
+              AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+            "#,
+        )
+        .bind(&record.invoke_id)
+        .bind(&record.occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(&record.model)
+        .bind(&record.status)
+        .bind(record.payload.as_deref())
+        .bind(record.req_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&record.req_raw))
+        .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
+        .bind(record.req_raw.truncated as i64)
+        .bind(record.req_raw.truncated_reason.as_deref())
+        .bind(record.resp_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&record.resp_raw))
+        .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
+        .bind(record.resp_raw.truncated as i64)
+        .bind(record.resp_raw.truncated_reason.as_deref())
+        .bind(nullable_runtime_timing_value(record.timings.t_req_read_ms))
+        .bind(nullable_runtime_timing_value(record.timings.t_req_parse_ms))
+        .bind(nullable_runtime_timing_value(record.timings.t_upstream_connect_ms))
+        .bind(nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+    } else {
+        0
+    };
     debug!(
         invoke_id = %record.invoke_id,
         occurred_at = %record.occurred_at,
         status = %record.status,
         rows_affected = insert_result.rows_affected(),
+        updated_rows,
         "running proxy capture snapshot placeholder flushed"
     );
-    Ok(insert_result.rows_affected())
+    Ok(insert_result.rows_affected() + updated_rows)
 }
 
 pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) -> ApiInvocation {
