@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.8.1",
+  "base_stable_version": "2.8.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-02T14:57:43Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.8.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a0879e2a585f555761163f91014c231f73e2de6c",
+  "pr_number": 510,
+  "pr_title": "fix: reduce running snapshot sqlite write pressure",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.8.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.8.1",
+  "target_sha": "5b35fe48b65c93bc6d80b317cdf5ce560c5cf628",
+  "type_label": "type:patch"
+}
