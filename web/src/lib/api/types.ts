@@ -63,6 +63,7 @@ export type {
   PromptCacheConversationInvocationPreview,
   PromptCacheConversation,
   PromptCacheConversationBindingKind,
+  PromptCacheConversationRewriteMode,
   PromptCacheConversationBindingResponse,
   UpdatePromptCacheConversationBindingPayload,
   PromptCacheConversationImplicitFilter,

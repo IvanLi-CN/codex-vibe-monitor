@@ -610,6 +610,11 @@ fn prompt_cache_conversation_bindings_create_sql(table_name: &str) -> String {
             compact_first_byte_timeout_secs INTEGER,
             responses_stream_timeout_secs INTEGER,
             compact_stream_timeout_secs INTEGER,
+            allow_switch_upstream INTEGER,
+            fast_mode_rewrite_mode TEXT,
+            image_tool_rewrite_mode TEXT,
+            available_models_json TEXT,
+            forward_proxy_key TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             CHECK (
@@ -622,6 +627,36 @@ fn prompt_cache_conversation_bindings_create_sql(table_name: &str) -> String {
         )
         "#
     )
+}
+
+async fn prompt_cache_conversation_bindings_existing_columns(
+    pool: &Pool<Sqlite>,
+) -> Result<std::collections::HashSet<String>> {
+    let rows = sqlx::query("PRAGMA table_info('prompt_cache_conversation_bindings')")
+        .fetch_all(pool)
+        .await
+        .context("failed to inspect prompt_cache_conversation_bindings columns")?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect())
+}
+
+fn prompt_cache_binding_copy_expr(
+    existing_columns: &std::collections::HashSet<String>,
+    column: &str,
+) -> &'static str {
+    if existing_columns.contains(column) {
+        match column {
+            "responses_first_byte_timeout_secs" => "responses_first_byte_timeout_secs",
+            "compact_first_byte_timeout_secs" => "compact_first_byte_timeout_secs",
+            "responses_stream_timeout_secs" => "responses_stream_timeout_secs",
+            "compact_stream_timeout_secs" => "compact_stream_timeout_secs",
+            _ => "NULL",
+        }
+    } else {
+        "NULL"
+    }
 }
 
 async fn migrate_prompt_cache_conversation_bindings_contract(
@@ -642,10 +677,26 @@ async fn migrate_prompt_cache_conversation_bindings_contract(
         && normalized_sql.contains("responses_first_byte_timeout_secs")
         && normalized_sql.contains("compact_first_byte_timeout_secs")
         && normalized_sql.contains("responses_stream_timeout_secs")
-        && normalized_sql.contains("compact_stream_timeout_secs");
+        && normalized_sql.contains("compact_stream_timeout_secs")
+        && normalized_sql.contains("allow_switch_upstream")
+        && normalized_sql.contains("fast_mode_rewrite_mode")
+        && normalized_sql.contains("image_tool_rewrite_mode")
+        && normalized_sql.contains("available_models_json")
+        && normalized_sql.contains("forward_proxy_key");
     if already_compatible {
         return Ok(());
     }
+    let existing_columns = prompt_cache_conversation_bindings_existing_columns(pool).await?;
+    let responses_first_byte_timeout_copy = prompt_cache_binding_copy_expr(
+        &existing_columns,
+        "responses_first_byte_timeout_secs",
+    );
+    let compact_first_byte_timeout_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "compact_first_byte_timeout_secs");
+    let responses_stream_timeout_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "responses_stream_timeout_secs");
+    let compact_stream_timeout_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "compact_stream_timeout_secs");
 
     let mut tx = pool.begin().await?;
     let drop_temp_sql = format!("DROP TABLE IF EXISTS {TEMP_TABLE}");
@@ -673,6 +724,11 @@ async fn migrate_prompt_cache_conversation_bindings_contract(
             compact_first_byte_timeout_secs,
             responses_stream_timeout_secs,
             compact_stream_timeout_secs,
+            allow_switch_upstream,
+            fast_mode_rewrite_mode,
+            image_tool_rewrite_mode,
+            available_models_json,
+            forward_proxy_key,
             created_at,
             updated_at
         )
@@ -681,6 +737,11 @@ async fn migrate_prompt_cache_conversation_bindings_contract(
             binding_kind,
             group_name,
             upstream_account_id,
+            {responses_first_byte_timeout_copy},
+            {compact_first_byte_timeout_copy},
+            {responses_stream_timeout_copy},
+            {compact_stream_timeout_copy},
+            NULL,
             NULL,
             NULL,
             NULL,
@@ -2803,6 +2864,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             compact_first_byte_timeout_secs INTEGER,
             responses_stream_timeout_secs INTEGER,
             compact_stream_timeout_secs INTEGER,
+            allow_switch_upstream INTEGER,
+            fast_mode_rewrite_mode TEXT,
+            image_tool_rewrite_mode TEXT,
+            available_models_json TEXT,
+            forward_proxy_key TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             CHECK (

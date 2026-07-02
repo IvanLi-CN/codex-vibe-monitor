@@ -256,8 +256,10 @@ async fn evaluate_live_pool_candidate(
     group_metadata: &UpstreamAccountGroupMetadata,
     node_shunt_assignments: &mut UpstreamAccountNodeShuntAssignments,
     routing_source: PoolRoutingSelectionSource,
+    conversation_override: Option<&ConversationRoutingOverride>,
     now: DateTime<Utc>,
 ) -> Result<LivePoolCandidateEvaluation> {
+    let conversation_proxy_scope = conversation_forward_proxy_scope(conversation_override);
     let build_evaluation =
         |eligibility, dispatch_state, resolved_account, assigned_blocked, blocked_message| {
             let runtime_last_selected_at = state
@@ -280,6 +282,34 @@ async fn evaluate_live_pool_candidate(
         };
 
     if group_metadata.node_shunt_enabled {
+        if let Some(conversation_proxy_scope) = conversation_proxy_scope {
+            let resolved_account = prepare_pool_account_with_scopes(
+                state,
+                row,
+                effective_rule,
+                group_metadata.clone(),
+                ForwardProxyRouteScope::Automatic,
+                conversation_proxy_scope,
+                routing_source,
+            )
+            .await?;
+            return Ok(build_evaluation(
+                if resolved_account.is_some() {
+                    PoolRoutingCandidateEligibility::Assignable
+                } else {
+                    PoolRoutingCandidateEligibility::HardBlocked
+                },
+                if resolved_account.is_some() {
+                    PoolRoutingCandidateDispatchState::ReadyOnOwnedNode
+                } else {
+                    PoolRoutingCandidateDispatchState::HardBlocked
+                },
+                resolved_account,
+                None,
+                None,
+            ));
+        }
+
         let Some(group_name) = row
             .group_name
             .as_deref()
@@ -350,7 +380,9 @@ async fn evaluate_live_pool_candidate(
                 effective_rule,
                 group_metadata.clone(),
                 refresh_proxy_scope,
-                ForwardProxyRouteScope::pinned(proxy_key.clone()),
+                conversation_proxy_scope
+                    .clone()
+                    .unwrap_or_else(|| ForwardProxyRouteScope::pinned(proxy_key.clone())),
                 routing_source,
             )
             .await?;
@@ -393,7 +425,9 @@ async fn evaluate_live_pool_candidate(
                 effective_rule,
                 group_metadata.clone(),
                 refresh_proxy_scope,
-                dispatch_proxy_scope,
+                conversation_proxy_scope
+                    .clone()
+                    .unwrap_or(dispatch_proxy_scope),
                 routing_source,
             )
             .await?;
@@ -447,7 +481,7 @@ async fn evaluate_live_pool_candidate(
         effective_rule,
         group_metadata.clone(),
         refresh_proxy_scope.clone(),
-        refresh_proxy_scope,
+        conversation_proxy_scope.unwrap_or(refresh_proxy_scope),
         routing_source,
     )
     .await?;
@@ -481,6 +515,7 @@ pub(crate) async fn resolve_pool_account_for_request(
         requested_model,
         excluded_ids,
         excluded_upstream_route_keys,
+        None,
         None,
         None,
         crate::ImageIntent::Unknown,
@@ -525,6 +560,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint(
         excluded_upstream_route_keys,
         None,
         binding_constraint,
+        None,
         crate::ImageIntent::Unknown,
     )
     .await
@@ -569,6 +605,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         excluded_upstream_route_keys,
         required_upstream_route_key,
         binding_constraint,
+        None,
         crate::ImageIntent::Unknown,
     )
     .await
@@ -584,6 +621,31 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
+    resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        binding_constraint,
+        None,
+        image_intent,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<&ConversationRoutingOverride>,
+    image_intent: crate::ImageIntent,
+) -> Result<PoolAccountResolution> {
     resolve_pool_account_for_request_with_route_requirement_internal(
         state,
         sticky_key,
@@ -592,6 +654,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
         excluded_upstream_route_keys,
         required_upstream_route_key,
         binding_constraint,
+        conversation_override,
         image_intent,
     )
     .await
@@ -605,6 +668,7 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
     excluded_upstream_route_keys: &HashSet<String>,
     required_upstream_route_key: Option<&str>,
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<&ConversationRoutingOverride>,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
     let now = Utc::now();
@@ -633,9 +697,20 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
     };
     let sticky_source_id = sticky_route.as_ref().map(|route| route.account_id);
     let sticky_source_rule = if let Some(route) = sticky_route.as_ref() {
-        Some(load_effective_routing_rule_for_account(&state.pool, route.account_id).await?)
+        let mut rule = load_effective_routing_rule_for_account(&state.pool, route.account_id).await?;
+        apply_conversation_routing_override(&mut rule, conversation_override);
+        Some(rule)
     } else {
         None
+    };
+    let sticky_cut_out_blocked_by_policy = match conversation_override
+        .and_then(|policy| policy.allow_switch_upstream)
+    {
+        Some(true) => false,
+        Some(false) => true,
+        None => sticky_source_rule
+            .as_ref()
+            .is_some_and(|rule| !rule.allow_cut_out),
     };
     let forced_binding_account_id = match binding_constraint {
         Some(PromptCacheConversationBindingConstraint::UpstreamAccount(account_id)) => {
@@ -644,16 +719,16 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
         _ => None,
     };
     let bypass_requested_model_filter = binding_constraint.is_some();
+    let conversation_available_models_override =
+        conversation_override.is_some_and(|policy| policy.available_models.is_some());
 
     if let Some(route) = sticky_route.as_ref() {
         let sticky_route_is_forced_binding_target =
             forced_binding_account_id == Some(route.account_id);
         if !sticky_route_is_forced_binding_target
             && binding_constraint.is_none()
+            && sticky_cut_out_blocked_by_policy
             && tried.contains(&route.account_id)
-            && sticky_source_rule
-                .as_ref()
-                .is_some_and(|rule| !rule.allow_cut_out)
             && load_upstream_account_row(&state.pool, route.account_id)
                 .await?
                 .is_some()
@@ -685,9 +760,7 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
                         .is_some_and(|route_key| route_key == required)
                 });
             if binding_constraint.is_none()
-                && sticky_source_rule
-                    .as_ref()
-                    .is_some_and(|rule| !rule.allow_cut_out)
+                && sticky_cut_out_blocked_by_policy
             {
                 sticky_source_cut_out_guard_applies = true;
             }
@@ -714,7 +787,8 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
                 }
             } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
                     if sticky_source_rule.as_ref().is_none_or(|rule| {
-                        bypass_requested_model_filter
+                        (bypass_requested_model_filter
+                            && !conversation_available_models_override)
                             || account_accepts_requested_model(requested_model, rule)
                     }) && account_accepts_requested_image_intent(
                         image_intent,
@@ -765,6 +839,7 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
                                 &group_metadata,
                                 &mut node_shunt_assignments,
                                 PoolRoutingSelectionSource::StickyReuse,
+                                conversation_override,
                                 now,
                             )
                             .await?;
@@ -907,7 +982,7 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
                 candidate.active_sticky_conversations.saturating_sub(1);
         }
     }
-    let candidate_effective_rules = load_effective_routing_rules_for_accounts(
+    let mut candidate_effective_rules = load_effective_routing_rules_for_accounts(
         &state.pool,
         &candidates
             .iter()
@@ -915,6 +990,9 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
             .collect::<Vec<_>>(),
     )
     .await?;
+    for rule in candidate_effective_rules.values_mut() {
+        apply_conversation_routing_override(rule, conversation_override);
+    }
     for candidate in candidates {
         let Some(row) = load_upstream_account_row(&state.pool, candidate.id).await? else {
             continue;
@@ -975,7 +1053,7 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
         let Some(effective_rule) = candidate_effective_rules.get(&row.id) else {
             continue;
         };
-        if !bypass_requested_model_filter
+        if (!bypass_requested_model_filter || conversation_available_models_override)
             && !account_accepts_requested_model(requested_model, effective_rule)
         {
             saw_other_non_rate_limited_routing_candidate = true;
@@ -1032,6 +1110,7 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
             &group_metadata,
             &mut node_shunt_assignments,
             PoolRoutingSelectionSource::FreshAssignment,
+            conversation_override,
             now,
         )
         .await?;

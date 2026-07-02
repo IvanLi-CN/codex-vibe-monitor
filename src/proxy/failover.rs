@@ -94,6 +94,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
         excluded_upstream_route_keys,
         required_upstream_route_key,
         None,
+        None,
         wait_for_no_available,
         wait_deadline,
         total_timeout_deadline,
@@ -150,6 +151,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         excluded_upstream_route_keys,
         required_upstream_route_key,
         binding_constraint,
+        None,
         wait_for_no_available,
         wait_deadline,
         total_timeout_deadline,
@@ -171,6 +173,37 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     total_timeout_deadline: Option<Instant>,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolutionWithWait> {
+    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        binding_constraint,
+        None,
+        wait_for_no_available,
+        wait_deadline,
+        total_timeout_deadline,
+        image_intent,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<&ConversationRoutingOverride>,
+    wait_for_no_available: bool,
+    wait_deadline: &mut Option<Instant>,
+    total_timeout_deadline: Option<Instant>,
+    image_intent: crate::ImageIntent,
+) -> Result<PoolAccountResolutionWithWait> {
     resolve_pool_account_for_request_with_wait_and_binding_constraint_internal(
         state,
         sticky_key,
@@ -179,6 +212,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         excluded_upstream_route_keys,
         required_upstream_route_key,
         binding_constraint,
+        conversation_override,
         wait_for_no_available,
         wait_deadline,
         total_timeout_deadline,
@@ -195,6 +229,7 @@ async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_inter
     excluded_upstream_route_keys: &HashSet<String>,
     required_upstream_route_key: Option<&str>,
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<&ConversationRoutingOverride>,
     wait_for_no_available: bool,
     wait_deadline: &mut Option<Instant>,
     total_timeout_deadline: Option<Instant>,
@@ -207,7 +242,8 @@ async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_inter
         if total_timeout_deadline.is_some_and(|deadline| now >= deadline) {
             return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
         }
-        let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent(
+        let resolution =
+            resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override(
             state,
             sticky_key,
             requested_model,
@@ -215,8 +251,9 @@ async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_inter
             excluded_upstream_route_keys,
             required_upstream_route_key,
             binding_constraint,
+            conversation_override,
             image_intent,
-        )
+            )
         .await?;
         if wait_for_no_available
             && matches!(
@@ -290,6 +327,7 @@ pub(crate) async fn send_pool_request_with_failover(
         runtime_snapshot_context,
         sticky_key,
         None,
+        None,
         preferred_account,
         failover_progress,
         same_account_attempts,
@@ -309,6 +347,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     runtime_snapshot_context: Option<PoolAttemptRuntimeSnapshotContext>,
     sticky_key: Option<&str>,
     binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<ConversationRoutingOverride>,
     preferred_account: Option<PoolResolvedAccount>,
     failover_progress: PoolFailoverProgress,
     same_account_attempts: u8,
@@ -550,7 +589,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 });
             let route_scoped_overload_selection =
                 overload_required_upstream_route_key.clone();
-            match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent(
+            match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
                 state.as_ref(),
                 sticky_key,
                 requested_model.as_deref(),
@@ -558,6 +597,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 &excluded_upstream_route_keys,
                 route_scoped_overload_selection.as_deref(),
                 binding_constraint.as_ref(),
+                conversation_override.as_ref(),
                 wait_for_no_available,
                 &mut no_available_wait_deadline,
                 total_timeout_deadline,

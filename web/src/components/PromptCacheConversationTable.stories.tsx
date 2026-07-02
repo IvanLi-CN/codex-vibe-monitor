@@ -74,6 +74,11 @@ function buildBindingResponse(
       responsesStreamTimeoutSecs: "root",
       compactStreamTimeoutSecs: "root",
     },
+    allowSwitchUpstream: overrides.allowSwitchUpstream ?? null,
+    fastModeRewriteMode: overrides.fastModeRewriteMode ?? null,
+    imageToolRewriteMode: overrides.imageToolRewriteMode ?? null,
+    availableModels: overrides.availableModels ?? null,
+    forwardProxyKey: overrides.forwardProxyKey ?? null,
     updatedAt: overrides.updatedAt ?? null,
   };
 }
@@ -1735,7 +1740,7 @@ export const DrawerOpen: Story = {
 
     await userEvent.click(historyButton);
     await expect(
-      await documentScope.findByText(/全部保留调用记录|All retained calls/i),
+      await documentScope.findByText(/对话详情|Conversation details/i),
     ).toBeInTheDocument();
     await expect(
       documentScope.getByText(/已加载 6 \/ 6 条保留调用记录|Loaded 6 \/ 6 retained record\(s\)/i),
@@ -1772,7 +1777,7 @@ export const ShortSameDayDrawerOpen: Story = {
 
     await userEvent.click(historyButton);
     await expect(
-      await documentScope.findByText(/全部保留调用记录|All retained calls/i),
+      await documentScope.findByText(/对话详情|Conversation details/i),
     ).toBeInTheDocument();
     const chart = await documentScope.findByTestId("conversation-activity-chart");
     await expect(chart).toHaveAttribute(
@@ -2043,6 +2048,11 @@ export const DrawerBindingAndTimeouts: Story = {
           responsesStreamTimeoutSecs: "conversation",
           compactStreamTimeoutSecs: "root",
         },
+        allowSwitchUpstream: true,
+        fastModeRewriteMode: "force_add",
+        imageToolRewriteMode: "force_remove",
+        availableModels: ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
+        forwardProxyKey: "__direct__",
         updatedAt: "2026-05-13T23:42:00.000Z",
       }),
     );
@@ -2057,6 +2067,24 @@ export const DrawerBindingAndTimeouts: Story = {
     );
     await expect(
       await documentScope.findByText(/路由绑定|Route binding/i),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(/当前对话覆盖|Conversation overrides/i),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(/允许换上游|Allow switching upstream/i),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(/强制添加|Force add/i),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(/强制移除|Force remove/i),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getAllByText(/对话|Conversation/i).length,
+    ).toBeGreaterThan(0);
+    await expect(
+      documentScope.getByText(/gpt-5\.1-codex-max, gpt-5\.1-codex-mini/i),
     ).toBeInTheDocument();
     await expect(
       documentScope.getByText(/40s/),
