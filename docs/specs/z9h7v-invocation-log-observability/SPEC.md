@@ -26,6 +26,7 @@
 - 复用 invocation preview wire shape 的 owner-facing 列表在需要稳定对话关联时，必须继续返回真实 `promptCacheKey`；Dashboard 上游账号活动 recent 行不得再把 `invokeId` 当成对话键替代。
 - Records 与 Dashboard 两个 owner-facing 列表同时显示独立“图片工具”徽标，避免同一条 invocation 在不同列表面出现语义漂移。
 - Live 展开详情与 Dashboard 调用详情抽屉必须共用同一套调用详情组件，并按“快速排障”组织信息：请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示。
+- 新 HTTP proxy invocation 的 `invokeId` 必须使用 10 位 NanoID 风格短格式，去掉历史 `proxy-...` 前缀、内部 counter 与时间戳尾巴；历史 `proxy-...` 记录继续兼容查询和展示。
 
 ### Non-goals
 
@@ -75,6 +76,9 @@
 - `requestBodyLoggingEnabled=false` 时，`compactionRequestKind` 与 `imageIntent` 仍必须稳定落库并对外可见，不能依赖 request raw body 后读。
 - 公开模型展示合同固定为：主显示值采用 `responseModel ?? model ?? requestModel`；只有在 `requestModel` 与 `responseModel` 同时存在、且忽略空白/大小写并按 dated alias/base-model 归并后仍不一致时，才显示“上游改路由”的差异图标。
 - 调用详情必须固定展示“请求模型 / 响应模型”两个字段；旧记录若只有历史 `model` 字段，则回填到“响应模型”，请求模型显示 `—`。
+- 新 HTTP proxy invocation 的 `invokeId` 必须匹配 `^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$`，字符集固定为 `ABCDEFGHJKMNPQRSTUVWXYZ23456789`，不包含 `I`、`L`、`O`、`0`、`1`、连字符、业务前缀或时间戳。
+- 内部 `proxy_request_id` 继续作为日志、路由预约、临时文件、并发控制与 pool replay 的 numeric ID；不得从短 `invokeId` 反向解析内部 ID。
+- `pool_routing_reservation_key_for_invoke_id` 只对历史 `proxy-{numeric}-{timestamp}` 格式恢复 `pool-route-{numeric}`，新短格式不生成 reservation key。
 
 ### SHOULD
 
@@ -111,6 +115,7 @@
 
 ### `GET /api/invocations` 记录对象（新增可选字段）
 
+- `invokeId: string`，新 HTTP proxy 记录为 10 位短 ID；历史记录可能仍为 `proxy-...` 长 ID。
 - `requesterIp?: string`
 - `promptCacheKey?: string`
 - `endpoint?: string`
@@ -170,6 +175,8 @@
 - Given Dashboard 上游账号 recent 行来源于共享 invocation preview，When 用户点击调用打开详情，Then selection 使用真实 `promptCacheKey` 建立对话关联，而不是退化成 `invokeId`。
 - Given Live 表格展开详情或 Dashboard 调用详情抽屉打开，When 记录包含调用 ID、账号、端点、请求/响应模型、请求方 IP、重试和失败字段，Then 首屏按请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示，不再以无差别双列字段平铺呈现。
 - Given 调用详情包含长 `invokeId`、`promptCacheKey`、endpoint、IPv6 或错误消息，When 页面在桌面和窄屏渲染，Then 文本在容器内换行或截断，不造成横向滚动或相邻内容遮挡。
+- Given 新 HTTP proxy invocation 被创建，When 查询 `/api/invocations`、接收 SSE `records` 或打开 Live/Dashboard 详情，Then `invokeId` 为 10 位短 ID，且不含 `proxy`、连字符、时间戳或内部 counter。
+- Given 历史 `proxy-9061-1783013997090` 记录存在，When 用户过滤、查询、展示或打开详情，Then 仍按完整历史 `invokeId` 兼容处理，不迁移、不回填。
 
 ### Manual verification
 

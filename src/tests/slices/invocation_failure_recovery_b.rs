@@ -1275,12 +1275,10 @@ async fn capture_target_pool_route_persists_attempt_rows_and_summary_fields() {
 
     wait_for_codex_invocations(&state.pool, 1).await;
     for _ in 0..20 {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id LIKE 'proxy-%'",
-        )
-        .fetch_one(&state.pool)
-        .await
-        .expect("count attempt rows");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count attempt rows");
         if count >= 3 {
             break;
         }
@@ -1409,12 +1407,10 @@ async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
 
     wait_for_codex_invocations(&state.pool, 1).await;
     for _ in 0..20 {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id LIKE 'proxy-%'",
-        )
-        .fetch_one(&state.pool)
-        .await
-        .expect("count budget attempt rows");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count budget attempt rows");
         if count >= 6 {
             break;
         }
@@ -2094,6 +2090,7 @@ async fn pool_route_compact_502_returns_cvm_id_and_attempt_observations() {
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
         .expect("cvm id header should be present");
+    assert!(proxy_invoke_id_has_short_format(&cvm_id));
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read compact 502 response");
