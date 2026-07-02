@@ -277,6 +277,34 @@ async fn evaluate_live_pool_candidate(
         };
 
     if group_metadata.node_shunt_enabled {
+        if let Some(conversation_proxy_scope) = conversation_proxy_scope {
+            let resolved_account = prepare_pool_account_with_scopes(
+                state,
+                row,
+                effective_rule,
+                group_metadata.clone(),
+                conversation_proxy_scope.clone(),
+                conversation_proxy_scope,
+                routing_source,
+            )
+            .await?;
+            return Ok(build_evaluation(
+                if resolved_account.is_some() {
+                    PoolRoutingCandidateEligibility::Assignable
+                } else {
+                    PoolRoutingCandidateEligibility::HardBlocked
+                },
+                if resolved_account.is_some() {
+                    PoolRoutingCandidateDispatchState::ReadyOnOwnedNode
+                } else {
+                    PoolRoutingCandidateDispatchState::HardBlocked
+                },
+                resolved_account,
+                None,
+                None,
+            ));
+        }
+
         let Some(group_name) = row
             .group_name
             .as_deref()

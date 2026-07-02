@@ -3456,6 +3456,81 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
 }
 
 #[tokio::test]
+async fn prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-proxy-override-node-shunt";
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Proxy Override",
+        "sk-prompt-cache-proxy-override",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_group_notes
+        SET bound_proxy_keys_json = '[]',
+            node_shunt_enabled = 1
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind(group_name)
+    .execute(&state.pool)
+    .await
+    .expect("enable node shunt group with no selectable slot proxies");
+
+    let prompt_cache_key = "prompt-cache-proxy-override-node-shunt";
+    let payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+            "forwardProxyKey": "__direct__",
+        }))
+        .expect("deserialize proxy override payload");
+    let Json(_) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(payload),
+    )
+    .await
+    .expect("proxy override binding should save");
+
+    let conversation_override =
+        load_prompt_cache_conversation_routing_override(&state.pool, Some(prompt_cache_key))
+            .await
+            .expect("load conversation routing override");
+    let resolution =
+        resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override(
+            state.as_ref(),
+            Some(prompt_cache_key),
+            Some("gpt-5.1-codex-max"),
+            &[],
+            &HashSet::new(),
+            None,
+            None,
+            conversation_override.as_ref(),
+            ImageIntent::Unknown,
+        )
+        .await
+        .expect("resolve account with conversation proxy override");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("conversation proxy override should resolve through direct node");
+    };
+    assert_eq!(account.account_id, account_id);
+    match account.forward_proxy_scope {
+        ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => {
+            assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+        }
+        other => panic!("expected pinned direct proxy scope, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn prompt_cache_conversation_binding_route_accepts_encoded_key() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
