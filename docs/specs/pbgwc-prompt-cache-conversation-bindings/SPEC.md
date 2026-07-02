@@ -81,8 +81,9 @@ The row is deleted only when there is no binding target, all four timeout overri
 ### HTTP API
 
 - `GET /api/stats/prompt-cache-conversation-bindings/{encodedPromptCacheKey}`
-  - Returns `{ promptCacheKey, bindingKind, groupName, upstreamAccountId, upstreamAccountName, timeouts, timeoutFieldSources, allowSwitchUpstream, fastModeRewriteMode, imageToolRewriteMode, availableModels, forwardProxyKey, updatedAt }`.
+  - Returns `{ promptCacheKey, bindingKind, groupName, upstreamAccountId, upstreamAccountName, timeouts, timeoutFieldSources, allowSwitchUpstream, fastModeRewriteMode, imageToolRewriteMode, availableModels, forwardProxyKey, policyFieldSources, updatedAt }`.
   - `bindingKind` is `none`, `group`, or `upstreamAccount`.
+  - `policyFieldSources` uses the same source vocabulary as effective routing rules and marks each conversation policy field as `conversation` when set locally or inherited from `account`/upstream policy otherwise.
 - `PATCH /api/stats/prompt-cache-conversation-bindings/{encodedPromptCacheKey}`
   - `{ "bindingKind": "none" }` clears only the manual binding target when no timeout patch is present.
   - `{ "bindingKind": "group", "groupName": "prod" }` binds a group.
@@ -147,7 +148,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given a bound target that is disabled or unavailable, the request fails through the existing no-selectable-account path without fallback.
 - Given the conversation detail drawer is open, the operator can see the current binding, change it, and clear it.
 - Given the conversation detail drawer is open, the operator can override or clear one timeout field without rewriting untouched timeout fields.
-- Given the conversation detail drawer is open on the Settings tab, the operator can override or clear 切出, FAST mode, image tool, available models, and one proxy node.
+- Given the conversation detail drawer is open on the Settings tab, the operator can see effective values plus source badges for 切出, FAST mode, image tool, available models, and one proxy node, then override or clear each field independently.
 - Given a conversation has thousands of retained records, opening the detail drawer loads only the first 50 records, keeps the binding controls interactive, and loads the next 50 records only after drawer scrolling reaches the load threshold.
 
 ## Visual Evidence

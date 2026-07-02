@@ -221,6 +221,13 @@ describe("PromptCacheConversationTable", () => {
       groupName: null,
       upstreamAccountId: null,
       upstreamAccountName: null,
+      policyFieldSources: {
+        allowSwitchUpstream: "account",
+        fastModeRewriteMode: "account",
+        imageToolRewriteMode: "account",
+        availableModels: "account",
+        forwardProxyKey: "account",
+      },
       updatedAt: null,
     });
     apiMocks.fetchUpstreamAccounts.mockResolvedValue({
@@ -1272,7 +1279,7 @@ describe("PromptCacheConversationTable", () => {
     );
     expect(document.body.textContent).not.toContain("不保留硬路由绑定。");
     expect(document.querySelectorAll("select")).toHaveLength(0);
-    expect(document.querySelectorAll('[role="combobox"]')).toHaveLength(7);
+    expect(document.querySelectorAll('[role="combobox"]')).toHaveLength(2);
 
     await user.click(kindSelect!);
     expect(findSelectOption("disabled-only")).toBeUndefined();
@@ -1296,12 +1303,7 @@ describe("PromptCacheConversationTable", () => {
     expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
       "pck-binding",
       {
-        allowSwitchUpstream: null,
-        availableModels: null,
         bindingKind: "upstreamAccount",
-        fastModeRewriteMode: null,
-        forwardProxyKey: null,
-        imageToolRewriteMode: null,
         upstreamAccountId: 77,
         timeouts: {},
       },
@@ -1430,19 +1432,38 @@ describe("PromptCacheConversationTable", () => {
       metrics: { total: 1, oauth: 0, apiKey: 1, attention: 0 },
       routing: null,
     });
-    apiMocks.updatePromptCacheConversationBinding.mockResolvedValue({
-      promptCacheKey: "pck-policy",
-      bindingKind: "none",
-      groupName: null,
-      upstreamAccountId: null,
-      upstreamAccountName: null,
-      allowSwitchUpstream: true,
-      fastModeRewriteMode: "force_add",
-      imageToolRewriteMode: "force_remove",
-      availableModels: ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
-      forwardProxyKey: "__direct__",
-      updatedAt: "2026-03-02T12:01:00Z",
-    });
+    apiMocks.updatePromptCacheConversationBinding.mockImplementation(
+      async (_promptCacheKey, payload) => ({
+        promptCacheKey: "pck-policy",
+        bindingKind: "none",
+        groupName: null,
+        upstreamAccountId: null,
+        upstreamAccountName: null,
+        allowSwitchUpstream:
+          "allowSwitchUpstream" in payload ? payload.allowSwitchUpstream : null,
+        fastModeRewriteMode:
+          "fastModeRewriteMode" in payload ? payload.fastModeRewriteMode : null,
+        imageToolRewriteMode:
+          "imageToolRewriteMode" in payload ? payload.imageToolRewriteMode : null,
+        availableModels:
+          "availableModels" in payload ? payload.availableModels : null,
+        forwardProxyKey:
+          "forwardProxyKey" in payload ? payload.forwardProxyKey : null,
+        policyFieldSources: {
+          allowSwitchUpstream:
+            "allowSwitchUpstream" in payload ? "conversation" : "account",
+          fastModeRewriteMode:
+            "fastModeRewriteMode" in payload ? "conversation" : "account",
+          imageToolRewriteMode:
+            "imageToolRewriteMode" in payload ? "conversation" : "account",
+          availableModels:
+            "availableModels" in payload ? "conversation" : "account",
+          forwardProxyKey:
+            "forwardProxyKey" in payload ? "conversation" : "account",
+        },
+        updatedAt: "2026-03-02T12:01:00Z",
+      }),
+    );
     apiMocks.fetchInvocationRecords.mockResolvedValue({
       snapshotId: 1,
       total: 0,
@@ -1479,58 +1500,84 @@ describe("PromptCacheConversationTable", () => {
     await clickDrawerTab("设置");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 切出")!);
     await user.click(
-      document.querySelector(
-        '[role="combobox"][aria-label="切出"]',
-      ) as HTMLElement,
+      document.querySelector('[role="combobox"][aria-label="切出"]') as HTMLElement,
     );
     await user.click(findSelectOption("允许换上游")!);
+    await flushInteractive();
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
+    );
     await user.click(
-      document.querySelector(
-        '[role="combobox"][aria-label="FAST 模式"]',
-      ) as HTMLElement,
+      findButtonByAriaLabel("编辑对话覆盖: FAST 模式")!,
+    );
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="FAST 模式"]') as HTMLElement,
     );
     await user.click(findSelectOption("强制添加")!);
+    await flushInteractive();
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(2),
+    );
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 图片工具")!);
     await user.click(
-      document.querySelector(
-        '[role="combobox"][aria-label="图片工具"]',
-      ) as HTMLElement,
+      document.querySelector('[role="combobox"][aria-label="图片工具"]') as HTMLElement,
     );
     await user.click(findSelectOption("强制移除")!);
+    await flushInteractive();
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(3),
+    );
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 代理")!);
     await user.click(
-      document.querySelector(
-        '[role="combobox"][aria-label="代理"]',
-      ) as HTMLElement,
+      document.querySelector('[role="combobox"][aria-label="代理"]') as HTMLElement,
     );
     await user.click(findSelectOption("直连 · DIRECT")!);
-    await user.click(
-      document.querySelector(
-        '[role="combobox"][aria-label="可用模型"]',
-      ) as HTMLElement,
+    await flushInteractive();
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(4),
     );
-    await user.click(findSelectOption("覆盖")!);
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 可用模型")!);
+    await user.clear(
+      document.querySelector('input[aria-label="可用模型"]') as HTMLInputElement,
+    );
     await user.type(
       document.querySelector('input[aria-label="可用模型"]') as HTMLInputElement,
       "gpt-5.1-codex-max, gpt-5.1-codex-mini",
     );
-
-    const saveButton = findButtonByAriaLabel("保存");
-    await act(async () => {
-      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    await user.click(findButtonByAriaLabel("应用覆盖")!);
     await flushInteractive();
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(5),
+    );
 
-    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
-      "pck-policy",
-      {
-        allowSwitchUpstream: true,
-        availableModels: ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
-        bindingKind: "none",
-        fastModeRewriteMode: "force_add",
-        forwardProxyKey: "__direct__",
-        imageToolRewriteMode: "force_remove",
-        timeouts: {},
-      },
+    const policyPatchCalls = apiMocks.updatePromptCacheConversationBinding.mock.calls
+      .filter(([key]) => key === "pck-policy")
+      .map(([, payload]) => payload);
+    expect(policyPatchCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          allowSwitchUpstream: true,
+          bindingKind: "none",
+        }),
+        expect.objectContaining({
+          bindingKind: "none",
+          fastModeRewriteMode: "force_add",
+        }),
+        expect.objectContaining({
+          bindingKind: "none",
+          imageToolRewriteMode: "force_remove",
+        }),
+        expect.objectContaining({
+          bindingKind: "none",
+          forwardProxyKey: "__direct__",
+        }),
+        expect.objectContaining({
+          availableModels: ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
+          bindingKind: "none",
+        }),
+      ]),
     );
   });
 
@@ -1935,12 +1982,7 @@ describe("PromptCacheConversationTable", () => {
     expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
       "pck-binding-clear",
       {
-        allowSwitchUpstream: null,
-        availableModels: null,
         bindingKind: "none",
-        fastModeRewriteMode: null,
-        forwardProxyKey: null,
-        imageToolRewriteMode: null,
         timeouts: {},
       },
     );

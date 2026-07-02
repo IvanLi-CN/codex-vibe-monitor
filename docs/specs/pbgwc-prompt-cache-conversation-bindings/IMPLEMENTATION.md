@@ -17,7 +17,7 @@
 - [x] Manual group binding bypasses sticky source cut-out policy while preserving target cut-in and target account eligibility.
 - [x] Upstream account binding writes the corresponding sticky route immediately.
 - [x] Prompt Cache conversation detail drawer controls.
-- [x] Prompt Cache conversation detail drawer title and Settings tab policy controls.
+- [x] Prompt Cache conversation detail drawer title and Settings tab policy controls with effective-value rows, source badges, and field-level edit/clear behavior.
 - [x] Prompt Cache conversation timeout editor with source badges, collapsed inherited rows, and field-level expand/clear behavior aligned with the effective routing rule card.
 - [x] Prompt Cache conversation history drawer loads retained invocation records in 50-row scroll pages instead of hydrating all pages on open.
 - [x] `InvocationTable` virtualizes desktop table rows and mobile cards, mounting only the active breakpoint layout.
@@ -40,4 +40,4 @@
 - `cd web && bunx vitest run src/components/InvocationTable.test.tsx src/components/PromptCacheConversationTable.test.tsx`
 - Storybook `LargeHistoryVirtualizedDrawer` browser evidence: 15,000 total retained records, 50 initial drawer records, 100 after one scroll-triggered page, 28 mounted table rows, first page still visible at the nested table offset, account-binding combobox opened in about 169 ms.
 - Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows binding controls plus the timeout subpanel, with mixed `conversation/account/root` source badges, collapsed inherited rows, expanded conversation-owned timeout rows, and editable timeout-only persistence when `bindingKind='none'`.
-- Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows the “对话详情” title, conversation-level policy overrides, binding controls, and the timeout subpanel in the Settings tab.
+- Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows the “对话详情” title, conversation-level policy override rows with source badges, binding controls, and the timeout subpanel in the Settings tab.

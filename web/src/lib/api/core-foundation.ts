@@ -2,6 +2,7 @@ import { getBrowserTimeZone } from "../timeZone";
 import { normalizeForwardProxyProtocolLabel } from "../forwardProxyDisplay";
 import type {
   CompactSupportState,
+  EffectiveRoutingRuleSource,
   EffectiveRoutingTimeoutFieldSources,
   PoolRoutingMaintenanceSettings,
   PoolRoutingSettings,
@@ -1220,6 +1221,13 @@ export interface PromptCacheConversationBindingResponse {
   imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
   availableModels?: string[] | null;
   forwardProxyKey?: string | null;
+  policyFieldSources?: {
+    allowSwitchUpstream: EffectiveRoutingRuleSource;
+    fastModeRewriteMode: EffectiveRoutingRuleSource;
+    imageToolRewriteMode: EffectiveRoutingRuleSource;
+    availableModels: EffectiveRoutingRuleSource;
+    forwardProxyKey: EffectiveRoutingRuleSource;
+  };
   updatedAt: string | null;
 }
 
@@ -2452,6 +2460,12 @@ function normalizePromptCacheConversationBindingResponse(
     value === "force_add"
       ? value
       : null;
+  const normalizePolicySource = (value: unknown): EffectiveRoutingRuleSource =>
+    typeof value === "string" && value.trim() ? value.trim() : "account";
+  const rawPolicySources =
+    raw.policyFieldSources && typeof raw.policyFieldSources === "object"
+      ? (raw.policyFieldSources as Record<string, unknown>)
+      : {};
   return {
     promptCacheKey:
       typeof raw.promptCacheKey === "string" ? raw.promptCacheKey : promptCacheKey,
@@ -2504,6 +2518,19 @@ function normalizePromptCacheConversationBindingResponse(
       typeof raw.forwardProxyKey === "string" && raw.forwardProxyKey.trim()
         ? raw.forwardProxyKey.trim()
         : null,
+    policyFieldSources: {
+      allowSwitchUpstream: normalizePolicySource(
+        rawPolicySources.allowSwitchUpstream,
+      ),
+      fastModeRewriteMode: normalizePolicySource(
+        rawPolicySources.fastModeRewriteMode,
+      ),
+      imageToolRewriteMode: normalizePolicySource(
+        rawPolicySources.imageToolRewriteMode,
+      ),
+      availableModels: normalizePolicySource(rawPolicySources.availableModels),
+      forwardProxyKey: normalizePolicySource(rawPolicySources.forwardProxyKey),
+    },
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
   };
 }

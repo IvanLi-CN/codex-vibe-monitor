@@ -42,6 +42,16 @@ pub(crate) struct PromptCacheEncryptedSessionRoutingContext {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationPolicyFieldSources {
+    pub(crate) allow_switch_upstream: String,
+    pub(crate) fast_mode_rewrite_mode: String,
+    pub(crate) image_tool_rewrite_mode: String,
+    pub(crate) available_models: String,
+    pub(crate) forward_proxy_key: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationBindingResponse {
     pub(crate) prompt_cache_key: String,
     pub(crate) binding_kind: String,
@@ -59,6 +69,7 @@ pub(crate) struct PromptCacheConversationBindingResponse {
     pub(crate) image_tool_rewrite_mode: Option<ImageToolRewriteMode>,
     pub(crate) available_models: Option<Vec<String>>,
     pub(crate) forward_proxy_key: Option<String>,
+    pub(crate) policy_field_sources: PromptCacheConversationPolicyFieldSources,
     pub(crate) updated_at: Option<String>,
 }
 
@@ -184,6 +195,7 @@ async fn binding_response_for_none(
         image_tool_rewrite_mode: None,
         available_models: None,
         forward_proxy_key: None,
+        policy_field_sources: PromptCacheConversationPolicyFieldSources::inherited(),
         updated_at: None,
     })
 }
@@ -194,6 +206,7 @@ async fn binding_response_from_row(
     row: PromptCacheConversationBindingRow,
     owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
 ) -> Result<PromptCacheConversationBindingResponse> {
+    let policy_field_sources = PromptCacheConversationPolicyFieldSources::from_row(&row);
     let (timeouts, timeout_field_sources) = if row.binding_kind == PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT {
         if let Some(account_id) = row.upstream_account_id {
             let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
@@ -273,9 +286,41 @@ async fn binding_response_from_row(
             .available_models_json
             .as_deref()
             .and_then(parse_available_models_json),
-        forward_proxy_key: row.forward_proxy_key,
+        forward_proxy_key: row.forward_proxy_key.clone(),
+        policy_field_sources,
         updated_at: Some(row.updated_at),
     })
+}
+
+impl PromptCacheConversationPolicyFieldSources {
+    fn inherited() -> Self {
+        Self {
+            allow_switch_upstream: "account".to_string(),
+            fast_mode_rewrite_mode: "account".to_string(),
+            image_tool_rewrite_mode: "account".to_string(),
+            available_models: "account".to_string(),
+            forward_proxy_key: "account".to_string(),
+        }
+    }
+
+    fn from_row(row: &PromptCacheConversationBindingRow) -> Self {
+        Self {
+            allow_switch_upstream: source_for_optional(row.allow_switch_upstream.as_ref()),
+            fast_mode_rewrite_mode: source_for_optional(row.fast_mode_rewrite_mode.as_ref()),
+            image_tool_rewrite_mode: source_for_optional(row.image_tool_rewrite_mode.as_ref()),
+            available_models: source_for_optional(row.available_models_json.as_ref()),
+            forward_proxy_key: source_for_optional(row.forward_proxy_key.as_ref()),
+        }
+    }
+}
+
+fn source_for_optional<T>(value: Option<&T>) -> String {
+    if value.is_some() {
+        "conversation"
+    } else {
+        "account"
+    }
+    .to_string()
 }
 
 fn apply_owner_to_none_response(
