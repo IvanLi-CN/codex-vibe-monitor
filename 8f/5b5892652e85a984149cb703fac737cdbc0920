@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.7.0",
+  "base_stable_version": "2.6.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-02T05:48:50Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.7.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7d5652e2904a7fa6a85a9cd3b5b10c9518b8fa7d",
+  "pr_number": 507,
+  "pr_title": "feat(dashboard): show upstream account policy badges",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.7.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.7.0",
+  "target_sha": "8f5b5892652e85a984149cb703fac737cdbc0920",
+  "type_label": "type:minor"
+}
