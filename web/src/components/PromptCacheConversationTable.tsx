@@ -256,8 +256,9 @@ function conversationRewriteModeLabel(
     case "force_add":
       return t("live.conversations.drawer.policy.rewrite.forceAdd");
     case "keep_original":
-    default:
       return t("live.conversations.drawer.policy.rewrite.keepOriginal");
+    default:
+      return t("live.conversations.drawer.policy.rewriteInherited");
   }
 }
 
@@ -2559,11 +2560,11 @@ export function PromptCacheConversationHistoryDrawer({
         ? t("live.conversations.drawer.policy.cutOutAllow")
         : t("live.conversations.drawer.policy.cutOutDeny");
   const effectiveFastMode = conversationRewriteModeLabel(
-    binding?.fastModeRewriteMode ?? null,
+    binding?.fastModeRewriteMode,
     t,
   );
   const effectiveImageTool = conversationRewriteModeLabel(
-    binding?.imageToolRewriteMode ?? null,
+    binding?.imageToolRewriteMode,
     t,
   );
   const effectiveAvailableModels =

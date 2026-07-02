@@ -2060,6 +2060,8 @@ const baseTranslations = {
     "live.conversations.drawer.policy.rewrite.keepOriginal": "Keep original",
     "live.conversations.drawer.policy.rewrite.fillMissing": "Fill missing",
     "live.conversations.drawer.policy.rewrite.forceAdd": "Force add",
+    "live.conversations.drawer.policy.rewriteInherited":
+      "Inherited rewrite policy",
     "live.conversations.drawer.binding.encryptedOwnerHint":
       "Clearing the manual binding does not clear the encrypted-session owner lock.",
     "live.conversations.activity.title": "Conversation activity overview",
@@ -4369,6 +4371,7 @@ const baseTranslations = {
     "live.conversations.drawer.policy.rewrite.keepOriginal": "保留原值",
     "live.conversations.drawer.policy.rewrite.fillMissing": "缺失时补齐",
     "live.conversations.drawer.policy.rewrite.forceAdd": "强制添加",
+    "live.conversations.drawer.policy.rewriteInherited": "继承改写策略",
     "live.conversations.drawer.binding.encryptedOwnerHint":
       "清空手工绑定不会清除加密会话 owner 锁。",
     "live.conversations.activity.title": "对话调用总览",
