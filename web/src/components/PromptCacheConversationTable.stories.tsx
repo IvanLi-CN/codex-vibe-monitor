@@ -1885,7 +1885,7 @@ export const DrawerEncryptedOwnerDangerConfirm: Story = {
     docs: {
       description: {
         story:
-          "Encrypted-session owner warning flow that asks for confirmation before clearing a manually bound route.",
+          "Encrypted-session owner warning flow that uses the project dialog before changing a manually bound route.",
       },
     },
   },
@@ -1896,10 +1896,8 @@ export const DrawerEncryptedOwnerDangerConfirm: Story = {
     })[0];
 
     const originalConfirm = window.confirm;
-    let confirmMessage = "";
     window.confirm = (message?: string) => {
-      confirmMessage = String(message ?? "");
-      return false;
+      throw new Error(`Native confirm should not be used: ${String(message ?? "")}`);
     };
 
     try {
@@ -1918,23 +1916,90 @@ export const DrawerEncryptedOwnerDangerConfirm: Story = {
       });
       await userEvent.click(bindingKindSelect);
       await userEvent.click(
-        await documentScope.findByRole("option", { name: /清空|Clear/i }),
+        await documentScope.findByRole("option", { name: /分组|Group/i }),
       );
 
       await userEvent.click(
         documentScope.getByRole("button", { name: /保存|Save/i }),
       );
 
+      const confirmDialog = await documentScope.findByRole("alertdialog", {
+        name: /要更改加密会话的路由绑定吗|change encrypted-session route binding/i,
+      });
+      await expect(confirmDialog).toHaveTextContent(
+        /growth\.6vv4@relay\.example · CIII/i,
+      );
+      await expect(confirmDialog).toHaveTextContent(/invalid_encrypted_content/i);
+      await userEvent.click(
+        within(confirmDialog).getByRole("button", { name: /取消|Cancel/i }),
+      );
       await waitFor(() => {
-        expect(confirmMessage).toMatch(
-          /encrypted session owner growth\.6vv4@relay\.example · CIII/i,
-        );
+        expect(documentScope.queryByRole("alertdialog")).toBeNull();
       });
       await expect(
         documentScope.getByText(
           /当前：账号 growth\.6vv4@relay\.example|Current: account growth\.6vv4@relay\.example/i,
         ),
       ).toBeInTheDocument();
+    } finally {
+      window.confirm = originalConfirm;
+    }
+  },
+};
+
+export const DrawerEncryptedOwnerDangerDialogOpen: Story = {
+  args: {
+    stats: shortSameDayStats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    themeMode: "dark",
+    viewport: { value: "desktop1280", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Stable visual state for the encrypted-session owner warning dialog inside the conversation route-binding drawer.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const historyButton = documentScope.getAllByRole("button", {
+      name: /打开全部调用记录|open full call history/i,
+    })[0];
+
+    const originalConfirm = window.confirm;
+    window.confirm = (message?: string) => {
+      throw new Error(`Native confirm should not be used: ${String(message ?? "")}`);
+    };
+
+    try {
+      await userEvent.click(historyButton);
+      await userEvent.click(
+        await documentScope.findByRole("tab", { name: /设置|Settings/i }),
+      );
+      const bindingKindSelect = documentScope.getByRole("combobox", {
+        name: /绑定类型|Binding type/i,
+      });
+      await userEvent.click(bindingKindSelect);
+      await userEvent.click(
+        await documentScope.findByRole("option", { name: /分组|Group/i }),
+      );
+
+      await userEvent.click(
+        documentScope.getByRole("button", { name: /保存|Save/i }),
+      );
+
+      const confirmDialog = await documentScope.findByRole("alertdialog", {
+        name: /要更改加密会话的路由绑定吗|change encrypted-session route binding/i,
+      });
+      await expect(confirmDialog).toHaveTextContent(
+        /growth\.6vv4@relay\.example · CIII/i,
+      );
+      await expect(confirmDialog).toHaveTextContent(/invalid_encrypted_content/i);
     } finally {
       window.confirm = originalConfirm;
     }
