@@ -35,6 +35,7 @@ import {
   shouldShowUpstreamPlanBadge,
   upstreamPlanBadgeRecipe,
 } from "../lib/upstreamAccountBadges";
+import { resolveActiveRoutingPolicyBadges } from "../lib/tagRoutingRule";
 import { Alert } from "./ui/alert";
 import { AnimatedDigits } from "./AnimatedDigits";
 import { Badge } from "./ui/badge";
@@ -481,6 +482,35 @@ function AccountStatusBadge({
       <span className={cn("h-1.5 w-1.5 rounded-full", dotClassName)} aria-hidden="true" />
       {label}
     </Badge>
+  );
+}
+
+function AccountPolicyBadges({
+  account,
+}: {
+  account: UpstreamAccountActivityAccount;
+}) {
+  const badges = resolveActiveRoutingPolicyBadges(account.effectiveRoutingRule, {
+    policyForbidNewConversation: "禁新对话",
+  });
+  if (badges.length === 0) return null;
+
+  return (
+    <div
+      data-testid="dashboard-upstream-account-policy-badges"
+      className="flex min-w-0 flex-wrap items-center gap-1.5 overflow-hidden"
+    >
+      {badges.map((badge) => (
+        <Badge
+          key={`policy:${badge.key}`}
+          variant={badge.variant}
+          className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
+          title={badge.title ?? badge.label}
+        >
+          {badge.label}
+        </Badge>
+      ))}
+    </div>
   );
 }
 
@@ -1781,7 +1811,7 @@ function DashboardUpstreamAccountActivityCard({
             <button
               type="button"
               data-motion-surface
-              className="inline-flex min-h-11 min-w-0 max-w-full cursor-pointer appearance-none items-center border-0 bg-transparent py-1 text-left text-[1rem] font-semibold text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              className="inline-flex min-h-11 min-w-0 max-w-full cursor-pointer appearance-none items-center border-0 bg-transparent py-1 text-left text-[1rem] font-semibold text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:min-h-8 sm:py-0"
               onClick={() =>
                 onOpenUpstreamAccount?.(account.upstreamAccountId, account.displayName)
               }
@@ -1804,9 +1834,10 @@ function DashboardUpstreamAccountActivityCard({
                 {compactUpstreamPlanLabel(account.planType)}
               </Badge>
             ) : null}
+            <AccountPolicyBadges account={account} />
           </div>
         </div>
-        <div className="flex min-w-0 flex-1 flex-wrap items-baseline justify-end gap-x-5 gap-y-1.5 text-right">
+        <div className="flex min-w-0 flex-1 flex-wrap items-start justify-end gap-x-5 gap-y-1.5 text-right">
           <AccountInlineMetric
             label="TPM"
             value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}

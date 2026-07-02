@@ -274,6 +274,15 @@ describe("fetchUpstreamAccountActivity", () => {
                 avgTotalMs: 30581.6567545,
                 inProgressInvocationCount: 2,
                 retryInvocationCount: 0,
+                effectiveRoutingRule: {
+                  blockNewConversations: true,
+                  allowCutIn: false,
+                  priorityTier: "primary",
+                  fastModeRewriteMode: "force_add",
+                  concurrencyLimit: 3,
+                  upstream429RetryEnabled: true,
+                  upstream429MaxRetries: 2,
+                },
                 recentInvocations: [],
               },
             ],
@@ -291,6 +300,15 @@ describe("fetchUpstreamAccountActivity", () => {
     expect(response.accounts[0]?.firstByteAvgMs).toBe(0.0050063);
     expect(response.accounts[0]?.firstResponseByteTotalAvgMs).toBe(2867.540251);
     expect(response.accounts[0]?.avgTotalMs).toBe(30581.6567545);
+    expect(response.accounts[0]?.effectiveRoutingRule).toMatchObject({
+      blockNewConversations: true,
+      allowCutIn: false,
+      priorityTier: "primary",
+      fastModeRewriteMode: "force_add",
+      concurrencyLimit: 3,
+      upstream429RetryEnabled: true,
+      upstream429MaxRetries: 2,
+    });
   });
 });
 

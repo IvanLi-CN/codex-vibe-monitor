@@ -23,6 +23,7 @@
 - 2026-06-30：Dashboard `Working Conversations` 的 5 分钟 head/count 改读 write-side `prompt_cache_working_set_live`，并为 mixed-source 对话保留独立 `ProxyOnly` 聚合槽位，避免 UI 为了代理视图再次回扫 `codex_invocations`。
 - 2026-06-30：修正上游账号 recent 行短 ID 的热区语义，明确 identity chip 独立打开对话详情，而整行其它区域继续保留调用详情入口，避免 operator 点短 ID 时误落到 invocation drawer。
 - 2026-06-30：补充冻结工作区 tabs 的浏览器侧记忆语义：只持久化用户主动选择的偏好视图；`usage` 下的 `对话` 回退仅为临时降级，不得覆盖上次选择的 `上游账号`，以保证重新进入 Dashboard 或切回支持 range 时能自动恢复。
+- 2026-07-02：账号活动接口补出账号当前 `effectiveRoutingRule`，并将账号卡标题区空位用于只读关键策略徽章；该区域只展示 `主力 / 兜底 / 禁新对话 / 禁出 / 禁入 / Fast / 并发 / 重试` 等策略信号，不展示普通系统 tag 名称。
 
 ## Key Reasons / Replacements
 

@@ -123,6 +123,10 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
     }
 }
 
+pub(crate) fn default_effective_routing_rule() -> EffectiveRoutingRule {
+    build_effective_routing_rule(&[])
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct RoutingPolicyOverrideRow {
     id: i64,
