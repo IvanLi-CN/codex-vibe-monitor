@@ -1258,9 +1258,21 @@ pub(crate) async fn broadcast_pool_upstream_attempts_snapshot(
         return Ok(());
     }
 
-    let attempts = query_pool_attempt_records_from_live(&state.pool, invoke_id)
-        .await
-        .map_err(|err| anyhow!("failed to load live pool attempts for SSE broadcast: {err:?}"))?;
+    let attempts = match query_pool_attempt_records_from_live(&state.pool, invoke_id).await {
+        Ok(attempts) => attempts,
+        Err(err) => {
+            let err = anyhow!("failed to load live pool attempts for SSE broadcast: {err:?}");
+            if crate::is_sqlite_lock_error(&err) {
+                warn!(
+                    invoke_id,
+                    sqlite_locked = true,
+                    "pool attempts snapshot broadcast skipped because sqlite is locked"
+                );
+                return Ok(());
+            }
+            return Err(err);
+        }
+    };
     state
         .broadcaster
         .send(BroadcastPayload::PoolAttempts {
@@ -1894,6 +1906,116 @@ pub(crate) async fn load_persisted_invocation_identity_tx(
     .map_err(Into::into)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn update_existing_proxy_invocation_record_tx(
+    tx: &mut SqliteConnection,
+    id: i64,
+    record: &ProxyCaptureRecord,
+    raw_response: &str,
+    resp_raw: &RawPayloadMeta,
+    failure_kind: Option<&str>,
+    failure_class: &str,
+    is_actionable: bool,
+    t_total_ms: Option<f64>,
+    t_req_read_ms: Option<f64>,
+    t_req_parse_ms: Option<f64>,
+    t_upstream_connect_ms: Option<f64>,
+    t_upstream_ttfb_ms: Option<f64>,
+    t_upstream_stream_ms: Option<f64>,
+    t_resp_parse_ms: Option<f64>,
+    t_persist_ms: Option<f64>,
+) -> Result<bool> {
+    let result = sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET
+            source = ?2,
+            model = ?3,
+            input_tokens = ?4,
+            output_tokens = ?5,
+            cache_input_tokens = ?6,
+            reasoning_tokens = ?7,
+            total_tokens = ?8,
+            cost = ?9,
+            cost_estimated = ?10,
+            price_version = ?11,
+            status = ?12,
+            error_message = ?13,
+            failure_kind = ?14,
+            failure_class = ?15,
+            is_actionable = ?16,
+            payload = ?17,
+            raw_response = ?18,
+            request_raw_path = ?19,
+            request_raw_codec = ?20,
+            request_raw_size = ?21,
+            request_raw_truncated = ?22,
+            request_raw_truncated_reason = ?23,
+            response_raw_path = ?24,
+            response_raw_codec = ?25,
+            response_raw_size = ?26,
+            response_raw_truncated = ?27,
+            response_raw_truncated_reason = ?28,
+            t_total_ms = ?29,
+            t_req_read_ms = ?30,
+            t_req_parse_ms = ?31,
+            t_upstream_connect_ms = ?32,
+            t_upstream_ttfb_ms = ?33,
+            t_upstream_stream_ms = ?34,
+            t_resp_parse_ms = ?35,
+            t_persist_ms = ?36
+        WHERE id = ?1
+          AND (
+                LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+                OR (
+                    LOWER(TRIM(COALESCE(status, ''))) = 'interrupted'
+                    AND LOWER(TRIM(COALESCE(failure_kind, ''))) = 'proxy_interrupted'
+                )
+          )
+        "#,
+    )
+    .bind(id)
+    .bind(SOURCE_PROXY)
+    .bind(&record.model)
+    .bind(record.usage.input_tokens)
+    .bind(record.usage.output_tokens)
+    .bind(record.usage.cache_input_tokens)
+    .bind(record.usage.reasoning_tokens)
+    .bind(record.usage.total_tokens)
+    .bind(record.cost)
+    .bind(record.cost_estimated as i64)
+    .bind(record.price_version.as_deref())
+    .bind(&record.status)
+    .bind(record.error_message.as_deref())
+    .bind(failure_kind)
+    .bind(failure_class)
+    .bind(is_actionable as i64)
+    .bind(record.payload.as_deref())
+    .bind(raw_response)
+    .bind(record.req_raw.path.as_deref())
+    .bind(raw_payload_meta_codec(&record.req_raw))
+    .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
+    .bind(record.req_raw.truncated as i64)
+    .bind(record.req_raw.truncated_reason.as_deref())
+    .bind(resp_raw.path.as_deref())
+    .bind(raw_payload_meta_codec(resp_raw))
+    .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
+    .bind(resp_raw.truncated as i64)
+    .bind(resp_raw.truncated_reason.as_deref())
+    .bind(t_total_ms)
+    .bind(t_req_read_ms)
+    .bind(t_req_parse_ms)
+    .bind(t_upstream_connect_ms)
+    .bind(t_upstream_ttfb_ms)
+    .bind(t_upstream_stream_ms)
+    .bind(t_resp_parse_ms)
+    .bind(t_persist_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
 pub(crate) fn persisted_invocation_allows_proxy_record_update(
     existing_status: Option<&str>,
     existing_failure_kind: Option<&str>,
@@ -2125,7 +2247,9 @@ async fn persist_proxy_capture_runtime_record_core(
     let t_req_parse_ms = nullable_runtime_timing_value(record.timings.t_req_parse_ms);
     let t_upstream_connect_ms = nullable_runtime_timing_value(record.timings.t_upstream_connect_ms);
     let t_upstream_ttfb_ms = nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms);
+    let core_write_started = Instant::now();
     let created_at = format_utc_iso_millis(Utc::now());
+    let mut core_write_path = "insert_missing";
     let mut tx = pool.begin().await?;
     let existing_identity = load_persisted_invocation_identity_tx(
         tx.as_mut(),
@@ -2144,131 +2268,166 @@ async fn persist_proxy_capture_runtime_record_core(
         return Ok(None);
     }
 
-    sqlx::query(
-        r#"
-        INSERT INTO codex_invocations (
-            invoke_id,
-            occurred_at,
-            source,
-            model,
-            input_tokens,
-            output_tokens,
-            cache_input_tokens,
-            reasoning_tokens,
-            total_tokens,
-            cost,
-            cost_estimated,
-            price_version,
-            status,
-            error_message,
-            failure_kind,
-            failure_class,
-            is_actionable,
-            payload,
-            raw_response,
-            request_raw_path,
-            request_raw_codec,
-            request_raw_size,
-            request_raw_truncated,
-            request_raw_truncated_reason,
-            response_raw_path,
-            response_raw_codec,
-            response_raw_size,
-            response_raw_truncated,
-            response_raw_truncated_reason,
-            t_total_ms,
+    if let Some(existing) = existing_identity.as_ref() {
+        let updated = update_existing_proxy_invocation_record_tx(
+            tx.as_mut(),
+            existing.id,
+            &record,
+            &raw_response,
+            &resp_raw,
+            failure_kind.as_deref(),
+            failure.failure_class.as_str(),
+            failure.is_actionable,
+            None,
             t_req_read_ms,
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
-            t_upstream_stream_ms,
-            t_resp_parse_ms,
-            t_persist_ms,
-            created_at
+            None,
+            None,
+            None,
         )
-        VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
-            ?37, ?38
+        .await?;
+        if !updated {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        core_write_path = "update_existing";
+    } else {
+        let insert_result = sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                reasoning_tokens,
+                total_tokens,
+                cost,
+                cost_estimated,
+                price_version,
+                status,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                payload,
+                raw_response,
+                request_raw_path,
+                request_raw_codec,
+                request_raw_size,
+                request_raw_truncated,
+                request_raw_truncated_reason,
+                response_raw_path,
+                response_raw_codec,
+                response_raw_size,
+                response_raw_truncated,
+                response_raw_truncated_reason,
+                t_total_ms,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
+                t_upstream_ttfb_ms,
+                t_upstream_stream_ms,
+                t_resp_parse_ms,
+                t_persist_ms,
+                created_at
+            )
+            VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
+                ?37, ?38
+            )
+            "#,
         )
-        ON CONFLICT(invoke_id, occurred_at) DO UPDATE SET
-            source = excluded.source,
-            model = excluded.model,
-            input_tokens = excluded.input_tokens,
-            output_tokens = excluded.output_tokens,
-            cache_input_tokens = excluded.cache_input_tokens,
-            reasoning_tokens = excluded.reasoning_tokens,
-            total_tokens = excluded.total_tokens,
-            cost = excluded.cost,
-            cost_estimated = excluded.cost_estimated,
-            price_version = excluded.price_version,
-            status = excluded.status,
-            error_message = excluded.error_message,
-            failure_kind = excluded.failure_kind,
-            failure_class = excluded.failure_class,
-            is_actionable = excluded.is_actionable,
-            payload = excluded.payload,
-            raw_response = excluded.raw_response,
-            request_raw_path = excluded.request_raw_path,
-            request_raw_codec = excluded.request_raw_codec,
-            request_raw_size = excluded.request_raw_size,
-            request_raw_truncated = excluded.request_raw_truncated,
-            request_raw_truncated_reason = excluded.request_raw_truncated_reason,
-            response_raw_path = excluded.response_raw_path,
-            response_raw_codec = excluded.response_raw_codec,
-            response_raw_size = excluded.response_raw_size,
-            response_raw_truncated = excluded.response_raw_truncated,
-            response_raw_truncated_reason = excluded.response_raw_truncated_reason,
-            t_total_ms = excluded.t_total_ms,
-            t_req_read_ms = excluded.t_req_read_ms,
-            t_req_parse_ms = excluded.t_req_parse_ms,
-            t_upstream_connect_ms = excluded.t_upstream_connect_ms,
-            t_upstream_ttfb_ms = excluded.t_upstream_ttfb_ms,
-            t_upstream_stream_ms = excluded.t_upstream_stream_ms,
-            t_resp_parse_ms = excluded.t_resp_parse_ms,
-            t_persist_ms = excluded.t_persist_ms
-        "#,
-    )
-    .bind(&record.invoke_id)
-    .bind(&record.occurred_at)
-    .bind(SOURCE_PROXY)
-    .bind(&record.model)
-    .bind(record.usage.input_tokens)
-    .bind(record.usage.output_tokens)
-    .bind(record.usage.cache_input_tokens)
-    .bind(record.usage.reasoning_tokens)
-    .bind(record.usage.total_tokens)
-    .bind(record.cost)
-    .bind(record.cost_estimated as i64)
-    .bind(record.price_version.as_deref())
-    .bind(&record.status)
-    .bind(record.error_message.as_deref())
-    .bind(failure_kind.as_deref())
-    .bind(failure.failure_class.as_str())
-    .bind(failure.is_actionable as i64)
-    .bind(record.payload.as_deref())
-    .bind(&raw_response)
-    .bind(record.req_raw.path.as_deref())
-    .bind(raw_payload_meta_codec(&record.req_raw))
-    .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
-    .bind(record.req_raw.truncated as i64)
-    .bind(record.req_raw.truncated_reason.as_deref())
-    .bind(resp_raw.path.as_deref())
-    .bind(raw_payload_meta_codec(&resp_raw))
-    .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
-    .bind(resp_raw.truncated as i64)
-    .bind(resp_raw.truncated_reason.as_deref())
-    .bind(None::<f64>)
-    .bind(t_req_read_ms)
-    .bind(t_req_parse_ms)
-    .bind(t_upstream_connect_ms)
-    .bind(t_upstream_ttfb_ms)
-    .bind(None::<f64>)
-    .bind(None::<f64>)
-    .bind(None::<f64>)
-    .bind(created_at)
-    .execute(tx.as_mut())
-    .await?;
+        .bind(&record.invoke_id)
+        .bind(&record.occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(&record.model)
+        .bind(record.usage.input_tokens)
+        .bind(record.usage.output_tokens)
+        .bind(record.usage.cache_input_tokens)
+        .bind(record.usage.reasoning_tokens)
+        .bind(record.usage.total_tokens)
+        .bind(record.cost)
+        .bind(record.cost_estimated as i64)
+        .bind(record.price_version.as_deref())
+        .bind(&record.status)
+        .bind(record.error_message.as_deref())
+        .bind(failure_kind.as_deref())
+        .bind(failure.failure_class.as_str())
+        .bind(failure.is_actionable as i64)
+        .bind(record.payload.as_deref())
+        .bind(&raw_response)
+        .bind(record.req_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&record.req_raw))
+        .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
+        .bind(record.req_raw.truncated as i64)
+        .bind(record.req_raw.truncated_reason.as_deref())
+        .bind(resp_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&resp_raw))
+        .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
+        .bind(resp_raw.truncated as i64)
+        .bind(resp_raw.truncated_reason.as_deref())
+        .bind(None::<f64>)
+        .bind(t_req_read_ms)
+        .bind(t_req_parse_ms)
+        .bind(t_upstream_connect_ms)
+        .bind(t_upstream_ttfb_ms)
+        .bind(None::<f64>)
+        .bind(None::<f64>)
+        .bind(None::<f64>)
+        .bind(created_at)
+        .execute(tx.as_mut())
+        .await?;
+        if insert_result.rows_affected() == 0 {
+            let Some(existing) = load_persisted_invocation_identity_tx(
+                tx.as_mut(),
+                &record.invoke_id,
+                &record.occurred_at,
+            )
+            .await?
+            else {
+                tx.commit().await?;
+                return Ok(None);
+            };
+            if !persisted_invocation_allows_proxy_record_update(
+                existing.status.as_deref(),
+                existing.failure_kind.as_deref(),
+                &record.status,
+            ) {
+                tx.commit().await?;
+                return Ok(None);
+            }
+            let updated = update_existing_proxy_invocation_record_tx(
+                tx.as_mut(),
+                existing.id,
+                &record,
+                &raw_response,
+                &resp_raw,
+                failure_kind.as_deref(),
+                failure.failure_class.as_str(),
+                failure.is_actionable,
+                None,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
+                t_upstream_ttfb_ms,
+                None,
+                None,
+                None,
+            )
+            .await?;
+            if !updated {
+                tx.commit().await?;
+                return Ok(None);
+            }
+            core_write_path = "update_race";
+        }
+    }
 
     let persisted_identity = load_persisted_invocation_identity_tx(
         tx.as_mut(),
@@ -2325,6 +2484,33 @@ async fn persist_proxy_capture_runtime_record_core(
     let persisted = load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
         .await?;
     tx.commit().await?;
+
+    let core_write_elapsed_ms = core_write_started.elapsed().as_millis() as u64;
+    if core_write_elapsed_ms >= 1_000 {
+        warn!(
+            invoke_id = %record.invoke_id,
+            status = %record.status,
+            core_write_path,
+            request_raw_bytes = record.req_raw.size_bytes,
+            response_raw_bytes = resp_raw.size_bytes,
+            has_request_raw_path = record.req_raw.path.is_some(),
+            has_response_raw_path = resp_raw.path.is_some(),
+            elapsed_ms = core_write_elapsed_ms,
+            "proxy capture core invocation write was slow"
+        );
+    } else {
+        debug!(
+            invoke_id = %record.invoke_id,
+            status = %record.status,
+            core_write_path,
+            request_raw_bytes = record.req_raw.size_bytes,
+            response_raw_bytes = resp_raw.size_bytes,
+            has_request_raw_path = record.req_raw.path.is_some(),
+            has_response_raw_path = resp_raw.path.is_some(),
+            elapsed_ms = core_write_elapsed_ms,
+            "proxy capture core invocation write completed"
+        );
+    }
 
     Ok(Some(persisted))
 }
