@@ -739,6 +739,9 @@ fn manual_binding_overrides_encrypted_owner(
     binding_row: &PromptCacheConversationBindingRow,
     owner: &PromptCacheEncryptedSessionOwnerRow,
 ) -> bool {
+    if binding_row.updated_at.as_str() < owner.first_locked_at.as_str() {
+        return false;
+    }
     match binding_row.binding_kind.as_str() {
         PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {
             binding_row.upstream_account_id != Some(owner.owner_upstream_account_id)
