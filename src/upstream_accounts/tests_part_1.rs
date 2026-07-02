@@ -774,7 +774,7 @@
     #[test]
     fn forward_proxy_binding_nodes_query_keeps_repeated_keys_and_include_current() {
         let query = parse_list_forward_proxy_binding_nodes_query(
-            &"/api/pool/forward-proxy-binding-nodes?includeCurrent=1&groupName=prod&key=legacy-a&key=&key=legacy-b"
+            &"/api/pool/forward-proxy-binding-nodes?includeCurrent=true&groupName=prod&key=legacy-a&key=&key=legacy-b"
                 .parse()
                 .expect("parse uri"),
         )
@@ -795,7 +795,7 @@
     #[test]
     fn forward_proxy_binding_nodes_query_ignores_blank_group_name() {
         let query = parse_list_forward_proxy_binding_nodes_query(
-            &"/api/pool/forward-proxy-binding-nodes?groupName=%20%20&includeCurrent=1"
+            &"/api/pool/forward-proxy-binding-nodes?groupName=%20%20&includeCurrent=true"
                 .parse()
                 .expect("parse uri"),
         )
@@ -831,7 +831,7 @@
 
         let Json(nodes) = list_forward_proxy_binding_nodes(
             State(state),
-            "/api/pool/forward-proxy-binding-nodes?includeCurrent=1&key=&key=legacy-missing-key&key=legacy-missing-key"
+            "/api/pool/forward-proxy-binding-nodes?includeCurrent=true&key=&key=legacy-missing-key&key=legacy-missing-key"
                 .parse()
                 .expect("parse uri"),
         )
@@ -1021,7 +1021,7 @@
 
         let Json(group_nodes) = list_forward_proxy_binding_nodes(
             State(state.clone()),
-            "/api/pool/forward-proxy-binding-nodes?includeCurrent=1&groupName=prod"
+            "/api/pool/forward-proxy-binding-nodes?includeCurrent=true&groupName=prod"
                 .parse()
                 .expect("parse grouped binding uri"),
         )
@@ -1190,7 +1190,7 @@
 
         let Json(nodes) = list_forward_proxy_binding_nodes(
             State(state.clone()),
-            "/api/pool/forward-proxy-binding-nodes?includeCurrent=1"
+            "/api/pool/forward-proxy-binding-nodes?includeCurrent=true"
                 .parse()
                 .expect("parse ungrouped binding uri"),
         )

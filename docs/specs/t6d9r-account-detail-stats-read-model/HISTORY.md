@@ -20,3 +20,4 @@
 - 2026-06-25: `selectedId` 暂空时的 roster 级 `window-usage` 自动 hydrate 被彻底移除；详情首屏只允许当前账号发 `window-usage`，手动 hydrate 才能批量取数。
 - 2026-06-29: 101 线上 CPU 复盘确认，剩余 summary / account-activity 热点来自请求时对 `codex_invocations` 做 in-progress correlated scan / group scan；对应 live augmentation 已切到 write-side `invocation_in_progress_live` 小表，并保留 summary 全局 retry 与 account-scoped retry 的既有语义。
 - 2026-06-30: 第二轮止血继续把 summary publish 的 distinct in-progress conversation count 也切到 live truth source，避免 maintenance 发布链路把 account detail 已经省下来的 SQLite 扫描又带回来。
+- 2026-07-02: 健康与事件 tab 的 `includeRecentActions` 前端 query 编码改为 `true/false`，避免 Rust/Axum bool 反序列化拒绝 `1` 并返回 400。

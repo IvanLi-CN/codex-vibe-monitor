@@ -132,6 +132,11 @@ PR: include
 PR: include
 ![账号详情记录页 token 标签单行态](./assets/detail-drawer-records-token-label-nowrap.png)
 
+- 全站列表 body 初始错误态（mock Storybook；首屏无已有数据时，错误信息和重试入口展示在列表 body 内，而不是漂在列表外层）
+
+PR: include
+![列表 body 初始错误态](./assets/list-body-state-initial-error.png)
+
 ## 参考
 
 - `docs/specs/9aucy-db-retention-archive/SPEC.md`

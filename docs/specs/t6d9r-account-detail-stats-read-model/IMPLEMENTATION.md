@@ -32,6 +32,7 @@
 - 共享账号详情抽屉桌面壳层从 `max-w-[60rem]` 放宽到 `max-w-[90rem]`；为了让新增横向空间真实转化为概览可读性，overview 下两张 usage card 提前到 `lg` 断点进入双列，而不是继续等到 `xl`。
 - records 视图总 token 指标标题改为 `Token` 单数文案，并在 `TodayStatsOverview` 中对该标签单独保留 mixed case + `whitespace-nowrap`，避免窄卡片里出现 `今日` / `TOKENS` 断成两行的问题。
 - 账号详情接口 `get_upstream_account` 默认改为 `includeRecentActions=false`，把 `pool_upstream_account_events` 读取从 overview 首屏热路径中移出；health events tab 再按需补一次 detail hydrate。
+- 前端 `fetchUpstreamAccountDetail(..., { includeRecentActions: true })` 改为把布尔 query 编码成 `includeRecentActions=true`，避免 Axum `Option<bool>` 拒绝 `1` 后让健康与事件 tab 显示 400。
 - `useUpstreamAccounts(...)` 在 `selectedId` 为空时不再自动对 roster 可见行批量触发 `window-usage` hydrate；只有当前选中账号或显式手动 hydrate 才会发 `window-usage` 请求。
 - account-scoped summary 将 `nonSuccessCost` 固定纳入 rollup/read-model totals，并恢复带 `full_hour_range` 的 today live tail 精确补尾，避免新增字段后 today 卡片回退成 0 或强制 raw window 重扫。
 - `fetch_summary` / `fetch_stats` 按窗口类型区分 live augmentation：闭区间默认跳过 in-progress 与 non-success token live 补算；SQLite `database is locked` 时非成功 token live 增量允许受限降级，不再整排卡片长期 skeleton。
@@ -63,6 +64,7 @@
 - `cargo test pool_upstream_request_attempt -- --test-threads=1`
 - `cargo check`
 - `cd web && bun x vitest run --project=unit src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/lib/api.test.ts`
+- `cd web && bun x vitest run --project=unit src/lib/api.test.ts src/components/ListBodyState.test.tsx src/components/InvocationTable.test.tsx src/components/InvocationRecordsTable.test.tsx src/components/UpstreamAccountsTable.test.tsx src/components/UpstreamAccountsGroupedRoster.test.tsx src/pages/account-pool/Groups.test.tsx src/pages/system/SystemTasksPage.test.tsx src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`
 - `cd web && bun run test-storybook`
 - `cd web && bun run build-storybook`
 
