@@ -2064,6 +2064,16 @@ const baseTranslations = {
       "Inherited rewrite policy",
     "live.conversations.drawer.binding.encryptedOwnerHint":
       "Clearing the manual binding does not clear the encrypted-session owner lock.",
+    "live.conversations.drawer.binding.ownerConfirm.title":
+      "Change encrypted-session route binding?",
+    "live.conversations.drawer.binding.ownerConfirm.description":
+      "This conversation already has encrypted session owner {{owner}}.",
+    "live.conversations.drawer.binding.ownerConfirm.risk":
+      "Changing the binding may make future requests fail with invalid_encrypted_content.",
+    "live.conversations.drawer.binding.ownerConfirm.cancel": "Cancel",
+    "live.conversations.drawer.binding.ownerConfirm.confirm": "Continue",
+    "live.conversations.drawer.binding.ownerConfirm.unknownOwner":
+      "unknown owner",
     "live.conversations.activity.title": "Conversation activity overview",
     "live.conversations.activity.metricRequests": "Calls",
     "live.conversations.activity.metricSuccess": "Success",
@@ -4374,6 +4384,16 @@ const baseTranslations = {
     "live.conversations.drawer.policy.rewriteInherited": "继承改写策略",
     "live.conversations.drawer.binding.encryptedOwnerHint":
       "清空手工绑定不会清除加密会话 owner 锁。",
+    "live.conversations.drawer.binding.ownerConfirm.title":
+      "要更改加密会话的路由绑定吗？",
+    "live.conversations.drawer.binding.ownerConfirm.description":
+      "这个对话已经绑定加密会话 owner：{{owner}}。",
+    "live.conversations.drawer.binding.ownerConfirm.risk":
+      "更改绑定后，后续请求可能因为 invalid_encrypted_content 失败。",
+    "live.conversations.drawer.binding.ownerConfirm.cancel": "取消",
+    "live.conversations.drawer.binding.ownerConfirm.confirm": "继续更改",
+    "live.conversations.drawer.binding.ownerConfirm.unknownOwner":
+      "未知 owner",
     "live.conversations.activity.title": "对话调用总览",
     "live.conversations.activity.metricRequests": "调用数",
     "live.conversations.activity.metricSuccess": "成功",

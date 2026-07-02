@@ -8,3 +8,4 @@
 - Adds Rust regression coverage for owner metadata visibility, clearing manual bindings without clearing owner lock, group-to-account promotion, and the dedicated owner-unavailable failover guard.
 - Updates Storybook/demo fixtures and optimistic live prompt-cache mocks so the new encrypted-owner fields remain type-safe under `bun run build` and `bun run test`.
 - Adds Storybook owner-lock coverage for the Prompt Cache conversation drawer and persists a mock visual-evidence capture in the spec assets.
+- Uses the shared project `Dialog` component for dangerous owner-rebinding confirmation in the Prompt Cache conversation drawer, with Storybook coverage that fails if native `window.confirm` is used.
