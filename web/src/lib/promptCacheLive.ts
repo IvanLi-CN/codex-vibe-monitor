@@ -785,6 +785,7 @@ export function reconcilePromptCacheLiveRecordMap(
         ? previewTail.id
         : null;
     if (recordId == null || previewTailId == null) return false;
+    if (recordId <= 0) return false;
     return recordId <= previewTailId;
   };
 

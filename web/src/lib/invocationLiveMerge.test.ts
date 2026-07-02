@@ -68,6 +68,31 @@ describe("invocationLiveMerge", () => {
     expect(choosePreferredInvocationRecord(authoritative, live)).toBe(authoritative);
   });
 
+  it("preserves a real DB id when a fresher transient running snapshot wins preference", () => {
+    const persisted = createRecord({
+      id: 42,
+      invokeId: "invoke-transient",
+      occurredAt: "2026-03-10T02:31:30Z",
+      status: "running",
+      proxyDisplayName: "Proxy Placeholder",
+    });
+    const transient = createRecord({
+      id: 0,
+      invokeId: "invoke-transient",
+      occurredAt: "2026-03-10T02:31:30Z",
+      status: "running",
+      proxyDisplayName: "Proxy Live",
+      tUpstreamTtfbMs: 180,
+    });
+
+    const merged = mergeInvocationRecordCollections([persisted], [transient]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.id).toBe(42);
+    expect(merged[0]?.proxyDisplayName).toBe("Proxy Live");
+    expect(merged[0]?.tUpstreamTtfbMs).toBe(180);
+  });
+
   it("does not backfill stale failure metadata into a recovered terminal success", () => {
     const runtimeFailure = createRecord({
       id: 3,

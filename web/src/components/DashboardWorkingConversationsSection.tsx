@@ -1929,7 +1929,7 @@ function DashboardUpstreamAccountActivityCard({
         <div className="grid flex-1 auto-rows-fr gap-1.5">
           {recentInvocations.map((invocation: DashboardWorkingConversationInvocationModel) => (
             <AccountRecentInvocationRow
-              key={invocation.record.id}
+              key={`${invocation.record.invokeId}:${invocation.record.occurredAt}:${invocation.record.id}`}
               invocation={invocation}
               locale={locale}
               nowMs={nowMs}

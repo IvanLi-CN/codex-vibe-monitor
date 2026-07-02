@@ -3275,10 +3275,6 @@ async fn pool_early_phase_orphan_cleanup_guard_recovers_dropped_sending_request_
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),

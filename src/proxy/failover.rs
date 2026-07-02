@@ -1378,7 +1378,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     }
                     request = request.header(header::AUTHORIZATION, authorization.clone());
                     request = request.body(prepared_request_body.snapshot.to_reqwest_body());
-                    record_account_selected(state.as_ref(), account.account_id);
+                    record_account_selected(state.as_ref(), account.account_id).await;
                     let group_name_snapshot =
                         normalize_pool_attempt_group_name(account.group_name.clone());
                     let proxy_binding_key_snapshot =
@@ -1966,7 +1966,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
                     attempt_started_at = shanghai_now_string();
-                    record_account_selected(state.as_ref(), account.account_id);
+                    record_account_selected(state.as_ref(), account.account_id).await;
                     let group_name_snapshot =
                         normalize_pool_attempt_group_name(account.group_name.clone());
                     pending_attempt_record = if let Some(trace) = trace_context.as_ref() {

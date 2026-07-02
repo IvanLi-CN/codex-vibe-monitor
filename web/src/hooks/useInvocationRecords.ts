@@ -10,7 +10,7 @@ import type {
 } from '../lib/api'
 import { fetchInvocationRecords, fetchInvocationRecordsNewCount, fetchInvocationRecordsSummary } from '../lib/api'
 import { invocationStableKey } from '../lib/invocation'
-import { matchesInvocationLiveFilters } from '../lib/invocationRecordsLive'
+import { matchesInvocationLiveFilters, mergeInvocationWindowRecords } from '../lib/invocationRecordsLive'
 import { useInvocationRecordsRealtime } from './useInvocationRecordsRealtime'
 import {
   buildAppliedInvocationFilters,
@@ -63,6 +63,75 @@ interface LiveMergeState {
   matchingVisibleInsertKeys: string[]
   countedLiveInsertKeys: string[]
   countedFilteredOutBaselineKeys: string[]
+}
+
+function isTransientInFlightRecord(record: InvocationRecordsResponse['records'][number]) {
+  const status = record.status?.trim().toLowerCase()
+  return record.id <= 0 && (status === 'running' || status === 'pending')
+}
+
+function mergeTransientInFlightRecords(
+  response: InvocationRecordsResponse,
+  previous: InvocationRecordsResponse | null,
+  options: {
+    filters: InvocationRecordsQuery
+    sortBy: InvocationSortBy
+    sortOrder: InvocationSortOrder
+    adjustTotal?: boolean
+  },
+) {
+  const transientRecords =
+    previous?.records.filter((record) => isTransientInFlightRecord(record)) ?? []
+  if (transientRecords.length === 0 || previous?.snapshotId !== response.snapshotId) {
+    return {
+      response,
+      preservedKeys: [] as string[],
+    }
+  }
+
+  const responseKeys = new Set(response.records.map((record) => invocationStableKey(record)))
+  const recordsToPreserve = transientRecords.filter((record) => {
+    const key = invocationStableKey(record)
+    return !responseKeys.has(key) && matchesInvocationLiveFilters(record, options.filters)
+  })
+
+  if (recordsToPreserve.length === 0) {
+    return {
+      response,
+      preservedKeys: [] as string[],
+    }
+  }
+
+  const mergedRecords = mergeInvocationWindowRecords(response.records, recordsToPreserve, {
+    filters: options.filters,
+    sortBy: options.sortBy,
+    sortOrder: options.sortOrder,
+    limit: response.pageSize,
+  })
+  const preservedKeySet = new Set(recordsToPreserve.map((record) => invocationStableKey(record)))
+  const preservedKeys = mergedRecords
+    .map((record) => invocationStableKey(record))
+    .filter((key) => preservedKeySet.has(key))
+
+  if (preservedKeys.length === 0) {
+    return {
+      response,
+      preservedKeys,
+    }
+  }
+
+  return {
+    response: {
+      ...response,
+      total:
+        response.total +
+        (options.adjustTotal === true && previous
+          ? Math.min(preservedKeys.length, Math.max(0, previous.total - response.total))
+          : 0),
+      records: mergedRecords,
+    },
+    preservedKeys,
+  }
 }
 
 export function shouldPollRecordsSummary() {
@@ -153,16 +222,25 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
           }),
         )
         if (!isCurrentRequest()) return
+        const {
+          response: visibleResponse,
+          preservedKeys,
+        } = mergeTransientInFlightRecords(response, recordsRef.current, {
+          filters,
+          sortBy: nextSortBy,
+          sortOrder: nextSortOrder,
+          adjustTotal: false,
+        })
         authoritativeTotalRef.current = response.total
-        setRecords(response)
+        setRecords(visibleResponse)
         setLiveMergeState({
           matchingVisibleInsertKeys: [],
-          countedLiveInsertKeys: [],
+          countedLiveInsertKeys: preservedKeys,
           countedFilteredOutBaselineKeys: [],
         })
-        setPageState(response.page)
-        setPageSizeState(response.pageSize)
-        pageSizeRef.current = response.pageSize
+        setPageState(visibleResponse.page)
+        setPageSizeState(visibleResponse.pageSize)
+        pageSizeRef.current = visibleResponse.pageSize
         setSortByState(nextSortBy)
         sortByRef.current = nextSortBy
         setSortOrderState(nextSortOrder)
@@ -209,18 +287,29 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
 
       listLoaded = true
       appliedRef.current = { filters, snapshotId: listResponse.snapshotId, generation: requestSeq }
+      const previousRecords = options?.source === 'applied' ? recordsRef.current : null
+      const { response: visibleListResponse, preservedKeys } = mergeTransientInFlightRecords(
+        listResponse,
+        previousRecords,
+        {
+          filters,
+          sortBy: sortByRef.current,
+          sortOrder: sortOrderRef.current,
+          adjustTotal: true,
+        },
+      )
       if (!options?.preserveSummary) {
         setSummary(null)
       }
       authoritativeTotalRef.current = listResponse.total
-      setRecords(listResponse)
+      setRecords(visibleListResponse)
       setLiveMergeState({
         matchingVisibleInsertKeys: [],
-        countedLiveInsertKeys: [],
+        countedLiveInsertKeys: preservedKeys,
         countedFilteredOutBaselineKeys: [],
       })
-      setPageState(listResponse.page)
-      setPageSizeState(listResponse.pageSize)
+      setPageState(visibleListResponse.page)
+      setPageSizeState(visibleListResponse.pageSize)
       setRecordsError(null)
       setIsRecordsLoading(false)
       // Treat search as "list fetch in flight". Once the list is visible, unlock the controls
@@ -343,15 +432,24 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         if (!isCurrentRequest()) return
         activeSnapshotId = response.snapshotId
         appliedRef.current = { filters, snapshotId: response.snapshotId, generation }
+        const {
+          response: visibleResponse,
+          preservedKeys,
+        } = mergeTransientInFlightRecords(response, currentRecords, {
+          filters,
+          sortBy: sortByRef.current,
+          sortOrder: sortOrderRef.current,
+          adjustTotal: true,
+        })
         authoritativeTotalRef.current = response.total
-        setRecords(response)
-        setPageState(response.page)
-        setPageSizeState(response.pageSize)
-        pageSizeRef.current = response.pageSize
+        setRecords(visibleResponse)
+        setPageState(visibleResponse.page)
+        setPageSizeState(visibleResponse.pageSize)
+        pageSizeRef.current = visibleResponse.pageSize
         setRecordsError(null)
         setLiveMergeState({
           matchingVisibleInsertKeys: [],
-          countedLiveInsertKeys: [],
+          countedLiveInsertKeys: preservedKeys,
           countedFilteredOutBaselineKeys: [],
         })
         setSummaryError(null)

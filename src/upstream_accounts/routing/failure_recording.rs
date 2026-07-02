@@ -303,24 +303,32 @@ pub(crate) async fn record_pool_route_transport_failure(
 }
 
 
-pub(crate) fn record_account_selected(state: &AppState, account_id: i64) {
+pub(crate) async fn record_account_selected(state: &AppState, account_id: i64) {
     let now_iso = format_utc_iso(Utc::now());
     state
         .pool_account_selection_runtime
         .record_selected(account_id, now_iso.clone());
+    let touch = BatchedAccountSelectedTouch {
+        account_id,
+        selected_at: now_iso,
+    };
     if !state
         .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::AccountSelectedTouch(
-            BatchedAccountSelectedTouch {
-                account_id,
-                selected_at: now_iso,
-            },
-        ))
+        .enqueue(SqliteBatchWrite::AccountSelectedTouch(touch.clone()))
     {
         warn!(
             account_id,
-            "account selected touch dropped by sqlite batch writer"
+            "account selected touch dropped by sqlite batch writer; flushing inline fallback"
         );
+        if let Err(err) =
+            SqliteBatchWriter::flush_account_selected_touch_inline(&state.pool, touch).await
+        {
+            warn!(
+                ?err,
+                account_id,
+                "account selected touch inline fallback failed"
+            );
+        }
     }
 }
 

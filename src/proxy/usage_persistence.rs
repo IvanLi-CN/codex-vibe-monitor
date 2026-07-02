@@ -1135,6 +1135,8 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
     selector: InvocationRecoverySelector,
     recovery_trigger: &'static str,
 ) -> Result<()> {
+    state.sqlite_batch_writer.flush_now(&state.pool).await?;
+
     let recovered_invocations = recover_proxy_invocations_with_scope(
         &state.pool,
         ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
@@ -2405,22 +2407,26 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
         record: record.clone(),
     };
 
-    if prompt_cache_key_from_payload(record.payload.as_deref())
-        .as_deref()
-        .is_some_and(|key| !key.trim().is_empty())
-    {
-        invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
-    }
-
     let invoke_id = persisted_record.invoke_id.clone();
     if !state
         .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::RunningProxySnapshot(snapshot))
+        .enqueue(SqliteBatchWrite::RunningProxySnapshot(snapshot.clone()))
     {
         warn!(
             invoke_id = %invoke_id,
-            "running proxy capture snapshot placeholder dropped by sqlite batch writer"
+            "running proxy capture snapshot placeholder dropped by sqlite batch writer; flushing inline fallback"
         );
+        if let Err(err) = state
+            .sqlite_batch_writer
+            .flush_running_proxy_snapshot_inline(&state.pool, snapshot)
+            .await
+        {
+            warn!(
+                ?err,
+                invoke_id = %invoke_id,
+                "running proxy capture snapshot inline fallback failed"
+            );
+        }
     }
     if state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
@@ -2440,6 +2446,57 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
         elapsed_ms,
         "running proxy capture snapshot deferred from synchronous sqlite write"
     );
+
+    Ok(())
+}
+
+pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
+    state: &AppState,
+    record: ProxyCaptureRecord,
+) -> Result<()> {
+    let derived_payload = record.payload.clone();
+    let persisted = persist_proxy_capture_runtime_record_core(&state.pool, record, false).await?;
+    let Some(persisted_record) = persisted else {
+        return Ok(());
+    };
+
+    if persisted_record
+        .prompt_cache_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty())
+    {
+        invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
+    }
+
+    let invoke_id = persisted_record.invoke_id.clone();
+    let derived = BatchedInvocationDerivedWrites {
+        invocation_id: persisted_record.id,
+        occurred_at: persisted_record.occurred_at.clone(),
+        payload: derived_payload,
+    };
+    if !state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::InvocationDerived(derived.clone()))
+        && let Err(err) =
+            SqliteBatchWriter::flush_invocation_derived_inline(&state.pool, derived).await
+    {
+        warn!(
+            error = %err,
+            invoke_id = %invoke_id,
+            "failed to synchronously compensate dropped terminal proxy derived write"
+        );
+    }
+    if state.broadcaster.receiver_count() > 0
+        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
+            records: vec![persisted_record],
+        })
+    {
+        warn!(
+            ?err,
+            invoke_id = %invoke_id,
+            "failed to broadcast terminal proxy capture record"
+        );
+    }
 
     Ok(())
 }

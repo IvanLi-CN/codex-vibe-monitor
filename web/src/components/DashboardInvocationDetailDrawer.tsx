@@ -241,7 +241,7 @@ export function DashboardInvocationDetailDrawer({
   }, [open, selection]);
 
   useEffect(() => {
-    if (!open || !fullRecord || !isAbnormalRecord(fullRecord)) {
+    if (!open || !fullRecord || !isAbnormalRecord(fullRecord) || fullRecord.id <= 0) {
       abnormalSeqRef.current += 1;
       setRecordDetail(null);
       setRecordDetailLoading(false);

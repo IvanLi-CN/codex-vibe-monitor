@@ -468,6 +468,35 @@ describe("InvocationRecordsTable", () => {
     expect(document.body.textContent ?? "").toContain('"trace":"full-body"');
   });
 
+  it("does not load DB-backed abnormal details for transient live records", async () => {
+    render(
+      <InvocationRecordsTable
+        focus="exception"
+        isLoading={false}
+        records={[
+          createRecord({
+            id: 0,
+            status: "failed",
+            failureClass: "service_failure",
+            errorMessage: "preview pending placeholder flush",
+          }),
+        ]}
+      />,
+    );
+
+    clickFirstToggle();
+
+    await waitFor(() =>
+      (host?.textContent ?? "").includes("preview pending placeholder flush"),
+    );
+
+    expect(apiMocks.fetchInvocationRecordDetail).not.toHaveBeenCalled();
+    expect(apiMocks.fetchInvocationResponseBody).not.toHaveBeenCalled();
+    expect(host?.textContent ?? "").not.toContain(
+      "table.responseBody.openFullDetails",
+    );
+  });
+
   it("lazy loads pool attempts for pool-routed records", async () => {
     apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([
       {

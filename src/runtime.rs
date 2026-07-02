@@ -113,7 +113,13 @@ pub(crate) async fn run() -> Result<()> {
         Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
     let shutdown = CancellationToken::new();
 
-    let sqlite_batch_writer = SqliteBatchWriter::spawn(pool.clone(), shutdown.clone());
+    let prompt_cache_conversation_cache =
+        Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
+    let sqlite_batch_writer = SqliteBatchWriter::spawn(
+        pool.clone(),
+        shutdown.clone(),
+        prompt_cache_conversation_cache.clone(),
+    );
     let pool_account_selection_runtime = Arc::new(PoolAccountSelectionRuntime::default());
 
     let state = Arc::new(AppState {
@@ -145,9 +151,7 @@ pub(crate) async fn run() -> Result<()> {
         forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
         pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog,
-        prompt_cache_conversation_cache: Arc::new(Mutex::new(
-            PromptCacheConversationsCacheState::default(),
-        )),
+        prompt_cache_conversation_cache,
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
