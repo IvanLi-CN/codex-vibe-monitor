@@ -1284,6 +1284,67 @@ pub(crate) fn next_proxy_request_id() -> u64 {
     NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+const PROXY_INVOKE_ID_LENGTH: usize = 10;
+const PROXY_INVOKE_ID_GENERATION_ATTEMPTS: usize = 5;
+const PROXY_INVOKE_ID_ALPHABET: [char; 31] = [
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'U',
+    'V', 'W', 'X', 'Y', 'Z', '2', '3', '4', '5', '6', '7', '8', '9',
+];
+
+pub(crate) fn generate_proxy_invoke_id() -> String {
+    nanoid::nanoid!(PROXY_INVOKE_ID_LENGTH, &PROXY_INVOKE_ID_ALPHABET)
+}
+
+#[cfg(test)]
+pub(crate) fn proxy_invoke_id_has_short_format(value: &str) -> bool {
+    value.len() == PROXY_INVOKE_ID_LENGTH
+        && value
+            .chars()
+            .all(|ch| PROXY_INVOKE_ID_ALPHABET.contains(&ch))
+}
+
+async fn proxy_invoke_id_exists(pool: &Pool<Sqlite>, invoke_id: &str) -> Result<bool> {
+    let exists = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM codex_invocations
+            WHERE invoke_id = ?1
+            LIMIT 1
+        )
+        "#,
+    )
+    .bind(invoke_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(exists != 0)
+}
+
+pub(crate) async fn generate_unique_proxy_invoke_id(pool: &Pool<Sqlite>) -> String {
+    for _ in 0..PROXY_INVOKE_ID_GENERATION_ATTEMPTS {
+        let candidate = generate_proxy_invoke_id();
+        match proxy_invoke_id_exists(pool, &candidate).await {
+            Ok(false) => return candidate,
+            Ok(true) => continue,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed to check generated proxy invoke id uniqueness; using generated id"
+                );
+                return candidate;
+            }
+        }
+    }
+
+    let fallback = generate_proxy_invoke_id();
+    warn!(
+        attempts = PROXY_INVOKE_ID_GENERATION_ATTEMPTS,
+        fallback_invoke_id = %fallback,
+        "generated proxy invoke id collided repeatedly; using final fallback id"
+    );
+    fallback
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PoolRoutingReservation {
     pub(crate) account_id: i64,
@@ -2059,6 +2120,28 @@ pub(crate) fn default_port_for_scheme(scheme: &str) -> Option<u16> {
 mod payload_utils_tests {
     use super::*;
     use axum::http::{HeaderMap, HeaderValue, header};
+
+    #[test]
+    fn generated_proxy_invoke_id_uses_short_nanoid_contract() {
+        let invoke_id = generate_proxy_invoke_id();
+
+        assert_eq!(invoke_id.len(), PROXY_INVOKE_ID_LENGTH);
+        assert!(proxy_invoke_id_has_short_format(&invoke_id));
+        assert!(!invoke_id.contains("proxy"));
+        assert!(!invoke_id.contains('-'));
+    }
+
+    #[test]
+    fn pool_routing_reservation_key_parses_only_legacy_proxy_invoke_ids() {
+        assert_eq!(
+            pool_routing_reservation_key_for_invoke_id("proxy-9061-1783013997090").as_deref(),
+            Some("pool-route-9061")
+        );
+        assert_eq!(
+            pool_routing_reservation_key_for_invoke_id("K7QM9ZD4HP"),
+            None
+        );
+    }
 
     #[test]
     fn request_public_origin_defaults_to_http_host_header() {
