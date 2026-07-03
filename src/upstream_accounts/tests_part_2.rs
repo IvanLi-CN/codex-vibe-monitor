@@ -4234,6 +4234,133 @@
     }
 
     #[tokio::test]
+    async fn update_upstream_account_patches_one_timeout_without_clearing_other_overrides() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Patch Timeout Policy").await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET policy_responses_first_byte_timeout_secs = 180,
+                policy_compact_first_byte_timeout_secs = 300,
+                policy_responses_stream_timeout_secs = 1800,
+                policy_compact_stream_timeout_secs = 300
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("seed account timeout overrides");
+
+        let detail = state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    email: OptionalField::Missing,
+                    group_name: None,
+                    group_bound_proxy_keys: None,
+                    group_node_shunt_enabled: None,
+                    group_single_account_rotation_enabled: None,
+                    note: None,
+                    group_note: None,
+                    concurrency_limit: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: None,
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                    routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
+                        allow_new_conversations: OptionalField::Missing,
+                        block_new_conversations: OptionalField::Missing,
+                        allow_cut_out: OptionalField::Missing,
+                        allow_cut_in: OptionalField::Missing,
+                        priority_tier: OptionalField::Missing,
+                        fast_mode_rewrite_mode: OptionalField::Missing,
+                        image_tool_rewrite_mode: OptionalField::Missing,
+                        concurrency_limit: OptionalField::Missing,
+                        upstream_429_retry_enabled: OptionalField::Missing,
+                        upstream_429_max_retries: OptionalField::Missing,
+                        available_models: OptionalField::Missing,
+                        timeouts: Some(UpdateRoutingTimeoutSettingsRequest {
+                            responses_first_byte_timeout_secs: OptionalField::Missing,
+                            compact_first_byte_timeout_secs: OptionalField::Missing,
+                            responses_stream_timeout_secs: OptionalField::Value(1900),
+                            compact_stream_timeout_secs: OptionalField::Missing,
+                        }),
+                    }),
+                },
+            )
+            .await
+            .expect("patch one account timeout field");
+
+        let response_rule = detail.summary.effective_routing_rule;
+        assert_eq!(
+            response_rule.timeouts.responses_first_byte_timeout_secs,
+            Some(180)
+        );
+        assert_eq!(
+            response_rule.timeouts.compact_first_byte_timeout_secs,
+            Some(300)
+        );
+        assert_eq!(
+            response_rule.timeouts.responses_stream_timeout_secs,
+            Some(1900)
+        );
+        assert_eq!(
+            response_rule.timeouts.compact_stream_timeout_secs,
+            Some(300)
+        );
+        assert_eq!(
+            response_rule
+                .timeout_field_sources
+                .responses_first_byte_timeout_secs,
+            "account"
+        );
+        assert_eq!(
+            response_rule
+                .timeout_field_sources
+                .responses_stream_timeout_secs,
+            "account"
+        );
+
+        let stored = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
+            "SELECT policy_responses_first_byte_timeout_secs, policy_compact_first_byte_timeout_secs, policy_responses_stream_timeout_secs, policy_compact_stream_timeout_secs FROM pool_upstream_accounts WHERE id = ?1",
+        )
+        .bind(account_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load stored timeout policy");
+        assert_eq!(stored, (Some(180), Some(300), Some(1900), Some(300)));
+
+        let reloaded_rule = load_effective_routing_rule_for_account(&state.pool, account_id)
+            .await
+            .expect("reload effective routing rule");
+        assert_eq!(
+            reloaded_rule.timeouts.responses_first_byte_timeout_secs,
+            Some(180)
+        );
+        assert_eq!(
+            reloaded_rule.timeouts.compact_first_byte_timeout_secs,
+            Some(300)
+        );
+        assert_eq!(
+            reloaded_rule.timeouts.responses_stream_timeout_secs,
+            Some(1900)
+        );
+        assert_eq!(
+            reloaded_rule.timeouts.compact_stream_timeout_secs,
+            Some(300)
+        );
+    }
+
+    #[tokio::test]
     async fn update_upstream_account_writes_positive_new_conversation_policy() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = insert_api_key_account(&state.pool, "Positive Account Policy").await;

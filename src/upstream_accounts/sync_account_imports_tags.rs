@@ -21,6 +21,8 @@ const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     policy_fast_mode_rewrite_mode, policy_image_tool_rewrite_mode, policy_concurrency_limit,
     policy_upstream_429_retry_enabled, policy_upstream_429_max_retries,
     policy_available_models_json,
+    policy_responses_first_byte_timeout_secs, policy_compact_first_byte_timeout_secs,
+    policy_responses_stream_timeout_secs, policy_compact_stream_timeout_secs,
     upstream_base_url, external_client_id, external_source_account_id,
     created_at, updated_at
 "#;
