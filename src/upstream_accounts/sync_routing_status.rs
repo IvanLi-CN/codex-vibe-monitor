@@ -440,6 +440,8 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     let inherited_available_models = rule.available_models.clone();
     let inherited_available_models_defined = rule.available_models_defined;
     let inherited_available_models_source = rule.field_sources.available_models.clone();
+    let inherited_timeouts = rule.timeouts.clone();
+    let inherited_timeout_field_sources = rule.timeout_field_sources.clone();
     rule.block_new_conversations |= tag_rule.block_new_conversations;
     rule.allow_cut_out = tag_rule.allow_cut_out;
     rule.allow_cut_in = tag_rule.allow_cut_in;
@@ -463,6 +465,8 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     rule.source_tag_ids = tag_rule.source_tag_ids.clone();
     rule.source_tag_names = tag_rule.source_tag_names.clone();
     rule.field_sources = tag_rule.field_sources.clone();
+    rule.timeouts = tag_rule.timeouts.clone();
+    rule.timeout_field_sources = tag_rule.timeout_field_sources.clone();
     rule.image_tool_rewrite_mode = inherited_image_tool_rewrite_mode;
     rule.field_sources.image_tool_rewrite_mode = inherited_image_tool_rewrite_mode_source;
     if inherited_block_new_conversations {
@@ -474,6 +478,30 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
         rule.field_sources.available_models = inherited_available_models_source;
     } else if !tag_rule.available_models_defined && inherited_available_models_defined {
         rule.field_sources.available_models = inherited_available_models_source;
+    }
+    if tag_rule.timeouts.responses_first_byte_timeout_secs.is_none() {
+        rule.timeouts.responses_first_byte_timeout_secs =
+            inherited_timeouts.responses_first_byte_timeout_secs;
+        rule.timeout_field_sources.responses_first_byte_timeout_secs =
+            inherited_timeout_field_sources.responses_first_byte_timeout_secs;
+    }
+    if tag_rule.timeouts.compact_first_byte_timeout_secs.is_none() {
+        rule.timeouts.compact_first_byte_timeout_secs =
+            inherited_timeouts.compact_first_byte_timeout_secs;
+        rule.timeout_field_sources.compact_first_byte_timeout_secs =
+            inherited_timeout_field_sources.compact_first_byte_timeout_secs;
+    }
+    if tag_rule.timeouts.responses_stream_timeout_secs.is_none() {
+        rule.timeouts.responses_stream_timeout_secs =
+            inherited_timeouts.responses_stream_timeout_secs;
+        rule.timeout_field_sources.responses_stream_timeout_secs =
+            inherited_timeout_field_sources.responses_stream_timeout_secs;
+    }
+    if tag_rule.timeouts.compact_stream_timeout_secs.is_none() {
+        rule.timeouts.compact_stream_timeout_secs =
+            inherited_timeouts.compact_stream_timeout_secs;
+        rule.timeout_field_sources.compact_stream_timeout_secs =
+            inherited_timeout_field_sources.compact_stream_timeout_secs;
     }
 }
 
