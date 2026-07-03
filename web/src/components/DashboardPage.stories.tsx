@@ -11,6 +11,7 @@ import type {
   StatsResponse,
   TimeseriesPoint,
   TimeseriesResponse,
+  UpstreamAccountActivityResponse,
 } from '../lib/api'
 import App from '../App'
 import DashboardPage from '../pages/Dashboard'
@@ -28,6 +29,31 @@ type DashboardScenario = 'default' | 'degraded' | 'readmeDense'
 type DashboardStoryParameters = {
   scenario?: DashboardScenario
   enableDiagnostics?: boolean
+  fixedNowMs?: number
+}
+
+const realDateNow = Date.now.bind(Date)
+
+function DashboardFixedClock({
+  children,
+  nowMs,
+}: {
+  children: ReactNode
+  nowMs?: number
+}) {
+  if (nowMs != null) {
+    Date.now = () => nowMs
+  }
+
+  useLayoutEffect(() => {
+    if (nowMs == null) return
+    Date.now = () => nowMs
+    return () => {
+      Date.now = realDateNow
+    }
+  }, [nowMs])
+
+  return <>{children}</>
 }
 
 type ReadmeWorkingConversationSeed = {
@@ -955,6 +981,73 @@ function buildWorkingConversationsResponse(empty = false): PromptCacheConversati
   }
 }
 
+function buildUpstreamAccountActivityResponse(): UpstreamAccountActivityResponse {
+  const recentInvocations = [
+    createPreview({
+      id: 10,
+      invokeId: 'acct-42-a',
+      occurredAt: '2026-04-09T12:00:00.000Z',
+      status: 'success',
+      upstreamAccountId: 42,
+      upstreamAccountName: 'pool-alpha@example.com',
+      totalTokens: 2800,
+      cost: 0.116,
+    }),
+    createPreview({
+      id: 11,
+      invokeId: 'acct-42-b',
+      occurredAt: '2026-04-09T11:58:20.000Z',
+      status: 'running',
+      upstreamAccountId: 42,
+      upstreamAccountName: 'pool-alpha@example.com',
+      totalTokens: 960,
+      cost: 0.041,
+      tTotalMs: null,
+    }),
+  ]
+
+  return {
+    range: 'today',
+    rangeStart: '2026-04-09T00:00:00.000Z',
+    rangeEnd: '2026-04-09T12:24:00.000Z',
+    accounts: [
+      {
+        upstreamAccountId: 42,
+        displayName: 'pool-alpha@example.com',
+        groupName: 'primary-pool',
+        planType: 'pro',
+        requestCount: 2,
+        successCount: 1,
+        failureCount: 0,
+        nonSuccessCount: 0,
+        totalTokens: 3760,
+        successTokens: 2800,
+        nonSuccessTokens: 0,
+        failureTokens: 0,
+        failureCost: 0,
+        totalCost: 0.157,
+        cacheHitRate: 0.24,
+        tokensPerMinute: 1280,
+        spendRate: 0.31,
+        firstByteAvgMs: 560,
+        firstResponseByteTotalAvgMs: 720,
+        avgTotalMs: 1840,
+        inProgressInvocationCount: 1,
+        retryInvocationCount: 0,
+        effectiveRoutingRule: {
+          blockNewConversations: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          priorityTier: 'normal',
+          sourceTagIds: [],
+          sourceTagNames: [],
+        },
+        recentInvocations,
+      },
+    ],
+  }
+}
+
 function createDashboardRequestHandler(scenario: DashboardScenario = 'default') {
   const now = Date.parse('2026-04-09T12:24:00+08:00')
   const rangeYesterdayStart = Date.parse('2026-04-08T00:00:00+08:00')
@@ -1115,6 +1208,10 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
       return jsonResponse(buildWorkingConversationsResponse(scenario === 'degraded'))
     }
 
+    if (url.pathname === '/api/stats/upstream-account-activity') {
+      return jsonResponse(buildUpstreamAccountActivityResponse())
+    }
+
     if (url.pathname === '/api/version') {
       return jsonResponse({ backend: 'v0.2.0' })
     }
@@ -1141,11 +1238,13 @@ const meta = {
           <StorybookPageEnvironment onRequest={createDashboardRequestHandler(scenario)}>
             <MemoryRouter initialEntries={['/dashboard']}>
               <FullPageStorySurface>
-                <DashboardDiagnosticsStorageReset enabled={parameters.enableDiagnostics === true}>
-                  <DashboardRangeStorageReset>
-                    <Story />
-                  </DashboardRangeStorageReset>
-                </DashboardDiagnosticsStorageReset>
+                <DashboardFixedClock nowMs={parameters.fixedNowMs}>
+                  <DashboardDiagnosticsStorageReset enabled={parameters.enableDiagnostics === true}>
+                    <DashboardRangeStorageReset>
+                      <Story />
+                    </DashboardRangeStorageReset>
+                  </DashboardDiagnosticsStorageReset>
+                </DashboardFixedClock>
               </FullPageStorySurface>
             </MemoryRouter>
           </StorybookPageEnvironment>
@@ -1207,6 +1306,7 @@ export const Degraded: Story = {
 export const LiveRefreshDiagnostics: Story = {
   parameters: {
     enableDiagnostics: true,
+    fixedNowMs: Date.parse('2026-04-09T12:24:00.000Z'),
   },
   render: () => <DashboardPage />,
   play: async ({ canvasElement }) => {
@@ -1223,6 +1323,9 @@ export const LiveRefreshDiagnostics: Story = {
         'dashboard-performance-diagnostics-today-chart-render-count',
       ).textContent ?? '0',
     )
+    await userEvent.click(canvas.getByRole('tab', { name: '上游账号' }))
+    await expect(canvas.getByTestId('dashboard-upstream-account-card')).toBeVisible()
+
     const controller = getStorybookPageSseController()
     if (!controller) {
       throw new Error('storybook page SSE controller unavailable')
@@ -1235,15 +1338,17 @@ export const LiveRefreshDiagnostics: Story = {
           id: 901,
           invokeId: 'wc-1-live-after-snapshot',
           promptCacheKey: 'wc-current-1',
-          occurredAt: '2026-04-06T12:00:20.000Z',
-          createdAt: '2026-04-06T12:00:20.000Z',
-          status: 'running',
+          occurredAt: '2026-04-09T12:23:55.000Z',
+          createdAt: '2026-04-09T12:24:05.000Z',
+          status: 'success',
           source: 'pool',
           routeMode: 'pool',
           model: 'gpt-5.4',
           endpoint: '/v1/responses',
           totalTokens: 640,
           cost: 0.0284,
+          upstreamAccountId: 42,
+          upstreamAccountName: 'pool-alpha@example.com',
         },
       ],
     })
@@ -1270,7 +1375,11 @@ export const LiveRefreshDiagnostics: Story = {
               'dashboard-performance-diagnostics-today-summary-refresh-count',
             ).textContent ?? '0',
           ),
-        ).toBeGreaterThan(initialSummaryRefreshCount)
+        ).toBe(initialSummaryRefreshCount)
+        expect(canvas.getByTestId('today-stats-value-success')).toHaveAttribute('aria-label', '9,950')
+        expect(canvas.getAllByTestId('dashboard-upstream-account-recent-row')[0]).toHaveTextContent(
+          'wc-1-live-after-snapshot',
+        )
       },
       { timeout: 4000 },
     )

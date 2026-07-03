@@ -4,6 +4,7 @@ import {
   DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
 } from "./useDashboardWorkingConversations";
 import {
+  type ApiInvocation,
   fetchUpstreamAccountActivity,
   type UpstreamAccountActivityAccount,
   type UpstreamAccountActivityResponse,
@@ -12,6 +13,13 @@ import {
   recordUpstreamAccountActivityOpenResync,
   recordUpstreamAccountActivityRefresh,
 } from "../lib/dashboardPerformanceDiagnostics";
+import {
+  DASHBOARD_SSE_VISIBLE_PATCH_BATCH_MS,
+  clearDashboardRecordPatchState,
+  createDashboardRecordPatchState,
+  patchUpstreamAccountActivityWithRecords,
+  seedUpstreamAccountActivityPatchState,
+} from "../lib/dashboardSseLocalPatch";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
 
 export const DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_REFRESH_THROTTLE_MS = 5_000;
@@ -74,6 +82,10 @@ export function useDashboardUpstreamAccountActivity(
   const requestSeqRef = useRef(0);
   const pendingLoadRef = useRef<LoadOptions | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const localPatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingLocalPatchRecordsRef = useRef<ApiInvocation[]>([]);
+  const localPatchStateRef = useRef(createDashboardRecordPatchState());
+  const pendingPostHydrationRefreshRef = useRef(false);
   const lastRefreshAtRef = useRef(0);
   const lastOpenResyncAtRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -111,12 +123,21 @@ export function useDashboardUpstreamAccountActivity(
     refreshTimerRef.current = null;
   }, []);
 
+  const clearLocalPatchTimer = useCallback(() => {
+    if (!localPatchTimerRef.current) return;
+    clearTimeout(localPatchTimerRef.current);
+    localPatchTimerRef.current = null;
+  }, []);
+
   const invalidateCurrentRequest = useCallback(() => {
     requestSeqRef.current += 1;
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
     inFlightRef.current = false;
     pendingLoadRef.current = null;
+    pendingLocalPatchRecordsRef.current = [];
+    pendingPostHydrationRefreshRef.current = false;
+    clearDashboardRecordPatchState(localPatchStateRef.current);
   }, []);
 
   const runLoad = useCallback(async ({ silent = false }: LoadOptions = {}) => {
@@ -154,6 +175,9 @@ export function useDashboardUpstreamAccountActivity(
       const needsExpandedReload =
         nextRecentInvocationLimit > requestedRecentLimit;
       recentInvocationLimitRef.current = nextRecentInvocationLimit;
+      pendingLocalPatchRecordsRef.current = [];
+      clearLocalPatchTimer();
+      seedUpstreamAccountActivityPatchState(localPatchStateRef.current, response);
       setVisibleRecentInvocationLimit(
         needsExpandedReload
           ? requestedRecentLimit
@@ -161,6 +185,7 @@ export function useDashboardUpstreamAccountActivity(
       );
       setData(response);
       recordUpstreamAccountActivityRefresh();
+      lastRefreshAtRef.current = Date.now();
       hasHydratedRef.current = true;
       setError(null);
       if (needsExpandedReload) {
@@ -186,7 +211,7 @@ export function useDashboardUpstreamAccountActivity(
         void runLoad(pendingLoad);
       }
     }
-  }, []);
+  }, [clearLocalPatchTimer]);
 
   const load = useCallback(
     async (options: LoadOptions = {}) => {
@@ -203,9 +228,79 @@ export function useDashboardUpstreamAccountActivity(
     [runLoad],
   );
 
+  const scheduleThrottledRefresh = useCallback(() => {
+    if (!hasHydratedRef.current) {
+      pendingPostHydrationRefreshRef.current = true;
+      return;
+    }
+    const now = Date.now();
+    const delay = Math.max(
+      0,
+      DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_REFRESH_THROTTLE_MS -
+        (now - lastRefreshAtRef.current),
+    );
+    const run = () => {
+      refreshTimerRef.current = null;
+      lastRefreshAtRef.current = Date.now();
+      void load({ silent: true });
+    };
+    if (delay === 0) {
+      clearPendingRefreshTimer();
+      run();
+      return;
+    }
+    if (refreshTimerRef.current) return;
+    refreshTimerRef.current = setTimeout(run, delay);
+  }, [clearPendingRefreshTimer, load]);
+
+  useEffect(() => {
+    if (
+      !enabled ||
+      !hasHydratedRef.current ||
+      !pendingPostHydrationRefreshRef.current
+    ) {
+      return;
+    }
+    pendingPostHydrationRefreshRef.current = false;
+    scheduleThrottledRefresh();
+  }, [data, enabled, scheduleThrottledRefresh]);
+
+  const flushPendingLocalPatches = useCallback(() => {
+    localPatchTimerRef.current = null;
+    const records = pendingLocalPatchRecordsRef.current;
+    pendingLocalPatchRecordsRef.current = [];
+    if (records.length === 0) return;
+
+    let missedAccountRecord = false;
+    setData((current) => {
+      const patched = patchUpstreamAccountActivityWithRecords(
+        current,
+        records,
+        recentInvocationLimitRef.current,
+        localPatchStateRef.current,
+      );
+      missedAccountRecord = patched.missedAccountRecord;
+      return patched.response;
+    });
+    if (missedAccountRecord) {
+      scheduleThrottledRefresh();
+    }
+  }, [scheduleThrottledRefresh]);
+
+  const enqueueLocalPatchRecords = useCallback((records: ApiInvocation[]) => {
+    if (records.length === 0 || rangeRef.current !== "today") return;
+    pendingLocalPatchRecordsRef.current.push(...records);
+    if (localPatchTimerRef.current) return;
+    localPatchTimerRef.current = setTimeout(
+      flushPendingLocalPatches,
+      DASHBOARD_SSE_VISIBLE_PATCH_BATCH_MS,
+    );
+  }, [flushPendingLocalPatches]);
+
   useEffect(() => {
     if (!enabled) {
       clearPendingRefreshTimer();
+      clearLocalPatchTimer();
       invalidateCurrentRequest();
       return;
     }
@@ -213,6 +308,7 @@ export function useDashboardUpstreamAccountActivity(
     void load({ silent: hasHydratedRef.current });
   }, [
     clearPendingRefreshTimer,
+    clearLocalPatchTimer,
     enabled,
     invalidateCurrentRequest,
     load,
@@ -220,31 +316,25 @@ export function useDashboardUpstreamAccountActivity(
     recentInvocationLimit,
   ]);
 
+  useEffect(
+    () => () => {
+      clearPendingRefreshTimer();
+      clearLocalPatchTimer();
+      pendingLocalPatchRecordsRef.current = [];
+      pendingPostHydrationRefreshRef.current = false;
+    },
+    [clearLocalPatchTimer, clearPendingRefreshTimer],
+  );
+
   useEffect(() => {
     if (!enabled) return;
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== "records") return;
-      const now = Date.now();
-      const delay = Math.max(
-        0,
-        DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_REFRESH_THROTTLE_MS -
-          (now - lastRefreshAtRef.current),
-      );
-      const run = () => {
-        refreshTimerRef.current = null;
-        lastRefreshAtRef.current = Date.now();
-        void load({ silent: true });
-      };
-      if (delay === 0) {
-        clearPendingRefreshTimer();
-        run();
-        return;
-      }
-      if (refreshTimerRef.current) return;
-      refreshTimerRef.current = setTimeout(run, delay);
+      enqueueLocalPatchRecords(payload.records);
+      scheduleThrottledRefresh();
     });
     return unsubscribe;
-  }, [clearPendingRefreshTimer, enabled, load]);
+  }, [enabled, enqueueLocalPatchRecords, scheduleThrottledRefresh]);
 
   useEffect(() => {
     if (!enabled) return;

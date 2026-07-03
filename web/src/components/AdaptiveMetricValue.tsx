@@ -165,6 +165,7 @@ export function AdaptiveDisplayValue({
         data-compact-precision={selectedCandidate?.precisionLabel ?? 'full'}
         data-candidate-key={selectedCandidate?.key ?? 'full'}
         data-testid={dataTestId}
+        aria-label={selectedCandidate?.value ?? spec.fullValue}
         title={resolvedTitle}
         className={cn('block max-w-full overflow-hidden whitespace-nowrap', className)}
       >

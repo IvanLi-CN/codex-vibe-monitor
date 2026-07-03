@@ -8,6 +8,14 @@ import {
   recordTodaySummaryRefresh,
   recordTodaySummarySseCommit,
 } from '../lib/dashboardPerformanceDiagnostics'
+import {
+  DASHBOARD_SSE_VISIBLE_PATCH_BATCH_MS,
+  clearDashboardRecordPatchState,
+  createDashboardRecordPatchState,
+  filterDashboardRecordsForLocalDay,
+  patchDashboardSummaryWithRecords,
+  seedDashboardSummaryPatchState,
+} from '../lib/dashboardSseLocalPatch'
 
 interface UseSummaryOptions {
   limit?: number
@@ -273,6 +281,9 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   const pendingOpenResyncRef = useRef(false)
   const requestSeqRef = useRef(0)
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const localPatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingLocalPatchRecordsRef = useRef<ApiInvocation[]>([])
+  const localPatchStateRef = useRef(createDashboardRecordPatchState())
   const dayRolloverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const activeRequestControllerRef = useRef<AbortController | null>(null)
   const lastCurrentRecordsRefreshAtRef = useRef(0)
@@ -291,6 +302,12 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     if (!refreshTimerRef.current) return
     clearTimeout(refreshTimerRef.current)
     refreshTimerRef.current = null
+  }, [])
+
+  const clearLocalPatchTimer = useCallback(() => {
+    if (!localPatchTimerRef.current) return
+    clearTimeout(localPatchTimerRef.current)
+    localPatchTimerRef.current = null
   }, [])
 
   const clearDayRolloverTimer = useCallback(() => {
@@ -325,6 +342,9 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         signal: controller.signal,
       })
       if (requestSeq !== requestSeqRef.current) return
+      pendingLocalPatchRecordsRef.current = []
+      clearLocalPatchTimer()
+      seedDashboardSummaryPatchState(localPatchStateRef.current, response)
       setStats(response)
       writeSummaryRemountCache(
         summaryContextRef.current.window,
@@ -335,6 +355,9 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       )
       recordTodaySummaryRefresh(summaryContextRef.current.window)
       recordCurrentSummaryRefresh(summaryContextRef.current.window)
+      if (isCalendarSummaryWindow(summaryContextRef.current.window)) {
+        calendarRefreshRef.current.lastTriggerAt = Date.now()
+      }
       lastNaturalDayLoadStartEpochRef.current =
         isDayBoundarySummaryWindow(summaryContextRef.current.window)
           ? getLocalDayStartEpoch()
@@ -370,7 +393,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       }
       activeLoadCountRef.current = Math.max(0, activeLoadCountRef.current - 1)
     }
-  }, [])
+  }, [clearLocalPatchTimer])
 
   const load = useCallback(async (loadOptions: LoadOptions = {}) => {
     const silent = loadOptions.silent ?? false
@@ -434,6 +457,26 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     refreshTimerRef.current = setTimeout(run, delay)
   }, [clearPendingRefreshTimer, load])
 
+  const flushPendingLocalPatches = useCallback(() => {
+    localPatchTimerRef.current = null
+    const records = pendingLocalPatchRecordsRef.current
+    pendingLocalPatchRecordsRef.current = []
+    if (records.length === 0) return
+    setStats((current) => patchDashboardSummaryWithRecords(current, records, localPatchStateRef.current))
+  }, [])
+
+  const enqueueLocalPatchRecords = useCallback((records: ApiInvocation[]) => {
+    if (records.length === 0 || window !== 'today') return
+    const eligibleRecords = filterDashboardRecordsForLocalDay(records)
+    if (eligibleRecords.length === 0) return
+    pendingLocalPatchRecordsRef.current.push(...eligibleRecords)
+    if (localPatchTimerRef.current) return
+    localPatchTimerRef.current = setTimeout(
+      flushPendingLocalPatches,
+      DASHBOARD_SSE_VISIBLE_PATCH_BATCH_MS,
+    )
+  }, [flushPendingLocalPatches, window])
+
   const triggerOpenResync = useCallback((force = false) => {
     if (!hasHydratedRef.current) {
       pendingOpenResyncRef.current = true
@@ -474,13 +517,16 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         : null
     clearPendingLoad()
     clearPendingRefreshTimer()
+    clearLocalPatchTimer()
+    pendingLocalPatchRecordsRef.current = []
+    clearDashboardRecordPatchState(localPatchStateRef.current)
     clearDayRolloverTimer()
     if (!cachedSummary) {
       void load({ force: true })
       return
     }
     void load({ silent: true, force: true })
-  }, [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer, load, options?.limit, options?.upstreamAccountId, window])
+  }, [clearDayRolloverTimer, clearLocalPatchTimer, clearPendingLoad, clearPendingRefreshTimer, load, options?.limit, options?.upstreamAccountId, window])
 
   useEffect(() => {
     if (!error || window !== 'current' || !shouldRetryCurrentSummaryError(error)) {
@@ -506,9 +552,11 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       pendingOpenResyncRef.current = false
       currentRetryAttemptRef.current = 0
       clearPendingRefreshTimer()
+      clearLocalPatchTimer()
+      pendingLocalPatchRecordsRef.current = []
       clearDayRolloverTimer()
     },
-    [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer],
+    [clearDayRolloverTimer, clearLocalPatchTimer, clearPendingLoad, clearPendingRefreshTimer],
   )
 
   const supportsSse = useMemo(
@@ -521,6 +569,9 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       if (payload.type === 'summary') {
         if (options?.upstreamAccountId != null) return
         if (payload.window === window) {
+          pendingLocalPatchRecordsRef.current = []
+          clearLocalPatchTimer()
+          seedDashboardSummaryPatchState(localPatchStateRef.current, payload.summary)
           setStats(payload.summary)
           writeSummaryRemountCache(window, options?.limit, payload.summary)
           recordTodaySummarySseCommit(window)
@@ -540,6 +591,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
             ? payload.records
             : payload.records.filter((record) => record.upstreamAccountId === options.upstreamAccountId)
         if (scopedRecords.length === 0) return
+        enqueueLocalPatchRecords(scopedRecords)
         if (window === 'current') {
           // current 窗口通过节流静默刷新，避免高频事件导致闪烁。
           triggerCurrentWindowRefresh()
@@ -556,7 +608,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       }
     })
     return unsubscribe
-  }, [load, options?.limit, options?.upstreamAccountId, supportsSse, triggerCurrentWindowRefresh, window])
+  }, [clearLocalPatchTimer, enqueueLocalPatchRecords, load, options?.limit, options?.upstreamAccountId, supportsSse, triggerCurrentWindowRefresh, window])
 
   useEffect(() => {
     if (typeof document === 'undefined') return

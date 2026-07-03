@@ -3,9 +3,12 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type {
+  ApiInvocation,
+  BroadcastPayload,
   PromptCacheConversationInvocationPreview,
   UpstreamAccountActivityResponse,
 } from "../lib/api";
+import { DASHBOARD_SSE_VISIBLE_PATCH_BATCH_MS } from "../lib/dashboardSseLocalPatch";
 import {
   DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
   DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
@@ -25,6 +28,11 @@ const apiMocks = vi.hoisted(() => ({
     >(),
 }));
 
+const sseMocks = vi.hoisted(() => ({
+  listeners: new Set<(payload: BroadcastPayload) => void>(),
+  openListeners: new Set<() => void>(),
+}));
+
 vi.mock("../lib/api", async () => {
   const actual =
     await vi.importActual<typeof import("../lib/api")>("../lib/api");
@@ -35,8 +43,14 @@ vi.mock("../lib/api", async () => {
 });
 
 vi.mock("../lib/sse", () => ({
-  subscribeToSse: () => () => {},
-  subscribeToSseOpen: () => () => {},
+  subscribeToSse: (listener: (payload: BroadcastPayload) => void) => {
+    sseMocks.listeners.add(listener);
+    return () => sseMocks.listeners.delete(listener);
+  },
+  subscribeToSseOpen: (listener: () => void) => {
+    sseMocks.openListeners.add(listener);
+    return () => sseMocks.openListeners.delete(listener);
+  },
 }));
 
 let host: HTMLDivElement | null = null;
@@ -57,6 +71,9 @@ afterEach(() => {
   host?.remove();
   host = null;
   root = null;
+  sseMocks.listeners.clear();
+  sseMocks.openListeners.clear();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -154,6 +171,40 @@ function createPreview(
   };
 }
 
+function createRecord(
+  overrides: Partial<ApiInvocation> & {
+    id: number;
+    invokeId: string;
+    occurredAt?: string;
+    status: string;
+  },
+): ApiInvocation {
+  return {
+    id: overrides.id,
+    invokeId: overrides.invokeId,
+    occurredAt: overrides.occurredAt ?? "2026-04-04T10:04:30Z",
+    createdAt: overrides.createdAt ?? overrides.occurredAt ?? "2026-04-04T10:04:30Z",
+    status: overrides.status,
+    source: overrides.source ?? "pool",
+    routeMode: overrides.routeMode ?? "pool",
+    model: overrides.model ?? "gpt-5.5",
+    endpoint: overrides.endpoint ?? "/v1/responses",
+    totalTokens: overrides.totalTokens ?? 0,
+    cost: overrides.cost ?? 0,
+    upstreamAccountId: overrides.upstreamAccountId ?? 42,
+    upstreamAccountName: overrides.upstreamAccountName ?? "Pool Alpha",
+    poolAttemptCount: overrides.poolAttemptCount,
+  };
+}
+
+function emitRecords(records: ApiInvocation[]) {
+  act(() => {
+    sseMocks.listeners.forEach((listener) => {
+      listener({ type: "records", records });
+    });
+  });
+}
+
 function createAccountResponse(
   inProgressInvocationCount: number,
   recentInvocations: PromptCacheConversationInvocationPreview[],
@@ -229,6 +280,18 @@ function Probe({
       <div data-testid="recent-count">
         {String(data?.accounts[0]?.recentInvocations.length ?? 0)}
       </div>
+      <div data-testid="request-count">
+        {String(data?.accounts[0]?.requestCount ?? 0)}
+      </div>
+      <div data-testid="total-tokens">
+        {String(data?.accounts[0]?.totalTokens ?? 0)}
+      </div>
+      <div data-testid="in-progress">
+        {String(data?.accounts[0]?.inProgressInvocationCount ?? 0)}
+      </div>
+      <div data-testid="first-recent-invoke">
+        {data?.accounts[0]?.recentInvocations[0]?.invokeId ?? ""}
+      </div>
     </div>
   );
 }
@@ -263,6 +326,238 @@ describe("resolveUpstreamAccountRecentPreviewLimit", () => {
 });
 
 describe("useDashboardUpstreamAccountActivity", () => {
+  it("does not immediately queue a second HTTP reconcile when records arrive before first hydration", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T10:05:00Z"));
+    const initial = deferred<UpstreamAccountActivityResponse>();
+    apiMocks.fetchUpstreamAccountActivity
+      .mockImplementationOnce(async () => initial.promise)
+      .mockResolvedValue(createAccountResponse(0, []));
+
+    render(<Probe />);
+    await flushAsync();
+    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(1);
+
+    emitRecords([
+      createRecord({
+        id: 9,
+        invokeId: "pre-hydration-record",
+        status: "success",
+        totalTokens: 20,
+      }),
+    ]);
+
+    initial.resolve(createAccountResponse(0, []));
+    await flushAsync();
+    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(4_999);
+    });
+    await flushAsync();
+    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    await flushAsync();
+    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("patches known account cards from SSE after the 1s visible batch while preserving the 5s HTTP budget", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T10:05:00Z"));
+    apiMocks.fetchUpstreamAccountActivity.mockResolvedValue(
+      createAccountResponse(
+        1,
+        [
+          createPreview({
+            id: 10,
+            invokeId: "seed",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "success",
+            totalTokens: 100,
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ],
+      ),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(1);
+    expect(text("request-count")).toBe("1");
+    expect(text("total-tokens")).toBe("100");
+
+    emitRecords([
+      createRecord({
+        id: 11,
+        invokeId: "live-success",
+        status: "success",
+        createdAt: "2026-04-04T10:05:01Z",
+        occurredAt: "2026-04-04T10:05:01Z",
+        totalTokens: 80,
+        cost: 0.08,
+      }),
+    ]);
+    expect(text("request-count")).toBe("1");
+    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(DASHBOARD_SSE_VISIBLE_PATCH_BATCH_MS);
+    });
+
+    expect(text("request-count")).toBe("2");
+    expect(text("total-tokens")).toBe("180");
+    expect(text("first-recent-invoke")).toBe("live-success");
+    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(4_000);
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not create incomplete cards for unseen accounts before reconcile", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T10:05:00Z"));
+    apiMocks.fetchUpstreamAccountActivity.mockResolvedValue(
+      createAccountResponse(0, []),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+
+    emitRecords([
+      createRecord({
+        id: 90,
+        invokeId: "new-account",
+        status: "success",
+        upstreamAccountId: 99,
+        upstreamAccountName: "Pool New",
+        totalTokens: 40,
+      }),
+    ]);
+
+    await act(async () => {
+      vi.advanceTimersByTime(DASHBOARD_SSE_VISIBLE_PATCH_BATCH_MS);
+    });
+
+    expect(text("request-count")).toBe("0");
+    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(4_000);
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores out-of-range account records and replaces running contribution with terminal contribution", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T10:05:00Z"));
+    apiMocks.fetchUpstreamAccountActivity.mockResolvedValue(
+      createAccountResponse(1, []),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+
+    emitRecords([
+      createRecord({
+        id: 120,
+        invokeId: "older-account-record",
+        status: "success",
+        occurredAt: "2026-04-03T23:59:59Z",
+        totalTokens: 40,
+      }),
+    ]);
+    await act(async () => {
+      vi.advanceTimersByTime(DASHBOARD_SSE_VISIBLE_PATCH_BATCH_MS);
+    });
+
+    expect(text("request-count")).toBe("0");
+    expect(text("in-progress")).toBe("1");
+
+    emitRecords([
+      createRecord({
+        id: 121,
+        invokeId: "lifecycle-account-record",
+        status: "running",
+        poolAttemptCount: 2,
+      }),
+    ]);
+    await act(async () => {
+      vi.advanceTimersByTime(DASHBOARD_SSE_VISIBLE_PATCH_BATCH_MS);
+    });
+    expect(text("request-count")).toBe("0");
+    expect(text("in-progress")).toBe("1");
+
+    emitRecords([
+      createRecord({
+        id: 121,
+        invokeId: "lifecycle-account-record",
+        status: "success",
+        totalTokens: 20,
+        cost: 0.02,
+      }),
+    ]);
+    await act(async () => {
+      vi.advanceTimersByTime(DASHBOARD_SSE_VISIBLE_PATCH_BATCH_MS);
+    });
+
+    expect(text("request-count")).toBe("0");
+    expect(text("total-tokens")).toBe("20");
+    expect(text("in-progress")).toBe("0");
+  });
+
+  it("consumes hydrated account in-progress count when only the terminal record arrives later", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T10:05:00Z"));
+    apiMocks.fetchUpstreamAccountActivity.mockResolvedValue(
+      createAccountResponse(
+        1,
+        [
+          createPreview({
+            id: 130,
+            invokeId: "prehydrated-account-running",
+            occurredAt: "2026-04-04T10:04:30Z",
+            status: "running",
+            totalTokens: 0,
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ],
+      ),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+
+    emitRecords([
+      createRecord({
+        id: 130,
+        invokeId: "prehydrated-account-running",
+        status: "success",
+        totalTokens: 20,
+        cost: 0.02,
+      }),
+    ]);
+
+    await act(async () => {
+      vi.advanceTimersByTime(DASHBOARD_SSE_VISIBLE_PATCH_BATCH_MS);
+    });
+
+    expect(text("request-count")).toBe("1");
+    expect(text("total-tokens")).toBe("20");
+    expect(text("in-progress")).toBe("0");
+  });
+
   it("expands the recent limit after hydration when an account has more in-flight invocations", async () => {
     const first = createAccountResponse(
       9,

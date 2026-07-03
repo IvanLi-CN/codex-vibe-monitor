@@ -41,10 +41,12 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - Keep lightweight live KPI semantics separate from heavy aggregate endpoint semantics. If the KPI means “strictly in progress now”, expose that directly on the summary path instead of reusing the latest point from a historical bucket series.
 - When a dashboard card combines a live main value with historical comparison rows, keep the semantic split explicit: the main value can come from a strict real-time read model, while comparison rows can continue to use a stable historical aggregate as long as they remain clearly secondary and do not overwrite the live truth source.
 - Batch visible local patches separately from head/snapshot reconcile. A 1 second visible patch batch is responsive enough for card updates while avoiding per-record rerenders.
+- Once `records` SSE data is already in the browser, patch the loaded Dashboard surfaces locally at no more than 1Hz. Top KPI cards, visible upstream-account cards, and visible recent/working conversation rows can use this path for fields that are directly derivable from one `ApiInvocation`.
 - Put expensive HTTP reconcile and dense chart data commits behind a separate 5 second budget.
 - For large aggregate endpoints that must keep their JSON shape, add conditional HTTP (`ETag` and `304 Not Modified`) instead of trimming fields.
 - Add lightweight diagnostics counters for each path: visible patch count, head fetch count, SSE summary commit count, HTTP reconcile count, chart data commit count, and conditional fetch hit count.
 - Keep `current` summary and dashboard account-activity reconcile on the same 5 second budget. A faster current-window reconcile without a matching backend live read model simply turns SQLite scan cost into a tighter request loop.
+- Start the 5 second reconcile budget from the last successful server hydration/reconcile, not from process startup. The first record after initial load should not immediately refetch the same aggregate unless that server budget has actually elapsed.
 - When an endpoint still needs strict “currently in progress” truth, move that truth into a write-side live table or read model and let the 5 second reconcile read that bounded surface instead of rescanning the historical raw table.
 - Treat dashboard working-set surfaces the same way: the 5-minute working-conversations head/count and snapshot pagination/count can both read a write-side bounded working-set table. Keep the response shape and main ordering stable, but accept `<=5s` bounded freshness instead of strict historical snapshot recomputation from the raw invocation table.
 - Align write-side maintenance with the same freshness budget. If Dashboard accepts `<=5s` reconcile, request-tail derived writes that feed those read models can use short-window coalescing/batch flush, while terminal invocation and terminal attempt facts remain synchronous.
@@ -53,6 +55,8 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 ## Guardrails / Reuse Notes
 
 - Do not delay KPI counters if the SSE payload is already authoritative for the selected window.
+- Do not make the 5 second HTTP reconcile throttle gate local UI patches for data the browser already has. The throttle exists to protect server-side aggregate work, not to delay cheap client-side deltas.
+- Do not create incomplete account or conversation cards from a record that only contains partial identity/context. Patch visible loaded cards locally and let the 5 second head/reconcile path discover new cards.
 - Do not reuse a long-horizon aggregate endpoint as a shortcut for a real-time KPI when their semantic boundaries differ, even if the payload looks close enough.
 - Do not simplify chart visuals to solve render pressure; throttle the data commit feeding the chart instead.
 - Keep timer constants exported when tests need to assert cadence without duplicating magic numbers.
