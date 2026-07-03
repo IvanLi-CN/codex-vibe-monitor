@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.9.1",
+  "base_stable_version": "2.9.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-03T12:32:33Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.9.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e77d44d568cc789026029a292fc0b1f9df6b759f",
+  "pr_number": 517,
+  "pr_title": "fix: keep proxy runtime snapshots in memory",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.9.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.9.1",
+  "target_sha": "2d0bbfc67bc3a17c20e860768685b905cfedabc5",
+  "type_label": "type:patch"
+}
