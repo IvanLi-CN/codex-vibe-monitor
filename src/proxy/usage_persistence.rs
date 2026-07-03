@@ -2212,6 +2212,7 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         image_intent: payload_text(payload, "imageIntent"),
         requester_ip: payload_text(payload, "requesterIp"),
         prompt_cache_key: prompt_cache_key_from_payload(payload),
+        sticky_key: sticky_key_from_payload(payload),
         route_mode: payload_text(payload, "routeMode"),
         upstream_account_id: upstream_account_id_from_payload(payload),
         upstream_account_name: upstream_account_name_from_payload(payload),
@@ -2301,6 +2302,7 @@ pub(crate) async fn load_persisted_api_invocation_tx(
             is_actionable,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key,
+            CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END AS sticky_key,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.routeMode') END AS route_mode,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountId') END AS upstream_account_id,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountName') END AS upstream_account_name,
@@ -2401,30 +2403,41 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
 ) -> Result<()> {
     let started = Instant::now();
     let persisted_record = api_invocation_from_runtime_record(&record);
-    let snapshot = BatchedRunningProxySnapshot {
-        invoke_id: record.invoke_id.clone(),
-        occurred_at: record.occurred_at.clone(),
-        record: record.clone(),
-    };
-
     let invoke_id = persisted_record.invoke_id.clone();
-    if !state
-        .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::RunningProxySnapshot(snapshot.clone()))
-    {
-        warn!(
+    let occurred_at = persisted_record.occurred_at.clone();
+    let store_outcome = state
+        .proxy_runtime_invocations
+        .upsert(persisted_record.clone());
+    if store_outcome.skipped_terminal {
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        debug!(
             invoke_id = %invoke_id,
-            "running proxy capture snapshot placeholder dropped by sqlite batch writer; flushing inline fallback"
+            occurred_at = %occurred_at,
+            elapsed_ms,
+            runtime_store_running_count = store_outcome.running_count,
+            runtime_store_pruned_count = store_outcome.pruned_count,
+            running_snapshot_db_write_skipped = true,
+            running_snapshot_skipped_after_terminal = true,
+            "stale running proxy capture snapshot skipped after terminal persistence"
         );
-        if let Err(err) = state
+        return Ok(());
+    }
+    let mut running_placeholder_enqueued = false;
+    if store_outcome.inserted_new {
+        let snapshot = BatchedRunningProxySnapshot {
+            invoke_id: record.invoke_id.clone(),
+            occurred_at: record.occurred_at.clone(),
+            record: record.clone(),
+        };
+        running_placeholder_enqueued = state
             .sqlite_batch_writer
-            .flush_running_proxy_snapshot_inline(&state.pool, snapshot)
-            .await
-        {
-            warn!(
-                ?err,
+            .enqueue(SqliteBatchWrite::RunningProxySnapshot(snapshot));
+        if !running_placeholder_enqueued {
+            debug!(
                 invoke_id = %invoke_id,
-                "running proxy capture snapshot inline fallback failed"
+                occurred_at = %occurred_at,
+                running_snapshot_db_placeholder_dropped = true,
+                "running proxy capture recovery placeholder dropped by sqlite batch writer"
             );
         }
     }
@@ -2443,11 +2456,32 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
     let elapsed_ms = started.elapsed().as_millis() as u64;
     debug!(
         invoke_id = %invoke_id,
+        occurred_at = %occurred_at,
         elapsed_ms,
-        "running proxy capture snapshot deferred from synchronous sqlite write"
+        runtime_store_running_count = store_outcome.running_count,
+        runtime_store_pruned_count = store_outcome.pruned_count,
+        running_snapshot_db_write_skipped = true,
+        running_snapshot_recovery_placeholder_enqueued = running_placeholder_enqueued,
+        "running proxy capture snapshot stored in memory and broadcast"
     );
 
     Ok(())
+}
+
+pub(crate) fn remove_proxy_runtime_snapshot_for_terminal(
+    state: &AppState,
+    record: &ApiInvocation,
+) -> bool {
+    let removed_runtime_snapshot = state
+        .proxy_runtime_invocations
+        .remove(&record.invoke_id, &record.occurred_at);
+    debug!(
+        invoke_id = %record.invoke_id,
+        occurred_at = %record.occurred_at,
+        terminal_removed_runtime_snapshot = removed_runtime_snapshot,
+        "terminal proxy capture record removed memory runtime snapshot"
+    );
+    removed_runtime_snapshot
 }
 
 pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
@@ -2469,6 +2503,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
     }
 
     let invoke_id = persisted_record.invoke_id.clone();
+    remove_proxy_runtime_snapshot_for_terminal(state, &persisted_record);
     let derived = BatchedInvocationDerivedWrites {
         invocation_id: persisted_record.id,
         occurred_at: persisted_record.occurred_at.clone(),

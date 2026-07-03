@@ -121,12 +121,14 @@ pub(crate) async fn run() -> Result<()> {
         prompt_cache_conversation_cache.clone(),
     );
     let pool_account_selection_runtime = Arc::new(PoolAccountSelectionRuntime::default());
+    let proxy_runtime_invocations = Arc::new(ProxyRuntimeInvocationStore::default());
 
     let state = Arc::new(AppState {
         config: config.clone(),
         pool,
         sqlite_batch_writer,
         pool_account_selection_runtime,
+        proxy_runtime_invocations,
         oauth_installation_seed,
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         http_clients,
@@ -821,6 +823,14 @@ async fn drain_runtime_after_shutdown(
         );
     }
 
+    let runtime_shutdown_summary = state.proxy_runtime_invocations.shutdown_summary();
+    if runtime_shutdown_summary.running_count > 0 {
+        warn!(
+            running_snapshot_shutdown_skipped_count = runtime_shutdown_summary.running_count,
+            oldest_age_ms = runtime_shutdown_summary.oldest_age_ms,
+            "skipping P2 memory running snapshots during graceful shutdown"
+        );
+    }
     state.sqlite_batch_writer.shutdown_and_drain().await;
 
     let broadcast_handles = {
