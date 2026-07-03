@@ -48,6 +48,7 @@
 - 第六轮止血继续收窄账号相关写锁：路由账号选择的 `last_selected_at` 不再在前台同步更新账号表，而是先记录到进程内公平性锚点并叠加到候选排序，再通过 batch writer 按账号 coalesce 落库。账号 status、cooldown 与 failure 仍保持同步写，因为它们是路由正确性的主事实。
 - Storybook 现有详情抽屉 overlay stories 继续作为 page-fallback 证据面，覆盖 owner-facing 概览页活动总览、records 表格本体与 records 无限滚动场景。
 - 第七轮止血把账号详情 records/current summary/account-activity 的 running 视图统一改为 DB 结果 + 进程内 runtime store overlay。`running/pending` 过程态不再依赖 `codex_invocations` 的常规刷新写；terminal 主事实落库后仍会覆盖并移除对应内存行，账号详情公开字段不变。
+- summary live augmentation 在叠加进程内 runtime store 前会先查询同 key 的 terminal DB rows；即使某条内存 `running` 快照未被 terminal cleanup 清掉，也不会继续贡献 in-progress 总数、retry 总数或 wait 平均值。
 
 ## Verification
 

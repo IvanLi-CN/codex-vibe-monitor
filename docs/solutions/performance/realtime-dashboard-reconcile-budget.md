@@ -62,6 +62,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - Large retained-history drawers need a separate history budget: load the first visible page only, fetch additional pages from the drawer scroll threshold, and let SSE refresh merge the already loaded range rather than replaying from page 1 to `total`.
 - Virtualize dense invocation surfaces at the shared table component, and render only the active responsive layout. Hidden desktop/mobile duplicates still contribute DOM and event-handler pressure.
 - Do not let HTTP open-resync depend on DB persistence of transient runtime rows. If DB writes are intentionally skipped for `running` snapshots, open-resync must overlay the same runtime store used by SSE; otherwise the UI will flicker or lose visible in-flight rows until terminal.
+- Apply terminal-DB exclusion to every runtime overlay path, including stats summary live augmentation. A runtime memory row may outlive terminal persistence after a missed cleanup, so overlay code must query terminal DB keys and skip matching memory rows before counting in-progress totals, retry totals, or wait averages.
 
 ## References
 
