@@ -2536,6 +2536,8 @@ async fn load_in_progress_summary_snapshot(
         .fetch_all(&state.pool)
         .await?;
     let runtime_snapshot = state.proxy_runtime_invocations.snapshot();
+    let db_terminal_keys =
+        query_terminal_db_keys_for_runtime_records(&state.pool, &runtime_snapshot, None).await?;
     let runtime_by_key = runtime_snapshot
         .iter()
         .map(|record| {
@@ -2576,6 +2578,9 @@ async fn load_in_progress_summary_snapshot(
         .collect::<HashMap<_, _>>();
     let runtime_records = runtime_snapshot
         .into_iter()
+        .filter(|record| {
+            !db_terminal_keys.contains(&(record.invoke_id.clone(), record.occurred_at.clone()))
+        })
         .filter(|record| runtime_record_matches_filters(record, &filter, source_scope))
         .collect::<Vec<_>>();
     let runtime_in_progress_count = runtime_records
