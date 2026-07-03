@@ -3,6 +3,7 @@ import type {
   PromptCacheConversationInvocationPreview,
   UpstreamStickyConversationsResponse,
 } from '../lib/api'
+import { currentStoryId } from './UpstreamAccountsPage.story-runtime-core'
 
 function buildStickyRequestPoints(
   points: Array<{
@@ -389,7 +390,7 @@ export function buildStickyConversations(
 }
 
 export function buildStickyInvocationRecords(accountId: number) {
-  return buildStickyConversationSeeds(accountId)
+  const baseRecords = buildStickyConversationSeeds(accountId)
     .flatMap((conversation) =>
       [...conversation.last24hRequests]
         .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt))
@@ -401,4 +402,21 @@ export function buildStickyInvocationRecords(accountId: number) {
         ),
     )
     .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt))
+  const storyId = currentStoryId()
+  if (!storyId?.includes('detail-drawer-records-infinite')) {
+    return baseRecords
+  }
+  return Array.from({ length: 3 }).flatMap((_, pageIndex) =>
+    baseRecords.map((record, recordIndex) => {
+      const occurredAt = new Date(record.occurredAt)
+      occurredAt.setMinutes(occurredAt.getMinutes() - pageIndex * baseRecords.length - recordIndex)
+      return {
+        ...record,
+        id: record.id + pageIndex * 1000,
+        invokeId: `${record.invokeId}-page-${pageIndex + 1}`,
+        occurredAt: occurredAt.toISOString(),
+        createdAt: occurredAt.toISOString(),
+      }
+    }),
+  )
 }
