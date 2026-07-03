@@ -17,3 +17,4 @@
 - 2026-07-01: 第四轮 SQLite 止血明确不降低代理并发，也不把 terminal `codex_invocations` 主事实改成 write-behind；仅把 attempt 中间进度、invocation rollup/live progress、upstream account touch 与 system task finish 这类可接受 `<=5s` 新鲜度的派生写放入有界 batch writer。
 - 2026-07-02: 第五轮 SQLite 止血继续保持代理并发与 terminal 主事实同步落盘，terminal invocation 写入改为 existing-row 窄更新优先、缺行 guarded insert，summary/attempt snapshot broadcast 在 `database is locked` 下 fail-soft skip 并由 SSE / HTTP reconcile 补齐。
 - 2026-07-02: 第六轮 SQLite 止血把高频 `running` runtime snapshot 从同步主表写改成内存/SSE 立即广播 + batch writer 有界占位落库；账号选择 `last_selected_at` 从路由前台同步写锁中移出，改由进程内公平性锚点叠加排序并批量 coalesce 落库。terminal 主事实、usage、失败分类、raw metadata 与账号 status/cooldown/failure 继续同步可靠写入。
+- 2026-07-03: 第七轮 SQLite 止血把 `running` runtime snapshot 进一步收口为进程内共享 runtime store + SSE/HTTP overlay；DB 只保留首次极窄恢复占位，后续 refresh 不再常规 enqueue SQLite running placeholder。优雅停机只 drain P0/P1 主事实，P2 running 过程态记录 skip 证据；terminal 主事实继续同步落库并清除内存 running 行。

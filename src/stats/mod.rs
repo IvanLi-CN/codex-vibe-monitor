@@ -179,6 +179,21 @@ pub(crate) fn add_approx_histogram_sample(counts: &mut ApproxHistogramCounts, va
     }
 }
 
+fn subtract_approx_histogram_sample(counts: &mut ApproxHistogramCounts, value_ms: f64) {
+    if !value_ms.is_finite() || value_ms < 0.0 {
+        return;
+    }
+    let index = APPROX_HISTOGRAM_BUCKETS_MS
+        .iter()
+        .position(|upper| value_ms <= *upper)
+        .unwrap_or(APPROX_HISTOGRAM_BUCKETS_MS.len());
+    if let Some(slot) = counts.get_mut(index)
+        && *slot > 0
+    {
+        *slot -= 1;
+    }
+}
+
 pub(crate) fn normalize_non_negative_timing_value(value: Option<f64>) -> Option<f64> {
     let value = value?;
     if !value.is_finite() || value < 0.0 {
@@ -373,6 +388,36 @@ impl BucketAggregate {
             return;
         };
         self.record_first_response_byte_total_value(value);
+    }
+
+    pub(crate) fn remove_exact_first_response_byte_total_sample(
+        &mut self,
+        t_req_read_ms: Option<f64>,
+        t_req_parse_ms: Option<f64>,
+        t_upstream_connect_ms: Option<f64>,
+        t_upstream_ttfb_ms: Option<f64>,
+    ) {
+        let Some(value) = resolve_first_response_byte_total_ms(
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+        ) else {
+            return;
+        };
+        self.first_response_byte_total_sample_count = self
+            .first_response_byte_total_sample_count
+            .saturating_sub(1);
+        self.first_response_byte_total_sum_ms =
+            (self.first_response_byte_total_sum_ms - value).max(0.0);
+        if let Some(index) = self
+            .first_response_byte_total_values
+            .iter()
+            .position(|sample| (*sample - value).abs() <= f64::EPSILON)
+        {
+            self.first_response_byte_total_values.swap_remove(index);
+        }
+        subtract_approx_histogram_sample(&mut self.first_response_byte_total_histogram, value);
     }
 
     pub(crate) fn first_byte_avg_ms(&self) -> Option<f64> {

@@ -12,6 +12,7 @@
 - Records 与 Dashboard 列表共用图片信号 resolver：仅 `yes` / `direct_image` 渲染独立“图片工具”徽标；详情区保留四态文本区分，历史缺字段降级为 `—`。
 - invocation payload 现已对外打通 `requestModel` / `responseModel`；Records、InvocationTable、Dashboard working conversations 与详情抽屉统一采用“响应模型优先”显示，并在规范化后的请求/响应模型真正不一致时显示上游路由差异图标。
 - 共享 invocation preview 现已继续透出真实 `promptCacheKey`；Dashboard 上游账号活动 recent 行据此恢复稳定的对话短 ID 生成与详情抽屉 selection 关联，不再误用 `invokeId` 充当对话键。
+- 新 HTTP proxy invocation 的 `invokeId` 由 `nanoid` 使用固定 10 位大写可读 alphabet 生成，格式为 `^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$`；历史 `proxy-...` ID 不迁移，旧 reservation recovery 解析只对历史格式生效。
 - 调用详情现在固定展示“请求模型 / 响应模型”两个 badge；旧记录仅有历史 `model` 时，响应模型回填旧值，请求模型显示 `—`。
 - `InvocationExpandedDetails` 现已按快速排障路径重组为请求身份、路由与模型、失败信号、细节保留、阶段耗时分组；Live 展开区与 Dashboard 调用详情抽屉继续复用同一共享组件，长 ID、endpoint、IPv6 与错误文本在桌面和窄屏内换行或截断。
 - 本次修复是 future-only：不改 SQLite schema，不对历史 invocation 回填 `imageIntent` 或 `compactionRequestKind`。
@@ -33,6 +34,12 @@
 - `cargo test`
 - `cargo check`
 - `cargo check --tests`
+- `cargo test payload_utils_tests`
+- `cargo test capture_target_pool_route_persists_attempt_rows_and_summary_fields`
+- `cargo test capture_target_pool_route_no_content_success_finalizes_pending_attempt`
+- `cargo test capture_target_pool_route_stops_after_three_distinct_accounts`
+- `cargo test pool_route_compact_502_returns_cvm_id_and_attempt_observations`
+- `cargo test send_pool_request_with_failover_keeps_early_phase_guard_armed_when_streaming_phase_was_not_persisted`
 - `cargo test prepare_target_request_body_detects_remote_v2_compaction_requests`
 - `cargo test parse_target_response_payload_detects_remote_v2_compaction_stream_events`
 - `cargo test parse_target_response_payload_detects_response_compaction_json_shape`

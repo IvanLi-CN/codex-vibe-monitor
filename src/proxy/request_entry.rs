@@ -82,8 +82,8 @@ pub(crate) async fn proxy_openai_v1_common(
     peer_ip: Option<IpAddr>,
 ) -> Response {
     let proxy_request_id = next_proxy_request_id();
-    let invoke_id = format!("proxy-{proxy_request_id}-{}", Utc::now().timestamp_millis());
     let started_at = Instant::now();
+    let invoke_id = generate_unique_proxy_invoke_id(&state.pool).await;
     let request_content_length = headers
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())

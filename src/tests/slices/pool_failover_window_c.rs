@@ -1796,6 +1796,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
+        proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,

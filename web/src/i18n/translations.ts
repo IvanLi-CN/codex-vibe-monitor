@@ -788,6 +788,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.records.limitOption": "{{count}} records",
     "accountPool.upstreamAccounts.records.empty":
       "No retained call records for this upstream account yet.",
+    "accountPool.upstreamAccounts.records.loadingMore":
+      "Loading more records...",
+    "accountPool.upstreamAccounts.records.loaded":
+      "Loaded {{loaded}} / {{total}} retained records",
+    "accountPool.upstreamAccounts.records.allLoaded":
+      "All {{count}} retained records loaded",
     "accountPool.upstreamAccounts.effectiveRule.title":
       "Effective routing rule",
     "accountPool.upstreamAccounts.effectiveRule.description":
@@ -3204,6 +3210,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.records.limitOption": "{{count}} 条记录",
     "accountPool.upstreamAccounts.records.empty":
       "这个上游账号暂时还没有保留的调用记录。",
+    "accountPool.upstreamAccounts.records.loadingMore":
+      "正在加载更多记录...",
+    "accountPool.upstreamAccounts.records.loaded":
+      "已加载 {{loaded}} / {{total}} 条保留调用记录",
+    "accountPool.upstreamAccounts.records.allLoaded":
+      "已加载全部 {{count}} 条保留调用记录",
     "accountPool.upstreamAccounts.effectiveRule.title": "最终生效规则",
     "accountPool.upstreamAccounts.effectiveRule.description":
       "这里展示的是当前账号最终参与路由判定的规则，账号级覆盖会最后生效。",

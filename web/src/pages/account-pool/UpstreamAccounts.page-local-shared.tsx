@@ -75,6 +75,7 @@ import type {
   UpstreamAccountSummary,
 } from "../../lib/api";
 import { fetchInvocationRecords } from "../../lib/api";
+import { invocationStableKey } from "../../lib/invocation";
 import {
   buildGroupOptions,
   isExistingGroup,
@@ -161,7 +162,7 @@ export type {
   UpstreamAccountsLocationState,
 };
 
-const ACCOUNT_RECORD_LIMIT_OPTIONS = [20, 50, 100] as const;
+const ACCOUNT_RECORD_PAGE_SIZE = 50;
 const DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE = "count:50";
 const STICKY_CONVERSATION_SELECTION_OPTIONS = [
   {
@@ -515,6 +516,40 @@ function DetailField({ label, value }: { label: string; value: ReactNode }) {
     <div className="metric-cell">
       <p className="metric-label">{label}</p>
       <div className="mt-2 text-sm text-base-content/80">{value ?? "—"}</div>
+    </div>
+  );
+}
+
+function CompactDetailField({
+  label,
+  value,
+  helper,
+  title,
+}: {
+  label: string;
+  value: ReactNode;
+  helper?: ReactNode;
+  title?: string;
+}) {
+  return (
+    <div className="min-w-0 py-0.5">
+      <p className="truncate text-[0.66rem] font-semibold uppercase tracking-[0.1em] text-base-content/55">
+        {label}
+      </p>
+      <div
+        className="mt-0.5 min-w-0 truncate text-sm font-medium leading-5 text-base-content/85"
+        title={title}
+      >
+        {value || "—"}
+      </div>
+      {helper ? (
+        <div
+          className="mt-0.5 truncate text-xs leading-4 text-base-content/55"
+          title={typeof helper === "string" ? helper : undefined}
+        >
+          {helper}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -879,10 +914,10 @@ function SharedUpstreamAccountDetailDrawerInner({
     setStickyConversationSelectionValue,
   ] = useState(DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE);
   const [expandedStickyKeys, setExpandedStickyKeys] = useState<string[]>([]);
-  const [accountRecordLimit, setAccountRecordLimit] = useState<number>(
-    ACCOUNT_RECORD_LIMIT_OPTIONS[1],
-  );
   const [accountRecords, setAccountRecords] = useState<ApiInvocation[]>([]);
+  const [accountRecordsPage, setAccountRecordsPage] = useState(0);
+  const [accountRecordsTotal, setAccountRecordsTotal] = useState(0);
+  const [accountRecordsHasMore, setAccountRecordsHasMore] = useState(false);
   const [accountRecordsLoading, setAccountRecordsLoading] = useState(false);
   const [accountRecordsError, setAccountRecordsError] = useState<string | null>(
     null,
@@ -916,7 +951,6 @@ function SharedUpstreamAccountDetailDrawerInner({
     open: boolean;
     accountId: number | null;
     detailTab: AccountDetailTab;
-    accountRecordLimit: number;
   } | null>(null);
   const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null);
   const detailDrawerTitleId = "upstream-account-detail-title";
@@ -926,6 +960,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   const routeAccountIdRef = useRef<number | null>(accountId);
   const drawerOpenRef = useRef(open);
   const accountRecordsRequestSeqRef = useRef(0);
+  const accountRecordsSnapshotIdRef = useRef<number | null>(null);
   const accountRecordsRef = useRef<ApiInvocation[]>([]);
   const draftSessionKeyRef = useRef<string | null>(null);
   const activeDraftSessionKeyRef = useRef<string | null>(null);
@@ -1558,16 +1593,6 @@ function SharedUpstreamAccountDetailDrawerInner({
       })),
     [t],
   );
-  const accountRecordLimitOptions = useMemo(
-    () =>
-      ACCOUNT_RECORD_LIMIT_OPTIONS.map((value) => ({
-        value: String(value),
-        label: t("accountPool.upstreamAccounts.records.limitOption", {
-          count: value,
-        }),
-      })),
-    [t],
-  );
   const {
     stats: stickyConversationStats,
     isLoading: stickyConversationLoading,
@@ -1606,38 +1631,123 @@ function SharedUpstreamAccountDetailDrawerInner({
     });
   }, [stickyConversationStats]);
 
-  const reloadAccountRecords = useCallback((): void => {
-    const requestSeq = accountRecordsRequestSeqRef.current + 1;
-    accountRecordsRequestSeqRef.current = requestSeq;
-    if (!open || accountId == null || detailTab !== "records") {
-      return;
-    }
+  const loadAccountRecordsPage = useCallback(
+    (
+      page: number,
+      mode: "replace" | "append",
+      pageSize = ACCOUNT_RECORD_PAGE_SIZE,
+    ): void => {
+      const requestSeq = accountRecordsRequestSeqRef.current + 1;
+      accountRecordsRequestSeqRef.current = requestSeq;
+      if (!open || accountId == null || detailTab !== "records") {
+        return;
+      }
 
-    setAccountRecordsLoading(true);
-    setAccountRecordsError(null);
-    void fetchInvocationRecords({
-      upstreamAccountId: accountId,
-      page: 1,
-      pageSize: accountRecordLimit,
-      sortBy: "occurredAt",
-      sortOrder: "desc",
-    })
-      .then((response) => {
-        if (requestSeq !== accountRecordsRequestSeqRef.current) return;
-        setAccountRecords(response.records);
+      setAccountRecordsLoading(true);
+      setAccountRecordsError(null);
+      void fetchInvocationRecords({
+        upstreamAccountId: accountId,
+        page,
+        pageSize,
+        snapshotId:
+          mode === "append"
+            ? (accountRecordsSnapshotIdRef.current ?? undefined)
+            : undefined,
+        sortBy: "occurredAt",
+        sortOrder: "desc",
       })
-      .catch((error) => {
-        if (requestSeq !== accountRecordsRequestSeqRef.current) return;
-        setAccountRecordsError(
-          error instanceof Error ? error.message : String(error),
-        );
-      })
-      .finally(() => {
-        if (requestSeq === accountRecordsRequestSeqRef.current) {
-          setAccountRecordsLoading(false);
-        }
-      });
-  }, [accountId, accountRecordLimit, detailTab, open]);
+        .then((response) => {
+          if (requestSeq !== accountRecordsRequestSeqRef.current) return;
+          const responseSnapshotId =
+            typeof response.snapshotId === "number" &&
+            Number.isFinite(response.snapshotId)
+              ? response.snapshotId
+              : null;
+          const responsePage =
+            typeof response.page === "number" && Number.isFinite(response.page)
+              ? response.page
+              : page;
+          const responsePageSize =
+            typeof response.pageSize === "number" &&
+            Number.isFinite(response.pageSize)
+              ? response.pageSize
+              : pageSize;
+          const responseTotal =
+            typeof response.total === "number" &&
+            Number.isFinite(response.total)
+              ? response.total
+              : response.records.length;
+          if (mode === "replace" && responseSnapshotId != null) {
+            accountRecordsSnapshotIdRef.current = responseSnapshotId;
+          }
+          setAccountRecords((current) => {
+            if (mode === "replace") return response.records;
+            const seen = new Set(
+              current.map((record) => invocationStableKey(record)),
+            );
+            const next = [...current];
+            response.records.forEach((record) => {
+              const key = invocationStableKey(record);
+              if (!seen.has(key)) {
+                seen.add(key);
+                next.push(record);
+              }
+            });
+            return next;
+          });
+          const loadedPage =
+            mode === "replace"
+              ? response.records.length > 0
+                ? Math.ceil(response.records.length / ACCOUNT_RECORD_PAGE_SIZE)
+                : 0
+              : responsePage;
+          const loadedCount =
+            mode === "replace"
+              ? response.records.length
+              : responsePage * responsePageSize;
+          setAccountRecordsPage(loadedPage);
+          setAccountRecordsTotal(responseTotal);
+          setAccountRecordsHasMore(loadedCount < responseTotal);
+        })
+        .catch((error) => {
+          if (requestSeq !== accountRecordsRequestSeqRef.current) return;
+          setAccountRecordsError(
+            error instanceof Error ? error.message : String(error),
+          );
+        })
+        .finally(() => {
+          if (requestSeq === accountRecordsRequestSeqRef.current) {
+            setAccountRecordsLoading(false);
+          }
+        });
+    },
+    [accountId, detailTab, open],
+  );
+
+  const reloadAccountRecords = useCallback((): void => {
+    loadAccountRecordsPage(1, "replace");
+  }, [loadAccountRecordsPage]);
+
+  const resyncAccountRecords = useCallback((): void => {
+    const loadedPageWindow =
+      Math.ceil(accountRecordsRef.current.length / ACCOUNT_RECORD_PAGE_SIZE) *
+      ACCOUNT_RECORD_PAGE_SIZE;
+    loadAccountRecordsPage(
+      1,
+      "replace",
+      Math.max(ACCOUNT_RECORD_PAGE_SIZE, loadedPageWindow),
+    );
+  }, [loadAccountRecordsPage]);
+
+  const loadMoreAccountRecords = useCallback((): void => {
+    if (accountRecordsLoading || !accountRecordsHasMore) return;
+    loadAccountRecordsPage(accountRecordsPage + 1, "append");
+  }, [
+    accountRecordsHasMore,
+    accountRecordsLoading,
+    accountRecordsPage,
+    loadAccountRecordsPage,
+  ]);
 
   useEffect(() => {
     const requestSeq = accountRecordsRequestSeqRef.current + 1;
@@ -1648,7 +1758,6 @@ function SharedUpstreamAccountDetailDrawerInner({
       open,
       accountId,
       detailTab,
-      accountRecordLimit,
     };
     previousAccountRecordsContextRef.current = next;
 
@@ -1673,24 +1782,14 @@ function SharedUpstreamAccountDetailDrawerInner({
       previous?.open &&
       previous.accountId === accountId &&
       previous.detailTab !== "records";
-    const changedLimitWithinRecords =
-      open &&
-      accountId != null &&
-      detailTab === "records" &&
-      previous?.open &&
-      previous.accountId === accountId &&
-      previous.detailTab === "records" &&
-      previous.accountRecordLimit !== accountRecordLimit;
-
-    if (
-      leftRecordsSurface ||
-      switchedAccounts ||
-      enteredRecordsTab ||
-      changedLimitWithinRecords
-    ) {
+    if (leftRecordsSurface || switchedAccounts || enteredRecordsTab) {
       setAccountRecords([]);
+      setAccountRecordsPage(0);
+      setAccountRecordsTotal(0);
+      setAccountRecordsHasMore(false);
+      accountRecordsSnapshotIdRef.current = null;
       setAccountRecordsError(null);
-      setAccountRecordsLoading(true);
+      setAccountRecordsLoading(!leftRecordsSurface);
     }
 
     if (!open || accountId == null || detailTab !== "records") {
@@ -1698,7 +1797,34 @@ function SharedUpstreamAccountDetailDrawerInner({
     }
 
     void reloadAccountRecords();
-  }, [accountId, accountRecordLimit, detailTab, open, reloadAccountRecords]);
+  }, [accountId, detailTab, open, reloadAccountRecords]);
+
+  useEffect(() => {
+    if (!open || accountId == null || detailTab !== "records") return;
+    const scrollTarget = detailDrawerBodyElement;
+    if (!scrollTarget) return;
+    const handleScroll = () => {
+      if (scrollTarget.scrollHeight <= scrollTarget.clientHeight) return;
+      const remaining =
+        scrollTarget.scrollHeight -
+        scrollTarget.scrollTop -
+        scrollTarget.clientHeight;
+      if (remaining < 520) {
+        loadMoreAccountRecords();
+      }
+    };
+    handleScroll();
+    scrollTarget.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      scrollTarget.removeEventListener("scroll", handleScroll);
+    };
+  }, [
+    accountId,
+    detailDrawerBodyElement,
+    detailTab,
+    loadMoreAccountRecords,
+    open,
+  ]);
 
   useInvocationRecordsRealtime({
     enabled: Boolean(open && accountId != null && detailTab === "records"),
@@ -1708,13 +1834,16 @@ function SharedUpstreamAccountDetailDrawerInner({
     filters: accountId == null ? undefined : { upstreamAccountId: accountId },
     sortBy: "occurredAt",
     sortOrder: "desc",
-    limit: accountRecordLimit,
+    limit: Math.max(
+      ACCOUNT_RECORD_PAGE_SIZE,
+      accountRecords.length + ACCOUNT_RECORD_PAGE_SIZE,
+    ),
     getRecords: () => accountRecordsRef.current,
     onRecordsChange: (next) => {
       setAccountRecords(next);
       setAccountRecordsError(null);
     },
-    onOpenResync: reloadAccountRecords,
+    onOpenResync: resyncAccountRecords,
   });
 
   const selectedDetail = detail?.id === selectedId ? detail : null;
@@ -2626,17 +2755,20 @@ function SharedUpstreamAccountDetailDrawerInner({
                       </div>
                     </Alert>
                   ) : null}
-                  <div className="metric-grid">
-                    <DetailField
-                      label={t("accountPool.upstreamAccounts.fields.groupName")}
-                      value={selectedDetail.groupName ?? ""}
-                    />
-                    <DetailField
-                      label={t(
-                        "accountPool.upstreamAccounts.fields.imageToolCapability",
-                      )}
-                      value={
-                        <div className="flex flex-col gap-1">
+                  <div className="rounded-xl border border-base-300/70 bg-base-100/55 px-4 py-2">
+                    <div className="grid gap-x-5 gap-y-1 [grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr))]">
+                      <CompactDetailField
+                        label={t(
+                          "accountPool.upstreamAccounts.fields.groupName",
+                        )}
+                        value={selectedDetail.groupName ?? ""}
+                        title={selectedDetail.groupName ?? undefined}
+                      />
+                      <CompactDetailField
+                        label={t(
+                          "accountPool.upstreamAccounts.fields.imageToolCapability",
+                        )}
+                        value={
                           <Badge
                             variant={
                               (selectedDetail.imageToolCapability ??
@@ -2647,62 +2779,73 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   ? "warning"
                                   : "secondary"
                             }
-                            className="w-fit"
+                            className="max-w-full truncate"
                           >
                             {t(
                               `accountPool.upstreamAccounts.imageToolCapability.${selectedDetail.imageToolCapability ?? "unknown"}`,
                             )}
                           </Badge>
-                          <span className="text-xs leading-5 text-base-content/60">
-                            {t(
-                              `accountPool.upstreamAccounts.imageToolCapabilityHint.${selectedDetail.imageToolCapability ?? "unknown"}`,
-                            )}
-                          </span>
-                        </div>
-                      }
-                    />
-                    <DetailField
-                      label={t(
-                        "accountPool.upstreamAccounts.mother.fieldLabel",
-                      )}
-                      value={
-                        selectedDetail.isMother
-                          ? t("accountPool.upstreamAccounts.mother.badge")
-                          : t("accountPool.upstreamAccounts.mother.notMother")
-                      }
-                    />
-                    <DetailField
-                      label={t("accountPool.upstreamAccounts.fields.email")}
-                      value={selectedDetail.email ?? ""}
-                    />
-                    {selectedDetail.kind === "oauth_codex" ? (
-                      <DetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.fields.verifiedEmail",
+                        }
+                        title={t(
+                          `accountPool.upstreamAccounts.imageToolCapabilityHint.${selectedDetail.imageToolCapability ?? "unknown"}`,
                         )}
-                        value={selectedDetail.verifiedEmail ?? ""}
                       />
-                    ) : null}
-                    <DetailField
-                      label={t("accountPool.upstreamAccounts.fields.accountId")}
-                      value={
-                        selectedDetail.chatgptAccountId ??
-                        selectedDetail.maskedApiKey ??
-                        ""
-                      }
-                    />
-                    <DetailField
-                      label={t("accountPool.upstreamAccounts.fields.userId")}
-                      value={selectedDetail.chatgptUserId ?? ""}
-                    />
-                    <DetailField
-                      label={t(
-                        "accountPool.upstreamAccounts.fields.lastSuccessSync",
-                      )}
-                      value={formatDateTime(
-                        selectedDetail.lastSuccessfulSyncAt,
-                      )}
-                    />
+                      <CompactDetailField
+                        label={t(
+                          "accountPool.upstreamAccounts.mother.fieldLabel",
+                        )}
+                        value={
+                          selectedDetail.isMother
+                            ? t("accountPool.upstreamAccounts.mother.badge")
+                            : t("accountPool.upstreamAccounts.mother.notMother")
+                        }
+                      />
+                      <CompactDetailField
+                        label={t("accountPool.upstreamAccounts.fields.email")}
+                        value={selectedDetail.email ?? ""}
+                        title={selectedDetail.email ?? undefined}
+                      />
+                      {selectedDetail.kind === "oauth_codex" ? (
+                        <CompactDetailField
+                          label={t(
+                            "accountPool.upstreamAccounts.fields.verifiedEmail",
+                          )}
+                          value={selectedDetail.verifiedEmail ?? ""}
+                          title={selectedDetail.verifiedEmail ?? undefined}
+                        />
+                      ) : null}
+                      <CompactDetailField
+                        label={t(
+                          "accountPool.upstreamAccounts.fields.accountId",
+                        )}
+                        value={
+                          selectedDetail.chatgptAccountId ??
+                          selectedDetail.maskedApiKey ??
+                          ""
+                        }
+                        title={
+                          selectedDetail.chatgptAccountId ??
+                          selectedDetail.maskedApiKey ??
+                          undefined
+                        }
+                      />
+                      <CompactDetailField
+                        label={t("accountPool.upstreamAccounts.fields.userId")}
+                        value={selectedDetail.chatgptUserId ?? ""}
+                        title={selectedDetail.chatgptUserId ?? undefined}
+                      />
+                      <CompactDetailField
+                        label={t(
+                          "accountPool.upstreamAccounts.fields.lastSuccessSync",
+                        )}
+                        value={formatDateTime(
+                          selectedDetail.lastSuccessfulSyncAt,
+                        )}
+                        title={formatDateTime(
+                          selectedDetail.lastSuccessfulSyncAt,
+                        )}
+                      />
+                    </div>
                   </div>
                   <div className="grid gap-4 lg:grid-cols-2">
                     <UpstreamAccountUsageCard
@@ -2745,16 +2888,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                       accentClassName="text-secondary"
                     />
                   </div>
-                </div>
-              ) : null}
-
-              {detailTab === "records" ? (
-                <div
-                  id={detailTabIds.records.panel}
-                  role="tabpanel"
-                  aria-labelledby={detailTabIds.records.tab}
-                  className="flex flex-col gap-4"
-                >
                   <DashboardActivityOverview
                     key={`account-activity-${accountId}`}
                     title={t(
@@ -2764,53 +2897,57 @@ function SharedUpstreamAccountDetailDrawerInner({
                     testId="upstream-account-records-activity-overview"
                     upstreamAccountId={accountId}
                   />
-                  <Card className="border-base-300/80 bg-base-100/72">
-                    <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                      <div>
-                        <CardTitle>
-                          {t("accountPool.upstreamAccounts.records.title")}
-                        </CardTitle>
-                        <CardDescription>
+                </div>
+              ) : null}
+
+              {detailTab === "records" ? (
+                <div
+                  id={detailTabIds.records.panel}
+                  role="tabpanel"
+                  aria-labelledby={detailTabIds.records.tab}
+                  className="flex flex-col gap-3"
+                >
+                  <InvocationTable
+                    records={accountRecords}
+                    isLoading={
+                      accountRecordsLoading && accountRecords.length === 0
+                    }
+                    error={accountRecordsError}
+                    emptyLabel={t("accountPool.upstreamAccounts.records.empty")}
+                    onOpenUpstreamAccount={handleOpenRelatedUpstreamAccount}
+                    scrollElement={detailDrawerBodyElement}
+                  />
+                  {accountRecords.length > 0 ? (
+                    <div
+                      className="flex justify-center py-2 text-xs text-base-content/62"
+                      data-testid="upstream-account-records-infinite-status"
+                    >
+                      {accountRecordsLoading ? (
+                        <span className="inline-flex items-center gap-2">
+                          <Spinner size="sm" />
                           {t(
-                            "accountPool.upstreamAccounts.records.description",
+                            "accountPool.upstreamAccounts.records.loadingMore",
                           )}
-                        </CardDescription>
-                      </div>
-                      <SelectField
-                        label={t(
-                          "accountPool.upstreamAccounts.records.limitLabel",
-                        )}
-                        className="w-36"
-                        name="upstreamAccountRecordLimit"
-                        size="sm"
-                        value={String(accountRecordLimit)}
-                        options={accountRecordLimitOptions}
-                        onValueChange={(value) => {
-                          const nextLimit = Number(value);
-                          if (
-                            !ACCOUNT_RECORD_LIMIT_OPTIONS.includes(
-                              nextLimit as (typeof ACCOUNT_RECORD_LIMIT_OPTIONS)[number],
-                            )
-                          ) {
-                            return;
-                          }
-                          setAccountRecordLimit(nextLimit);
-                        }}
-                      />
-                    </CardHeader>
-                    <CardContent>
-                      <InvocationTable
-                        records={accountRecords}
-                        isLoading={accountRecordsLoading}
-                        error={accountRecordsError}
-                        emptyLabel={t(
-                          "accountPool.upstreamAccounts.records.empty",
-                        )}
-                        onOpenUpstreamAccount={handleOpenRelatedUpstreamAccount}
-                        scrollElement={detailDrawerBodyElement}
-                      />
-                    </CardContent>
-                  </Card>
+                        </span>
+                      ) : accountRecordsHasMore ? (
+                        <span>
+                          {t("accountPool.upstreamAccounts.records.loaded", {
+                            loaded: accountRecords.length,
+                            total: accountRecordsTotal,
+                          })}
+                        </span>
+                      ) : (
+                        <span>
+                          {t(
+                            "accountPool.upstreamAccounts.records.allLoaded",
+                            {
+                              count: accountRecords.length,
+                            },
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 

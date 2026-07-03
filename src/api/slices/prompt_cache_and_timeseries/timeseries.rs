@@ -1,5 +1,6 @@
 use super::*;
 use super::prompt_cache_and_timeseries_shared as prompt_shared;
+use std::collections::HashMap;
 
 pub(crate) async fn fetch_timeseries(
     State(state): State<Arc<AppState>>,
@@ -65,6 +66,7 @@ pub(crate) async fn fetch_timeseries(
         Some(snapshot_id),
     )
     .await?;
+    let db_runtime_records = collect_in_flight_aggregate_records(&records);
 
     let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
 
@@ -167,6 +169,17 @@ pub(crate) async fn fetch_timeseries(
         aggregates.entry(bucket_cursor).or_default();
         bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
     }
+    overlay_runtime_timeseries_in_flight(
+        state.as_ref(),
+        &mut aggregates,
+        source_scope,
+        None,
+        start_dt,
+        end_dt,
+        bucket_seconds,
+        reporting_tz,
+        &db_runtime_records,
+    )?;
 
     let mut points = Vec::with_capacity(aggregates.len());
     for (bucket_epoch, agg) in aggregates {
@@ -236,6 +249,7 @@ async fn fetch_timeseries_for_account(
     }
 
     let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+    let mut db_runtime_records = HashMap::new();
     let range_plan = if bucket_seconds >= 3_600 {
         build_hourly_rollup_exact_range_plan(
             start_dt,
@@ -308,6 +322,7 @@ async fn fetch_timeseries_for_account(
             upstream_account_id,
         )
         .await?;
+        db_runtime_records.extend(collect_in_flight_aggregate_records(&exact_records));
         add_exact_records_to_timeseries_aggregates(
             &mut aggregates,
             exact_records,
@@ -332,6 +347,7 @@ async fn fetch_timeseries_for_account(
         )
         .await?;
         archive_overlap_ids.extend(tail_records.iter().map(|record| record.id));
+        db_runtime_records.extend(collect_in_flight_aggregate_records(&tail_records));
         add_exact_records_to_timeseries_aggregates(
             &mut aggregates,
             tail_records,
@@ -401,6 +417,17 @@ async fn fetch_timeseries_for_account(
             }
         }
     }
+    overlay_runtime_timeseries_in_flight(
+        state.as_ref(),
+        &mut aggregates,
+        source_scope,
+        Some(upstream_account_id),
+        start_dt,
+        end_dt,
+        bucket_seconds,
+        reporting_tz,
+        &db_runtime_records,
+    )?;
     drop(tx);
     build_timeseries_response(
         start_dt,
@@ -478,58 +505,229 @@ fn add_exact_records_to_timeseries_aggregates(
         let bucket_epoch =
             align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
         if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-            entry.total_count += 1;
-            let classification = resolve_failure_classification(
-                record.status.as_deref(),
-                record.error_message.as_deref(),
-                record.failure_kind.as_deref(),
-                record.failure_class.as_deref(),
-                record.is_actionable,
-            );
-            let is_success_like = prompt_shared::invocation_status_is_success_like(
-                record.status.as_deref(),
-                record.error_message.as_deref(),
-            ) && classification.failure_class == FailureClass::None;
-            if is_success_like {
-                entry.success_count += 1;
-            } else if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
-                entry.in_flight_count += 1;
-            } else if prompt_shared::invocation_status_counts_toward_terminal_totals(record.status.as_deref())
-                && classification.failure_class != FailureClass::None
-            {
-                entry.failure_count += 1;
-            }
-            let latency_status = if is_success_like {
-                Some("success")
-            } else {
-                record.status.as_deref()
-            };
-            if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
-                entry.record_total_latency_sample(record.t_total_ms);
-            }
-            entry.record_exact_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
-            entry.record_exact_first_response_byte_total_sample(
-                record.t_req_read_ms,
-                record.t_req_parse_ms,
-                record.t_upstream_connect_ms,
-                record.t_upstream_ttfb_ms,
-            );
-            entry.total_tokens += record.total_tokens.unwrap_or_default();
-            entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
-            let cost = record.cost.unwrap_or_default();
-            entry.total_cost += cost;
-            if invocation_counts_toward_non_success_usage(
-                record.status.as_deref(),
-                record.error_message.as_deref(),
-                record.failure_kind.as_deref(),
-                record.failure_class.as_deref(),
-                record.is_actionable,
-            ) {
-                entry.non_success_cost += cost;
-            }
+            add_exact_record_to_timeseries_aggregate(entry, &record);
         }
     }
     Ok(())
+}
+
+fn add_exact_record_to_timeseries_aggregate(
+    entry: &mut BucketAggregate,
+    record: &InvocationAggregateRecord,
+) {
+    entry.total_count += 1;
+    let classification = resolve_failure_classification(
+        record.status.as_deref(),
+        record.error_message.as_deref(),
+        record.failure_kind.as_deref(),
+        record.failure_class.as_deref(),
+        record.is_actionable,
+    );
+    let is_success_like = prompt_shared::invocation_status_is_success_like(
+        record.status.as_deref(),
+        record.error_message.as_deref(),
+    ) && classification.failure_class == FailureClass::None;
+    if is_success_like {
+        entry.success_count += 1;
+    } else if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
+        entry.in_flight_count += 1;
+    } else if prompt_shared::invocation_status_counts_toward_terminal_totals(record.status.as_deref())
+        && classification.failure_class != FailureClass::None
+    {
+        entry.failure_count += 1;
+    }
+    let latency_status = if is_success_like {
+        Some("success")
+    } else {
+        record.status.as_deref()
+    };
+    if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
+        entry.record_total_latency_sample(record.t_total_ms);
+    }
+    entry.record_exact_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
+    entry.record_exact_first_response_byte_total_sample(
+        record.t_req_read_ms,
+        record.t_req_parse_ms,
+        record.t_upstream_connect_ms,
+        record.t_upstream_ttfb_ms,
+    );
+    entry.total_tokens += record.total_tokens.unwrap_or_default();
+    entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
+    let cost = record.cost.unwrap_or_default();
+    entry.total_cost += cost;
+    if invocation_counts_toward_non_success_usage(
+        record.status.as_deref(),
+        record.error_message.as_deref(),
+        record.failure_kind.as_deref(),
+        record.failure_class.as_deref(),
+        record.is_actionable,
+    ) {
+        entry.non_success_cost += cost;
+    }
+}
+
+fn subtract_stale_in_flight_record_from_timeseries_aggregate(
+    entry: &mut BucketAggregate,
+    record: &InvocationAggregateRecord,
+) {
+    if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
+        return;
+    }
+    entry.total_count = entry.total_count.saturating_sub(1);
+    entry.in_flight_count = entry.in_flight_count.saturating_sub(1);
+    entry.total_tokens = entry
+        .total_tokens
+        .saturating_sub(record.total_tokens.unwrap_or_default());
+    entry.cache_input_tokens = entry
+        .cache_input_tokens
+        .saturating_sub(record.cache_input_tokens.unwrap_or_default());
+    entry.total_cost = (entry.total_cost - record.cost.unwrap_or_default()).max(0.0);
+    entry.remove_exact_first_response_byte_total_sample(
+        record.t_req_read_ms,
+        record.t_req_parse_ms,
+        record.t_upstream_connect_ms,
+        record.t_upstream_ttfb_ms,
+    );
+}
+
+fn overlay_runtime_timeseries_in_flight(
+    state: &AppState,
+    aggregates: &mut BTreeMap<i64, BucketAggregate>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    start_dt: DateTime<Utc>,
+    end_dt: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    db_runtime_records: &HashMap<(String, String), InvocationAggregateRecord>,
+) -> Result<(), ApiError> {
+    let mut runtime_overlay_row_count = 0_i64;
+    let mut stale_db_runtime_row_count = 0_i64;
+    for record in state.proxy_runtime_invocations.snapshot() {
+        let key = (record.invoke_id.clone(), record.occurred_at.clone());
+        if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
+            if let Some(db_record) = db_runtime_records.get(&key) {
+                subtract_stale_db_runtime_record(
+                    aggregates,
+                    db_record,
+                    bucket_seconds,
+                    reporting_tz,
+                    &mut stale_db_runtime_row_count,
+                )?;
+            }
+            continue;
+        }
+        if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
+            if let Some(db_record) = db_runtime_records.get(&key) {
+                subtract_stale_db_runtime_record(
+                    aggregates,
+                    db_record,
+                    bucket_seconds,
+                    reporting_tz,
+                    &mut stale_db_runtime_row_count,
+                )?;
+            }
+            continue;
+        }
+        if let Some(expected_upstream_account_id) = upstream_account_id
+            && record.upstream_account_id != Some(expected_upstream_account_id)
+        {
+            if let Some(db_record) = db_runtime_records.get(&key) {
+                subtract_stale_db_runtime_record(
+                    aggregates,
+                    db_record,
+                    bucket_seconds,
+                    reporting_tz,
+                    &mut stale_db_runtime_row_count,
+                )?;
+            }
+            continue;
+        }
+        let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
+            continue;
+        };
+        if occurred_utc < start_dt || occurred_utc >= end_dt {
+            if let Some(db_record) = db_runtime_records.get(&key) {
+                subtract_stale_db_runtime_record(
+                    aggregates,
+                    db_record,
+                    bucket_seconds,
+                    reporting_tz,
+                    &mut stale_db_runtime_row_count,
+                )?;
+            }
+            continue;
+        }
+        if let Some(db_record) = db_runtime_records.get(&key) {
+            subtract_stale_db_runtime_record(
+                aggregates,
+                db_record,
+                bucket_seconds,
+                reporting_tz,
+                &mut stale_db_runtime_row_count,
+            )?;
+        }
+        let bucket_epoch =
+            align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
+        let entry = aggregates.entry(bucket_epoch).or_default();
+        entry.total_count += 1;
+        entry.in_flight_count += 1;
+        entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
+        entry.record_first_response_byte_total_sample(
+            record.t_req_read_ms,
+            record.t_req_parse_ms,
+            record.t_upstream_connect_ms,
+            record.t_upstream_ttfb_ms,
+        );
+        entry.total_tokens += record.total_tokens.unwrap_or_default();
+        entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
+        entry.total_cost += record.cost.unwrap_or_default();
+        runtime_overlay_row_count += 1;
+    }
+    if runtime_overlay_row_count > 0 || stale_db_runtime_row_count > 0 {
+        debug!(
+            endpoint = "/api/timeseries",
+            runtime_overlay_row_count,
+            stale_db_runtime_row_count,
+            upstream_account_id,
+            "overlayed memory runtime in-flight records into timeseries"
+        );
+    }
+    Ok(())
+}
+
+fn subtract_stale_db_runtime_record(
+    aggregates: &mut BTreeMap<i64, BucketAggregate>,
+    record: &InvocationAggregateRecord,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    stale_db_runtime_row_count: &mut i64,
+) -> Result<(), ApiError> {
+    let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
+        return Ok(());
+    };
+    let bucket_epoch =
+        align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
+    if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+        subtract_stale_in_flight_record_from_timeseries_aggregate(entry, record);
+        *stale_db_runtime_row_count += 1;
+    }
+    Ok(())
+}
+
+fn collect_in_flight_aggregate_records(
+    records: &[InvocationAggregateRecord],
+) -> HashMap<(String, String), InvocationAggregateRecord> {
+    records
+        .iter()
+        .filter(|record| prompt_shared::invocation_status_is_in_flight(record.status.as_deref()))
+        .map(|record| {
+            (
+                (record.invoke_id.clone(), record.occurred_at.clone()),
+                record.clone(),
+            )
+        })
+        .collect()
 }
 
 fn timeseries_point_from_aggregate(
@@ -1027,6 +1225,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 merged
             };
     }
+    let db_runtime_records = collect_in_flight_aggregate_records(&exact_records);
     for record in exact_records {
         let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
             continue;
@@ -1108,6 +1307,17 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             entry.total_cost += delta.total_cost;
         }
     }
+    overlay_runtime_timeseries_in_flight(
+        state.as_ref(),
+        &mut aggregates,
+        source_scope,
+        None,
+        range_window.start,
+        range_window.end,
+        bucket_seconds,
+        reporting_tz,
+        &db_runtime_records,
+    )?;
 
     let mut points = Vec::with_capacity(aggregates.len());
     for (bucket_epoch, agg) in aggregates {
