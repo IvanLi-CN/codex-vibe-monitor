@@ -11340,6 +11340,127 @@ async fn empty_summary_response_keeps_live_in_progress_conversation_count() {
 }
 
 #[tokio::test]
+async fn summary_ignores_runtime_overlay_records_with_terminal_db_rows() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.5".to_string()),
+        prompt_cache_key: Some("pck-summary-runtime-terminal".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+
+    let stale_runtime_record = build_running_proxy_capture_record(
+        "summary-runtime-terminal",
+        &occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("203.0.113.42"),
+        Some("summary-runtime-terminal"),
+        Some("pck-summary-runtime-terminal"),
+        true,
+        Some(42),
+        Some("Runtime Summary"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+        Some("runtime-summary-proxy"),
+        Some(2),
+        Some(1),
+        None,
+        None,
+        10.0,
+        2.0,
+        33.0,
+        910.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, stale_runtime_record)
+        .await
+        .expect("store stale runtime summary snapshot");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            t_upstream_ttfb_ms,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(481_i64)
+    .bind("summary-runtime-terminal")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(100_i64)
+    .bind(0.1_f64)
+    .bind(910.0_f64)
+    .bind(json!({ "promptCacheKey": "pck-summary-runtime-terminal" }).to_string())
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert terminal DB row for stale runtime snapshot");
+
+    let active_runtime_record = build_running_proxy_capture_record(
+        "summary-runtime-active",
+        &occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("203.0.113.43"),
+        Some("summary-runtime-active"),
+        Some("pck-summary-runtime-active"),
+        true,
+        Some(43),
+        Some("Runtime Summary Active"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+        Some("runtime-summary-proxy"),
+        Some(1),
+        Some(1),
+        None,
+        None,
+        11.0,
+        3.0,
+        34.0,
+        333.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, active_runtime_record)
+        .await
+        .expect("store active runtime summary snapshot");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch today summary with runtime terminal exclusion");
+
+    assert_eq!(summary.in_progress_conversation_count, Some(1));
+    assert_eq!(summary.in_progress_retry_conversation_count, Some(0));
+    assert_f64_close(
+        summary
+            .in_progress_avg_wait_ms
+            .expect("active runtime wait should be reported"),
+        333.0,
+    );
+}
+
+#[tokio::test]
 async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -11354,11 +11475,13 @@ async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
     let previous_complete_hour_utc =
         (current_hour_utc - ChronoDuration::hours(1)).max(today_start_utc);
     let occurred_at = format_naive(now_utc.with_timezone(&Shanghai).naive_local());
-    let earlier_today = format_naive(
-        (previous_complete_hour_utc + ChronoDuration::minutes(30))
-            .with_timezone(&Shanghai)
-            .naive_local(),
-    );
+    let earlier_today_utc = previous_complete_hour_utc + ChronoDuration::minutes(30);
+    let earlier_today_utc = if earlier_today_utc < now_utc {
+        earlier_today_utc
+    } else {
+        (now_utc - ChronoDuration::seconds(1)).max(today_start_utc)
+    };
+    let earlier_today = format_naive(earlier_today_utc.with_timezone(&Shanghai).naive_local());
 
     for (
         id,
