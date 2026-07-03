@@ -1961,6 +1961,9 @@ pub(crate) struct ApiInvocation {
     #[sqlx(default)]
     pub(crate) prompt_cache_key: Option<String>,
     #[sqlx(default)]
+    #[serde(skip_serializing)]
+    pub(crate) sticky_key: Option<String>,
+    #[sqlx(default)]
     pub(crate) route_mode: Option<String>,
     #[sqlx(default)]
     pub(crate) upstream_account_id: Option<i64>,

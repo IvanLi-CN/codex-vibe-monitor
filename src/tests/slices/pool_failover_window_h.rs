@@ -12168,6 +12168,162 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
 }
 
 #[tokio::test]
+async fn upstream_account_activity_overlays_memory_runtime_running_rows() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(88_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Runtime Pool")
+    .bind("Primary")
+    .bind("team")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert runtime upstream account");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(89_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Runtime Pool Retry")
+    .bind("Primary")
+    .bind("team")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert retry runtime upstream account");
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.5".to_string()),
+        prompt_cache_key: Some("pck-runtime-activity".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let record = build_running_proxy_capture_record(
+        "runtime-account-activity-running",
+        &occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("203.0.113.88"),
+        None,
+        Some("pck-runtime-activity"),
+        true,
+        Some(88),
+        Some("Runtime Pool"),
+        Some("api_key_codex"),
+        Some("api-keys.vendor.invalid"),
+        Some("runtime-proxy"),
+        Some(2),
+        Some(1),
+        None,
+        None,
+        11.0,
+        2.0,
+        33.0,
+        44.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, record)
+        .await
+        .expect("store runtime account activity snapshot in memory");
+
+    let persisted_running_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'runtime-account-activity-running'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count persisted memory-only running row");
+    assert_eq!(persisted_running_count, 0);
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+    let retry_record = build_running_proxy_capture_record(
+        "runtime-account-activity-running",
+        &occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("203.0.113.88"),
+        None,
+        Some("pck-runtime-activity"),
+        true,
+        Some(89),
+        Some("Runtime Pool Retry"),
+        Some("api_key_codex"),
+        Some("api-keys.vendor.invalid"),
+        Some("runtime-proxy"),
+        Some(3),
+        Some(2),
+        None,
+        None,
+        12.0,
+        3.0,
+        34.0,
+        45.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, retry_record)
+        .await
+        .expect("retry runtime account activity snapshot should update memory only");
+
+    let Json(activity) = fetch_upstream_account_activity(
+        State(state),
+        Query(UpstreamAccountActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(4),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch upstream account activity with memory overlay");
+
+    assert_eq!(activity.accounts.len(), 1);
+    let account = activity.accounts.first().expect("runtime activity account");
+    assert_eq!(account.upstream_account_id, 89);
+    assert_eq!(account.display_name, "Runtime Pool Retry");
+    assert_eq!(account.request_count, 1);
+    assert_eq!(account.success_count, 0);
+    assert_eq!(account.failure_count, 0);
+    assert_eq!(account.in_progress_invocation_count, Some(1));
+    assert_eq!(account.retry_invocation_count, Some(1));
+    let preview = account
+        .recent_invocations
+        .first()
+        .expect("memory runtime recent invocation");
+    assert_eq!(preview.invoke_id, "runtime-account-activity-running");
+    assert_eq!(preview.id, 0);
+    assert_eq!(preview.status, "running");
+    assert_eq!(
+        preview.prompt_cache_key.as_deref(),
+        Some("pck-runtime-activity")
+    );
+    assert_eq!(preview.upstream_account_id, Some(89));
+}
+
+#[tokio::test]
 async fn account_scoped_historical_stats_include_unmaterialized_archived_hours() {
     let mut config = test_config();
     config.openai_upstream_base_url =

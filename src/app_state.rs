@@ -38,12 +38,221 @@ impl PoolAccountSelectionRuntime {
     }
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct RuntimeInvocationKey {
+    invoke_id: String,
+    occurred_at: String,
+}
+
+impl RuntimeInvocationKey {
+    fn new(invoke_id: impl Into<String>, occurred_at: impl Into<String>) -> Self {
+        Self {
+            invoke_id: invoke_id.into(),
+            occurred_at: occurred_at.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeInvocationEntry {
+    record: ApiInvocation,
+    updated_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeInvocationStoreUpsertOutcome {
+    running_count: usize,
+    pruned_count: usize,
+    skipped_terminal: bool,
+    inserted_new: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeInvocationStoreShutdownSummary {
+    running_count: usize,
+    oldest_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct ProxyRuntimeInvocationStore {
+    inner: std::sync::Mutex<ProxyRuntimeInvocationStoreInner>,
+}
+
+#[derive(Debug, Default)]
+struct ProxyRuntimeInvocationStoreInner {
+    records: HashMap<RuntimeInvocationKey, RuntimeInvocationEntry>,
+    terminal_tombstones: HashMap<RuntimeInvocationKey, Instant>,
+}
+
+const PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE: Duration = Duration::from_secs(6 * 60 * 60);
+const PROXY_RUNTIME_INVOCATION_STORE_MAX_RECORDS: usize = 10_000;
+const PROXY_RUNTIME_INVOCATION_TERMINAL_TOMBSTONE_MAX_RECORDS: usize = 50_000;
+
+impl ProxyRuntimeInvocationStore {
+    fn upsert(&self, record: ApiInvocation) -> RuntimeInvocationStoreUpsertOutcome {
+        let now = Instant::now();
+        let key = RuntimeInvocationKey::new(record.invoke_id.clone(), record.occurred_at.clone());
+        let Ok(mut guard) = self.inner.lock() else {
+            return RuntimeInvocationStoreUpsertOutcome {
+                running_count: 0,
+                pruned_count: 0,
+                skipped_terminal: false,
+                inserted_new: false,
+            };
+        };
+        let pruned_count = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+        if guard.terminal_tombstones.contains_key(&key) {
+            return RuntimeInvocationStoreUpsertOutcome {
+                running_count: guard.records.len(),
+                pruned_count,
+                skipped_terminal: true,
+                inserted_new: false,
+            };
+        }
+        let inserted_new = guard
+            .records
+            .insert(
+                key,
+                RuntimeInvocationEntry {
+                    record,
+                    updated_at: now,
+                },
+            )
+            .is_none();
+        let pruned_count =
+            pruned_count + prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+        RuntimeInvocationStoreUpsertOutcome {
+            running_count: guard.records.len(),
+            pruned_count,
+            skipped_terminal: false,
+            inserted_new,
+        }
+    }
+
+    fn remove(&self, invoke_id: &str, occurred_at: &str) -> bool {
+        let Ok(mut guard) = self.inner.lock() else {
+            return false;
+        };
+        let key = RuntimeInvocationKey::new(invoke_id, occurred_at);
+        let removed = guard.records.remove(&key).is_some();
+        guard.terminal_tombstones.insert(key, Instant::now());
+        let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
+        removed
+    }
+
+    fn snapshot(&self) -> Vec<ApiInvocation> {
+        let Ok(mut guard) = self.inner.lock() else {
+            return Vec::new();
+        };
+        let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
+        guard
+            .records
+            .values()
+            .map(|entry| entry.record.clone())
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn backdate_for_test(&self, invoke_id: &str, occurred_at: &str, age: Duration) {
+        let Some(updated_at) = Instant::now().checked_sub(age) else {
+            return;
+        };
+        if let Ok(mut guard) = self.inner.lock()
+            && let Some(entry) = guard
+                .records
+                .get_mut(&RuntimeInvocationKey::new(invoke_id, occurred_at))
+        {
+            entry.updated_at = updated_at;
+        }
+    }
+
+    fn shutdown_summary(&self) -> RuntimeInvocationStoreShutdownSummary {
+        let Ok(guard) = self.inner.lock() else {
+            return RuntimeInvocationStoreShutdownSummary {
+                running_count: 0,
+                oldest_age_ms: None,
+            };
+        };
+        let now = Instant::now();
+        RuntimeInvocationStoreShutdownSummary {
+            running_count: guard.records.len(),
+            oldest_age_ms: guard
+                .records
+                .values()
+                .map(|entry| now.duration_since(entry.updated_at).as_millis() as u64)
+                .max(),
+        }
+    }
+}
+
+fn prune_bounded_runtime_invocation_store_locked(
+    store: &mut ProxyRuntimeInvocationStoreInner,
+    now: Instant,
+) -> usize {
+    prune_bounded_runtime_invocations_locked(
+        &mut store.records,
+        now,
+        PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE,
+        PROXY_RUNTIME_INVOCATION_STORE_MAX_RECORDS,
+    ) + prune_bounded_runtime_tombstones_locked(
+        &mut store.terminal_tombstones,
+        now,
+        PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE,
+        PROXY_RUNTIME_INVOCATION_TERMINAL_TOMBSTONE_MAX_RECORDS,
+    )
+}
+
+fn prune_bounded_runtime_invocations_locked(
+    records: &mut HashMap<RuntimeInvocationKey, RuntimeInvocationEntry>,
+    now: Instant,
+    max_age: Duration,
+    max_records: usize,
+) -> usize {
+    let before = records.len();
+    records.retain(|_, entry| now.duration_since(entry.updated_at) <= max_age);
+    if records.len() > max_records {
+        let mut ranked_keys = records
+            .iter()
+            .map(|(key, entry)| (key.clone(), entry.updated_at))
+            .collect::<Vec<_>>();
+        ranked_keys.sort_by_key(|(_, updated_at)| *updated_at);
+        let excess = records.len().saturating_sub(max_records);
+        for (key, _) in ranked_keys.into_iter().take(excess) {
+            records.remove(&key);
+        }
+    }
+    before.saturating_sub(records.len())
+}
+
+fn prune_bounded_runtime_tombstones_locked(
+    tombstones: &mut HashMap<RuntimeInvocationKey, Instant>,
+    now: Instant,
+    max_age: Duration,
+    max_records: usize,
+) -> usize {
+    let before = tombstones.len();
+    tombstones.retain(|_, terminal_at| now.duration_since(*terminal_at) <= max_age);
+    if tombstones.len() > max_records {
+        let mut ranked_keys = tombstones
+            .iter()
+            .map(|(key, terminal_at)| (key.clone(), *terminal_at))
+            .collect::<Vec<_>>();
+        ranked_keys.sort_by_key(|(_, terminal_at)| *terminal_at);
+        let excess = tombstones.len().saturating_sub(max_records);
+        for (key, _) in ranked_keys.into_iter().take(excess) {
+            tombstones.remove(&key);
+        }
+    }
+    before.saturating_sub(tombstones.len())
+}
+
 #[derive(Debug)]
 struct AppState {
     config: AppConfig,
     pool: Pool<Sqlite>,
     sqlite_batch_writer: Arc<SqliteBatchWriter>,
     pool_account_selection_runtime: Arc<PoolAccountSelectionRuntime>,
+    proxy_runtime_invocations: Arc<ProxyRuntimeInvocationStore>,
     oauth_installation_seed: [u8; 32],
     hourly_rollup_sync_lock: Arc<Mutex<()>>,
     http_clients: HttpClients,

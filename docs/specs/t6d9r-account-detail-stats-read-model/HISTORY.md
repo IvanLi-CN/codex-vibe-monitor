@@ -23,3 +23,4 @@
 - 2026-07-02: 健康与事件 tab 的 `includeRecentActions` 前端 query 编码改为 `true/false`，避免 Rust/Axum bool 反序列化拒绝 `1` 并返回 400。
 - 2026-07-03: 账号活动总览从 records tab 迁移到 overview tab；records tab 收敛为调用表格本体，并改为固定页大小的滚动追加加载，减少统计图表与日志列表之间的视觉和请求职责混杂。
 - 2026-07-03: overview 顶部账号基础属性从独立卡片网格压缩为单条元数据带，优先把首屏空间留给使用率窗口与账号活动总览。
+- 2026-07-03: running runtime snapshot 从 batch writer 占位落库继续降级为进程内 runtime store。账号详情和 account activity 的 in-flight 展示通过 HTTP overlay 共享同一内存态，terminal DB 事实仍是最高优先级。

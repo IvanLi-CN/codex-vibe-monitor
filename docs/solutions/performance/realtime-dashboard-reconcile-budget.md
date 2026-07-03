@@ -48,6 +48,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - When an endpoint still needs strict “currently in progress” truth, move that truth into a write-side live table or read model and let the 5 second reconcile read that bounded surface instead of rescanning the historical raw table.
 - Treat dashboard working-set surfaces the same way: the 5-minute working-conversations head/count and snapshot pagination/count can both read a write-side bounded working-set table. Keep the response shape and main ordering stable, but accept `<=5s` bounded freshness instead of strict historical snapshot recomputation from the raw invocation table.
 - Align write-side maintenance with the same freshness budget. If Dashboard accepts `<=5s` reconcile, request-tail derived writes that feed those read models can use short-window coalescing/batch flush, while terminal invocation and terminal attempt facts remain synchronous.
+- For high-frequency `running` process state, prefer one shared in-process runtime store plus SSE/HTTP overlay over writing every progress snapshot into SQLite. Records/current summary/current timeseries/account-activity should read DB terminal facts first and overlay only `running/pending` memory rows; terminal DB facts always win.
 - For future regressions, slow-path evidence needs to identify the class of work, not just that something was slow: emit endpoint/window/source-scope plus key counts or cache-hit state so operators can tell apart request-time scans, maintenance-time rebuilds, and cache hydration misses.
 
 ## Guardrails / Reuse Notes
@@ -60,6 +61,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - Closed historical windows can commit immediately because they do not receive live churn.
 - Large retained-history drawers need a separate history budget: load the first visible page only, fetch additional pages from the drawer scroll threshold, and let SSE refresh merge the already loaded range rather than replaying from page 1 to `total`.
 - Virtualize dense invocation surfaces at the shared table component, and render only the active responsive layout. Hidden desktop/mobile duplicates still contribute DOM and event-handler pressure.
+- Do not let HTTP open-resync depend on DB persistence of transient runtime rows. If DB writes are intentionally skipped for `running` snapshots, open-resync must overlay the same runtime store used by SSE; otherwise the UI will flicker or lose visible in-flight rows until terminal.
 
 ## References
 
