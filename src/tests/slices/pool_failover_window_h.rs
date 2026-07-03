@@ -11479,7 +11479,7 @@ async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
     let earlier_today_utc = if earlier_today_utc < now_utc {
         earlier_today_utc
     } else {
-        now_utc - ChronoDuration::seconds(1)
+        (now_utc - ChronoDuration::seconds(1)).max(today_start_utc)
     };
     let earlier_today = format_naive(earlier_today_utc.with_timezone(&Shanghai).naive_local());
 

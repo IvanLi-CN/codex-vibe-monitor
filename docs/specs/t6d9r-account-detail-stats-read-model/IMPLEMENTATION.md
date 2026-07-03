@@ -49,7 +49,7 @@
 - Storybook 现有详情抽屉 overlay stories 继续作为 page-fallback 证据面，覆盖 owner-facing 概览页活动总览、records 表格本体与 records 无限滚动场景。
 - 第七轮止血把账号详情 records/current summary/account-activity 的 running 视图统一改为 DB 结果 + 进程内 runtime store overlay。`running/pending` 过程态不再依赖 `codex_invocations` 的常规刷新写；terminal 主事实落库后仍会覆盖并移除对应内存行，账号详情公开字段不变。
 - summary live augmentation 在叠加进程内 runtime store 前会先查询同 key 的 terminal DB rows；即使某条内存 `running` 快照未被 terminal cleanup 清掉，也不会继续贡献 in-progress 总数、retry 总数或 wait 平均值。
-- 自然日 summary 测试夹具会把 `earlier_today` 限定在当前时刻之前，避免在 Asia/Shanghai 自然日开始后的前半小时造出未来行并误排除非成功用量。
+- 自然日 summary 测试夹具会把 `earlier_today` 限定在当前 Asia/Shanghai 自然日内且不落到未来，避免自然日开始后的前半小时造出未来行并误排除非成功用量。
 
 ## Verification
 
