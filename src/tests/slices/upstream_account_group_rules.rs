@@ -265,8 +265,39 @@ fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCapture
     }
 }
 
+async fn seed_success_invocation_for_records_page(
+    state: &AppState,
+    invoke_id: &str,
+    occurred_at: &str,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_tokens,
+            cost,
+            status,
+            raw_response,
+            detail_level
+        )
+        VALUES (?1, ?2, 'proxy', 1, 2, 0, 3, 0.01, 'success', '', 'full')
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .execute(&state.pool)
+    .await
+    .expect("seed records page invocation");
+}
+
 #[tokio::test]
-async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_running_record() {
+async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overlay_without_sync_db_write()
+{
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -309,7 +340,10 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
 
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, record)
         .await
-        .expect("runtime snapshot should persist and broadcast");
+        .expect("runtime snapshot should store in memory and broadcast");
+    state
+        .proxy_runtime_invocations
+        .backdate_for_test(invoke_id, occurred_at, std::time::Duration::from_secs(2 * 60 * 60));
 
     let payload = rx
         .recv()
@@ -362,7 +396,20 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
     assert_eq!(broadcast_record.t_upstream_connect_ms, Some(330.0));
     assert_eq!(broadcast_record.t_upstream_ttfb_ms, Some(120.0));
 
-    let Json(pre_flush_response) = list_invocations(
+    let persisted_running_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count running db rows before flush");
+    assert_eq!(
+        persisted_running_count, 0,
+        "runtime snapshot should not synchronously create a db placeholder"
+    );
+
+    let Json(response) = list_invocations(
         State(state.clone()),
         Query(ListQuery {
             request_id: Some(invoke_id.to_string()),
@@ -371,29 +418,11 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
         }),
     )
     .await
-    .expect("running invocation should not require synchronous db persistence");
-
-    assert_eq!(pre_flush_response.total, 0);
-
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
-
-    let Json(response) = list_invocations(
-        State(state),
-        Query(ListQuery {
-            request_id: Some(invoke_id.to_string()),
-            page_size: Some(1),
-            ..Default::default()
-        }),
-    )
-    .await
-    .expect("running invocation should be queryable after bounded sqlite flush");
+    .expect("running invocation should be visible through memory overlay");
 
     assert_eq!(response.total, 1);
     assert_eq!(response.records.len(), 1);
-    assert!(response.records[0].id > 0);
+    assert_eq!(response.records[0].id, 0);
     assert_eq!(response.records[0].status.as_deref(), Some("running"));
     assert_eq!(
         response.records[0].compaction_request_kind.as_deref(),
@@ -403,6 +432,632 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
     assert_eq!(response.records[0].pool_attempt_count, Some(3));
     assert_eq!(response.records[0].pool_distinct_account_count, Some(2));
     assert_eq!(response.records[0].pool_attempt_terminal_reason, None);
+
+    let Json(internal_scope_response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            upstream_scope: Some("internal".to_string()),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("pool running invocation should match internal memory overlay scope");
+    assert_eq!(internal_scope_response.total, 1);
+    assert_eq!(internal_scope_response.records.len(), 1);
+
+    let Json(external_scope_response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            upstream_scope: Some("external".to_string()),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("pool running invocation should not match external memory overlay scope");
+    assert_eq!(external_scope_response.total, 0);
+    assert!(external_scope_response.records.is_empty());
+
+    let Json(sticky_response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            sticky_key: Some("pck-running".to_string()),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("runtime sticky-key filter should use sticky fallback semantics");
+    assert_eq!(sticky_response.total, 1);
+    assert_eq!(sticky_response.records.len(), 1);
+
+    let Json(max_tokens_response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            max_total_tokens: Some(0),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("runtime maxTotalTokens filter should match db null semantics");
+    assert_eq!(max_tokens_response.total, 0);
+    assert!(max_tokens_response.records.is_empty());
+
+    let Json(max_ms_response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            max_total_ms: Some(0.0),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("runtime maxTotalMs filter should match db null semantics");
+    assert_eq!(max_ms_response.total, 0);
+    assert!(max_ms_response.records.is_empty());
+
+    for index in 0..60 {
+        seed_success_invocation_for_records_page(
+            state.as_ref(),
+            &format!("page-db-{index:02}"),
+            &format!("2026-03-17 18:12:{:02}", index % 60),
+        )
+        .await;
+    }
+    let Json(second_page) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            page: Some(2),
+            page_size: Some(50),
+            sort_by: Some("occurredAt".to_string()),
+            sort_order: Some("desc".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("runtime overlay should preserve current records pagination");
+    assert_eq!(second_page.total, 61);
+    assert_eq!(second_page.records.len(), 11);
+    assert!(
+        second_page
+            .records
+            .iter()
+            .any(|record| record.invoke_id == "page-db-10"),
+        "DB row at the page boundary should remain reachable while runtime overlay is present"
+    );
+
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+    let persisted_running_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count running db rows after flush");
+    assert_eq!(
+        persisted_running_count, 1,
+        "bounded flush should write only the first minimal DB recovery placeholder"
+    );
+
+    let repeat_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        Some("pck-running"),
+        true,
+        Some(17),
+        Some("pool-account-17"),
+        Some("api_key_codex"),
+        Some("api-keys.vendor.invalid"),
+        Some("jp-relay-01"),
+        Some(3),
+        Some(2),
+        None,
+        Some("gzip"),
+        24.0,
+        5.0,
+        340.0,
+        130.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, repeat_record)
+        .await
+        .expect("repeated runtime snapshot should only refresh memory");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+    let repeated_running_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count running db rows after repeated runtime snapshot");
+    assert_eq!(
+        repeated_running_count, 1,
+        "repeated runtime snapshots should not enqueue more DB placeholder writes"
+    );
+
+    let switched_account_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        Some("pck-running"),
+        true,
+        Some(23),
+        Some("pool-account-23"),
+        Some("api_key_codex"),
+        Some("api-keys.vendor.invalid"),
+        Some("jp-relay-02"),
+        Some(4),
+        Some(3),
+        None,
+        Some("gzip"),
+        26.0,
+        6.0,
+        350.0,
+        140.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, switched_account_record)
+        .await
+        .expect("account-switched runtime snapshot should only refresh memory");
+
+    let Json(old_account_records) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            upstream_account_id: Some(17),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("records should hide stale DB running placeholder after runtime account switch");
+    assert_eq!(old_account_records.total, 0);
+    assert!(old_account_records.records.is_empty());
+
+    let Json(new_account_records) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            upstream_account_id: Some(23),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("records should show current memory runtime account after switch");
+    assert_eq!(new_account_records.total, 1);
+    assert_eq!(new_account_records.records.len(), 1);
+    assert_eq!(new_account_records.records[0].id, 0);
+    assert_eq!(new_account_records.records[0].upstream_account_id, Some(23));
+
+    let Json(summary) = fetch_invocation_summary(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("current summary should overlay running memory count");
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 0);
+    assert_eq!(summary.failure_count, 0);
+
+    let Json(old_account_stats_summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(17),
+        }),
+    )
+    .await
+    .expect("stats summary should remove stale DB account count after runtime switch");
+    assert_eq!(
+        old_account_stats_summary.in_progress_conversation_count,
+        Some(0)
+    );
+    assert_eq!(
+        old_account_stats_summary.in_progress_retry_conversation_count,
+        Some(0)
+    );
+
+    let Json(new_account_stats_summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(23),
+        }),
+    )
+    .await
+    .expect("stats summary should move running memory count to the current account");
+    assert_eq!(
+        new_account_stats_summary.in_progress_conversation_count,
+        Some(1)
+    );
+    assert_eq!(
+        new_account_stats_summary.in_progress_retry_conversation_count,
+        Some(1)
+    );
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, occurred_at),
+    )
+    .await
+    .expect("http terminal record should persist with only a minimal running db placeholder");
+
+    let Json(after_terminal) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("terminal invocation should be loaded from db after memory removal");
+    assert_eq!(after_terminal.total, 1);
+    assert_eq!(after_terminal.records.len(), 1);
+    assert!(after_terminal.records[0].id > 0);
+    assert_eq!(after_terminal.records[0].status.as_deref(), Some("success"));
+}
+
+#[tokio::test]
+async fn account_timeseries_replaces_stale_db_runtime_placeholder_after_account_switch() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        prompt_cache_key: Some("pck-timeseries-account-switch".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let invoke_id = "invoke-timeseries-account-switch";
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let initial_record = build_running_proxy_capture_record(
+        invoke_id,
+        &occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        Some("pck-timeseries-account-switch"),
+        true,
+        Some(17),
+        Some("pool-account-17"),
+        Some("api_key_codex"),
+        Some("api-keys.vendor.invalid"),
+        Some("jp-relay-01"),
+        Some(1),
+        Some(1),
+        None,
+        Some("gzip"),
+        12.0,
+        2.0,
+        40.0,
+        80.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, initial_record)
+        .await
+        .expect("initial runtime snapshot should enter memory");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+
+    let updated_same_account_record = build_running_proxy_capture_record(
+        invoke_id,
+        &occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        Some("pck-timeseries-account-switch"),
+        true,
+        Some(17),
+        Some("pool-account-17"),
+        Some("api_key_codex"),
+        Some("api-keys.vendor.invalid"),
+        Some("jp-relay-01"),
+        Some(1),
+        Some(1),
+        None,
+        Some("gzip"),
+        14.0,
+        4.0,
+        60.0,
+        100.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, updated_same_account_record)
+        .await
+        .expect("same-account runtime update should refresh memory only");
+
+    let Json(updated_account_timeseries) = fetch_timeseries(
+        State(state.clone()),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(17),
+        }),
+    )
+    .await
+    .expect("updated account timeseries should load");
+    let updated_point = updated_account_timeseries
+        .points
+        .iter()
+        .find(|point| point.in_flight_count == 1)
+        .expect("updated in-flight point should be present");
+    assert_eq!(
+        updated_point.first_response_byte_total_avg_ms,
+        Some(178.0),
+        "same-key memory runtime update should replace stale DB placeholder timing"
+    );
+
+    let switched_record = build_running_proxy_capture_record(
+        invoke_id,
+        &occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        Some("pck-timeseries-account-switch"),
+        true,
+        Some(23),
+        Some("pool-account-23"),
+        Some("api_key_codex"),
+        Some("api-keys.vendor.invalid"),
+        Some("jp-relay-02"),
+        Some(2),
+        Some(2),
+        None,
+        Some("gzip"),
+        13.0,
+        3.0,
+        50.0,
+        90.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, switched_record)
+        .await
+        .expect("account-switched runtime snapshot should refresh memory only");
+
+    let Json(old_account_timeseries) = fetch_timeseries(
+        State(state.clone()),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(17),
+        }),
+    )
+    .await
+    .expect("old account timeseries should load");
+    let old_in_flight: i64 = old_account_timeseries
+        .points
+        .iter()
+        .map(|point| point.in_flight_count)
+        .sum();
+    assert_eq!(
+        old_in_flight, 0,
+        "memory runtime account should subtract stale DB running placeholder from the old account"
+    );
+
+    let Json(new_account_timeseries) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(23),
+        }),
+    )
+    .await
+    .expect("new account timeseries should load");
+    let new_in_flight: i64 = new_account_timeseries
+        .points
+        .iter()
+        .map(|point| point.in_flight_count)
+        .sum();
+    assert_eq!(
+        new_in_flight, 1,
+        "memory runtime account should be counted on the current account"
+    );
+}
+
+#[tokio::test]
+async fn terminal_db_row_wins_over_stale_memory_runtime_overlay() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        prompt_cache_key: Some("pck-terminal-wins".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let invoke_id = "invoke-terminal-db-wins";
+    let occurred_at = "2026-03-17 18:13:37";
+    let running_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        Some("pck-terminal-wins"),
+        true,
+        Some(17),
+        Some("pool-account-17"),
+        Some("api_key_codex"),
+        Some("api-keys.vendor.invalid"),
+        Some("jp-relay-01"),
+        Some(1),
+        Some(1),
+        None,
+        None,
+        12.0,
+        3.0,
+        99.0,
+        120.0,
+    );
+
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
+        .await
+        .expect("runtime snapshot should enter memory");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+
+    sqlx::query(
+        "UPDATE codex_invocations \
+         SET status = 'success', total_tokens = 42, cost = 0.01 \
+         WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .execute(&state.pool)
+    .await
+    .expect("simulate terminal DB write before memory cleanup");
+
+    let Json(records_response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            page_size: Some(10),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("terminal DB row should suppress stale memory running row");
+    assert_eq!(records_response.total, 1);
+    assert_eq!(records_response.records.len(), 1);
+    assert!(records_response.records[0].id > 0);
+    assert_eq!(records_response.records[0].status.as_deref(), Some("success"));
+
+    let Json(summary_response) = fetch_invocation_summary(
+        State(state),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("summary should not double-count stale memory running row over terminal DB fact");
+    assert_eq!(summary_response.total_count, 1);
+    assert_eq!(summary_response.success_count, 1);
+}
+
+#[tokio::test]
+async fn delayed_runtime_snapshot_after_terminal_does_not_reintroduce_running_overlay() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        prompt_cache_key: Some("pck-delayed-running".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let invoke_id = "invoke-delayed-runtime-after-terminal";
+    let occurred_at = "2026-03-17 18:13:36";
+    let running_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        Some("pck-delayed-running"),
+        true,
+        Some(17),
+        Some("pool-account-17"),
+        Some("api_key_codex"),
+        Some("api-keys.vendor.invalid"),
+        Some("jp-relay-01"),
+        Some(1),
+        Some(1),
+        None,
+        None,
+        12.0,
+        3.0,
+        99.0,
+        120.0,
+    );
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, occurred_at),
+    )
+    .await
+    .expect("terminal record should persist before delayed runtime snapshot");
+
+    let mut rx = state.broadcaster.subscribe();
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
+        .await
+        .expect("delayed runtime snapshot should be skipped after terminal persistence");
+
+    let delayed_broadcast = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
+        .await;
+    assert!(
+        delayed_broadcast.is_err(),
+        "stale delayed running snapshot should not be rebroadcast after terminal persistence"
+    );
+
+    let Json(after_delayed_runtime) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            page_size: Some(10),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("terminal invocation should remain visible without stale memory overlay");
+    assert_eq!(after_delayed_runtime.total, 1);
+    assert_eq!(after_delayed_runtime.records.len(), 1);
+    assert!(after_delayed_runtime.records[0].id > 0);
+    assert_eq!(
+        after_delayed_runtime.records[0].status.as_deref(),
+        Some("success")
+    );
 }
 
 #[tokio::test]

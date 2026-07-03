@@ -847,6 +847,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
     }
 
     let invoke_id = inserted_record.invoke_id.clone();
+    remove_proxy_runtime_snapshot_for_terminal(state, &inserted_record);
     let derived = BatchedInvocationDerivedWrites {
         invocation_id: inserted_record.id,
         occurred_at: inserted_record.occurred_at.clone(),

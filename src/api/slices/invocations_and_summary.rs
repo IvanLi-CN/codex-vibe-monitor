@@ -118,6 +118,11 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
             " AS prompt_cache_key, \
          ",
         )
+        .push(INVOCATION_STICKY_KEY_SQL)
+        .push(
+            " AS sticky_key, \
+         ",
+        )
         .push(INVOCATION_ROUTE_MODE_SQL)
         .push(
             " AS route_mode, \
@@ -256,7 +261,7 @@ enum SnapshotConstraint {
     After(i64),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct InvocationRecordsFilters {
     occurred_from: Option<String>,
     occurred_to: Option<String>,
@@ -764,6 +769,527 @@ fn append_invocation_order_clause(
     }
 }
 
+fn normalized_runtime_text(value: Option<&str>) -> String {
+    value.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_lowercase()
+}
+
+fn runtime_text_equals(value: Option<&str>, expected: &str) -> bool {
+    normalized_runtime_text(value) == expected.trim().to_lowercase()
+}
+
+fn runtime_keyword_matches(record: &ApiInvocation, keyword: &str) -> bool {
+    let keyword = keyword.trim().to_lowercase();
+    if keyword.is_empty() {
+        return true;
+    }
+    [
+        Some(record.invoke_id.as_str()),
+        record.model.as_deref(),
+        record.proxy_display_name.as_deref(),
+        record.endpoint.as_deref(),
+        record.failure_kind.as_deref(),
+        record.error_message.as_deref(),
+        record.downstream_error_message.as_deref(),
+        record.prompt_cache_key.as_deref(),
+        record.requester_ip.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| value.to_lowercase().contains(&keyword))
+}
+
+fn runtime_sticky_key(record: &ApiInvocation) -> Option<&str> {
+    record
+        .sticky_key
+        .as_deref()
+        .or(record.prompt_cache_key.as_deref())
+}
+
+fn runtime_upstream_scope(record: &ApiInvocation) -> &'static str {
+    if runtime_text_equals(record.route_mode.as_deref(), "pool") {
+        "internal"
+    } else {
+        "external"
+    }
+}
+
+fn runtime_record_is_retry(record: &ApiInvocation) -> bool {
+    record.pool_attempt_count.unwrap_or(1) > 1
+}
+
+fn runtime_record_matches_filters(
+    record: &ApiInvocation,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+) -> bool {
+    if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
+        return false;
+    }
+    if !matches!(
+        normalized_runtime_text(record.status.as_deref()).as_str(),
+        "running" | "pending"
+    ) {
+        return false;
+    }
+    if let Some(from_bound) = filters.occurred_from.as_deref()
+        && record.occurred_at.as_str() < from_bound
+    {
+        return false;
+    }
+    if let Some(to_bound) = filters.occurred_to.as_deref()
+        && record.occurred_at.as_str() >= to_bound
+    {
+        return false;
+    }
+    if let Some(model) = filters.model.as_deref()
+        && !runtime_text_equals(record.model.as_deref(), model)
+    {
+        return false;
+    }
+    if let Some(status) = filters.status.as_deref() {
+        let normalized_status = status.trim();
+        if normalized_status.eq_ignore_ascii_case("failed")
+            || normalized_status.eq_ignore_ascii_case("success")
+        {
+            return false;
+        }
+        if !runtime_text_equals(record.status.as_deref(), normalized_status) {
+            return false;
+        }
+    }
+    if let Some(endpoint) = filters.endpoint.as_deref()
+        && !runtime_text_equals(record.endpoint.as_deref(), endpoint)
+    {
+        return false;
+    }
+    if let Some(request_id) = filters.request_id.as_deref()
+        && !runtime_text_equals(Some(record.invoke_id.as_str()), request_id)
+    {
+        return false;
+    }
+    if let Some(failure_class) = filters.failure_class.as_deref()
+        && !runtime_text_equals(record.failure_class.as_deref(), failure_class)
+    {
+        return false;
+    }
+    if let Some(failure_kind) = filters.failure_kind.as_deref()
+        && !runtime_text_equals(record.failure_kind.as_deref(), failure_kind)
+    {
+        return false;
+    }
+    if let Some(prompt_cache_key) = filters.prompt_cache_key.as_deref()
+        && !runtime_text_equals(record.prompt_cache_key.as_deref(), prompt_cache_key)
+    {
+        return false;
+    }
+    if let Some(sticky_key) = filters.sticky_key.as_deref()
+        && !runtime_text_equals(runtime_sticky_key(record), sticky_key)
+    {
+        return false;
+    }
+    if let Some(upstream_scope) = filters.upstream_scope.as_deref()
+        && !runtime_text_equals(Some(runtime_upstream_scope(record)), upstream_scope)
+    {
+        return false;
+    }
+    if let Some(upstream_account_id) = filters.upstream_account_id
+        && record.upstream_account_id != Some(upstream_account_id)
+    {
+        return false;
+    }
+    if let Some(requester_ip) = filters.requester_ip.as_deref()
+        && !runtime_text_equals(record.requester_ip.as_deref(), requester_ip)
+    {
+        return false;
+    }
+    if let Some(keyword) = filters.keyword.as_deref()
+        && !runtime_keyword_matches(record, keyword)
+    {
+        return false;
+    }
+    if let Some(min_total_tokens) = filters.min_total_tokens {
+        let Some(total_tokens) = record.total_tokens else {
+            return false;
+        };
+        if total_tokens < min_total_tokens {
+            return false;
+        }
+    }
+    if let Some(max_total_tokens) = filters.max_total_tokens {
+        let Some(total_tokens) = record.total_tokens else {
+            return false;
+        };
+        if total_tokens > max_total_tokens {
+            return false;
+        }
+    }
+    if let Some(min_total_ms) = filters.min_total_ms {
+        let Some(total_ms) = record.t_total_ms else {
+            return false;
+        };
+        if total_ms < min_total_ms {
+            return false;
+        }
+    }
+    if let Some(max_total_ms) = filters.max_total_ms {
+        let Some(total_ms) = record.t_total_ms else {
+            return false;
+        };
+        if total_ms > max_total_ms {
+            return false;
+        }
+    }
+    true
+}
+
+fn option_presence_order(left_some: bool, right_some: bool) -> Option<std::cmp::Ordering> {
+    match (left_some, right_some) {
+        (true, false) => Some(std::cmp::Ordering::Less),
+        (false, true) => Some(std::cmp::Ordering::Greater),
+        (false, false) => Some(std::cmp::Ordering::Equal),
+        (true, true) => None,
+    }
+}
+
+fn apply_runtime_sort_order(
+    ordering: std::cmp::Ordering,
+    sort_order: InvocationSortOrder,
+) -> std::cmp::Ordering {
+    match sort_order {
+        InvocationSortOrder::Asc => ordering,
+        InvocationSortOrder::Desc => ordering.reverse(),
+    }
+}
+
+fn compare_runtime_option_i64(
+    left: Option<i64>,
+    right: Option<i64>,
+    sort_order: InvocationSortOrder,
+) -> std::cmp::Ordering {
+    option_presence_order(left.is_some(), right.is_some()).unwrap_or_else(|| {
+        apply_runtime_sort_order(left.unwrap_or_default().cmp(&right.unwrap_or_default()), sort_order)
+    })
+}
+
+fn compare_runtime_option_f64(
+    left: Option<f64>,
+    right: Option<f64>,
+    sort_order: InvocationSortOrder,
+) -> std::cmp::Ordering {
+    option_presence_order(left.is_some(), right.is_some()).unwrap_or_else(|| {
+        apply_runtime_sort_order(
+            left.unwrap_or_default()
+                .partial_cmp(&right.unwrap_or_default())
+                .unwrap_or(std::cmp::Ordering::Equal),
+            sort_order,
+        )
+    })
+}
+
+fn compare_runtime_option_str(
+    left: Option<&str>,
+    right: Option<&str>,
+    sort_order: InvocationSortOrder,
+) -> std::cmp::Ordering {
+    option_presence_order(left.is_some(), right.is_some()).unwrap_or_else(|| {
+        apply_runtime_sort_order(
+            left.unwrap_or_default().cmp(right.unwrap_or_default()),
+            sort_order,
+        )
+    })
+}
+
+fn invocation_display_status_value(record: &ApiInvocation) -> Option<&str> {
+    let status = record.status.as_deref().map(str::trim).unwrap_or_default();
+    let failure_class = record
+        .failure_class
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    if status.eq_ignore_ascii_case("interrupted") {
+        Some("interrupted")
+    } else if matches!(
+        failure_class,
+        "service_failure" | "client_failure" | "client_abort"
+    ) {
+        Some("failed")
+    } else if status.is_empty() {
+        Some("unknown")
+    } else {
+        record.status.as_deref()
+    }
+}
+
+fn compare_runtime_invocation_records(
+    left: &ApiInvocation,
+    right: &ApiInvocation,
+    sort_by: InvocationSortBy,
+    sort_order: InvocationSortOrder,
+) -> std::cmp::Ordering {
+    let primary = match sort_by {
+        InvocationSortBy::OccurredAt => compare_runtime_option_str(
+            Some(left.occurred_at.as_str()),
+            Some(right.occurred_at.as_str()),
+            sort_order,
+        )
+        .then_with(|| apply_runtime_sort_order(left.id.cmp(&right.id), sort_order)),
+        InvocationSortBy::TotalTokens => {
+            compare_runtime_option_i64(left.total_tokens, right.total_tokens, sort_order)
+        }
+        InvocationSortBy::Cost => compare_runtime_option_f64(left.cost, right.cost, sort_order),
+        InvocationSortBy::TotalMs => {
+            compare_runtime_option_f64(left.t_total_ms, right.t_total_ms, sort_order)
+        }
+        InvocationSortBy::TtfbMs => compare_runtime_option_f64(
+            left.t_upstream_ttfb_ms,
+            right.t_upstream_ttfb_ms,
+            sort_order,
+        ),
+        InvocationSortBy::Status => compare_runtime_option_str(
+            invocation_display_status_value(left),
+            invocation_display_status_value(right),
+            sort_order,
+        ),
+    };
+    primary
+        .then_with(|| right.occurred_at.cmp(&left.occurred_at))
+        .then_with(|| right.id.cmp(&left.id))
+}
+
+fn should_overlay_runtime_records(request: &InvocationListRequest) -> bool {
+    request.snapshot_id.is_none()
+}
+
+fn runtime_overlay_snapshot(state: &AppState) -> Vec<ApiInvocation> {
+    state.proxy_runtime_invocations.snapshot()
+}
+
+async fn query_current_runtime_db_keys(
+    pool: &Pool<Sqlite>,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot: Option<SnapshotConstraint>,
+) -> Result<HashSet<(String, String)>, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct RuntimeKeyRow {
+        invoke_id: String,
+        occurred_at: String,
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT invoke_id, occurred_at FROM codex_invocations WHERE 1 = 1",
+    );
+    apply_invocation_records_filters(&mut query, filters, source_scope, snapshot);
+    query.push(" AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
+
+    Ok(query
+        .build_query_as::<RuntimeKeyRow>()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| (row.invoke_id, row.occurred_at))
+        .collect())
+}
+
+async fn query_terminal_db_keys_for_runtime_records(
+    pool: &Pool<Sqlite>,
+    runtime_records: &[ApiInvocation],
+    snapshot: Option<SnapshotConstraint>,
+) -> Result<HashSet<(String, String)>, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct RuntimeKeyRow {
+        invoke_id: String,
+        occurred_at: String,
+    }
+
+    let keys = runtime_records
+        .iter()
+        .map(|record| (record.invoke_id.clone(), record.occurred_at.clone()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if keys.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let mut terminal_keys = HashSet::new();
+    for chunk in keys.chunks(100) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT invoke_id, occurred_at FROM codex_invocations \
+             WHERE LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending') \
+             AND (",
+        );
+        for (index, (invoke_id, occurred_at)) in chunk.iter().enumerate() {
+            if index > 0 {
+                query.push(" OR ");
+            }
+            query
+                .push("(invoke_id = ")
+                .push_bind(invoke_id)
+                .push(" AND occurred_at = ")
+                .push_bind(occurred_at)
+                .push(")");
+        }
+        query.push(")");
+        if let Some(snapshot_constraint) = snapshot {
+            match snapshot_constraint {
+                SnapshotConstraint::UpTo(snapshot_id) => {
+                    query.push(" AND id <= ").push_bind(snapshot_id);
+                }
+                SnapshotConstraint::After(snapshot_id) => {
+                    query.push(" AND id > ").push_bind(snapshot_id);
+                }
+            }
+        }
+        terminal_keys.extend(
+            query
+                .build_query_as::<RuntimeKeyRow>()
+                .fetch_all(pool)
+                .await?
+                .into_iter()
+                .map(|row| (row.invoke_id, row.occurred_at)),
+        );
+    }
+    Ok(terminal_keys)
+}
+
+fn overlay_runtime_records_for_current_page(
+    request: &InvocationListRequest,
+    source_scope: InvocationSourceScope,
+    runtime_records: Vec<ApiInvocation>,
+    db_runtime_keys: &HashSet<(String, String)>,
+    db_terminal_keys: &HashSet<(String, String)>,
+    db_records_are_prefix: bool,
+    mut records: Vec<ApiInvocation>,
+    total: i64,
+    endpoint: &'static str,
+) -> (Vec<ApiInvocation>, i64) {
+    if runtime_records.is_empty() {
+        return (records, total);
+    }
+    let runtime_by_key = runtime_records
+        .into_iter()
+        .map(|record| ((record.invoke_id.clone(), record.occurred_at.clone()), record))
+        .collect::<HashMap<_, _>>();
+    let mut runtime_overlay_row_count = 0_usize;
+    let mut stale_db_runtime_row_count = 0_usize;
+    records = records
+        .into_iter()
+        .filter_map(|mut record| {
+            let key = (record.invoke_id.clone(), record.occurred_at.clone());
+            let Some(runtime_record) = runtime_by_key.get(&key) else {
+                return Some(record);
+            };
+            match normalized_runtime_text(record.status.as_deref()).as_str() {
+                "running" | "pending" => {
+                    if runtime_record_matches_filters(runtime_record, &request.filters, source_scope)
+                    {
+                        record = runtime_record.clone();
+                        runtime_overlay_row_count += 1;
+                        Some(record)
+                    } else {
+                        stale_db_runtime_row_count += 1;
+                        None
+                    }
+                }
+                _ => Some(record),
+            }
+        })
+        .collect();
+    let stale_db_runtime_total_count = db_runtime_keys
+        .iter()
+        .filter(|key| {
+            runtime_by_key.get(*key).is_some_and(|record| {
+                !runtime_record_matches_filters(record, &request.filters, source_scope)
+            })
+        })
+        .count();
+    let runtime_new_records = runtime_by_key
+        .iter()
+        .filter(|(key, record)| {
+            !db_runtime_keys.contains(*key)
+                && !db_terminal_keys.contains(*key)
+                && runtime_record_matches_filters(record, &request.filters, source_scope)
+        })
+        .map(|(_, record)| record.clone())
+        .collect::<Vec<_>>();
+    let runtime_new_row_count = runtime_new_records.len();
+    let effective_stale_db_runtime_total_count = if db_runtime_keys.is_empty() {
+        stale_db_runtime_row_count
+    } else {
+        stale_db_runtime_total_count
+    };
+    runtime_overlay_row_count += runtime_new_row_count;
+    records.extend(runtime_new_records);
+    records.sort_by(|left, right| {
+        compare_runtime_invocation_records(left, right, request.sort_by, request.sort_order)
+    });
+    if db_records_are_prefix {
+        let offset = (request.page - 1).saturating_mul(request.page_size) as usize;
+        records = records
+            .into_iter()
+            .skip(offset)
+            .take(request.page_size as usize)
+            .collect();
+    } else {
+        records.truncate(request.page_size as usize);
+    }
+    if runtime_overlay_row_count > 0 {
+        debug!(
+            endpoint,
+            runtime_overlay_row_count,
+            stale_db_runtime_row_count,
+            stale_db_runtime_total_count = effective_stale_db_runtime_total_count,
+            "overlayed memory runtime invocation records into current response"
+        );
+    }
+    (
+        records,
+        total.saturating_sub(effective_stale_db_runtime_total_count as i64)
+            + runtime_new_row_count as i64,
+    )
+}
+
+fn runtime_overlay_total_delta(
+    request: &InvocationListRequest,
+    source_scope: InvocationSourceScope,
+    runtime_records: &[ApiInvocation],
+    db_runtime_keys: &HashSet<(String, String)>,
+    db_terminal_keys: &HashSet<(String, String)>,
+) -> (i64, usize, usize) {
+    if runtime_records.is_empty() {
+        return (0, 0, 0);
+    }
+    let runtime_by_key = runtime_records
+        .iter()
+        .map(|record| ((record.invoke_id.clone(), record.occurred_at.clone()), record))
+        .collect::<HashMap<_, _>>();
+    let stale_db_runtime_count = db_runtime_keys
+        .iter()
+        .filter(|key| {
+            runtime_by_key.get(*key).is_some_and(|record| {
+                !runtime_record_matches_filters(record, &request.filters, source_scope)
+            })
+        })
+        .count();
+    let runtime_new_count = runtime_by_key
+        .iter()
+        .filter(|(key, record)| {
+            !db_runtime_keys.contains(*key)
+                && !db_terminal_keys.contains(*key)
+                && runtime_record_matches_filters(record, &request.filters, source_scope)
+        })
+        .count();
+    (
+        runtime_new_count as i64 - stale_db_runtime_count as i64,
+        runtime_new_count,
+        stale_db_runtime_count,
+    )
+}
+
 async fn query_invocation_network_summary(
     pool: &Pool<Sqlite>,
     filters: &InvocationRecordsFilters,
@@ -1160,8 +1686,18 @@ pub(crate) async fn list_invocations(
 ) -> Result<Json<ListResponse>, ApiError> {
     let request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
-
+    let runtime_overlay_records = if should_overlay_runtime_records(&request) {
+        runtime_overlay_snapshot(state.as_ref())
+    } else {
+        Vec::new()
+    };
     if is_legacy_invocation_stream_query(&params) {
+        let db_terminal_keys = if runtime_overlay_records.is_empty() {
+            HashSet::new()
+        } else {
+            query_terminal_db_keys_for_runtime_records(&state.pool, &runtime_overlay_records, None)
+                .await?
+        };
         let mut query = build_invocation_select_query();
         apply_invocation_records_filters(&mut query, &request.filters, source_scope, None);
         append_invocation_order_clause(&mut query, request.sort_by, request.sort_order);
@@ -1171,10 +1707,22 @@ pub(crate) async fn list_invocations(
             .build_query_as::<ApiInvocation>()
             .fetch_all(&state.pool)
             .await?;
+        let total = records.len() as i64;
+        let (records, total) = overlay_runtime_records_for_current_page(
+            &request,
+            source_scope,
+            runtime_overlay_records,
+            &HashSet::new(),
+            &db_terminal_keys,
+            false,
+            records,
+            total,
+            "invocation_records_legacy",
+        );
 
         return Ok(Json(ListResponse {
             snapshot_id: 0,
-            total: records.len() as i64,
+            total,
             page: 1,
             page_size: request.page_size,
             records,
@@ -1184,6 +1732,16 @@ pub(crate) async fn list_invocations(
     let snapshot_id = request
         .snapshot_id
         .unwrap_or(resolve_invocation_snapshot_id(&state.pool, source_scope).await?);
+    let db_terminal_keys = if runtime_overlay_records.is_empty() {
+        HashSet::new()
+    } else {
+        query_terminal_db_keys_for_runtime_records(
+            &state.pool,
+            &runtime_overlay_records,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?
+    };
 
     #[derive(Debug, FromRow)]
     struct CountRow {
@@ -1204,6 +1762,17 @@ pub(crate) async fn list_invocations(
         .fetch_one(&mut *tx)
         .await?
         .total;
+    let db_runtime_keys = if runtime_overlay_records.is_empty() {
+        HashSet::new()
+    } else {
+        query_current_runtime_db_keys(
+            &state.pool,
+            &request.filters,
+            source_scope,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?
+    };
 
     let offset = (request.page - 1).saturating_mul(request.page_size);
     #[derive(Debug, FromRow)]
@@ -1219,11 +1788,21 @@ pub(crate) async fn list_invocations(
         Some(SnapshotConstraint::UpTo(snapshot_id)),
     );
     append_invocation_order_clause(&mut page_id_query, request.sort_by, request.sort_order);
+    let db_page_size = if runtime_overlay_records.is_empty() {
+        request.page_size
+    } else {
+        offset.saturating_add(request.page_size)
+    };
+    let db_offset = if runtime_overlay_records.is_empty() {
+        offset
+    } else {
+        0
+    };
     page_id_query
         .push(" LIMIT ")
-        .push_bind(request.page_size)
+        .push_bind(db_page_size)
         .push(" OFFSET ")
-        .push_bind(offset);
+        .push_bind(db_offset);
     let page_ids = page_id_query
         .build_query_as::<PageIdRow>()
         .fetch_all(&mut *tx)
@@ -1233,12 +1812,23 @@ pub(crate) async fn list_invocations(
         .collect::<Vec<_>>();
 
     if page_ids.is_empty() {
+        let (records, total) = overlay_runtime_records_for_current_page(
+            &request,
+            source_scope,
+            runtime_overlay_records,
+            &db_runtime_keys,
+            &db_terminal_keys,
+            true,
+            Vec::new(),
+            total,
+            "invocation_records",
+        );
         return Ok(Json(ListResponse {
             snapshot_id,
             total,
             page: request.page,
             page_size: request.page_size,
-            records: Vec::new(),
+            records,
         }));
     }
 
@@ -1273,6 +1863,17 @@ pub(crate) async fn list_invocations(
             .copied()
             .unwrap_or(usize::MAX)
     });
+    let (records, total) = overlay_runtime_records_for_current_page(
+        &request,
+        source_scope,
+        runtime_overlay_records,
+        &db_runtime_keys,
+        &db_terminal_keys,
+        true,
+        records,
+        total,
+        "invocation_records",
+    );
 
     Ok(Json(ListResponse {
         snapshot_id,
@@ -1545,22 +2146,59 @@ pub(crate) async fn fetch_invocation_summary(
     )
     .await?;
 
-    let avg_tokens_per_request = if totals.total_count <= 0 {
+    let runtime_overlay_row_count = if request.snapshot_id.is_none() {
+        let db_runtime_keys =
+            query_current_runtime_db_keys(
+                &state.pool,
+                &request.filters,
+                source_scope,
+                Some(SnapshotConstraint::UpTo(snapshot_id)),
+            )
+            .await?;
+        let runtime_records = runtime_overlay_snapshot(state.as_ref());
+        let db_terminal_keys = query_terminal_db_keys_for_runtime_records(
+            &state.pool,
+            &runtime_records,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?;
+        let (delta, runtime_new_count, stale_db_runtime_count) =
+            runtime_overlay_total_delta(
+                &request,
+                source_scope,
+                &runtime_records,
+                &db_runtime_keys,
+                &db_terminal_keys,
+            );
+        if runtime_new_count > 0 || stale_db_runtime_count > 0 {
+            debug!(
+                endpoint = "invocation_summary",
+                runtime_overlay_row_count = runtime_new_count,
+                stale_db_runtime_total_count = stale_db_runtime_count,
+                "adjusted current summary count with memory runtime overlay"
+            );
+        }
+        delta
+    } else {
+        0
+    };
+    let total_count = (totals.total_count + runtime_overlay_row_count).max(0);
+    let avg_tokens_per_request = if total_count <= 0 {
         0.0
     } else {
-        totals.total_tokens as f64 / totals.total_count as f64
+        totals.total_tokens as f64 / total_count as f64
     };
 
     Ok(Json(InvocationSummaryResponse {
         snapshot_id,
         new_records_count,
-        total_count: totals.total_count,
+        total_count,
         success_count: totals.success_count,
         failure_count: totals.failure_count,
         total_tokens: totals.total_tokens,
         total_cost: totals.total_cost,
         token: InvocationTokenSummary {
-            request_count: totals.total_count,
+            request_count: total_count,
             total_tokens: totals.total_tokens,
             avg_tokens_per_request,
             cache_input_tokens: totals.cache_input_tokens,
@@ -1729,7 +2367,7 @@ async fn load_in_progress_conversation_count(
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
 ) -> Result<i64, ApiError> {
-    Ok(load_in_progress_summary_snapshot(&state.pool, source_scope, upstream_account_id)
+    Ok(load_in_progress_summary_snapshot(state, source_scope, upstream_account_id)
         .await?
         .0)
 }
@@ -1776,8 +2414,7 @@ async fn load_summary_live_augmentation(
     policy: SummaryLiveAugmentationPolicy,
 ) -> Result<SummaryLiveAugmentation, ApiError> {
     let in_progress = if policy.include_in_progress {
-        let snapshot =
-            load_in_progress_summary_snapshot(&state.pool, source_scope, upstream_account_id).await?;
+        let snapshot = load_in_progress_summary_snapshot(state, source_scope, upstream_account_id).await?;
         (Some(snapshot.0), Some(snapshot.1), snapshot.2)
     } else {
         (None, None, None)
@@ -1819,10 +2456,18 @@ fn apply_summary_live_augmentation(
 }
 
 async fn load_in_progress_summary_snapshot(
-    pool: &Pool<Sqlite>,
+    state: &AppState,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
 ) -> Result<(i64, i64, Option<f64>), ApiError> {
+    #[derive(Debug, FromRow)]
+    struct RuntimeKeyRow {
+        invoke_id: String,
+        occurred_at: String,
+        retry_count: i64,
+        upstream_ttfb_ms: Option<f64>,
+    }
+
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("inv");
     let retry_sql = if upstream_account_id.is_some() {
@@ -1843,7 +2488,8 @@ async fn load_in_progress_summary_snapshot(
     );
     query.push(retry_sql.as_str()).push(
         "), 0) AS retry_count, \
-         AVG(CASE WHEN live.upstream_ttfb_ms IS NOT NULL AND live.upstream_ttfb_ms >= 0 THEN live.upstream_ttfb_ms END) AS avg_wait_ms \
+         AVG(CASE WHEN live.upstream_ttfb_ms IS NOT NULL AND live.upstream_ttfb_ms >= 0 THEN live.upstream_ttfb_ms END) AS avg_wait_ms, \
+         COUNT(CASE WHEN live.upstream_ttfb_ms IS NOT NULL AND live.upstream_ttfb_ms >= 0 THEN 1 END) AS avg_wait_sample_count \
          FROM invocation_in_progress_live live \
          JOIN codex_invocations inv ON inv.id = live.invocation_id \
          WHERE 1 = 1",
@@ -1860,11 +2506,117 @@ async fn load_in_progress_summary_snapshot(
             .push_bind(upstream_account_id);
     }
 
-    let (in_progress_count, retry_count, avg_wait_ms) = query
-        .build_query_as::<(i64, i64, Option<f64>)>()
-        .fetch_one(pool)
+    let (mut db_in_progress_count, mut retry_count, avg_wait_ms, mut avg_wait_sample_count) = query
+        .build_query_as::<(i64, i64, Option<f64>, i64)>()
+        .fetch_one(&state.pool)
         .await?;
-    Ok((in_progress_count, retry_count, avg_wait_ms))
+    let mut db_key_query = QueryBuilder::<Sqlite>::new(
+        "SELECT inv.invoke_id AS invoke_id, inv.occurred_at AS occurred_at, ",
+    );
+    db_key_query.push(retry_sql.as_str()).push(
+        " AS retry_count, live.upstream_ttfb_ms AS upstream_ttfb_ms \
+         FROM invocation_in_progress_live live \
+         JOIN codex_invocations inv ON inv.id = live.invocation_id \
+         WHERE 1 = 1",
+    );
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        db_key_query
+            .push(" AND live.source = ")
+            .push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        db_key_query
+            .push(" AND ")
+            .push(resolved_upstream_account_id_sql.as_str())
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    let db_runtime_rows = db_key_query
+        .build_query_as::<RuntimeKeyRow>()
+        .fetch_all(&state.pool)
+        .await?;
+    let runtime_snapshot = state.proxy_runtime_invocations.snapshot();
+    let runtime_by_key = runtime_snapshot
+        .iter()
+        .map(|record| {
+            (
+                (record.invoke_id.clone(), record.occurred_at.clone()),
+                record,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let filter = InvocationRecordsFilters {
+        upstream_account_id,
+        ..InvocationRecordsFilters::default()
+    };
+    let mut db_ttfb_sum = avg_wait_ms.unwrap_or_default() * avg_wait_sample_count as f64;
+    for row in &db_runtime_rows {
+        let key = (row.invoke_id.clone(), row.occurred_at.clone());
+        let Some(runtime_record) = runtime_by_key.get(&key) else {
+            continue;
+        };
+        if runtime_record_matches_filters(runtime_record, &filter, source_scope) {
+            continue;
+        }
+        db_in_progress_count = db_in_progress_count.saturating_sub(1);
+        if row.retry_count > 0 {
+            retry_count = retry_count.saturating_sub(1);
+        }
+        if let Some(ttfb_ms) = row
+            .upstream_ttfb_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            db_ttfb_sum -= ttfb_ms;
+            avg_wait_sample_count = avg_wait_sample_count.saturating_sub(1);
+        }
+    }
+    let db_runtime_keys = db_runtime_rows
+        .into_iter()
+        .map(|row| ((row.invoke_id, row.occurred_at), row.retry_count > 0))
+        .collect::<HashMap<_, _>>();
+    let runtime_records = runtime_snapshot
+        .into_iter()
+        .filter(|record| runtime_record_matches_filters(record, &filter, source_scope))
+        .collect::<Vec<_>>();
+    let runtime_in_progress_count = runtime_records
+        .iter()
+        .filter(|record| {
+            !db_runtime_keys.contains_key(&(record.invoke_id.clone(), record.occurred_at.clone()))
+        })
+        .count() as i64;
+    let runtime_retry_count = runtime_records
+        .iter()
+        .filter(|record| {
+            let key = (record.invoke_id.clone(), record.occurred_at.clone());
+            runtime_record_is_retry(record) && !db_runtime_keys.get(&key).copied().unwrap_or(false)
+        })
+        .count() as i64;
+    let (ttfb_sum, ttfb_count) = runtime_records
+        .iter()
+        .filter(|record| {
+            !db_runtime_keys.contains_key(&(record.invoke_id.clone(), record.occurred_at.clone()))
+        })
+        .filter_map(|record| record.t_upstream_ttfb_ms.filter(|value| value.is_finite() && *value >= 0.0))
+        .fold((0.0, 0_i64), |(sum, count), value| (sum + value, count + 1));
+    let combined_avg_wait_ms = match (avg_wait_sample_count, ttfb_count) {
+        (db_sample_count, runtime_count) if db_sample_count > 0 || runtime_count > 0 => {
+            Some((db_ttfb_sum + ttfb_sum) / (db_sample_count + runtime_count) as f64)
+        }
+        _ => None,
+    };
+    if runtime_in_progress_count > 0 {
+        debug!(
+            endpoint = "/api/stats/summary",
+            runtime_overlay_row_count = runtime_in_progress_count,
+            upstream_account_id,
+            "overlayed memory runtime in-progress records into summary live augmentation"
+        );
+    }
+    Ok((
+        db_in_progress_count + runtime_in_progress_count,
+        retry_count + runtime_retry_count,
+        combined_avg_wait_ms,
+    ))
 }
 
 async fn load_live_invocation_ids_in_range(
@@ -2434,6 +3186,116 @@ async fn query_live_upstream_account_activity_preview_rows(
         .await?)
 }
 
+fn runtime_upstream_account_activity_preview_row(
+    record: ApiInvocation,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Option<UpstreamAccountInvocationPreviewRow> {
+    if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
+        return None;
+    }
+    if !matches!(
+        normalized_runtime_text(record.status.as_deref()).as_str(),
+        "running" | "pending"
+    ) {
+        return None;
+    }
+    let Some(upstream_account_id) = record.upstream_account_id else {
+        return None;
+    };
+    let occurred_at = parse_to_utc_datetime(&record.occurred_at)?;
+    if occurred_at < range.start || occurred_at >= range.end {
+        return None;
+    }
+    Some(UpstreamAccountInvocationPreviewRow {
+        upstream_account_id,
+        id: record.id,
+        invoke_id: record.invoke_id,
+        prompt_cache_key: record.prompt_cache_key,
+        occurred_at: record.occurred_at,
+        status: record.status.unwrap_or_else(|| "running".to_string()),
+        failure_class: record.failure_class,
+        route_mode: record.route_mode,
+        model: record.model,
+        request_model: record.request_model,
+        response_model: record.response_model,
+        total_tokens: record.total_tokens.unwrap_or_default(),
+        cost: record.cost,
+        source: Some(record.source),
+        input_tokens: record.input_tokens,
+        output_tokens: record.output_tokens,
+        cache_input_tokens: record.cache_input_tokens,
+        reasoning_tokens: record.reasoning_tokens,
+        reasoning_effort: record.reasoning_effort,
+        error_message: record.error_message,
+        downstream_status_code: record.downstream_status_code,
+        downstream_error_message: record.downstream_error_message,
+        failure_kind: record.failure_kind,
+        is_actionable: record
+            .is_actionable
+            .map(|value| if value { 1 } else { 0 }),
+        proxy_display_name: record.proxy_display_name,
+        upstream_account_name: record.upstream_account_name,
+        upstream_account_plan_type: None,
+        response_content_encoding: record.response_content_encoding,
+        transport: record.transport,
+        requested_service_tier: record.requested_service_tier,
+        service_tier: record.service_tier,
+        billing_service_tier: record.billing_service_tier,
+        t_req_read_ms: record.t_req_read_ms,
+        t_req_parse_ms: record.t_req_parse_ms,
+        t_upstream_connect_ms: record.t_upstream_connect_ms,
+        t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
+        t_upstream_stream_ms: record.t_upstream_stream_ms,
+        t_resp_parse_ms: record.t_resp_parse_ms,
+        t_persist_ms: record.t_persist_ms,
+        t_total_ms: record.t_total_ms,
+        endpoint: record.endpoint,
+        compaction_request_kind: record.compaction_request_kind,
+        compaction_response_kind: record.compaction_response_kind,
+        image_intent: record.image_intent,
+    })
+}
+
+fn overlay_runtime_upstream_account_activity_preview_rows(
+    state: &AppState,
+    rows: &mut Vec<UpstreamAccountInvocationPreviewRow>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) {
+    let mut runtime_overlay_row_count = 0_i64;
+    for record in state.proxy_runtime_invocations.snapshot() {
+        let Some(row) =
+            runtime_upstream_account_activity_preview_row(record, source_scope, range)
+        else {
+            continue;
+        };
+        let key = (row.invoke_id.clone(), row.occurred_at.clone());
+        if let Some(existing) = rows
+            .iter_mut()
+            .find(|existing| (existing.invoke_id.clone(), existing.occurred_at.clone()) == key)
+        {
+            if matches!(
+                normalized_runtime_text(Some(existing.status.as_str())).as_str(),
+                "running" | "pending"
+            ) {
+                *existing = row;
+                runtime_overlay_row_count += 1;
+            }
+        } else {
+            rows.push(row);
+            runtime_overlay_row_count += 1;
+        }
+    }
+    if runtime_overlay_row_count > 0 {
+        debug!(
+            endpoint = "/api/upstream-account-activity",
+            runtime_overlay_row_count,
+            "overlayed memory runtime invocation rows into upstream account activity"
+        );
+    }
+}
+
 async fn query_upstream_account_activity_meta(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
@@ -2461,9 +3323,17 @@ async fn query_upstream_account_activity_meta(
 }
 
 async fn query_upstream_account_in_progress_counts(
-    pool: &Pool<Sqlite>,
+    state: &AppState,
     source_scope: InvocationSourceScope,
 ) -> Result<HashMap<i64, (i64, i64)>, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct RuntimeKeyRow {
+        invoke_id: String,
+        occurred_at: String,
+        upstream_account_id: i64,
+        retry_count: i64,
+    }
+
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("inv");
     let retry_sql = invocation_account_retry_after_failure_with_attempt_fallback_sql(
@@ -2494,9 +3364,9 @@ async fn query_upstream_account_in_progress_counts(
         .push(" GROUP BY ")
         .push(resolved_upstream_account_id_sql.as_str());
 
-    Ok(query
+    let mut counts = query
         .build_query_as::<UpstreamAccountInProgressRow>()
-        .fetch_all(pool)
+        .fetch_all(&state.pool)
         .await?
         .into_iter()
         .map(|row| {
@@ -2505,7 +3375,89 @@ async fn query_upstream_account_in_progress_counts(
                 (row.in_progress_count.max(0), row.retry_count.max(0)),
             )
         })
-        .collect())
+        .collect::<HashMap<_, _>>();
+    let mut db_key_query = QueryBuilder::<Sqlite>::new("SELECT inv.invoke_id AS invoke_id, inv.occurred_at AS occurred_at, ");
+    db_key_query
+        .push(resolved_upstream_account_id_sql.as_str())
+        .push(" AS upstream_account_id, ")
+        .push(retry_sql.as_str())
+        .push(
+            " AS retry_count \
+         FROM invocation_in_progress_live live \
+         JOIN codex_invocations inv ON inv.id = live.invocation_id \
+         WHERE ",
+        );
+    db_key_query
+        .push(resolved_upstream_account_id_sql.as_str())
+        .push(" IS NOT NULL");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        db_key_query
+            .push(" AND live.source = ")
+            .push_bind(SOURCE_PROXY);
+    }
+    let db_runtime_keys = db_key_query
+        .build_query_as::<RuntimeKeyRow>()
+        .fetch_all(&state.pool)
+        .await?
+        .into_iter()
+        .map(|row| {
+            (
+                (row.invoke_id, row.occurred_at),
+                (row.upstream_account_id, row.retry_count > 0),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut runtime_overlay_row_count = 0_i64;
+    for record in state.proxy_runtime_invocations.snapshot() {
+        if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
+            continue;
+        }
+        if !matches!(
+            normalized_runtime_text(record.status.as_deref()).as_str(),
+            "running" | "pending"
+        ) {
+            continue;
+        }
+        let Some(upstream_account_id) = record.upstream_account_id else {
+            continue;
+        };
+        let key = (record.invoke_id.clone(), record.occurred_at.clone());
+        if let Some((db_upstream_account_id, db_is_retry)) = db_runtime_keys.get(&key).copied() {
+            let runtime_is_retry = runtime_record_is_retry(&record);
+            if db_upstream_account_id != upstream_account_id {
+                if let Some(entry) = counts.get_mut(&db_upstream_account_id) {
+                    entry.0 = entry.0.saturating_sub(1);
+                    if db_is_retry {
+                        entry.1 = entry.1.saturating_sub(1);
+                    }
+                }
+                let entry = counts.entry(upstream_account_id).or_insert((0, 0));
+                entry.0 += 1;
+                if runtime_is_retry {
+                    entry.1 += 1;
+                }
+                runtime_overlay_row_count += 1;
+            } else if runtime_is_retry && !db_is_retry {
+                let entry = counts.entry(upstream_account_id).or_insert((0, 0));
+                entry.1 += 1;
+            }
+            continue;
+        }
+        let entry = counts.entry(upstream_account_id).or_insert((0, 0));
+        entry.0 += 1;
+        if runtime_record_is_retry(&record) {
+            entry.1 += 1;
+        }
+        runtime_overlay_row_count += 1;
+    }
+    if runtime_overlay_row_count > 0 {
+        debug!(
+            endpoint = "/api/upstream-account-activity",
+            runtime_overlay_row_count,
+            "overlayed memory runtime account in-progress counts"
+        );
+    }
+    Ok(counts)
 }
 
 pub(crate) async fn fetch_upstream_account_activity(
@@ -2535,8 +3487,14 @@ pub(crate) async fn fetch_upstream_account_activity(
         start: range_window.start,
         end: range_window.end,
     };
-    let live_rows =
+    let mut live_rows =
         query_live_upstream_account_activity_preview_rows(&state.pool, source_scope, range).await?;
+    overlay_runtime_upstream_account_activity_preview_rows(
+        state.as_ref(),
+        &mut live_rows,
+        source_scope,
+        range,
+    );
     let live_ids = live_rows.iter().map(|row| row.id).collect::<HashSet<_>>();
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut combined_rows = live_rows;
@@ -2664,7 +3622,7 @@ pub(crate) async fn fetch_upstream_account_activity(
     let in_progress_counts = if params.range == "yesterday" {
         HashMap::new()
     } else {
-        query_upstream_account_in_progress_counts(&state.pool, source_scope).await?
+        query_upstream_account_in_progress_counts(state.as_ref(), source_scope).await?
     };
 
     let mut accounts = account_activity
@@ -3113,6 +4071,7 @@ pub(crate) struct HourlyRollupExactRangePlan {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub(crate) struct InvocationAggregateRecord {
     pub(crate) id: i64,
+    pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
     pub(crate) status: Option<String>,
     pub(crate) total_tokens: Option<i64>,

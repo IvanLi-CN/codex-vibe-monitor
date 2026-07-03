@@ -291,7 +291,7 @@ where
 {
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
-            id, occurred_at, status, total_tokens, cache_input_tokens, cost, error_message, ",
+            id, invoke_id, occurred_at, status, total_tokens, cache_input_tokens, cost, error_message, ",
     );
     query
         .push(INVOCATION_FAILURE_KIND_SQL)

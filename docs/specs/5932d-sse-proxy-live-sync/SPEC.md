@@ -71,6 +71,11 @@
 - Dashboard working conversations:
   - SSE `records` 对已加载会话的本地可见 patch 必须 1 秒合批提交，避免逐条记录触发卡片重排。
   - 新会话、排序锚点变化或 head 需要重算时，HTTP head/snapshot reconcile 必须节流到不超过每 5 秒一次。
+- Proxy runtime snapshots:
+  - `running` / `pending` 过程态以进程内共享 runtime store 为当前真相源，并通过 SSE `records` 立即广播。
+  - HTTP current-window reconcile 必须在 DB 结果上 overlay 同一份内存 runtime store，避免 DB 不再常规刷新 running 行后出现短暂丢行。
+  - terminal success/failure 仍以同步 DB 主事实为最高优先级；terminal 落库成功后必须移除对应内存 running 记录。
+  - 优雅停机只保证 terminal 主事实与其他 P0/P1 写入 drain；P2 running snapshot 不强制逐条写回 SQLite。
 - `/api/stats/parallel-work`:
   - JSON shape 与字段集合必须保持不变。
   - 服务端可以通过 ETag / `If-None-Match` / `304 Not Modified` 或等价 version 机制减少未变化 payload 传输。

@@ -47,6 +47,7 @@
 - 第四轮止血把账号详情依赖的 upstream account touch、invocation hourly rollup/live progress 与 attempt 中间进度迁入进程内 SQLite batch writer。账号详情仍以同步 terminal invocation 主事实为可靠来源；派生统计和进度展示接受 `<=5s` bounded freshness，队列满时 invocation 派生写会做同步补偿以降低数据漂移风险。
 - 第六轮止血继续收窄账号相关写锁：路由账号选择的 `last_selected_at` 不再在前台同步更新账号表，而是先记录到进程内公平性锚点并叠加到候选排序，再通过 batch writer 按账号 coalesce 落库。账号 status、cooldown 与 failure 仍保持同步写，因为它们是路由正确性的主事实。
 - Storybook 现有详情抽屉 overlay stories 继续作为 page-fallback 证据面，覆盖 owner-facing 概览页活动总览、records 表格本体与 records 无限滚动场景。
+- 第七轮止血把账号详情 records/current summary/account-activity 的 running 视图统一改为 DB 结果 + 进程内 runtime store overlay。`running/pending` 过程态不再依赖 `codex_invocations` 的常规刷新写；terminal 主事实落库后仍会覆盖并移除对应内存行，账号详情公开字段不变。
 
 ## Verification
 

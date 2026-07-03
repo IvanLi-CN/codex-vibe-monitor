@@ -212,6 +212,12 @@ impl PendingBatch {
         }
     }
 
+    fn skip_running_proxy_snapshots_for_shutdown(&mut self) -> usize {
+        let skipped = self.running_proxy_snapshots.len();
+        self.running_proxy_snapshots.clear();
+        skipped
+    }
+
     fn take(&mut self) -> Self {
         std::mem::take(self)
     }
@@ -527,21 +533,34 @@ async fn run_sqlite_batch_writer(
                             &pending_depth,
                             queued_depth_snapshot,
                         );
-                        let result = match flush_pending_batch(
-                            &pool,
-                            pending.take(),
-                            FlushReason::Shutdown,
-                            prompt_cache_conversation_cache.as_ref(),
-                        )
-                        .await
-                        {
-                            Some(retained) => {
-                                Err(format!(
-                                    "sqlite batch writer retained {} logical rows after shutdown flush",
-                                    retained.logical_rows()
-                                ))
+                        let running_snapshot_shutdown_skipped_count =
+                            pending.skip_running_proxy_snapshots_for_shutdown();
+                        if running_snapshot_shutdown_skipped_count > 0 {
+                            warn!(
+                                running_snapshot_shutdown_skipped_count,
+                                oldest_age_ms = pending.age().as_millis() as u64,
+                                "sqlite batch writer skipped P2 running snapshots during shutdown drain"
+                            );
+                        }
+                        let result = if pending.is_empty() {
+                            Ok(())
+                        } else {
+                            match flush_pending_batch(
+                                &pool,
+                                pending.take(),
+                                FlushReason::Shutdown,
+                                prompt_cache_conversation_cache.as_ref(),
+                            )
+                            .await
+                            {
+                                Some(retained) => {
+                                    Err(format!(
+                                        "sqlite batch writer retained {} logical rows after shutdown flush",
+                                        retained.logical_rows()
+                                    ))
+                                }
+                                None => Ok(()),
                             }
-                            None => Ok(()),
                         };
                         let _ = responder.send(result);
                         return;
@@ -553,14 +572,24 @@ async fn run_sqlite_batch_writer(
             }
             maybe_write = write_receiver.recv() => {
                 let Some(write) = maybe_write else {
-                    let _ =
-                        flush_pending_batch(
+                    let running_snapshot_shutdown_skipped_count =
+                        pending.skip_running_proxy_snapshots_for_shutdown();
+                    if running_snapshot_shutdown_skipped_count > 0 {
+                        warn!(
+                            running_snapshot_shutdown_skipped_count,
+                            oldest_age_ms = pending.age().as_millis() as u64,
+                            "sqlite batch writer skipped P2 running snapshots while draining closed channel"
+                        );
+                    }
+                    if !pending.is_empty() {
+                        let _ = flush_pending_batch(
                             &pool,
                             pending.take(),
                             FlushReason::Shutdown,
                             prompt_cache_conversation_cache.as_ref(),
                         )
                         .await;
+                    }
                     return;
                 };
                 pending_depth.fetch_sub(1, Ordering::Relaxed);
@@ -1749,6 +1778,62 @@ mod tests {
 
         assert_eq!(row.0, "running");
         assert_eq!(row.1, Some(42));
+    }
+
+    #[tokio::test]
+    async fn shutdown_drain_skips_running_proxy_snapshots() {
+        let pool = test_pool().await;
+        let request_info = RequestCaptureInfo {
+            model: Some("gpt-5.5".to_string()),
+            is_stream: true,
+            ..RequestCaptureInfo::default()
+        };
+        let record = build_running_proxy_capture_record(
+            "batch-running-shutdown-skip",
+            "2026-07-01 10:00:00",
+            ProxyCaptureTarget::Responses,
+            &request_info,
+            Some("192.0.2.44"),
+            Some("sticky-a"),
+            Some("pck-a"),
+            true,
+            Some(42),
+            Some("Primary"),
+            Some("api_key_codex"),
+            Some("api.openai.com"),
+            None,
+            Some(1),
+            Some(1),
+            None,
+            None,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+        );
+
+        let writer = SqliteBatchWriter::spawn(
+            pool.clone(),
+            CancellationToken::new(),
+            Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+        );
+        assert!(writer.enqueue(SqliteBatchWrite::RunningProxySnapshot(
+            BatchedRunningProxySnapshot {
+                invoke_id: record.invoke_id.clone(),
+                occurred_at: record.occurred_at.clone(),
+                record,
+            },
+        )));
+
+        writer.shutdown_and_drain().await;
+
+        let persisted_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'batch-running-shutdown-skip'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count skipped shutdown running snapshots");
+        assert_eq!(persisted_count, 0);
     }
 
     #[tokio::test]
