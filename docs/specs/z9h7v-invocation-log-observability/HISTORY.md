@@ -33,3 +33,4 @@
 - 2026-06-28: 将共享 invocation preview 的 `promptCacheKey` 明确打通到 Dashboard 上游账号活动 recent 行，修复详情抽屉 selection 误把 `invokeId` 当对话键的问题。
 - 2026-06-30: 重组共享调用详情组件的信息架构，按快速排障路径分组展示请求身份、路由与模型、失败信号、细节保留和阶段耗时，并补齐 Storybook 视觉证据。
 - 2026-07-02: 明确 101 SQLite 止血不截断、不跳过、不丢弃 raw payload；新增 raw 文件写入耗时、codec、文件字节数与 terminal raw metadata 写入路径证据，用于区分 DB 核心写慢、batch flush 慢与 raw IO/gzip 慢。
+- 2026-07-03: 新 HTTP proxy invocation 改用 10 位 NanoID 风格 `invokeId`，移除 owner-facing `proxy-...` 前缀、内部 counter 与时间戳；历史长 ID 继续兼容查询、展示与 reservation recovery。

@@ -1529,7 +1529,6 @@ async fn capture_target_pool_route_no_content_success_finalizes_pending_attempt(
                 failure_kind,
                 upstream_account_id
             FROM pool_upstream_request_attempts
-            WHERE invoke_id LIKE 'proxy-%'
             ORDER BY id DESC
             LIMIT 1
             "#,
@@ -1564,7 +1563,7 @@ async fn capture_target_pool_route_no_content_success_finalizes_pending_attempt(
         r#"
         SELECT status, failure_kind
         FROM codex_invocations
-        WHERE invoke_id LIKE 'proxy-%'
+        WHERE source = 'proxy'
         ORDER BY id DESC
         LIMIT 1
         "#,
