@@ -115,13 +115,14 @@ pub(crate) async fn run() -> Result<()> {
 
     let prompt_cache_conversation_cache =
         Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
+    let proxy_runtime_invocations = Arc::new(ProxyRuntimeInvocationStore::default());
     let sqlite_batch_writer = SqliteBatchWriter::spawn(
         pool.clone(),
         shutdown.clone(),
         prompt_cache_conversation_cache.clone(),
     );
+    sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
     let pool_account_selection_runtime = Arc::new(PoolAccountSelectionRuntime::default());
-    let proxy_runtime_invocations = Arc::new(ProxyRuntimeInvocationStore::default());
 
     let state = Arc::new(AppState {
         config: config.clone(),

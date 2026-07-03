@@ -64,13 +64,18 @@ struct RuntimeInvocationStoreUpsertOutcome {
     running_count: usize,
     pruned_count: usize,
     skipped_terminal: bool,
-    inserted_new: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct RuntimeInvocationStoreShutdownSummary {
     running_count: usize,
     oldest_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeInvocationStoreRemoveOutcome {
+    removed: bool,
+    already_terminal: bool,
 }
 
 #[derive(Debug, Default)]
@@ -97,46 +102,121 @@ impl ProxyRuntimeInvocationStore {
                 running_count: 0,
                 pruned_count: 0,
                 skipped_terminal: false,
-                inserted_new: false,
             };
         };
         let pruned_count = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
-        if guard.terminal_tombstones.contains_key(&key) {
+        let terminal_overlay_exists = guard
+            .records
+            .get(&key)
+            .is_some_and(|entry| runtime_store_record_is_terminal(&entry.record));
+        if guard.terminal_tombstones.contains_key(&key) || terminal_overlay_exists {
             return RuntimeInvocationStoreUpsertOutcome {
                 running_count: guard.records.len(),
                 pruned_count,
                 skipped_terminal: true,
-                inserted_new: false,
             };
         }
-        let inserted_new = guard
-            .records
-            .insert(
-                key,
-                RuntimeInvocationEntry {
-                    record,
-                    updated_at: now,
-                },
-            )
-            .is_none();
+        guard.records.insert(
+            key,
+            RuntimeInvocationEntry {
+                record,
+                updated_at: now,
+            },
+        );
         let pruned_count =
             pruned_count + prune_bounded_runtime_invocation_store_locked(&mut guard, now);
         RuntimeInvocationStoreUpsertOutcome {
             running_count: guard.records.len(),
             pruned_count,
             skipped_terminal: false,
-            inserted_new,
         }
     }
 
-    fn remove(&self, invoke_id: &str, occurred_at: &str) -> bool {
+    fn upsert_terminal(&self, record: ApiInvocation) -> RuntimeInvocationStoreRemoveOutcome {
+        let Ok(mut guard) = self.inner.lock() else {
+            return RuntimeInvocationStoreRemoveOutcome {
+                removed: false,
+                already_terminal: false,
+            };
+        };
+        let now = Instant::now();
+        let key = RuntimeInvocationKey::new(record.invoke_id.clone(), record.occurred_at.clone());
+        let already_terminal = guard.terminal_tombstones.contains_key(&key);
+        if already_terminal {
+            let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+            return RuntimeInvocationStoreRemoveOutcome {
+                removed: false,
+                already_terminal: true,
+            };
+        }
+        let removed = guard
+            .records
+            .insert(
+                key.clone(),
+                RuntimeInvocationEntry {
+                    record,
+                    updated_at: now,
+                },
+            )
+            .is_some();
+        guard.terminal_tombstones.insert(key, now);
+        let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+        RuntimeInvocationStoreRemoveOutcome {
+            removed,
+            already_terminal: false,
+        }
+    }
+
+    fn clear_terminal_tombstone(&self, invoke_id: &str, occurred_at: &str) -> bool {
+        let Ok(mut guard) = self.inner.lock() else {
+            return false;
+        };
+        guard
+            .terminal_tombstones
+            .remove(&RuntimeInvocationKey::new(invoke_id, occurred_at))
+            .is_some()
+    }
+
+    fn contains_terminal(&self, invoke_id: &str, occurred_at: &str) -> bool {
+        let Ok(mut guard) = self.inner.lock() else {
+            return false;
+        };
+        let now = Instant::now();
+        let key = RuntimeInvocationKey::new(invoke_id, occurred_at);
+        let contains_terminal = guard.terminal_tombstones.contains_key(&key)
+            || guard
+                .records
+                .get(&key)
+                .is_some_and(|entry| runtime_store_record_is_terminal(&entry.record));
+        let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+        contains_terminal
+    }
+
+    fn remove_non_terminal(&self, invoke_id: &str, occurred_at: &str) -> bool {
         let Ok(mut guard) = self.inner.lock() else {
             return false;
         };
         let key = RuntimeInvocationKey::new(invoke_id, occurred_at);
-        let removed = guard.records.remove(&key).is_some();
-        guard.terminal_tombstones.insert(key, Instant::now());
+        let removed = guard
+            .records
+            .get(&key)
+            .is_some_and(|entry| !runtime_store_record_is_terminal(&entry.record));
+        if removed {
+            guard.records.remove(&key);
+        }
         let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
+        removed
+    }
+
+    fn remove_persisted_terminal_overlay(&self, invoke_id: &str, occurred_at: &str) -> bool {
+        let Ok(mut guard) = self.inner.lock() else {
+            return false;
+        };
+        let now = Instant::now();
+        let key = RuntimeInvocationKey::new(invoke_id, occurred_at);
+        let removed = guard.records.remove(&key).is_some();
+        guard.terminal_tombstones.insert(key, now);
+        let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
         removed
     }
 
@@ -183,6 +263,19 @@ impl ProxyRuntimeInvocationStore {
                 .max(),
         }
     }
+}
+
+fn runtime_store_record_is_terminal(record: &ApiInvocation) -> bool {
+    !matches!(
+        record
+            .status
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "running" | "pending"
+    )
 }
 
 fn prune_bounded_runtime_invocation_store_locked(

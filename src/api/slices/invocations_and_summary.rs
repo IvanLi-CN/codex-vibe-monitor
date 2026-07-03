@@ -820,18 +820,19 @@ fn runtime_record_is_retry(record: &ApiInvocation) -> bool {
     record.pool_attempt_count.unwrap_or(1) > 1
 }
 
+fn runtime_record_is_in_flight(record: &ApiInvocation) -> bool {
+    matches!(
+        normalized_runtime_text(record.status.as_deref()).as_str(),
+        "running" | "pending"
+    )
+}
+
 fn runtime_record_matches_filters(
     record: &ApiInvocation,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
 ) -> bool {
     if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
-        return false;
-    }
-    if !matches!(
-        normalized_runtime_text(record.status.as_deref()).as_str(),
-        "running" | "pending"
-    ) {
         return false;
     }
     if let Some(from_bound) = filters.occurred_from.as_deref()
@@ -851,11 +852,6 @@ fn runtime_record_matches_filters(
     }
     if let Some(status) = filters.status.as_deref() {
         let normalized_status = status.trim();
-        if normalized_status.eq_ignore_ascii_case("failed")
-            || normalized_status.eq_ignore_ascii_case("success")
-        {
-            return false;
-        }
         if !runtime_text_equals(record.status.as_deref(), normalized_status) {
             return false;
         }
@@ -943,6 +939,15 @@ fn runtime_record_matches_filters(
         }
     }
     true
+}
+
+fn runtime_in_flight_record_matches_filters(
+    record: &ApiInvocation,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+) -> bool {
+    runtime_record_is_in_flight(record)
+        && runtime_record_matches_filters(record, filters, source_scope)
 }
 
 fn option_presence_order(left_some: bool, right_some: bool) -> Option<std::cmp::Ordering> {
@@ -1259,9 +1264,9 @@ fn runtime_overlay_total_delta(
     runtime_records: &[ApiInvocation],
     db_runtime_keys: &HashSet<(String, String)>,
     db_terminal_keys: &HashSet<(String, String)>,
-) -> (i64, usize, usize) {
+) -> (RuntimeSummaryOverlayDelta, usize, usize) {
     if runtime_records.is_empty() {
-        return (0, 0, 0);
+        return (RuntimeSummaryOverlayDelta::default(), 0, 0);
     }
     let runtime_by_key = runtime_records
         .iter()
@@ -1275,19 +1280,80 @@ fn runtime_overlay_total_delta(
             })
         })
         .count();
-    let runtime_new_count = runtime_by_key
-        .iter()
-        .filter(|(key, record)| {
-            !db_runtime_keys.contains(*key)
-                && !db_terminal_keys.contains(*key)
-                && runtime_record_matches_filters(record, &request.filters, source_scope)
-        })
-        .count();
+    let mut delta = RuntimeSummaryOverlayDelta {
+        total_count: -(stale_db_runtime_count as i64),
+        ..RuntimeSummaryOverlayDelta::default()
+    };
+    let mut runtime_new_count = 0_usize;
+    for (key, record) in &runtime_by_key {
+        if db_terminal_keys.contains(key)
+            || !runtime_record_matches_filters(record, &request.filters, source_scope)
+        {
+            continue;
+        }
+        let has_db_runtime_row = db_runtime_keys.contains(key);
+        if !has_db_runtime_row {
+            delta.total_count += 1;
+            runtime_new_count += 1;
+        }
+        if runtime_record_is_in_flight(record) {
+            continue;
+        }
+        delta.add_terminal_record(record);
+    }
     (
-        runtime_new_count as i64 - stale_db_runtime_count as i64,
+        delta,
         runtime_new_count,
         stale_db_runtime_count,
     )
+}
+
+#[derive(Debug, Default)]
+struct RuntimeSummaryOverlayDelta {
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    cache_input_tokens: i64,
+    service_failure_count: i64,
+    client_failure_count: i64,
+    client_abort_count: i64,
+}
+
+impl RuntimeSummaryOverlayDelta {
+    fn add_terminal_record(&mut self, record: &ApiInvocation) {
+        self.total_tokens += record.total_tokens.unwrap_or_default();
+        self.total_cost += record.cost.unwrap_or_default();
+        self.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
+        let failure_class = normalized_runtime_text(record.failure_class.as_deref());
+        if failure_class == "none" && runtime_record_is_success_for_summary(record) {
+            self.success_count += 1;
+        }
+        match failure_class.as_str() {
+            "service_failure" => {
+                self.failure_count += 1;
+                self.service_failure_count += 1;
+            }
+            "client_failure" => {
+                self.failure_count += 1;
+                self.client_failure_count += 1;
+            }
+            "client_abort" => {
+                self.failure_count += 1;
+                self.client_abort_count += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn runtime_record_is_success_for_summary(record: &ApiInvocation) -> bool {
+    let status = normalized_runtime_text(record.status.as_deref());
+    status == "success"
+        || status == "completed"
+        || (status == "http_200"
+            && normalized_runtime_text(record.error_message.as_deref()).is_empty())
 }
 
 async fn query_invocation_network_summary(
@@ -2146,7 +2212,7 @@ pub(crate) async fn fetch_invocation_summary(
     )
     .await?;
 
-    let runtime_overlay_row_count = if request.snapshot_id.is_none() {
+    let runtime_overlay_delta = if request.snapshot_id.is_none() {
         let db_runtime_keys =
             query_current_runtime_db_keys(
                 &state.pool,
@@ -2161,7 +2227,7 @@ pub(crate) async fn fetch_invocation_summary(
             &runtime_records,
             Some(SnapshotConstraint::UpTo(snapshot_id)),
         )
-        .await?;
+            .await?;
         let (delta, runtime_new_count, stale_db_runtime_count) =
             runtime_overlay_total_delta(
                 &request,
@@ -2180,32 +2246,53 @@ pub(crate) async fn fetch_invocation_summary(
         }
         delta
     } else {
-        0
+        RuntimeSummaryOverlayDelta::default()
     };
-    let total_count = (totals.total_count + runtime_overlay_row_count).max(0);
+    let total_count = (totals.total_count + runtime_overlay_delta.total_count).max(0);
+    let success_count = (totals.success_count + runtime_overlay_delta.success_count).max(0);
+    let failure_count = (totals.failure_count + runtime_overlay_delta.failure_count).max(0);
+    let total_tokens = (totals.total_tokens + runtime_overlay_delta.total_tokens).max(0);
+    let total_cost = totals.total_cost + runtime_overlay_delta.total_cost;
+    let cache_input_tokens =
+        (totals.cache_input_tokens + runtime_overlay_delta.cache_input_tokens).max(0);
     let avg_tokens_per_request = if total_count <= 0 {
         0.0
     } else {
-        totals.total_tokens as f64 / total_count as f64
+        total_tokens as f64 / total_count as f64
+    };
+    let exception_summary = InvocationExceptionSummary {
+        failure_count: (exception.failure_count + runtime_overlay_delta.failure_count).max(0),
+        service_failure_count: (exception.service_failure_count
+            + runtime_overlay_delta.service_failure_count)
+            .max(0),
+        client_failure_count: (exception.client_failure_count
+            + runtime_overlay_delta.client_failure_count)
+            .max(0),
+        client_abort_count: (exception.client_abort_count
+            + runtime_overlay_delta.client_abort_count)
+            .max(0),
+        actionable_failure_count: (exception.actionable_failure_count
+            + runtime_overlay_delta.service_failure_count)
+            .max(0),
     };
 
     Ok(Json(InvocationSummaryResponse {
         snapshot_id,
         new_records_count,
         total_count,
-        success_count: totals.success_count,
-        failure_count: totals.failure_count,
-        total_tokens: totals.total_tokens,
-        total_cost: totals.total_cost,
+        success_count,
+        failure_count,
+        total_tokens,
+        total_cost,
         token: InvocationTokenSummary {
             request_count: total_count,
-            total_tokens: totals.total_tokens,
+            total_tokens,
             avg_tokens_per_request,
-            cache_input_tokens: totals.cache_input_tokens,
-            total_cost: totals.total_cost,
+            cache_input_tokens,
+            total_cost,
         },
         network,
-        exception,
+        exception: exception_summary,
     }))
 }
 
@@ -2557,7 +2644,7 @@ async fn load_in_progress_summary_snapshot(
         let Some(runtime_record) = runtime_by_key.get(&key) else {
             continue;
         };
-        if runtime_record_matches_filters(runtime_record, &filter, source_scope) {
+        if runtime_in_flight_record_matches_filters(runtime_record, &filter, source_scope) {
             continue;
         }
         db_in_progress_count = db_in_progress_count.saturating_sub(1);
@@ -2581,7 +2668,7 @@ async fn load_in_progress_summary_snapshot(
         .filter(|record| {
             !db_terminal_keys.contains(&(record.invoke_id.clone(), record.occurred_at.clone()))
         })
-        .filter(|record| runtime_record_matches_filters(record, &filter, source_scope))
+        .filter(|record| runtime_in_flight_record_matches_filters(record, &filter, source_scope))
         .collect::<Vec<_>>();
     let runtime_in_progress_count = runtime_records
         .iter()
