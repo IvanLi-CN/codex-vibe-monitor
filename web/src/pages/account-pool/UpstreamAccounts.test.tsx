@@ -130,6 +130,23 @@ vi.mock("../../lib/sse", () => ({
   },
 }));
 
+vi.mock("../../components/DashboardActivityOverview", () => ({
+  DashboardActivityOverview: ({
+    testId,
+    upstreamAccountId,
+  }: {
+    testId?: string;
+    upstreamAccountId?: number | null;
+  }) => (
+    <section
+      data-testid={testId ?? "dashboard-activity-overview"}
+      data-upstream-account-id={upstreamAccountId ?? ""}
+    >
+      Account activity overview
+    </section>
+  ),
+}));
+
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({
     count,
@@ -2237,7 +2254,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       })
       .mockResolvedValueOnce({
         snapshotId: 84,
-        total: 2,
+        total: 51,
         page: 1,
         pageSize: 50,
         records: [
@@ -2473,7 +2490,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     );
   });
 
-  it("clears stale rows before the records tab refetches for limit changes", async () => {
+  it("shows account activity on overview and keeps records as a bare infinite table", async () => {
     const secondFetch = deferred<{
       snapshotId: number;
       total: number;
@@ -2486,7 +2503,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     apiMocks.fetchInvocationRecords
       .mockResolvedValueOnce({
         snapshotId: 42,
-        total: 1,
+        total: 51,
         page: 1,
         pageSize: 50,
         records: [
@@ -2527,41 +2544,77 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       );
     });
 
+    await waitForAssertion(() => {
+      expect(
+        document.body.querySelector(
+          '[data-testid="upstream-account-records-activity-overview"]',
+        ),
+      ).toBeTruthy();
+    });
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(0);
+
     clickTab(/调用记录|records/i);
     await flushAsync();
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
     });
-    await waitForAssertion(() => {
-      expect(document.body.textContent).toMatch(/记录数量|Rows/);
-    });
+    expect(
+      document.body.querySelector(
+        '[data-testid="upstream-account-records-activity-overview"]',
+      ),
+    ).toBeNull();
+    expect(document.body.textContent).not.toMatch(/记录数量|Rows/);
+    expect(document.body.textContent).not.toMatch(
+      /查看这个上游账号最近保留的调用记录|latest retained invocations/i,
+    );
     expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
 
-    clickCombobox(/记录数量|rows/i);
-    clickSelectOption(/100/);
+    const drawerBody = document.body.querySelector(".drawer-body");
+    if (!(drawerBody instanceof HTMLElement)) {
+      throw new Error("missing drawer body");
+    }
+    Object.defineProperty(drawerBody, "scrollHeight", {
+      configurable: true,
+      value: 1200,
+    });
+    Object.defineProperty(drawerBody, "clientHeight", {
+      configurable: true,
+      value: 800,
+    });
+    Object.defineProperty(drawerBody, "scrollTop", {
+      configurable: true,
+      value: 390,
+    });
+    act(() => {
+      drawerBody.dispatchEvent(new Event("scroll"));
+    });
 
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
     });
-    expect(renderedInvocationAccountNames()).toHaveLength(0);
-    expect(
-      document.body.querySelector(
-        '[aria-label="正在加载记录"], [aria-label="Loading records"]',
-      ),
-    ).toBeTruthy();
+    expect(apiMocks.fetchInvocationRecords.mock.calls[1]?.[0]).toMatchObject({
+      upstreamAccountId: 5,
+      page: 2,
+      pageSize: 50,
+      snapshotId: 42,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+    });
+    expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+    expect(document.body.textContent).toMatch(/Loading more records|正在加载更多记录/);
 
     act(() => {
       secondFetch.resolve({
         snapshotId: 84,
-        total: 1,
-        page: 1,
-        pageSize: 100,
+        total: 2,
+        page: 2,
+        pageSize: 50,
         records: [
           {
-            id: 1,
-            invokeId: "invoke-stable",
-            occurredAt: "2026-03-16T02:05:00.000Z",
-            createdAt: "2026-03-16T02:05:00.000Z",
+            id: 2,
+            invokeId: "invoke-next",
+            occurredAt: "2026-03-16T02:04:00.000Z",
+            createdAt: "2026-03-16T02:04:00.000Z",
             status: "success",
             model: "gpt-5.4",
             upstreamAccountId: 5,
@@ -2576,6 +2629,10 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     await waitForAssertion(() => {
       expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
     });
+    expect(renderedInvocationAccountNames()).toHaveLength(2);
+    expect(document.body.textContent).toMatch(
+      /All 2 retained records loaded|已加载全部 2 条保留调用记录/,
+    );
   }, 30000);
 
   it("clears stale rows when entering the records tab from another tab", async () => {
