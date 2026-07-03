@@ -2,7 +2,7 @@
 
 ## 背景 / 问题陈述
 
-- 账号详情抽屉的统计面长期依赖在线重算：`/api/pool/upstream-accounts/window-usage`、账号维度 `/api/stats/summary`、`/api/stats/timeseries`、记录页顶部 summary 都会在读路径上混合 live rows、archive overlap、hourly rollup 与内存聚合。
+- 账号详情抽屉的统计面长期依赖在线重算：`/api/pool/upstream-accounts/window-usage`、账号维度 `/api/stats/summary`、`/api/stats/timeseries`、概览页账号活动总览都会在读路径上混合 live rows、archive overlap、hourly rollup 与内存聚合。
 - 该读路径在生产数据量下已经退化为秒级到十秒级响应；现网日志已出现单次 20 个账号批量统计约 12 秒，直接导致详情抽屉打开后长时间空白。
 - 现有 `upstream_account_usage_hourly` 只能覆盖部分数量类指标，不足以支撑详情页全部精确字段，尤其无法可靠承接 `firstResponseByteTotalP95Ms`。
 
@@ -28,7 +28,7 @@
 
 - `actualUsage` 卡片的自然窗口汇总。
 - `DashboardActivityOverview` 的账号维度 summary 与 trend / heatmap timeseries。
-- 记录页顶部 summary。
+- 概览页账号活动总览。
 - 账号统计 read-model 的 schema、增量维护、archive 重放、启动追平与 readiness 语义。
 - 详情抽屉前端懒加载、请求去重、取消旧请求与 SSE / roster refresh 编排。
 
@@ -98,7 +98,7 @@
 
 ## 验收标准（Acceptance Criteria）
 
-- 打开账号详情抽屉后，`actualUsage`、活动总览 summary、活动趋势、记录页顶部 summary 都必须在 3 秒内完成准确渲染。
+- 打开账号详情抽屉后，`actualUsage`、概览页活动总览 summary 与活动趋势都必须在 3 秒内完成准确渲染。
 - `/api/pool/upstream-accounts/window-usage` 不再走按账号批量 live 重算热路径；批量账号统计恢复到现有性能预算内，不再出现 10 秒级响应。
 - 账号维度 summary / timeseries 对 success / failure / in-flight、tokens、cost、`firstResponseByteTotalAvgMs`、`firstResponseByteTotalP95Ms` 的结果，与既有精确口径逐项一致。
 - 冷启动或 archive 回放后，read-model 未追平时 readiness 不得通过。
@@ -106,6 +106,21 @@
 - 后端必须覆盖：增量维护、历史补齐幂等、boundary + live tail 精确性、cursor 恢复、接口只读 read-model 行为。
 
 ## Visual Evidence
+
+- 详情抽屉概览页活动总览（mock Storybook；账号活动总览已归属概览页，记录页不再承载统计图表）
+
+PR: include
+![账号详情概览页活动总览](./assets/detail-drawer-overview-activity-overview.png)
+
+- 详情抽屉 records tab 表格本体（mock Storybook；records tab 移除外层 records 卡片、标题说明与记录数量选择，只保留调用表格）
+
+PR: include
+![账号详情调用记录表格本体](./assets/detail-drawer-records-bare-table.png)
+
+- 详情抽屉 records tab 无限滚动（mock Storybook；固定页大小加载后滚动追加下一页，保留记录表格本体）
+
+PR: include
+![账号详情调用记录无限滚动](./assets/detail-drawer-records-infinite-scroll.png)
 
 - 详情抽屉记录页默认态（mock Storybook，记录页 tab 已选中；右上角请求日志证明此时只读取详情与账号 stats，不再额外预取 roster `/api/pool/upstream-accounts` 或 sticky `/sticky-keys`）
 
@@ -117,17 +132,17 @@ PR: include
 PR: include
 ![账号详情路由页按需加载](./assets/detail-drawer-routing-request-gating.png)
 
-- 详情抽屉 records tab 稳定态（mock Storybook；记录列表已进入 settled state，作为这次实时推送一致性修复后的 owner-facing 视觉证据）
+- 详情抽屉 records tab 稳定态（mock Storybook；记录列表已进入 settled state，records tab 只保留调用表格本体，不再承载账号活动总览）
 
 PR: include
 ![账号详情记录页实时推送稳定态](./assets/detail-drawer-records-live-sync-stable.png)
 
-- 详情抽屉 records tab 宽屏放宽态（mock Storybook；共享抽屉桌面宽度提升到 `90rem` 后，records 视图横向空间更充足，概览与记录容器不再被旧的 `60rem` 壳层过早压缩）
+- 详情抽屉 records tab 宽屏放宽态（mock Storybook；共享抽屉桌面宽度提升到 `90rem` 后，记录表格横向空间更充足，不再被旧的 `60rem` 壳层过早压缩）
 
 PR: include
 ![账号详情记录页宽屏放宽态](./assets/detail-drawer-records-settled-wide.png)
 
-- 详情抽屉 records tab 窄宽度 token 标签稳定态（mock Storybook；总 token 指标标题从 `今日 Tokens` 缩短为 `今日 Token`，并保持单行显示，不再在窄卡片里被拆成两行）
+- 详情抽屉概览页活动总览窄宽度 token 标签稳定态（mock Storybook；总 token 指标标题从 `今日 Tokens` 缩短为 `今日 Token`，并保持单行显示，不再在窄卡片里被拆成两行）
 
 PR: include
 ![账号详情记录页 token 标签单行态](./assets/detail-drawer-records-token-label-nowrap.png)

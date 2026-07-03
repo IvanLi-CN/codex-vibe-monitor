@@ -94,8 +94,11 @@ export const DetailDrawer: Story = {
     await expect(within(dialog).getByRole('tab', { name: /概览|overview/i })).toHaveAttribute('aria-selected', 'true')
     await expect(within(dialog).getByText(/最近成功同步|last successful sync/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/5 小时窗口|5h window/i)).toBeInTheDocument()
+    await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
-    await expect(within(dialog).getByText(/查看这个上游账号最近保留的调用记录|latest retained invocations routed to this upstream account/i)).toBeInTheDocument()
+    await expect(within(dialog).queryByTestId('upstream-account-records-activity-overview')).not.toBeInTheDocument()
+    await expect(within(dialog).queryByText(/查看这个上游账号最近保留的调用记录|latest retained invocations routed to this upstream account/i)).not.toBeInTheDocument()
+    await expect(within(dialog).queryByRole('combobox', { name: /记录数量|rows/i })).not.toBeInTheDocument()
     await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: /路由|routing/i }))
     await waitFor(() => {
@@ -128,6 +131,8 @@ export const DetailDrawerOverview: Story = {
     await expect(
       within(dialog).getByText(/图片能力|image capability/i),
     ).toBeInTheDocument()
+    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
+    await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
   },
 }
 
@@ -141,8 +146,9 @@ export const DetailDrawerRecordsPopulated: Story = {
     const documentScope = within(canvasElement.ownerDocument.body)
     const dialog = await findTokyoDetailDialog(documentScope)
     await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
-    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
-    await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
+    await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
+    await expect(within(dialog).queryByTestId('upstream-account-records-activity-overview')).not.toBeInTheDocument()
+    await expect(within(dialog).queryByRole('combobox', { name: /记录数量|rows/i })).not.toBeInTheDocument()
     await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
   },
 }
@@ -157,7 +163,7 @@ export const DetailDrawerRecordsEmpty: Story = {
     const documentScope = within(canvasElement.ownerDocument.body)
     const dialog = await findTokyoDetailDialog(documentScope)
     await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
-    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
+    await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
     await expect(within(dialog).getByText(/这个上游账号暂时还没有保留的调用记录|No retained call records/i)).toBeInTheDocument()
   },
 }
@@ -199,8 +205,8 @@ export const DetailDrawerRecordsLoading: Story = {
       name: /Codex Pro - Tokyo/i,
     })
     await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
-    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
-    await expect(within(dialog).getAllByLabelText(/loading detailed|加载详细图表/i).length).toBeGreaterThan(0)
+    await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
+    await expect(within(dialog).getByTestId('invocation-table-loading')).toBeInTheDocument()
   },
 }
 
@@ -212,8 +218,8 @@ export const DetailDrawerRecordsSettled: Story = {
       name: /Codex Pro - Tokyo/i,
     })
     await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
-    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
-    await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
+    await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
+    await expect(within(dialog).queryByTestId('upstream-account-records-activity-overview')).not.toBeInTheDocument()
     await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
   },
 }
@@ -232,8 +238,8 @@ export const DetailDrawerRecordsSettledWide: Story = {
       'aria-selected',
       'true',
     )
-    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
-    await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
+    await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
+    await expect(within(dialog).queryByTestId('upstream-account-records-activity-overview')).not.toBeInTheDocument()
     await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
   },
 }
@@ -252,12 +258,10 @@ export const DetailDrawerRecordsOverflowDarkNarrow: Story = {
       name: /Codex Pro - Tokyo/i,
     })
     await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
-    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
-    await expect(within(dialog).getByText('今日 Token')).toBeInTheDocument()
-    const totalTokens = within(dialog).getByTestId('today-stats-value-total-tokens')
-    await expect(totalTokens).toHaveAttribute('data-compact', 'true')
-    await expect(totalTokens).toHaveAttribute('data-compact-precision', '0')
-    await expect(totalTokens).toHaveTextContent(/281M/i)
+    await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
+    await expect(within(dialog).queryByText('今日 Token')).not.toBeInTheDocument()
+    await expect(within(dialog).queryByRole('combobox', { name: /记录数量|rows/i })).not.toBeInTheDocument()
+    await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
     await expect(within(dialog).queryByText(/并行对话|parallel/i)).not.toBeInTheDocument()
   },
 }
@@ -276,10 +280,40 @@ export const DetailDrawerRecordsLoadingDarkNarrow: Story = {
       name: /Codex Pro - Tokyo/i,
     })
     await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
-    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
-    await expect(within(dialog).getByTestId('today-stats-value-tpm-loading')).toBeInTheDocument()
-    await expect(within(dialog).getByTestId('today-stats-value-total-tokens-loading')).toBeInTheDocument()
+    await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
+    await expect(within(dialog).getByTestId('invocation-table-loading')).toBeInTheDocument()
     await expect(within(dialog).queryByText(/并行对话|parallel/i)).not.toBeInTheDocument()
+  },
+}
+
+export const DetailDrawerRecordsInfinite: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'desktop1280' },
+  },
+  render: () => <DetailDrawerStorySurface initialTab="records" maxWidth="1280px" />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Codex Pro - Tokyo/i,
+    })
+    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() => {
+      expect(within(dialog).getByText(/已加载 50 \/|Loaded 50 \//i)).toBeInTheDocument()
+    })
+    const body = dialog.querySelector('.drawer-body')
+    if (!(body instanceof HTMLElement)) {
+      throw new Error('missing drawer body')
+    }
+    body.scrollTop = body.scrollHeight
+    body.dispatchEvent(new Event('scroll', { bubbles: true }))
+    await waitFor(() => {
+      const requestLog = window.__storybookUpstreamAccountsController__?.getRequestLog() ?? []
+      expect(
+        requestLog.some((entry) =>
+          entry.includes('/api/invocations') && entry.includes('page=2') && entry.includes('pageSize=50'),
+        ),
+      ).toBe(true)
+    })
   },
 }
 

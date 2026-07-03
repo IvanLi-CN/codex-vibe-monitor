@@ -145,7 +145,7 @@ function Probe({ window }: { window: string }) {
 describe('useSummary SSE reconnect behavior', () => {
   it('patches today summary from SSE records after the 1s visible batch without immediate HTTP reconcile', async () => {
     vi.useFakeTimers()
-    vi.setSystemTime(new Date(2026, 3, 8, 12, 0, 0))
+    vi.setSystemTime(new Date('2026-04-08T11:59:00.000Z'))
     apiMocks.fetchSummary.mockResolvedValue(createSummary(10))
 
     render(<Probe window="today" />)
@@ -181,7 +181,7 @@ describe('useSummary SSE reconnect behavior', () => {
 
   it('ignores out-of-day records and replaces running contribution when the terminal record arrives', async () => {
     vi.useFakeTimers()
-    vi.setSystemTime(new Date(2026, 3, 8, 12, 0, 0))
+    vi.setSystemTime(new Date('2026-04-08T11:59:00.000Z'))
     apiMocks.fetchSummary.mockResolvedValue({
       ...createSummary(10),
       inProgressConversationCount: 1,

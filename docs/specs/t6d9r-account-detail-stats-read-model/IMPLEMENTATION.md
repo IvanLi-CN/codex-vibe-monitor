@@ -13,7 +13,8 @@
 - Note: `useUpstreamAccounts(...)` 不再消费 invocation `records` SSE 来静默刷新 roster/detail/window-usage；账号池重型统计只保留手动 refresh、显式业务变更和 SSE `open` 后的受控补齐。
 - Note: 账号详情抽屉默认不再额外预取 roster / sticky conversation 统计；只有 `edit` / `routing` 这类真正依赖上下文的 tab 才会触发对应重查询。
 - Note: 账号详情默认 `overview` 首屏已改为不再同步读取 `recentActions`；健康与事件 tab 才通过显式 follow-up detail hydrate 拉取事件流。
-- Note: records 顶部卡片新增的 `nonSuccessCost` 已重新回到 read-model-first 主路径；live augmentation 只保留 `nonSuccessTokens` 与 in-progress 字段，闭区间 summary / timeseries 默认不再回退到 live raw 重算。
+- Note: 账号活动总览现在归属 overview tab；records tab 只承载调用表格本体，并通过固定页大小的滚动追加加载保留调用记录。
+- Note: 概览页活动总览新增的 `nonSuccessCost` 已重新回到 read-model-first 主路径；live augmentation 只保留 `nonSuccessTokens` 与 in-progress 字段，闭区间 summary / timeseries 默认不再回退到 live raw 重算。
 
 ## 落地内容
 
@@ -31,6 +32,9 @@
 - `DashboardActivityOverview` 在 account-scoped `yesterday` 视图不再额外请求 yesterday comparison summary / timeseries，消除一个重复请求源。
 - 共享账号详情抽屉桌面壳层从 `max-w-[60rem]` 放宽到 `max-w-[90rem]`；为了让新增横向空间真实转化为概览可读性，overview 下两张 usage card 提前到 `lg` 断点进入双列，而不是继续等到 `xl`。
 - records 视图总 token 指标标题改为 `Token` 单数文案，并在 `TodayStatsOverview` 中对该标签单独保留 mixed case + `whitespace-nowrap`，避免窄卡片里出现 `今日` / `TOKENS` 断成两行的问题。
+- 账号活动总览从 records tab 迁移到 overview tab；records tab 移除外层 records card、标题说明与记录数量选择，改为直接显示调用表格。
+- overview tab 顶部账号基础属性从多张独立 `metric-cell` 卡片收敛为单条紧凑元数据带，保留字段与截断 title，但显著减少首屏高度占用。
+- records tab 记录列表改为固定 `50` 条页大小的无限滚动追加：首次进入加载第一页，抽屉滚动接近底部时追加下一页，账号切换、离开 records tab 或关闭抽屉时丢弃旧请求结果。
 - 账号详情接口 `get_upstream_account` 默认改为 `includeRecentActions=false`，把 `pool_upstream_account_events` 读取从 overview 首屏热路径中移出；health events tab 再按需补一次 detail hydrate。
 - 前端 `fetchUpstreamAccountDetail(..., { includeRecentActions: true })` 改为把布尔 query 编码成 `includeRecentActions=true`，避免 Axum `Option<bool>` 拒绝 `1` 后让健康与事件 tab 显示 400。
 - `useUpstreamAccounts(...)` 在 `selectedId` 为空时不再自动对 roster 可见行批量触发 `window-usage` hydrate；只有当前选中账号或显式手动 hydrate 才会发 `window-usage` 请求。
@@ -42,7 +46,7 @@
 - proxy capture 请求尾写路径也继续收敛：`codex_invocations` 终态持久化改为单路径 upsert/finalize，`pool_upstream_request_attempts` 的 phase / latency / compact-support 进度尽量并入同一条更新，减少账号详情和 Dashboard 与请求尾写争用 SQLite 单写者预算。
 - 第四轮止血把账号详情依赖的 upstream account touch、invocation hourly rollup/live progress 与 attempt 中间进度迁入进程内 SQLite batch writer。账号详情仍以同步 terminal invocation 主事实为可靠来源；派生统计和进度展示接受 `<=5s` bounded freshness，队列满时 invocation 派生写会做同步补偿以降低数据漂移风险。
 - 第六轮止血继续收窄账号相关写锁：路由账号选择的 `last_selected_at` 不再在前台同步更新账号表，而是先记录到进程内公平性锚点并叠加到候选排序，再通过 batch writer 按账号 coalesce 落库。账号 status、cooldown 与 failure 仍保持同步写，因为它们是路由正确性的主事实。
-- Storybook 现有详情抽屉 overlay stories 继续作为 page-fallback 证据面，新增 owner-facing 首屏概览态与 records 统计卡片完成态图片，覆盖这次性能回归修复后的默认打开路径。
+- Storybook 现有详情抽屉 overlay stories 继续作为 page-fallback 证据面，覆盖 owner-facing 概览页活动总览、records 表格本体与 records 无限滚动场景。
 
 ## Verification
 
@@ -77,9 +81,18 @@
 - `assets/detail-drawer-records-live-sync-stable.png`
 - `assets/detail-drawer-records-settled-wide.png`
 - `assets/detail-drawer-records-token-label-nowrap.png`
+- `assets/detail-drawer-overview-activity-overview.png`
+- `assets/detail-drawer-records-bare-table.png`
+- `assets/detail-drawer-records-infinite-scroll.png`
 
 ## 2026-06-21 Records Live Follow-up
 
 - 账号详情抽屉 records tab 继续保留懒加载和旧请求丢弃约束，但列表本身改为消费共享 `records` SSE 实时 adapter，而不是一次性快照拉取后静止。
 - 当前账号命中的新调用现在会自动插入到 records tab；同一 `invokeId` 后续收到更完整终态记录时，会自动替换掉先前的 `running/pending` 可见行。
 - SSE 连接 `open` 后，records tab 会静默回源补齐重连窗口内可能漏掉的记录，同时不额外触发 overview / routing 这类重型统计面的重复 hydrate。
+
+## 2026-07-03 Overview Activity Placement Follow-up
+
+- 账号活动总览归属 overview tab，records tab 不再渲染统计图表或记录数量选择控件。
+- overview 顶部基础属性使用紧凑元数据带展示，减少账号活动总览进入首屏前的空间占用。
+- records tab 使用固定页大小的滚动追加加载，保持表格本体密度，同时避免一次性拉取全部历史记录。
