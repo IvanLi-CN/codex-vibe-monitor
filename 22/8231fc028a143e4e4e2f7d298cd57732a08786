@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.10.0",
+  "base_stable_version": "2.9.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-03T18:16:42Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.10.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "eb13ed56c42c3cc890d965448a5f63807e52dd2f",
+  "pr_number": 524,
+  "pr_title": "feat(web): add upstream account metric detail tooltips",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.10.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.10.0",
+  "target_sha": "228231fc028a143e4e4e2f7d298cd57732a08786",
+  "type_label": "type:minor"
+}
