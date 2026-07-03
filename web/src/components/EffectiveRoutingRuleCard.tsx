@@ -281,6 +281,65 @@ function sourceVariant(source: string) {
         : 'secondary'
 }
 
+type BadgeVariant = React.ComponentProps<typeof Badge>['variant']
+
+function valueVariant(field: EditablePolicyField | null, value: string, labels: EffectiveRoutingRuleCardProps['labels']): BadgeVariant {
+  if (field === 'allowNewConversations') {
+    return value === labels.blockNewConversations ? 'warning' : 'success'
+  }
+  if (field === 'allowCutOut') {
+    return value === labels.denyCutOut ? 'warning' : 'success'
+  }
+  if (field === 'allowCutIn') {
+    return value === labels.denyCutIn ? 'warning' : 'success'
+  }
+  if (field === 'priorityTier') {
+    if (value === labels.priorityPrimary) return 'default'
+    if (value === labels.priorityFallback) return 'warning'
+    return 'info'
+  }
+  if (field === 'fastModeRewriteMode') {
+    if (value === labels.fastModeForceAdd || value === labels.fastModeForceRemove) return 'default'
+    if (value === labels.fastModeFillMissing) return 'info'
+    return 'secondary'
+  }
+  if (field === 'imageToolRewriteMode') {
+    if (value === labels.imageToolForceAdd || value === labels.imageToolForceRemove) return 'default'
+    if (value === labels.imageToolFillMissing) return 'info'
+    return 'secondary'
+  }
+  if (field === 'concurrencyLimit') {
+    return value === (labels.concurrencyUnlimited ?? 'Concurrency unlimited') ? 'success' : 'warning'
+  }
+  if (field === 'upstream429Retry') {
+    return value === '0' ? 'secondary' : 'info'
+  }
+  if (field === 'availableModels') {
+    if (
+      value === (labels.availableModelsInherited ?? 'Inherited / unrestricted') ||
+      value === (labels.availableModelsNoneAllowed ?? 'No models allowed')
+    ) {
+      return value === (labels.availableModelsNoneAllowed ?? 'No models allowed') ? 'warning' : 'success'
+    }
+    return 'default'
+  }
+  if (field == null && value === (labels.systemDeniedModelsEmpty ?? 'None')) {
+    return 'success'
+  }
+  return field == null ? 'warning' : 'secondary'
+}
+
+function ValueBadge({ field, value, labels }: { field: EditablePolicyField | null; value: string; labels: EffectiveRoutingRuleCardProps['labels'] }) {
+  return (
+    <Badge
+      className="min-w-0 max-w-full justify-self-start whitespace-normal break-words text-left leading-5"
+      variant={valueVariant(field, value, labels)}
+    >
+      {value}
+    </Badge>
+  )
+}
+
 function accountOverrideFields(fieldSources: FieldSourceMap): EditablePolicyField[] {
   return editableFieldSourceKeys
     .filter(([, sourceKey]) => fieldSources[sourceKey] === 'account')
@@ -674,12 +733,6 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
       source: fieldSources.systemDeniedModels ?? 'root',
     },
   ]
-  const blockingBadges = [
-    resolvedRule.blockNewConversations ? labels.blockNewConversations : null,
-    !resolvedRule.allowCutOut ? labels.denyCutOut : null,
-    !resolvedRule.allowCutIn ? labels.denyCutIn : null,
-  ].filter((value): value is string => value != null)
-
   return (
     <Card className="border-base-300/80 bg-base-100/72">
       <CardHeader>
@@ -687,16 +740,6 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
         <CardDescription>{labels.description}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        {blockingBadges.length > 0 ? (
-          <div className="flex flex-wrap gap-2">
-            {blockingBadges.map((label) => (
-              <Badge key={label} variant="warning">
-                {label}
-              </Badge>
-            ))}
-          </div>
-        ) : null}
-
         <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
           <p className="metric-label">{labels.sourceBreakdownTitle ?? 'Field source breakdown'}</p>
           <div className="mt-3 overflow-hidden rounded-xl border border-base-300/70">
@@ -710,7 +753,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
                 <div key={row.label} className="border-b border-base-300/60 last:border-b-0">
                   <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[minmax(7rem,1fr)_minmax(8rem,1.2fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
                     <span className="font-medium text-base-content/80">{row.label}</span>
-                    <span className="text-base-content">{row.value}</span>
+                    <ValueBadge field={row.field} value={row.value} labels={labels} />
                     <Badge className="w-fit sm:justify-self-end" variant={sourceVariant(row.source)}>
                       {sourceLabel(row.source, labels)}
                     </Badge>
@@ -769,7 +812,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
                 <div key={row.key} className="border-b border-base-300/60 last:border-b-0">
                   <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:items-center sm:gap-3">
                     <span className="min-w-0 font-medium text-base-content/80">{row.label}</span>
-                    <span className="whitespace-nowrap text-base-content">{row.value}</span>
+                    <ValueBadge field={row.field} value={row.value} labels={labels} />
                     <div className="min-w-0 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-base-content/65">
                         {activeOverride ? labels.timeoutOverrideValue ?? 'Account override' : labels.timeoutInheritedValue ?? 'Inherited'}

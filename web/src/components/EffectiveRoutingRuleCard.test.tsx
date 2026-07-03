@@ -183,6 +183,42 @@ describe('EffectiveRoutingRuleCard', () => {
     expect(document.body.textContent).not.toContain('Inherited / unrestricted')
   })
 
+  it('renders rule values as semantic badges without the blocking summary strip', () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          blockNewConversations: true,
+          allowCutOut: false,
+          allowCutIn: false,
+          priorityTier: 'fallback',
+          fastModeRewriteMode: 'force_add',
+          fieldSources: {
+            ...buildRule().fieldSources,
+            blockNewConversations: 'group',
+            allowCutOut: 'tag',
+            allowCutIn: 'account',
+            priorityTier: 'tag',
+            fastModeRewriteMode: 'account',
+          },
+        })}
+        labels={labels}
+      />,
+    )
+
+    const blockedValues = Array.from(document.querySelectorAll('[class*="bg-warning"]'))
+      .map((node) => node.textContent)
+    expect(blockedValues).toContain('New conversations blocked')
+    expect(blockedValues).toContain('Cut-out blocked')
+    expect(blockedValues).toContain('Cut-in blocked')
+    expect(blockedValues).toContain('Fallback only')
+
+    const forceAddBadge = Array.from(document.querySelectorAll('[class*="bg-primary"]'))
+      .find((node) => node.textContent === 'Force add')
+    expect(forceAddBadge).toBeTruthy()
+    expect(document.body.textContent?.match(/Cut-out blocked/g)).toHaveLength(1)
+    expect(document.body.textContent?.match(/Cut-in blocked/g)).toHaveLength(1)
+  })
+
   it('expands an inherited boolean override and saves the positive switch as the backend inverse', () => {
     const onChange = vi.fn()
     render(

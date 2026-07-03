@@ -51,7 +51,6 @@ import {
 import { Spinner } from "../../components/ui/spinner";
 import { Switch } from "../../components/ui/switch";
 import { EffectiveRoutingRuleCard } from "../../components/EffectiveRoutingRuleCard";
-import { GroupAccountRoutingRuleDialog } from "../../components/GroupAccountRoutingRuleDialog";
 import { InvocationTable } from "../../components/InvocationTable";
 import {
   DashboardActivityOverview,
@@ -875,7 +874,6 @@ function SharedUpstreamAccountDetailDrawerInner({
     Partial<Record<InlinePolicyField, string | null>>
   >({});
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
-  const [accountPolicyEditorOpen, setAccountPolicyEditorOpen] = useState(false);
   const [
     stickyConversationSelectionValue,
     setStickyConversationSelectionValue,
@@ -2056,47 +2054,6 @@ function SharedUpstreamAccountDetailDrawerInner({
       saveAccount,
     ],
   );
-  const handleSaveAccountPolicy = useCallback(
-    async (
-      source: UpstreamAccountDetail,
-      payload: UpdateGroupAccountRoutingRulePayload,
-    ) => {
-      if (hasBusyAccountAction(busyAction, source.id)) return;
-      setActionError((current) => {
-        const nextMessages = { ...current.accountMessages };
-        delete nextMessages[source.id];
-        return { ...current, accountMessages: nextMessages };
-      });
-      setBusyAction((current) => {
-        const nextActions = new Set(current.accountActions);
-        nextActions.add(createBusyActionKey("save", source.id));
-        return { ...current, accountActions: nextActions };
-      });
-      try {
-        const response = await saveAccount(source.id, {
-          routingRule: payload,
-        });
-        notifyMotherChange(response);
-        setAccountPolicyEditorOpen(false);
-      } catch (err) {
-        if (handleNotFoundClose(source.id, err)) return;
-        setActionError((current) => ({
-          ...current,
-          accountMessages: {
-            ...current.accountMessages,
-            [source.id]: err instanceof Error ? err.message : String(err),
-          },
-        }));
-      } finally {
-        setBusyAction((current) => {
-          const nextActions = new Set(current.accountActions);
-          nextActions.delete(createBusyActionKey("save", source.id));
-          return { ...current, accountActions: nextActions };
-        });
-      }
-    },
-    [busyAction, handleNotFoundClose, notifyMotherChange, saveAccount],
-  );
   const handleSaveInlineAccountPolicy = useCallback(
     async (
       source: UpstreamAccountDetail,
@@ -3214,28 +3171,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-labelledby={detailTabIds.routing.tab}
                   className="grid gap-5"
                 >
-                  <div className="flex justify-end">
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="gap-2"
-                      disabled={
-                        !writesEnabled ||
-                        hasBusyAccountAction(busyAction, selectedDetail.id)
-                      }
-                      onClick={() => setAccountPolicyEditorOpen(true)}
-                    >
-                      <AppIcon
-                        name="file-document-edit-outline"
-                        className="h-4 w-4"
-                        aria-hidden
-                      />
-                      {t(
-                        "accountPool.upstreamAccounts.actions.editRoutingPolicy",
-                      )}
-                    </Button>
-                  </div>
                   <EffectiveRoutingRuleCard
                     rule={selectedDetail.effectiveRoutingRule}
                     identityKey={selectedDetail.id}
@@ -3788,139 +3723,6 @@ function SharedUpstreamAccountDetailDrawerInner({
       ) : null}
 
       {groupNoteDialog}
-      <GroupAccountRoutingRuleDialog
-        open={accountPolicyEditorOpen && selectedDetail != null}
-        changedFieldsOnly
-        timeoutOverrideSource="account"
-        availableModelOptions={availableModelOptions}
-        title={t("accountPool.upstreamAccounts.policyDialog.accountTitle")}
-        description={t(
-          "accountPool.upstreamAccounts.policyDialog.accountDescription",
-        )}
-        submitLabel={t("accountPool.upstreamAccounts.policyDialog.save")}
-        rule={selectedDetail?.effectiveRoutingRule ?? null}
-        effectiveTimeouts={selectedDetail?.effectiveRoutingRule?.timeouts ?? DEFAULT_ROUTING_TIMEOUTS}
-        timeoutFieldSources={selectedDetail?.effectiveRoutingRule?.timeoutFieldSources}
-        busy={
-          selectedDetail
-            ? hasBusyAccountAction(busyAction, selectedDetail.id)
-            : false
-        }
-        error={
-          selectedDetail
-            ? (actionError.accountMessages[selectedDetail.id] ?? null)
-            : null
-        }
-        onClose={() => setAccountPolicyEditorOpen(false)}
-        onSubmit={(payload) => {
-          if (!selectedDetail) return;
-          void handleSaveAccountPolicy(selectedDetail, payload);
-        }}
-        labels={{
-          allowNewConversations: t(
-            "accountPool.tags.dialog.allowNewConversations",
-          ),
-          newConversationHint: t(
-            "accountPool.tags.dialog.newConversationHint",
-          ),
-          allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
-          allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
-          forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
-          forbidCutIn: t("accountPool.tags.dialog.forbidCutIn"),
-          priorityTier: t("accountPool.tags.dialog.priorityTier"),
-          priorityPrimary: t("accountPool.tags.dialog.priorityPrimary"),
-          priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
-          priorityFallback: t("accountPool.tags.dialog.priorityFallback"),
-          fastModeRewriteMode: t("accountPool.tags.dialog.fastModeRewriteMode"),
-          fastModeKeepOriginal: t(
-            "accountPool.tags.dialog.fastModeKeepOriginal",
-          ),
-          fastModeFillMissing: t("accountPool.tags.dialog.fastModeFillMissing"),
-          fastModeForceAdd: t("accountPool.tags.dialog.fastModeForceAdd"),
-          fastModeForceRemove: t("accountPool.tags.dialog.fastModeForceRemove"),
-          imageToolRewriteMode: t(
-            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode",
-          ),
-          imageToolKeepOriginal: t(
-            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal",
-          ),
-          imageToolFillMissing: t(
-            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing",
-          ),
-          imageToolForceAdd: t(
-            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd",
-          ),
-          imageToolForceRemove: t(
-            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove",
-          ),
-          imageToolRewriteHint: t(
-            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint",
-          ),
-          upstream429Retry: t(
-            "accountPool.upstreamAccounts.groupNotes.upstream429.label",
-          ),
-          upstream429RetryHint: t(
-            "accountPool.upstreamAccounts.groupNotes.upstream429.hint",
-          ),
-          upstream429RetryToggle: t(
-            "accountPool.upstreamAccounts.groupNotes.upstream429.toggle",
-          ),
-          upstream429RetryCount: t(
-            "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel",
-          ),
-          upstream429RetryCountOnce: t(
-            "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce",
-          ),
-          upstream429RetryCountMany: (count) =>
-            t("accountPool.upstreamAccounts.groupNotes.upstream429.countMany", {
-              count,
-            }),
-          concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
-          concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
-          currentValue: t("accountPool.tags.dialog.currentValue"),
-          unlimited: t("accountPool.tags.dialog.unlimited"),
-          availableModels: t("accountPool.tags.dialog.availableModels"),
-          availableModelsHint: t("accountPool.tags.dialog.availableModelsHint"),
-          availableModelsSearchPlaceholder: t(
-            "accountPool.tags.dialog.availableModelsSearchPlaceholder",
-          ),
-          availableModelsEmpty: t(
-            "accountPool.tags.dialog.availableModelsEmpty",
-          ),
-          availableModelsAll: t("accountPool.tags.dialog.availableModelsAll"),
-          availableModelsCustomLabel: (value) =>
-            t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
-          availableModelsAddCustom: t(
-            "accountPool.tags.dialog.availableModelsAddCustom",
-          ),
-          availableModelsInherited: t(
-            "accountPool.tags.dialog.availableModelsInherited",
-          ),
-          availableModelsRemove: t(
-            "accountPool.tags.dialog.availableModelsRemove",
-          ),
-          timeoutSectionTitle: t("accountPool.upstreamAccounts.routing.timeout.sectionTitle"),
-          timeoutSectionHint: t("accountPool.upstreamAccounts.policyDialog.accountDescription"),
-          timeoutResponsesFirstByte: t("accountPool.upstreamAccounts.routing.timeout.responsesFirstByte"),
-          timeoutCompactFirstByte: t("accountPool.upstreamAccounts.routing.timeout.compactFirstByte"),
-          timeoutResponsesStream: t("accountPool.upstreamAccounts.routing.timeout.responsesStream"),
-          timeoutCompactStream: t("accountPool.upstreamAccounts.routing.timeout.compactStream"),
-          timeoutInheritedValue: t("accountPool.upstreamAccounts.timeoutEditor.inherited"),
-          timeoutOverrideValue: t(
-            "accountPool.upstreamAccounts.timeoutEditor.accountOverride",
-          ),
-          timeoutClearField: t(
-            "accountPool.upstreamAccounts.effectiveRule.overrideClear",
-          ),
-          timeoutInheritField: t("accountPool.tags.dialog.availableModelsInherited"),
-          timeoutSourceGlobal: t("accountPool.upstreamAccounts.effectiveRule.sourceRoot"),
-          timeoutSourceGroup: t("accountPool.upstreamAccounts.effectiveRule.sourceGroup"),
-          timeoutSourceAccount: t("accountPool.upstreamAccounts.effectiveRule.sourceAccount"),
-          timeoutSourceConversation: t("accountPool.upstreamAccounts.effectiveRule.sourceConversation"),
-          cancel: t("accountPool.tags.dialog.cancel"),
-          validation: t("accountPool.tags.dialog.validation"),
-        }}
-      />
     </>
   );
 }
