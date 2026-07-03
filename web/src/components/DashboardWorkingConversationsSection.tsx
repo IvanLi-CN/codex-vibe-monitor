@@ -398,6 +398,10 @@ function formatAccountDurationValue(
   return `${formatAccountNumberValue(value, localeTag, abs >= 100 ? 0 : 1)} ms`;
 }
 
+function finiteNumber(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function SummaryMetric({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 rounded-[0.65rem] bg-base-100/4 px-1.5 py-1 sm:px-2">
@@ -419,6 +423,17 @@ type AccountMetricTone =
   | "warning"
   | "error"
   | "info";
+
+type AccountMetricDetailRow = {
+  label: string;
+  value: string;
+  tone?: AccountMetricTone;
+};
+
+type AccountMetricDetailSection = {
+  title: string;
+  rows: AccountMetricDetailRow[];
+};
 
 type AccountActivityStatus = {
   kind: "busy" | "attention" | "steady";
@@ -519,12 +534,16 @@ function AccountHeroMetric({
   value,
   tone,
   hint,
+  detailSections,
+  metricKey,
   children,
 }: {
   label: string;
   value: string;
   tone: "neutral" | "primary" | "secondary" | "success" | "warning" | "info";
   hint?: string;
+  detailSections?: AccountMetricDetailSection[];
+  metricKey?: string;
   children?: ReactNode;
 }) {
   const toneSurfaceClassName = {
@@ -542,10 +561,18 @@ function AccountHeroMetric({
           tone === "neutral" ? "neutral" : tone
         ];
 
-  return (
+  const card = (
     <div
+      data-testid="dashboard-upstream-account-metric-card"
+      data-metric={metricKey}
       data-motion-surface
-      className={cn("rounded-[0.85rem] px-3 py-2.5", toneSurfaceClassName)}
+      className={cn(
+        "h-full w-full rounded-[0.85rem] px-3 py-2.5 transition-colors duration-200",
+        detailSections?.length
+          ? "cursor-help focus-within:outline-none"
+          : null,
+        toneSurfaceClassName,
+      )}
     >
       <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/54">
         {label}
@@ -562,6 +589,90 @@ function AccountHeroMetric({
         <div className="mt-1 text-[11px] leading-4 text-base-content/58">{hint}</div>
       ) : null}
       {children ? <div className="mt-1.5">{children}</div> : null}
+    </div>
+  );
+
+  if (!detailSections?.length) return card;
+
+  return (
+    <Tooltip
+      clickToOpen
+      side="top"
+      sideOffset={12}
+      triggerElement="div"
+      className="h-full w-full rounded-[0.85rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+      contentClassName="w-[min(21rem,calc(100vw-1rem))] px-3.5 py-3"
+      content={
+        <AccountMetricDetailTooltip
+          label={label}
+          value={value}
+          valueClassName={valueClassName}
+          sections={detailSections}
+        />
+      }
+      triggerProps={{
+        tabIndex: 0,
+        "aria-label": `${label} ${value}`,
+      }}
+    >
+      {card}
+    </Tooltip>
+  );
+}
+
+function AccountMetricDetailTooltip({
+  label,
+  value,
+  valueClassName,
+  sections,
+}: {
+  label: string;
+  value: string;
+  valueClassName: string;
+  sections: AccountMetricDetailSection[];
+}) {
+  return (
+    <div data-testid="dashboard-upstream-account-metric-tooltip" className="space-y-3">
+      <div className="flex min-w-0 items-baseline justify-between gap-4 border-b border-base-300/45 pb-2">
+        <div className="min-w-0 text-[11px] font-semibold leading-4 text-base-content/62">
+          {label}
+        </div>
+        <div
+          className={cn(
+            "min-w-0 truncate text-right font-mono text-[1rem] font-semibold leading-none",
+            valueClassName,
+          )}
+        >
+          {value}
+        </div>
+      </div>
+      {sections.map((section) => (
+        <div key={section.title} className="space-y-1.5">
+          <div className="text-[10px] font-semibold leading-4 text-base-content/52">
+            {section.title}
+          </div>
+          <div className="space-y-1">
+            {section.rows.map((row) => (
+              <div
+                key={`${section.title}:${row.label}`}
+                className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3"
+              >
+                <span className="min-w-0 truncate text-[11px] leading-4 text-base-content/68">
+                  {row.label}
+                </span>
+                <span
+                  className={cn(
+                    "min-w-0 max-w-[12rem] truncate text-right font-mono text-[11px] font-semibold leading-4 text-base-content",
+                    row.tone ? ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[row.tone] : null,
+                  )}
+                >
+                  {row.value}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -602,6 +713,7 @@ function AccountSegmentList({
   className,
   testId,
   showLabel = false,
+  enableTooltips = true,
 }: {
   segments: Array<{
     label: string;
@@ -611,7 +723,41 @@ function AccountSegmentList({
   className?: string;
   testId?: string;
   showLabel?: boolean;
+  enableTooltips?: boolean;
 }) {
+  const renderedSegments = segments.map((segment) => (
+    <span
+      key={`${segment.label}-${String(segment.value)}`}
+      data-testid="dashboard-upstream-account-segment"
+      data-motion-surface
+      className={cn(
+        "inline-flex items-center whitespace-nowrap rounded-md px-1 py-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+        showLabel ? "gap-1.5" : "gap-1.5",
+      )}
+    >
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          ACCOUNT_METRIC_DOT_TONE_CLASSNAMES[segment.tone],
+        )}
+        aria-hidden="true"
+      />
+      {showLabel ? (
+        <span className="text-[11px] font-semibold leading-none text-base-content/72">
+          {segment.label}
+        </span>
+      ) : null}
+      <span
+        className={cn(
+          "font-mono text-[12px] font-semibold leading-none",
+          ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[segment.tone],
+        )}
+      >
+        {segment.value}
+      </span>
+    </span>
+  ));
+
   return (
     <div
       data-testid={testId}
@@ -624,53 +770,27 @@ function AccountSegmentList({
         className,
       )}
     >
-      {segments.map((segment) => (
-        <Tooltip
-          key={`${segment.label}-${String(segment.value)}`}
-          content={
-            <span className="font-medium">
-              {segment.label}
-              <span className="font-mono font-semibold"> {String(segment.value)}</span>
-            </span>
-          }
-          clickToOpen
-          className="rounded-md"
-          triggerProps={{
-            tabIndex: 0,
-            "aria-label": `${segment.label} ${String(segment.value)}`,
-          }}
-        >
-          <span
-            data-testid="dashboard-upstream-account-segment"
-            data-motion-surface
-            className={cn(
-              "inline-flex items-center whitespace-nowrap rounded-md px-1 py-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-              showLabel ? "gap-1.5" : "gap-1.5",
-            )}
-          >
-            <span
-              className={cn(
-                "h-1.5 w-1.5 rounded-full",
-                ACCOUNT_METRIC_DOT_TONE_CLASSNAMES[segment.tone],
-              )}
-              aria-hidden="true"
-            />
-            {showLabel ? (
-              <span className="text-[11px] font-semibold leading-none text-base-content/72">
-                {segment.label}
-              </span>
-            ) : null}
-            <span
-              className={cn(
-                "font-mono text-[12px] font-semibold leading-none",
-                ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[segment.tone],
-              )}
+      {enableTooltips
+        ? segments.map((segment, index) => (
+            <Tooltip
+              key={`${segment.label}-${String(segment.value)}`}
+              content={
+                <span className="font-medium">
+                  {segment.label}
+                  <span className="font-mono font-semibold"> {String(segment.value)}</span>
+                </span>
+              }
+              clickToOpen
+              className="rounded-md"
+              triggerProps={{
+                tabIndex: 0,
+                "aria-label": `${segment.label} ${String(segment.value)}`,
+              }}
             >
-              {segment.value}
-            </span>
-          </span>
-        </Tooltip>
-      ))}
+              {renderedSegments[index]}
+            </Tooltip>
+          ))
+        : renderedSegments}
     </div>
   );
 }
@@ -1796,6 +1916,237 @@ function DashboardUpstreamAccountActivityCard({
   const avgTotalValue = formatAccountDurationValue(account.avgTotalMs, localeTag);
   const totalRequestValue = formatAccountNumberValue(account.requestCount, localeTag, 0);
   const totalCostValue = formatAccountCurrencyValue(account.totalCost, localeTag, 2);
+  const totalTokenValue = formatAccountNumberValue(account.totalTokens, localeTag, 0);
+  const latencyDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
+    const firstByteMs = finiteNumber(
+      account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs,
+    );
+    const stageFirstByteMs = finiteNumber(account.firstByteAvgMs);
+    const avgTotalMs = finiteNumber(account.avgTotalMs);
+    const relatedRows: AccountMetricDetailRow[] = [];
+
+    if (
+      stageFirstByteMs != null &&
+      firstByteMs != null &&
+      Math.abs(stageFirstByteMs - firstByteMs) >= 0.5
+    ) {
+      relatedRows.push({
+        label: locale === "zh" ? "阶段首字节" : "Stage first byte",
+        value: formatAccountDurationValue(stageFirstByteMs, localeTag),
+        tone: "secondary",
+      });
+    }
+    if (firstByteMs != null && avgTotalMs != null && avgTotalMs > 0 && firstByteMs <= avgTotalMs) {
+      relatedRows.push({
+        label: locale === "zh" ? "首字占比" : "First-byte share",
+        value: formatAccountPercentValue(firstByteMs / avgTotalMs, localeTag),
+        tone: "secondary",
+      });
+    }
+
+    return [
+      {
+        title: locale === "zh" ? "当前字段" : "Current fields",
+        rows: [
+          {
+            label: t("dashboard.today.firstResponseTime"),
+            value: firstByteValue,
+            tone: firstByteValue === FALLBACK_CELL ? "neutral" : "secondary",
+          },
+          {
+            label: t("dashboard.today.responseTime"),
+            value: avgTotalValue,
+            tone: avgTotalValue === FALLBACK_CELL ? "neutral" : "primary",
+          },
+        ],
+      },
+      ...(relatedRows.length > 0
+        ? [
+            {
+              title: locale === "zh" ? "相关数据" : "Related data",
+              rows: relatedRows,
+            },
+          ]
+        : []),
+    ];
+  }, [
+    account.avgTotalMs,
+    account.firstByteAvgMs,
+    account.firstResponseByteTotalAvgMs,
+    avgTotalValue,
+    firstByteValue,
+    locale,
+    localeTag,
+    t,
+  ]);
+  const requestDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
+    const otherCount = Math.max(0, account.nonSuccessCount - account.failureCount);
+    const successRate =
+      account.requestCount > 0 ? account.successCount / account.requestCount : null;
+    const nonSuccessRate =
+      account.requestCount > 0 ? account.nonSuccessCount / account.requestCount : null;
+
+    return [
+      {
+        title: locale === "zh" ? "当前字段" : "Current fields",
+        rows: [
+          {
+            label: locale === "zh" ? "请求数" : "Requests",
+            value: totalRequestValue,
+            tone: "neutral" as const,
+          },
+          {
+            label: locale === "zh" ? "成功" : "Success",
+            value: formatAccountNumberValue(account.successCount, localeTag, 0),
+            tone: "success" as const,
+          },
+          {
+            label: locale === "zh" ? "失败" : "Failure",
+            value: formatAccountNumberValue(account.failureCount, localeTag, 0),
+            tone: "error" as const,
+          },
+          {
+            label: locale === "zh" ? "其他" : "Other",
+            value: formatAccountNumberValue(otherCount, localeTag, 0),
+            tone: "warning" as const,
+          },
+        ],
+      },
+      {
+        title: locale === "zh" ? "相关数据" : "Related data",
+        rows: [
+          {
+            label: locale === "zh" ? "成功率" : "Success rate",
+            value: formatAccountPercentValue(successRate, localeTag),
+            tone: "success" as const,
+          },
+          {
+            label: locale === "zh" ? "非成功率" : "Non-success rate",
+            value: formatAccountPercentValue(nonSuccessRate, localeTag),
+            tone: "warning" as const,
+          },
+        ],
+      },
+    ];
+  }, [
+    account.failureCount,
+    account.nonSuccessCount,
+    account.requestCount,
+    account.successCount,
+    locale,
+    localeTag,
+    totalRequestValue,
+  ]);
+  const costDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
+    const failureRate =
+      account.requestCount > 0 ? account.failureCount / account.requestCount : null;
+    const nonFailureCost = account.totalCost - account.failureCost;
+    const averageCost =
+      account.requestCount > 0 ? account.totalCost / account.requestCount : null;
+
+    return [
+      {
+        title: locale === "zh" ? "当前字段" : "Current fields",
+        rows: [
+          {
+            label: locale === "zh" ? "成本" : "Cost",
+            value: totalCostValue,
+            tone: "warning" as const,
+          },
+          {
+            label: locale === "zh" ? "失败成本" : "Failure cost",
+            value: formatAccountCurrencyValue(account.failureCost, localeTag, 2),
+            tone: "error" as const,
+          },
+          {
+            label: locale === "zh" ? "失败比率" : "Failure rate",
+            value: formatAccountPercentValue(failureRate, localeTag),
+            tone: "error" as const,
+          },
+        ],
+      },
+      {
+        title: locale === "zh" ? "相关数据" : "Related data",
+        rows: [
+          {
+            label: locale === "zh" ? "成功/其他成本" : "Success/other cost",
+            value: formatAccountCurrencyValue(nonFailureCost, localeTag, 2),
+            tone: "warning" as const,
+          },
+          {
+            label: locale === "zh" ? "单次均价" : "Average per request",
+            value: formatAccountCurrencyValue(averageCost, localeTag, 4),
+            tone: "warning" as const,
+          },
+        ],
+      },
+    ];
+  }, [
+    account.failureCost,
+    account.failureCount,
+    account.requestCount,
+    account.totalCost,
+    locale,
+    localeTag,
+    totalCostValue,
+  ]);
+  const tokenDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
+    const averageTokens =
+      account.requestCount > 0 ? account.totalTokens / account.requestCount : null;
+
+    return [
+      {
+        title: locale === "zh" ? "当前字段" : "Current fields",
+        rows: [
+          {
+            label: "Token",
+            value: totalTokenValue,
+            tone: "success" as const,
+          },
+          {
+            label: locale === "zh" ? "缓存命中率" : "Cache hit",
+            value: formatAccountPercentValue(account.cacheHitRate, localeTag),
+            tone: "secondary" as const,
+          },
+          {
+            label: locale === "zh" ? "失败 Token" : "Failure tokens",
+            value: formatAccountNumberValue(account.failureTokens, localeTag, 0),
+            tone: "error" as const,
+          },
+        ],
+      },
+      {
+        title: locale === "zh" ? "相关数据" : "Related data",
+        rows: [
+          {
+            label: locale === "zh" ? "成功 Token" : "Success tokens",
+            value: formatAccountNumberValue(account.successTokens, localeTag, 0),
+            tone: "success" as const,
+          },
+          {
+            label: locale === "zh" ? "非成功 Token" : "Non-success tokens",
+            value: formatAccountNumberValue(account.nonSuccessTokens, localeTag, 0),
+            tone: "warning" as const,
+          },
+          {
+            label: locale === "zh" ? "单请求 Token" : "Tokens per request",
+            value: formatAccountNumberValue(averageTokens, localeTag, 1),
+            tone: "success" as const,
+          },
+        ],
+      },
+    ];
+  }, [
+    account.cacheHitRate,
+    account.failureTokens,
+    account.nonSuccessTokens,
+    account.requestCount,
+    account.successTokens,
+    account.totalTokens,
+    locale,
+    localeTag,
+    totalTokenValue,
+  ]);
   return (
     <article
       data-testid="dashboard-upstream-account-card"
@@ -1860,6 +2211,8 @@ function DashboardUpstreamAccountActivityCard({
             label={t("dashboard.today.firstResponseTime")}
             value={firstByteValue}
             tone={firstByteValue === FALLBACK_CELL ? "neutral" : "secondary"}
+            metricKey="latency"
+            detailSections={latencyDetailSections}
           >
             <AccountSegmentList
               segments={[
@@ -1870,36 +2223,46 @@ function DashboardUpstreamAccountActivityCard({
                 },
               ]}
               testId="dashboard-upstream-account-latency-breakdown"
+              enableTooltips={false}
             />
           </AccountHeroMetric>
           <AccountHeroMetric
             label={locale === "zh" ? "请求数" : "Requests"}
             value={totalRequestValue}
             tone="neutral"
+            metricKey="requests"
+            detailSections={requestDetailSections}
           >
             <AccountSegmentList
               segments={requestSummarySegments}
               testId="dashboard-upstream-account-request-breakdown"
+              enableTooltips={false}
             />
           </AccountHeroMetric>
           <AccountHeroMetric
             label={locale === "zh" ? "成本" : "Cost"}
             value={totalCostValue}
             tone="warning"
+            metricKey="cost"
+            detailSections={costDetailSections}
           >
             <AccountSegmentList
               segments={costSummarySegments}
               testId="dashboard-upstream-account-cost-breakdown"
+              enableTooltips={false}
             />
           </AccountHeroMetric>
           <AccountHeroMetric
             label="Token"
-            value={formatAccountNumberValue(account.totalTokens, localeTag, 0)}
+            value={totalTokenValue}
             tone="success"
+            metricKey="token"
+            detailSections={tokenDetailSections}
           >
             <AccountSegmentList
               segments={tokenSummarySegments}
               testId="dashboard-upstream-account-token-breakdown"
+              enableTooltips={false}
             />
           </AccountHeroMetric>
         </div>
