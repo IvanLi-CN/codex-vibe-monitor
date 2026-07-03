@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent } from "@testing-library/dom";
+import { fireEvent, waitFor } from "@testing-library/dom";
 import { I18nProvider } from "../i18n";
 import type {
   PromptCacheConversation,
@@ -674,6 +674,129 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(recentBreakdown?.textContent).toContain("成功");
     expect(recentBreakdown?.textContent).toContain("2");
     expect(recentBreakdown?.textContent).toContain("1");
+  });
+
+  it("opens detailed metric tooltips from the whole upstream account metric cards", async () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-metric-tooltips", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-metric-tooltips",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    expect(
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-metric-card"]'),
+    ).toHaveLength(4);
+
+    const costTrigger = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-metric-card"][data-metric="cost"]',
+    );
+    if (!(costTrigger instanceof HTMLElement)) {
+      throw new Error("missing cost metric trigger");
+    }
+
+    act(() => {
+      fireEvent.click(costTrigger);
+    });
+
+    await waitFor(() => {
+      const tooltipText = document.body.textContent ?? "";
+      expect(tooltipText).toContain("成本");
+      expect(tooltipText).toContain("$0.72");
+      expect(tooltipText).toContain("失败成本");
+      expect(tooltipText).toContain("$0.22");
+      expect(tooltipText).toContain("失败比率");
+      expect(tooltipText).toContain("25%");
+      expect(tooltipText).toContain("成功/其他成本");
+      expect(tooltipText).toContain("$0.50");
+      expect(tooltipText).toContain("单次均价");
+    });
+
+    const tokenTrigger = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-metric-card"][data-metric="token"]',
+    );
+    if (!(tokenTrigger instanceof HTMLElement)) {
+      throw new Error("missing token metric trigger");
+    }
+
+    act(() => {
+      fireEvent.click(tokenTrigger);
+    });
+
+    await waitFor(() => {
+      const tooltipText = document.body.textContent ?? "";
+      expect(tooltipText).toContain("Token");
+      expect(tooltipText).toContain("3,200");
+      expect(tooltipText).toContain("缓存命中率");
+      expect(tooltipText).toContain("25%");
+      expect(tooltipText).toContain("失败 Token");
+      expect(tooltipText).toContain("350");
+      expect(tooltipText).toContain("成功 Token");
+      expect(tooltipText).toContain("2,800");
+      expect(tooltipText).toContain("单请求 Token");
+      expect(tooltipText).toContain("400");
+    });
+
+    const requestTrigger = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-metric-card"][data-metric="requests"]',
+    );
+    if (!(requestTrigger instanceof HTMLElement)) {
+      throw new Error("missing request metric trigger");
+    }
+
+    act(() => {
+      fireEvent.click(requestTrigger);
+    });
+
+    await waitFor(() => {
+      const tooltipText = document.body.textContent ?? "";
+      expect(tooltipText).toContain("请求数");
+      expect(tooltipText).toContain("8");
+      expect(tooltipText).toContain("成功率");
+      expect(tooltipText).toContain("75%");
+      expect(tooltipText).toContain("非成功率");
+      expect(tooltipText).toContain("25%");
+    });
+
+    const latencyTrigger = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-metric-card"][data-metric="latency"]',
+    );
+    if (!(latencyTrigger instanceof HTMLElement)) {
+      throw new Error("missing latency metric trigger");
+    }
+
+    act(() => {
+      fireEvent.click(latencyTrigger);
+    });
+
+    await waitFor(() => {
+      const tooltipText = document.body.textContent ?? "";
+      expect(tooltipText).toContain("首字用时");
+      expect(tooltipText).toContain("2.87 s");
+      expect(tooltipText).toContain("响应时间");
+      expect(tooltipText).toContain("860");
+      expect(tooltipText).toContain("阶段首字节");
+      expect(tooltipText).toContain("420");
+    });
   });
 
   it("passes the dynamic recent preview limit into upstream account activity", () => {
