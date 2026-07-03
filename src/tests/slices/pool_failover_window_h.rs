@@ -11475,11 +11475,13 @@ async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
     let previous_complete_hour_utc =
         (current_hour_utc - ChronoDuration::hours(1)).max(today_start_utc);
     let occurred_at = format_naive(now_utc.with_timezone(&Shanghai).naive_local());
-    let earlier_today = format_naive(
-        (previous_complete_hour_utc + ChronoDuration::minutes(30))
-            .with_timezone(&Shanghai)
-            .naive_local(),
-    );
+    let earlier_today_utc = previous_complete_hour_utc + ChronoDuration::minutes(30);
+    let earlier_today_utc = if earlier_today_utc < now_utc {
+        earlier_today_utc
+    } else {
+        now_utc - ChronoDuration::seconds(1)
+    };
+    let earlier_today = format_naive(earlier_today_utc.with_timezone(&Shanghai).naive_local());
 
     for (
         id,
