@@ -10,7 +10,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 
 - Add a per-`promptCacheKey` binding contract for group binding, upstream account binding, and clearing the binding.
 - Add per-conversation request-path timeout overrides that can exist with or without a manual binding target.
-- Add per-conversation runtime policy overrides for upstream switching, FAST mode rewrite, image tool rewrite, available models, and one forward-proxy binding node.
+- Add per-conversation runtime policy overrides for upstream switching, FAST mode rewrite, image tool rewrite, available models, and a hard list of forward-proxy binding nodes.
 - Expose the binding on the Prompt Cache conversation detail drawer.
 - Apply the binding when the proxy can observe the same `promptCacheKey` before account-pool selection.
 - Keep group binding and upstream account binding mutually exclusive at both API and UI layers.
@@ -20,9 +20,9 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Do not change Prompt Cache conversation aggregation, historical invocation records, rollups, or SSE payload semantics.
 - Do not migrate existing sticky routes into conversation bindings.
 - Do not add tag-based, policy-based, or bulk binding workflows.
-- Do not change account-pool group, tag, forward-proxy, or policy inheritance semantics.
+- Do not change account-pool group, tag, or policy inheritance semantics.
 - Do not make tags participate in timeout inheritance or timeout source display.
-- Do not add arbitrary proxy URL input; conversation proxy override selects exactly one existing forward-proxy binding node, including direct.
+- Do not add arbitrary proxy URL input; conversation proxy override selects existing forward-proxy binding nodes, including direct.
 - Do not copy account-level `allowCutIn` semantics into the conversation layer.
 
 ## Requirements
@@ -44,9 +44,9 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Conversation `allowSwitchUpstream` is the setting labelled “切出”. It means the current conversation may switch away from the original/sticky upstream account when routing evaluates future requests.
 - Conversation FAST mode and image tool overrides use the existing rewrite modes: `force_remove`, `keep_original`, `fill_missing`, and `force_add`.
 - Conversation available-model override must contain at least one model. An empty list is rejected; clearing the override uses `null`.
-- Conversation proxy override stores one existing selectable forward-proxy binding key. It may be `__direct__`; it may not be a custom proxy URL.
+- Conversation proxy override stores one or more existing selectable forward-proxy binding keys. The list may include `__direct__`; it may not contain custom proxy URLs.
 - Runtime routing treats an observed binding as a hard constraint; if the bound target is unavailable, routing must fail through the existing no-selectable-account error path rather than falling back to the global pool.
-- Runtime routing treats an observed conversation proxy override as a pinned single-node forward-proxy scope. If that node is unavailable, routing must fail through the existing proxy/account readiness path rather than silently choosing another proxy.
+- Runtime routing treats an observed conversation proxy override as a hard bound forward-proxy scope. The current node remains sticky for the prompt cache key, and runtime switches within the explicit list only after the existing consecutive network-failure threshold. If every node in that list is unavailable, routing fails through the existing proxy/account readiness path rather than silently choosing another proxy or falling back to the account/group scope.
 - Binding lookup does not change the existing live-first request-body streaming strategy; large or chunked requests whose body key is not visible before account selection keep the normal account-pool routing behavior.
 - Binding changes affect future requests only; in-flight requests are not rerouted.
 - Conversation detail history is loaded incrementally: the drawer requests an initial 50 retained invocation records and fetches later 50-record pages only when the drawer body scrolls near the bottom.
@@ -71,6 +71,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - `image_tool_rewrite_mode TEXT NULL`
 - `available_models_json TEXT NULL`
 - `forward_proxy_key TEXT NULL`
+- `forward_proxy_keys_json TEXT NULL`
 - `created_at TEXT NOT NULL`
 - `updated_at TEXT NOT NULL`
 
@@ -81,14 +82,14 @@ The row is deleted only when there is no binding target, all four timeout overri
 ### HTTP API
 
 - `GET /api/stats/prompt-cache-conversation-bindings/{encodedPromptCacheKey}`
-  - Returns `{ promptCacheKey, bindingKind, groupName, upstreamAccountId, upstreamAccountName, timeouts, timeoutFieldSources, allowSwitchUpstream, fastModeRewriteMode, imageToolRewriteMode, availableModels, forwardProxyKey, policyFieldSources, updatedAt }`.
+  - Returns `{ promptCacheKey, bindingKind, groupName, upstreamAccountId, upstreamAccountName, timeouts, timeoutFieldSources, allowSwitchUpstream, fastModeRewriteMode, imageToolRewriteMode, availableModels, forwardProxyKey, forwardProxyKeys, policyFieldSources, updatedAt }`.
   - `bindingKind` is `none`, `group`, or `upstreamAccount`.
   - `policyFieldSources` uses the same source vocabulary as effective routing rules and marks each conversation policy field as `conversation` when set locally or inherited from `account`/upstream policy otherwise.
 - `PATCH /api/stats/prompt-cache-conversation-bindings/{encodedPromptCacheKey}`
   - `{ "bindingKind": "none" }` clears only the manual binding target when no timeout patch is present.
   - `{ "bindingKind": "group", "groupName": "prod" }` binds a group.
   - `{ "bindingKind": "upstreamAccount", "upstreamAccountId": 123 }` binds an account.
-  - All variants may also include `timeouts`, `allowSwitchUpstream`, `fastModeRewriteMode`, `imageToolRewriteMode`, `availableModels`, and `forwardProxyKey`.
+  - All variants may also include `timeouts`, `allowSwitchUpstream`, `fastModeRewriteMode`, `imageToolRewriteMode`, `availableModels`, `forwardProxyKey`, and `forwardProxyKeys`.
 
 Timeout patch semantics are field-local:
 
@@ -104,7 +105,8 @@ Policy patch semantics are field-local:
 - `null`: clear that field's conversation override
 - concrete value: store that field's conversation override
 - `availableModels: []`: rejected because an explicit available-model override cannot be empty
-- `forwardProxyKey`: must reference a selectable existing binding node, including `__direct__`
+- `forwardProxyKey`: legacy single-node write surface; must reference a selectable existing binding node, including `__direct__`
+- `forwardProxyKeys`: must contain at least one selectable existing binding node, including `__direct__`; `null` clears the override and an empty list is treated as clear
 
 The key segment is URL-encoded with normal component encoding; the server accepts encoded keys that decode to values containing `/`, trims the decoded key, and validates the result before use.
 
@@ -120,7 +122,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - For forced upstream account binding, an existing sticky route cannot block the selected target through sticky cut-out policy, and the selected target's cut-in policy cannot reject the operator-forced transfer.
 - Existing account eligibility, health, quota, guard, concurrency, retry, route-key, and forward-proxy readiness checks remain authoritative inside the constrained candidate set.
 - FAST mode, image tool, and available-model conversation overrides are applied to the effective routing rule before candidate compatibility checks.
-- A conversation proxy override replaces the selected account/group/node-shunt forward-proxy dispatch scope with one pinned binding key.
+- A conversation proxy override replaces the selected account/group/node-shunt forward-proxy dispatch scope with a prompt-cache-key scoped hard binding list. Account-level proxy lists still override group lists when no conversation proxy override is set.
 - A conversation “切出” override allows routing to move the conversation away from the original/sticky upstream account. It is not a cut-in override and does not force another account to accept otherwise invalid traffic.
 - Saving an upstream account binding immediately updates `pool_sticky_routes` for that `promptCacheKey` to the bound account so future requests and operator views agree on the effective assignment.
 - Clearing a binding removes only the binding row; any existing sticky route remains ordinary sticky-routing state and is governed by the normal sticky reuse and cut-out policy.
@@ -142,7 +144,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given `allowSwitchUpstream=true`, routing may move the current conversation away from the original/sticky upstream account; clearing the field restores inherited sticky cut-out behavior.
 - Given FAST mode or image tool is overridden, later requests for the same `promptCacheKey` use that rewrite mode in account compatibility and request rewrite decisions.
 - Given available models are overridden, later requests for the same `promptCacheKey` select only accounts compatible with that explicit non-empty list; `availableModels: []` is rejected.
-- Given `forwardProxyKey` is overridden to one selectable node, later requests for the same `promptCacheKey` dispatch through that pinned node or fail if it is unavailable.
+- Given `forwardProxyKeys` is overridden to multiple selectable nodes, later requests for the same `promptCacheKey` reuse the current selected node, switch only within that list after consecutive network failures, and fail if the explicit list has no selectable nodes.
 - Given failover from one target account to another, the request recomputes effective timeouts against the new target's group/account chain before applying conversation overrides.
 - Given a PATCH payload containing both `groupName` and `upstreamAccountId`, the API rejects it.
 - Given a bound target that is disabled or unavailable, the request fails through the existing no-selectable-account path without fallback.
@@ -169,3 +171,6 @@ The Storybook `DrawerBindingAndTimeouts` scenario renders the conversation drawe
 ![Conversation detail settings with policy overrides](./assets/conversation-detail-settings-overrides-20260702-trimmed.png)
 
 The Storybook `DrawerBindingAndTimeouts` scenario now also renders the conversation detail Settings tab with conversation-level policy overrides visible: 切出 allows switching upstream, FAST mode is forced on, image tool is forced off, available models are explicitly overridden with a non-empty list, and the proxy selector remains constrained to existing binding nodes. The drawer title is “对话详情”.
+
+PR: include
+![Conversation settings multi proxy](./assets/conversation-settings-multi-proxy-story.png)

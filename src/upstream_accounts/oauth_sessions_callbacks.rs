@@ -1605,6 +1605,32 @@ pub(crate) async fn update_upstream_account_inner(
     if let Some(resolved_group_binding) = resolved_group_binding.as_ref() {
         row.group_name = Some(resolved_group_binding.group_name.clone());
     }
+    let next_bound_proxy_keys_json = match payload.bound_proxy_keys {
+        OptionalField::Missing => row.bound_proxy_keys_json.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(values) => {
+            let normalized = normalize_bound_proxy_keys(values);
+            if normalized.is_empty() {
+                None
+            } else {
+                let canonical = canonicalize_forward_proxy_bound_keys(state, &normalized)
+                    .await
+                    .map_err(internal_error_tuple)?;
+                let has_selectable = {
+                    let manager = state.forward_proxy.lock().await;
+                    manager.has_selectable_bound_proxy_keys(&canonical)
+                };
+                if !has_selectable {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "select at least one available proxy node or clear account proxy bindings"
+                            .to_string(),
+                    ));
+                }
+                Some(encode_group_bound_proxy_keys_json(&canonical).map_err(internal_error_tuple)?)
+            }
+        }
+    };
     let now_iso = format_utc_iso(Utc::now());
     let mut tx = state
         .pool
@@ -1659,7 +1685,8 @@ pub(crate) async fn update_upstream_account_inner(
             policy_compact_first_byte_timeout_secs = ?26,
             policy_responses_stream_timeout_secs = ?27,
             policy_compact_stream_timeout_secs = ?28,
-            updated_at = ?29
+            bound_proxy_keys_json = ?29,
+            updated_at = ?30
         WHERE id = ?1
         "#,
     )
@@ -1853,6 +1880,7 @@ pub(crate) async fn update_upstream_account_inner(
         },
         None => row.policy_compact_stream_timeout_secs,
     })
+    .bind(next_bound_proxy_keys_json)
     .bind(&now_iso)
     .execute(tx.as_mut())
     .await

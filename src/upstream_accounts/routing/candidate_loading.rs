@@ -349,11 +349,21 @@ fn build_pool_resolved_account(
 pub(crate) fn conversation_forward_proxy_scope(
     override_policy: Option<&ConversationRoutingOverride>,
 ) -> Option<ForwardProxyRouteScope> {
-    override_policy
-        .and_then(|policy| policy.forward_proxy_key.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|proxy_key| ForwardProxyRouteScope::pinned(proxy_key.to_string()))
+    override_policy.and_then(|policy| {
+        if !policy.forward_proxy_keys.is_empty() {
+            Some(ForwardProxyRouteScope::bound_scope(
+                policy.forward_proxy_scope_key.clone(),
+                policy.forward_proxy_keys.clone(),
+            ))
+        } else {
+            policy
+                .forward_proxy_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|proxy_key| ForwardProxyRouteScope::pinned(proxy_key.to_string()))
+        }
+    })
 }
 
 async fn prepare_pool_account_with_scopes(
@@ -626,19 +636,20 @@ pub(crate) async fn prepare_pool_account(
     conversation_override: Option<&ConversationRoutingOverride>,
 ) -> Result<Option<PoolResolvedAccount>> {
     let conversation_proxy_scope = conversation_forward_proxy_scope(conversation_override);
+    let account_proxy_scope = account_bound_forward_proxy_scope(row);
     let refresh_proxy_scope = conversation_proxy_scope.clone().unwrap_or(
-        required_account_forward_proxy_scope(
+        account_proxy_scope.clone().unwrap_or(required_account_forward_proxy_scope(
             row.group_name.as_deref(),
             group_metadata.bound_proxy_keys.clone(),
-        )?,
+        )?),
     );
     let forward_proxy_scope = conversation_proxy_scope.unwrap_or(
-        resolve_account_forward_proxy_scope_from_assignments(
+        account_proxy_scope.unwrap_or(resolve_account_forward_proxy_scope_from_assignments(
             row.id,
             row.group_name.as_deref(),
             &group_metadata,
             node_shunt_assignments,
-        )?,
+        )?),
     );
     prepare_pool_account_with_scopes(
         state,

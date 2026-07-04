@@ -229,6 +229,7 @@ export interface UpstreamAccountSummary {
   lastActionInvokeId?: string | null;
   lastActionAt?: string | null;
   cooldownUntil?: string | null;
+  boundProxyKeys?: string[];
   currentForwardProxyKey?: string | null;
   currentForwardProxyDisplayName?: string | null;
   currentForwardProxyState?: UpstreamAccountForwardProxyState;
@@ -622,6 +623,7 @@ export interface UpdateUpstreamAccountPayload {
   email?: string | null;
   groupName?: string;
   groupBoundProxyKeys?: string[];
+  boundProxyKeys?: string[] | null;
   concurrencyLimit?: number;
   groupNodeShuntEnabled?: boolean;
   groupSingleAccountRotationEnabled?: boolean;
@@ -1232,6 +1234,9 @@ function normalizeUpstreamAccountSummary(
       typeof payload.lastActionAt === "string" ? payload.lastActionAt : null,
     cooldownUntil:
       typeof payload.cooldownUntil === "string" ? payload.cooldownUntil : null,
+    boundProxyKeys: normalizeStringArray(payload.boundProxyKeys)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0),
     currentForwardProxyKey:
       typeof payload.currentForwardProxyKey === "string"
         ? payload.currentForwardProxyKey
