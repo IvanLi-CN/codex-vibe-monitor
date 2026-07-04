@@ -167,7 +167,7 @@ function MetricTile({
       aria-hidden
       data-testid={valueTestId ? `${valueTestId}-icon` : undefined}
       className={cn(
-        'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-base-100/72 text-[1.15rem] ring-1 ring-inset ring-base-300/70',
+        'flex h-[1.65rem] w-[1.65rem] shrink-0 items-center justify-center text-[1.55rem] leading-none',
         subdued ? 'text-base-content/45' : toneClass ?? 'text-base-content/65',
       )}
     >

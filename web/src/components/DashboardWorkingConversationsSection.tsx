@@ -610,8 +610,7 @@ function AccountHeroMetric({
           aria-hidden
           data-testid={metricKey ? `dashboard-upstream-account-${metricKey}-icon` : undefined}
           className={cn(
-            "flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-base-100/70 text-[0.95rem] ring-1 ring-inset",
-            ACCOUNT_CARD_INNER_RING_CLASS_NAME,
+            "flex h-[1.35rem] w-[1.35rem] shrink-0 items-center justify-center text-[1.22rem] leading-none",
             iconClassName,
           )}
         >
@@ -743,7 +742,7 @@ function AccountInlineMetric({
       <span
         aria-hidden
         className={cn(
-          "flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-base-200/70 text-[0.82rem] ring-1 ring-inset ring-base-300/70",
+          "flex h-[1.2rem] w-[1.2rem] shrink-0 items-center justify-center text-[1.05rem] leading-none",
           iconClassName,
         )}
       >
