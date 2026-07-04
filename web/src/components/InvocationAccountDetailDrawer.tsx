@@ -298,31 +298,35 @@ export function InvocationAccountDetailDrawer({
                   }
                 />
                 <DetailField label={t('accountPool.upstreamAccounts.fields.email')} value={detail.email ?? detail.maskedApiKey ?? ''} />
-                <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={detail.chatgptAccountId ?? detail.maskedApiKey ?? ''} />
-                <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={detail.chatgptUserId ?? ''} />
+                {detail.kind === 'oauth_codex' ? (
+                  <>
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={detail.chatgptAccountId ?? ''} />
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={detail.chatgptUserId ?? ''} />
+                  </>
+                ) : null}
                 <DetailField label={t('accountPool.upstreamAccounts.fields.lastSuccessSync')} value={formatDateTime(detail.lastSuccessfulSyncAt)} />
               </div>
-              <div className="grid gap-4 xl:grid-cols-2">
-                <UpstreamAccountUsageCard
-                  title={t('accountPool.upstreamAccounts.primaryWindowLabel')}
-                  description={t('accountPool.upstreamAccounts.usage.primaryDescription')}
-                  window={detail.primaryWindow}
-                  history={detail.history}
-                  historyKey="primaryUsedPercent"
-                  emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
-                  noteLabel={detail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
-                />
-                <UpstreamAccountUsageCard
-                  title={t('accountPool.upstreamAccounts.secondaryWindowLabel')}
-                  description={t('accountPool.upstreamAccounts.usage.secondaryDescription')}
-                  window={detail.secondaryWindow}
-                  history={detail.history}
-                  historyKey="secondaryUsedPercent"
-                  emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
-                  noteLabel={detail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
-                  accentClassName="text-secondary"
-                />
-              </div>
+              {detail.kind === 'oauth_codex' ? (
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <UpstreamAccountUsageCard
+                    title={t('accountPool.upstreamAccounts.primaryWindowLabel')}
+                    description={t('accountPool.upstreamAccounts.usage.primaryDescription')}
+                    window={detail.primaryWindow}
+                    history={detail.history}
+                    historyKey="primaryUsedPercent"
+                    emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
+                  />
+                  <UpstreamAccountUsageCard
+                    title={t('accountPool.upstreamAccounts.secondaryWindowLabel')}
+                    description={t('accountPool.upstreamAccounts.usage.secondaryDescription')}
+                    window={detail.secondaryWindow}
+                    history={detail.history}
+                    historyKey="secondaryUsedPercent"
+                    emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
+                    accentClassName="text-secondary"
+                  />
+                </div>
+              ) : null}
             </div>
           ) : null}
 
