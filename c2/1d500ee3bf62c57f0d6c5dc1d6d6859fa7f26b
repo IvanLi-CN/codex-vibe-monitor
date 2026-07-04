@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.11.1",
+  "base_stable_version": "2.11.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-04T11:18:39Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.11.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "82a58b3e67eb7d5f674d4f3f033106c20d4be7d4",
+  "pr_number": 525,
+  "pr_title": "fix: overlay runtime prompt cache conversations",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.11.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.11.1",
+  "target_sha": "c21d500ee3bf62c57f0d6c5dc1d6d6859fa7f26b",
+  "type_label": "type:patch"
+}
