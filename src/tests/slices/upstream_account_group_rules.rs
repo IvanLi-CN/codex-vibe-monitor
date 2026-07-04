@@ -988,6 +988,59 @@ async fn admitted_proxy_capture_snapshot_can_be_cleared_before_terminal_on_early
 }
 
 #[tokio::test]
+async fn admitted_proxy_capture_snapshot_is_cleared_when_cleanup_guard_drops_before_attempt() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let invoke_id = "invoke-admitted-drop-guard";
+    let occurred_at = "2026-03-17 18:15:55";
+    let guard = PoolInvocationCleanupGuard::new(
+        state.clone(),
+        InvocationRecoverySelector::new(invoke_id.to_string(), occurred_at.to_string()),
+        "test_admitted_drop_guard",
+    );
+
+    let admitted_record = build_admitted_proxy_capture_runtime_snapshot(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        Some("203.0.113.45"),
+        Some("sticky-from-header"),
+        Some("pck-from-header"),
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, admitted_record)
+        .await
+        .expect("admitted snapshot should store in memory");
+
+    assert_eq!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .into_iter()
+            .filter(|record| record.invoke_id == invoke_id && record.occurred_at == occurred_at)
+            .count(),
+        1,
+        "admitted runtime snapshot should be visible before the cleanup guard drops"
+    );
+
+    drop(guard);
+    for _ in 0..50 {
+        if state
+            .proxy_runtime_invocations
+            .snapshot()
+            .into_iter()
+            .all(|record| record.invoke_id != invoke_id || record.occurred_at != occurred_at)
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    panic!("drop guard should clear pre-attempt admitted runtime snapshot without a DB row");
+}
+
+#[tokio::test]
 async fn admitted_proxy_capture_snapshot_is_terminalized_on_pre_attempt_error() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

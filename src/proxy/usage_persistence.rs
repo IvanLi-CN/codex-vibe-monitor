@@ -1241,6 +1241,12 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
     .await?;
 
     if recovered_invocations.is_empty() {
+        remove_proxy_runtime_snapshot_by_key(
+            state,
+            &selector.invoke_id,
+            &selector.occurred_at,
+            recovery_trigger,
+        );
         return Ok(());
     }
 

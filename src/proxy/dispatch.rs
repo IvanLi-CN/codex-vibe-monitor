@@ -172,7 +172,7 @@ async fn persist_pre_attempt_proxy_capture_error(
     status: StatusCode,
     failure_kind: &'static str,
     error_message: &str,
-) {
+) -> bool {
     let req_raw = spawn_raw_payload_file_write(
         state,
         invoke_id,
@@ -286,6 +286,9 @@ async fn persist_pre_attempt_proxy_capture_error(
             failure_kind,
             "failed to persist pre-attempt proxy capture terminal record"
         );
+        false
+    } else {
+        true
     }
 }
 
@@ -322,6 +325,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let occurred_at_utc = Utc::now();
     let occurred_at = format_naive(occurred_at_utc.with_timezone(&Shanghai).naive_local());
+    let mut pool_invocation_cleanup_guard = pool_route_active.then(|| {
+        PoolInvocationCleanupGuard::new(
+            state.clone(),
+            InvocationRecoverySelector::new(invoke_id.clone(), occurred_at.clone()),
+            "request_drop_guard",
+        )
+    });
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     let requester_ip = extract_requester_ip(&headers, peer_ip);
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
@@ -489,10 +499,16 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     t_persist_ms: 0.0,
                 },
             };
-            if let Err(err) =
+            let terminal_invocation_persisted = if let Err(err) =
                 persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record).await
             {
                 warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
+                false
+            } else {
+                true
+            };
+            if terminal_invocation_persisted {
+                disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
             }
             return Err((read_err.status, read_err.message));
         }
@@ -554,7 +570,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     let status = StatusCode::BAD_GATEWAY;
                     let message =
                         format!("failed to resolve prompt cache conversation binding: {err}");
-                    persist_pre_attempt_proxy_capture_error(
+                    let terminal_invocation_persisted = persist_pre_attempt_proxy_capture_error(
                         state.as_ref(),
                         proxy_request_id,
                         capture_started,
@@ -575,6 +591,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         &message,
                     )
                     .await;
+                    if terminal_invocation_persisted {
+                        disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
+                    }
                     return Err((status, message));
                 }
             }
@@ -590,7 +609,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 let status = StatusCode::BAD_GATEWAY;
                 let message =
                     format!("failed to resolve prompt cache conversation overrides: {err}");
-                persist_pre_attempt_proxy_capture_error(
+                let terminal_invocation_persisted = persist_pre_attempt_proxy_capture_error(
                     state.as_ref(),
                     proxy_request_id,
                     capture_started,
@@ -611,6 +630,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     &message,
                 )
                 .await;
+                if terminal_invocation_persisted {
+                    disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
+                }
                 return Err((status, message));
             }
         }
@@ -682,13 +704,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let first_byte_timeout =
         pool_upstream_first_chunk_timeout(&runtime_timeouts, &original_uri, &Method::POST);
     let stream_timeout = proxy_capture_target_stream_timeout(&runtime_timeouts, capture_target);
-    let mut pool_invocation_cleanup_guard = pool_route_active.then(|| {
-        PoolInvocationCleanupGuard::new(
-            state.clone(),
-            InvocationRecoverySelector::new(invoke_id.clone(), occurred_at.clone()),
-            "request_drop_guard",
-        )
-    });
     let (
         selected_proxy,
         pool_account,
