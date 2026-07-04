@@ -255,6 +255,15 @@ export const DetailDrawerRoutingRules: Story = {
     expect(warningValues).toContain('禁止切入')
     expect((dialog.textContent ?? '').match(/禁止切出/g)).toHaveLength(1)
     expect((dialog.textContent ?? '').match(/禁止切入/g)).toHaveLength(1)
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /添加代理|add proxy/i }))
+    const proxyDialog = await documentScope.findByRole('dialog', {
+      name: /选择账号代理节点|select account proxy nodes/i,
+    })
+    await expect(within(proxyDialog).getByText(/Direct/i)).toBeInTheDocument()
+    await expect(within(proxyDialog).getByText(/fpn_5a7b0c1d2e3f4a10/i)).toBeInTheDocument()
+    expect(within(proxyDialog).getAllByText(/24H/i).length).toBeGreaterThan(0)
+    await expect(within(proxyDialog).getByRole('button', { name: /应用选择|apply selection/i })).toBeInTheDocument()
   },
 }
 

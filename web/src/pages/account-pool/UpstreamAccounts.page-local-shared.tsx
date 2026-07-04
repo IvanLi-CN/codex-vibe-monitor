@@ -51,6 +51,7 @@ import {
 import { Spinner } from "../../components/ui/spinner";
 import { Switch } from "../../components/ui/switch";
 import { EffectiveRoutingRuleCard } from "../../components/EffectiveRoutingRuleCard";
+import { ForwardProxyBindingSelector } from "../../components/ForwardProxyBindingSelector";
 import { InvocationTable } from "../../components/InvocationTable";
 import {
   DashboardActivityOverview,
@@ -298,6 +299,15 @@ function proxyNodeStatusLabel(
     return t("accountPool.upstreamAccounts.proxyBindings.statusUnavailable");
   }
   return t("accountPool.upstreamAccounts.proxyBindings.statusMissing");
+}
+
+function proxyNodeTone(
+  node: ForwardProxyBindingNode | undefined,
+  key: string,
+): "direct" | "available" | "unavailable" | "missing" {
+  if (key === DIRECT_PROXY_KEY || node?.source === "direct") return "direct";
+  if (!node) return "missing";
+  return node.selectable ? "available" : "unavailable";
 }
 
 function toggleProxyKey(keys: string[], key: string): string[] {
@@ -1892,6 +1902,10 @@ function SharedUpstreamAccountDetailDrawerInner({
   const selectedAccountProxyKeys = normalizeProxyKeys(
     selectedDetail?.boundProxyKeys,
   );
+  const [accountProxyEditorOpen, setAccountProxyEditorOpen] = useState(false);
+  const [accountProxyDraftKeys, setAccountProxyDraftKeys] = useState<string[]>(
+    [],
+  );
   const selectedGroupProxyKeys = normalizeProxyKeys(
     selectedDetail?.groupName
       ? resolveGroupBoundProxyKeysForName(selectedDetail.groupName)
@@ -1904,10 +1918,22 @@ function SharedUpstreamAccountDetailDrawerInner({
   const selectedProxyNodeByKey = new Map(
     forwardProxyNodes.map((node) => [node.key, node]),
   );
-  const selectableProxyOptions = forwardProxyNodes.filter(
-    (node) =>
-      node.selectable || selectedAccountProxyKeys.includes(node.key),
+  const accountProxyEditorBusy = Boolean(
+    selectedDetail && hasBusyAccountAction(busyAction, selectedDetail.id),
   );
+  const openAccountProxyEditor = useCallback(() => {
+    setAccountProxyDraftKeys(selectedAccountProxyKeys);
+    setAccountProxyEditorOpen(true);
+  }, [selectedAccountProxyKeys]);
+  const closeAccountProxyEditor = useCallback(() => {
+    if (accountProxyEditorBusy) return;
+    setAccountProxyEditorOpen(false);
+  }, [accountProxyEditorBusy]);
+  useEffect(() => {
+    if (!open || !selectedDetail) {
+      setAccountProxyEditorOpen(false);
+    }
+  }, [open, selectedDetail]);
   useEffect(() => {
     if (
       !open ||
@@ -2263,8 +2289,9 @@ function SharedUpstreamAccountDetailDrawerInner({
             normalizedProxyKeys.length > 0 ? normalizedProxyKeys : null,
         });
         notifyMotherChange(response);
+        return true;
       } catch (err) {
-        if (handleNotFoundClose(source.id, err)) return;
+        if (handleNotFoundClose(source.id, err)) return false;
         setActionError((current) => ({
           ...current,
           accountMessages: {
@@ -2272,6 +2299,7 @@ function SharedUpstreamAccountDetailDrawerInner({
             [source.id]: err instanceof Error ? err.message : String(err),
           },
         }));
+        return false;
       } finally {
         setBusyAction((current) => {
           const nextActions = new Set(current.accountActions);
@@ -2282,6 +2310,20 @@ function SharedUpstreamAccountDetailDrawerInner({
     },
     [busyAction, handleNotFoundClose, notifyMotherChange, saveAccount],
   );
+  const applyAccountProxyEditor = useCallback(async () => {
+    if (!selectedDetail) return;
+    const saved = await handleSaveAccountProxyBindings(
+      selectedDetail,
+      accountProxyDraftKeys,
+    );
+    if (saved) {
+      setAccountProxyEditorOpen(false);
+    }
+  }, [
+    accountProxyDraftKeys,
+    handleSaveAccountProxyBindings,
+    selectedDetail,
+  ]);
   const handleSaveInlineAccountPolicy = useCallback(
     async (
       source: UpstreamAccountDetail,
@@ -3407,154 +3449,180 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-labelledby={detailTabIds.routing.tab}
                   className="grid gap-5"
                 >
-                  <Card className="border-base-300/80 bg-base-100">
-                    <CardHeader>
-                      <CardTitle className="text-base">
-                        {t(
-                          "accountPool.upstreamAccounts.proxyBindings.accountTitle",
-                        )}
-                      </CardTitle>
-                      <CardDescription>
-                        {t(
-                          "accountPool.upstreamAccounts.proxyBindings.accountDescription",
-                        )}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_14rem] md:items-end">
-                        <SelectField
-                          label={t(
-                            "accountPool.upstreamAccounts.proxyBindings.addLabel",
+                  <Dialog
+                    open={accountProxyEditorOpen}
+                    onOpenChange={(nextOpen) => {
+                      if (nextOpen) {
+                        openAccountProxyEditor();
+                      } else {
+                        closeAccountProxyEditor();
+                      }
+                    }}
+                  >
+                    <DialogContent
+                      container={detailDrawerPortalContainer}
+                      className="!bottom-0 !top-auto flex max-h-[88dvh] w-full !translate-y-0 flex-col overflow-hidden rounded-b-none border-base-300 bg-base-100 p-0 sm:!bottom-auto sm:!top-1/2 sm:w-[min(48rem,calc(100vw-4rem))] sm:!translate-y-[-50%] sm:rounded-[1.25rem]"
+                    >
+                      <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 sm:px-6">
+                        <DialogHeader className="min-w-0">
+                          <DialogTitle className="text-lg">
+                            {t(
+                              "accountPool.upstreamAccounts.proxyBindings.dialogTitle",
+                            )}
+                          </DialogTitle>
+                          <DialogDescription>
+                            {t(
+                              "accountPool.upstreamAccounts.proxyBindings.dialogDescription",
+                            )}
+                          </DialogDescription>
+                        </DialogHeader>
+                        <DialogCloseIcon
+                          aria-label={t(
+                            "accountPool.upstreamAccounts.actions.closeDetails",
                           )}
-                          value=""
-                          disabled={
-                            !writesEnabled ||
-                            hasBusyAccountAction(busyAction, selectedDetail.id) ||
-                            selectableProxyOptions.length === 0
-                          }
-                          options={[
-                            {
-                              value: "",
-                              label:
-                                forwardProxyCatalogState.kind === "loading"
-                                  ? t(
-                                      "accountPool.upstreamAccounts.proxyBindings.loading",
-                                    )
-                                  : t(
-                                      "accountPool.upstreamAccounts.proxyBindings.addPlaceholder",
-                                    ),
-                              disabled: true,
-                            },
-                            ...selectableProxyOptions.map((node) => ({
-                              value: node.key,
-                              label: proxyNodeLabel(node, node.key),
-                              disabled:
-                                !node.selectable ||
-                                selectedAccountProxyKeys.includes(node.key),
-                            })),
-                          ]}
-                          onValueChange={(value) => {
-                            if (!value) return;
-                            void handleSaveAccountProxyBindings(
-                              selectedDetail,
-                              toggleProxyKey(selectedAccountProxyKeys, value),
-                            );
-                          }}
+                          disabled={accountProxyEditorBusy}
                         />
+                      </div>
+                      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 sm:px-6">
+                        <ForwardProxyBindingSelector
+                          selectedKeys={accountProxyDraftKeys}
+                          availableProxyNodes={forwardProxyNodes}
+                          disabled={accountProxyEditorBusy || !writesEnabled}
+                          catalogKind={forwardProxyCatalogState.kind}
+                          catalogFreshness={forwardProxyCatalogState.freshness}
+                          onChange={setAccountProxyDraftKeys}
+                          labels={{
+                            automatic: t(
+                              "accountPool.upstreamAccounts.proxyBindings.dialogAutomatic",
+                            ),
+                            loading: t(
+                              "accountPool.upstreamAccounts.proxyBindings.loading",
+                            ),
+                            empty: t(
+                              "accountPool.upstreamAccounts.proxyBindings.dialogEmpty",
+                            ),
+                            missing: t(
+                              "accountPool.upstreamAccounts.proxyBindings.statusMissing",
+                            ),
+                            unavailable: t(
+                              "accountPool.upstreamAccounts.proxyBindings.statusUnavailable",
+                            ),
+                            chartLabel: t(
+                              "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel",
+                            ),
+                            chartSuccess: t(
+                              "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess",
+                            ),
+                            chartFailure: t(
+                              "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure",
+                            ),
+                            chartEmpty: t(
+                              "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty",
+                            ),
+                            chartTotal: t(
+                              "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartTotal",
+                            ),
+                            chartAriaLabel: t(
+                              "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartAriaLabel",
+                            ),
+                            chartInteractionHint: t(
+                              "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartInteractionHint",
+                            ),
+                            chartLocaleTag:
+                              typeof navigator === "undefined"
+                                ? "en-US"
+                                : navigator.language,
+                          }}
+                          scrollRegionClassName="max-h-[min(29rem,58dvh)]"
+                        />
+                      </div>
+                      <DialogFooter className="flex flex-col-reverse gap-2 border-t border-base-300/80 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
                         <Button
                           type="button"
-                          variant="secondary"
-                          disabled={
-                            !writesEnabled ||
-                            hasBusyAccountAction(busyAction, selectedDetail.id) ||
-                            selectedAccountProxyKeys.length === 0
-                          }
-                          onClick={() =>
-                            void handleSaveAccountProxyBindings(
-                              selectedDetail,
-                              [],
-                            )
-                          }
+                          variant="ghost"
+                          disabled={accountProxyEditorBusy}
+                          onClick={closeAccountProxyEditor}
                         >
+                          {t("accountPool.upstreamAccounts.actions.cancel")}
+                        </Button>
+                        <Button
+                          type="button"
+                          disabled={
+                            accountProxyEditorBusy ||
+                            !writesEnabled ||
+                            !selectedDetail
+                          }
+                          onClick={() => void applyAccountProxyEditor()}
+                        >
+                          {accountProxyEditorBusy ? (
+                            <Spinner size="sm" className="mr-2" />
+                          ) : (
+                            <AppIcon
+                              name="content-save-outline"
+                              className="mr-2 h-4 w-4"
+                              aria-hidden
+                            />
+                          )}
                           {t(
-                            "accountPool.upstreamAccounts.proxyBindings.clear",
+                            "accountPool.upstreamAccounts.proxyBindings.apply",
                           )}
                         </Button>
-                      </div>
-
-                      <div className="rounded-xl border border-base-300/80 bg-base-200/35 p-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Badge variant="secondary">
-                            {selectedAccountProxyKeys.length > 0
-                              ? t(
-                                  "accountPool.upstreamAccounts.proxyBindings.sourceAccount",
-                                )
-                              : t(
-                                  "accountPool.upstreamAccounts.proxyBindings.sourceGroup",
-                                )}
-                          </Badge>
-                          {selectedEffectiveProxyKeys.length === 0 ? (
-                            <span className="text-sm text-base-content/68">
-                              {t(
-                                "accountPool.upstreamAccounts.proxyBindings.effectiveEmpty",
-                              )}
-                            </span>
-                          ) : (
-                            selectedEffectiveProxyKeys.map((key) => {
-                              const node = selectedProxyNodeByKey.get(key);
-                              const isAccountOverride =
-                                selectedAccountProxyKeys.includes(key);
-                              return (
-                                <span
-                                  key={key}
-                                  className="inline-flex min-w-0 items-center gap-2 rounded-full border border-base-300 bg-base-100 px-2.5 py-1 text-xs text-base-content"
-                                >
-                                  <span className="max-w-56 truncate font-medium">
-                                    {proxyNodeLabel(node, key)}
-                                  </span>
-                                  <span className="text-base-content/55">
-                                    {proxyNodeStatusLabel(node, key, t)}
-                                  </span>
-                                  {isAccountOverride && writesEnabled ? (
-                                    <button
-                                      type="button"
-                                      className="rounded-full px-1 text-base-content/55 hover:bg-base-200 hover:text-base-content"
-                                      disabled={hasBusyAccountAction(
-                                        busyAction,
-                                        selectedDetail.id,
-                                      )}
-                                      onClick={() =>
-                                        void handleSaveAccountProxyBindings(
-                                          selectedDetail,
-                                          toggleProxyKey(
-                                            selectedAccountProxyKeys,
-                                            key,
-                                          ),
-                                        )
-                                      }
-                                      aria-label={t(
-                                        "accountPool.upstreamAccounts.proxyBindings.remove",
-                                      )}
-                                    >
-                                      x
-                                    </button>
-                                  ) : null}
-                                </span>
-                              );
-                            })
-                          )}
-                        </div>
-                        <p className="mt-3 text-xs leading-5 text-base-content/65">
-                          {t(
-                            "accountPool.upstreamAccounts.proxyBindings.failoverHint",
-                          )}
-                        </p>
-                      </div>
-                    </CardContent>
-                  </Card>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
                   <EffectiveRoutingRuleCard
                     rule={selectedDetail.effectiveRoutingRule}
                     identityKey={selectedDetail.id}
+                    proxyBindings={{
+                      source:
+                        selectedAccountProxyKeys.length > 0
+                          ? "account"
+                          : "group",
+                      items: selectedEffectiveProxyKeys.map((key) => {
+                        const node = selectedProxyNodeByKey.get(key);
+                        return {
+                          key,
+                          label: proxyNodeLabel(node, key),
+                          status: proxyNodeStatusLabel(node, key, t),
+                          tone: proxyNodeTone(node, key),
+                          accountOverride:
+                            selectedAccountProxyKeys.includes(key),
+                        };
+                      }),
+                      busy: accountProxyEditorBusy,
+                      disabled: !writesEnabled,
+                      onEdit: openAccountProxyEditor,
+                      onClear: () =>
+                        void handleSaveAccountProxyBindings(
+                          selectedDetail,
+                          [],
+                        ),
+                      onRemove: (key) =>
+                        void handleSaveAccountProxyBindings(
+                          selectedDetail,
+                          toggleProxyKey(selectedAccountProxyKeys, key),
+                        ),
+                      labels: {
+                        field: t(
+                          "accountPool.upstreamAccounts.proxyBindings.accountTitle",
+                        ),
+                        add: t(
+                          "accountPool.upstreamAccounts.proxyBindings.addLabel",
+                        ),
+                        clear: t(
+                          "accountPool.upstreamAccounts.proxyBindings.clear",
+                        ),
+                        empty: t(
+                          "accountPool.upstreamAccounts.proxyBindings.effectiveEmpty",
+                        ),
+                        hint: t(
+                          "accountPool.upstreamAccounts.proxyBindings.failoverHint",
+                        ),
+                        remove: t(
+                          "accountPool.upstreamAccounts.proxyBindings.remove",
+                        ),
+                      },
+                    }}
                     editablePolicy={{
                       busyField: inlinePolicyBusyField,
                       errorByField: inlinePolicyErrors,
@@ -3626,6 +3694,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                       ),
                       fieldSystemDeniedModels: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels",
+                      ),
+                      fieldProxyBindings: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings",
                       ),
                       availableModelsInherited: t(
                         "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited",

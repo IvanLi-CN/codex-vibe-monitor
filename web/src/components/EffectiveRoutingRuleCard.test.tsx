@@ -74,6 +74,7 @@ const labels = {
   fieldUpstream429: 'Upstream 429 retry',
   fieldAvailableModels: 'Available models',
   fieldSystemDeniedModels: 'System denied models',
+  fieldProxyBindings: 'Account proxy',
   sourceRoot: 'Root default',
   sourceGroup: 'Group',
   sourceTag: 'Tag',
