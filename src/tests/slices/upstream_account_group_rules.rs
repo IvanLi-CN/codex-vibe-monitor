@@ -927,6 +927,67 @@ async fn admitted_proxy_capture_snapshot_is_visible_before_body_parse_and_later_
 }
 
 #[tokio::test]
+async fn admitted_proxy_capture_snapshot_can_be_cleared_before_terminal_on_early_error() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let invoke_id = "invoke-admitted-cleared";
+    let occurred_at = "2026-03-17 18:15:34";
+
+    let admitted_record = build_admitted_proxy_capture_runtime_snapshot(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        Some("203.0.113.43"),
+        Some("sticky-from-header"),
+        Some("pck-from-header"),
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, admitted_record)
+        .await
+        .expect("admitted snapshot should store in memory");
+
+    assert_eq!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .into_iter()
+            .filter(|record| record.invoke_id == invoke_id && record.occurred_at == occurred_at)
+            .count(),
+        1,
+        "admitted runtime snapshot should be visible before early error cleanup"
+    );
+
+    remove_proxy_runtime_snapshot_by_key(
+        &state,
+        invoke_id,
+        occurred_at,
+        "test_early_routing_error",
+    );
+
+    assert!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .into_iter()
+            .all(|record| record.invoke_id != invoke_id || record.occurred_at != occurred_at),
+        "early pre-attempt failures must clear admitted runtime snapshots"
+    );
+    let persisted_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count db rows after early cleanup");
+    assert_eq!(
+        persisted_count, 0,
+        "early cleanup must not restore sqlite running writes"
+    );
+}
+
+#[tokio::test]
 async fn account_timeseries_replaces_stale_db_runtime_placeholder_after_account_switch() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

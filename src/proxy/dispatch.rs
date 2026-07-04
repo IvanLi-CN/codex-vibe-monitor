@@ -405,15 +405,21 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     }
     let (prompt_cache_binding_constraint, encrypted_owner_auto_guard_active) =
         if pool_route_active {
-            match resolve_prompt_cache_effective_routing_constraint(
+            let binding_constraint_result = resolve_prompt_cache_effective_routing_constraint(
                 &state.pool,
                 prompt_cache_key.as_deref(),
                 request_info.contains_encrypted_content,
             )
-            .await
-            {
+            .await;
+            match binding_constraint_result {
                 Ok(value) => value,
                 Err(err) => {
+                    remove_proxy_runtime_snapshot_by_key(
+                        state.as_ref(),
+                        &invoke_id,
+                        &occurred_at,
+                        "prompt_cache_binding_error",
+                    );
                     return Err((
                         StatusCode::BAD_GATEWAY,
                         format!("failed to resolve prompt cache conversation binding: {err}"),
@@ -429,6 +435,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         {
             Ok(value) => value,
             Err(err) => {
+                remove_proxy_runtime_snapshot_by_key(
+                    state.as_ref(),
+                    &invoke_id,
+                    &occurred_at,
+                    "prompt_cache_override_error",
+                );
                 return Err((
                     StatusCode::BAD_GATEWAY,
                     format!("failed to resolve prompt cache conversation overrides: {err}"),
