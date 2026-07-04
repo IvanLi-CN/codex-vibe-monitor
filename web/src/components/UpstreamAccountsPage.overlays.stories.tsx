@@ -224,6 +224,35 @@ export const DetailDrawerRecordsSettled: Story = {
   },
 }
 
+export const DetailDrawerRoutingRules: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'desktop1280' },
+  },
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={detailRouteEntry(101)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await findTokyoDetailDialog(documentScope)
+    await userEvent.click(within(dialog).getByRole('tab', { name: /路由|routing/i }))
+    await expect(within(dialog).getByRole('tab', { name: /路由|routing/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).queryByRole('button', { name: /编辑账号策略|edit account policy/i })).not.toBeInTheDocument()
+    await expect(within(dialog).queryByRole('button', { name: /账号路由策略|account routing policy/i })).not.toBeInTheDocument()
+    await expect(within(dialog).getByText(/最终生效规则|effective routing rule/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/字段来源明细|field source breakdown/i)).toBeInTheDocument()
+
+    const warningValues = Array.from(
+      dialog.querySelectorAll('[class*="bg-warning"]') as NodeListOf<HTMLElement>,
+    ).map((node) => node.textContent)
+    expect(warningValues).toContain('禁止切出')
+    expect(warningValues).toContain('禁止切入')
+    expect((dialog.textContent ?? '').match(/禁止切出/g)).toHaveLength(1)
+    expect((dialog.textContent ?? '').match(/禁止切入/g)).toHaveLength(1)
+  },
+}
+
 export const DetailDrawerRecordsSettledWide: Story = {
   parameters: {
     viewport: { defaultViewport: 'desktop1920' },
@@ -344,41 +373,6 @@ export const EditDraftSurvivesBackgroundRefresh: Story = {
         'input[name="detailDisplayName"]',
       ) as HTMLInputElement
       expect(refreshedInput.value).toBe('Codex Pro - Tokyo Draft')
-    })
-  },
-}
-
-export const AccountPolicyDraftSurvivesBackgroundRefresh: Story = {
-  render: () => (
-    <AccountPoolStoryRouter
-      initialEntry={detailRouteEntry(101)}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    const documentScope = within(canvasElement.ownerDocument.body)
-    const dialog = await findTokyoDetailDialog(documentScope)
-    await userEvent.click(
-      within(dialog).getByRole('tab', { name: /路由|routing/i }),
-    )
-    await userEvent.click(
-      within(dialog).getByRole('button', { name: /编辑策略|edit routing policy/i }),
-    )
-    const policyDialog = await documentScope.findByRole('dialog', {
-      name: /账号路由策略|account routing policy/i,
-    })
-    await userEvent.click(
-      within(policyDialog).getByRole('combobox', { name: /优先使用|preferred usage/i }),
-    )
-    await userEvent.click(
-      await documentScope.findByRole('option', { name: /兜底|fallback/i }),
-    )
-
-    window.dispatchEvent(new CustomEvent(UPSTREAM_ACCOUNTS_CHANGED_EVENT))
-
-    await waitFor(() => {
-      expect(
-        within(policyDialog).getByRole('combobox', { name: /优先使用|preferred usage/i }),
-      ).toHaveTextContent(/兜底|fallback/i)
     })
   },
 }
