@@ -1174,12 +1174,21 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
     };
     tx.commit().await?;
 
-    remove_proxy_runtime_snapshot_by_key(
-        state,
-        &pending_attempt_record.invoke_id,
-        &pending_attempt_record.occurred_at,
-        "drop_guard",
-    );
+    if recovered_invocations.is_empty() {
+        terminalize_proxy_runtime_snapshot_by_key(
+            state,
+            &pending_attempt_record.invoke_id,
+            &pending_attempt_record.occurred_at,
+            "drop_guard",
+        );
+    } else {
+        remove_proxy_runtime_snapshot_by_key(
+            state,
+            &pending_attempt_record.invoke_id,
+            &pending_attempt_record.occurred_at,
+            "drop_guard",
+        );
+    }
 
     if recovered_attempts.is_empty() && recovered_invocations.is_empty() {
         return Ok(());
@@ -1241,7 +1250,7 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
     .await?;
 
     if recovered_invocations.is_empty() {
-        remove_proxy_runtime_snapshot_by_key(
+        terminalize_proxy_runtime_snapshot_by_key(
             state,
             &selector.invoke_id,
             &selector.occurred_at,
@@ -2442,7 +2451,8 @@ pub(crate) fn remove_proxy_runtime_snapshot_by_key(
 ) -> bool {
     let removed_runtime_snapshot = state
         .proxy_runtime_invocations
-        .remove_non_terminal(invoke_id, occurred_at);
+        .remove_non_terminal(invoke_id, occurred_at)
+        .is_some();
     debug!(
         invoke_id,
         occurred_at,
@@ -2451,7 +2461,62 @@ pub(crate) fn remove_proxy_runtime_snapshot_by_key(
         terminal_already_tombstoned = false,
         "non-terminal proxy runtime snapshot removed by key"
     );
-    false
+    removed_runtime_snapshot
+}
+
+pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
+    state: &AppState,
+    invoke_id: &str,
+    occurred_at: &str,
+    reason: &'static str,
+) -> bool {
+    let Some(mut record) = state
+        .proxy_runtime_invocations
+        .remove_non_terminal(invoke_id, occurred_at)
+    else {
+        debug!(
+            invoke_id,
+            occurred_at,
+            reason,
+            terminal_removed_runtime_snapshot = false,
+            terminal_already_tombstoned = false,
+            "no non-terminal proxy runtime snapshot found for terminal cleanup"
+        );
+        return false;
+    };
+
+    record.status = Some(INVOCATION_STATUS_INTERRUPTED.to_string());
+    record.error_message = Some(format!(
+        "[{PROXY_FAILURE_INVOCATION_INTERRUPTED}] proxy request ended before a terminal record was written"
+    ));
+    record.failure_kind = Some(PROXY_FAILURE_INVOCATION_INTERRUPTED.to_string());
+    record.failure_class = Some(FAILURE_CLASS_SERVICE.to_string());
+    record.is_actionable = Some(true);
+    record.pool_attempt_terminal_reason = Some(PROXY_FAILURE_INVOCATION_INTERRUPTED.to_string());
+
+    let remove_outcome = state.proxy_runtime_invocations.upsert_terminal(record.clone());
+    debug!(
+        invoke_id,
+        occurred_at,
+        reason,
+        terminal_removed_runtime_snapshot = true,
+        terminal_already_tombstoned = remove_outcome.already_terminal,
+        "non-terminal proxy runtime snapshot terminalized by key"
+    );
+    if state.broadcaster.receiver_count() > 0
+        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
+            records: vec![record],
+        })
+    {
+        warn!(
+            ?err,
+            invoke_id,
+            occurred_at,
+            reason,
+            "failed to broadcast terminalized proxy runtime snapshot"
+        );
+    }
+    true
 }
 
 pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(

@@ -993,6 +993,7 @@ async fn admitted_proxy_capture_snapshot_is_cleared_when_cleanup_guard_drops_bef
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    let mut rx = state.broadcaster.subscribe();
     let invoke_id = "invoke-admitted-drop-guard";
     let occurred_at = "2026-03-17 18:15:55";
     let guard = PoolInvocationCleanupGuard::new(
@@ -1012,6 +1013,17 @@ async fn admitted_proxy_capture_snapshot_is_cleared_when_cleanup_guard_drops_bef
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, admitted_record)
         .await
         .expect("admitted snapshot should store in memory");
+    let payload = rx
+        .recv()
+        .await
+        .expect("admitted runtime snapshot should arrive");
+    match payload {
+        BroadcastPayload::Records { records } => {
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].status.as_deref(), Some("running"));
+        }
+        other => panic!("expected admitted records payload, got {other:?}"),
+    }
 
     assert_eq!(
         state
@@ -1026,18 +1038,42 @@ async fn admitted_proxy_capture_snapshot_is_cleared_when_cleanup_guard_drops_bef
 
     drop(guard);
     for _ in 0..50 {
-        if state
+        let terminal_record = state
             .proxy_runtime_invocations
             .snapshot()
             .into_iter()
-            .all(|record| record.invoke_id != invoke_id || record.occurred_at != occurred_at)
+            .find(|record| record.invoke_id == invoke_id && record.occurred_at == occurred_at);
+        if terminal_record
+            .as_ref()
+            .is_some_and(|record| record.status.as_deref() == Some(INVOCATION_STATUS_INTERRUPTED))
         {
+            let payload = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                .await
+                .expect("terminalized runtime snapshot should be broadcast")
+                .expect("terminalized runtime snapshot channel should stay open");
+            let terminal_broadcast = match payload {
+                BroadcastPayload::Records { records } => {
+                    assert_eq!(records.len(), 1);
+                    records.into_iter().next().expect("single terminal record")
+                }
+                other => panic!("expected terminal records payload, got {other:?}"),
+            };
+            assert_eq!(terminal_broadcast.invoke_id, invoke_id);
+            assert_eq!(terminal_broadcast.occurred_at, occurred_at);
+            assert_eq!(
+                terminal_broadcast.status.as_deref(),
+                Some(INVOCATION_STATUS_INTERRUPTED)
+            );
+            assert_eq!(
+                terminal_broadcast.failure_kind.as_deref(),
+                Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+            );
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    panic!("drop guard should clear pre-attempt admitted runtime snapshot without a DB row");
+    panic!("drop guard should terminalize pre-attempt admitted runtime snapshot without a DB row");
 }
 
 #[tokio::test]
@@ -1485,7 +1521,7 @@ async fn clearing_terminal_tombstone_allows_enqueue_retry_without_running_regres
         "retry after queue-full should be allowed to enqueue again"
     );
     assert!(
-        !store.remove_non_terminal(invoke_id, occurred_at),
+        store.remove_non_terminal(invoke_id, occurred_at).is_none(),
         "drop-guard cleanup must not remove a queued terminal overlay before sqlite flush"
     );
 
