@@ -129,18 +129,6 @@ pub(crate) async fn proxy_openai_v1_common(
             }
         };
 
-    if extract_bearer_token(&headers).is_none() {
-        return build_proxy_error_response(
-            ProxyErrorResponse {
-                status: StatusCode::UNAUTHORIZED,
-                message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
-                cvm_id: None,
-                retry_after_secs: None,
-            },
-            &invoke_id,
-        );
-    }
-
     let proxy_request_permit = Some(
         acquire_proxy_request_concurrency_permit(
             state.as_ref(),
@@ -192,6 +180,27 @@ pub(crate) async fn proxy_openai_v1_common(
         }
         None => None,
     };
+
+    if extract_bearer_token(&headers).is_none() {
+        let err = ProxyErrorResponse {
+            status: StatusCode::UNAUTHORIZED,
+            message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
+            cvm_id: None,
+            retry_after_secs: None,
+        };
+        if let Some(runtime_snapshot) = admitted_runtime_snapshot.as_ref() {
+            terminalize_proxy_runtime_snapshot_with_error(
+                state.as_ref(),
+                &invoke_id,
+                &runtime_snapshot.occurred_at,
+                err.status,
+                PROXY_FAILURE_POOL_ROUTING_BLOCKED,
+                &err.message,
+                "missing_bearer_token",
+            );
+        }
+        return build_proxy_error_response(err, &invoke_id);
+    }
 
     let route_context_started = Instant::now();
     let runtime_timeouts = match resolve_proxy_route_context_for_request(

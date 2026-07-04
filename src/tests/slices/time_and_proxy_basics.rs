@@ -278,6 +278,65 @@ async fn proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_missing_pool_key_terminalizes_admitted_running_shell() {
+    let state = test_state_from_config(test_config(), true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+    let mut rx = state.broadcaster.subscribe();
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "missing pool keys should release observable in-flight tracking after response"
+    );
+
+    let mut running_record: Option<ApiInvocation> = None;
+    let mut terminal_record: Option<ApiInvocation> = None;
+    for _ in 0..4 {
+        let Ok(Ok(BroadcastPayload::Records { records })) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        else {
+            continue;
+        };
+        for record in records {
+            match record.status.as_deref() {
+                Some(INVOCATION_STATUS_RUNNING) => running_record = Some(record),
+                Some("failed") => terminal_record = Some(record),
+                _ => {}
+            }
+        }
+        if running_record.is_some() && terminal_record.is_some() {
+            break;
+        }
+    }
+
+    let running_record =
+        running_record.expect("tracked proxy request should emit a running shell before missing-key validation");
+    let terminal_record =
+        terminal_record.expect("missing pool key should terminalize the running shell");
+    assert_eq!(terminal_record.invoke_id, running_record.invoke_id);
+    assert_eq!(terminal_record.occurred_at, running_record.occurred_at);
+    assert_eq!(
+        terminal_record.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED)
+    );
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_models_rejects_non_pool_bearer_key() {
     let state = test_state_with_openai_base(
         Url::parse("https://example.invalid").expect("valid upstream base url"),
