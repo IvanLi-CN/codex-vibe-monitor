@@ -68,6 +68,17 @@ function createCurrencyFormatter(
   })
 }
 
+function createDecimalFormatter(
+  localeTag: string,
+  maximumFractionDigits: number,
+  minimumFractionDigits = 0,
+) {
+  return new Intl.NumberFormat(localeTag, {
+    minimumFractionDigits,
+    maximumFractionDigits,
+  })
+}
+
 function standardPrecisionCandidates(kind: AdaptiveMetricValueKind) {
   if (kind === 'integer') return [0]
   return [2, 1, 0]
@@ -279,6 +290,52 @@ export function buildAdaptiveCurrencyTextSpec(value: number | null, localeTag: s
       priority: 2,
     },
     ...buildAdaptiveMetricSpec(value, localeTag, 'currency').candidates.map((candidate, index) => ({
+      key: candidate.key,
+      value: candidate.value,
+      priority: 20 + index,
+    })),
+  ])
+}
+
+export function buildAdaptiveCurrencyAmountTextSpec(
+  value: number | null,
+  localeTag: string,
+  {
+    maximumFractionDigits = 2,
+    minimumFractionDigits = maximumFractionDigits,
+  }: {
+    maximumFractionDigits?: number
+    minimumFractionDigits?: number
+  } = {},
+) {
+  if (value == null || !Number.isFinite(value)) {
+    return buildAdaptiveTextSpec('—', [{ key: 'placeholder', value: '—', priority: 0 }])
+  }
+
+  const precisionCandidates = Array.from(
+    { length: maximumFractionDigits + 1 },
+    (_, index) => maximumFractionDigits - index,
+  )
+  const fullValue = createDecimalFormatter(
+    localeTag,
+    maximumFractionDigits,
+    minimumFractionDigits,
+  ).format(value)
+
+  return buildAdaptiveTextSpec(fullValue, [
+    {
+      key: 'full',
+      value: fullValue,
+      priority: 0,
+    },
+    ...precisionCandidates
+      .filter((precision) => precision !== maximumFractionDigits)
+      .map((precision, index) => ({
+        key: `standard-${precision}`,
+        value: createDecimalFormatter(localeTag, precision, Math.min(precision, minimumFractionDigits)).format(value),
+        priority: index + 1,
+      })),
+    ...buildAdaptiveMetricSpec(value, localeTag, 'number').candidates.map((candidate, index) => ({
       key: candidate.key,
       value: candidate.value,
       priority: 20 + index,

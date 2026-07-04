@@ -25,7 +25,7 @@ import {
   hashDashboardWorkingConversationKey,
 } from "../lib/dashboardWorkingConversations";
 import { cn } from "../lib/utils";
-import { AppIcon } from "./AppIcon";
+import { AppIcon, type AppIconName } from "./AppIcon";
 import {
   getReasoningEffortTone,
   REASONING_EFFORT_TONE_CLASSNAMES,
@@ -384,6 +384,18 @@ function formatAccountCurrencyValue(
   }).format(value);
 }
 
+function formatAccountCurrencyAmountValue(
+  value: number | null | undefined,
+  localeTag: string,
+  maximumFractionDigits = 2,
+) {
+  if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
+  return new Intl.NumberFormat(localeTag, {
+    minimumFractionDigits: maximumFractionDigits,
+    maximumFractionDigits,
+  }).format(value);
+}
+
 function formatAccountDurationValue(
   value: number | null | undefined,
   localeTag: string,
@@ -541,6 +553,7 @@ function AccountHeroMetric({
   label,
   value,
   tone,
+  iconName,
   hint,
   detailSections,
   metricKey,
@@ -549,6 +562,7 @@ function AccountHeroMetric({
   label: string;
   value: string;
   tone: "neutral" | "primary" | "secondary" | "success" | "warning" | "info";
+  iconName: AppIconName;
   hint?: string;
   detailSections?: AccountMetricDetailSection[];
   metricKey?: string;
@@ -565,6 +579,12 @@ function AccountHeroMetric({
   const valueClassName =
     value === FALLBACK_CELL
       ? "text-base-content/55"
+      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[
+          tone === "neutral" ? "neutral" : tone
+        ];
+  const iconClassName =
+    value === FALLBACK_CELL
+      ? "text-base-content/45"
       : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[
           tone === "neutral" ? "neutral" : tone
         ];
@@ -585,13 +605,26 @@ function AccountHeroMetric({
       <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/54">
         {label}
       </div>
-      <div
-        className={cn(
-          "mt-1 font-mono text-[1.08rem] font-semibold leading-none",
-          valueClassName,
-        )}
-      >
-        <AnimatedDigits value={value} />
+      <div className="mt-1 flex min-w-0 items-center gap-1.5">
+        <span
+          aria-hidden
+          data-testid={metricKey ? `dashboard-upstream-account-${metricKey}-icon` : undefined}
+          className={cn(
+            "flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-base-100/70 text-[0.95rem] ring-1 ring-inset",
+            ACCOUNT_CARD_INNER_RING_CLASS_NAME,
+            iconClassName,
+          )}
+        >
+          <AppIcon name={iconName} />
+        </span>
+        <div
+          className={cn(
+            "min-w-0 flex-1 overflow-hidden text-ellipsis font-mono text-[1.08rem] font-semibold leading-none",
+            valueClassName,
+          )}
+        >
+          <AnimatedDigits value={value} />
+        </div>
       </div>
       {hint ? (
         <div className="mt-1 text-[11px] leading-4 text-base-content/58">{hint}</div>
@@ -689,20 +722,32 @@ function AccountInlineMetric({
   label,
   value,
   tone,
+  iconName,
 }: {
   label: string;
   value: string;
   tone: AccountMetricTone;
+  iconName: AppIconName;
 }) {
   const valueClassName =
     value === FALLBACK_CELL
       ? "text-base-content/55"
       : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
+  const iconClassName =
+    value === FALLBACK_CELL
+      ? "text-base-content/45"
+      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
 
-  return (
-    <div className="inline-flex min-w-0 items-baseline gap-1.5 whitespace-nowrap">
-      <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/52">
-        {label}
+  const metric = (
+    <span className="inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap">
+      <span
+        aria-hidden
+        className={cn(
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-base-200/70 text-[0.82rem] ring-1 ring-inset ring-base-300/70",
+          iconClassName,
+        )}
+      >
+        <AppIcon name={iconName} />
       </span>
       <span
         className={cn(
@@ -712,7 +757,26 @@ function AccountInlineMetric({
       >
         <AnimatedDigits value={value} />
       </span>
-    </div>
+    </span>
+  );
+
+  return (
+    <Tooltip
+      content={
+        <span className="font-medium">
+          {label}
+          <span className="font-mono font-semibold"> {value}</span>
+        </span>
+      }
+      clickToOpen
+      className="rounded-md"
+      triggerProps={{
+        tabIndex: 0,
+        "aria-label": `${label} ${value}`,
+      }}
+    >
+      {metric}
+    </Tooltip>
   );
 }
 
@@ -1923,7 +1987,7 @@ function DashboardUpstreamAccountActivityCard({
         );
   const avgTotalValue = formatAccountDurationValue(account.avgTotalMs, localeTag);
   const totalRequestValue = formatAccountNumberValue(account.requestCount, localeTag, 0);
-  const totalCostValue = formatAccountCurrencyValue(account.totalCost, localeTag, 2);
+  const totalCostValue = formatAccountCurrencyAmountValue(account.totalCost, localeTag, 2);
   const totalTokenValue = formatAccountNumberValue(account.totalTokens, localeTag, 0);
   const latencyDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
     const firstByteMs = finiteNumber(
@@ -2199,16 +2263,19 @@ function DashboardUpstreamAccountActivityCard({
             label={t("dashboard.today.inProgressConversations")}
             value={formatAccountNumberValue(account.inProgressInvocationCount, localeTag, 0)}
             tone="secondary"
+            iconName="progress-clock"
           />
           <AccountInlineMetric
             label="TPM"
             value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
             tone="primary"
+            iconName="speedometer"
           />
           <AccountInlineMetric
             label={t("dashboard.today.spendRate")}
-            value={formatAccountCurrencyValue(account.spendRate, localeTag, 2)}
+            value={formatAccountCurrencyAmountValue(account.spendRate, localeTag, 2)}
             tone="warning"
+            iconName="currency-usd"
           />
           <div className="shrink-0 font-mono text-xs font-semibold text-base-content/72">
             #{account.upstreamAccountId}
@@ -2222,6 +2289,7 @@ function DashboardUpstreamAccountActivityCard({
             label={t("dashboard.today.firstResponseTime")}
             value={firstByteValue}
             tone={firstByteValue === FALLBACK_CELL ? "neutral" : "secondary"}
+            iconName="timer-outline"
             metricKey="latency"
             detailSections={latencyDetailSections}
           >
@@ -2241,6 +2309,7 @@ function DashboardUpstreamAccountActivityCard({
             label={locale === "zh" ? "请求数" : "Requests"}
             value={totalRequestValue}
             tone="neutral"
+            iconName="counter"
             metricKey="requests"
             detailSections={requestDetailSections}
           >
@@ -2254,6 +2323,7 @@ function DashboardUpstreamAccountActivityCard({
             label={locale === "zh" ? "成本" : "Cost"}
             value={totalCostValue}
             tone="warning"
+            iconName="currency-usd"
             metricKey="cost"
             detailSections={costDetailSections}
           >
@@ -2267,6 +2337,7 @@ function DashboardUpstreamAccountActivityCard({
             label="Token"
             value={totalTokenValue}
             tone="success"
+            iconName="database-outline"
             metricKey="token"
             detailSections={tokenDetailSections}
           >

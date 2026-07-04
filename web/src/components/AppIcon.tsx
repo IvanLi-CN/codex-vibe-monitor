@@ -25,8 +25,10 @@ import contentCopyIcon from '@iconify-icons/mdi/content-copy'
 import contentSaveOutlineIcon from '@iconify-icons/mdi/content-save-outline'
 import contentSavePlusOutlineIcon from '@iconify-icons/mdi/content-save-plus-outline'
 import compareHorizontalIcon from '@iconify-icons/mdi/compare-horizontal'
+import counterIcon from '@iconify-icons/mdi/counter'
 import crownIcon from '@iconify-icons/mdi/crown'
 import crownOutlineIcon from '@iconify-icons/mdi/crown-outline'
+import currencyUsdIcon from '@iconify-icons/mdi/currency-usd'
 import databaseOutlineIcon from '@iconify-icons/mdi/database-outline'
 import deleteOutlineIcon from '@iconify-icons/mdi/delete-outline'
 import dotsHorizontalIcon from '@iconify-icons/mdi/dots-horizontal'
@@ -48,12 +50,15 @@ import pencilOutlineIcon from '@iconify-icons/mdi/pencil-outline'
 import playlistPlusIcon from '@iconify-icons/mdi/playlist-plus'
 import plusIcon from '@iconify-icons/mdi/plus'
 import plusCircleOutlineIcon from '@iconify-icons/mdi/plus-circle-outline'
+import progressClockIcon from '@iconify-icons/mdi/progress-clock'
 import refreshIcon from '@iconify-icons/mdi/refresh'
 import refreshCircleIcon from '@iconify-icons/mdi/refresh-circle'
 import serverNetworkOutlineIcon from '@iconify-icons/mdi/server-network-outline'
 import shieldKeyOutlineIcon from '@iconify-icons/mdi/shield-key-outline'
+import speedometerIcon from '@iconify-icons/mdi/speedometer'
 import tagOutlineIcon from '@iconify-icons/mdi/tag-outline'
 import tagPlusOutlineIcon from '@iconify-icons/mdi/tag-plus-outline'
+import timerOutlineIcon from '@iconify-icons/mdi/timer-outline'
 import timerRefreshOutlineIcon from '@iconify-icons/mdi/timer-refresh-outline'
 import trashCanOutlineIcon from '@iconify-icons/mdi/trash-can-outline'
 import undoVariantIcon from '@iconify-icons/mdi/undo-variant'
@@ -85,8 +90,10 @@ const appIconRegistry = {
   'content-save-outline': contentSaveOutlineIcon,
   'content-save-plus-outline': contentSavePlusOutlineIcon,
   'compare-horizontal': compareHorizontalIcon,
+  'counter': counterIcon,
   'crown': crownIcon,
   'crown-outline': crownOutlineIcon,
+  'currency-usd': currencyUsdIcon,
   'database-outline': databaseOutlineIcon,
   'delete-outline': deleteOutlineIcon,
   'dots-horizontal': dotsHorizontalIcon,
@@ -108,12 +115,15 @@ const appIconRegistry = {
   'playlist-plus': playlistPlusIcon,
   'plus': plusIcon,
   'plus-circle-outline': plusCircleOutlineIcon,
+  'progress-clock': progressClockIcon,
   'refresh': refreshIcon,
   'refresh-circle': refreshCircleIcon,
   'server-network-outline': serverNetworkOutlineIcon,
   'shield-key-outline': shieldKeyOutlineIcon,
+  'speedometer': speedometerIcon,
   'tag-outline': tagOutlineIcon,
   'tag-plus-outline': tagPlusOutlineIcon,
+  'timer-outline': timerOutlineIcon,
   'timer-refresh-outline': timerRefreshOutlineIcon,
   'trash-can-outline': trashCanOutlineIcon,
   'undo-variant': undoVariantIcon,
