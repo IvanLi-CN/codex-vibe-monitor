@@ -96,6 +96,7 @@ pub(crate) async fn proxy_openai_v1_common(
         proxy_request_id,
         method = %method_for_log,
         uri = %uri_for_log,
+        proxy_request_started = true,
         has_body = request_may_have_body,
         content_length = ?request_content_length,
         peer_ip = ?peer_ip,
@@ -140,6 +141,59 @@ pub(crate) async fn proxy_openai_v1_common(
         );
     }
 
+    let proxy_request_permit = Some(
+        acquire_proxy_request_concurrency_permit(
+            state.as_ref(),
+            proxy_request_id,
+            &method_for_log,
+            &uri_for_log,
+        )
+        .await,
+    );
+    let capture_target = capture_target_for_request(original_uri.path(), &method);
+    let admitted_runtime_snapshot = match capture_target {
+        Some(target) => {
+            let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+            let requester_ip = extract_requester_ip(&headers, peer_ip);
+            let header_sticky_key = extract_sticky_key_from_headers(&headers);
+            let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
+            let shell_started = Instant::now();
+            let admitted_record = build_admitted_proxy_capture_runtime_snapshot(
+                &invoke_id,
+                &occurred_at,
+                target,
+                requester_ip.as_deref(),
+                header_sticky_key.as_deref(),
+                header_prompt_cache_key.as_deref(),
+            );
+            if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
+                state.as_ref(),
+                admitted_record,
+            )
+            .await
+            {
+                warn!(
+                    ?err,
+                    proxy_request_id,
+                    invoke_id = %invoke_id,
+                    "failed to broadcast admitted running proxy capture snapshot"
+                );
+            } else {
+                debug!(
+                    proxy_request_id,
+                    invoke_id = %invoke_id,
+                    occurred_at = %occurred_at,
+                    running_shell_emitted = true,
+                    running_shell_emit_elapsed = shell_started.elapsed().as_millis() as u64,
+                    "admitted proxy request emitted running shell before route context"
+                );
+            }
+            Some(AdmittedProxyRuntimeSnapshot { occurred_at })
+        }
+        None => None,
+    };
+
+    let route_context_started = Instant::now();
     let runtime_timeouts = match resolve_proxy_route_context_for_request(
         state.as_ref(),
         proxy_request_id,
@@ -157,23 +211,30 @@ pub(crate) async fn proxy_openai_v1_common(
                 uri = %uri_for_log,
                 status = %err.status,
                 error = %err.message,
+                route_context_elapsed = route_context_started.elapsed().as_millis() as u64,
                 elapsed_ms = started_at.elapsed().as_millis(),
                 "openai proxy request failed during route validation"
             );
+            if let Some(runtime_snapshot) = admitted_runtime_snapshot.as_ref() {
+                terminalize_proxy_runtime_snapshot_with_error(
+                    state.as_ref(),
+                    &invoke_id,
+                    &runtime_snapshot.occurred_at,
+                    err.status,
+                    PROXY_FAILURE_POOL_ROUTING_BLOCKED,
+                    &err.message,
+                    "route_validation_failed",
+                );
+            }
             return build_proxy_error_response(err, &invoke_id);
         }
     };
-    let pool_route_active = true;
-
-    let proxy_request_permit = Some(
-        acquire_proxy_request_concurrency_permit(
-            state.as_ref(),
-            proxy_request_id,
-            &method_for_log,
-            &uri_for_log,
-        )
-        .await,
+    debug!(
+        proxy_request_id,
+        route_context_elapsed = route_context_started.elapsed().as_millis() as u64,
+        "proxy route context resolved"
     );
+    let pool_route_active = true;
 
     match Box::pin(proxy_openai_v1_inner(
         state,
@@ -188,6 +249,7 @@ pub(crate) async fn proxy_openai_v1_common(
         pool_route_active,
         runtime_timeouts,
         proxy_request_permit,
+        admitted_runtime_snapshot,
     ))
     .await
     {
@@ -268,6 +330,11 @@ pub(crate) struct ProxyRequestConcurrencyPermit {
     in_flight: Arc<AtomicUsize>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct AdmittedProxyRuntimeSnapshot {
+    pub(crate) occurred_at: String,
+}
+
 impl Drop for ProxyRequestConcurrencyPermit {
     fn drop(&mut self) {
         let _ = self.in_flight.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
@@ -291,6 +358,8 @@ pub(crate) async fn acquire_proxy_request_concurrency_permit(
         method = %method,
         uri = %original_uri,
         in_flight,
+        proxy_request_admitted_observed = true,
+        max_proxy_in_flight_observed = in_flight,
         "proxy request admitted"
     );
 

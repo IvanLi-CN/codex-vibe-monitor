@@ -2442,6 +2442,7 @@ pub(crate) fn remove_proxy_runtime_snapshot_for_terminal(
     debug!(
         invoke_id = %record.invoke_id,
         occurred_at = %record.occurred_at,
+        terminal_overlay_emitted = true,
         terminal_removed_runtime_snapshot = remove_outcome.removed,
         terminal_already_tombstoned = remove_outcome.already_terminal,
         "terminal proxy capture record stored in memory runtime overlay"
@@ -2525,6 +2526,76 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
     true
 }
 
+pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
+    state: &AppState,
+    invoke_id: &str,
+    occurred_at: &str,
+    status: StatusCode,
+    failure_kind: &'static str,
+    error_message: &str,
+    reason: &'static str,
+) -> bool {
+    let Some(mut record) = state
+        .proxy_runtime_invocations
+        .remove_non_terminal(invoke_id, occurred_at)
+    else {
+        debug!(
+            invoke_id,
+            occurred_at,
+            reason,
+            terminal_overlay_emitted = false,
+            terminal_removed_runtime_snapshot = false,
+            "no non-terminal proxy runtime snapshot found for terminal error overlay"
+        );
+        return false;
+    };
+
+    record.status = Some(if status.is_server_error() {
+        format!("http_{}", status.as_u16())
+    } else {
+        "failed".to_string()
+    });
+    record.error_message = Some(format!("[{failure_kind}] {error_message}"));
+    record.failure_kind = Some(failure_kind.to_string());
+    record.failure_class = Some(
+        if status.is_client_error() {
+            FAILURE_CLASS_CLIENT
+        } else {
+            FAILURE_CLASS_SERVICE
+        }
+        .to_string(),
+    );
+    record.is_actionable = Some(true);
+    record.pool_attempt_terminal_reason = Some(failure_kind.to_string());
+
+    let remove_outcome = state.proxy_runtime_invocations.upsert_terminal(record.clone());
+    debug!(
+        invoke_id,
+        occurred_at,
+        reason,
+        status = %status,
+        failure_kind,
+        terminal_overlay_emitted = true,
+        terminal_removed_runtime_snapshot = true,
+        terminal_already_tombstoned = remove_outcome.already_terminal,
+        "non-terminal proxy runtime snapshot terminalized with error overlay"
+    );
+    if state.broadcaster.receiver_count() > 0
+        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
+            records: vec![record],
+        })
+    {
+        warn!(
+            ?err,
+            invoke_id,
+            occurred_at,
+            reason,
+            "failed to broadcast terminal error proxy runtime snapshot"
+        );
+    }
+    true
+}
+
 pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
     state: &AppState,
     record: ProxyCaptureRecord,
@@ -2540,7 +2611,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             business_unblocked_record_write = true,
             "duplicate terminal proxy capture record skipped before sqlite enqueue"
         );
-        schedule_proxy_capture_follow_up_after_terminal_flush(
+        schedule_proxy_capture_follow_up_after_terminal_enqueue(
             state,
             &invoke_id,
             "duplicate_runtime_terminal",
@@ -2566,6 +2637,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             enqueue_failed_by_class = "terminal_invocation",
             terminal_tombstone_cleared,
             business_unblocked_record_write = true,
+            record_flush_deferred_or_failed = "terminal_invocation_enqueue_failed",
             "terminal proxy capture record dropped by sqlite write controller"
         );
     } else {
@@ -2573,6 +2645,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             invoke_id = %invoke_id,
             terminal_record_enqueue_elapsed = enqueue_started.elapsed().as_millis() as u64,
             business_unblocked_record_write = true,
+            record_flush_deferred_or_failed = "terminal_invocation_enqueued_async",
             "terminal proxy capture record queued for sqlite write controller"
         );
     }
@@ -2595,7 +2668,11 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
         );
     }
     if terminal_enqueued {
-        schedule_proxy_capture_follow_up_after_terminal_flush(state, &invoke_id, "runtime_terminal");
+        schedule_proxy_capture_follow_up_after_terminal_enqueue(
+            state,
+            &invoke_id,
+            "runtime_terminal",
+        );
     }
 
     Ok(())

@@ -158,12 +158,51 @@ async fn acquire_proxy_request_concurrency_permit_tracks_multiple_in_flight_requ
 }
 
 #[tokio::test]
+async fn acquire_proxy_request_concurrency_permit_tracks_100_in_flight_without_local_rejection() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(25);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let mut permits = Vec::new();
+    for proxy_request_id in 10_000..10_100 {
+        permits.push(
+            acquire_proxy_request_concurrency_permit(
+                state.as_ref(),
+                proxy_request_id,
+                &Method::POST,
+                &uri,
+            )
+            .await,
+        );
+    }
+
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        100,
+        "deprecated proxy concurrency config must not cap observable /v1 in-flight requests"
+    );
+
+    drop(permits);
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        0
+    );
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
     config.proxy_request_concurrency_wait_timeout = Duration::from_millis(25);
     let state = test_state_from_config(config, true).await;
     let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+    let mut rx = state.broadcaster.subscribe();
 
     let permit =
         acquire_proxy_request_concurrency_permit(state.as_ref(), 2001, &Method::POST, &uri).await;
@@ -203,6 +242,36 @@ async fn proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure() {
             .load(std::sync::atomic::Ordering::Acquire),
         1,
         "invalid pool keys should not consume an admission slot while another request is in flight"
+    );
+
+    let mut running_record: Option<ApiInvocation> = None;
+    let mut terminal_record: Option<ApiInvocation> = None;
+    for _ in 0..4 {
+        let Ok(Ok(BroadcastPayload::Records { records })) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        else {
+            continue;
+        };
+        for record in records {
+            match record.status.as_deref() {
+                Some(INVOCATION_STATUS_RUNNING) => running_record = Some(record),
+                Some("failed") => terminal_record = Some(record),
+                _ => {}
+            }
+        }
+        if running_record.is_some() && terminal_record.is_some() {
+            break;
+        }
+    }
+    let running_record =
+        running_record.expect("tracked proxy request should emit a running shell before route validation");
+    let terminal_record =
+        terminal_record.expect("route validation failure should terminalize the running shell");
+    assert_eq!(terminal_record.invoke_id, running_record.invoke_id);
+    assert_eq!(terminal_record.occurred_at, running_record.occurred_at);
+    assert_eq!(
+        terminal_record.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED)
     );
 
     drop(permit);

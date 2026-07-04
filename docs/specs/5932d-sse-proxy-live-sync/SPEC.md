@@ -79,6 +79,8 @@
   - Memory overlay 中的 `running` / `pending` 记录不受 activity window、natural-day 或 5 分钟工作集限制；只要尚未 terminal/tombstone，current summary、account activity 与 working conversations 都必须展示。历史 terminal DB 行仍按所选窗口过滤。
   - terminal success/failure 记录是 P1 观测事实，必须构造成完整 terminal record 后进入 SQLite write controller；代理业务响应不等待 SQLite 落库，入队或 flush 失败只记录结构化证据。
   - terminal record 入队后必须 tombstone/remove 对应内存 running 记录；HTTP overlay 中已存在的 terminal DB 事实始终优先于 memory running。
+  - body read timeout、route validation failure、owner unavailable、pool no account 与 upstream send timeout 等终态失败必须先发布 terminal overlay 并 tombstone/remove 对应 running shell；不得依赖 SQLite flush 成功来避免 UI 假 running。
+  - active SSE subscriber 场景下，terminal overlay 是 UI 的立即收敛来源；summary/quota follow-up 可以延迟到 write controller 后续 flush 后自然一致，不得为了 follow-up 强制制造同步 SQLite flush barrier。
   - 优雅停机只尽力 drain P1 terminal/route 状态记录；P2 running snapshot 不强制逐条写回 SQLite。
 - `/api/stats/parallel-work`:
   - JSON shape 与字段集合必须保持不变。
@@ -105,6 +107,7 @@
 - Given 代理请求构造出 running 或 terminal record，When 订阅 `/events`，Then 在 1 秒内收到包含新增 `invokeId` 的 `records` 事件，即使 SQLite 记录落库仍在 write controller 队列中。
 - Given tracked proxy capture 请求已经被本服务 admit，When request body 尚未读完或尚未完成上游路由，Then 订阅 `/events` 与 HTTP runtime overlay 均能看到同一 `invokeId` 的最小 `running` 记录，后续解析/attempt 快照只补全该记录。
 - Given 同一代理请求，When `records` 事件发送后，Then 后续 summary/quota 通过 SSE 或 HTTP reconcile 最终补齐，且 SQLite locked 不得阻断业务响应。
+- Given 请求在 body/route/upstream 阶段失败，When 已经存在 admit-time running shell，Then 后端必须广播 terminal overlay 并清理 running 可见态，即使 terminal 记录尚未 flush 到 SQLite。
 - Given 命中 `INSERT OR IGNORE` 未插入，When 请求完成，Then 不重复发送 `records` 事件。
 - Given SSE 发生断线并恢复，When 连接 open，Then 前端列表通过静默回源补齐，且与后端一致。
 - Given Dashboard 收到 `today` 的 SSE `summary`，When payload 匹配当前窗口，Then KPI 数字不等待 HTTP reconcile 即可提交。

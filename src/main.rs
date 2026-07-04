@@ -283,9 +283,8 @@ const ENV_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS: &str =
 const LEGACY_ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS: &str =
     "XY_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS";
 
-fn proxy_raw_async_writer_limit(config: &AppConfig) -> usize {
+fn proxy_raw_async_writer_limit(_config: &AppConfig) -> usize {
     DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS
-        .max(config.proxy_request_concurrency_limit.saturating_mul(2))
 }
 const ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: &str = "STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS";
 const LEGACY_ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: &str =
@@ -340,6 +339,8 @@ const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit
 const PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT: &str = "request_body_read_timeout";
 const PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED: &str =
     "request_body_stream_error_client_closed";
+// Legacy failure kind retained only for historical records in failure distribution views.
+// New `/v1/*` requests no longer use a local proxy concurrency admission gate.
 const PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT: &str = "proxy_concurrency_limit";
 const PROXY_FAILURE_FAILED_CONTACT_UPSTREAM: &str = "failed_contact_upstream";
 const PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream_handshake_timeout";
