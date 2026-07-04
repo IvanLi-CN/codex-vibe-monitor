@@ -657,7 +657,7 @@ describe("DashboardWorkingConversationsSection", () => {
     )?.textContent;
     expect(accountCardText).toContain("$0.72");
     expect(costBreakdown?.textContent).toContain("$0.22");
-    expect(costBreakdown?.textContent).toContain("25%");
+    expect(costBreakdown?.textContent).toContain("30.6%");
 
     const tokenBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-token-breakdown"]',
@@ -724,8 +724,8 @@ describe("DashboardWorkingConversationsSection", () => {
       expect(tooltipText).toContain("$0.72");
       expect(tooltipText).toContain("失败成本");
       expect(tooltipText).toContain("$0.22");
-      expect(tooltipText).toContain("失败比率");
-      expect(tooltipText).toContain("25%");
+      expect(tooltipText).toContain("失败成本比率");
+      expect(tooltipText).toContain("30.6%");
       expect(tooltipText).toContain("成功/其他成本");
       expect(tooltipText).toContain("$0.50");
       expect(tooltipText).toContain("单次均价");
@@ -796,6 +796,68 @@ describe("DashboardWorkingConversationsSection", () => {
       expect(tooltipText).toContain("860");
       expect(tooltipText).toContain("阶段首字节");
       expect(tooltipText).toContain("420");
+    });
+  });
+
+  it("uses failure cost share for the upstream account cost failure ratio", async () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    const account = upstreamAccountActivityMock.data.accounts[0];
+    account.failureCount = 2;
+    account.nonSuccessCount = 2;
+    account.failureCost = 0;
+    account.totalCost = 0.72;
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-cost-ratio", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-cost-ratio",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const costBreakdown = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-cost-breakdown"]',
+    );
+    expect(costBreakdown?.textContent).toContain("$0.00");
+    expect(costBreakdown?.textContent).toContain("0%");
+
+    const costTrigger = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-metric-card"][data-metric="cost"]',
+    );
+    if (!(costTrigger instanceof HTMLElement)) {
+      throw new Error("missing cost metric trigger");
+    }
+
+    act(() => {
+      fireEvent.click(costTrigger);
+    });
+
+    await waitFor(() => {
+      const tooltip = Array.from(
+        document.body.querySelectorAll('[data-testid="dashboard-upstream-account-metric-tooltip"]'),
+      ).find((node) => node.textContent?.includes("失败成本"));
+      const tooltipText = tooltip?.textContent ?? "";
+      expect(tooltipText).toContain("失败成本");
+      expect(tooltipText).toContain("$0.00");
+      expect(tooltipText).toContain("失败成本比率");
+      expect(tooltipText).toContain("0%");
+      expect(tooltipText).not.toContain("25%");
     });
   });
 

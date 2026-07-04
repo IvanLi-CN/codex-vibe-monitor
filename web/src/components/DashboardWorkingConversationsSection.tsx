@@ -402,6 +402,14 @@ function finiteNumber(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function accountCostShare(numerator: number | null | undefined, total: number | null | undefined) {
+  const resolvedNumerator = finiteNumber(numerator);
+  const resolvedTotal = finiteNumber(total);
+  if (resolvedNumerator == null || resolvedTotal == null) return null;
+  if (resolvedTotal <= 0) return resolvedNumerator <= 0 ? 0 : null;
+  return Math.max(0, resolvedNumerator) / resolvedTotal;
+}
+
 function SummaryMetric({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 rounded-[0.65rem] bg-base-100/4 px-1.5 py-1 sm:px-2">
@@ -1838,22 +1846,22 @@ function DashboardUpstreamAccountActivityCard({
     [account.failureCount, account.nonSuccessCount, account.successCount, locale, localeTag],
   );
   const costSummarySegments = useMemo(
-    () => [
-      {
-        label: locale === "zh" ? "失败" : "Failure",
-        value: formatAccountCurrencyValue(account.failureCost, localeTag, 2),
-        tone: "error" as const,
-      },
-      {
-        label: locale === "zh" ? "失败比率" : "Failure rate",
-        value: formatAccountPercentValue(
-          account.requestCount > 0 ? account.failureCount / account.requestCount : null,
-          localeTag,
-        ),
-        tone: "error" as const,
-      },
-    ],
-    [account.failureCost, account.failureCount, account.requestCount, locale, localeTag],
+    () => {
+      const failureCostShare = accountCostShare(account.failureCost, account.totalCost);
+      return [
+        {
+          label: locale === "zh" ? "失败" : "Failure",
+          value: formatAccountCurrencyValue(account.failureCost, localeTag, 2),
+          tone: "error" as const,
+        },
+        {
+          label: locale === "zh" ? "失败成本比率" : "Failure cost ratio",
+          value: formatAccountPercentValue(failureCostShare, localeTag),
+          tone: "error" as const,
+        },
+      ];
+    },
+    [account.failureCost, account.totalCost, locale, localeTag],
   );
   const tokenSummarySegments = useMemo(
     () => [
@@ -2038,8 +2046,7 @@ function DashboardUpstreamAccountActivityCard({
     totalRequestValue,
   ]);
   const costDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
-    const failureRate =
-      account.requestCount > 0 ? account.failureCount / account.requestCount : null;
+    const failureCostShare = accountCostShare(account.failureCost, account.totalCost);
     const nonFailureCost = account.totalCost - account.failureCost;
     const averageCost =
       account.requestCount > 0 ? account.totalCost / account.requestCount : null;
@@ -2059,8 +2066,8 @@ function DashboardUpstreamAccountActivityCard({
             tone: "error" as const,
           },
           {
-            label: locale === "zh" ? "失败比率" : "Failure rate",
-            value: formatAccountPercentValue(failureRate, localeTag),
+            label: locale === "zh" ? "失败成本比率" : "Failure cost ratio",
+            value: formatAccountPercentValue(failureCostShare, localeTag),
             tone: "error" as const,
           },
         ],
@@ -2083,7 +2090,6 @@ function DashboardUpstreamAccountActivityCard({
     ];
   }, [
     account.failureCost,
-    account.failureCount,
     account.requestCount,
     account.totalCost,
     locale,
