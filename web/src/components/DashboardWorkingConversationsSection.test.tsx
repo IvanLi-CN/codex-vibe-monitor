@@ -724,7 +724,7 @@ describe("DashboardWorkingConversationsSection", () => {
       expect(tooltipText).toContain("$0.72");
       expect(tooltipText).toContain("失败成本");
       expect(tooltipText).toContain("$0.22");
-      expect(tooltipText).toContain("失败比率");
+      expect(tooltipText).toContain("失败成本比率");
       expect(tooltipText).toContain("30.6%");
       expect(tooltipText).toContain("成功/其他成本");
       expect(tooltipText).toContain("$0.50");
@@ -855,7 +855,7 @@ describe("DashboardWorkingConversationsSection", () => {
       const tooltipText = tooltip?.textContent ?? "";
       expect(tooltipText).toContain("失败成本");
       expect(tooltipText).toContain("$0.00");
-      expect(tooltipText).toContain("失败比率");
+      expect(tooltipText).toContain("失败成本比率");
       expect(tooltipText).toContain("0%");
       expect(tooltipText).not.toContain("25%");
     });

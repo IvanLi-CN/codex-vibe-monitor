@@ -1855,7 +1855,7 @@ function DashboardUpstreamAccountActivityCard({
           tone: "error" as const,
         },
         {
-          label: locale === "zh" ? "失败比率" : "Failure rate",
+          label: locale === "zh" ? "失败成本比率" : "Failure cost ratio",
           value: formatAccountPercentValue(failureCostShare, localeTag),
           tone: "error" as const,
         },
@@ -2066,7 +2066,7 @@ function DashboardUpstreamAccountActivityCard({
             tone: "error" as const,
           },
           {
-            label: locale === "zh" ? "失败比率" : "Failure rate",
+            label: locale === "zh" ? "失败成本比率" : "Failure cost ratio",
             value: formatAccountPercentValue(failureCostShare, localeTag),
             tone: "error" as const,
           },
