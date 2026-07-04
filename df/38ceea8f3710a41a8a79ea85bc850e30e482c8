@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.11.4",
+  "base_stable_version": "2.11.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-04T13:23:01Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.11.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "fb2e6350eaaad854a1d58be095c893fe8d08ab5b",
+  "pr_number": 528,
+  "pr_title": "fix(proxy): create running invocation on admission",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.11.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.11.4",
+  "target_sha": "df38ceea8f3710a41a8a79ea85bc850e30e482c8",
+  "type_label": "type:patch"
+}
