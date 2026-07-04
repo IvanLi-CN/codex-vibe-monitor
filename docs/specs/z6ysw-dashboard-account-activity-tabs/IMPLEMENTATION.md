@@ -26,6 +26,7 @@
 - 已实现：上游账号 recent 行不再重复显示账号名；当 `requestModel` / `responseModel` 规范化后仍不一致时，recent 行改为同时展示请求模型、切换图标与响应模型。
 - 已实现：上游账号 recent 行的 endpoint、reasoning effort 与双模型 badge 统一复用 compact 尺寸 recipe，消除同一行内 badge 高度不一致问题。
 - 已实现：上游账号卡片标题区改为账号名 + 文本型实时 `TPM / 消费速率` 指标，删除卡内 `渠道 / 分组` 行和顶部 `调用` 指标；周期统计重排为首字用时、请求数、成本、Token 四组，并沿用滚动数字效果。
+- 已实现：上游账号卡片四组周期统计改为整张统计卡触发结构化 tooltip；浮层按主值、当前字段、相关数据分层展示字段名和值，并关闭卡内分解段落的逐段 tooltip，避免嵌套触发区域。
 - 已实现：账号活动接口返回每个账号的 `effectiveRoutingRule`，Dashboard 账号卡标题区复用账号池关键策略徽章语义展示 `主力 / 兜底 / 禁新对话 / 禁出 / 禁入 / Fast / 并发 / 重试` 等信号；普通系统 tag 名称不进入该区域。
 - 已实现：账号活动接口补出 `avgTotalMs`、`totalCost`、严格失败 `failureCost` 与 `failureTokens`；失败比率由前端按 `failureCount / requestCount` 计算，`其他` 按 `nonSuccessCount - failureCount` 下限归零。
 - 已实现：账号活动接口中的 `tokensPerMinute` / `spendRate` 改为按每个账号最近 5 分钟活跃尾段计算；账号卡今日总量、recent 调用与排序仍使用所选 range 总量口径。
@@ -36,6 +37,7 @@
 - 已实现：工作区 `对话` tab 的 snapshot count/page 也收口到同一份 live working-set truth，不再通过 `WITH recent_terminal` 对 `codex_invocations` 做严格历史重算。公开字段、cursor 形态、recent preview 与主排序语义保持不变，但 snapshot membership 明确接受 `<=5s` bounded freshness。
 - 已实现：Dashboard 相关的 working-set / account-activity 派生维护继续遵守 `<=5s` bounded freshness；proxy capture 请求尾的 rollup/live progress、upstream account touch 与 attempt 中间进度已迁入 SQLite batch writer，避免 Dashboard reconcile 与请求收尾派生写在 SQLite 单写者上持续争用。
 - 已实现：Dashboard current records、summary/timeseries 与上游账号活动的 running 视图统一 overlay 进程内 runtime invocation store。SSE 仍即时广播 `running/pending` 记录，HTTP open-resync/current reconcile 即使 DB 不再刷新 running 行也不会短暂丢行；terminal DB 事实优先并会移除对应内存记录。
+- 已实现：terminal invocation 记录进入 SQLite write controller，代理业务响应不等待落库。Dashboard 继续先消费 SSE/runtime overlay，随后由 HTTP reconcile 读取最终一致的 DB terminal 行；running snapshot 不再产生 DB/batch 写入。
 
 ## Remaining Gaps
 

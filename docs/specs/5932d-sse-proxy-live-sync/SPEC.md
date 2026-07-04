@@ -74,8 +74,9 @@
 - Proxy runtime snapshots:
   - `running` / `pending` 过程态以进程内共享 runtime store 为当前真相源，并通过 SSE `records` 立即广播。
   - HTTP current-window reconcile 必须在 DB 结果上 overlay 同一份内存 runtime store，避免 DB 不再常规刷新 running 行后出现短暂丢行。
-  - terminal success/failure 仍以同步 DB 主事实为最高优先级；terminal 落库成功后必须移除对应内存 running 记录。
-  - 优雅停机只保证 terminal 主事实与其他 P0/P1 写入 drain；P2 running snapshot 不强制逐条写回 SQLite。
+  - terminal success/failure 记录是 P1 观测事实，必须构造成完整 terminal record 后进入 SQLite write controller；代理业务响应不等待 SQLite 落库，入队或 flush 失败只记录结构化证据。
+  - terminal record 入队后必须 tombstone/remove 对应内存 running 记录；HTTP overlay 中已存在的 terminal DB 事实始终优先于 memory running。
+  - 优雅停机只尽力 drain P1 terminal/route 状态记录；P2 running snapshot 不强制逐条写回 SQLite。
 - `/api/stats/parallel-work`:
   - JSON shape 与字段集合必须保持不变。
   - 服务端可以通过 ETag / `If-None-Match` / `304 Not Modified` 或等价 version 机制减少未变化 payload 传输。
@@ -98,8 +99,8 @@
 
 ## 验收标准（Acceptance Criteria）
 
-- Given 代理请求写库成功，When 订阅 `/events`，Then 在 1 秒内收到包含新增 `invokeId` 的 `records` 事件。
-- Given 同一代理请求，When `records` 事件发送后，Then 能收到对应窗口的 `summary` 与最新 `quota` 事件。
+- Given 代理请求构造出 running 或 terminal record，When 订阅 `/events`，Then 在 1 秒内收到包含新增 `invokeId` 的 `records` 事件，即使 SQLite 记录落库仍在 write controller 队列中。
+- Given 同一代理请求，When `records` 事件发送后，Then 后续 summary/quota 通过 SSE 或 HTTP reconcile 最终补齐，且 SQLite locked 不得阻断业务响应。
 - Given 命中 `INSERT OR IGNORE` 未插入，When 请求完成，Then 不重复发送 `records` 事件。
 - Given SSE 发生断线并恢复，When 连接 open，Then 前端列表通过静默回源补齐，且与后端一致。
 - Given Dashboard 收到 `today` 的 SSE `summary`，When payload 匹配当前窗口，Then KPI 数字不等待 HTTP reconcile 即可提交。
@@ -109,7 +110,7 @@
 
 ### Performance & Reliability
 
-- 代理主链路不可因广播失败而失败。
+- 代理主链路不可因广播失败、terminal 记录入队失败或 write controller flush 失败而失败；这些失败必须结构化记录并计数。
 - 不新增显著阻塞路径与重复广播噪声。
 - Dashboard 高频 SSE 消费不得让顶部图表、working conversation head reconcile 或 parallel-work 统计在每条记录上全量重渲染。
 

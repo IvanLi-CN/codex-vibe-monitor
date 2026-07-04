@@ -2013,7 +2013,7 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
     };
     assert_eq!(
         cache_generation_before_flush, 0,
-        "runtime snapshots should not invalidate prompt-cache conversations before the placeholder lands"
+        "runtime snapshots should not invalidate prompt-cache conversations"
     );
 
     let runtime_snapshot_follow_up_handles = state.proxy_summary_quota_broadcast_handle.lock().await.len();
@@ -2034,8 +2034,8 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
     .await
     .expect("load running placeholder after runtime snapshot flush");
     assert_eq!(
-        running_rows, 1,
-        "runtime snapshots should flush a bounded running placeholder"
+        running_rows, 0,
+        "runtime snapshots should stay memory-only after sqlite batch flush"
     );
 
     let prompt_cache_requests: i64 = sqlx::query_scalar(
@@ -2054,9 +2054,9 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
         let cache = state.prompt_cache_conversation_cache.lock().await;
         cache.generation
     };
-    assert!(
-        cache_generation_after_flush >= 1,
-        "running snapshot batch flush should invalidate prompt-cache conversations after the placeholder lands"
+    assert_eq!(
+        cache_generation_after_flush, 0,
+        "memory-only running snapshots should not invalidate prompt-cache conversations"
     );
 
     let account_last_activity_at: Option<String> =
@@ -2067,8 +2067,8 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
             .expect("load upstream account last activity after runtime snapshot flush");
     assert_eq!(
         account_last_activity_at.as_deref(),
-        Some(occurred_at.as_str()),
-        "runtime snapshots should batch upstream account activity touches before terminal persistence"
+        None,
+        "runtime snapshots should not touch upstream account activity before terminal persistence"
     );
 
     let Json(conversations) = fetch_prompt_cache_conversations(
@@ -2087,12 +2087,8 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
     .await
     .expect("working conversations should stay readable after runtime snapshot");
     assert!(
-        conversations
-            .conversations
-            .iter()
-            .any(|conversation| conversation.prompt_cache_key == "pck-follow-up-refresh"
-                && conversation.request_count >= 1),
-        "runtime snapshots should keep the new prompt-cache key visible after the bounded batch flush"
+        conversations.conversations.is_empty(),
+        "memory-only running snapshots should not materialize prompt-cache conversations before terminal persistence"
     );
 
     let mut terminal_record = test_proxy_capture_record("follow-up-refresh-running", &occurred_at);

@@ -2550,6 +2550,77 @@ export const UpstreamAccountTab: Story = {
   },
 };
 
+export const UpstreamAccountMetricTooltips: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation("pck-story-upstream-account-tooltips", [
+          createPreview({
+            id: 9831,
+            invokeId: "story-working-tooltips",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ]),
+      ])}
+      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse()}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+
+    const triggers = await canvas.findAllByTestId(
+      "dashboard-upstream-account-metric-card",
+    );
+    await expect(triggers).toHaveLength(4);
+
+    const assertMetricTooltip = async (
+      metric: string,
+      expectedTexts: string[],
+    ) => {
+      const trigger = canvasElement.querySelector(
+        `[data-testid="dashboard-upstream-account-metric-card"][data-metric="${metric}"]`,
+      );
+      if (!(trigger instanceof HTMLElement)) {
+        throw new Error(`missing ${metric} metric trigger`);
+      }
+      await userEvent.click(trigger);
+      await waitFor(() => {
+        const tooltipText = document.body.textContent ?? "";
+        for (const text of expectedTexts) {
+          expect(tooltipText).toContain(text);
+        }
+      });
+      await userEvent.click(trigger);
+      await userEvent.unhover(trigger);
+    };
+
+    await assertMetricTooltip("latency", ["首字用时", "2.87 s", "响应时间", "阶段首字节"]);
+    await assertMetricTooltip("requests", ["请求数", "成功率", "75%", "非成功率"]);
+    await assertMetricTooltip("cost", ["成本", "$0.72", "失败成本", "成功/其他成本", "单次均价"]);
+    await assertMetricTooltip("token", ["Token", "缓存命中率", "成功 Token", "单请求 Token"]);
+
+    const finalTrigger = canvasElement.querySelector(
+      '[data-testid="dashboard-upstream-account-metric-card"][data-metric="cost"]',
+    );
+    if (finalTrigger instanceof HTMLElement) await userEvent.click(finalTrigger);
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Stable interaction coverage for the four upstream-account metric cards. Each whole metric card opens a structured tooltip with explicit field labels, values, and related computed data while the card surface stays compact.",
+      },
+    },
+  },
+};
+
 export const UpstreamAccountRecentIdentityChipOpensConversation: Story = {
   args: UpstreamAccountTab.args,
   render: () => (

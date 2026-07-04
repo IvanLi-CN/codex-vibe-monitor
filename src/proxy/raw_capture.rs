@@ -827,43 +827,119 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
     Ok(())
 }
 
+pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_flush(
+    state: &AppState,
+    invoke_id: &str,
+    trigger: &'static str,
+) {
+    #[cfg(test)]
+    if !state.sqlite_batch_writer.auto_flush_terminal_for_test() {
+        return;
+    }
+
+    if state.broadcaster.receiver_count() == 0 && !state.shutdown.is_cancelled() {
+        return;
+    }
+
+    let sqlite_batch_writer = state.sqlite_batch_writer.clone();
+    let pool = state.pool.clone();
+    let hourly_rollup_sync_lock = state.hourly_rollup_sync_lock.clone();
+    let broadcaster = state.broadcaster.clone();
+    let broadcast_state_cache = state.broadcast_state_cache.clone();
+    let relay_config = state.config.crs_stats.clone();
+    let invocation_max_days = state.config.invocation_max_days;
+    let shutdown = state.shutdown.clone();
+    let invoke_id = invoke_id.to_string();
+    tokio::spawn(async move {
+        if let Err(err) = sqlite_batch_writer.flush_now(&pool).await {
+            warn!(
+                error = %err,
+                invoke_id = %invoke_id,
+                trigger,
+                "proxy capture follow-up skipped because terminal sqlite flush barrier failed"
+            );
+            return;
+        }
+        let mode = if shutdown.is_cancelled() {
+            ProxyCaptureFollowUpBroadcastMode::ShutdownFlush
+        } else {
+            ProxyCaptureFollowUpBroadcastMode::ActiveSubscribers
+        };
+        broadcast_proxy_capture_follow_up(
+            &pool,
+            hourly_rollup_sync_lock.as_ref(),
+            &broadcaster,
+            broadcast_state_cache.as_ref(),
+            relay_config.as_ref(),
+            invocation_max_days,
+            mode,
+            &invoke_id,
+        )
+        .await;
+    });
+}
+
 pub(crate) async fn persist_and_broadcast_proxy_capture(
     state: &AppState,
     capture_started: Instant,
-    record: ProxyCaptureRecord,
+    mut record: ProxyCaptureRecord,
 ) -> Result<()> {
-    let derived_payload = record.payload.clone();
-    let inserted =
-        persist_proxy_capture_record_core(&state.pool, capture_started, record, false).await?;
-    let Some(inserted_record) = inserted else {
-        return Ok(());
-    };
-    if inserted_record
-        .prompt_cache_key
-        .as_deref()
-        .is_some_and(|key| !key.trim().is_empty())
-    {
-        invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
+    let enqueue_started = Instant::now();
+    if !record.timings.t_total_ms.is_finite() || record.timings.t_total_ms <= 0.0 {
+        record.timings.t_total_ms = elapsed_ms(capture_started);
     }
-
+    let inserted_record = api_invocation_from_runtime_record(&record);
     let invoke_id = inserted_record.invoke_id.clone();
-    remove_proxy_runtime_snapshot_for_terminal(state, &inserted_record);
-    let derived = BatchedInvocationDerivedWrites {
-        invocation_id: inserted_record.id,
-        occurred_at: inserted_record.occurred_at.clone(),
-        payload: derived_payload,
-    };
-    if !state
-        .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::InvocationDerived(derived.clone()))
-        && let Err(err) =
-            SqliteBatchWriter::flush_invocation_derived_inline(&state.pool, derived).await
-    {
-        warn!(
-            error = %err,
+    let duplicate_terminal = remove_proxy_runtime_snapshot_for_terminal(state, &inserted_record);
+    if duplicate_terminal {
+        debug!(
             invoke_id = %invoke_id,
-            "failed to synchronously compensate dropped raw proxy derived write"
+            occurred_at = %inserted_record.occurred_at,
+            business_unblocked_record_write = true,
+            "duplicate raw proxy capture record skipped before sqlite enqueue"
         );
+        schedule_proxy_capture_follow_up_after_terminal_flush(
+            state,
+            &invoke_id,
+            "duplicate_raw_terminal",
+        );
+        return Ok(());
+    }
+    let terminal_enqueued = state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::TerminalInvocation(
+            BatchedTerminalInvocationWrite {
+                record,
+                capture_started: Some(capture_started),
+                raw_capture: true,
+            },
+        ));
+    if !terminal_enqueued {
+        let terminal_tombstone_cleared = state
+            .proxy_runtime_invocations
+            .clear_terminal_tombstone(&inserted_record.invoke_id, &inserted_record.occurred_at);
+        warn!(
+            invoke_id = %invoke_id,
+            occurred_at = %inserted_record.occurred_at,
+            enqueue_failed_by_class = "raw_terminal_invocation",
+            terminal_tombstone_cleared,
+            business_unblocked_record_write = true,
+            "raw proxy capture record dropped by sqlite write controller"
+        );
+    } else {
+        debug!(
+            invoke_id = %invoke_id,
+            terminal_record_enqueue_elapsed = enqueue_started.elapsed().as_millis() as u64,
+            business_unblocked_record_write = true,
+            "raw proxy capture record queued for sqlite write controller"
+        );
+    }
+    #[cfg(test)]
+    if terminal_enqueued && state.sqlite_batch_writer.auto_flush_terminal_for_test() {
+        state
+            .sqlite_batch_writer
+            .flush_buffered_for_test(&state.pool)
+            .await;
     }
     if state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
@@ -876,7 +952,10 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             "failed to broadcast new proxy capture record"
         );
     }
-    schedule_proxy_capture_follow_up_worker(state, &invoke_id).await
+    if terminal_enqueued {
+        schedule_proxy_capture_follow_up_after_terminal_flush(state, &invoke_id, "raw_terminal");
+    }
+    Ok(())
 }
 
 pub(crate) async fn persist_proxy_capture_record(
@@ -887,7 +966,7 @@ pub(crate) async fn persist_proxy_capture_record(
     persist_proxy_capture_record_core(pool, capture_started, record, true).await
 }
 
-async fn persist_proxy_capture_record_core(
+pub(crate) async fn persist_proxy_capture_record_core(
     pool: &Pool<Sqlite>,
     capture_started: Instant,
     mut record: ProxyCaptureRecord,
@@ -913,6 +992,10 @@ async fn persist_proxy_capture_record_core(
     let failure_kind = failure.failure_kind.clone();
     let persist_started = Instant::now();
     let created_at = format_utc_iso_millis(Utc::now());
+    if !record.timings.t_total_ms.is_finite() || record.timings.t_total_ms <= 0.0 {
+        record.timings.t_total_ms = elapsed_ms(capture_started);
+    }
+    let t_persist_ms = nullable_runtime_timing_value(record.timings.t_persist_ms);
 
     let mut tx = pool.begin().await?;
     let mut core_write_path = "insert_missing";
@@ -941,14 +1024,14 @@ async fn persist_proxy_capture_record_core(
             failure_kind.as_deref(),
             failure.failure_class.as_str(),
             failure.is_actionable,
-            None,
+            Some(record.timings.t_total_ms),
             Some(record.timings.t_req_read_ms),
             Some(record.timings.t_req_parse_ms),
             Some(record.timings.t_upstream_connect_ms),
             Some(record.timings.t_upstream_ttfb_ms),
             Some(record.timings.t_upstream_stream_ms),
             Some(record.timings.t_resp_parse_ms),
-            None,
+            t_persist_ms,
         )
         .await?;
         if !updated {
@@ -1036,14 +1119,14 @@ async fn persist_proxy_capture_record_core(
         .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
         .bind(resp_raw.truncated as i64)
         .bind(resp_raw.truncated_reason.as_deref())
-        .bind(None::<f64>)
+        .bind(record.timings.t_total_ms)
         .bind(record.timings.t_req_read_ms)
         .bind(record.timings.t_req_parse_ms)
         .bind(record.timings.t_upstream_connect_ms)
         .bind(record.timings.t_upstream_ttfb_ms)
         .bind(record.timings.t_upstream_stream_ms)
         .bind(record.timings.t_resp_parse_ms)
-        .bind(None::<f64>)
+        .bind(t_persist_ms)
         .bind(created_at)
         .execute(tx.as_mut())
         .await?;
@@ -1077,14 +1160,14 @@ async fn persist_proxy_capture_record_core(
                 failure_kind.as_deref(),
                 failure.failure_class.as_str(),
                 failure.is_actionable,
-                None,
+                Some(record.timings.t_total_ms),
                 Some(record.timings.t_req_read_ms),
                 Some(record.timings.t_req_parse_ms),
                 Some(record.timings.t_upstream_connect_ms),
                 Some(record.timings.t_upstream_ttfb_ms),
                 Some(record.timings.t_upstream_stream_ms),
                 Some(record.timings.t_resp_parse_ms),
-                None,
+                t_persist_ms,
             )
             .await?;
             if !updated {
@@ -1105,23 +1188,6 @@ async fn persist_proxy_capture_record_core(
         .await?;
     }
 
-    record.timings.t_persist_ms = elapsed_ms(persist_started);
-    record.timings.t_total_ms = elapsed_ms(capture_started);
-
-    sqlx::query(
-        r#"
-        UPDATE codex_invocations
-        SET t_total_ms = ?2,
-            t_persist_ms = ?3
-        WHERE id = ?1
-        "#,
-    )
-    .bind(invocation_id)
-    .bind(record.timings.t_total_ms)
-    .bind(record.timings.t_persist_ms)
-    .execute(tx.as_mut())
-    .await?;
-
     if write_derived_inline {
         recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[invocation_id]).await?;
         save_hourly_rollup_live_progress_tx(
@@ -1131,6 +1197,19 @@ async fn persist_proxy_capture_record_core(
         )
         .await?;
     }
+
+    let measured_t_persist_ms = elapsed_ms(persist_started);
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET t_persist_ms = ?2
+        WHERE id = ?1
+        "#,
+    )
+    .bind(invocation_id)
+    .bind(measured_t_persist_ms)
+    .execute(tx.as_mut())
+    .await?;
 
     let persisted =
         load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)

@@ -318,17 +318,10 @@ pub(crate) async fn record_account_selected(state: &AppState, account_id: i64) {
     {
         warn!(
             account_id,
-            "account selected touch dropped by sqlite batch writer; flushing inline fallback"
+            enqueue_failed_by_class = "account_selected_touch",
+            business_unblocked_record_write = true,
+            "account selected touch dropped by sqlite write controller"
         );
-        if let Err(err) =
-            SqliteBatchWriter::flush_account_selected_touch_inline(&state.pool, touch).await
-        {
-            warn!(
-                ?err,
-                account_id,
-                "account selected touch inline fallback failed"
-            );
-        }
     }
 }
 
