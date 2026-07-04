@@ -192,6 +192,21 @@ function conversationForwardProxyLabel(node: ForwardProxyBindingNode) {
     : node.displayName;
 }
 
+function normalizeConversationProxyKeys(values?: string[] | null): string[] {
+  if (!Array.isArray(values)) return [];
+  return Array.from(
+    new Set(
+      values.map((value) => value.trim()).filter((value) => value.length > 0),
+    ),
+  );
+}
+
+function toggleConversationProxyKey(keys: string[], target: string): string[] {
+  return keys.includes(target)
+    ? keys.filter((key) => key !== target)
+    : [...keys, target];
+}
+
 function splitConversationModelsDraft(value: string) {
   return value
     .split(/[\n,]/)
@@ -207,7 +222,7 @@ function applyBindingPolicyDraft(
     setImageToolDraft: (value: RewriteModeDraft) => void;
     setAvailableModelsMode: (value: "inherit" | "override") => void;
     setAvailableModelsDraft: (value: string) => void;
-    setForwardProxyKeyDraft: (value: string) => void;
+    setForwardProxyKeysDraft: (value: string[]) => void;
   },
 ) {
   setters.setAllowSwitchUpstreamDraft(
@@ -223,7 +238,9 @@ function applyBindingPolicyDraft(
     nextBinding.availableModels == null ? "inherit" : "override",
   );
   setters.setAvailableModelsDraft((nextBinding.availableModels ?? []).join(", "));
-  setters.setForwardProxyKeyDraft(nextBinding.forwardProxyKey ?? "inherit");
+  setters.setForwardProxyKeysDraft(
+    normalizeConversationProxyKeys(nextBinding.forwardProxyKeys),
+  );
 }
 
 function conversationPolicySourceLabel(
@@ -271,13 +288,18 @@ function conversationRewriteModeLabel(
 }
 
 function conversationProxyValueLabel(
-  forwardProxyKey: string | null | undefined,
+  forwardProxyKeys: string[] | null | undefined,
   nodes: ForwardProxyBindingNode[],
   t: (key: string) => string,
 ) {
-  if (!forwardProxyKey) return t("live.conversations.drawer.policy.proxyInherited");
-  const node = nodes.find((candidate) => candidate.key === forwardProxyKey);
-  return node ? conversationForwardProxyLabel(node) : forwardProxyKey;
+  const keys = normalizeConversationProxyKeys(forwardProxyKeys);
+  if (keys.length === 0) return t("live.conversations.drawer.policy.proxyInherited");
+  return keys
+    .map((key) => {
+      const node = nodes.find((candidate) => candidate.key === key);
+      return node ? conversationForwardProxyLabel(node) : key;
+    })
+    .join(", ");
 }
 
 function accountCanBePromptCacheBindingTarget(account: UpstreamAccountSummary) {
@@ -2095,7 +2117,7 @@ export function PromptCacheConversationHistoryDrawer({
   const [availableModelsMode, setAvailableModelsMode] =
     useState<"inherit" | "override">("inherit");
   const [availableModelsDraft, setAvailableModelsDraft] = useState("");
-  const [forwardProxyKeyDraft, setForwardProxyKeyDraft] = useState("inherit");
+  const [forwardProxyKeysDraft, setForwardProxyKeysDraft] = useState<string[]>([]);
   const [expandedPolicyField, setExpandedPolicyField] =
     useState<ConversationPolicyField | null>(null);
   const [policySavingField, setPolicySavingField] =
@@ -2359,7 +2381,7 @@ export function PromptCacheConversationHistoryDrawer({
       setImageToolDraft("inherit");
       setAvailableModelsMode("inherit");
       setAvailableModelsDraft("");
-      setForwardProxyKeyDraft("inherit");
+      setForwardProxyKeysDraft([]);
       setExpandedPolicyField(null);
       setPolicySavingField(null);
       return;
@@ -2393,7 +2415,7 @@ export function PromptCacheConversationHistoryDrawer({
           setImageToolDraft,
           setAvailableModelsMode,
           setAvailableModelsDraft,
-          setForwardProxyKeyDraft,
+          setForwardProxyKeysDraft,
         });
         setBindingTimeoutDraft(
           buildRoutingTimeoutOverrideDraftForSource(
@@ -2593,7 +2615,7 @@ export function PromptCacheConversationHistoryDrawer({
       ? binding.availableModels.join(", ")
       : t("accountPool.upstreamAccounts.effectiveRule.availableModelsInherited");
   const effectiveForwardProxy = conversationProxyValueLabel(
-    binding?.forwardProxyKey ?? null,
+    binding?.forwardProxyKeys ?? null,
     bindingProxyNodes,
     t,
   );
@@ -2668,24 +2690,28 @@ export function PromptCacheConversationHistoryDrawer({
       setPolicySavingField(field);
       setBindingError(null);
       try {
+        const fieldPatch =
+          field === "forwardProxyKey"
+            ? { forwardProxyKeys: Array.isArray(value) ? value : null }
+            : { [field]: value };
         const nextBinding = await updatePromptCacheConversationBinding(
           conversationKey,
           binding.bindingKind === "group" && binding.groupName
             ? {
                 bindingKind: "group",
                 groupName: binding.groupName,
-                [field]: value,
+                ...fieldPatch,
               }
             : binding.bindingKind === "upstreamAccount" &&
                 binding.upstreamAccountId != null
               ? {
                   bindingKind: "upstreamAccount",
                   upstreamAccountId: binding.upstreamAccountId,
-                  [field]: value,
+                  ...fieldPatch,
                 }
               : {
                   bindingKind: "none",
-                  [field]: value,
+                  ...fieldPatch,
                 },
         );
         setBinding(nextBinding);
@@ -2695,7 +2721,7 @@ export function PromptCacheConversationHistoryDrawer({
           setImageToolDraft,
           setAvailableModelsMode,
           setAvailableModelsDraft,
-          setForwardProxyKeyDraft,
+          setForwardProxyKeysDraft,
         });
         setExpandedPolicyField(null);
       } catch (err) {
@@ -2937,17 +2963,101 @@ export function PromptCacheConversationHistoryDrawer({
                 t("live.conversations.drawer.policy.proxy"),
                 effectiveForwardProxy,
                 policyFieldSources.forwardProxyKey,
-                <SelectField
-                  value={forwardProxyKeyDraft === "inherit" ? "" : forwardProxyKeyDraft}
-                  disabled={policySavingField != null}
-                  aria-label={t("live.conversations.drawer.policy.proxy")}
-                  size="sm"
-                  options={forwardProxyOptions.filter((option) => option.value !== "inherit")}
-                  onValueChange={(value) => {
-                    setForwardProxyKeyDraft(value);
-                    void savePolicyField("forwardProxyKey", value);
-                  }}
-                />,
+                <div className="space-y-2">
+                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                    <SelectField
+                      value=""
+                      disabled={policySavingField != null}
+                      aria-label={t("live.conversations.drawer.policy.proxy")}
+                      size="sm"
+                      options={[
+                        {
+                          value: "",
+                          label: t(
+                            "live.conversations.drawer.policy.proxyAddPlaceholder",
+                          ),
+                          disabled: true,
+                        },
+                        ...forwardProxyOptions
+                          .filter((option) => option.value !== "inherit")
+                          .map((option) => ({
+                            ...option,
+                            disabled: forwardProxyKeysDraft.includes(
+                              option.value,
+                            ),
+                          })),
+                      ]}
+                      onValueChange={(value) => {
+                        if (!value) return;
+                        const nextKeys = toggleConversationProxyKey(
+                          forwardProxyKeysDraft,
+                          value,
+                        );
+                        setForwardProxyKeysDraft(nextKeys);
+                        void savePolicyField("forwardProxyKey", nextKeys);
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      disabled={
+                        policySavingField != null ||
+                        forwardProxyKeysDraft.length === 0
+                      }
+                      onClick={() => {
+                        setForwardProxyKeysDraft([]);
+                        void savePolicyField("forwardProxyKey", null);
+                      }}
+                    >
+                      {t("live.conversations.drawer.policy.inherit")}
+                    </Button>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {forwardProxyKeysDraft.length === 0 ? (
+                      <span className="text-xs text-base-content/60">
+                        {t("live.conversations.drawer.policy.proxyInherited")}
+                      </span>
+                    ) : (
+                      forwardProxyKeysDraft.map((key) => {
+                        const node = bindingProxyNodes.find(
+                          (candidate) => candidate.key === key,
+                        );
+                        return (
+                          <span
+                            key={key}
+                            className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-base-300 bg-base-100 px-2 py-1 text-xs"
+                          >
+                            <span className="max-w-48 truncate">
+                              {node ? conversationForwardProxyLabel(node) : key}
+                            </span>
+                            <button
+                              type="button"
+                              className="rounded-full px-1 text-base-content/55 hover:bg-base-200 hover:text-base-content"
+                              disabled={policySavingField != null}
+                              aria-label={t(
+                                "live.conversations.drawer.policy.proxyRemove",
+                              )}
+                              onClick={() => {
+                                const nextKeys = toggleConversationProxyKey(
+                                  forwardProxyKeysDraft,
+                                  key,
+                                );
+                                setForwardProxyKeysDraft(nextKeys);
+                                void savePolicyField(
+                                  "forwardProxyKey",
+                                  nextKeys.length > 0 ? nextKeys : null,
+                                );
+                              }}
+                            >
+                              x
+                            </button>
+                          </span>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>,
               )}
               {renderPolicyRow(
                 "availableModels",
@@ -3155,7 +3265,7 @@ export function PromptCacheConversationHistoryDrawer({
         setImageToolDraft,
         setAvailableModelsMode,
         setAvailableModelsDraft,
-        setForwardProxyKeyDraft,
+        setForwardProxyKeysDraft,
       });
       setBindingTimeoutDraft(
         buildRoutingTimeoutOverrideDraftForSource(

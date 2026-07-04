@@ -1233,6 +1233,8 @@ pub(crate) struct ConversationRoutingOverride {
     pub(crate) image_tool_rewrite_mode: Option<ImageToolRewriteMode>,
     pub(crate) available_models: Option<Vec<String>>,
     pub(crate) forward_proxy_key: Option<String>,
+    pub(crate) forward_proxy_keys: Vec<String>,
+    pub(crate) forward_proxy_scope_key: String,
 }
 
 impl ConversationRoutingOverride {
@@ -1242,6 +1244,7 @@ impl ConversationRoutingOverride {
             || self.image_tool_rewrite_mode.is_some()
             || self.available_models.is_some()
             || self.forward_proxy_key.is_some()
+            || !self.forward_proxy_keys.is_empty()
     }
 }
 
@@ -1400,6 +1403,7 @@ pub(crate) struct UpstreamAccountSummary {
     last_action_invoke_id: Option<String>,
     last_action_at: Option<String>,
     cooldown_until: Option<String>,
+    bound_proxy_keys: Vec<String>,
     current_forward_proxy_key: Option<String>,
     current_forward_proxy_display_name: Option<String>,
     current_forward_proxy_state: String,
@@ -2301,6 +2305,8 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     concurrency_limit: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     upstream_base_url: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    bound_proxy_keys: OptionalField<Vec<String>>,
     enabled: Option<bool>,
     is_mother: Option<bool>,
     api_key: Option<String>,

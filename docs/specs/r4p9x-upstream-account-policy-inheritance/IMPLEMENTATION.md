@@ -69,6 +69,16 @@ Local stale state is sanitized instead of preserved as a hidden write path.
 - restored batch/create drafts no longer replay legacy shared-tag sync metadata
 - detail draft saves no longer write `tagIds`
 
+Account-level forward-proxy bindings are now a first-class routing override.
+
+- `pool_upstream_accounts.bound_proxy_keys_json` stores a nullable account-local list of canonical binding keys
+- account update payloads accept `boundProxyKeys`; missing preserves, `null` or `[]` clears to inherit, and non-empty lists are validated against selectable existing binding nodes
+- account summaries/details expose `boundProxyKeys`
+- route resolution uses `conversation > account > group` proxy precedence
+- account proxy lists use a dedicated `account:<id>` runtime scope so the current node remains sticky per account
+- explicit account proxy lists are hard constraints; all-unavailable lists fail through the existing proxy readiness path rather than falling back to group or automatic routing
+- the account detail Routing tab now shows the account proxy editor inline and no longer renders the separate "edit account policy" button
+
 ## Validation
 
 Validation covers:
@@ -85,3 +95,7 @@ Validation covers:
   - existing account overrides auto-expand on load, available models use the tag-selector control, and upstream 429 retry uses the `0..5` count selector without a separate switch
 - timeout source badges and clear-to-inherit controls work across group, account, and conversation layers without involving tags
 - timeout rows stay collapsed when the current layer does not override them; current-layer timeout overrides expand by default and can be cleared one field at a time without affecting untouched fields
+- account route proxy binding Storybook evidence proves the inline account proxy editor, inherited/effective proxy chips, and removal of the old edit policy button
+- `cargo test prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots -- --nocapture`
+- `cd web && npm test -- --run UpstreamAccounts.test.tsx`
+- `cd web && npm run build`

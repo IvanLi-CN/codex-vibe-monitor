@@ -142,6 +142,27 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.grouped.proxiesEmpty": "No bound proxy",
     "accountPool.upstreamAccounts.proxy.pending": "Pending",
     "accountPool.upstreamAccounts.proxy.unconfigured": "Unconfigured proxy",
+    "accountPool.upstreamAccounts.proxyBindings.accountTitle":
+      "Account forward proxies",
+    "accountPool.upstreamAccounts.proxyBindings.accountDescription":
+      "Choose explicit proxy nodes for this account. Empty inherits the group configuration.",
+    "accountPool.upstreamAccounts.proxyBindings.addLabel": "Add proxy",
+    "accountPool.upstreamAccounts.proxyBindings.addPlaceholder":
+      "Select a proxy node",
+    "accountPool.upstreamAccounts.proxyBindings.loading": "Loading proxy nodes",
+    "accountPool.upstreamAccounts.proxyBindings.clear": "Inherit group",
+    "accountPool.upstreamAccounts.proxyBindings.sourceAccount":
+      "Account override",
+    "accountPool.upstreamAccounts.proxyBindings.sourceGroup": "Inherited group",
+    "accountPool.upstreamAccounts.proxyBindings.effectiveEmpty":
+      "No explicit proxy list; automatic routing remains in effect.",
+    "accountPool.upstreamAccounts.proxyBindings.failoverHint":
+      "Requests keep the current node sticky. After consecutive network failures, the next selectable node is chosen from this list by existing proxy weight and penalty rules. If every explicit node is unavailable, routing fails instead of falling back.",
+    "accountPool.upstreamAccounts.proxyBindings.remove": "Remove proxy",
+    "accountPool.upstreamAccounts.proxyBindings.statusAvailable": "Available",
+    "accountPool.upstreamAccounts.proxyBindings.statusUnavailable":
+      "Unavailable",
+    "accountPool.upstreamAccounts.proxyBindings.statusMissing": "Missing",
     "accountPool.upstreamAccounts.plan.free": "Free",
     "accountPool.upstreamAccounts.plan.plus": "Plus",
     "accountPool.upstreamAccounts.plan.team": "Team",
@@ -2054,6 +2075,9 @@ const baseTranslations = {
     "live.conversations.drawer.policy.imageTool": "Image tool",
     "live.conversations.drawer.policy.proxy": "Proxy",
     "live.conversations.drawer.policy.proxyInherited": "Inherited proxy policy",
+    "live.conversations.drawer.policy.proxyAddPlaceholder":
+      "Add a proxy node",
+    "live.conversations.drawer.policy.proxyRemove": "Remove proxy",
     "live.conversations.drawer.policy.availableModels": "Available models",
     "live.conversations.drawer.policy.availableModelsPlaceholder":
       "Comma-separated model names",
@@ -2733,6 +2757,23 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.confirmDelete": "确认删除",
     "accountPool.upstreamAccounts.actions.save": "保存修改",
     "accountPool.upstreamAccounts.actions.editRoutingPolicy": "编辑账号策略",
+    "accountPool.upstreamAccounts.proxyBindings.accountTitle": "账号代理",
+    "accountPool.upstreamAccounts.proxyBindings.accountDescription":
+      "为这个账号选择显式代理节点。留空时继承分组配置。",
+    "accountPool.upstreamAccounts.proxyBindings.addLabel": "添加代理",
+    "accountPool.upstreamAccounts.proxyBindings.addPlaceholder": "选择代理节点",
+    "accountPool.upstreamAccounts.proxyBindings.loading": "正在加载代理节点",
+    "accountPool.upstreamAccounts.proxyBindings.clear": "继承分组",
+    "accountPool.upstreamAccounts.proxyBindings.sourceAccount": "账号覆盖",
+    "accountPool.upstreamAccounts.proxyBindings.sourceGroup": "继承分组",
+    "accountPool.upstreamAccounts.proxyBindings.effectiveEmpty":
+      "没有显式代理列表，继续使用自动路由。",
+    "accountPool.upstreamAccounts.proxyBindings.failoverHint":
+      "请求会粘住当前节点；连续网络失败后，才在这个列表内按现有代理权重和惩罚规则选择下一个可用节点。显式列表全部不可用时会直接失败，不回退到上层或自动代理。",
+    "accountPool.upstreamAccounts.proxyBindings.remove": "移除代理",
+    "accountPool.upstreamAccounts.proxyBindings.statusAvailable": "可用",
+    "accountPool.upstreamAccounts.proxyBindings.statusUnavailable": "不可选",
+    "accountPool.upstreamAccounts.proxyBindings.statusMissing": "缺失",
     "accountPool.upstreamAccounts.actions.enable": "启用",
     "accountPool.upstreamAccounts.actions.openDetails": "打开详情",
     "accountPool.upstreamAccounts.actions.dismissDuplicateWarning": "收起提示",
@@ -4381,6 +4422,8 @@ const baseTranslations = {
     "live.conversations.drawer.policy.imageTool": "图片工具",
     "live.conversations.drawer.policy.proxy": "代理",
     "live.conversations.drawer.policy.proxyInherited": "继承代理策略",
+    "live.conversations.drawer.policy.proxyAddPlaceholder": "添加代理节点",
+    "live.conversations.drawer.policy.proxyRemove": "移除代理",
     "live.conversations.drawer.policy.availableModels": "可用模型",
     "live.conversations.drawer.policy.availableModelsPlaceholder":
       "用逗号分隔模型名",

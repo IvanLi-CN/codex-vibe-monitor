@@ -79,6 +79,8 @@ pub(crate) struct UpstreamAccountRow {
     policy_responses_stream_timeout_secs: Option<i64>,
     #[sqlx(default)]
     policy_compact_stream_timeout_secs: Option<i64>,
+    #[sqlx(default)]
+    bound_proxy_keys_json: Option<String>,
     upstream_base_url: Option<String>,
     #[sqlx(default)]
     external_client_id: Option<String>,
@@ -98,6 +100,10 @@ impl UpstreamAccountRow {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
+    }
+
+    pub(crate) fn bound_proxy_keys(&self) -> Vec<String> {
+        decode_group_bound_proxy_keys_json(self.bound_proxy_keys_json.as_deref())
     }
 }
 
