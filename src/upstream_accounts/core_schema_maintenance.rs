@@ -62,6 +62,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_compact_first_byte_timeout_secs INTEGER,
             policy_responses_stream_timeout_secs INTEGER,
             policy_compact_stream_timeout_secs INTEGER,
+            bound_proxy_keys_json TEXT,
             upstream_base_url TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -120,6 +121,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "upstream_base_url")
         .await
         .context("failed to ensure pool_upstream_accounts.upstream_base_url")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "bound_proxy_keys_json")
+        .await
+        .context("failed to ensure pool_upstream_accounts.bound_proxy_keys_json")?;
     ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_block_new_conversations")
         .await
         .context("failed to ensure pool_upstream_accounts.policy_block_new_conversations")?;

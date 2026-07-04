@@ -75,6 +75,16 @@ Timeout inheritance is field-local:
 
 Tags and system-tag signals never contribute timeout values or timeout sources.
 
+Forward-proxy bindings are resolved independently from routing policy and timeout inheritance:
+
+1. Conversation proxy override
+2. Account proxy override
+3. Group proxy binding
+
+Each layer may store a list of existing forward-proxy binding keys, including `__direct__`. An empty account list means inherit the group list; an empty conversation list means inherit the selected account/group scope.
+
+An explicit proxy list is a hard constraint. Runtime must select only from the configured list, keep the current selected node sticky for that scope, and switch to the next best selectable node from the same list only after the existing consecutive network-failure threshold is reached. If every explicit node is unavailable, routing fails with the existing proxy/account readiness error instead of falling back to an upstream layer or automatic proxy routing.
+
 System tags are not an editable routing authoring surface. Their current contract is:
 
 - `unsupported_model:<model>` appends `<model>` to `systemDeniedModels`
@@ -143,11 +153,14 @@ Account summaries and detail responses expose:
 
 - read-only `tags` for system badge display
 - read-only `imageToolCapability`
+- account-level `boundProxyKeys`
 - effective-rule field sources including `systemDeniedModels`
 - effective request-path `timeouts`
 - request-path `timeoutFieldSources`
 
-Account update payloads accept `routingRule`. Missing `routingRule` preserves account-level overrides. Inside a present `routingRule`, every account-policy field is tri-state:
+Account update payloads accept `routingRule` and `boundProxyKeys`. Missing `boundProxyKeys` preserves account-level proxy overrides; `null` or an empty list clears the account override and inherits the group proxy binding; a non-empty list stores an account-level hard proxy list after canonicalization and selectable-node validation.
+
+Missing `routingRule` preserves account-level overrides. Inside a present `routingRule`, every account-policy field is tri-state:
 
 - missing field: preserve that account override as stored
 - `null`: clear that account override and inherit the upstream effective value
@@ -176,7 +189,7 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 
 ## Non-Goals
 
-- Proxy binding, node shunt, and notes are not part of system tag policy.
+- Forward-proxy binding, node shunt, and notes are not part of system tag policy.
 - User-maintained tag policies, tag ordering, or tag routing dialogs are not reintroduced.
 - Historical custom tag strategies are not migrated onto groups or accounts.
 - Image capability is not an editable account control.
@@ -200,6 +213,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - effective routing rule card rendering upstream 429 retry as a `0..5` inline count selector without a separate toggle
 - group/account routing dialogs showing mixed inherited/global timeout defaults with timeout rows collapsed until the current layer explicitly overrides a field
 - account effective-rule card showing timeout source badges, inherited timeout rows collapsed by default, account-owned timeout rows expanded by default, and single-field clear-to-inherit rollback
+- account detail Routing tab showing account-level forward-proxy bindings, inherited group bindings, and sticky failover semantics without the old "edit account policy" button
 
 PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)
@@ -218,6 +232,9 @@ PR: include
 
 PR: include
 ![Effective routing rule account overrides default expanded](./assets/effective-rule-multiple-account-overrides-default-expanded.png)
+
+PR: include
+![Account route proxy bindings](./assets/account-route-proxy-bindings-story.png)
 
 PR: include
 ![Effective routing rule available-model tag selector](./assets/effective-rule-available-models-tag-selector.png)

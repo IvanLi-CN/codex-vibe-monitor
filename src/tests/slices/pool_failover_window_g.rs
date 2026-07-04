@@ -2081,14 +2081,32 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
     .expect("working conversations should stay readable after runtime snapshot");
+    assert_eq!(
+        conversations.conversations.len(),
+        1,
+        "memory-only running snapshots should be visible through HTTP overlay before terminal persistence"
+    );
+    let runtime_conversation = conversations
+        .conversations
+        .iter()
+        .find(|conversation| conversation.prompt_cache_key == "pck-follow-up-refresh")
+        .expect("running prompt-cache conversation should come from runtime overlay");
     assert!(
-        conversations.conversations.is_empty(),
-        "memory-only running snapshots should not materialize prompt-cache conversations before terminal persistence"
+        runtime_conversation.last_in_flight_at.is_some(),
+        "runtime overlay should expose the in-flight anchor"
+    );
+    assert_eq!(
+        runtime_conversation
+            .recent_invocations
+            .first()
+            .map(|invocation| invocation.status.as_str()),
+        Some("running"),
+        "runtime overlay should hydrate a running recent preview"
     );
 
     let mut terminal_record = test_proxy_capture_record("follow-up-refresh-running", &occurred_at);

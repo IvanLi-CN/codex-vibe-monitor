@@ -1888,6 +1888,7 @@
                     group_note: None,
                     concurrency_limit: None,
                     upstream_base_url: OptionalField::Missing,
+            bound_proxy_keys: OptionalField::Missing,
                     enabled: None,
                     is_mother: None,
                     api_key: None,

@@ -201,6 +201,13 @@ async fn route_binding_keys_for_candidate_scope(
             .current_bound_group_binding_key(group_name, bound_proxy_keys)
             .map(|key| vec![key])
             .unwrap_or_else(|| manager.selectable_bound_proxy_keys_in_order(bound_proxy_keys)),
+        ForwardProxyRouteScope::BoundProxyKeys {
+            scope_key,
+            bound_proxy_keys,
+        } => manager
+            .current_bound_scope_binding_key(scope_key, bound_proxy_keys)
+            .map(|key| vec![key])
+            .unwrap_or_else(|| manager.selectable_bound_proxy_keys_in_order(bound_proxy_keys)),
     }
 }
 
@@ -803,12 +810,18 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
                     {
                         sticky_route_still_reusable = true;
                         let mut sticky_route_was_excluded = false;
-                    match resolve_pool_account_group_proxy_routing_readiness(
-                        state,
-                        row.group_name.as_deref(),
-                    )
-                    .await?
-                    {
+                    let group_readiness = if row.bound_proxy_keys().is_empty() {
+                        resolve_pool_account_group_proxy_routing_readiness(
+                            state,
+                            row.group_name.as_deref(),
+                        )
+                        .await?
+                    } else {
+                        PoolAccountGroupProxyRoutingReadiness::Ready(
+                            load_group_metadata(&state.pool, row.group_name.as_deref()).await?,
+                        )
+                    };
+                    match group_readiness {
                         PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => {
                             let mut evaluation = evaluate_live_pool_candidate(
                                 state,
@@ -1090,12 +1103,15 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
             saw_other_non_rate_limited_routing_candidate = true;
             continue;
         }
-        let group_metadata = match resolve_pool_account_group_proxy_routing_readiness(
-            state,
-            row.group_name.as_deref(),
-        )
-        .await?
-        {
+        let group_readiness = if row.bound_proxy_keys().is_empty() {
+            resolve_pool_account_group_proxy_routing_readiness(state, row.group_name.as_deref())
+                .await?
+        } else {
+            PoolAccountGroupProxyRoutingReadiness::Ready(
+                load_group_metadata(&state.pool, row.group_name.as_deref()).await?,
+            )
+        };
+        let group_metadata = match group_readiness {
             PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => group_metadata,
             PoolAccountGroupProxyRoutingReadiness::Blocked(message) => {
                 group_proxy_blocked_messages.push(message);

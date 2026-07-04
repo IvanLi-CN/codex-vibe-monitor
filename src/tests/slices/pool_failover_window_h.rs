@@ -11346,6 +11346,11 @@ async fn summary_ignores_runtime_overlay_records_with_terminal_db_rows() {
     )
     .await;
     let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let old_running_occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::days(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
     let request_info = RequestCaptureInfo {
         model: Some("gpt-5.5".to_string()),
         prompt_cache_key: Some("pck-summary-runtime-terminal".to_string()),
@@ -11413,7 +11418,7 @@ async fn summary_ignores_runtime_overlay_records_with_terminal_db_rows() {
 
     let active_runtime_record = build_running_proxy_capture_record(
         "summary-runtime-active",
-        &occurred_at,
+        &old_running_occurred_at,
         ProxyCaptureTarget::Responses,
         &request_info,
         Some("203.0.113.43"),
@@ -12291,7 +12296,7 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
 }
 
 #[tokio::test]
-async fn upstream_account_activity_overlays_memory_runtime_running_rows() {
+async fn upstream_account_activity_overlays_memory_runtime_running_rows_without_activity_window_limit() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -12340,7 +12345,11 @@ async fn upstream_account_activity_overlays_memory_runtime_running_rows() {
     .await
     .expect("insert retry runtime upstream account");
 
-    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::days(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
     let request_info = RequestCaptureInfo {
         model: Some("gpt-5.5".to_string()),
         prompt_cache_key: Some("pck-runtime-activity".to_string()),

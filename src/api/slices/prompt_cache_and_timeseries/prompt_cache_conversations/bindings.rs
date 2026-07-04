@@ -19,6 +19,7 @@ pub(crate) struct PromptCacheConversationBindingRow {
     pub(crate) image_tool_rewrite_mode: Option<String>,
     pub(crate) available_models_json: Option<String>,
     pub(crate) forward_proxy_key: Option<String>,
+    pub(crate) forward_proxy_keys_json: Option<String>,
     pub(crate) updated_at: String,
 }
 
@@ -69,6 +70,7 @@ pub(crate) struct PromptCacheConversationBindingResponse {
     pub(crate) image_tool_rewrite_mode: Option<ImageToolRewriteMode>,
     pub(crate) available_models: Option<Vec<String>>,
     pub(crate) forward_proxy_key: Option<String>,
+    pub(crate) forward_proxy_keys: Vec<String>,
     pub(crate) policy_field_sources: PromptCacheConversationPolicyFieldSources,
     pub(crate) updated_at: Option<String>,
 }
@@ -123,6 +125,8 @@ pub(crate) struct UpdatePromptCacheConversationBindingRequest {
     available_models: PatchField<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_patch_field")]
     forward_proxy_key: PatchField<String>,
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
+    forward_proxy_keys: PatchField<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -188,6 +192,7 @@ async fn binding_response_for_none(
     };
     let forward_proxy_key =
         resolve_effective_forward_proxy_key_for_account(state, effective_account_id).await;
+    let forward_proxy_keys = forward_proxy_key.iter().cloned().collect::<Vec<_>>();
 
     Ok(PromptCacheConversationBindingResponse {
         prompt_cache_key,
@@ -208,6 +213,7 @@ async fn binding_response_for_none(
             .available_models()
             .map(|models| models.to_vec()),
         forward_proxy_key,
+        forward_proxy_keys,
         policy_field_sources: PromptCacheConversationPolicyFieldSources::inherited(
             Some(&effective_policy),
         ),
@@ -302,9 +308,19 @@ async fn binding_response_from_row(
         .await?;
         (timeouts, sources)
     };
-    let forward_proxy_key = row.forward_proxy_key.clone().or(
-        resolve_effective_forward_proxy_key_for_row(state, &row, owner, sticky_account_id).await,
-    );
+    let row_forward_proxy_keys =
+        parse_forward_proxy_keys_json(row.forward_proxy_keys_json.as_deref());
+    let forward_proxy_key = row
+        .forward_proxy_key
+        .clone()
+        .or_else(|| row_forward_proxy_keys.first().cloned())
+        .or(resolve_effective_forward_proxy_key_for_row(state, &row, owner, sticky_account_id)
+            .await);
+    let forward_proxy_keys = if row_forward_proxy_keys.is_empty() {
+        forward_proxy_key.iter().cloned().collect::<Vec<_>>()
+    } else {
+        row_forward_proxy_keys
+    };
 
     Ok(PromptCacheConversationBindingResponse {
         prompt_cache_key: row.prompt_cache_key,
@@ -343,6 +359,7 @@ async fn binding_response_from_row(
             .and_then(parse_available_models_json)
             .or(effective_available_models),
         forward_proxy_key,
+        forward_proxy_keys,
         policy_field_sources,
         updated_at: Some(row.updated_at),
     })
@@ -392,7 +409,11 @@ impl PromptCacheConversationPolicyFieldSources {
                 row.available_models_json.as_ref(),
                 effective_policy.map(|rule| rule.available_models_source()),
             ),
-            forward_proxy_key: source_for_optional(row.forward_proxy_key.as_ref()),
+            forward_proxy_key: source_for_optional(
+                row.forward_proxy_key
+                    .as_ref()
+                    .or(row.forward_proxy_keys_json.as_ref()),
+            ),
         }
     }
 }
@@ -490,7 +511,9 @@ async fn forward_proxy_key_for_scope(
 ) -> Option<String> {
     match scope {
         ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => Some(proxy_key.clone()),
-        ForwardProxyRouteScope::Automatic | ForwardProxyRouteScope::BoundGroup { .. } => {
+        ForwardProxyRouteScope::Automatic
+        | ForwardProxyRouteScope::BoundGroup { .. }
+        | ForwardProxyRouteScope::BoundProxyKeys { .. } => {
             select_forward_proxy_for_scope(state, scope)
                 .await
                 .ok()
@@ -536,6 +559,7 @@ where
             binding.image_tool_rewrite_mode,
             binding.available_models_json,
             binding.forward_proxy_key,
+            binding.forward_proxy_keys_json,
             binding.updated_at
         FROM prompt_cache_conversation_bindings AS binding
         LEFT JOIN pool_upstream_accounts AS account
@@ -640,9 +664,17 @@ fn parse_available_models_json(value: &str) -> Option<Vec<String>> {
         .filter(|values| !values.is_empty())
 }
 
+fn parse_forward_proxy_keys_json(value: Option<&str>) -> Vec<String> {
+    value
+        .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .map(normalize_bound_proxy_keys)
+        .unwrap_or_default()
+}
+
 fn conversation_routing_override_from_row(
     row: &PromptCacheConversationBindingRow,
 ) -> Option<ConversationRoutingOverride> {
+    let forward_proxy_keys = parse_forward_proxy_keys_json(row.forward_proxy_keys_json.as_deref());
     let override_policy = ConversationRoutingOverride {
         allow_switch_upstream: row.allow_switch_upstream.map(|value| value != 0),
         fast_mode_rewrite_mode: row
@@ -663,6 +695,8 @@ fn conversation_routing_override_from_row(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned),
+        forward_proxy_keys,
+        forward_proxy_scope_key: format!("conversation:{}", row.prompt_cache_key),
     };
     override_policy.has_policy_override().then_some(override_policy)
 }
@@ -1174,6 +1208,32 @@ async fn normalize_forward_proxy_key_patch(
     Ok(PatchField::Value(canonical))
 }
 
+async fn normalize_forward_proxy_keys_patch(
+    state: &AppState,
+    value: PatchField<Vec<String>>,
+) -> Result<PatchField<Vec<String>>, ApiError> {
+    let values = match value {
+        PatchField::Missing => return Ok(PatchField::Missing),
+        PatchField::Null => return Ok(PatchField::Null),
+        PatchField::Value(values) => values,
+    };
+    let normalized = normalize_bound_proxy_keys(values);
+    if normalized.is_empty() {
+        return Ok(PatchField::Null);
+    }
+    let canonical = canonicalize_forward_proxy_bound_keys(state, &normalized).await?;
+    let has_selectable = {
+        let manager = state.forward_proxy.lock().await;
+        manager.has_selectable_bound_proxy_keys(&canonical)
+    };
+    if !has_selectable {
+        return Err(ApiError::bad_request(anyhow!(
+            "forwardProxyKeys must contain at least one selectable forward proxy binding node"
+        )));
+    }
+    Ok(PatchField::Value(canonical))
+}
+
 fn next_optional_patch_value<T: Clone>(
     incoming: PatchField<T>,
     current: Option<T>,
@@ -1263,6 +1323,16 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
     };
     let forward_proxy_key =
         normalize_forward_proxy_key_patch(state.as_ref(), payload.forward_proxy_key).await?;
+    let forward_proxy_keys =
+        normalize_forward_proxy_keys_patch(state.as_ref(), payload.forward_proxy_keys).await?;
+    let forward_proxy_keys = match forward_proxy_keys {
+        PatchField::Missing => match &forward_proxy_key {
+            PatchField::Missing => PatchField::Missing,
+            PatchField::Null => PatchField::Null,
+            PatchField::Value(proxy_key) => PatchField::Value(vec![proxy_key.clone()]),
+        },
+        value => value,
+    };
     let existing_row =
         load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await?;
     let next_responses_first_byte_timeout_secs =
@@ -1281,8 +1351,28 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
         next_optional_patch_value(image_tool_rewrite_mode, existing_row.as_ref().and_then(|row| row.image_tool_rewrite_mode.clone()));
     let next_available_models =
         next_optional_patch_value(available_models, existing_row.as_ref().and_then(|row| row.available_models_json.clone()));
-    let next_forward_proxy_key =
-        next_optional_patch_value(forward_proxy_key, existing_row.as_ref().and_then(|row| row.forward_proxy_key.clone()));
+    let next_forward_proxy_keys = next_optional_patch_value(
+        forward_proxy_keys,
+        existing_row
+            .as_ref()
+            .map(|row| parse_forward_proxy_keys_json(row.forward_proxy_keys_json.as_deref()))
+            .filter(|values| !values.is_empty()),
+    );
+    let next_forward_proxy_keys_json = next_forward_proxy_keys
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    let next_forward_proxy_key = next_forward_proxy_keys
+        .as_ref()
+        .and_then(|values| values.first().cloned())
+        .or_else(|| {
+            next_optional_patch_value(
+                forward_proxy_key,
+                existing_row
+                    .as_ref()
+                    .and_then(|row| row.forward_proxy_key.clone()),
+            )
+        });
     let next_timeouts_all_clear = next_responses_first_byte_timeout_secs.is_none()
         && next_compact_first_byte_timeout_secs.is_none()
         && next_responses_stream_timeout_secs.is_none()
@@ -1291,7 +1381,8 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
         && next_fast_mode_rewrite_mode.is_none()
         && next_image_tool_rewrite_mode.is_none()
         && next_available_models.is_none()
-        && next_forward_proxy_key.is_none();
+        && next_forward_proxy_key.is_none()
+        && next_forward_proxy_keys_json.is_none();
 
     match binding_kind {
         "none" => {
@@ -1319,10 +1410,11 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                         image_tool_rewrite_mode,
                         available_models_json,
                         forward_proxy_key,
+                        forward_proxy_keys_json,
                         created_at,
                         updated_at
                     )
-                    VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), datetime('now'))
+                    VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'), datetime('now'))
                     ON CONFLICT(prompt_cache_key) DO UPDATE SET
                         binding_kind = excluded.binding_kind,
                         group_name = NULL,
@@ -1336,6 +1428,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                         image_tool_rewrite_mode = excluded.image_tool_rewrite_mode,
                         available_models_json = excluded.available_models_json,
                         forward_proxy_key = excluded.forward_proxy_key,
+                        forward_proxy_keys_json = excluded.forward_proxy_keys_json,
                         updated_at = excluded.updated_at
                     "#,
                 )
@@ -1350,6 +1443,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                 .bind(&next_image_tool_rewrite_mode)
                 .bind(&next_available_models)
                 .bind(&next_forward_proxy_key)
+                .bind(&next_forward_proxy_keys_json)
                 .execute(&state.pool)
                 .await?;
             }
@@ -1386,10 +1480,11 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     image_tool_rewrite_mode,
                     available_models_json,
                     forward_proxy_key,
+                    forward_proxy_keys_json,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'), datetime('now'))
+                VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'), datetime('now'))
                 ON CONFLICT(prompt_cache_key) DO UPDATE SET
                     binding_kind = excluded.binding_kind,
                     group_name = excluded.group_name,
@@ -1403,6 +1498,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     image_tool_rewrite_mode = excluded.image_tool_rewrite_mode,
                     available_models_json = excluded.available_models_json,
                     forward_proxy_key = excluded.forward_proxy_key,
+                    forward_proxy_keys_json = excluded.forward_proxy_keys_json,
                     updated_at = excluded.updated_at
                 "#,
             )
@@ -1418,6 +1514,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             .bind(&next_image_tool_rewrite_mode)
             .bind(&next_available_models)
             .bind(&next_forward_proxy_key)
+            .bind(&next_forward_proxy_keys_json)
             .execute(&state.pool)
             .await?;
             let owner =
@@ -1456,10 +1553,11 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     image_tool_rewrite_mode,
                     available_models_json,
                     forward_proxy_key,
+                    forward_proxy_keys_json,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'), datetime('now'))
+                VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'), datetime('now'))
                 ON CONFLICT(prompt_cache_key) DO UPDATE SET
                     binding_kind = excluded.binding_kind,
                     group_name = NULL,
@@ -1473,6 +1571,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     image_tool_rewrite_mode = excluded.image_tool_rewrite_mode,
                     available_models_json = excluded.available_models_json,
                     forward_proxy_key = excluded.forward_proxy_key,
+                    forward_proxy_keys_json = excluded.forward_proxy_keys_json,
                     updated_at = excluded.updated_at
                 "#,
             )
@@ -1488,6 +1587,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             .bind(&next_image_tool_rewrite_mode)
             .bind(&next_available_models)
             .bind(&next_forward_proxy_key)
+            .bind(&next_forward_proxy_keys_json)
             .execute(&state.pool)
             .await?;
             let now_iso = format_utc_iso(Utc::now());
