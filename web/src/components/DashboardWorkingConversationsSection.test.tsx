@@ -230,6 +230,7 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         avgTotalMs: 860,
         inProgressInvocationCount: 3,
         retryInvocationCount: 1,
+        activeConversationCount: 2,
         recentInvocations: [
           createPreview({
             id: 9001,
@@ -617,6 +618,8 @@ describe("DashboardWorkingConversationsSection", () => {
     )?.textContent;
     expect(accountHeaderText).toContain("TPM");
     expect(accountHeaderText).toContain("消费速率");
+    expect(accountHeaderText).toContain("并行对话");
+    expect(accountHeaderText).toContain("2");
     expect(accountHeaderText).not.toContain("调用");
     expect(accountHeaderText).not.toContain("重试");
 
@@ -1305,6 +1308,7 @@ describe("DashboardWorkingConversationsSection", () => {
           avgTotalMs: 860,
           inProgressInvocationCount: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
           retryInvocationCount: 0,
+          activeConversationCount: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
           recentInvocations: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.map(
             (promptCacheKey, index) =>
               createPreview({

@@ -98,6 +98,11 @@ export const DetailDrawer: Story = {
     ).toBe(0)
     await expect(within(dialog).getByRole('tab', { name: /概览|overview/i })).toHaveAttribute('aria-selected', 'true')
     await expect(within(dialog).getByText(/最近成功同步|last successful sync/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/图片工具能力|image tool capability/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/账号 ID|Account ID/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/User ID/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/org_tokyo/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/user_tokyo/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/5 小时窗口|5h window/i)).toBeInTheDocument()
     await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
@@ -509,8 +514,12 @@ export const MissingWindowPlaceholders: Story = {
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
     const dialog = await documentScope.findByRole('dialog', { name: /Team key - missing weekly limit/i })
-    await expect(within(dialog).getByText(/18 requests/i)).toBeInTheDocument()
-    expect(within(dialog).getAllByText('-').length).toBeGreaterThanOrEqual(4)
+    await expect(within(dialog).queryByText(/图片工具能力|image tool capability/i)).not.toBeInTheDocument()
+    await expect(within(dialog).queryByText(/账号 ID|Account ID/i)).not.toBeInTheDocument()
+    await expect(within(dialog).queryByText(/User ID/i)).not.toBeInTheDocument()
+    await expect(within(dialog).queryByText(/5 小时窗口|5h window/i)).not.toBeInTheDocument()
+    await expect(within(dialog).queryByText(/7 天窗口|7d window/i)).not.toBeInTheDocument()
+    await expect(within(dialog).queryByText(/18 requests/i)).not.toBeInTheDocument()
     await expect(within(dialog).queryByText(/还没有额度历史|No quota history yet/i)).not.toBeInTheDocument()
   },
 }

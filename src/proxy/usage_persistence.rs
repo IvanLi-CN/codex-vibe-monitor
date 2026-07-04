@@ -1174,35 +1174,50 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
     };
     tx.commit().await?;
 
-    remove_proxy_runtime_snapshot_by_key(
-        state,
-        &pending_attempt_record.invoke_id,
-        &pending_attempt_record.occurred_at,
-        "drop_guard",
-    );
+    let should_clean_up_route = pending_attempt_record.attempt_id.is_none()
+        || !recovered_attempts.is_empty()
+        || !recovered_invocations.is_empty();
+    let record_route_failure = (pending_attempt_record.attempt_id.is_none()
+        || !recovered_attempts.is_empty())
+        && should_record_route_failure_after_attempt_recovery(
+            state,
+            &pending_attempt_record.invoke_id,
+            &pending_attempt_record.occurred_at,
+            !recovered_invocations.is_empty(),
+        )
+        .await;
+
+    if recovered_invocations.is_empty() {
+        terminalize_proxy_runtime_snapshot_by_key(
+            state,
+            &pending_attempt_record.invoke_id,
+            &pending_attempt_record.occurred_at,
+            "drop_guard",
+        );
+    } else {
+        remove_proxy_runtime_snapshot_by_key(
+            state,
+            &pending_attempt_record.invoke_id,
+            &pending_attempt_record.occurred_at,
+            "drop_guard",
+        );
+    }
+
+    if should_clean_up_route {
+        clean_up_pool_route_after_orphan_recovery(
+            state,
+            &pending_attempt_record.invoke_id,
+            pending_attempt_record.sticky_key.as_deref(),
+            Some(pending_attempt_record.upstream_account_id),
+            "drop_guard",
+            record_route_failure,
+        )
+        .await;
+    }
 
     if recovered_attempts.is_empty() && recovered_invocations.is_empty() {
         return Ok(());
     }
-
-    let record_route_failure =
-        (pending_attempt_record.attempt_id.is_none() || !recovered_attempts.is_empty())
-            && should_record_route_failure_after_attempt_recovery(
-                state,
-                &pending_attempt_record.invoke_id,
-                &pending_attempt_record.occurred_at,
-                !recovered_invocations.is_empty(),
-            )
-            .await;
-    clean_up_pool_route_after_orphan_recovery(
-        state,
-        &pending_attempt_record.invoke_id,
-        pending_attempt_record.sticky_key.as_deref(),
-        Some(pending_attempt_record.upstream_account_id),
-        "drop_guard",
-        record_route_failure,
-    )
-    .await;
 
     if !recovered_attempts.is_empty()
         && let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, &pending_attempt_record.invoke_id).await
@@ -1241,6 +1256,12 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
     .await?;
 
     if recovered_invocations.is_empty() {
+        terminalize_proxy_runtime_snapshot_by_key(
+            state,
+            &selector.invoke_id,
+            &selector.occurred_at,
+            recovery_trigger,
+        );
         return Ok(());
     }
 
@@ -2436,7 +2457,8 @@ pub(crate) fn remove_proxy_runtime_snapshot_by_key(
 ) -> bool {
     let removed_runtime_snapshot = state
         .proxy_runtime_invocations
-        .remove_non_terminal(invoke_id, occurred_at);
+        .remove_non_terminal(invoke_id, occurred_at)
+        .is_some();
     debug!(
         invoke_id,
         occurred_at,
@@ -2445,7 +2467,62 @@ pub(crate) fn remove_proxy_runtime_snapshot_by_key(
         terminal_already_tombstoned = false,
         "non-terminal proxy runtime snapshot removed by key"
     );
-    false
+    removed_runtime_snapshot
+}
+
+pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
+    state: &AppState,
+    invoke_id: &str,
+    occurred_at: &str,
+    reason: &'static str,
+) -> bool {
+    let Some(mut record) = state
+        .proxy_runtime_invocations
+        .remove_non_terminal(invoke_id, occurred_at)
+    else {
+        debug!(
+            invoke_id,
+            occurred_at,
+            reason,
+            terminal_removed_runtime_snapshot = false,
+            terminal_already_tombstoned = false,
+            "no non-terminal proxy runtime snapshot found for terminal cleanup"
+        );
+        return false;
+    };
+
+    record.status = Some(INVOCATION_STATUS_INTERRUPTED.to_string());
+    record.error_message = Some(format!(
+        "[{PROXY_FAILURE_INVOCATION_INTERRUPTED}] proxy request ended before a terminal record was written"
+    ));
+    record.failure_kind = Some(PROXY_FAILURE_INVOCATION_INTERRUPTED.to_string());
+    record.failure_class = Some(FAILURE_CLASS_SERVICE.to_string());
+    record.is_actionable = Some(true);
+    record.pool_attempt_terminal_reason = Some(PROXY_FAILURE_INVOCATION_INTERRUPTED.to_string());
+
+    let remove_outcome = state.proxy_runtime_invocations.upsert_terminal(record.clone());
+    debug!(
+        invoke_id,
+        occurred_at,
+        reason,
+        terminal_removed_runtime_snapshot = true,
+        terminal_already_tombstoned = remove_outcome.already_terminal,
+        "non-terminal proxy runtime snapshot terminalized by key"
+    );
+    if state.broadcaster.receiver_count() > 0
+        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
+            records: vec![record],
+        })
+    {
+        warn!(
+            ?err,
+            invoke_id,
+            occurred_at,
+            reason,
+            "failed to broadcast terminalized proxy runtime snapshot"
+        );
+    }
+    true
 }
 
 pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
@@ -2940,6 +3017,45 @@ pub(crate) fn build_running_proxy_capture_record(
             t_persist_ms: 0.0,
         },
     }
+}
+
+pub(crate) fn build_admitted_proxy_capture_runtime_snapshot(
+    invoke_id: &str,
+    occurred_at: &str,
+    target: ProxyCaptureTarget,
+    requester_ip: Option<&str>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+) -> ProxyCaptureRecord {
+    let request_info = RequestCaptureInfo {
+        sticky_key: sticky_key.map(ToOwned::to_owned),
+        prompt_cache_key: prompt_cache_key.map(ToOwned::to_owned),
+        prompt_cache_key_attribution_source: prompt_cache_key.map(|_| "request".to_string()),
+        ..RequestCaptureInfo::default()
+    };
+    build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        target,
+        &request_info,
+        requester_ip,
+        sticky_key,
+        prompt_cache_key,
+        true,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
 }
 
 pub(crate) fn resolve_invocation_proxy_display_name(

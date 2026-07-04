@@ -614,6 +614,7 @@ export interface UpstreamAccountActivityAccount {
   avgTotalMs?: number | null;
   inProgressInvocationCount?: number | null;
   retryInvocationCount?: number | null;
+  activeConversationCount: number;
   effectiveRoutingRule: EffectiveRoutingRule;
   recentInvocations: PromptCacheConversationInvocationPreview[];
 }
@@ -2691,6 +2692,8 @@ function normalizeUpstreamAccountActivityAccount(
       payload.inProgressInvocationCount,
     ),
     retryInvocationCount: normalizeFiniteNumber(payload.retryInvocationCount),
+    activeConversationCount:
+      normalizeFiniteNumber(payload.activeConversationCount) ?? 0,
     effectiveRoutingRule: normalizeEffectiveRoutingRule(
       payload.effectiveRoutingRule,
     ),

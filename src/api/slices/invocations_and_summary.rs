@@ -3008,6 +3008,12 @@ struct UpstreamAccountInProgressRow {
     retry_count: i64,
 }
 
+#[derive(Debug, FromRow)]
+struct UpstreamAccountActiveConversationCountRow {
+    account_id: i64,
+    active_conversation_count: i64,
+}
+
 #[derive(Debug, Default)]
 struct UpstreamAccountActivityAccumulator {
     display_name_hint: Option<String>,
@@ -3544,6 +3550,44 @@ async fn query_upstream_account_in_progress_counts(
     Ok(counts)
 }
 
+async fn query_upstream_account_active_conversation_counts(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    now: DateTime<Utc>,
+) -> Result<HashMap<i64, i64>, ApiError> {
+    if account_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let active_cutoff =
+        format_utc_iso(now - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES));
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            account_id,
+            COUNT(*) AS active_conversation_count
+        FROM pool_sticky_routes
+        WHERE last_seen_at >=
+        "#,
+    );
+    query.push_bind(&active_cutoff).push(" AND account_id IN (");
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(") GROUP BY account_id");
+
+    Ok(query
+        .build_query_as::<UpstreamAccountActiveConversationCountRow>()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| (row.account_id, row.active_conversation_count))
+        .collect())
+}
+
 pub(crate) async fn fetch_upstream_account_activity(
     State(state): State<Arc<AppState>>,
     Query(params): Query<UpstreamAccountActivityQuery>,
@@ -3696,6 +3740,9 @@ pub(crate) async fn fetch_upstream_account_activity(
 
     let account_ids = account_activity.keys().copied().collect::<Vec<_>>();
     let account_meta = query_upstream_account_activity_meta(&state.pool, &account_ids).await?;
+    let now = Utc::now();
+    let active_conversation_counts =
+        query_upstream_account_active_conversation_counts(&state.pool, &account_ids, now).await?;
     let effective_routing_rules =
         crate::upstream_accounts::load_effective_routing_rules_for_accounts(
             &state.pool,
@@ -3773,6 +3820,10 @@ pub(crate) async fn fetch_upstream_account_activity(
                 ),
                 in_progress_invocation_count,
                 retry_invocation_count,
+                active_conversation_count: active_conversation_counts
+                    .get(&upstream_account_id)
+                    .copied()
+                    .unwrap_or(0),
                 effective_routing_rule: effective_routing_rules
                     .get(&upstream_account_id)
                     .cloned()

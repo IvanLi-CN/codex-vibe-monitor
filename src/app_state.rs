@@ -192,19 +192,23 @@ impl ProxyRuntimeInvocationStore {
         contains_terminal
     }
 
-    fn remove_non_terminal(&self, invoke_id: &str, occurred_at: &str) -> bool {
+    fn remove_non_terminal(&self, invoke_id: &str, occurred_at: &str) -> Option<ApiInvocation> {
         let Ok(mut guard) = self.inner.lock() else {
-            return false;
+            return None;
         };
         let key = RuntimeInvocationKey::new(invoke_id, occurred_at);
-        let removed = guard
+        let should_remove = guard
             .records
             .get(&key)
             .is_some_and(|entry| !runtime_store_record_is_terminal(&entry.record));
-        if removed {
-            guard.records.remove(&key);
+        let removed = if should_remove {
+            guard.records.remove(&key).map(|entry| entry.record)
+        } else {
+            None
+        };
+        if removed.is_some() {
+            let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
         }
-        let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
         removed
     }
 
