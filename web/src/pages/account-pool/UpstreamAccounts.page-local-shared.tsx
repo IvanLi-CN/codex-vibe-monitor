@@ -2906,32 +2906,34 @@ function SharedUpstreamAccountDetailDrawerInner({
                         value={selectedDetail.groupName ?? ""}
                         title={selectedDetail.groupName ?? undefined}
                       />
-                      <CompactDetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.fields.imageToolCapability",
-                        )}
-                        value={
-                          <Badge
-                            variant={
-                              (selectedDetail.imageToolCapability ??
-                                "unknown") === "supported"
-                                ? "success"
-                                : (selectedDetail.imageToolCapability ??
-                                      "unknown") === "unsupported"
-                                  ? "warning"
-                                  : "secondary"
-                            }
-                            className="max-w-full truncate"
-                          >
-                            {t(
-                              `accountPool.upstreamAccounts.imageToolCapability.${selectedDetail.imageToolCapability ?? "unknown"}`,
-                            )}
-                          </Badge>
-                        }
-                        title={t(
-                          `accountPool.upstreamAccounts.imageToolCapabilityHint.${selectedDetail.imageToolCapability ?? "unknown"}`,
-                        )}
-                      />
+                      {selectedDetail.kind === "oauth_codex" ? (
+                        <CompactDetailField
+                          label={t(
+                            "accountPool.upstreamAccounts.fields.imageToolCapability",
+                          )}
+                          value={
+                            <Badge
+                              variant={
+                                (selectedDetail.imageToolCapability ??
+                                  "unknown") === "supported"
+                                  ? "success"
+                                  : (selectedDetail.imageToolCapability ??
+                                        "unknown") === "unsupported"
+                                    ? "warning"
+                                    : "secondary"
+                              }
+                              className="max-w-full truncate"
+                            >
+                              {t(
+                                `accountPool.upstreamAccounts.imageToolCapability.${selectedDetail.imageToolCapability ?? "unknown"}`,
+                              )}
+                            </Badge>
+                          }
+                          title={t(
+                            `accountPool.upstreamAccounts.imageToolCapabilityHint.${selectedDetail.imageToolCapability ?? "unknown"}`,
+                          )}
+                        />
+                      ) : null}
                       <CompactDetailField
                         label={t(
                           "accountPool.upstreamAccounts.mother.fieldLabel",
@@ -2956,26 +2958,24 @@ function SharedUpstreamAccountDetailDrawerInner({
                           title={selectedDetail.verifiedEmail ?? undefined}
                         />
                       ) : null}
-                      <CompactDetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.fields.accountId",
-                        )}
-                        value={
-                          selectedDetail.chatgptAccountId ??
-                          selectedDetail.maskedApiKey ??
-                          ""
-                        }
-                        title={
-                          selectedDetail.chatgptAccountId ??
-                          selectedDetail.maskedApiKey ??
-                          undefined
-                        }
-                      />
-                      <CompactDetailField
-                        label={t("accountPool.upstreamAccounts.fields.userId")}
-                        value={selectedDetail.chatgptUserId ?? ""}
-                        title={selectedDetail.chatgptUserId ?? undefined}
-                      />
+                      {selectedDetail.kind === "oauth_codex" ? (
+                        <>
+                          <CompactDetailField
+                            label={t(
+                              "accountPool.upstreamAccounts.fields.accountId",
+                            )}
+                            value={selectedDetail.chatgptAccountId ?? ""}
+                            title={selectedDetail.chatgptAccountId ?? undefined}
+                          />
+                          <CompactDetailField
+                            label={t(
+                              "accountPool.upstreamAccounts.fields.userId",
+                            )}
+                            value={selectedDetail.chatgptUserId ?? ""}
+                            title={selectedDetail.chatgptUserId ?? undefined}
+                          />
+                        </>
+                      ) : null}
                       <CompactDetailField
                         label={t(
                           "accountPool.upstreamAccounts.fields.lastSuccessSync",
@@ -2989,47 +2989,35 @@ function SharedUpstreamAccountDetailDrawerInner({
                       />
                     </div>
                   </div>
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <UpstreamAccountUsageCard
-                      title={t(
-                        "accountPool.upstreamAccounts.primaryWindowLabel",
-                      )}
-                      description={t(
-                        "accountPool.upstreamAccounts.usage.primaryDescription",
-                      )}
-                      window={selectedDetail.primaryWindow}
-                      history={selectedDetail.history}
-                      historyKey="primaryUsedPercent"
-                      emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
-                      noteLabel={
-                        selectedDetail.kind === "api_key_codex"
-                          ? t(
-                              "accountPool.upstreamAccounts.apiKey.localPlaceholder",
-                            )
-                          : undefined
-                      }
-                    />
-                    <UpstreamAccountUsageCard
-                      title={t(
-                        "accountPool.upstreamAccounts.secondaryWindowLabel",
-                      )}
-                      description={t(
-                        "accountPool.upstreamAccounts.usage.secondaryDescription",
-                      )}
-                      window={selectedDetail.secondaryWindow}
-                      history={selectedDetail.history}
-                      historyKey="secondaryUsedPercent"
-                      emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
-                      noteLabel={
-                        selectedDetail.kind === "api_key_codex"
-                          ? t(
-                              "accountPool.upstreamAccounts.apiKey.localPlaceholder",
-                            )
-                          : undefined
-                      }
-                      accentClassName="text-secondary"
-                    />
-                  </div>
+                  {selectedDetail.kind === "oauth_codex" ? (
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <UpstreamAccountUsageCard
+                        title={t(
+                          "accountPool.upstreamAccounts.primaryWindowLabel",
+                        )}
+                        description={t(
+                          "accountPool.upstreamAccounts.usage.primaryDescription",
+                        )}
+                        window={selectedDetail.primaryWindow}
+                        history={selectedDetail.history}
+                        historyKey="primaryUsedPercent"
+                        emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
+                      />
+                      <UpstreamAccountUsageCard
+                        title={t(
+                          "accountPool.upstreamAccounts.secondaryWindowLabel",
+                        )}
+                        description={t(
+                          "accountPool.upstreamAccounts.usage.secondaryDescription",
+                        )}
+                        window={selectedDetail.secondaryWindow}
+                        history={selectedDetail.history}
+                        historyKey="secondaryUsedPercent"
+                        emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
+                        accentClassName="text-secondary"
+                      />
+                    </div>
+                  ) : null}
                   <DashboardActivityOverview
                     key={`account-activity-${accountId}`}
                     title={t(
