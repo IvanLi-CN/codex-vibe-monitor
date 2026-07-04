@@ -79,6 +79,9 @@ function buildBindingResponse(
     imageToolRewriteMode: overrides.imageToolRewriteMode ?? null,
     availableModels: overrides.availableModels ?? null,
     forwardProxyKey: overrides.forwardProxyKey ?? null,
+    forwardProxyKeys:
+      overrides.forwardProxyKeys ??
+      (overrides.forwardProxyKey ? [overrides.forwardProxyKey] : []),
     updatedAt: overrides.updatedAt ?? null,
   };
 }
@@ -283,6 +286,29 @@ const accountSummaries = Array.from(accountDetails.values()).map((detail, index)
     groupName: index < 3 ? "JOZ Team" : index < 5 ? "CIII" : "Overflow",
   }),
 );
+
+const storyForwardProxyNodes = [
+  {
+    key: "__direct__",
+    displayName: "Direct",
+    protocolLabel: "DIRECT",
+    source: "direct",
+    selectable: true,
+    penalized: false,
+    aliasKeys: [],
+    last24h: [],
+  },
+  {
+    key: "tokyo-edge-01",
+    displayName: "Tokyo Edge 01",
+    protocolLabel: "HTTP",
+    source: "node",
+    selectable: true,
+    penalized: false,
+    aliasKeys: ["jp-edge-01"],
+    last24h: [],
+  },
+] as const;
 
 const bindingByPromptCacheKey = new Map<string, PromptCacheConversationBindingResponse>([
   [
@@ -1005,6 +1031,48 @@ function StorybookPromptCacheAccountMock({
                 ? "conversation"
                 : current.timeoutFieldSources.compactStreamTimeoutSecs,
         };
+        const currentPolicySources = current.policyFieldSources ?? {
+          allowSwitchUpstream: "account",
+          fastModeRewriteMode: "account",
+          imageToolRewriteMode: "account",
+          availableModels: "account",
+          forwardProxyKey: "account",
+        };
+        const policyOverrides = {
+          allowSwitchUpstream:
+            "allowSwitchUpstream" in payload
+              ? payload.allowSwitchUpstream
+              : current.allowSwitchUpstream,
+          fastModeRewriteMode:
+            "fastModeRewriteMode" in payload
+              ? payload.fastModeRewriteMode
+              : current.fastModeRewriteMode,
+          imageToolRewriteMode:
+            "imageToolRewriteMode" in payload
+              ? payload.imageToolRewriteMode
+              : current.imageToolRewriteMode,
+          availableModels:
+            "availableModels" in payload
+              ? payload.availableModels
+              : current.availableModels,
+          forwardProxyKey: Array.isArray(payload.forwardProxyKeys)
+            ? (payload.forwardProxyKeys[0] ?? null)
+            : "forwardProxyKey" in payload
+              ? payload.forwardProxyKey
+              : current.forwardProxyKey,
+          forwardProxyKeys: Array.isArray(payload.forwardProxyKeys)
+            ? payload.forwardProxyKeys
+            : "forwardProxyKey" in payload && payload.forwardProxyKey
+              ? [payload.forwardProxyKey]
+              : current.forwardProxyKeys,
+          policyFieldSources: {
+            ...currentPolicySources,
+            ...(Array.isArray(payload.forwardProxyKeys) ||
+            "forwardProxyKey" in payload
+              ? { forwardProxyKey: "conversation" as const }
+              : {}),
+          },
+        };
         const response =
           payload.bindingKind === "upstreamAccount"
             ? buildBindingResponse({
@@ -1021,6 +1089,7 @@ function StorybookPromptCacheAccountMock({
                 encryptedOwnerGroupName: "CIII",
                 timeouts: nextTimeouts,
                 timeoutFieldSources: nextTimeoutSources,
+                ...policyOverrides,
                 updatedAt: new Date().toISOString(),
               })
             : payload.bindingKind === "group"
@@ -1034,6 +1103,7 @@ function StorybookPromptCacheAccountMock({
                   encryptedOwnerGroupName: "CIII",
                   timeouts: nextTimeouts,
                   timeoutFieldSources: nextTimeoutSources,
+                  ...policyOverrides,
                   updatedAt: new Date().toISOString(),
                 })
               : buildBindingResponse({
@@ -1045,6 +1115,7 @@ function StorybookPromptCacheAccountMock({
                   encryptedOwnerGroupName: "CIII",
                   timeouts: nextTimeouts,
                   timeoutFieldSources: nextTimeoutSources,
+                  ...policyOverrides,
                   updatedAt:
                     Object.values(timeoutPatch).some((value) => value !== undefined)
                       ? new Date().toISOString()
@@ -1063,6 +1134,7 @@ function StorybookPromptCacheAccountMock({
             { groupName: "CIII", accountCount: 2 },
             { groupName: "Overflow", accountCount: 2 },
           ],
+          forwardProxyNodes: storyForwardProxyNodes,
           hasUngroupedAccounts: false,
           total: accountSummaries.length,
           page: 1,
@@ -2118,6 +2190,7 @@ export const DrawerBindingAndTimeouts: Story = {
         imageToolRewriteMode: "force_remove",
         availableModels: ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
         forwardProxyKey: "__direct__",
+        forwardProxyKeys: ["__direct__", "tokyo-edge-01"],
         updatedAt: "2026-05-13T23:42:00.000Z",
       }),
     );

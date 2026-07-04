@@ -615,6 +615,7 @@ fn prompt_cache_conversation_bindings_create_sql(table_name: &str) -> String {
             image_tool_rewrite_mode TEXT,
             available_models_json TEXT,
             forward_proxy_key TEXT,
+            forward_proxy_keys_json TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             CHECK (
@@ -652,6 +653,7 @@ fn prompt_cache_binding_copy_expr(
             "compact_first_byte_timeout_secs" => "compact_first_byte_timeout_secs",
             "responses_stream_timeout_secs" => "responses_stream_timeout_secs",
             "compact_stream_timeout_secs" => "compact_stream_timeout_secs",
+            "forward_proxy_key" => "forward_proxy_key",
             _ => "NULL",
         }
     } else {
@@ -682,7 +684,8 @@ async fn migrate_prompt_cache_conversation_bindings_contract(
         && normalized_sql.contains("fast_mode_rewrite_mode")
         && normalized_sql.contains("image_tool_rewrite_mode")
         && normalized_sql.contains("available_models_json")
-        && normalized_sql.contains("forward_proxy_key");
+        && normalized_sql.contains("forward_proxy_key")
+        && normalized_sql.contains("forward_proxy_keys_json");
     if already_compatible {
         return Ok(());
     }
@@ -697,6 +700,8 @@ async fn migrate_prompt_cache_conversation_bindings_contract(
         prompt_cache_binding_copy_expr(&existing_columns, "responses_stream_timeout_secs");
     let compact_stream_timeout_copy =
         prompt_cache_binding_copy_expr(&existing_columns, "compact_stream_timeout_secs");
+    let forward_proxy_key_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "forward_proxy_key");
 
     let mut tx = pool.begin().await?;
     let drop_temp_sql = format!("DROP TABLE IF EXISTS {TEMP_TABLE}");
@@ -729,6 +734,7 @@ async fn migrate_prompt_cache_conversation_bindings_contract(
             image_tool_rewrite_mode,
             available_models_json,
             forward_proxy_key,
+            forward_proxy_keys_json,
             created_at,
             updated_at
         )
@@ -745,6 +751,7 @@ async fn migrate_prompt_cache_conversation_bindings_contract(
             NULL,
             NULL,
             NULL,
+            {forward_proxy_key_copy},
             NULL,
             created_at,
             updated_at
@@ -2869,6 +2876,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             image_tool_rewrite_mode TEXT,
             available_models_json TEXT,
             forward_proxy_key TEXT,
+            forward_proxy_keys_json TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             CHECK (

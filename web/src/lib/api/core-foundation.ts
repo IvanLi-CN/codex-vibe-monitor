@@ -1224,6 +1224,7 @@ export interface PromptCacheConversationBindingResponse {
   imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
   availableModels?: string[] | null;
   forwardProxyKey?: string | null;
+  forwardProxyKeys?: string[];
   policyFieldSources?: {
     allowSwitchUpstream: EffectiveRoutingRuleSource;
     fastModeRewriteMode: EffectiveRoutingRuleSource;
@@ -1250,6 +1251,7 @@ export type UpdatePromptCacheConversationBindingPayload =
       imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
       availableModels?: string[] | null;
       forwardProxyKey?: string | null;
+      forwardProxyKeys?: string[] | null;
     }
   | {
       bindingKind: "group";
@@ -1260,6 +1262,7 @@ export type UpdatePromptCacheConversationBindingPayload =
       imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
       availableModels?: string[] | null;
       forwardProxyKey?: string | null;
+      forwardProxyKeys?: string[] | null;
     }
   | {
       bindingKind: "upstreamAccount";
@@ -1270,6 +1273,7 @@ export type UpdatePromptCacheConversationBindingPayload =
       imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
       availableModels?: string[] | null;
       forwardProxyKey?: string | null;
+      forwardProxyKeys?: string[] | null;
     };
 
 export type PromptCacheConversationSelectionMode = "count" | "activityWindow";
@@ -2469,6 +2473,16 @@ function normalizePromptCacheConversationBindingResponse(
     raw.policyFieldSources && typeof raw.policyFieldSources === "object"
       ? (raw.policyFieldSources as Record<string, unknown>)
       : {};
+  const forwardProxyKeys = Array.isArray(raw.forwardProxyKeys)
+    ? raw.forwardProxyKeys
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
+  const forwardProxyKey =
+    typeof raw.forwardProxyKey === "string" && raw.forwardProxyKey.trim()
+      ? raw.forwardProxyKey.trim()
+      : forwardProxyKeys[0] ?? null;
   return {
     promptCacheKey:
       typeof raw.promptCacheKey === "string" ? raw.promptCacheKey : promptCacheKey,
@@ -2517,10 +2531,13 @@ function normalizePromptCacheConversationBindingResponse(
           .map((value) => value.trim())
           .filter(Boolean)
       : null,
-    forwardProxyKey:
-      typeof raw.forwardProxyKey === "string" && raw.forwardProxyKey.trim()
-        ? raw.forwardProxyKey.trim()
-        : null,
+    forwardProxyKey,
+    forwardProxyKeys:
+      forwardProxyKeys.length > 0
+        ? forwardProxyKeys
+        : forwardProxyKey
+          ? [forwardProxyKey]
+          : [],
     policyFieldSources: {
       allowSwitchUpstream: normalizePolicySource(
         rawPolicySources.allowSwitchUpstream,
