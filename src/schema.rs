@@ -1515,7 +1515,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     let prompt_cache_insert_trigger_sql = format!(
         r#"
-        CREATE TRIGGER trg_codex_invocations_prompt_cache_working_set_insert
+        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_insert
         AFTER INSERT ON codex_invocations
         BEGIN
             {refresh_sql};
@@ -1532,7 +1532,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     let prompt_cache_update_trigger_sql = format!(
         r#"
-        CREATE TRIGGER trg_codex_invocations_prompt_cache_working_set_update
+        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_update
         AFTER UPDATE ON codex_invocations
         BEGIN
             {refresh_old_sql};
@@ -1553,7 +1553,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     let prompt_cache_delete_trigger_sql = format!(
         r#"
-        CREATE TRIGGER trg_codex_invocations_prompt_cache_working_set_delete
+        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_delete
         AFTER DELETE ON codex_invocations
         BEGIN
             {refresh_sql};
