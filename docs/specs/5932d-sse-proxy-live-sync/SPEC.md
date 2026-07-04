@@ -72,6 +72,8 @@
   - SSE `records` 对已加载会话的本地可见 patch 必须 1 秒合批提交，避免逐条记录触发卡片重排。
   - 新会话、排序锚点变化或 head 需要重算时，HTTP head/snapshot reconcile 必须节流到不超过每 5 秒一次。
 - Proxy runtime snapshots:
+  - 对 tracked proxy capture endpoints，服务在请求 admit 并分配 `invokeId + occurredAt` 后，必须立即把最小 `running` shell record 写入进程内 runtime store 并广播 SSE；该可见性不得等待 request body 读完、body parse、账号路由或上游 attempt start。
+  - admit-time shell record 可以只包含已知字段，例如 endpoint、requester IP、header sticky/prompt-cache key 与 `status=running`；后续 body-parsed / attempt-start / response-ready snapshot 必须用同一 `invokeId + occurredAt` 覆盖补全，不得制造重复行。
   - `running` / `pending` 过程态以进程内共享 runtime store 为当前真相源，并通过 SSE `records` 立即广播。
   - HTTP current-window reconcile 必须在 DB 结果上 overlay 同一份内存 runtime store，避免 DB 不再常规刷新 running 行后出现短暂丢行。
   - terminal success/failure 记录是 P1 观测事实，必须构造成完整 terminal record 后进入 SQLite write controller；代理业务响应不等待 SQLite 落库，入队或 flush 失败只记录结构化证据。
@@ -100,6 +102,7 @@
 ## 验收标准（Acceptance Criteria）
 
 - Given 代理请求构造出 running 或 terminal record，When 订阅 `/events`，Then 在 1 秒内收到包含新增 `invokeId` 的 `records` 事件，即使 SQLite 记录落库仍在 write controller 队列中。
+- Given tracked proxy capture 请求已经被本服务 admit，When request body 尚未读完或尚未完成上游路由，Then 订阅 `/events` 与 HTTP runtime overlay 均能看到同一 `invokeId` 的最小 `running` 记录，后续解析/attempt 快照只补全该记录。
 - Given 同一代理请求，When `records` 事件发送后，Then 后续 summary/quota 通过 SSE 或 HTTP reconcile 最终补齐，且 SQLite locked 不得阻断业务响应。
 - Given 命中 `INSERT OR IGNORE` 未插入，When 请求完成，Then 不重复发送 `records` 事件。
 - Given SSE 发生断线并恢复，When 连接 open，Then 前端列表通过静默回源补齐，且与后端一致。

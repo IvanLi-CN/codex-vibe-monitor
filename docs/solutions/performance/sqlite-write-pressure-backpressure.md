@@ -26,7 +26,7 @@
 - 请求收尾写入：invocation 记录、usage、raw metadata；若产品决策是业务优先于记录，应进入 P1 write controller 队列，业务响应不等待 SQLite。入队失败、flush 失败和 dropped 记录必须结构化记录。
 - 请求收尾若已经存在对应 `running/pending` 行，优先原地更新而不是先 `INSERT OR IGNORE` 再走 repair/update；这样可以少一次唯一键冲突写尝试与后续锁竞争。
 - terminal invocation 如果仍被定义为审计/计费强主事实，安全做法是同步“已存在 running row 时窄 `UPDATE`，缺行时 `INSERT OR IGNORE`，冲突后重读并按同一状态守卫更新”。如果当前服务明确选择业务优先于记录，则 terminal invocation 可以降级为 P1 best-effort 队列写，但必须保留完整 terminal record、raw metadata、失败分类和结构化失败证据。
-- `running` snapshot 如果只是为 UI/SSE 提供进度，应避免每次同步写主表。可广播 `id=0` 的内存记录，并让 HTTP current-window reconcile 在 DB 结果上 overlay 同一份内存 store；terminal record 入队后 tombstone/remove 内存行，DB terminal 行稍后通过 write controller 最终一致补齐。这样 DB 不需要为每个 first-byte/response-ready 刷新写 `status='running'`。
+- `running` snapshot 如果只是为 UI/SSE 提供进度，应避免每次同步写主表。可在请求 admit 后立即广播 `id=0` 的最小内存 shell record，并让 body parse、attempt start、first-byte、response-ready 等后续快照覆盖补全同一 `invokeId + occurredAt` runtime key；HTTP current-window reconcile 在 DB 结果上 overlay 同一份内存 store。terminal record 入队后 tombstone/remove 内存行，DB terminal 行稍后通过 write controller 最终一致补齐。这样 DB 不需要为每个 first-byte/response-ready 刷新写 `status='running'`，UI 也不会把 body read 或上游路由等待误判成“请求尚未开始”。
 - 对同一 attempt 的 phase、latency、capability/compact-support 等进度字段，优先并入同一条前台更新，而不是拆成 `phase bump -> latency patch -> finalize` 的多段慢写；减少单请求尾部把 SQLite 单写者预算切碎。
 - 对同一 attempt 的中间 phase、latency、capability/compact-support 等进度字段，如果不需要立刻作为业务决策真相源，可进入 250ms 级短窗口缓冲并按 `attempt_id` 只保留最新值；terminal finalize 必须同步一次写全并通过 `status=pending AND finished_at IS NULL` 防止未 flush 进度覆盖终态。
 - Invocation 派生写可以按 `invocation_id` coalesce：hourly rollup/live progress 与 upstream account last activity touch 批量执行。terminal 记录 flush 产生的派生写不应强行复用同一个 SQLite 锁窗口；更稳妥的做法是把派生写放回 pending，在后续 P2 flush 中收敛。

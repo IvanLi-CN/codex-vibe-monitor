@@ -2942,6 +2942,45 @@ pub(crate) fn build_running_proxy_capture_record(
     }
 }
 
+pub(crate) fn build_admitted_proxy_capture_runtime_snapshot(
+    invoke_id: &str,
+    occurred_at: &str,
+    target: ProxyCaptureTarget,
+    requester_ip: Option<&str>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+) -> ProxyCaptureRecord {
+    let request_info = RequestCaptureInfo {
+        sticky_key: sticky_key.map(ToOwned::to_owned),
+        prompt_cache_key: prompt_cache_key.map(ToOwned::to_owned),
+        prompt_cache_key_attribution_source: prompt_cache_key.map(|_| "request".to_string()),
+        ..RequestCaptureInfo::default()
+    };
+    build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        target,
+        &request_info,
+        requester_ip,
+        sticky_key,
+        prompt_cache_key,
+        true,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+}
+
 pub(crate) fn resolve_invocation_proxy_display_name(
     selected_proxy: Option<&SelectedForwardProxy>,
 ) -> Option<String> {

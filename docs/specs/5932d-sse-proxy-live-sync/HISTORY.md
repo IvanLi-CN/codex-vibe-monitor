@@ -19,3 +19,4 @@
 - 2026-07-02: 第六轮 SQLite 止血把高频 `running` runtime snapshot 从同步主表写改成内存/SSE 立即广播 + batch writer 有界占位落库；账号选择 `last_selected_at` 从路由前台同步写锁中移出，改由进程内公平性锚点叠加排序并批量 coalesce 落库。terminal 主事实、usage、失败分类、raw metadata 与账号 status/cooldown/failure 继续同步可靠写入。
 - 2026-07-03: 第七轮 SQLite 止血把 `running` runtime snapshot 进一步收口为进程内共享 runtime store + SSE/HTTP overlay；DB 只保留首次极窄恢复占位，后续 refresh 不再常规 enqueue SQLite running placeholder。优雅停机只 drain P0/P1 主事实，P2 running 过程态记录 skip 证据；terminal 主事实继续同步落库并清除内存 running 行。
 - 2026-07-03: 第八轮 SQLite 止血按“业务优先于记录”重新定义 proxy capture 记录边界：terminal invocation 记录进入 SQLite write controller 的 P1 best-effort 队列，代理响应不等待落库；running snapshot 完全退出 DB/batch 写路径；terminal 派生 rollup/account-touch 延后到后续 P2 flush，避免和 terminal 记录共享同一个 SQLite 锁窗口。
+- 2026-07-04: 修正 running 可见性边界：tracked proxy capture 请求在本服务 admit 后立即创建最小内存 running shell record，不再等 body 读完、body parse、账号路由或上游 attempt start；后续 snapshot 只补全同一 `invokeId + occurredAt` runtime key。

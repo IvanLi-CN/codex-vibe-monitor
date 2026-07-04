@@ -190,6 +190,24 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
     let client_attribution_context = client_prompt_cache_attribution_context_from_headers(&headers);
+    let admitted_running_record = build_admitted_proxy_capture_runtime_snapshot(
+        &invoke_id,
+        &occurred_at,
+        capture_target,
+        requester_ip.as_deref(),
+        header_sticky_key.as_deref(),
+        header_prompt_cache_key.as_deref(),
+    );
+    if let Err(err) =
+        persist_and_broadcast_proxy_capture_runtime_snapshot(state.as_ref(), admitted_running_record)
+            .await
+    {
+        warn!(
+            ?err,
+            invoke_id = %invoke_id,
+            "failed to broadcast admitted running proxy capture snapshot"
+        );
+    }
     let proxy_settings = state.proxy_model_settings.read().await.clone();
 
     let req_read_started = Instant::now();
