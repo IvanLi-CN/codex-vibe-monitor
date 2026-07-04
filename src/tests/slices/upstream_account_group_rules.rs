@@ -988,6 +988,91 @@ async fn admitted_proxy_capture_snapshot_can_be_cleared_before_terminal_on_early
 }
 
 #[tokio::test]
+async fn admitted_proxy_capture_snapshot_is_terminalized_on_pre_attempt_error() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    state
+        .sqlite_batch_writer
+        .set_auto_flush_terminal_for_test(false);
+    let mut rx = state.broadcaster.subscribe();
+    let invoke_id = "invoke-admitted-terminalized";
+    let occurred_at = "2026-03-17 18:16:34";
+
+    let admitted_record = build_admitted_proxy_capture_runtime_snapshot(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        Some("203.0.113.44"),
+        Some("sticky-from-header"),
+        Some("pck-from-header"),
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, admitted_record)
+        .await
+        .expect("admitted snapshot should store in memory and broadcast");
+
+    let payload = rx
+        .recv()
+        .await
+        .expect("admitted runtime snapshot should arrive");
+    let admitted_broadcast = match payload {
+        BroadcastPayload::Records { records } => {
+            assert_eq!(records.len(), 1);
+            records.into_iter().next().expect("single admitted record")
+        }
+        other => panic!("expected admitted records payload, got {other:?}"),
+    };
+    assert_eq!(admitted_broadcast.status.as_deref(), Some("running"));
+
+    let mut terminal_record = test_proxy_capture_record(invoke_id, occurred_at);
+    terminal_record.status = "http_502".to_string();
+    terminal_record.error_message = Some(format!(
+        "[{}] failed to resolve prompt cache conversation binding",
+        PROXY_FAILURE_POOL_ROUTING_BLOCKED
+    ));
+    terminal_record.failure_kind = Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED.to_string());
+    persist_and_broadcast_proxy_capture(state.as_ref(), Instant::now(), terminal_record)
+        .await
+        .expect("pre-attempt terminal record should broadcast without waiting for sqlite");
+
+    let payload = rx
+        .recv()
+        .await
+        .expect("terminal runtime snapshot should arrive");
+    let terminal_broadcast = match payload {
+        BroadcastPayload::Records { records } => {
+            assert_eq!(records.len(), 1);
+            records.into_iter().next().expect("single terminal record")
+        }
+        other => panic!("expected terminal records payload, got {other:?}"),
+    };
+    assert_eq!(terminal_broadcast.invoke_id, invoke_id);
+    assert_eq!(terminal_broadcast.occurred_at, occurred_at);
+    assert_eq!(terminal_broadcast.status.as_deref(), Some("http_502"));
+    assert_eq!(
+        terminal_broadcast.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED)
+    );
+
+    let Json(records_response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            page_size: Some(10),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("terminal overlay should replace admitted running row");
+    assert_eq!(records_response.total, 1);
+    assert_eq!(
+        records_response.records[0].status.as_deref(),
+        Some("http_502")
+    );
+}
+
+#[tokio::test]
 async fn account_timeseries_replaces_stale_db_runtime_placeholder_after_account_switch() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

@@ -153,6 +153,143 @@ pub(crate) fn capture_target_for_request(path: &str, method: &Method) -> Option<
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn persist_pre_attempt_proxy_capture_error(
+    state: &AppState,
+    proxy_request_id: u64,
+    capture_started: Instant,
+    invoke_id: &str,
+    occurred_at: &str,
+    capture_target: ProxyCaptureTarget,
+    request_info: &RequestCaptureInfo,
+    requester_ip: Option<&str>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    client_attribution_context: &ClientPromptCacheAttributionContext,
+    request_body_for_capture: Bytes,
+    request_body_logging_enabled: bool,
+    t_req_read_ms: f64,
+    t_req_parse_ms: f64,
+    status: StatusCode,
+    failure_kind: &'static str,
+    error_message: &str,
+) {
+    let req_raw = spawn_raw_payload_file_write(
+        state,
+        invoke_id,
+        "request",
+        request_body_for_capture,
+        request_body_logging_enabled,
+    )
+    .finish()
+    .await;
+    let usage = ParsedUsage::default();
+    let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
+        &state.pricing_catalog,
+        request_info.model.as_deref(),
+        &usage,
+        None,
+        ProxyPricingMode::ResponseTier,
+    )
+    .await;
+    let record = ProxyCaptureRecord {
+        invoke_id: invoke_id.to_string(),
+        occurred_at: occurred_at.to_string(),
+        model: request_info.model.clone(),
+        usage,
+        cost,
+        cost_estimated,
+        price_version,
+        status: if status.is_server_error() {
+            format!("http_{}", status.as_u16())
+        } else {
+            "failed".to_string()
+        },
+        error_message: Some(format!("[{failure_kind}] {error_message}")),
+        failure_kind: Some(failure_kind.to_string()),
+        payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
+            target: capture_target,
+            status,
+            is_stream: request_info.is_stream,
+            request_contains_encrypted_content: request_info.contains_encrypted_content,
+            response_contains_encrypted_content: false,
+            compaction_request_kind: request_info.compaction_request_kind,
+            compaction_response_kind: None,
+            image_intent: request_info.image_intent.as_deref(),
+            request_model: None,
+            requested_service_tier: request_info.requested_service_tier.as_deref(),
+            billing_service_tier: None,
+            reasoning_effort: request_info.reasoning_effort.as_deref(),
+            response_model: None,
+            usage_missing_reason: None,
+            request_parse_error: request_info.parse_error.as_deref(),
+            failure_kind: Some(failure_kind),
+            requester_ip,
+            upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
+            route_mode: INVOCATION_ROUTE_MODE_POOL,
+            sticky_key,
+            prompt_cache_key,
+            prompt_cache_key_attribution_source: request_info
+                .prompt_cache_key_attribution_source
+                .as_deref(),
+            client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+            client_header_fingerprints: Some(&client_attribution_context.header_fingerprints)
+                .filter(|fingerprints| !fingerprints.is_empty()),
+            upstream_account_id: None,
+            upstream_account_name: None,
+            upstream_account_kind: None,
+            upstream_base_url_host: None,
+            oauth_account_header_attached: None,
+            oauth_account_id_shape: None,
+            oauth_forwarded_header_count: None,
+            oauth_forwarded_header_names: None,
+            oauth_fingerprint_version: None,
+            oauth_forwarded_header_fingerprints: None,
+            oauth_prompt_cache_header_forwarded: None,
+            oauth_request_body_prefix_fingerprint: None,
+            oauth_request_body_prefix_bytes: None,
+            oauth_request_body_snapshot_kind: None,
+            oauth_responses_body_mode: None,
+            oauth_responses_rewrite: None,
+            service_tier: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_status_code: None,
+            downstream_error_message: None,
+            upstream_request_id: None,
+            response_content_encoding: None,
+            proxy_display_name: None,
+            proxy_weight_delta: None,
+            pool_attempt_count: Some(0),
+            pool_distinct_account_count: Some(0),
+            pool_attempt_terminal_reason: Some(failure_kind),
+        })),
+        raw_response: "{}".to_string(),
+        response_body_preview_enabled: false,
+        req_raw,
+        resp_raw: RawPayloadMeta::default(),
+        timings: StageTimings {
+            t_total_ms: 0.0,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms: 0.0,
+            t_upstream_ttfb_ms: 0.0,
+            t_upstream_stream_ms: 0.0,
+            t_resp_parse_ms: 0.0,
+            t_persist_ms: 0.0,
+        },
+    };
+    if let Err(err) = persist_and_broadcast_proxy_capture(state, capture_started, record).await {
+        warn!(
+            proxy_request_id,
+            error = %err,
+            failure_kind,
+            "failed to persist pre-attempt proxy capture terminal record"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn proxy_openai_v1_capture_target(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -414,16 +551,31 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             match binding_constraint_result {
                 Ok(value) => value,
                 Err(err) => {
-                    remove_proxy_runtime_snapshot_by_key(
+                    let status = StatusCode::BAD_GATEWAY;
+                    let message =
+                        format!("failed to resolve prompt cache conversation binding: {err}");
+                    persist_pre_attempt_proxy_capture_error(
                         state.as_ref(),
+                        proxy_request_id,
+                        capture_started,
                         &invoke_id,
                         &occurred_at,
-                        "prompt_cache_binding_error",
-                    );
-                    return Err((
-                        StatusCode::BAD_GATEWAY,
-                        format!("failed to resolve prompt cache conversation binding: {err}"),
-                    ));
+                        capture_target,
+                        &request_info,
+                        requester_ip.as_deref(),
+                        sticky_key.as_deref(),
+                        prompt_cache_key.as_deref(),
+                        &client_attribution_context,
+                        Bytes::from(upstream_body.clone()),
+                        proxy_settings.request_body_logging_enabled,
+                        t_req_read_ms,
+                        elapsed_ms(req_parse_started),
+                        status,
+                        PROXY_FAILURE_POOL_ROUTING_BLOCKED,
+                        &message,
+                    )
+                    .await;
+                    return Err((status, message));
                 }
             }
         } else {
@@ -435,16 +587,31 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         {
             Ok(value) => value,
             Err(err) => {
-                remove_proxy_runtime_snapshot_by_key(
+                let status = StatusCode::BAD_GATEWAY;
+                let message =
+                    format!("failed to resolve prompt cache conversation overrides: {err}");
+                persist_pre_attempt_proxy_capture_error(
                     state.as_ref(),
+                    proxy_request_id,
+                    capture_started,
                     &invoke_id,
                     &occurred_at,
-                    "prompt_cache_override_error",
-                );
-                return Err((
-                    StatusCode::BAD_GATEWAY,
-                    format!("failed to resolve prompt cache conversation overrides: {err}"),
-                ));
+                    capture_target,
+                    &request_info,
+                    requester_ip.as_deref(),
+                    sticky_key.as_deref(),
+                    prompt_cache_key.as_deref(),
+                    &client_attribution_context,
+                    Bytes::from(upstream_body.clone()),
+                    proxy_settings.request_body_logging_enabled,
+                    t_req_read_ms,
+                    elapsed_ms(req_parse_started),
+                    status,
+                    PROXY_FAILURE_POOL_ROUTING_BLOCKED,
+                    &message,
+                )
+                .await;
+                return Err((status, message));
             }
         }
     } else {
