@@ -75,7 +75,8 @@
   - 对 tracked proxy capture endpoints，服务在请求 admit 并分配 `invokeId + occurredAt` 后，必须立即把最小 `running` shell record 写入进程内 runtime store 并广播 SSE；该可见性不得等待 request body 读完、body parse、账号路由或上游 attempt start。
   - admit-time shell record 可以只包含已知字段，例如 endpoint、requester IP、header sticky/prompt-cache key 与 `status=running`；后续 body-parsed / attempt-start / response-ready snapshot 必须用同一 `invokeId + occurredAt` 覆盖补全，不得制造重复行。
   - `running` / `pending` 过程态以进程内共享 runtime store 为当前真相源，并通过 SSE `records` 立即广播。
-  - HTTP current-window reconcile 必须在 DB 结果上 overlay 同一份内存 runtime store，避免 DB 不再常规刷新 running 行后出现短暂丢行。
+  - HTTP current-window reconcile 必须在 DB 结果上 overlay 同一份内存 runtime store，覆盖 records、summary、timeseries、account activity 与 working conversations，避免 DB 不再常规刷新 running 行后出现短暂丢行。
+  - Memory overlay 中的 `running` / `pending` 记录不受 activity window、natural-day 或 5 分钟工作集限制；只要尚未 terminal/tombstone，current summary、account activity 与 working conversations 都必须展示。历史 terminal DB 行仍按所选窗口过滤。
   - terminal success/failure 记录是 P1 观测事实，必须构造成完整 terminal record 后进入 SQLite write controller；代理业务响应不等待 SQLite 落库，入队或 flush 失败只记录结构化证据。
   - terminal record 入队后必须 tombstone/remove 对应内存 running 记录；HTTP overlay 中已存在的 terminal DB 事实始终优先于 memory running。
   - 优雅停机只尽力 drain P1 terminal/route 状态记录；P2 running snapshot 不强制逐条写回 SQLite。

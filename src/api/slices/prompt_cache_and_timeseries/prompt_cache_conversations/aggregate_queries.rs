@@ -198,6 +198,67 @@ pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot(
     Ok(count)
 }
 
+pub(crate) async fn query_existing_working_prompt_cache_conversation_keys(
+    pool: &Pool<Sqlite>,
+    range_start_bound: &str,
+    source_scope: InvocationSourceScope,
+    prompt_cache_keys: &HashSet<String>,
+) -> Result<HashSet<String>> {
+    if prompt_cache_keys.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    #[derive(Debug, FromRow)]
+    struct PromptCacheKeyRow {
+        prompt_cache_key: String,
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(match source_scope {
+        InvocationSourceScope::All => {
+            "SELECT prompt_cache_key \
+             FROM prompt_cache_working_set_live \
+             WHERE source_scope_all = 1"
+        }
+        InvocationSourceScope::ProxyOnly => {
+            "SELECT prompt_cache_key \
+             FROM prompt_cache_working_set_live \
+             WHERE source_scope_proxy_only = 1"
+        }
+    });
+    match source_scope {
+        InvocationSourceScope::All => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "last_activity_at",
+            "last_terminal_at",
+            "last_in_flight_at",
+        ),
+        InvocationSourceScope::ProxyOnly => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "proxy_last_activity_at",
+            "proxy_last_terminal_at",
+            "proxy_last_in_flight_at",
+        ),
+    }
+    query.push(" AND prompt_cache_key IN (");
+    {
+        let mut separated = query.separated(", ");
+        for key in prompt_cache_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(")");
+
+    Ok(query
+        .build_query_as::<PromptCacheKeyRow>()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.prompt_cache_key)
+        .collect())
+}
+
 pub(crate) async fn query_prompt_cache_conversation_hidden_count(
     pool: &Pool<Sqlite>,
     range_start_bound: &str,
