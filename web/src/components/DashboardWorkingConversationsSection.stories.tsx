@@ -2602,7 +2602,7 @@ export const UpstreamAccountMetricTooltips: Story = {
 
     await assertMetricTooltip("latency", ["首字用时", "2.87 s", "响应时间", "阶段首字节"]);
     await assertMetricTooltip("requests", ["请求数", "成功率", "75%", "非成功率"]);
-    await assertMetricTooltip("cost", ["成本", "$0.72", "失败成本", "成功/其他成本", "单次均价"]);
+    await assertMetricTooltip("cost", ["成本", "$0.72", "失败成本", "30.6%", "成功/其他成本", "单次均价"]);
     await assertMetricTooltip("token", ["Token", "缓存命中率", "成功 Token", "单请求 Token"]);
 
     const finalTrigger = canvasElement.querySelector(
