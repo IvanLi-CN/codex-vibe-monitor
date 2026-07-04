@@ -69,6 +69,7 @@ import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroup
 import { useUpstreamStickyConversations } from "../../hooks/useUpstreamStickyConversations";
 import type {
   ApiInvocation,
+  ForwardProxyBindingNode,
   StickyKeyConversationSelection,
   UpdateGroupAccountRoutingRulePayload,
   UpstreamAccountDetail,
@@ -165,6 +166,7 @@ export type {
 
 const ACCOUNT_RECORD_PAGE_SIZE = 50;
 const DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE = "count:50";
+const DIRECT_PROXY_KEY = "__direct__";
 const STICKY_CONVERSATION_SELECTION_OPTIONS = [
   {
     value: "count:20",
@@ -267,6 +269,43 @@ type PendingSaveSession = {
   sessionKey: string | null;
   fallbackDraft: AccountDraft;
 };
+
+function normalizeProxyKeys(values?: string[]): string[] {
+  if (!Array.isArray(values)) return [];
+  return Array.from(
+    new Set(
+      values.map((value) => value.trim()).filter((value) => value.length > 0),
+    ),
+  );
+}
+
+function proxyNodeLabel(node: ForwardProxyBindingNode | undefined, key: string) {
+  if (node) {
+    const protocol = node.protocolLabel ? ` · ${node.protocolLabel}` : "";
+    return `${node.displayName}${protocol}`;
+  }
+  return key === DIRECT_PROXY_KEY ? "Direct · DIRECT" : key;
+}
+
+function proxyNodeStatusLabel(
+  node: ForwardProxyBindingNode | undefined,
+  key: string,
+  t: (key: string) => string,
+) {
+  if (node?.selectable || key === DIRECT_PROXY_KEY) {
+    return t("accountPool.upstreamAccounts.proxyBindings.statusAvailable");
+  }
+  if (node) {
+    return t("accountPool.upstreamAccounts.proxyBindings.statusUnavailable");
+  }
+  return t("accountPool.upstreamAccounts.proxyBindings.statusMissing");
+}
+
+function toggleProxyKey(keys: string[], key: string): string[] {
+  return keys.includes(key)
+    ? keys.filter((value) => value !== key)
+    : [...keys, key];
+}
 
 type RecentSaveResponseGuard = {
   accountId: number;
@@ -888,6 +927,8 @@ function SharedUpstreamAccountDetailDrawerInner({
     removeAccount,
     saveGroupNote,
     deleteGroupNote,
+    forwardProxyNodes = [],
+    forwardProxyCatalogState,
     missingDetailAccountId,
   } = useUpstreamAccounts(needsRosterContext ? undefined : null, {
     allowSelectionOutsideList: true,
@@ -1850,6 +1891,25 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   const selectedDetail = detail?.id === selectedId ? detail : null;
   const selected = selectedDetail ?? selectedSummary;
+  const selectedAccountProxyKeys = normalizeProxyKeys(
+    selectedDetail?.boundProxyKeys,
+  );
+  const selectedGroupProxyKeys = normalizeProxyKeys(
+    selectedDetail?.groupName
+      ? resolveGroupBoundProxyKeysForName(selectedDetail.groupName)
+      : [],
+  );
+  const selectedEffectiveProxyKeys =
+    selectedAccountProxyKeys.length > 0
+      ? selectedAccountProxyKeys
+      : selectedGroupProxyKeys;
+  const selectedProxyNodeByKey = new Map(
+    forwardProxyNodes.map((node) => [node.key, node]),
+  );
+  const selectableProxyOptions = forwardProxyNodes.filter(
+    (node) =>
+      node.selectable || selectedAccountProxyKeys.includes(node.key),
+  );
   useEffect(() => {
     if (
       !open ||
@@ -2207,6 +2267,45 @@ function SharedUpstreamAccountDetailDrawerInner({
         });
         notifyMotherChange(response);
         setAccountPolicyEditorOpen(false);
+      } catch (err) {
+        if (handleNotFoundClose(source.id, err)) return;
+        setActionError((current) => ({
+          ...current,
+          accountMessages: {
+            ...current.accountMessages,
+            [source.id]: err instanceof Error ? err.message : String(err),
+          },
+        }));
+      } finally {
+        setBusyAction((current) => {
+          const nextActions = new Set(current.accountActions);
+          nextActions.delete(createBusyActionKey("save", source.id));
+          return { ...current, accountActions: nextActions };
+        });
+      }
+    },
+    [busyAction, handleNotFoundClose, notifyMotherChange, saveAccount],
+  );
+  const handleSaveAccountProxyBindings = useCallback(
+    async (source: UpstreamAccountDetail, proxyKeys: string[]) => {
+      if (hasBusyAccountAction(busyAction, source.id)) return;
+      const normalizedProxyKeys = normalizeProxyKeys(proxyKeys);
+      setActionError((current) => {
+        const nextMessages = { ...current.accountMessages };
+        delete nextMessages[source.id];
+        return { ...current, accountMessages: nextMessages };
+      });
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions);
+        nextActions.add(createBusyActionKey("save", source.id));
+        return { ...current, accountActions: nextActions };
+      });
+      try {
+        const response = await saveAccount(source.id, {
+          boundProxyKeys:
+            normalizedProxyKeys.length > 0 ? normalizedProxyKeys : null,
+        });
+        notifyMotherChange(response);
       } catch (err) {
         if (handleNotFoundClose(source.id, err)) return;
         setActionError((current) => ({
@@ -3351,28 +3450,151 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-labelledby={detailTabIds.routing.tab}
                   className="grid gap-5"
                 >
-                  <div className="flex justify-end">
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="gap-2"
-                      disabled={
-                        !writesEnabled ||
-                        hasBusyAccountAction(busyAction, selectedDetail.id)
-                      }
-                      onClick={() => setAccountPolicyEditorOpen(true)}
-                    >
-                      <AppIcon
-                        name="file-document-edit-outline"
-                        className="h-4 w-4"
-                        aria-hidden
-                      />
-                      {t(
-                        "accountPool.upstreamAccounts.actions.editRoutingPolicy",
-                      )}
-                    </Button>
-                  </div>
+                  <Card className="border-base-300/80 bg-base-100">
+                    <CardHeader>
+                      <CardTitle className="text-base">
+                        {t(
+                          "accountPool.upstreamAccounts.proxyBindings.accountTitle",
+                        )}
+                      </CardTitle>
+                      <CardDescription>
+                        {t(
+                          "accountPool.upstreamAccounts.proxyBindings.accountDescription",
+                        )}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_14rem] md:items-end">
+                        <SelectField
+                          label={t(
+                            "accountPool.upstreamAccounts.proxyBindings.addLabel",
+                          )}
+                          value=""
+                          disabled={
+                            !writesEnabled ||
+                            hasBusyAccountAction(busyAction, selectedDetail.id) ||
+                            selectableProxyOptions.length === 0
+                          }
+                          options={[
+                            {
+                              value: "",
+                              label:
+                                forwardProxyCatalogState.kind === "loading"
+                                  ? t(
+                                      "accountPool.upstreamAccounts.proxyBindings.loading",
+                                    )
+                                  : t(
+                                      "accountPool.upstreamAccounts.proxyBindings.addPlaceholder",
+                                    ),
+                              disabled: true,
+                            },
+                            ...selectableProxyOptions.map((node) => ({
+                              value: node.key,
+                              label: proxyNodeLabel(node, node.key),
+                              disabled:
+                                !node.selectable ||
+                                selectedAccountProxyKeys.includes(node.key),
+                            })),
+                          ]}
+                          onValueChange={(value) => {
+                            if (!value) return;
+                            void handleSaveAccountProxyBindings(
+                              selectedDetail,
+                              toggleProxyKey(selectedAccountProxyKeys, value),
+                            );
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={
+                            !writesEnabled ||
+                            hasBusyAccountAction(busyAction, selectedDetail.id) ||
+                            selectedAccountProxyKeys.length === 0
+                          }
+                          onClick={() =>
+                            void handleSaveAccountProxyBindings(
+                              selectedDetail,
+                              [],
+                            )
+                          }
+                        >
+                          {t(
+                            "accountPool.upstreamAccounts.proxyBindings.clear",
+                          )}
+                        </Button>
+                      </div>
+
+                      <div className="rounded-xl border border-base-300/80 bg-base-200/35 p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="secondary">
+                            {selectedAccountProxyKeys.length > 0
+                              ? t(
+                                  "accountPool.upstreamAccounts.proxyBindings.sourceAccount",
+                                )
+                              : t(
+                                  "accountPool.upstreamAccounts.proxyBindings.sourceGroup",
+                                )}
+                          </Badge>
+                          {selectedEffectiveProxyKeys.length === 0 ? (
+                            <span className="text-sm text-base-content/68">
+                              {t(
+                                "accountPool.upstreamAccounts.proxyBindings.effectiveEmpty",
+                              )}
+                            </span>
+                          ) : (
+                            selectedEffectiveProxyKeys.map((key) => {
+                              const node = selectedProxyNodeByKey.get(key);
+                              const isAccountOverride =
+                                selectedAccountProxyKeys.includes(key);
+                              return (
+                                <span
+                                  key={key}
+                                  className="inline-flex min-w-0 items-center gap-2 rounded-full border border-base-300 bg-base-100 px-2.5 py-1 text-xs text-base-content"
+                                >
+                                  <span className="max-w-56 truncate font-medium">
+                                    {proxyNodeLabel(node, key)}
+                                  </span>
+                                  <span className="text-base-content/55">
+                                    {proxyNodeStatusLabel(node, key, t)}
+                                  </span>
+                                  {isAccountOverride && writesEnabled ? (
+                                    <button
+                                      type="button"
+                                      className="rounded-full px-1 text-base-content/55 hover:bg-base-200 hover:text-base-content"
+                                      disabled={hasBusyAccountAction(
+                                        busyAction,
+                                        selectedDetail.id,
+                                      )}
+                                      onClick={() =>
+                                        void handleSaveAccountProxyBindings(
+                                          selectedDetail,
+                                          toggleProxyKey(
+                                            selectedAccountProxyKeys,
+                                            key,
+                                          ),
+                                        )
+                                      }
+                                      aria-label={t(
+                                        "accountPool.upstreamAccounts.proxyBindings.remove",
+                                      )}
+                                    >
+                                      x
+                                    </button>
+                                  ) : null}
+                                </span>
+                              );
+                            })
+                          )}
+                        </div>
+                        <p className="mt-3 text-xs leading-5 text-base-content/65">
+                          {t(
+                            "accountPool.upstreamAccounts.proxyBindings.failoverHint",
+                          )}
+                        </p>
+                      </div>
+                    </CardContent>
+                  </Card>
                   <EffectiveRoutingRuleCard
                     rule={selectedDetail.effectiveRoutingRule}
                     identityKey={selectedDetail.id}

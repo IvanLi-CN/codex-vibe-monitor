@@ -1119,6 +1119,20 @@ export function StorybookUpstreamAccountsMock({
         const nextEffectiveRoutingRule = body.routingRule
           ? applyRoutingRulePatchToEffectiveRule(detail.effectiveRoutingRule, body.routingRule)
           : detail.effectiveRoutingRule
+        const nextBoundProxyKeys = Object.prototype.hasOwnProperty.call(
+          body,
+          'boundProxyKeys',
+        )
+          ? Array.isArray(body.boundProxyKeys)
+            ? Array.from(
+                new Set(
+                  body.boundProxyKeys
+                    .map((value) => value.trim())
+                    .filter(Boolean),
+                ),
+              )
+            : []
+          : (detail.boundProxyKeys ?? [])
         const updated = syncLocalWindows({
           ...detail,
           displayName:
@@ -1147,6 +1161,7 @@ export function StorybookUpstreamAccountsMock({
           maskedApiKey: body.apiKey
             ? maskApiKey(body.apiKey)
             : detail.maskedApiKey,
+          boundProxyKeys: nextBoundProxyKeys,
           localLimits:
             detail.kind === 'api_key_codex'
               ? {

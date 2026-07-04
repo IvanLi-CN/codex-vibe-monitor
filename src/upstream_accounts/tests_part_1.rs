@@ -75,6 +75,7 @@
             last_action_invoke_id: None,
             last_action_at: None,
             cooldown_until: None,
+            bound_proxy_keys: Vec::new(),
             current_forward_proxy_key: None,
             current_forward_proxy_display_name: None,
             current_forward_proxy_state: UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_UNCONFIGURED
@@ -2794,6 +2795,7 @@
                 group_note: None,
                 concurrency_limit: None,
                 upstream_base_url: OptionalField::Missing,
+            bound_proxy_keys: OptionalField::Missing,
                 enabled: None,
                 is_mother: None,
                 api_key: None,
@@ -3110,6 +3112,7 @@
                 provider: UPSTREAM_ACCOUNT_PROVIDER_CODEX.to_string(),
                 display_name: "Test".to_string(),
                 group_name: None,
+                bound_proxy_keys_json: None,
                 is_mother: 0,
                 note: None,
                 status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),

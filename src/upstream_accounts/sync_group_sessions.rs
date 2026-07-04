@@ -850,7 +850,7 @@ async fn group_has_accounts_conn(conn: &mut SqliteConnection, group_name: &str) 
     Ok(group_account_count_conn(conn, group_name).await? > 0)
 }
 
-fn normalize_bound_proxy_keys(bound_proxy_keys: Vec<String>) -> Vec<String> {
+pub(crate) fn normalize_bound_proxy_keys(bound_proxy_keys: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     bound_proxy_keys
         .into_iter()
@@ -1719,6 +1719,13 @@ fn resolve_account_forward_proxy_scope_from_assignments(
     Ok(ForwardProxyRouteScope::pinned(proxy_key.clone()))
 }
 
+fn account_bound_forward_proxy_scope(row: &UpstreamAccountRow) -> Option<ForwardProxyRouteScope> {
+    let bound_proxy_keys = row.bound_proxy_keys();
+    (!bound_proxy_keys.is_empty()).then(|| {
+        ForwardProxyRouteScope::bound_scope(format!("account:{}", row.id()), bound_proxy_keys)
+    })
+}
+
 pub(crate) async fn resolve_account_forward_proxy_scope(
     state: &AppState,
     row: &UpstreamAccountRow,
@@ -1728,6 +1735,9 @@ pub(crate) async fn resolve_account_forward_proxy_scope(
         Some(metadata) => metadata,
         None => load_group_metadata(&state.pool, row.group_name.as_deref()).await?,
     };
+    if let Some(scope) = account_bound_forward_proxy_scope(row) {
+        return Ok(scope);
+    }
     if !group_metadata.node_shunt_enabled {
         return required_account_forward_proxy_scope(
             row.group_name.as_deref(),
@@ -1752,6 +1762,9 @@ async fn resolve_account_forward_proxy_scope_for_sync(
         Some(metadata) => metadata,
         None => load_group_metadata(&state.pool, row.group_name.as_deref()).await?,
     };
+    if let Some(scope) = account_bound_forward_proxy_scope(row) {
+        return Ok(scope);
+    }
     if !group_metadata.node_shunt_enabled {
         return required_account_forward_proxy_scope(
             row.group_name.as_deref(),

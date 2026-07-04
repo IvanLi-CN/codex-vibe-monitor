@@ -3616,10 +3616,14 @@ async fn prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slot
     };
     assert_eq!(account.account_id, account_id);
     match account.forward_proxy_scope {
-        ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => {
-            assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+        ForwardProxyRouteScope::BoundProxyKeys {
+            scope_key,
+            bound_proxy_keys,
+        } => {
+            assert_eq!(scope_key, format!("conversation:{prompt_cache_key}"));
+            assert_eq!(bound_proxy_keys, vec![FORWARD_PROXY_DIRECT_KEY.to_string()]);
         }
-        other => panic!("expected pinned direct proxy scope, got {other:?}"),
+        other => panic!("expected conversation bound proxy scope, got {other:?}"),
     }
 }
 
