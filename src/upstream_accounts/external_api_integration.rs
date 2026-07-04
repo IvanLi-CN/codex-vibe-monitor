@@ -178,6 +178,7 @@ fn external_metadata_to_update_request(
         group_note: metadata.group_note,
         concurrency_limit: metadata.concurrency_limit,
         upstream_base_url: OptionalField::Missing,
+        bound_proxy_keys: OptionalField::Missing,
         enabled: metadata.enabled,
         is_mother: metadata.is_mother,
         api_key: None,

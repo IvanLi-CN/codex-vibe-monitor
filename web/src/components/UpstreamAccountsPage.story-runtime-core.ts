@@ -1577,6 +1577,7 @@ export function createOauthAccount(
     lastSuccessfulSyncAt: now,
     lastActivityAt: '2026-03-11T12:12:00.000Z',
     activeConversationCount: 3,
+    boundProxyKeys: [],
     lastRefreshedAt: now,
     tokenExpiresAt: '2026-03-12T12:30:00.000Z',
     lastError: null,
@@ -1742,6 +1743,7 @@ export function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary
     lastActionHttpStatus: normalized.lastActionHttpStatus,
     lastActionInvokeId: normalized.lastActionInvokeId,
     lastActionAt: normalized.lastActionAt,
+    boundProxyKeys: [...(normalized.boundProxyKeys ?? [])],
     currentForwardProxyKey: normalized.currentForwardProxyKey ?? null,
     currentForwardProxyDisplayName:
       normalized.currentForwardProxyDisplayName ?? null,
@@ -1824,6 +1826,7 @@ export function createStore(): StoryStore {
 
   const oauth = createOauthAccount(101, {
     ...baseOauthStoryOverrides,
+    boundProxyKeys: ['__direct__', 'fpn_5a7b0c1d2e3f4a10'],
     ...(duplicateStory
       ? {
           duplicateInfo: {

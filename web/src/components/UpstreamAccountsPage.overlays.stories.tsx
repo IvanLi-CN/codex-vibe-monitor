@@ -51,6 +51,11 @@ async function findTokyoDetailDialog(documentScope: ReturnType<typeof within>) {
   })
   if (existingDialog) return existingDialog
 
+  const routedDialog = await documentScope.findByRole('dialog', {
+    name: /Codex Pro - Tokyo/i,
+  }).catch(() => null)
+  if (routedDialog) return routedDialog
+
   await userEvent.click(
     await documentScope.findByRole('button', {
       name: /选择 Codex Pro - Tokyo/i,
@@ -360,25 +365,23 @@ export const AccountPolicyDraftSurvivesBackgroundRefresh: Story = {
     await userEvent.click(
       within(dialog).getByRole('tab', { name: /路由|routing/i }),
     )
-    await userEvent.click(
-      within(dialog).getByRole('button', { name: /编辑策略|edit routing policy/i }),
-    )
-    const policyDialog = await documentScope.findByRole('dialog', {
-      name: /账号路由策略|account routing policy/i,
-    })
-    await userEvent.click(
-      within(policyDialog).getByRole('combobox', { name: /优先使用|preferred usage/i }),
-    )
-    await userEvent.click(
-      await documentScope.findByRole('option', { name: /兜底|fallback/i }),
-    )
+    await expect(
+      within(dialog).queryByRole('button', { name: /编辑账号策略|edit account policy/i }),
+    ).not.toBeInTheDocument()
+    await expect(within(dialog).getByText(/账号代理|account forward proxies/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/账号覆盖|account override/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/DIRECT/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/fpn_5a7b0c1d2e3f4a10/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/连续网络失败|consecutive network failures/i)).toBeInTheDocument()
 
     window.dispatchEvent(new CustomEvent(UPSTREAM_ACCOUNTS_CHANGED_EVENT))
 
     await waitFor(() => {
       expect(
-        within(policyDialog).getByRole('combobox', { name: /优先使用|preferred usage/i }),
-      ).toHaveTextContent(/兜底|fallback/i)
+        within(dialog).queryByRole('button', { name: /编辑账号策略|edit account policy/i }),
+      ).not.toBeInTheDocument()
+      expect(within(dialog).getByText(/账号代理|account forward proxies/i)).toBeInTheDocument()
+      expect(within(dialog).getByText(/DIRECT/i)).toBeInTheDocument()
     })
   },
 }

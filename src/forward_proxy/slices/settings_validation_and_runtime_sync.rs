@@ -271,6 +271,14 @@ async fn canonicalize_forward_proxy_route_scope(
             bound_proxy_keys: canonicalize_forward_proxy_bound_keys(state, bound_proxy_keys)
                 .await?,
         }),
+        ForwardProxyRouteScope::BoundProxyKeys {
+            scope_key,
+            bound_proxy_keys,
+        } => Ok(ForwardProxyRouteScope::BoundProxyKeys {
+            scope_key: scope_key.clone(),
+            bound_proxy_keys: canonicalize_forward_proxy_bound_keys(state, bound_proxy_keys)
+                .await?,
+        }),
     }
 }
 
@@ -1008,6 +1016,10 @@ pub(crate) enum ForwardProxyRouteScope {
         group_name: String,
         bound_proxy_keys: Vec<String>,
     },
+    BoundProxyKeys {
+        scope_key: String,
+        bound_proxy_keys: Vec<String>,
+    },
 }
 
 impl ForwardProxyRouteScope {
@@ -1039,6 +1051,27 @@ impl ForwardProxyRouteScope {
 
     pub(crate) fn pinned(proxy_key: impl Into<String>) -> Self {
         Self::PinnedProxyKey(proxy_key.into())
+    }
+
+    pub(crate) fn bound_scope(
+        scope_key: impl Into<String>,
+        bound_proxy_keys: Vec<String>,
+    ) -> Self {
+        let scope_key = scope_key.into().trim().to_string();
+        let normalized_bound_proxy_keys = bound_proxy_keys
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| normalize_bound_proxy_key(&value).unwrap_or(value))
+            .collect::<Vec<_>>();
+        if scope_key.is_empty() || normalized_bound_proxy_keys.is_empty() {
+            Self::Automatic
+        } else {
+            Self::BoundProxyKeys {
+                scope_key,
+                bound_proxy_keys: normalized_bound_proxy_keys,
+            }
+        }
     }
 }
 
@@ -1360,12 +1393,20 @@ impl ForwardProxyManager {
         group_name: &str,
         bound_proxy_keys: &[String],
     ) -> Option<String> {
+        self.current_bound_scope_binding_key(group_name, bound_proxy_keys)
+    }
+
+    pub(crate) fn current_bound_scope_binding_key(
+        &self,
+        scope_key: &str,
+        bound_proxy_keys: &[String],
+    ) -> Option<String> {
         let available_keys = self.selectable_bound_proxy_keys_in_order(bound_proxy_keys);
         if available_keys.is_empty() {
             return None;
         }
         self.bound_group_runtime
-            .get(group_name)
+            .get(scope_key)
             .and_then(|state| state.current_binding_key.as_deref())
             .and_then(|key| self.resolve_current_bound_proxy_key(key).or_else(|| normalize_bound_proxy_key(key)))
             .filter(|key| available_keys.contains(key))
@@ -1553,20 +1594,41 @@ impl ForwardProxyManager {
             .is_empty()
     }
 
-    fn choose_random_bound_proxy_key(
-        &mut self,
+    fn bound_proxy_key_effective_weight(&self, binding_key: &str) -> f64 {
+        if binding_key == FORWARD_PROXY_DIRECT_KEY {
+            return 0.0;
+        }
+        let Some(endpoint_key) = self.bound_key_endpoint_keys.get(binding_key) else {
+            return 0.0;
+        };
+        let Some(runtime) = self.runtime.get(endpoint_key) else {
+            return 0.0;
+        };
+        if !(runtime.weight > 0.0 && runtime.weight.is_finite()) {
+            return 0.0;
+        }
+        if self.algo == ForwardProxyAlgo::V2 {
+            let success_factor = runtime.success_ema.clamp(0.0, 1.0).powi(8).max(0.01);
+            runtime.weight.powi(2) * success_factor
+        } else {
+            runtime.weight
+        }
+    }
+
+    fn choose_best_bound_proxy_key(
+        &self,
         available_keys: &[String],
         exclude_key: Option<&str>,
     ) -> Option<String> {
-        let candidates = available_keys
+        available_keys
             .iter()
             .filter(|candidate| Some(candidate.as_str()) != exclude_key)
             .cloned()
-            .collect::<Vec<_>>();
-        if candidates.is_empty() {
-            return None;
-        }
-        Some(candidates[self.next_random_index(candidates.len())].clone())
+            .max_by(|lhs, rhs| {
+                self.bound_proxy_key_effective_weight(lhs)
+                    .total_cmp(&self.bound_proxy_key_effective_weight(rhs))
+                    .then_with(|| rhs.cmp(lhs))
+            })
     }
 
     pub(crate) fn select_auto_proxy(&mut self) -> Option<SelectedForwardProxy> {
@@ -1619,28 +1681,28 @@ impl ForwardProxyManager {
         last_candidate.map(SelectedForwardProxy::from_endpoint)
     }
 
-    fn select_bound_group_proxy(
+    fn select_bound_scope_proxy(
         &mut self,
-        group_name: &str,
+        scope_key: &str,
         bound_proxy_keys: &[String],
     ) -> Result<SelectedForwardProxy> {
         let available_keys = self.selectable_bound_proxy_keys(bound_proxy_keys);
         if available_keys.is_empty() {
-            self.bound_group_runtime.remove(group_name);
+            self.bound_group_runtime.remove(scope_key);
             bail!("bound forward proxy group has no selectable nodes");
         }
         let existing_current = self
             .bound_group_runtime
-            .get(group_name)
+            .get(scope_key)
             .and_then(|state| state.current_binding_key.clone())
             .filter(|key| available_keys.contains(key));
         let selected_binding_key = existing_current.unwrap_or_else(|| {
-            self.choose_random_bound_proxy_key(&available_keys, None)
+            self.choose_best_bound_proxy_key(&available_keys, None)
                 .expect("available bound proxy keys should not be empty")
         });
         let state = self
             .bound_group_runtime
-            .entry(group_name.to_string())
+            .entry(scope_key.to_string())
             .or_default();
         state.current_binding_key = Some(selected_binding_key.clone());
         if selected_binding_key == FORWARD_PROXY_DIRECT_KEY {
@@ -1716,7 +1778,11 @@ impl ForwardProxyManager {
             ForwardProxyRouteScope::BoundGroup {
                 group_name,
                 bound_proxy_keys,
-            } => self.select_bound_group_proxy(group_name, bound_proxy_keys),
+            } => self.select_bound_scope_proxy(group_name, bound_proxy_keys),
+            ForwardProxyRouteScope::BoundProxyKeys {
+                scope_key,
+                bound_proxy_keys,
+            } => self.select_bound_scope_proxy(scope_key, bound_proxy_keys),
         }
     }
 
@@ -1726,16 +1792,20 @@ impl ForwardProxyManager {
         selected_proxy_key: &str,
         result: ForwardProxyRouteResultKind,
     ) {
-        let ForwardProxyRouteScope::BoundGroup {
-            group_name,
-            bound_proxy_keys,
-        } = scope
-        else {
-            return;
+        let (scope_key, bound_proxy_keys) = match scope {
+            ForwardProxyRouteScope::BoundGroup {
+                group_name,
+                bound_proxy_keys,
+            } => (group_name, bound_proxy_keys),
+            ForwardProxyRouteScope::BoundProxyKeys {
+                scope_key,
+                bound_proxy_keys,
+            } => (scope_key, bound_proxy_keys),
+            _ => return,
         };
         let available_keys = self.selectable_bound_proxy_keys(bound_proxy_keys);
         if available_keys.is_empty() {
-            self.bound_group_runtime.remove(group_name);
+            self.bound_group_runtime.remove(scope_key);
             return;
         }
 
@@ -1746,7 +1816,7 @@ impl ForwardProxyManager {
         {
             let state = self
                 .bound_group_runtime
-                .entry(group_name.clone())
+                .entry(scope_key.clone())
                 .or_default();
             state.current_binding_key = Some(selected_binding_key.clone());
             match result {
@@ -1763,12 +1833,12 @@ impl ForwardProxyManager {
         }
 
         if should_switch
-            && let Some(next_binding_key) = self
-                .choose_random_bound_proxy_key(&available_keys, Some(selected_binding_key.as_str()))
+            && let Some(next_binding_key) =
+                self.choose_best_bound_proxy_key(&available_keys, Some(selected_binding_key.as_str()))
         {
             let state = self
                 .bound_group_runtime
-                .entry(group_name.clone())
+                .entry(scope_key.clone())
                 .or_default();
             state.current_binding_key = Some(next_binding_key);
             state.consecutive_network_failures = 0;

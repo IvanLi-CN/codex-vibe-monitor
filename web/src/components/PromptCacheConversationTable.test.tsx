@@ -1585,7 +1585,7 @@ describe("PromptCacheConversationTable", () => {
         }),
         expect.objectContaining({
           bindingKind: "none",
-          forwardProxyKey: "__direct__",
+          forwardProxyKeys: ["__direct__"],
         }),
         expect.objectContaining({
           availableModels: ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
