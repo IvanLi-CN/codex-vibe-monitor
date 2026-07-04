@@ -151,6 +151,15 @@ const baseTranslations = {
       "Select a proxy node",
     "accountPool.upstreamAccounts.proxyBindings.loading": "Loading proxy nodes",
     "accountPool.upstreamAccounts.proxyBindings.clear": "Inherit group",
+    "accountPool.upstreamAccounts.proxyBindings.dialogTitle":
+      "Select account proxy nodes",
+    "accountPool.upstreamAccounts.proxyBindings.dialogDescription":
+      "Choose one or more explicit proxy nodes for this account. Clear all selections to inherit the group configuration.",
+    "accountPool.upstreamAccounts.proxyBindings.dialogAutomatic":
+      "No account override selected. This account inherits the group proxy configuration.",
+    "accountPool.upstreamAccounts.proxyBindings.dialogEmpty":
+      "No proxy nodes are available right now.",
+    "accountPool.upstreamAccounts.proxyBindings.apply": "Apply selection",
     "accountPool.upstreamAccounts.proxyBindings.sourceAccount":
       "Account override",
     "accountPool.upstreamAccounts.proxyBindings.sourceGroup": "Inherited group",
@@ -701,6 +710,12 @@ const baseTranslations = {
       "fail",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
       "No 24h data",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartTotal":
+      "total",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartAriaLabel":
+      "Last 24h request volume chart",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartInteractionHint":
+      "Hover or tap for details. Focus the chart and use arrow keys to switch points.",
     "accountPool.upstreamAccounts.table.routingBlockShort": "Blocked",
     "accountPool.upstreamAccounts.routingBlock.title": "Routing blocked",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle":
@@ -867,6 +882,8 @@ const baseTranslations = {
       "Available models",
     "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels":
       "System denied models",
+    "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings":
+      "Account proxy",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited":
       "Inherited / unrestricted",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed":
@@ -2764,6 +2781,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.proxyBindings.addPlaceholder": "选择代理节点",
     "accountPool.upstreamAccounts.proxyBindings.loading": "正在加载代理节点",
     "accountPool.upstreamAccounts.proxyBindings.clear": "继承分组",
+    "accountPool.upstreamAccounts.proxyBindings.dialogTitle": "选择账号代理节点",
+    "accountPool.upstreamAccounts.proxyBindings.dialogDescription":
+      "为这个账号选择一个或多个显式代理节点。清空选择后会继承分组配置。",
+    "accountPool.upstreamAccounts.proxyBindings.dialogAutomatic":
+      "当前没有账号覆盖，这个账号会继承分组代理配置。",
+    "accountPool.upstreamAccounts.proxyBindings.dialogEmpty":
+      "当前没有可用的代理节点。",
+    "accountPool.upstreamAccounts.proxyBindings.apply": "应用选择",
     "accountPool.upstreamAccounts.proxyBindings.sourceAccount": "账号覆盖",
     "accountPool.upstreamAccounts.proxyBindings.sourceGroup": "继承分组",
     "accountPool.upstreamAccounts.proxyBindings.effectiveEmpty":
@@ -3148,6 +3173,11 @@ const baseTranslations = {
       "失败",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
       "暂无 24 小时数据",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartTotal": "总计",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartAriaLabel":
+      "最近 24 小时请求量图表",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartInteractionHint":
+      "悬停或轻触查看详情；聚焦图表后可用方向键切换点位。",
     "accountPool.upstreamAccounts.table.routingBlockShort": "受限",
     "accountPool.upstreamAccounts.routingBlock.title": "路由受限",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle": "提交回调",
@@ -3298,6 +3328,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels": "可用模型",
     "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels":
       "系统拒绝模型",
+    "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings": "账号代理",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited":
       "继承 / 不限",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed":

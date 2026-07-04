@@ -234,6 +234,44 @@ export const DetailDrawerRecordsSettled: Story = {
   },
 }
 
+export const DetailDrawerRoutingRules: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'desktop1280' },
+  },
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={detailRouteEntry(101)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await findTokyoDetailDialog(documentScope)
+    await userEvent.click(within(dialog).getByRole('tab', { name: /路由|routing/i }))
+    await expect(within(dialog).getByRole('tab', { name: /路由|routing/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).queryByRole('button', { name: /编辑账号策略|edit account policy/i })).not.toBeInTheDocument()
+    await expect(within(dialog).queryByRole('button', { name: /账号路由策略|account routing policy/i })).not.toBeInTheDocument()
+    await expect(within(dialog).getByText(/最终生效规则|effective routing rule/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/字段来源明细|field source breakdown/i)).toBeInTheDocument()
+
+    const warningValues = Array.from(
+      dialog.querySelectorAll('[class*="bg-warning"]') as NodeListOf<HTMLElement>,
+    ).map((node) => node.textContent)
+    expect(warningValues).toContain('禁止切出')
+    expect(warningValues).toContain('禁止切入')
+    expect((dialog.textContent ?? '').match(/禁止切出/g)).toHaveLength(1)
+    expect((dialog.textContent ?? '').match(/禁止切入/g)).toHaveLength(1)
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /添加代理|add proxy/i }))
+    const proxyDialog = await documentScope.findByRole('dialog', {
+      name: /选择账号代理节点|select account proxy nodes/i,
+    })
+    await expect(within(proxyDialog).getByText(/Direct/i)).toBeInTheDocument()
+    await expect(within(proxyDialog).getByText(/fpn_5a7b0c1d2e3f4a10/i)).toBeInTheDocument()
+    expect(within(proxyDialog).getAllByText(/24H/i).length).toBeGreaterThan(0)
+    await expect(within(proxyDialog).getByRole('button', { name: /应用选择|apply selection/i })).toBeInTheDocument()
+  },
+}
+
 export const DetailDrawerRecordsSettledWide: Story = {
   parameters: {
     viewport: { defaultViewport: 'desktop1920' },

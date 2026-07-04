@@ -56,6 +56,7 @@ type EditablePolicyField =
   | 'timeoutCompactFirstByte'
   | 'timeoutResponsesStream'
   | 'timeoutCompactStream'
+  | 'proxyBindings'
 
 type FieldSourceMap = NonNullable<EffectiveRoutingRule['fieldSources']>
 
@@ -131,10 +132,37 @@ interface EditablePolicyConfig {
   ) => Promise<void> | void
 }
 
+interface EffectiveProxyBindingItem {
+  key: string
+  label: string
+  status?: string
+  accountOverride?: boolean
+  tone?: 'direct' | 'available' | 'unavailable' | 'missing'
+}
+
+interface EffectiveProxyBindingConfig {
+  source: 'account' | 'group'
+  items: EffectiveProxyBindingItem[]
+  busy?: boolean
+  disabled?: boolean
+  onEdit?: () => void
+  onClear?: () => void
+  onRemove?: (key: string) => void
+  labels: {
+    field: string
+    add: string
+    clear: string
+    empty: string
+    hint: string
+    remove: string
+  }
+}
+
 interface EffectiveRoutingRuleCardProps {
   rule?: EffectiveRoutingRule | null
   identityKey?: string | number | null
   editablePolicy?: EditablePolicyConfig
+  proxyBindings?: EffectiveProxyBindingConfig
   labels: {
     title: string
     description: string
@@ -176,6 +204,7 @@ interface EffectiveRoutingRuleCardProps {
     fieldUpstream429?: string
     fieldAvailableModels?: string
     fieldSystemDeniedModels?: string
+    fieldProxyBindings?: string
     timeoutSectionTitle?: string
     timeoutInheritedValue?: string
     timeoutOverrideValue?: string
@@ -281,6 +310,191 @@ function sourceVariant(source: string) {
         : 'secondary'
 }
 
+type BadgeVariant = React.ComponentProps<typeof Badge>['variant']
+
+function valueVariant(field: EditablePolicyField | null, value: string, labels: EffectiveRoutingRuleCardProps['labels']): BadgeVariant {
+  if (field === 'allowNewConversations') {
+    return value === labels.blockNewConversations ? 'warning' : 'success'
+  }
+  if (field === 'allowCutOut') {
+    return value === labels.denyCutOut ? 'warning' : 'success'
+  }
+  if (field === 'allowCutIn') {
+    return value === labels.denyCutIn ? 'warning' : 'success'
+  }
+  if (field === 'priorityTier') {
+    if (value === labels.priorityPrimary) return 'default'
+    if (value === labels.priorityFallback) return 'warning'
+    return 'info'
+  }
+  if (field === 'fastModeRewriteMode') {
+    if (value === labels.fastModeForceAdd || value === labels.fastModeForceRemove) return 'default'
+    if (value === labels.fastModeFillMissing) return 'info'
+    return 'secondary'
+  }
+  if (field === 'imageToolRewriteMode') {
+    if (value === labels.imageToolForceAdd || value === labels.imageToolForceRemove) return 'default'
+    if (value === labels.imageToolFillMissing) return 'info'
+    return 'secondary'
+  }
+  if (field === 'concurrencyLimit') {
+    return value === (labels.concurrencyUnlimited ?? 'Concurrency unlimited') ? 'success' : 'warning'
+  }
+  if (field === 'upstream429Retry') {
+    return value === '0' ? 'secondary' : 'info'
+  }
+  if (field === 'availableModels') {
+    if (
+      value === (labels.availableModelsInherited ?? 'Inherited / unrestricted') ||
+      value === (labels.availableModelsNoneAllowed ?? 'No models allowed')
+    ) {
+      return value === (labels.availableModelsNoneAllowed ?? 'No models allowed') ? 'warning' : 'success'
+    }
+    return 'default'
+  }
+  if (field == null && value === (labels.systemDeniedModelsEmpty ?? 'None')) {
+    return 'success'
+  }
+  return field == null ? 'warning' : 'secondary'
+}
+
+function ValueBadge({ field, value, labels }: { field: EditablePolicyField | null; value: string; labels: EffectiveRoutingRuleCardProps['labels'] }) {
+  return (
+    <Badge
+      className="min-w-0 max-w-full justify-self-start whitespace-normal break-words text-left leading-5"
+      variant={valueVariant(field, value, labels)}
+    >
+      {value}
+    </Badge>
+  )
+}
+
+function ValueBadgeList({
+  field,
+  values,
+  labels,
+}: {
+  field: EditablePolicyField | null
+  values: string[]
+  labels: EffectiveRoutingRuleCardProps['labels']
+}) {
+  return (
+    <div className="flex min-w-0 flex-wrap gap-2 justify-self-start">
+      {values.map((value) => (
+        <ValueBadge key={value} field={field} value={value} labels={labels} />
+      ))}
+    </div>
+  )
+}
+
+function ProxyBindingChips({
+  items,
+  labels,
+  disabled,
+  onRemove,
+}: {
+  items: EffectiveProxyBindingItem[]
+  labels: EffectiveProxyBindingConfig['labels']
+  disabled?: boolean
+  onRemove?: (key: string) => void
+}) {
+  if (items.length === 0) {
+    return <span className="text-sm text-base-content/60">{labels.empty}</span>
+  }
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      {items.map((item) => (
+        <span
+          key={item.key}
+          className={cn(
+            'inline-flex min-w-0 max-w-full items-center gap-2 rounded-full border px-2.5 py-1 text-xs',
+            item.tone === 'direct'
+              ? 'border-primary/40 bg-primary/10 text-primary'
+              : item.tone === 'missing'
+                ? 'border-error/35 bg-error/15 text-error'
+                : item.tone === 'available'
+                  ? 'border-success/35 bg-success/15 text-success'
+                  : 'border-base-300 bg-base-200/70 text-base-content/85',
+          )}
+        >
+          <span className="max-w-56 truncate font-medium">{item.label}</span>
+          {item.status ? (
+            <span className="shrink-0 text-current/70">
+              {item.status}
+            </span>
+          ) : null}
+          {item.accountOverride && onRemove ? (
+            <button
+              type="button"
+              className="shrink-0 rounded-full px-1 text-current/60 hover:bg-base-200 hover:text-current disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={disabled}
+              onClick={(event) => {
+                event.stopPropagation()
+                onRemove(item.key)
+              }}
+              aria-label={labels.remove}
+            >
+              x
+            </button>
+          ) : null}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function ProxyBindingMultiSelectTrigger({
+  items,
+  labels,
+  disabled,
+  onOpen,
+  onRemove,
+}: {
+  items: EffectiveProxyBindingItem[]
+  labels: EffectiveProxyBindingConfig['labels']
+  disabled?: boolean
+  onOpen?: () => void
+  onRemove?: (key: string) => void
+}) {
+  return (
+    <div
+      role="combobox"
+      aria-expanded={false}
+      aria-label={labels.field}
+      aria-disabled={disabled ? 'true' : undefined}
+      tabIndex={disabled ? -1 : 0}
+      title={items.length > 0 ? items.map((item) => item.label).join(', ') : labels.empty}
+      className={cn(
+        'flex min-h-11 w-full items-center gap-3 rounded-xl border border-base-300 bg-base-100 px-3 py-2.5 text-left shadow-sm transition-colors',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100',
+        'hover:border-primary/35',
+        disabled && 'cursor-not-allowed opacity-60',
+      )}
+      onClick={() => {
+        if (!disabled) onOpen?.()
+      }}
+      onKeyDown={(event) => {
+        if (disabled) return
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onOpen?.()
+        }
+      }}
+    >
+      <AppIcon name="tag-outline" className="mt-0.5 h-4 w-4 shrink-0 text-base-content/55" aria-hidden />
+      <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+        <ProxyBindingChips
+          items={items}
+          labels={labels}
+          disabled={disabled}
+          onRemove={onRemove}
+        />
+      </span>
+      <AppIcon name="chevron-down" className="h-4 w-4 shrink-0 text-base-content/45" aria-hidden />
+    </div>
+  )
+}
+
 function accountOverrideFields(fieldSources: FieldSourceMap): EditablePolicyField[] {
   return editableFieldSourceKeys
     .filter(([, sourceKey]) => fieldSources[sourceKey] === 'account')
@@ -322,7 +536,7 @@ function formatUpstream429RetryCount(
   return labels.upstream429RetryCountValue?.(normalized) ?? String(normalized)
 }
 
-export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePolicy }: EffectiveRoutingRuleCardProps) {
+export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePolicy, proxyBindings }: EffectiveRoutingRuleCardProps) {
   const resolvedRule = defaultRule(rule)
   const isEditable = editablePolicy != null
   const fieldSources = useMemo(
@@ -353,6 +567,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
     ? [
         ...accountOverrideFields(fieldSources),
         ...accountTimeoutOverrideFields(timeoutSources),
+        ...(proxyBindings?.source === 'account' ? (['proxyBindings'] as const) : []),
       ]
     : []
   const [expandedFields, setExpandedFields] = useState<EditablePolicyField[]>(defaultExpandedFields)
@@ -376,10 +591,11 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
     const nextDefaultExpandedFields = [
       ...accountOverrideFields(fieldSources),
       ...accountTimeoutOverrideFields(timeoutSources),
+      ...(proxyBindings?.source === 'account' ? (['proxyBindings'] as const) : []),
     ]
     setExpandedFields((current) => {
       if (userTouchedExpansionRef.current) return current
-      if (current.some((field) => fieldToSource(field, fieldSources, timeoutSources) === 'account')) return current
+      if (current.some((field) => field === 'proxyBindings' ? proxyBindings?.source === 'account' : fieldToSource(field, fieldSources, timeoutSources) === 'account')) return current
       return nextDefaultExpandedFields
     })
   }, [
@@ -398,6 +614,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
     timeoutSources.compactFirstByteTimeoutSecs,
     timeoutSources.responsesStreamTimeoutSecs,
     timeoutSources.compactStreamTimeoutSecs,
+    proxyBindings?.source,
     fieldSources,
     timeoutSources,
   ])
@@ -644,6 +861,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
             ? labels.availableModelsNoneAllowed ?? 'No models allowed'
             : labels.availableModelsInherited ?? 'Inherited / unrestricted',
       source: fieldSources.availableModels ?? 'root',
+      valueBadges: availableModelsValue.length > 0 ? availableModelsValue : null,
       clearPayload: { availableModels: null },
       editor: (
         <AvailableModelsEditor
@@ -672,13 +890,24 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
         ? resolvedRule.systemDeniedModels.join(', ')
         : labels.systemDeniedModelsEmpty ?? 'None',
       source: fieldSources.systemDeniedModels ?? 'root',
+      valueBadges: resolvedRule.systemDeniedModels && resolvedRule.systemDeniedModels.length > 0
+        ? resolvedRule.systemDeniedModels
+        : null,
     },
   ]
-  const blockingBadges = [
-    resolvedRule.blockNewConversations ? labels.blockNewConversations : null,
-    !resolvedRule.allowCutOut ? labels.denyCutOut : null,
-    !resolvedRule.allowCutIn ? labels.denyCutIn : null,
-  ].filter((value): value is string => value != null)
+  const proxyBindingsSource = proxyBindings?.source ?? 'group'
+  const proxyBindingsActiveOverride = proxyBindingsSource === 'account'
+  const proxyBindingsExpanded = expandedFields.includes('proxyBindings')
+  const toggleProxyBindingsRow = () => {
+    if (!proxyBindings || proxyBindings.busy) return
+    userTouchedExpansionRef.current = true
+    if (proxyBindingsActiveOverride) {
+      proxyBindings.onClear?.()
+      setExpandedFields((current) => current.filter((value) => value !== 'proxyBindings'))
+      return
+    }
+    proxyBindings.onEdit?.()
+  }
 
   return (
     <Card className="border-base-300/80 bg-base-100/72">
@@ -687,16 +916,6 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
         <CardDescription>{labels.description}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        {blockingBadges.length > 0 ? (
-          <div className="flex flex-wrap gap-2">
-            {blockingBadges.map((label) => (
-              <Badge key={label} variant="warning">
-                {label}
-              </Badge>
-            ))}
-          </div>
-        ) : null}
-
         <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
           <p className="metric-label">{labels.sourceBreakdownTitle ?? 'Field source breakdown'}</p>
           <div className="mt-3 overflow-hidden rounded-xl border border-base-300/70">
@@ -708,9 +927,13 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
               const busy = row.field != null && isBusy(row.field)
               return (
                 <div key={row.label} className="border-b border-base-300/60 last:border-b-0">
-                  <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[minmax(7rem,1fr)_minmax(8rem,1.2fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
+                  <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
                     <span className="font-medium text-base-content/80">{row.label}</span>
-                    <span className="text-base-content">{row.value}</span>
+                    {row.valueBadges ? (
+                      <ValueBadgeList field={row.field} values={row.valueBadges} labels={labels} />
+                    ) : (
+                      <ValueBadge field={row.field} value={row.value} labels={labels} />
+                    )}
                     <Badge className="w-fit sm:justify-self-end" variant={sourceVariant(row.source)}>
                       {sourceLabel(row.source, labels)}
                     </Badge>
@@ -733,7 +956,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
                   </div>
                   {expanded && row.field ? (
                     <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
-                      <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[minmax(7rem,1fr)_minmax(8rem,1.2fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
+                      <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
                         <p className="text-sm font-semibold text-base-content">{row.label}</p>
                         <div className="min-w-0 sm:col-span-3">{row.editor}</div>
                         {busy ? (
@@ -754,6 +977,50 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
                 </div>
               )
             })}
+            {proxyBindings ? (
+              <div className="border-b border-base-300/60 last:border-b-0">
+                <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
+                  <span className="font-medium text-base-content/80">{labels.fieldProxyBindings ?? proxyBindings.labels.field}</span>
+                  <ProxyBindingChips
+                    items={proxyBindings.items}
+                    labels={proxyBindings.labels}
+                    disabled={proxyBindings.busy || proxyBindings.disabled}
+                  />
+                  <Badge className="w-fit sm:justify-self-end" variant={sourceVariant(proxyBindingsSource)}>
+                    {sourceLabel(proxyBindingsSource, labels)}
+                  </Badge>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant={proxyBindingsActiveOverride ? 'default' : 'ghost'}
+                    className={cn('h-8 w-8 justify-self-start rounded-full sm:justify-self-end', proxyBindingsActiveOverride ? 'text-primary-content' : 'text-base-content/65')}
+                    disabled={proxyBindings.busy || proxyBindings.disabled}
+                    aria-pressed={proxyBindingsActiveOverride}
+                    aria-label={`${proxyBindingsActiveOverride ? labels.overrideClear ?? 'Clear override' : labels.overrideEdit ?? 'Edit override'}: ${proxyBindings.labels.field}`}
+                    onClick={toggleProxyBindingsRow}
+                  >
+                    <AppIcon name={proxyBindings.busy ? 'loading' : proxyBindingsActiveOverride ? 'check-decagram-outline' : 'pencil-outline'} className={cn('h-4 w-4', proxyBindings.busy ? 'animate-spin' : '')} aria-hidden />
+                  </Button>
+                </div>
+                {proxyBindingsActiveOverride && proxyBindingsExpanded ? (
+                  <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
+                    <div className="grid grid-cols-1 gap-y-3 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-start sm:gap-x-3">
+                      <p className="text-sm font-semibold text-base-content">{proxyBindings.labels.field}</p>
+                      <div className="min-w-0 space-y-3 sm:col-span-3">
+                        <ProxyBindingMultiSelectTrigger
+                          items={proxyBindings.items}
+                          labels={proxyBindings.labels}
+                          disabled={proxyBindings.busy || proxyBindings.disabled}
+                          onOpen={proxyBindings.onEdit}
+                          onRemove={proxyBindings.onRemove}
+                        />
+                        <p className="text-xs leading-5 text-base-content/65">{proxyBindings.labels.hint}</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -769,7 +1036,7 @@ export function EffectiveRoutingRuleCard({ rule, identityKey, labels, editablePo
                 <div key={row.key} className="border-b border-base-300/60 last:border-b-0">
                   <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:items-center sm:gap-3">
                     <span className="min-w-0 font-medium text-base-content/80">{row.label}</span>
-                    <span className="whitespace-nowrap text-base-content">{row.value}</span>
+                    <ValueBadge field={row.field} value={row.value} labels={labels} />
                     <div className="min-w-0 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-base-content/65">
                         {activeOverride ? labels.timeoutOverrideValue ?? 'Account override' : labels.timeoutInheritedValue ?? 'Inherited'}
@@ -894,6 +1161,8 @@ function fieldToSource(
       return timeoutSources.responsesStreamTimeoutSecs
     case 'timeoutCompactStream':
       return timeoutSources.compactStreamTimeoutSecs
+    case 'proxyBindings':
+      return 'account'
   }
 }
 

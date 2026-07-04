@@ -44,6 +44,7 @@ const labels = {
   fieldUpstream429: 'Upstream 429 retry',
   fieldAvailableModels: 'Available models',
   fieldSystemDeniedModels: 'System denied models',
+  fieldProxyBindings: 'Account proxy',
   sourceRoot: 'Root default',
   sourceGroup: 'Group',
   sourceTag: 'Tag',
@@ -243,6 +244,21 @@ export const Default: Story = {}
 export const StrictMergedRule: Story = {
   args: {
     rule: strictRule,
+  },
+  play: async ({ canvasElement }) => {
+    const warningValues = Array.from(
+      canvasElement.querySelectorAll('[class*="bg-warning"]'),
+    ).map((node) => node.textContent)
+
+    expect(warningValues).toContain('New conversations blocked')
+    expect(warningValues).toContain('Cut-out blocked')
+    expect(warningValues).toContain('Fallback only')
+    expect((canvasElement.textContent ?? '').match(/Cut-out blocked/g)).toHaveLength(1)
+
+    const forceRemoveBadge = Array.from(
+      canvasElement.querySelectorAll('[class*="bg-primary"]'),
+    ).find((node) => node.textContent === 'Force remove')
+    expect(forceRemoveBadge).toBeTruthy()
   },
 }
 
