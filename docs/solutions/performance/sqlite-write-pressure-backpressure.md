@@ -60,7 +60,7 @@
 - skip 必须有日志和后续 ticker，否则会变成静默丢任务。
 - write controller 必须有有界队列、flush 触发（时间窗口 / row count / 最大等待）、coalesced row count、oldest age、flush elapsed、queue depth、enqueue failed 与 dropped count 证据；否则只是把 SQLite 锁问题藏到内存里。
 - buffered progress 不能立刻广播“已持久化”的 DB snapshot；要么广播内存态，要么等后续 reconcile/terminal 更新。否则会把 stale DB state 伪装成实时状态。
-- 如果选择内存态广播，就必须让所有相关读方共享同一个 runtime store，包括 SSE、records open-resync、current summary、current timeseries 与账号活动 in-flight 统计；否则去掉 DB running 写后会产生多套不一致实时视图。
+- 如果选择内存态广播，就必须让所有相关读方共享同一个 runtime store，包括 SSE、records open-resync、current summary、current timeseries、账号活动 in-flight 统计与 prompt-cache working conversations；否则去掉 DB running 写后会产生多套不一致实时视图。
 - `INSERT OR IGNORE` 会静默吞掉 `NOT NULL` 约束错误；用于占位写时必须绑定所有 NOT NULL 默认列，或者检查 `rows_affected` 并记录结构化证据，否则会误以为 batch flush 成功。
 - 为每个后台入口单独做局部退避，容易遗漏同一压力窗口内的其他维护任务；进程级 gate 更容易统一行为。
 - `SELECT MAX(id) ... WHERE <稀疏条件>`、`NOT EXISTS` + 低选择性 phase 过滤这类查询，即使最终只返回 1 行，也可能在 SQLite 上吃掉秒级读锁预算；若它们会与前台 HTTP 共享同一数据库，必须先压成 cursor 读取或用 partial index 固定扫描面。
