@@ -3281,7 +3281,6 @@ async fn query_live_upstream_account_activity_preview_rows(
 fn runtime_upstream_account_activity_preview_row(
     record: ApiInvocation,
     source_scope: InvocationSourceScope,
-    range: ExactUtcRange,
 ) -> Option<UpstreamAccountInvocationPreviewRow> {
     if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
         return None;
@@ -3295,10 +3294,6 @@ fn runtime_upstream_account_activity_preview_row(
     let Some(upstream_account_id) = record.upstream_account_id else {
         return None;
     };
-    let occurred_at = parse_to_utc_datetime(&record.occurred_at)?;
-    if occurred_at < range.start || occurred_at >= range.end {
-        return None;
-    }
     Some(UpstreamAccountInvocationPreviewRow {
         upstream_account_id,
         id: record.id,
@@ -3353,13 +3348,10 @@ fn overlay_runtime_upstream_account_activity_preview_rows(
     state: &AppState,
     rows: &mut Vec<UpstreamAccountInvocationPreviewRow>,
     source_scope: InvocationSourceScope,
-    range: ExactUtcRange,
 ) {
     let mut runtime_overlay_row_count = 0_i64;
     for record in state.proxy_runtime_invocations.snapshot() {
-        let Some(row) =
-            runtime_upstream_account_activity_preview_row(record, source_scope, range)
-        else {
+        let Some(row) = runtime_upstream_account_activity_preview_row(record, source_scope) else {
             continue;
         };
         let key = (row.invoke_id.clone(), row.occurred_at.clone());
@@ -3585,7 +3577,6 @@ pub(crate) async fn fetch_upstream_account_activity(
         state.as_ref(),
         &mut live_rows,
         source_scope,
-        range,
     );
     let live_ids = live_rows.iter().map(|row| row.id).collect::<HashSet<_>>();
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);

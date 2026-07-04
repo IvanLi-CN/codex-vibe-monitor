@@ -83,6 +83,7 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
     detail_level: PromptCacheConversationDetailLevel,
     recent_invocation_limit: Option<i64>,
     snapshot: Option<&PromptCacheConversationHydrationSnapshot<'_>>,
+    runtime_overlay_records: &[ApiInvocation],
 ) -> Result<Vec<PromptCacheConversationResponse>> {
     if aggregates.is_empty() {
         return Ok(Vec::new());
@@ -215,6 +216,12 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
             .or_default()
             .push(prompt_cache_invocation_preview_from_row(row));
     }
+    overlay_runtime_prompt_cache_invocation_previews(
+        &mut grouped_recent_invocations,
+        runtime_overlay_records,
+        &selected_keys,
+        recent_invocation_limit,
+    );
 
     let mut grouped_upstream_accounts: HashMap<
         String,
@@ -388,6 +395,115 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
     }
 
     Ok(conversations)
+}
+
+fn overlay_runtime_prompt_cache_invocation_previews(
+    grouped_recent_invocations: &mut HashMap<String, Vec<PromptCacheConversationInvocationPreviewResponse>>,
+    runtime_overlay_records: &[ApiInvocation],
+    selected_keys: &[String],
+    recent_invocation_limit: i64,
+) {
+    if runtime_overlay_records.is_empty() || selected_keys.is_empty() || recent_invocation_limit <= 0 {
+        return;
+    }
+    let selected_keys = selected_keys.iter().collect::<HashSet<_>>();
+    for record in runtime_overlay_records {
+        let Some(prompt_cache_key) = normalize_trimmed_optional_string(record.prompt_cache_key.clone()) else {
+            continue;
+        };
+        if !selected_keys.contains(&prompt_cache_key) {
+            continue;
+        }
+        let previews = grouped_recent_invocations
+            .entry(prompt_cache_key.clone())
+            .or_default();
+        if previews.iter().any(|preview| {
+            preview.invoke_id == record.invoke_id && preview.occurred_at == record.occurred_at
+        }) {
+            continue;
+        }
+        previews.push(prompt_cache_invocation_preview_from_runtime_record(
+            record,
+            prompt_cache_key,
+        ));
+    }
+
+    for previews in grouped_recent_invocations.values_mut() {
+        previews.sort_by(|left, right| {
+            right
+                .occurred_at
+                .cmp(&left.occurred_at)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        previews.truncate(recent_invocation_limit as usize);
+    }
+}
+
+fn prompt_cache_invocation_preview_from_runtime_record(
+    record: &ApiInvocation,
+    prompt_cache_key: String,
+) -> PromptCacheConversationInvocationPreviewResponse {
+    PromptCacheConversationInvocationPreviewResponse {
+        id: record.id,
+        invoke_id: record.invoke_id.clone(),
+        prompt_cache_key: Some(prompt_cache_key),
+        occurred_at: record.occurred_at.clone(),
+        status: record
+            .status
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+        failure_class: normalize_trimmed_optional_string(record.failure_class.clone()),
+        route_mode: normalize_trimmed_optional_string(record.route_mode.clone()),
+        model: normalize_trimmed_optional_string(record.model.clone()),
+        request_model: normalize_trimmed_optional_string(record.request_model.clone()),
+        response_model: normalize_trimmed_optional_string(record.response_model.clone()),
+        total_tokens: record.total_tokens.unwrap_or_default().max(0),
+        cost: record.cost,
+        proxy_display_name: normalize_trimmed_optional_string(record.proxy_display_name.clone()),
+        upstream_account_id: record.upstream_account_id,
+        upstream_account_name: normalize_trimmed_optional_string(record.upstream_account_name.clone()),
+        upstream_account_plan_type: None,
+        endpoint: normalize_trimmed_optional_string(record.endpoint.clone()),
+        compaction_request_kind: normalize_trimmed_optional_string(
+            record.compaction_request_kind.clone(),
+        ),
+        compaction_response_kind: normalize_trimmed_optional_string(
+            record.compaction_response_kind.clone(),
+        ),
+        image_intent: normalize_trimmed_optional_string(record.image_intent.clone()),
+        source: normalize_trimmed_optional_string(Some(record.source.clone())),
+        input_tokens: record.input_tokens,
+        output_tokens: record.output_tokens,
+        cache_input_tokens: record.cache_input_tokens,
+        reasoning_tokens: record.reasoning_tokens,
+        reasoning_effort: normalize_trimmed_optional_string(record.reasoning_effort.clone()),
+        error_message: normalize_trimmed_optional_string(record.error_message.clone()),
+        downstream_status_code: record.downstream_status_code,
+        downstream_error_message: normalize_trimmed_optional_string(
+            record.downstream_error_message.clone(),
+        ),
+        failure_kind: normalize_trimmed_optional_string(record.failure_kind.clone()),
+        is_actionable: record.is_actionable,
+        response_content_encoding: normalize_trimmed_optional_string(
+            record.response_content_encoding.clone(),
+        ),
+        transport: normalize_trimmed_optional_string(record.transport.clone()),
+        requested_service_tier: normalize_trimmed_optional_string(
+            record.requested_service_tier.clone(),
+        ),
+        service_tier: normalize_trimmed_optional_string(record.service_tier.clone()),
+        billing_service_tier: normalize_trimmed_optional_string(
+            record.billing_service_tier.clone(),
+        ),
+        t_req_read_ms: record.t_req_read_ms,
+        t_req_parse_ms: record.t_req_parse_ms,
+        t_upstream_connect_ms: record.t_upstream_connect_ms,
+        t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
+        t_upstream_stream_ms: record.t_upstream_stream_ms,
+        t_resp_parse_ms: record.t_resp_parse_ms,
+        t_persist_ms: record.t_persist_ms,
+        t_total_ms: record.t_total_ms,
+    }
 }
 
 fn resolve_prompt_cache_conversation_chart_range_start(
