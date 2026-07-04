@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.11.0",
+  "base_stable_version": "2.10.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-04T10:42:13Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.11.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "85541d3300a8d7a1bbd96b533f6dc46bab3d7567",
+  "pr_number": 527,
+  "pr_title": "Bind proxy routes to prompt cache scopes",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.11.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.11.0",
+  "target_sha": "c177a2f0c6df6a10e0106e41ee691f46b3ffeb91",
+  "type_label": "type:minor"
+}
