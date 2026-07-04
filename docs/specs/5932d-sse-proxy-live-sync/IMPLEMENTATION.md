@@ -11,6 +11,8 @@
 - Proxy capture request completion no longer waits for terminal `codex_invocations` SQLite persistence before allowing the proxy business flow to finish. It constructs the full terminal record, tombstones/removes the corresponding runtime-store row, broadcasts `records`, and enqueues the terminal record into the SQLite write controller as P1 best-effort observability. Enqueue/flush failures are structured evidence and must not fail an already completed proxy response.
 - The SQLite write controller is the single write path for terminal invocation records and bounded derived writes. Terminal records flush first; terminal-generated rollup/account-touch maintenance is retained as deferred P2 work for a later controller window instead of running in the same lock window. Attempt phase/latency progress, invocation hourly rollup/live progress, upstream account activity touch, and background system-task finish updates continue to coalesce on short windows before touching SQLite. Terminal attempt begin/finalize remains synchronous for now because the existing failover/recovery flow depends on a concrete attempt id and final attempt state.
 - Runtime proxy snapshots no longer write `codex_invocations` or enqueue recovery placeholders on the normal `running` path. They update a process-local runtime invocation store keyed by `invokeId + occurredAt` and broadcast the in-memory `records` payload immediately. HTTP current-window records, summary, timeseries, account-activity in-flight reads, and prompt-cache working conversations overlay the same memory store on top of DB results so open-resync does not briefly drop visible running rows. P2 running snapshots are skipped during shutdown drain instead of being forced back into SQLite.
+- Tracked proxy capture requests now create an admit-time shell `running` record immediately after `invokeId + occurredAt` assignment and header inspection, before request body read, proxy settings read, account routing, or upstream attempt start. Later body-parsed and attempt snapshots upsert the same runtime-store key to enrich model, prompt-cache, account, and timing fields instead of adding another visible row.
+- If a request future drops after the admit-time runtime row but before any terminal invocation exists, the drop guard terminalizes the same runtime-store key with an interrupted overlay and broadcasts `records`; it must not silently remove the row because clients preserve transient `id=0` in-flight records across HTTP reconcile.
 - Runtime overlay is intentionally unbounded by activity windows for `running/pending` rows. Current summary in-progress counts, account-activity in-flight cards, and working-conversation current cards all include memory rows regardless of start time; only terminal/historical DB rows remain constrained by the selected window.
 - Pool account `last_selected_at` selection touches now use an in-process routing fairness anchor plus a coalesced batch write. Candidate sorting overlays the runtime timestamp on top of persisted account rows, while status/cooldown/failure writes remain synchronous because they affect routing correctness.
 
@@ -44,6 +46,7 @@
 - [x] M9: Runtime running snapshot 去同步主表写；账号选择 touch 去耦到内存公平性锚点 + batch writer，路由状态正确性保持同步可靠。
 - [x] M10: Runtime running snapshot 收口为纯内存实时态 + SSE/HTTP overlay；后续 running refresh 不再常规写主表，shutdown 不强制 flush P2 running snapshot。
 - [x] M11: Terminal invocation 记录从代理业务关键路径移入 SQLite write controller；业务响应不等待记录落库，running snapshot 完全退出 DB/batch 路径，terminal 产生的派生写延后到后续 P2 flush。
+- [x] M12: Proxy capture 请求 admit 后立即创建最小内存 running shell record；body parse / attempt start / response-ready 只覆盖补全同一 runtime key。
 
 ## 2026-06-21 Follow-up
 
@@ -59,6 +62,7 @@
 - `cd web && bun run test useDashboardUpstreamAccountActivity.test.tsx`
 - `cargo test sqlite_batch_writer`
 - `cargo test persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_running_record -- --nocapture`
+- `cargo test admitted_proxy_capture_snapshot_is_visible_before_body_parse_and_later_enriched -- --nocapture`
 - `cargo test runtime_snapshot_batches_prompt_cache_rollups_without_background_follow_up -- --nocapture`
 - `cargo test persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overlay_without_sync_db_write --no-fail-fast`
 - `cargo test persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overlay_without_sync_db_write --quiet -- --test-threads=1`

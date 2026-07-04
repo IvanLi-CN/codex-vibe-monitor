@@ -792,6 +792,376 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overla
 }
 
 #[tokio::test]
+async fn admitted_proxy_capture_snapshot_is_visible_before_body_parse_and_later_enriched() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mut rx = state.broadcaster.subscribe();
+    let invoke_id = "invoke-admitted-running";
+    let occurred_at = "2026-03-17 18:14:34";
+
+    let admitted_record = build_admitted_proxy_capture_runtime_snapshot(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        Some("203.0.113.42"),
+        Some("sticky-from-header"),
+        Some("pck-from-header"),
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, admitted_record)
+        .await
+        .expect("admitted snapshot should store in memory and broadcast");
+
+    let payload = rx
+        .recv()
+        .await
+        .expect("admitted runtime snapshot should arrive");
+    let admitted_broadcast = match payload {
+        BroadcastPayload::Records { records } => {
+            assert_eq!(records.len(), 1);
+            records.into_iter().next().expect("single admitted record")
+        }
+        other => panic!("expected records payload, got {other:?}"),
+    };
+    assert_eq!(admitted_broadcast.id, 0);
+    assert_eq!(admitted_broadcast.status.as_deref(), Some("running"));
+    assert_eq!(admitted_broadcast.endpoint.as_deref(), Some("/v1/responses"));
+    assert_eq!(
+        admitted_broadcast.requester_ip.as_deref(),
+        Some("203.0.113.42")
+    );
+    assert_eq!(
+        admitted_broadcast.prompt_cache_key.as_deref(),
+        Some("pck-from-header")
+    );
+    assert_eq!(
+        admitted_broadcast.sticky_key.as_deref(),
+        Some("sticky-from-header")
+    );
+    assert_eq!(admitted_broadcast.model, None);
+    assert_eq!(admitted_broadcast.upstream_account_id, None);
+
+    let enriched_request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        prompt_cache_key: Some("pck-from-body".to_string()),
+        sticky_key: Some("sticky-from-body".to_string()),
+        prompt_cache_key_attribution_source: Some("request".to_string()),
+        contains_encrypted_content: true,
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let enriched_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &enriched_request_info,
+        Some("203.0.113.42"),
+        Some("sticky-from-body"),
+        Some("pck-from-body"),
+        true,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        31.0,
+        7.0,
+        0.0,
+        0.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, enriched_record)
+        .await
+        .expect("body-parsed snapshot should enrich the same runtime row");
+
+    let payload = rx
+        .recv()
+        .await
+        .expect("enriched runtime snapshot should arrive");
+    let enriched_broadcast = match payload {
+        BroadcastPayload::Records { records } => {
+            assert_eq!(records.len(), 1);
+            records.into_iter().next().expect("single enriched record")
+        }
+        other => panic!("expected records payload, got {other:?}"),
+    };
+    assert_eq!(enriched_broadcast.id, 0);
+    assert_eq!(enriched_broadcast.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        enriched_broadcast.prompt_cache_key.as_deref(),
+        Some("pck-from-body")
+    );
+    assert_eq!(
+        enriched_broadcast.sticky_key.as_deref(),
+        Some("sticky-from-body")
+    );
+
+    let runtime_rows = state.proxy_runtime_invocations.snapshot();
+    let matching_rows: Vec<_> = runtime_rows
+        .iter()
+        .filter(|record| record.invoke_id == invoke_id && record.occurred_at == occurred_at)
+        .collect();
+    assert_eq!(
+        matching_rows.len(),
+        1,
+        "admitted and body-parsed snapshots should share one runtime key"
+    );
+    assert_eq!(matching_rows[0].model.as_deref(), Some("gpt-5.4"));
+
+    let persisted_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count db rows after admitted runtime snapshots");
+    assert_eq!(
+        persisted_count, 0,
+        "admitted runtime snapshots must not restore sqlite running writes"
+    );
+}
+
+#[tokio::test]
+async fn admitted_proxy_capture_snapshot_can_be_cleared_before_terminal_on_early_error() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let invoke_id = "invoke-admitted-cleared";
+    let occurred_at = "2026-03-17 18:15:34";
+
+    let admitted_record = build_admitted_proxy_capture_runtime_snapshot(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        Some("203.0.113.43"),
+        Some("sticky-from-header"),
+        Some("pck-from-header"),
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, admitted_record)
+        .await
+        .expect("admitted snapshot should store in memory");
+
+    assert_eq!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .into_iter()
+            .filter(|record| record.invoke_id == invoke_id && record.occurred_at == occurred_at)
+            .count(),
+        1,
+        "admitted runtime snapshot should be visible before early error cleanup"
+    );
+
+    remove_proxy_runtime_snapshot_by_key(
+        &state,
+        invoke_id,
+        occurred_at,
+        "test_early_routing_error",
+    );
+
+    assert!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .into_iter()
+            .all(|record| record.invoke_id != invoke_id || record.occurred_at != occurred_at),
+        "early pre-attempt failures must clear admitted runtime snapshots"
+    );
+    let persisted_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count db rows after early cleanup");
+    assert_eq!(
+        persisted_count, 0,
+        "early cleanup must not restore sqlite running writes"
+    );
+}
+
+#[tokio::test]
+async fn admitted_proxy_capture_snapshot_is_cleared_when_cleanup_guard_drops_before_attempt() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mut rx = state.broadcaster.subscribe();
+    let invoke_id = "invoke-admitted-drop-guard";
+    let occurred_at = "2026-03-17 18:15:55";
+    let guard = PoolInvocationCleanupGuard::new(
+        state.clone(),
+        InvocationRecoverySelector::new(invoke_id.to_string(), occurred_at.to_string()),
+        "test_admitted_drop_guard",
+    );
+
+    let admitted_record = build_admitted_proxy_capture_runtime_snapshot(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        Some("203.0.113.45"),
+        Some("sticky-from-header"),
+        Some("pck-from-header"),
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, admitted_record)
+        .await
+        .expect("admitted snapshot should store in memory");
+    let payload = rx
+        .recv()
+        .await
+        .expect("admitted runtime snapshot should arrive");
+    match payload {
+        BroadcastPayload::Records { records } => {
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].status.as_deref(), Some("running"));
+        }
+        other => panic!("expected admitted records payload, got {other:?}"),
+    }
+
+    assert_eq!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .into_iter()
+            .filter(|record| record.invoke_id == invoke_id && record.occurred_at == occurred_at)
+            .count(),
+        1,
+        "admitted runtime snapshot should be visible before the cleanup guard drops"
+    );
+
+    drop(guard);
+    for _ in 0..50 {
+        let terminal_record = state
+            .proxy_runtime_invocations
+            .snapshot()
+            .into_iter()
+            .find(|record| record.invoke_id == invoke_id && record.occurred_at == occurred_at);
+        if terminal_record
+            .as_ref()
+            .is_some_and(|record| record.status.as_deref() == Some(INVOCATION_STATUS_INTERRUPTED))
+        {
+            let payload = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                .await
+                .expect("terminalized runtime snapshot should be broadcast")
+                .expect("terminalized runtime snapshot channel should stay open");
+            let terminal_broadcast = match payload {
+                BroadcastPayload::Records { records } => {
+                    assert_eq!(records.len(), 1);
+                    records.into_iter().next().expect("single terminal record")
+                }
+                other => panic!("expected terminal records payload, got {other:?}"),
+            };
+            assert_eq!(terminal_broadcast.invoke_id, invoke_id);
+            assert_eq!(terminal_broadcast.occurred_at, occurred_at);
+            assert_eq!(
+                terminal_broadcast.status.as_deref(),
+                Some(INVOCATION_STATUS_INTERRUPTED)
+            );
+            assert_eq!(
+                terminal_broadcast.failure_kind.as_deref(),
+                Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    panic!("drop guard should terminalize pre-attempt admitted runtime snapshot without a DB row");
+}
+
+#[tokio::test]
+async fn admitted_proxy_capture_snapshot_is_terminalized_on_pre_attempt_error() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    state
+        .sqlite_batch_writer
+        .set_auto_flush_terminal_for_test(false);
+    let mut rx = state.broadcaster.subscribe();
+    let invoke_id = "invoke-admitted-terminalized";
+    let occurred_at = "2026-03-17 18:16:34";
+
+    let admitted_record = build_admitted_proxy_capture_runtime_snapshot(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        Some("203.0.113.44"),
+        Some("sticky-from-header"),
+        Some("pck-from-header"),
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, admitted_record)
+        .await
+        .expect("admitted snapshot should store in memory and broadcast");
+
+    let payload = rx
+        .recv()
+        .await
+        .expect("admitted runtime snapshot should arrive");
+    let admitted_broadcast = match payload {
+        BroadcastPayload::Records { records } => {
+            assert_eq!(records.len(), 1);
+            records.into_iter().next().expect("single admitted record")
+        }
+        other => panic!("expected admitted records payload, got {other:?}"),
+    };
+    assert_eq!(admitted_broadcast.status.as_deref(), Some("running"));
+
+    let mut terminal_record = test_proxy_capture_record(invoke_id, occurred_at);
+    terminal_record.status = "http_502".to_string();
+    terminal_record.error_message = Some(format!(
+        "[{}] failed to resolve prompt cache conversation binding",
+        PROXY_FAILURE_POOL_ROUTING_BLOCKED
+    ));
+    terminal_record.failure_kind = Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED.to_string());
+    persist_and_broadcast_proxy_capture(state.as_ref(), Instant::now(), terminal_record)
+        .await
+        .expect("pre-attempt terminal record should broadcast without waiting for sqlite");
+
+    let payload = rx
+        .recv()
+        .await
+        .expect("terminal runtime snapshot should arrive");
+    let terminal_broadcast = match payload {
+        BroadcastPayload::Records { records } => {
+            assert_eq!(records.len(), 1);
+            records.into_iter().next().expect("single terminal record")
+        }
+        other => panic!("expected terminal records payload, got {other:?}"),
+    };
+    assert_eq!(terminal_broadcast.invoke_id, invoke_id);
+    assert_eq!(terminal_broadcast.occurred_at, occurred_at);
+    assert_eq!(terminal_broadcast.status.as_deref(), Some("http_502"));
+    assert_eq!(
+        terminal_broadcast.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED)
+    );
+
+    let Json(records_response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            page_size: Some(10),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("terminal overlay should replace admitted running row");
+    assert_eq!(records_response.total, 1);
+    assert_eq!(
+        records_response.records[0].status.as_deref(),
+        Some("http_502")
+    );
+}
+
+#[tokio::test]
 async fn account_timeseries_replaces_stale_db_runtime_placeholder_after_account_switch() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -1151,7 +1521,7 @@ async fn clearing_terminal_tombstone_allows_enqueue_retry_without_running_regres
         "retry after queue-full should be allowed to enqueue again"
     );
     assert!(
-        !store.remove_non_terminal(invoke_id, occurred_at),
+        store.remove_non_terminal(invoke_id, occurred_at).is_none(),
         "drop-guard cleanup must not remove a queued terminal overlay before sqlite flush"
     );
 
