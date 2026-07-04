@@ -546,8 +546,8 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overla
     .await
     .expect("count running db rows after flush");
     assert_eq!(
-        persisted_running_count, 1,
-        "bounded flush should write only the first minimal DB recovery placeholder"
+        persisted_running_count, 0,
+        "runtime snapshots should remain memory-only even after sqlite batch flush"
     );
 
     let repeat_record = build_running_proxy_capture_record(
@@ -576,10 +576,6 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overla
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, repeat_record)
         .await
         .expect("repeated runtime snapshot should only refresh memory");
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
     let repeated_running_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
     )
@@ -589,8 +585,8 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overla
     .await
     .expect("count running db rows after repeated runtime snapshot");
     assert_eq!(
-        repeated_running_count, 1,
-        "repeated runtime snapshots should not enqueue more DB placeholder writes"
+        repeated_running_count, 0,
+        "repeated runtime snapshots should never enqueue DB placeholder writes"
     );
 
     let switched_account_record = build_running_proxy_capture_record(
@@ -620,99 +616,148 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overla
         .await
         .expect("account-switched runtime snapshot should only refresh memory");
 
-    let Json(old_account_records) = list_invocations(
-        State(state.clone()),
-        Query(ListQuery {
-            request_id: Some(invoke_id.to_string()),
-            upstream_account_id: Some(17),
-            page_size: Some(1),
-            ..Default::default()
-        }),
-    )
-    .await
-    .expect("records should hide stale DB running placeholder after runtime account switch");
-    assert_eq!(old_account_records.total, 0);
-    assert!(old_account_records.records.is_empty());
+    {
+        let Json(old_account_records) = list_invocations(
+            State(state.clone()),
+            Query(ListQuery {
+                request_id: Some(invoke_id.to_string()),
+                upstream_account_id: Some(17),
+                page_size: Some(1),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("records should hide stale DB running placeholder after runtime account switch");
+        assert_eq!(old_account_records.total, 0);
+        assert!(old_account_records.records.is_empty());
 
-    let Json(new_account_records) = list_invocations(
-        State(state.clone()),
-        Query(ListQuery {
-            request_id: Some(invoke_id.to_string()),
-            upstream_account_id: Some(23),
-            page_size: Some(1),
-            ..Default::default()
-        }),
-    )
-    .await
-    .expect("records should show current memory runtime account after switch");
-    assert_eq!(new_account_records.total, 1);
-    assert_eq!(new_account_records.records.len(), 1);
-    assert_eq!(new_account_records.records[0].id, 0);
-    assert_eq!(new_account_records.records[0].upstream_account_id, Some(23));
+        let Json(new_account_records) = list_invocations(
+            State(state.clone()),
+            Query(ListQuery {
+                request_id: Some(invoke_id.to_string()),
+                upstream_account_id: Some(23),
+                page_size: Some(1),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("records should show current memory runtime account after switch");
+        assert_eq!(new_account_records.total, 1);
+        assert_eq!(new_account_records.records.len(), 1);
+        assert_eq!(new_account_records.records[0].id, 0);
+        assert_eq!(new_account_records.records[0].upstream_account_id, Some(23));
 
-    let Json(summary) = fetch_invocation_summary(
-        State(state.clone()),
-        Query(ListQuery {
-            request_id: Some(invoke_id.to_string()),
-            ..Default::default()
-        }),
-    )
-    .await
-    .expect("current summary should overlay running memory count");
-    assert_eq!(summary.total_count, 1);
-    assert_eq!(summary.success_count, 0);
-    assert_eq!(summary.failure_count, 0);
+        let Json(summary) = fetch_invocation_summary(
+            State(state.clone()),
+            Query(ListQuery {
+                request_id: Some(invoke_id.to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("current summary should overlay running memory count");
+        assert_eq!(summary.total_count, 1);
+        assert_eq!(summary.success_count, 0);
+        assert_eq!(summary.failure_count, 0);
 
-    let Json(old_account_stats_summary) = fetch_summary(
-        State(state.clone()),
-        Query(SummaryQuery {
-            window: Some("today".to_string()),
-            limit: None,
-            time_zone: Some("Asia/Shanghai".to_string()),
-            upstream_account_id: Some(17),
-        }),
-    )
-    .await
-    .expect("stats summary should remove stale DB account count after runtime switch");
-    assert_eq!(
-        old_account_stats_summary.in_progress_conversation_count,
-        Some(0)
-    );
-    assert_eq!(
-        old_account_stats_summary.in_progress_retry_conversation_count,
-        Some(0)
-    );
+        let Json(old_account_stats_summary) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("today".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: Some(17),
+            }),
+        )
+        .await
+        .expect("stats summary should remove stale DB account count after runtime switch");
+        assert_eq!(
+            old_account_stats_summary.in_progress_conversation_count,
+            Some(0)
+        );
+        assert_eq!(
+            old_account_stats_summary.in_progress_retry_conversation_count,
+            Some(0)
+        );
 
-    let Json(new_account_stats_summary) = fetch_summary(
-        State(state.clone()),
-        Query(SummaryQuery {
-            window: Some("today".to_string()),
-            limit: None,
-            time_zone: Some("Asia/Shanghai".to_string()),
-            upstream_account_id: Some(23),
-        }),
-    )
-    .await
-    .expect("stats summary should move running memory count to the current account");
-    assert_eq!(
-        new_account_stats_summary.in_progress_conversation_count,
-        Some(1)
-    );
-    assert_eq!(
-        new_account_stats_summary.in_progress_retry_conversation_count,
-        Some(1)
-    );
+        let Json(new_account_stats_summary) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("today".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: Some(23),
+            }),
+        )
+        .await
+        .expect("stats summary should move running memory count to the current account");
+        assert_eq!(
+            new_account_stats_summary.in_progress_conversation_count,
+            Some(1)
+        );
+        assert_eq!(
+            new_account_stats_summary.in_progress_retry_conversation_count,
+            Some(1)
+        );
+    }
 
+    state
+        .sqlite_batch_writer
+        .set_auto_flush_terminal_for_test(false);
     persist_and_broadcast_proxy_capture(
         state.as_ref(),
         Instant::now(),
         test_proxy_capture_record(invoke_id, occurred_at),
     )
     .await
-    .expect("http terminal record should persist with only a minimal running db placeholder");
+    .expect("http terminal record should enqueue without waiting for sqlite");
+
+    let terminal_before_flush = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count terminal db row before flush");
+    assert_eq!(
+        terminal_before_flush, 0,
+        "terminal record should not synchronously block on sqlite persistence"
+    );
+    let Json(summary_before_terminal_flush) = fetch_invocation_summary(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("current summary should overlay queued terminal record before sqlite flush");
+    assert_eq!(summary_before_terminal_flush.total_count, 1);
+    assert_eq!(summary_before_terminal_flush.success_count, 1);
+    assert_eq!(summary_before_terminal_flush.failure_count, 0);
+    assert_eq!(summary_before_terminal_flush.total_tokens, 15);
+    assert_eq!(summary_before_terminal_flush.token.total_tokens, 15);
+    assert_eq!(summary_before_terminal_flush.token.cache_input_tokens, 2);
+    assert_eq!(
+        summary_before_terminal_flush.token.avg_tokens_per_request,
+        15.0
+    );
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+    assert!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .iter()
+            .any(|record| record.invoke_id == invoke_id && record.occurred_at == occurred_at),
+        "terminal overlay should remain until deferred derived writes flush"
+    );
 
     let Json(after_terminal) = list_invocations(
-        State(state),
+        State(state.clone()),
         Query(ListQuery {
             request_id: Some(invoke_id.to_string()),
             page_size: Some(1),
@@ -720,11 +765,30 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overla
         }),
     )
     .await
-    .expect("terminal invocation should be loaded from db after memory removal");
+    .expect("terminal invocation should be loaded from db after write-controller flush");
     assert_eq!(after_terminal.total, 1);
     assert_eq!(after_terminal.records.len(), 1);
     assert!(after_terminal.records[0].id > 0);
     assert_eq!(after_terminal.records[0].status.as_deref(), Some("success"));
+    assert!(
+        after_terminal.records[0]
+            .t_persist_ms
+            .is_some_and(|value| value >= 0.0),
+        "raw terminal persistence latency should remain recorded after async flush"
+    );
+
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+    assert!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .iter()
+            .all(|record| record.invoke_id != invoke_id || record.occurred_at != occurred_at),
+        "terminal overlay should be removed after deferred derived writes flush"
+    );
 }
 
 #[tokio::test]
@@ -771,10 +835,6 @@ async fn account_timeseries_replaces_stale_db_runtime_placeholder_after_account_
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, initial_record)
         .await
         .expect("initial runtime snapshot should enter memory");
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
 
     let updated_same_account_record = build_running_proxy_capture_record(
         invoke_id,
@@ -939,15 +999,24 @@ async fn terminal_db_row_wins_over_stale_memory_runtime_overlay() {
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("runtime snapshot should enter memory");
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
-
     sqlx::query(
-        "UPDATE codex_invocations \
-         SET status = 'success', total_tokens = 42, cost = 0.01 \
-         WHERE invoke_id = ?1 AND occurred_at = ?2",
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_tokens,
+            cost,
+            status,
+            raw_response,
+            detail_level
+        )
+        VALUES (?1, ?2, 'proxy', 'gpt-5.4', 1, 2, 0, 42, 0.01, 'success', '', 'full')
+        "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
@@ -981,6 +1050,180 @@ async fn terminal_db_row_wins_over_stale_memory_runtime_overlay() {
     .expect("summary should not double-count stale memory running row over terminal DB fact");
     assert_eq!(summary_response.total_count, 1);
     assert_eq!(summary_response.success_count, 1);
+}
+
+#[tokio::test]
+async fn queued_terminal_overlay_preserves_total_when_db_running_placeholder_exists() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let invoke_id = "invoke-terminal-overlay-over-running-db";
+    let occurred_at = "2026-03-17 18:13:39";
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_tokens,
+            cost,
+            status,
+            raw_response,
+            detail_level
+        )
+        VALUES (?1, ?2, 'proxy', 'gpt-5.4', 0, 0, 0, 0, 0.0, 'running', '', 'full')
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .execute(&state.pool)
+    .await
+    .expect("seed running DB placeholder");
+
+    state
+        .sqlite_batch_writer
+        .set_auto_flush_terminal_for_test(false);
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, occurred_at),
+    )
+    .await
+    .expect("terminal record should enqueue without sqlite flush");
+
+    let Json(records_response) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            page_size: Some(10),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("queued terminal overlay should replace DB running row");
+    assert_eq!(records_response.total, 1);
+    assert_eq!(records_response.records.len(), 1);
+    assert_eq!(records_response.records[0].id, 0);
+    assert_eq!(records_response.records[0].status.as_deref(), Some("success"));
+
+    let Json(summary_response) = fetch_invocation_summary(
+        State(state),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("current summary should count queued terminal overlay over DB running row");
+    assert_eq!(summary_response.total_count, 1);
+    assert_eq!(summary_response.success_count, 1);
+    assert_eq!(summary_response.total_tokens, 15);
+}
+
+#[tokio::test]
+async fn clearing_terminal_tombstone_allows_enqueue_retry_without_running_regression() {
+    let store = ProxyRuntimeInvocationStore::default();
+    let invoke_id = "invoke-terminal-retry-after-queue-full";
+    let occurred_at = "2026-03-17 18:13:40";
+    let terminal = api_invocation_from_runtime_record(&test_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+    ));
+
+    let first_terminal = store.upsert_terminal(terminal.clone());
+    assert!(
+        !first_terminal.already_terminal,
+        "first terminal overlay should not be considered duplicate"
+    );
+    assert!(
+        store.clear_terminal_tombstone(invoke_id, occurred_at),
+        "enqueue failure should clear the tombstone while keeping the terminal overlay"
+    );
+
+    let retry_terminal = store.upsert_terminal(terminal);
+    assert!(
+        !retry_terminal.already_terminal,
+        "retry after queue-full should be allowed to enqueue again"
+    );
+    assert!(
+        !store.remove_non_terminal(invoke_id, occurred_at),
+        "drop-guard cleanup must not remove a queued terminal overlay before sqlite flush"
+    );
+
+    let mut delayed_running = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &RequestCaptureInfo::default(),
+        Some("198.51.100.88"),
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    );
+    delayed_running.status = "running".to_string();
+    let running_outcome = store.upsert(api_invocation_from_runtime_record(&delayed_running));
+    assert!(
+        running_outcome.skipped_terminal,
+        "terminal overlay should still block delayed running snapshots even without a tombstone"
+    );
+    let snapshot = store.snapshot();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].status.as_deref(), Some("success"));
+}
+
+#[tokio::test]
+async fn route_failure_cleanup_skips_queued_terminal_runtime_overlay() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let invoke_id = "queued-terminal-route-cleanup";
+    let occurred_at = "2026-03-17 18:13:41";
+    let terminal = api_invocation_from_runtime_record(&test_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+    ));
+
+    state.proxy_runtime_invocations.upsert_terminal(terminal);
+
+    assert!(
+        !should_record_route_failure_after_attempt_recovery_for_test(
+            state.as_ref(),
+            invoke_id,
+            occurred_at,
+            false,
+        )
+        .await,
+        "queued terminal overlay should prevent DB-missing cleanup from recording route failure"
+    );
+    assert!(
+        !should_record_route_failure_after_attempt_recovery_for_test(
+            state.as_ref(),
+            invoke_id,
+            occurred_at,
+            true,
+        )
+        .await,
+        "queued terminal overlay should also prevent recovered-invocation cleanup from penalizing the account"
+    );
 }
 
 #[tokio::test]
@@ -1027,7 +1270,11 @@ async fn delayed_runtime_snapshot_after_terminal_does_not_reintroduce_running_ov
         test_proxy_capture_record(invoke_id, occurred_at),
     )
     .await
-    .expect("terminal record should persist before delayed runtime snapshot");
+    .expect("terminal record should enqueue before delayed runtime snapshot");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
 
     let mut rx = state.broadcaster.subscribe();
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)

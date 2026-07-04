@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sqlx::{Pool, Sqlite, SqliteConnection};
 use tokio::{
     sync::{Mutex, mpsc, oneshot},
@@ -66,18 +66,22 @@ pub(crate) struct BatchedInvocationDerivedWrites {
     pub(crate) invocation_id: i64,
     pub(crate) occurred_at: String,
     pub(crate) payload: Option<String>,
+    pub(crate) terminal_overlay_key: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct BatchedRunningProxySnapshot {
-    pub(crate) invoke_id: String,
-    pub(crate) occurred_at: String,
+pub(crate) struct BatchedTerminalInvocationWrite {
     pub(crate) record: ProxyCaptureRecord,
+    pub(crate) capture_started: Option<Instant>,
+    pub(crate) raw_capture: bool,
 }
 
-impl BatchedRunningProxySnapshot {
+impl BatchedTerminalInvocationWrite {
     fn key(&self) -> String {
-        format!("{}\n{}", self.invoke_id, self.occurred_at)
+        format!(
+            "{}\n{}\n{}",
+            self.record.invoke_id, self.record.occurred_at, self.raw_capture
+        )
     }
 }
 
@@ -101,9 +105,9 @@ pub(crate) struct BatchedSystemTaskFinish {
 
 #[derive(Debug)]
 pub(crate) enum SqliteBatchWrite {
+    TerminalInvocation(BatchedTerminalInvocationWrite),
     AttemptProgress(BatchedAttemptProgress),
     InvocationDerived(BatchedInvocationDerivedWrites),
-    RunningProxySnapshot(BatchedRunningProxySnapshot),
     AccountSelectedTouch(BatchedAccountSelectedTouch),
     SystemTaskFinish(BatchedSystemTaskFinish),
 }
@@ -121,9 +125,9 @@ enum SqliteBatchWriterControl {
 
 #[derive(Debug, Default)]
 struct PendingBatch {
+    terminal_invocations: BTreeMap<String, BatchedTerminalInvocationWrite>,
     attempt_progress: HashMap<i64, BatchedAttemptProgress>,
     invocation_derived: BTreeMap<i64, BatchedInvocationDerivedWrites>,
-    running_proxy_snapshots: HashMap<String, BatchedRunningProxySnapshot>,
     account_selected_touches: HashMap<i64, BatchedAccountSelectedTouch>,
     system_task_finishes: HashMap<i64, BatchedSystemTaskFinish>,
     enqueued_rows: usize,
@@ -133,17 +137,17 @@ struct PendingBatch {
 
 impl PendingBatch {
     fn is_empty(&self) -> bool {
-        self.attempt_progress.is_empty()
+        self.terminal_invocations.is_empty()
+            && self.attempt_progress.is_empty()
             && self.invocation_derived.is_empty()
-            && self.running_proxy_snapshots.is_empty()
             && self.account_selected_touches.is_empty()
             && self.system_task_finishes.is_empty()
     }
 
     fn logical_rows(&self) -> usize {
-        self.attempt_progress.len()
+        self.terminal_invocations.len()
+            + self.attempt_progress.len()
             + self.invocation_derived.len()
-            + self.running_proxy_snapshots.len()
             + self.account_selected_touches.len()
             + self.system_task_finishes.len()
     }
@@ -159,6 +163,15 @@ impl PendingBatch {
         self.oldest_at.get_or_insert(now);
         self.enqueued_rows += 1;
         match write {
+            SqliteBatchWrite::TerminalInvocation(terminal) => {
+                if self
+                    .terminal_invocations
+                    .insert(terminal.key(), terminal)
+                    .is_some()
+                {
+                    self.coalesced_rows += 1;
+                }
+            }
             SqliteBatchWrite::AttemptProgress(progress) => {
                 if self
                     .attempt_progress
@@ -172,15 +185,6 @@ impl PendingBatch {
                 if self
                     .invocation_derived
                     .insert(derived.invocation_id, derived)
-                    .is_some()
-                {
-                    self.coalesced_rows += 1;
-                }
-            }
-            SqliteBatchWrite::RunningProxySnapshot(snapshot) => {
-                if self
-                    .running_proxy_snapshots
-                    .insert(snapshot.key(), snapshot)
                     .is_some()
                 {
                     self.coalesced_rows += 1;
@@ -212,15 +216,46 @@ impl PendingBatch {
         }
     }
 
-    fn skip_running_proxy_snapshots_for_shutdown(&mut self) -> usize {
-        let skipped = self.running_proxy_snapshots.len();
-        self.running_proxy_snapshots.clear();
-        skipped
-    }
-
     fn take(&mut self) -> Self {
         std::mem::take(self)
     }
+
+    #[cfg(test)]
+    fn into_writes(self) -> Vec<SqliteBatchWrite> {
+        let mut writes = Vec::with_capacity(self.logical_rows());
+        writes.extend(
+            self.terminal_invocations
+                .into_values()
+                .map(SqliteBatchWrite::TerminalInvocation),
+        );
+        writes.extend(
+            self.attempt_progress
+                .into_values()
+                .map(SqliteBatchWrite::AttemptProgress),
+        );
+        writes.extend(
+            self.invocation_derived
+                .into_values()
+                .map(SqliteBatchWrite::InvocationDerived),
+        );
+        writes.extend(
+            self.account_selected_touches
+                .into_values()
+                .map(SqliteBatchWrite::AccountSelectedTouch),
+        );
+        writes.extend(
+            self.system_task_finishes
+                .into_values()
+                .map(SqliteBatchWrite::SystemTaskFinish),
+        );
+        writes
+    }
+}
+
+#[derive(Debug)]
+struct RetainedBatch {
+    batch: PendingBatch,
+    failed: bool,
 }
 
 #[derive(Debug)]
@@ -229,10 +264,14 @@ pub(crate) struct SqliteBatchWriter {
     control_sender: mpsc::Sender<SqliteBatchWriterControl>,
     pending_depth: Arc<AtomicUsize>,
     dropped_writes: Arc<AtomicU64>,
+    terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+    #[cfg(test)]
     prompt_cache_conversation_cache: Option<Arc<Mutex<PromptCacheConversationsCacheState>>>,
     handle: Mutex<Option<JoinHandle<()>>>,
     #[cfg(test)]
     buffered_writes: Option<Arc<std::sync::Mutex<Vec<SqliteBatchWrite>>>>,
+    #[cfg(test)]
+    auto_flush_terminal_for_test: std::sync::atomic::AtomicBool,
 }
 
 impl SqliteBatchWriter {
@@ -245,6 +284,7 @@ impl SqliteBatchWriter {
         let (control_sender, control_receiver) = mpsc::channel(128);
         let pending_depth = Arc::new(AtomicUsize::new(0));
         let dropped_writes = Arc::new(AtomicU64::new(0));
+        let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
         let cache_for_task = prompt_cache_conversation_cache.clone();
         let handle = tokio::spawn(run_sqlite_batch_writer(
             pool,
@@ -252,16 +292,21 @@ impl SqliteBatchWriter {
             control_receiver,
             pending_depth.clone(),
             Some(cache_for_task),
+            terminal_runtime_store.clone(),
         ));
         Arc::new(Self {
             write_sender,
             control_sender,
             pending_depth,
             dropped_writes,
+            terminal_runtime_store,
+            #[cfg(test)]
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
             handle: Mutex::new(Some(handle)),
             #[cfg(test)]
             buffered_writes: None,
+            #[cfg(test)]
+            auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
         })
     }
 
@@ -283,10 +328,32 @@ impl SqliteBatchWriter {
             control_sender,
             pending_depth: Arc::new(AtomicUsize::new(0)),
             dropped_writes: Arc::new(AtomicU64::new(0)),
+            terminal_runtime_store: Arc::new(std::sync::Mutex::new(None)),
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
             handle: Mutex::new(None),
             buffered_writes: Some(Arc::new(std::sync::Mutex::new(Vec::new()))),
+            auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_auto_flush_terminal_for_test(&self, enabled: bool) {
+        self.auto_flush_terminal_for_test
+            .store(enabled, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn auto_flush_terminal_for_test(&self) -> bool {
+        self.auto_flush_terminal_for_test.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_terminal_runtime_store(
+        &self,
+        runtime_store: Arc<ProxyRuntimeInvocationStore>,
+    ) {
+        if let Ok(mut guard) = self.terminal_runtime_store.lock() {
+            *guard = Some(runtime_store);
+        }
     }
 
     pub(crate) fn enqueue(&self, write: SqliteBatchWrite) -> bool {
@@ -401,34 +468,6 @@ impl SqliteBatchWriter {
         }
     }
 
-    pub(crate) async fn flush_invocation_derived_inline(
-        pool: &Pool<Sqlite>,
-        derived: BatchedInvocationDerivedWrites,
-    ) -> Result<()> {
-        let mut batch = PendingBatch::default();
-        batch.push(SqliteBatchWrite::InvocationDerived(derived));
-        flush_pending_batch_inner(pool, &batch, None).await
-    }
-
-    pub(crate) async fn flush_running_proxy_snapshot_inline(
-        &self,
-        pool: &Pool<Sqlite>,
-        snapshot: BatchedRunningProxySnapshot,
-    ) -> Result<()> {
-        let mut batch = PendingBatch::default();
-        batch.push(SqliteBatchWrite::RunningProxySnapshot(snapshot));
-        flush_pending_batch_inner(pool, &batch, self.prompt_cache_conversation_cache.as_ref()).await
-    }
-
-    pub(crate) async fn flush_account_selected_touch_inline(
-        pool: &Pool<Sqlite>,
-        touch: BatchedAccountSelectedTouch,
-    ) -> Result<()> {
-        let mut batch = PendingBatch::default();
-        batch.push(SqliteBatchWrite::AccountSelectedTouch(touch));
-        flush_pending_batch_inner(pool, &batch, None).await
-    }
-
     #[cfg(test)]
     pub(crate) fn stats_snapshot(&self) -> (usize, u64) {
         (
@@ -443,9 +482,15 @@ impl SqliteBatchWriter {
         for write in writes {
             batch.push(write);
         }
-        flush_pending_batch_inner(pool, &batch, None)
+        let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
+        let deferred = flush_pending_batch_inner(pool, &batch, None, &terminal_runtime_store)
             .await
             .expect("flush pending sqlite batch writes");
+        if !deferred.is_empty() {
+            flush_pending_batch_inner(pool, &deferred, None, &terminal_runtime_store)
+                .await
+                .expect("flush deferred pending sqlite batch writes");
+        }
     }
 
     #[cfg(test)]
@@ -468,9 +513,25 @@ impl SqliteBatchWriter {
             for write in writes {
                 batch.push(write);
             }
-            flush_pending_batch_inner(pool, &batch, self.prompt_cache_conversation_cache.as_ref())
-                .await
-                .expect("flush buffered sqlite batch writes for test");
+            let deferred = flush_pending_batch_inner(
+                pool,
+                &batch,
+                self.prompt_cache_conversation_cache.as_ref(),
+                &self.terminal_runtime_store,
+            )
+            .await
+            .expect("flush buffered sqlite batch writes for test");
+            if !deferred.is_empty() {
+                let deferred_writes = deferred.into_writes();
+                if let Some(buffered_writes) = &self.buffered_writes {
+                    let retained_count = deferred_writes.len();
+                    if let Ok(mut guard) = buffered_writes.lock() {
+                        guard.extend(deferred_writes);
+                        self.pending_depth
+                            .fetch_add(retained_count, Ordering::Relaxed);
+                    }
+                }
+            }
         }
     }
 }
@@ -481,6 +542,7 @@ async fn run_sqlite_batch_writer(
     mut control_receiver: mpsc::Receiver<SqliteBatchWriterControl>,
     pending_depth: Arc<AtomicUsize>,
     prompt_cache_conversation_cache: Option<Arc<Mutex<PromptCacheConversationsCacheState>>>,
+    terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
 ) {
     let mut ticker = interval(SQLITE_BATCH_FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -508,16 +570,21 @@ async fn run_sqlite_batch_writer(
                             pending.take(),
                             FlushReason::Barrier,
                             prompt_cache_conversation_cache.as_ref(),
+                            &terminal_runtime_store,
                         )
                         .await
                         {
                             Some(retained) => {
-                                let message = format!(
-                                    "sqlite batch writer retained {} logical rows after forced flush",
-                                    retained.logical_rows()
-                                );
-                                pending = retained;
-                                Err(message)
+                                let logical_rows = retained.batch.logical_rows();
+                                let failed = retained.failed;
+                                pending = retained.batch;
+                                if failed {
+                                    Err(format!(
+                                        "sqlite batch writer retained {logical_rows} logical rows after forced flush"
+                                    ))
+                                } else {
+                                    Ok(())
+                                }
                             }
                             None => Ok(()),
                         };
@@ -533,15 +600,6 @@ async fn run_sqlite_batch_writer(
                             &pending_depth,
                             queued_depth_snapshot,
                         );
-                        let running_snapshot_shutdown_skipped_count =
-                            pending.skip_running_proxy_snapshots_for_shutdown();
-                        if running_snapshot_shutdown_skipped_count > 0 {
-                            warn!(
-                                running_snapshot_shutdown_skipped_count,
-                                oldest_age_ms = pending.age().as_millis() as u64,
-                                "sqlite batch writer skipped P2 running snapshots during shutdown drain"
-                            );
-                        }
                         let result = if pending.is_empty() {
                             Ok(())
                         } else {
@@ -550,14 +608,23 @@ async fn run_sqlite_batch_writer(
                                 pending.take(),
                                 FlushReason::Shutdown,
                                 prompt_cache_conversation_cache.as_ref(),
+                                &terminal_runtime_store,
                             )
                             .await
                             {
                                 Some(retained) => {
-                                    Err(format!(
-                                        "sqlite batch writer retained {} logical rows after shutdown flush",
-                                        retained.logical_rows()
-                                    ))
+                                    let logical_rows = retained.batch.logical_rows();
+                                    if retained.failed {
+                                        Err(format!(
+                                            "sqlite batch writer retained {logical_rows} logical rows after shutdown flush"
+                                        ))
+                                    } else {
+                                        warn!(
+                                            logical_rows,
+                                            "sqlite batch writer skipped deferred P2 writes during shutdown after P1 drain"
+                                        );
+                                        Ok(())
+                                    }
                                 }
                                 None => Ok(()),
                             }
@@ -572,21 +639,13 @@ async fn run_sqlite_batch_writer(
             }
             maybe_write = write_receiver.recv() => {
                 let Some(write) = maybe_write else {
-                    let running_snapshot_shutdown_skipped_count =
-                        pending.skip_running_proxy_snapshots_for_shutdown();
-                    if running_snapshot_shutdown_skipped_count > 0 {
-                        warn!(
-                            running_snapshot_shutdown_skipped_count,
-                            oldest_age_ms = pending.age().as_millis() as u64,
-                            "sqlite batch writer skipped P2 running snapshots while draining closed channel"
-                        );
-                    }
                     if !pending.is_empty() {
                         let _ = flush_pending_batch(
                             &pool,
                             pending.take(),
                             FlushReason::Shutdown,
                             prompt_cache_conversation_cache.as_ref(),
+                            &terminal_runtime_store,
                         )
                         .await;
                     }
@@ -601,10 +660,11 @@ async fn run_sqlite_batch_writer(
                             pending.take(),
                             FlushReason::RowLimit,
                             prompt_cache_conversation_cache.as_ref(),
+                            &terminal_runtime_store,
                         )
                         .await
                     {
-                        pending = retained;
+                        pending = retained.batch;
                     }
                 }
             }
@@ -640,10 +700,11 @@ async fn run_sqlite_batch_writer(
                             pending.take(),
                             flush_reason,
                             prompt_cache_conversation_cache.as_ref(),
+                            &terminal_runtime_store,
                         )
                         .await
                     {
-                        pending = retained;
+                        pending = retained.batch;
                     }
                 }
             }
@@ -675,16 +736,17 @@ async fn flush_pending_batch(
     batch: PendingBatch,
     reason: FlushReason,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
-) -> Option<PendingBatch> {
+    terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+) -> Option<RetainedBatch> {
     if batch.is_empty() {
         return None;
     }
     let started = Instant::now();
     let enqueued_rows = batch.enqueued_rows;
     let coalesced_rows = batch.coalesced_rows;
+    let terminal_invocation_count = batch.terminal_invocations.len();
     let attempt_count = batch.attempt_progress.len();
     let invocation_count = batch.invocation_derived.len();
-    let running_snapshot_count = batch.running_proxy_snapshots.len();
     let account_touch_count = batch.account_selected_touches.len();
     let system_task_count = batch.system_task_finishes.len();
     let system_task_scope = summarize_system_task_batch_scope(&batch);
@@ -703,9 +765,9 @@ async fn flush_pending_batch(
                     deny_reason = %reason,
                     enqueued_rows,
                     coalesced_rows,
+                    terminal_invocation_count,
                     attempt_count,
                     invocation_count,
-                    running_snapshot_count,
                     account_touch_count,
                     system_task_count,
                     system_task_scope = %system_task_scope,
@@ -713,32 +775,47 @@ async fn flush_pending_batch(
                     flush_reason,
                     "sqlite batch writer deferred flush because pressure gate is closed"
                 );
-                return Some(batch);
+                return Some(RetainedBatch {
+                    batch,
+                    failed: false,
+                });
             }
         }
     };
 
-    if let Err(err) = flush_pending_batch_inner(pool, &batch, prompt_cache_conversation_cache).await
+    let deferred_batch = match flush_pending_batch_inner(
+        pool,
+        &batch,
+        prompt_cache_conversation_cache,
+        terminal_runtime_store,
+    )
+    .await
     {
-        crate::db_pressure::global_db_pressure_gate().record_error("sqlite_batch_writer", &err);
-        warn!(
-            error = %err,
-            enqueued_rows,
-            coalesced_rows,
-            attempt_count,
-            invocation_count,
-            running_snapshot_count,
-            account_touch_count,
-            system_task_count,
-            system_task_scope = %system_task_scope,
-            oldest_age_ms,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            flush_reason,
-            "sqlite batch writer flush failed"
-        );
-        drop(permit);
-        return Some(batch);
-    }
+        Ok(deferred_batch) => deferred_batch,
+        Err(err) => {
+            crate::db_pressure::global_db_pressure_gate().record_error("sqlite_batch_writer", &err);
+            warn!(
+                error = %err,
+                enqueued_rows,
+                coalesced_rows,
+                terminal_invocation_count,
+                attempt_count,
+                invocation_count,
+                account_touch_count,
+                system_task_count,
+                system_task_scope = %system_task_scope,
+                oldest_age_ms,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                flush_reason,
+                "sqlite batch writer flush failed"
+            );
+            drop(permit);
+            return Some(RetainedBatch {
+                batch,
+                failed: true,
+            });
+        }
+    };
     drop(permit);
 
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -746,9 +823,9 @@ async fn flush_pending_batch(
         warn!(
             enqueued_rows,
             coalesced_rows,
+            terminal_invocation_count,
             attempt_count,
             invocation_count,
-            running_snapshot_count,
             account_touch_count,
             system_task_count,
             system_task_scope = %system_task_scope,
@@ -761,9 +838,9 @@ async fn flush_pending_batch(
         debug!(
             enqueued_rows,
             coalesced_rows,
+            terminal_invocation_count,
             attempt_count,
             invocation_count,
-            running_snapshot_count,
             account_touch_count,
             system_task_count,
             system_task_scope = %system_task_scope,
@@ -773,7 +850,14 @@ async fn flush_pending_batch(
             "sqlite batch writer flushed derived writes"
         );
     }
-    None
+    if deferred_batch.is_empty() {
+        None
+    } else {
+        Some(RetainedBatch {
+            batch: deferred_batch,
+            failed: false,
+        })
+    }
 }
 
 fn summarize_system_task_batch_scope(batch: &PendingBatch) -> String {
@@ -803,9 +887,79 @@ async fn flush_pending_batch_inner(
     pool: &Pool<Sqlite>,
     batch: &PendingBatch,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
-) -> Result<()> {
-    let mut tx = pool.begin().await?;
+    terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+) -> Result<PendingBatch> {
+    let mut deferred_batch = PendingBatch::default();
     let mut should_invalidate_prompt_cache_conversations = false;
+    for terminal in batch.terminal_invocations.values() {
+        let persisted = if terminal.raw_capture {
+            let capture_started = terminal.capture_started.unwrap_or_else(Instant::now);
+            persist_proxy_capture_record_core(pool, capture_started, terminal.record.clone(), false)
+                .await
+                .with_context(|| "flush terminal raw proxy invocation")?
+        } else {
+            persist_proxy_capture_runtime_record_core(pool, terminal.record.clone(), false)
+                .await
+                .with_context(|| "flush terminal runtime proxy invocation")?
+        };
+        let derived_identity = if let Some(persisted) = persisted {
+            if persisted
+                .prompt_cache_key
+                .as_deref()
+                .is_some_and(|key| !key.trim().is_empty())
+            {
+                should_invalidate_prompt_cache_conversations = true;
+            }
+            Some((persisted.id, persisted.occurred_at))
+        } else {
+            // Terminal writes are committed before lower-priority derived work. If a later
+            // mixed-batch transaction fails, retry must still regenerate that derived work.
+            let mut lookup_tx = pool.begin().await?;
+            let identity = load_persisted_invocation_identity_tx(
+                lookup_tx.as_mut(),
+                &terminal.record.invoke_id,
+                &terminal.record.occurred_at,
+            )
+            .await?;
+            lookup_tx.commit().await?;
+            identity.map(|row| (row.id, terminal.record.occurred_at.clone()))
+        };
+        let Some((invocation_id, occurred_at)) = derived_identity else {
+            continue;
+        };
+        if prompt_cache_key_from_payload(terminal.record.payload.as_deref())
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
+        {
+            should_invalidate_prompt_cache_conversations = true;
+        }
+        deferred_batch.push(SqliteBatchWrite::InvocationDerived(
+            BatchedInvocationDerivedWrites {
+                invocation_id,
+                occurred_at,
+                payload: terminal.record.payload.clone(),
+                terminal_overlay_key: Some((
+                    terminal.record.invoke_id.clone(),
+                    terminal.record.occurred_at.clone(),
+                )),
+            },
+        ));
+    }
+
+    if batch.attempt_progress.is_empty()
+        && batch.invocation_derived.is_empty()
+        && batch.account_selected_touches.is_empty()
+        && batch.system_task_finishes.is_empty()
+    {
+        if should_invalidate_prompt_cache_conversations
+            && let Some(cache) = prompt_cache_conversation_cache
+        {
+            invalidate_prompt_cache_conversations_cache(cache).await;
+        }
+        return Ok(deferred_batch);
+    }
+
+    let mut tx = pool.begin().await?;
 
     for progress in batch.attempt_progress.values() {
         sqlx::query(
@@ -848,9 +1002,13 @@ async fn flush_pending_batch_inner(
         .await?;
     }
 
-    if !batch.invocation_derived.is_empty() {
-        let target_invocation_id = batch
-            .invocation_derived
+    let invocation_derived = batch.invocation_derived.clone();
+    let terminal_overlay_keys = invocation_derived
+        .values()
+        .filter_map(|derived| derived.terminal_overlay_key.clone())
+        .collect::<Vec<_>>();
+    if !invocation_derived.is_empty() {
+        let target_invocation_id = invocation_derived
             .keys()
             .next_back()
             .copied()
@@ -859,8 +1017,7 @@ async fn flush_pending_batch_inner(
             load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS)
                 .await?;
         replay_live_invocation_hourly_rollups_until_tx(tx.as_mut(), target_invocation_id).await?;
-        let skipped_terminal_ids = batch
-            .invocation_derived
+        let skipped_terminal_ids = invocation_derived
             .keys()
             .filter(|invocation_id| **invocation_id <= live_rollup_cursor_before)
             .copied()
@@ -869,31 +1026,13 @@ async fn flush_pending_batch_inner(
             recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &skipped_terminal_ids)
                 .await?;
         }
-        for derived in batch.invocation_derived.values() {
+        for derived in invocation_derived.values() {
             touch_invocation_upstream_account_last_activity_tx(
                 tx.as_mut(),
                 &derived.occurred_at,
                 derived.payload.as_deref(),
             )
             .await?;
-        }
-    }
-
-    for snapshot in batch.running_proxy_snapshots.values() {
-        let rows_affected =
-            insert_running_proxy_snapshot_placeholder_tx(tx.as_mut(), &snapshot.record).await?;
-        touch_invocation_upstream_account_last_activity_tx(
-            tx.as_mut(),
-            &snapshot.record.occurred_at,
-            snapshot.record.payload.as_deref(),
-        )
-        .await?;
-        if rows_affected > 0
-            && prompt_cache_key_from_payload(snapshot.record.payload.as_deref())
-                .as_deref()
-                .is_some_and(|key| !key.trim().is_empty())
-        {
-            should_invalidate_prompt_cache_conversations = true;
         }
     }
 
@@ -941,12 +1080,30 @@ async fn flush_pending_batch_inner(
     }
 
     tx.commit().await?;
+
+    if !terminal_overlay_keys.is_empty()
+        && let Some(runtime_store) = terminal_runtime_store
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned())
+    {
+        for (invoke_id, occurred_at) in terminal_overlay_keys {
+            let removed = runtime_store.remove_persisted_terminal_overlay(&invoke_id, &occurred_at);
+            debug!(
+                invoke_id = %invoke_id,
+                occurred_at = %occurred_at,
+                terminal_runtime_overlay_removed_after_derived_flush = removed,
+                "removed persisted terminal record from memory runtime overlay after derived writes"
+            );
+        }
+    }
+
     if should_invalidate_prompt_cache_conversations
         && let Some(cache) = prompt_cache_conversation_cache
     {
         invalidate_prompt_cache_conversations_cache(cache).await;
     }
-    Ok(())
+    Ok(deferred_batch)
 }
 
 async fn replay_live_invocation_hourly_rollups_until_tx(
@@ -1354,6 +1511,7 @@ mod tests {
                     invocation_id: max_id,
                     occurred_at: "2026-07-01 10:00:00".to_string(),
                     payload: None,
+                    terminal_overlay_key: None,
                 },
             )],
         )
@@ -1366,7 +1524,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invocation_derived_batch_corrects_terminal_placeholder_rollup_after_cursor_passed() {
+    async fn terminal_invocation_batch_persists_and_updates_rollups() {
         let pool = test_pool().await;
         save_hourly_rollup_live_progress_tx(
             pool.acquire().await.expect("acquire").as_mut(),
@@ -1381,8 +1539,8 @@ mod tests {
             is_stream: true,
             ..RequestCaptureInfo::default()
         };
-        let running = build_running_proxy_capture_record(
-            "batch-running-placeholder-rollup-correction",
+        let mut record = build_running_proxy_capture_record(
+            "batch-terminal-invocation",
             "2026-07-01 10:00:00",
             ProxyCaptureTarget::Responses,
             &request_info,
@@ -1390,7 +1548,7 @@ mod tests {
             Some("sticky-a"),
             Some("pck-a"),
             true,
-            Some(42),
+            Some(99),
             Some("Primary"),
             Some("api_key_codex"),
             Some("api.openai.com"),
@@ -1404,104 +1562,46 @@ mod tests {
             5.0,
             6.0,
         );
+        record.status = "success".to_string();
+        record.usage.input_tokens = Some(2);
+        record.usage.output_tokens = Some(3);
+        record.usage.total_tokens = Some(5);
+        record.cost = Some(0.02);
 
         SqliteBatchWriter::flush_for_test(
             &pool,
-            vec![SqliteBatchWrite::RunningProxySnapshot(
-                BatchedRunningProxySnapshot {
-                    invoke_id: running.invoke_id.clone(),
-                    occurred_at: running.occurred_at.clone(),
-                    record: running,
+            vec![SqliteBatchWrite::TerminalInvocation(
+                BatchedTerminalInvocationWrite {
+                    capture_started: None,
+                    raw_capture: false,
+                    record,
                 },
             )],
         )
         .await;
 
-        let running_id =
-            sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations WHERE invoke_id = ?1")
-                .bind("batch-running-placeholder-rollup-correction")
-                .fetch_one(&pool)
-                .await
-                .expect("load running placeholder id");
-
-        sqlx::query(
+        let row = sqlx::query_as::<_, (String, i64, i64, Option<i64>)>(
             r#"
-            INSERT INTO codex_invocations (
-                invoke_id,
-                occurred_at,
-                source,
+            SELECT
+                status,
                 input_tokens,
                 output_tokens,
-                cache_input_tokens,
-                total_tokens,
-                cost,
-                status,
-                raw_response,
-                detail_level
-            )
-            VALUES ('batch-terminal-after-placeholder', '2026-07-01 10:01:00', 'proxy', 1, 2, 0, 3, 0.01, 'success', '', 'full')
+                CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountId') END
+            FROM codex_invocations
+            WHERE invoke_id = 'batch-terminal-invocation'
+            LIMIT 1
             "#,
         )
-        .execute(&pool)
+        .fetch_one(&pool)
         .await
-        .expect("insert later terminal invocation");
+        .expect("load terminal invocation");
 
-        let later_terminal_id =
-            sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations WHERE invoke_id = ?1")
-                .bind("batch-terminal-after-placeholder")
-                .fetch_one(&pool)
-                .await
-                .expect("load later terminal id");
+        assert_eq!(row.0, "success");
+        assert_eq!(row.1, 2);
+        assert_eq!(row.2, 3);
+        assert_eq!(row.3, Some(99));
 
-        SqliteBatchWriter::flush_for_test(
-            &pool,
-            vec![SqliteBatchWrite::InvocationDerived(
-                BatchedInvocationDerivedWrites {
-                    invocation_id: later_terminal_id,
-                    occurred_at: "2026-07-01 10:01:00".to_string(),
-                    payload: None,
-                },
-            )],
-        )
-        .await;
-
-        let cursor = load_hourly_rollup_live_progress(&pool, HOURLY_ROLLUP_DATASET_INVOCATIONS)
-            .await
-            .expect("load live progress after later terminal");
-        assert_eq!(cursor, later_terminal_id);
-
-        sqlx::query(
-            r#"
-            UPDATE codex_invocations
-            SET status = 'success',
-                input_tokens = 2,
-                output_tokens = 3,
-                cache_input_tokens = 0,
-                total_tokens = 5,
-                cost = 0.02,
-                raw_response = '',
-                detail_level = 'full'
-            WHERE id = ?1
-            "#,
-        )
-        .bind(running_id)
-        .execute(&pool)
-        .await
-        .expect("terminalize earlier placeholder");
-
-        SqliteBatchWriter::flush_for_test(
-            &pool,
-            vec![SqliteBatchWrite::InvocationDerived(
-                BatchedInvocationDerivedWrites {
-                    invocation_id: running_id,
-                    occurred_at: "2026-07-01 10:00:00".to_string(),
-                    payload: None,
-                },
-            )],
-        )
-        .await;
-
-        let row = sqlx::query_as::<_, (i64, i64, i64)>(
+        let rollup = sqlx::query_as::<_, (i64, i64, i64)>(
             r#"
             SELECT
                 COALESCE(SUM(total_count), 0),
@@ -1513,145 +1613,31 @@ mod tests {
         )
         .fetch_one(&pool)
         .await
-        .expect("load corrected invocation rollup");
+        .expect("load invocation rollup");
 
-        assert_eq!(row.0, 2);
-        assert_eq!(row.1, 2);
-        assert_eq!(row.2, 8);
+        assert_eq!(rollup.0, 1);
+        assert_eq!(rollup.1, 1);
+        assert_eq!(rollup.2, 5);
     }
 
     #[tokio::test]
-    async fn running_proxy_snapshot_batch_inserts_placeholder_once() {
+    async fn flush_now_treats_deferred_terminal_derived_writes_as_success() {
         let pool = test_pool().await;
+        save_hourly_rollup_live_progress_tx(
+            pool.acquire().await.expect("acquire").as_mut(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            0,
+        )
+        .await
+        .expect("seed live progress");
+
         let request_info = RequestCaptureInfo {
             model: Some("gpt-5.5".to_string()),
             is_stream: true,
             ..RequestCaptureInfo::default()
         };
-        let first = build_running_proxy_capture_record(
-            "batch-running-placeholder",
-            "2026-07-01 10:00:00",
-            ProxyCaptureTarget::Responses,
-            &request_info,
-            Some("192.0.2.44"),
-            Some("sticky-a"),
-            Some("pck-a"),
-            true,
-            Some(42),
-            Some("Primary"),
-            Some("api_key_codex"),
-            Some("api.openai.com"),
-            None,
-            Some(1),
-            Some(1),
-            None,
-            None,
-            3.0,
-            4.0,
-            5.0,
-            6.0,
-        );
-        let second = build_running_proxy_capture_record(
-            "batch-running-placeholder",
-            "2026-07-01 10:00:00",
-            ProxyCaptureTarget::Responses,
-            &request_info,
-            Some("192.0.2.44"),
-            Some("sticky-a"),
-            Some("pck-a"),
-            true,
-            Some(43),
-            Some("Secondary"),
-            Some("api_key_codex"),
-            Some("api.openai.com"),
-            None,
-            Some(2),
-            Some(2),
-            None,
-            None,
-            3.0,
-            4.0,
-            8.0,
-            9.0,
-        );
-
-        SqliteBatchWriter::flush_for_test(
-            &pool,
-            vec![
-                SqliteBatchWrite::RunningProxySnapshot(BatchedRunningProxySnapshot {
-                    invoke_id: first.invoke_id.clone(),
-                    occurred_at: first.occurred_at.clone(),
-                    record: first,
-                }),
-                SqliteBatchWrite::RunningProxySnapshot(BatchedRunningProxySnapshot {
-                    invoke_id: second.invoke_id.clone(),
-                    occurred_at: second.occurred_at.clone(),
-                    record: second,
-                }),
-            ],
-        )
-        .await;
-
-        let count = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT COUNT(*)
-            FROM codex_invocations
-            WHERE invoke_id = 'batch-running-placeholder'
-            "#,
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("count running placeholder");
-        let row = sqlx::query_as::<_, (String, Option<i64>)>(
-            r#"
-            SELECT status, CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountId') END
-            FROM codex_invocations
-            WHERE invoke_id = 'batch-running-placeholder'
-            LIMIT 1
-            "#,
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("load running placeholder");
-
-        assert_eq!(count, 1);
-        assert_eq!(row.0, "running");
-        assert_eq!(row.1, Some(43));
-    }
-
-    #[tokio::test]
-    async fn running_proxy_snapshot_batch_refreshes_existing_running_placeholder() {
-        let pool = test_pool().await;
-        let request_info = RequestCaptureInfo {
-            model: Some("gpt-5.5".to_string()),
-            is_stream: true,
-            ..RequestCaptureInfo::default()
-        };
-        let first = build_running_proxy_capture_record(
-            "batch-running-placeholder-refresh",
-            "2026-07-01 10:00:00",
-            ProxyCaptureTarget::Responses,
-            &request_info,
-            Some("192.0.2.44"),
-            Some("sticky-a"),
-            Some("pck-a"),
-            true,
-            Some(42),
-            Some("Primary"),
-            Some("api_key_codex"),
-            Some("api.openai.com"),
-            None,
-            Some(1),
-            Some(1),
-            None,
-            None,
-            3.0,
-            4.0,
-            5.0,
-            6.0,
-        );
-        let second = build_running_proxy_capture_record(
-            "batch-running-placeholder-refresh",
+        let mut record = build_running_proxy_capture_record(
+            "batch-terminal-flush-now-deferred-derived",
             "2026-07-01 10:00:00",
             ProxyCaptureTarget::Responses,
             &request_info,
@@ -1660,83 +1646,6 @@ mod tests {
             Some("pck-a"),
             true,
             Some(99),
-            Some("Secondary"),
-            Some("api_key_codex"),
-            Some("api.openai.com"),
-            None,
-            Some(3),
-            Some(2),
-            None,
-            None,
-            3.0,
-            4.0,
-            12.0,
-            13.0,
-        );
-
-        SqliteBatchWriter::flush_for_test(
-            &pool,
-            vec![SqliteBatchWrite::RunningProxySnapshot(
-                BatchedRunningProxySnapshot {
-                    invoke_id: first.invoke_id.clone(),
-                    occurred_at: first.occurred_at.clone(),
-                    record: first,
-                },
-            )],
-        )
-        .await;
-        SqliteBatchWriter::flush_for_test(
-            &pool,
-            vec![SqliteBatchWrite::RunningProxySnapshot(
-                BatchedRunningProxySnapshot {
-                    invoke_id: second.invoke_id.clone(),
-                    occurred_at: second.occurred_at.clone(),
-                    record: second,
-                },
-            )],
-        )
-        .await;
-
-        let row = sqlx::query_as::<_, (String, Option<i64>, Option<i64>, Option<f64>)>(
-            r#"
-            SELECT
-                status,
-                CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountId') END,
-                CASE WHEN json_valid(payload) THEN json_extract(payload, '$.poolAttemptCount') END,
-                t_upstream_ttfb_ms
-            FROM codex_invocations
-            WHERE invoke_id = 'batch-running-placeholder-refresh'
-            LIMIT 1
-            "#,
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("load refreshed running placeholder");
-
-        assert_eq!(row.0, "running");
-        assert_eq!(row.1, Some(99));
-        assert_eq!(row.2, Some(3));
-        assert_eq!(row.3, Some(13.0));
-    }
-
-    #[tokio::test]
-    async fn running_proxy_snapshot_inline_fallback_inserts_placeholder() {
-        let pool = test_pool().await;
-        let request_info = RequestCaptureInfo {
-            model: Some("gpt-5.5".to_string()),
-            is_stream: true,
-            ..RequestCaptureInfo::default()
-        };
-        let record = build_running_proxy_capture_record(
-            "batch-running-inline-fallback",
-            "2026-07-01 10:00:00",
-            ProxyCaptureTarget::Responses,
-            &request_info,
-            Some("192.0.2.44"),
-            Some("sticky-a"),
-            Some("pck-a"),
-            true,
-            Some(42),
             Some("Primary"),
             Some("api_key_codex"),
             Some("api.openai.com"),
@@ -1750,77 +1659,118 @@ mod tests {
             5.0,
             6.0,
         );
+        record.status = "success".to_string();
+        record.usage.input_tokens = Some(2);
+        record.usage.output_tokens = Some(3);
+        record.usage.total_tokens = Some(5);
 
-        let writer = SqliteBatchWriter::spawn_for_test();
-        writer
-            .flush_running_proxy_snapshot_inline(
-                &pool,
-                BatchedRunningProxySnapshot {
-                    invoke_id: record.invoke_id.clone(),
-                    occurred_at: record.occurred_at.clone(),
-                    record,
-                },
-            )
-            .await
-            .expect("flush running snapshot fallback");
-
-        let row = sqlx::query_as::<_, (String, Option<i64>)>(
-            r#"
-            SELECT status, CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountId') END
-            FROM codex_invocations
-            WHERE invoke_id = 'batch-running-inline-fallback'
-            LIMIT 1
-            "#,
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("load inline fallback running placeholder");
-
-        assert_eq!(row.0, "running");
-        assert_eq!(row.1, Some(42));
-    }
-
-    #[tokio::test]
-    async fn shutdown_drain_skips_running_proxy_snapshots() {
-        let pool = test_pool().await;
-        let request_info = RequestCaptureInfo {
-            model: Some("gpt-5.5".to_string()),
-            is_stream: true,
-            ..RequestCaptureInfo::default()
-        };
-        let record = build_running_proxy_capture_record(
-            "batch-running-shutdown-skip",
-            "2026-07-01 10:00:00",
-            ProxyCaptureTarget::Responses,
-            &request_info,
-            Some("192.0.2.44"),
-            Some("sticky-a"),
-            Some("pck-a"),
-            true,
-            Some(42),
-            Some("Primary"),
-            Some("api_key_codex"),
-            Some("api.openai.com"),
-            None,
-            Some(1),
-            Some(1),
-            None,
-            None,
-            3.0,
-            4.0,
-            5.0,
-            6.0,
-        );
+        let runtime_store = Arc::new(ProxyRuntimeInvocationStore::default());
+        let runtime_record = api_invocation_from_runtime_record(&record);
+        runtime_store.upsert_terminal(runtime_record);
+        assert_eq!(runtime_store.snapshot().len(), 1);
 
         let writer = SqliteBatchWriter::spawn(
             pool.clone(),
             CancellationToken::new(),
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
         );
-        assert!(writer.enqueue(SqliteBatchWrite::RunningProxySnapshot(
-            BatchedRunningProxySnapshot {
-                invoke_id: record.invoke_id.clone(),
-                occurred_at: record.occurred_at.clone(),
+        writer.set_terminal_runtime_store(runtime_store.clone());
+        assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
+            BatchedTerminalInvocationWrite {
+                capture_started: None,
+                raw_capture: false,
+                record,
+            },
+        )));
+
+        writer
+            .flush_now(&pool)
+            .await
+            .expect("P1 terminal flush should not fail because P2 derived work was deferred");
+
+        let persisted_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'batch-terminal-flush-now-deferred-derived' AND status = 'success'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count terminal invocation after forced flush");
+        assert_eq!(persisted_count, 1);
+
+        let rollup_before_second_flush = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = 'proxy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load rollup before deferred flush");
+        assert_eq!(rollup_before_second_flush, 0);
+        assert_eq!(
+            runtime_store.snapshot().len(),
+            1,
+            "terminal overlay should remain until deferred derived writes flush"
+        );
+
+        writer
+            .flush_now(&pool)
+            .await
+            .expect("deferred P2 derived write should flush later");
+
+        let rollup_after_second_flush = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = 'proxy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load rollup after deferred flush");
+        assert_eq!(rollup_after_second_flush, 1);
+        assert!(
+            runtime_store.snapshot().is_empty(),
+            "terminal overlay should be removed after derived writes flush"
+        );
+
+        writer.shutdown_and_drain().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_drain_flushes_terminal_invocations() {
+        let pool = test_pool().await;
+        let request_info = RequestCaptureInfo {
+            model: Some("gpt-5.5".to_string()),
+            is_stream: true,
+            ..RequestCaptureInfo::default()
+        };
+        let mut record = build_running_proxy_capture_record(
+            "batch-terminal-shutdown-drain",
+            "2026-07-01 10:00:00",
+            ProxyCaptureTarget::Responses,
+            &request_info,
+            Some("192.0.2.44"),
+            Some("sticky-a"),
+            Some("pck-a"),
+            true,
+            Some(42),
+            Some("Primary"),
+            Some("api_key_codex"),
+            Some("api.openai.com"),
+            None,
+            Some(1),
+            Some(1),
+            None,
+            None,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+        );
+        record.status = "success".to_string();
+
+        let writer = SqliteBatchWriter::spawn(
+            pool.clone(),
+            CancellationToken::new(),
+            Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+        );
+        assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
+            BatchedTerminalInvocationWrite {
+                capture_started: None,
+                raw_capture: false,
                 record,
             },
         )));
@@ -1828,12 +1778,12 @@ mod tests {
         writer.shutdown_and_drain().await;
 
         let persisted_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'batch-running-shutdown-skip'",
+            "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'batch-terminal-shutdown-drain' AND status = 'success'",
         )
         .fetch_one(&pool)
         .await
-        .expect("count skipped shutdown running snapshots");
-        assert_eq!(persisted_count, 0);
+        .expect("count drained terminal invocation");
+        assert_eq!(persisted_count, 1);
     }
 
     #[tokio::test]
@@ -1879,41 +1829,5 @@ mod tests {
 
         assert_eq!(row.0.as_deref(), Some("2026-07-01T10:00:05Z"));
         assert_eq!(row.1.as_deref(), Some("2026-07-01T10:00:05Z"));
-    }
-
-    #[tokio::test]
-    async fn account_selected_touch_inline_fallback_updates_existing_timestamp() {
-        let pool = test_pool().await;
-        sqlx::query(
-            r#"
-            INSERT INTO pool_upstream_accounts (
-                id, kind, provider, display_name, status, enabled, last_selected_at, created_at, updated_at
-            )
-            VALUES (78, 'api_key', 'codex', 'Secondary', 'active', 1, '2026-07-01T09:00:00Z', '2026-07-01T08:59:00Z', '2026-07-01T09:00:00Z')
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("seed account");
-
-        SqliteBatchWriter::flush_account_selected_touch_inline(
-            &pool,
-            BatchedAccountSelectedTouch {
-                account_id: 78,
-                selected_at: "2026-07-01T10:00:00Z".to_string(),
-            },
-        )
-        .await
-        .expect("flush account selected fallback");
-
-        let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-            "SELECT last_selected_at, updated_at FROM pool_upstream_accounts WHERE id = 78",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("load selected account");
-
-        assert_eq!(row.0.as_deref(), Some("2026-07-01T10:00:00Z"));
-        assert_eq!(row.1.as_deref(), Some("2026-07-01T10:00:00Z"));
     }
 }

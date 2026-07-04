@@ -2017,6 +2017,69 @@ async fn persist_and_broadcast_proxy_capture_flushes_follow_up_when_shutdown_beg
 }
 
 #[tokio::test]
+async fn persist_and_broadcast_runtime_terminal_schedules_follow_up_after_flush() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    seed_quota_snapshot(&state.pool, &now_local).await;
+
+    let mut rx = state.broadcaster.subscribe();
+    let invoke_id = "runtime-terminal-follow-up";
+    persist_and_broadcast_proxy_capture_terminal_record(
+        state.as_ref(),
+        test_proxy_capture_record(invoke_id, &now_local),
+    )
+    .await
+    .expect("queue runtime terminal record");
+
+    let mut saw_record = false;
+    let mut saw_quota = false;
+    let mut summary_windows = HashSet::new();
+    let expected_summary_windows = summary_broadcast_specs().len();
+    for _ in 0..16 {
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for runtime terminal follow-up event")
+            .expect("broadcast channel should stay open");
+        match payload {
+            BroadcastPayload::Records { records } => {
+                saw_record |= records
+                    .into_iter()
+                    .any(|record| record.invoke_id == invoke_id);
+            }
+            BroadcastPayload::Summary { window, .. } => {
+                summary_windows.insert(window);
+            }
+            BroadcastPayload::Quota { snapshot } => {
+                saw_quota = true;
+                assert_eq!(snapshot.total_requests, 9);
+            }
+            BroadcastPayload::Version { .. } | BroadcastPayload::PoolAttempts { .. } => {}
+        }
+
+        if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {
+            break;
+        }
+    }
+
+    assert!(
+        saw_record,
+        "runtime terminal path should still emit the terminal record immediately"
+    );
+    assert!(
+        saw_quota,
+        "runtime terminal path should broadcast quota after terminal sqlite flush"
+    );
+    assert_eq!(
+        summary_windows.len(),
+        expected_summary_windows,
+        "runtime terminal path should broadcast every summary window after terminal sqlite flush"
+    );
+}
+
+#[tokio::test]
 async fn persist_and_broadcast_proxy_capture_skips_summary_worker_during_shutdown() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -2909,7 +2972,6 @@ async fn recover_orphaned_pool_upstream_request_attempts_keeps_startup_sequence_
         .sqlite_batch_writer
         .flush_buffered_for_test(&state.pool)
         .await;
-
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
         occurred_at: occurred_at.to_string(),
@@ -2939,7 +3001,7 @@ async fn recover_orphaned_pool_upstream_request_attempts_keeps_startup_sequence_
     let recovered_invocations = recover_orphaned_proxy_invocations(&state.pool)
         .await
         .expect("recover orphaned invocations first");
-    assert_eq!(recovered_invocations, 1);
+    assert_eq!(recovered_invocations, 0);
 
     let recovered_attempts = recover_orphaned_pool_upstream_request_attempts(&state.pool)
         .await
@@ -2957,20 +3019,18 @@ async fn recover_orphaned_pool_upstream_request_attempts_keeps_startup_sequence_
     .fetch_one(&state.pool)
     .await
     .expect("load recovered pending attempt");
-    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load startup-recovered invocation");
+    .expect("count startup-recovered invocation rows");
 
     assert_eq!(
         attempt.0,
@@ -2984,10 +3044,9 @@ async fn recover_orphaned_pool_upstream_request_attempts_keeps_startup_sequence_
         attempt.2.as_deref(),
         Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
     );
-    assert_eq!(invocation.0, INVOCATION_STATUS_INTERRUPTED);
     assert_eq!(
-        invocation.1.as_deref(),
-        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+        invocation_count, 0,
+        "memory-only running snapshots should not create DB invocation rows for startup recovery"
     );
 }
 
@@ -3064,17 +3123,26 @@ async fn recover_orphaned_pool_upstream_request_attempts_recovers_terminal_invoc
 
     sqlx::query(
         r#"
-        UPDATE codex_invocations
-        SET status = 'success',
-            error_message = NULL,
-            failure_kind = NULL,
-            failure_class = NULL,
-            is_actionable = 0
-        WHERE invoke_id = ?1 AND occurred_at = ?2
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            raw_response,
+            payload,
+            failure_kind,
+            failure_class,
+            is_actionable
+        )
+        VALUES (?1, ?2, ?3, 'success', NULL, ?4, ?5, NULL, NULL, 0)
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("{}")
+    .bind("{\"endpoint\":\"/v1/responses\"}")
     .execute(&state.pool)
     .await
     .expect("finalize invocation before startup attempt recovery");
@@ -3317,20 +3385,18 @@ async fn pool_early_phase_orphan_cleanup_guard_recovers_dropped_sending_request_
     .fetch_one(&state.pool)
     .await
     .expect("load recovered pending attempt");
-    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load recovered invocation");
+    .expect("count recovered invocation rows");
 
     assert_eq!(
         attempt.0,
@@ -3344,11 +3410,7 @@ async fn pool_early_phase_orphan_cleanup_guard_recovers_dropped_sending_request_
         attempt.2.as_deref(),
         Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
     );
-    assert_eq!(invocation.0, INVOCATION_STATUS_INTERRUPTED);
-    assert_eq!(
-        invocation.1.as_deref(),
-        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
-    );
+    assert_eq!(invocation_count, 0);
 }
 
 #[tokio::test]
@@ -3422,26 +3484,20 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
         .await
         .expect("recover dropped guard without persisted attempt row");
 
-    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load invocation after dropped guard recovery");
+    .expect("count invocation rows after dropped guard recovery");
 
-    assert_eq!(invocation.0, INVOCATION_STATUS_INTERRUPTED);
-    assert_eq!(
-        invocation.1.as_deref(),
-        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
-    );
+    assert_eq!(invocation_count, 0);
 }
 
 #[tokio::test]
@@ -3489,7 +3545,6 @@ async fn recover_guard_dropped_pool_early_phase_orphan_skips_streaming_response_
         .sqlite_batch_writer
         .flush_buffered_for_test(&state.pool)
         .await;
-
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
         occurred_at: occurred_at.to_string(),
@@ -3531,20 +3586,18 @@ async fn recover_guard_dropped_pool_early_phase_orphan_skips_streaming_response_
     .fetch_one(&state.pool)
     .await
     .expect("load streaming attempt after dropped guard");
-    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load invocation after dropped streaming guard");
+    .expect("count invocation rows after dropped streaming guard");
 
     assert_eq!(attempt.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
     assert_eq!(
@@ -3552,8 +3605,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_skips_streaming_response_
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
     );
     assert_eq!(attempt.2, None);
-    assert_eq!(invocation.0, INVOCATION_STATUS_RUNNING);
-    assert_eq!(invocation.1, None);
+    assert_eq!(invocation_count, 0);
 }
 
 #[tokio::test]
@@ -3630,17 +3682,26 @@ async fn recover_guard_dropped_pool_early_phase_orphan_recovers_attempt_after_in
 
     sqlx::query(
         r#"
-        UPDATE codex_invocations
-        SET status = 'success',
-            error_message = NULL,
-            failure_kind = NULL,
-            failure_class = NULL,
-            is_actionable = 0
-        WHERE invoke_id = ?1 AND occurred_at = ?2
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            raw_response,
+            payload,
+            failure_kind,
+            failure_class,
+            is_actionable
+        )
+        VALUES (?1, ?2, ?3, 'success', NULL, ?4, ?5, NULL, NULL, 0)
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("{}")
+    .bind("{\"endpoint\":\"/v1/responses\"}")
     .execute(&state.pool)
     .await
     .expect("finalize invocation before dropped guard recovery");
@@ -3777,20 +3838,18 @@ async fn recover_guard_dropped_pool_early_phase_orphan_skips_post_first_byte_ter
     .fetch_one(&state.pool)
     .await
     .expect("load post-first-byte attempt after dropped guard");
-    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load invocation after skipped post-first-byte guard");
+    .expect("count invocation rows after skipped post-first-byte guard");
 
     assert_eq!(attempt.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
     assert_eq!(
@@ -3798,8 +3857,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_skips_post_first_byte_ter
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE)
     );
     assert_eq!(attempt.2, None);
-    assert_eq!(invocation.0, INVOCATION_STATUS_RUNNING);
-    assert_eq!(invocation.1, None);
+    assert_eq!(invocation_count, 0);
 }
 
 #[tokio::test]
@@ -3889,20 +3947,18 @@ async fn recover_guard_dropped_pool_early_phase_orphan_recovers_post_first_byte_
     .fetch_one(&state.pool)
     .await
     .expect("load post-first-byte nonterminal attempt after dropped guard");
-    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load invocation after recovering post-first-byte nonterminal guard");
+    .expect("count invocation rows after recovering post-first-byte nonterminal guard");
 
     assert_eq!(
         attempt.0,
@@ -3916,11 +3972,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_recovers_post_first_byte_
         attempt.2.as_deref(),
         Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
     );
-    assert_eq!(invocation.0, INVOCATION_STATUS_INTERRUPTED);
-    assert_eq!(
-        invocation.1.as_deref(),
-        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
-    );
+    assert_eq!(invocation_count, 0);
 }
 
 #[tokio::test]
@@ -3968,6 +4020,29 @@ async fn recover_guard_dropped_pool_terminal_invocation_orphan_repairs_running_i
         .sqlite_batch_writer
         .flush_buffered_for_test(&state.pool)
         .await;
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            raw_response,
+            payload
+        )
+        VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(INVOCATION_STATUS_RUNNING)
+    .bind("{}")
+    .bind("{\"endpoint\":\"/v1/responses\"}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy running invocation for terminal drop guard recovery");
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -4072,6 +4147,74 @@ async fn recover_guard_dropped_pool_terminal_invocation_orphan_repairs_running_i
     assert_eq!(route_state.0, None);
     assert_eq!(route_state.1, None);
     assert_eq!(route_state.2, 0);
+}
+
+#[tokio::test]
+async fn drop_guard_runtime_remove_does_not_tombstone_later_terminal_record() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let invoke_id = "drop-guard-later-terminal";
+    let occurred_at = "2026-03-23 21:10:16";
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let running_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.41"),
+        Some("sticky-drop-guard-later-terminal"),
+        Some("pck-drop-guard-later-terminal"),
+        true,
+        Some(account_id),
+        Some("Primary"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+        None,
+        Some(1),
+        Some(1),
+        None,
+        None,
+        10.0,
+        2.0,
+        0.0,
+        0.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record.clone())
+        .await
+        .expect("store running invocation in memory");
+
+    remove_proxy_runtime_snapshot_by_key(state.as_ref(), invoke_id, occurred_at, "drop_guard");
+
+    let mut terminal_record = running_record;
+    terminal_record.status = "success".to_string();
+    terminal_record.usage.input_tokens = Some(2);
+    terminal_record.usage.output_tokens = Some(3);
+    terminal_record.usage.total_tokens = Some(5);
+    terminal_record.cost = Some(0.02);
+    persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), terminal_record)
+        .await
+        .expect("later terminal record should still enqueue after drop guard runtime cleanup");
+
+    let count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2 AND status = 'success'
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count later terminal invocation rows");
+    assert_eq!(count, 1);
 }
 
 #[tokio::test]
@@ -4185,20 +4328,18 @@ async fn pool_invocation_cleanup_guard_recovers_running_invocation_during_retry_
     .fetch_one(&state.pool)
     .await
     .expect("load finalized retryable attempt after request-drop guard");
-    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load invocation after request-drop guard");
+    .expect("count invocation rows after request-drop guard");
 
     assert_eq!(
         attempt.0,
@@ -4212,10 +4353,9 @@ async fn pool_invocation_cleanup_guard_recovers_running_invocation_during_retry_
         attempt.2.as_deref(),
         Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
     );
-    assert_eq!(invocation.0, INVOCATION_STATUS_INTERRUPTED);
     assert_eq!(
-        invocation.1.as_deref(),
-        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+        invocation_count, 0,
+        "memory-only running snapshots should not create request-drop DB invocation rows"
     );
 }
 
@@ -4260,6 +4400,29 @@ async fn recover_guard_dropped_pool_early_phase_orphan_rolls_back_attempt_when_i
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            raw_response,
+            payload
+        )
+        VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(INVOCATION_STATUS_RUNNING)
+    .bind("{}")
+    .bind("{\"endpoint\":\"/v1/responses\"}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy running invocation for rollback coverage");
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -4534,23 +4697,23 @@ async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_w
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load invocation after disarmed guard drop");
+    .expect("count invocation rows after disarmed guard drop");
 
-    assert_eq!(invocation.0, INVOCATION_STATUS_RUNNING);
-    assert_eq!(invocation.1, None);
+    assert_eq!(
+        invocation_count, 0,
+        "disarmed memory-only running guard should not create a DB invocation row"
+    );
 }
 
 #[tokio::test]
@@ -4749,22 +4912,22 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
         .flush_buffered_for_test(&state.pool)
         .await;
 
-    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load invocation after successful request without persisted attempt row");
-    assert_eq!(invocation.0, INVOCATION_STATUS_RUNNING);
-    assert_eq!(invocation.1, None);
+    .expect("count invocation after successful request without persisted attempt row");
+    assert_eq!(
+        invocation_count, 0,
+        "running runtime state should not create a codex_invocations row"
+    );
 
     disarm_pool_early_phase_cleanup_guard(&mut upstream.deferred_early_phase_cleanup_guard);
     upstream_handle.abort();
@@ -5023,34 +5186,31 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
     assert_eq!(attempt.1.as_deref(), Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED));
     assert_eq!(attempt.2.as_deref(), Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED));
 
-    let invocation = {
+    let invocation_count = {
         let mut poll_count = 0;
         loop {
-            let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+            let invocation_count = sqlx::query_scalar::<_, i64>(
                 r#"
-                SELECT status, failure_kind
+                SELECT COUNT(*)
                 FROM codex_invocations
                 WHERE invoke_id = ?1 AND occurred_at = ?2
-                ORDER BY id DESC
-                LIMIT 1
                 "#,
             )
             .bind(invoke_id)
             .bind(occurred_at)
             .fetch_one(&state.pool)
             .await
-            .expect("load invocation after suppressed streaming-phase update");
-            if invocation.0 == INVOCATION_STATUS_INTERRUPTED || poll_count >= 100 {
-                break invocation;
+            .expect("count invocation rows after suppressed streaming-phase update");
+            if invocation_count == 0 || poll_count >= 100 {
+                break invocation_count;
             }
             poll_count += 1;
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     };
-    assert_eq!(invocation.0, INVOCATION_STATUS_INTERRUPTED);
     assert_eq!(
-        invocation.1.as_deref(),
-        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+        invocation_count, 0,
+        "suppressed streaming-phase guard should not create a DB invocation row"
     );
 
     upstream_handle.abort();
@@ -5160,7 +5320,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
             "2026-03-23 21:10:25",
             stale_started.as_str(),
             POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE,
-            false,
+            true,
             120.0,
         ),
         (
@@ -5250,20 +5410,6 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
         }
     }
 
-    let post_first_byte_ttfb = sqlx::query_scalar::<_, Option<f64>>(
-        r#"
-        SELECT t_upstream_ttfb_ms
-        FROM codex_invocations
-        WHERE invoke_id = 'stale-early-phase-post-first-byte'
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load stale post-first-byte invocation ttfb");
-    assert_eq!(post_first_byte_ttfb, Some(120.0));
-
     let outcome = recover_stale_pool_early_phase_orphans_runtime(state.as_ref())
         .await
         .expect("recover stale early-phase orphans");
@@ -5271,7 +5417,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
         outcome,
         PoolOrphanRecoveryOutcome {
             recovered_attempts: 1,
-            recovered_invocations: 1,
+            recovered_invocations: 0,
         }
     );
 
@@ -5296,23 +5442,17 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
     );
 
-    let stale_invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let stale_invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = 'stale-early-phase'
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .fetch_one(&state.pool)
     .await
-    .expect("load stale recovered invocation");
-    assert_eq!(stale_invocation.0, INVOCATION_STATUS_INTERRUPTED);
-    assert_eq!(
-        stale_invocation.1.as_deref(),
-        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
-    );
+    .expect("count stale recovered invocation rows");
+    assert_eq!(stale_invocation_count, 0);
 
     let stale_post_first_byte_attempt = sqlx::query_as::<_, (String, Option<String>, Option<f64>)>(
         r#"
@@ -5334,27 +5474,20 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
         stale_post_first_byte_attempt.1.as_deref(),
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE)
     );
-    assert_eq!(stale_post_first_byte_attempt.2, None);
+    assert_eq!(stale_post_first_byte_attempt.2, Some(120.0));
 
-    let stale_post_first_byte_invocation =
-        sqlx::query_as::<_, (String, Option<String>, Option<f64>)>(
+    let stale_post_first_byte_invocation_count =
+        sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT status, failure_kind, t_upstream_ttfb_ms
+            SELECT COUNT(*)
             FROM codex_invocations
             WHERE invoke_id = 'stale-early-phase-post-first-byte'
-            ORDER BY id DESC
-            LIMIT 1
             "#,
         )
         .fetch_one(&state.pool)
         .await
-        .expect("load stale post-first-byte invocation");
-    assert_eq!(
-        stale_post_first_byte_invocation.0,
-        INVOCATION_STATUS_RUNNING
-    );
-    assert_eq!(stale_post_first_byte_invocation.1, None);
-    assert_eq!(stale_post_first_byte_invocation.2, Some(120.0));
+        .expect("count stale post-first-byte invocation rows");
+    assert_eq!(stale_post_first_byte_invocation_count, 0);
 
     let stale_attempt_first_byte_progress_attempt =
         sqlx::query_as::<_, (String, Option<String>, Option<f64>)>(
@@ -5379,24 +5512,18 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
     );
     assert_eq!(stale_attempt_first_byte_progress_attempt.2, Some(120.0));
 
-    let stale_attempt_first_byte_progress_invocation =
-        sqlx::query_as::<_, (String, Option<String>, Option<f64>)>(
+    let stale_attempt_first_byte_progress_invocation_count =
+        sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT status, failure_kind, t_upstream_ttfb_ms
+            SELECT COUNT(*)
             FROM codex_invocations
             WHERE invoke_id = 'stale-early-phase-attempt-first-byte-progress'
-            ORDER BY id DESC
-            LIMIT 1
             "#,
         )
         .fetch_one(&state.pool)
         .await
-        .expect("load stale attempt-first-byte-progress invocation");
-    assert_eq!(
-        stale_attempt_first_byte_progress_invocation.0,
-        INVOCATION_STATUS_RUNNING
-    );
-    assert_eq!(stale_attempt_first_byte_progress_invocation.1, None);
+        .expect("count stale attempt-first-byte-progress invocation rows");
+    assert_eq!(stale_attempt_first_byte_progress_invocation_count, 0);
 
     let fresh_attempt = sqlx::query_as::<_, (String, Option<String>)>(
         r#"
@@ -5440,20 +5567,17 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
     );
 
-    let streaming_invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let streaming_invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = 'stale-streaming-phase'
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .fetch_one(&state.pool)
     .await
-    .expect("load stale streaming invocation");
-    assert_eq!(streaming_invocation.0, INVOCATION_STATUS_RUNNING);
-    assert_eq!(streaming_invocation.1, None);
+    .expect("count stale streaming invocation rows");
+    assert_eq!(streaming_invocation_count, 0);
 }
 
 #[tokio::test]
@@ -5555,28 +5679,25 @@ async fn recover_stale_pool_early_phase_orphans_runtime_skips_active_live_attemp
     .fetch_one(&state.pool)
     .await
     .expect("load active attempt after stale recovery");
-    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+    let invocation_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, failure_kind
+        SELECT COUNT(*)
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load active invocation after stale recovery");
+    .expect("count active invocation rows after stale recovery");
 
     assert_eq!(attempt.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
     assert_eq!(
         attempt.1.as_deref(),
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST)
     );
-    assert_eq!(invocation.0, INVOCATION_STATUS_RUNNING);
-    assert_eq!(invocation.1, None);
+    assert_eq!(invocation_count, 0);
 }
 
 #[tokio::test]
@@ -5624,6 +5745,29 @@ async fn recover_stale_pool_early_phase_orphans_runtime_rolls_back_attempts_when
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            raw_response,
+            payload
+        )
+        VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(INVOCATION_STATUS_RUNNING)
+    .bind("{}")
+    .bind("{\"endpoint\":\"/v1/responses\"}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy running invocation for rollback coverage");
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -5790,17 +5934,26 @@ async fn recover_stale_pool_early_phase_orphans_runtime_recovers_stale_attempts_
 
     sqlx::query(
         r#"
-        UPDATE codex_invocations
-        SET status = 'success',
-            error_message = NULL,
-            failure_kind = NULL,
-            failure_class = NULL,
-            is_actionable = 0
-        WHERE invoke_id = ?1 AND occurred_at = ?2
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            raw_response,
+            payload,
+            failure_kind,
+            failure_class,
+            is_actionable
+        )
+        VALUES (?1, ?2, ?3, 'success', NULL, ?4, ?5, NULL, NULL, 0)
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("{}")
+    .bind("{\"endpoint\":\"/v1/responses\"}")
     .execute(&state.pool)
     .await
     .expect("finalize invocation before stale recovery");
@@ -5955,7 +6108,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_clears_pool_routing_rese
         outcome,
         PoolOrphanRecoveryOutcome {
             recovered_attempts: 1,
-            recovered_invocations: 1,
+            recovered_invocations: 0,
         }
     );
 
@@ -6100,7 +6253,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_records_route_failures_f
         outcome,
         PoolOrphanRecoveryOutcome {
             recovered_attempts: 2,
-            recovered_invocations: 1,
+            recovered_invocations: 0,
         }
     );
 
@@ -6493,16 +6646,28 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_rechecks_invocat
     .await;
     sqlx::query(
         r#"
-        UPDATE codex_invocations
-        SET t_upstream_ttfb_ms = 120.0
-        WHERE invoke_id = ?1 AND occurred_at = ?2
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            raw_response,
+            payload,
+            t_upstream_ttfb_ms
+        )
+        VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, 120.0)
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(INVOCATION_STATUS_RUNNING)
+    .bind("{}")
+    .bind("{\"endpoint\":\"/v1/responses\"}")
     .execute(&state.pool)
     .await
-    .expect("persist invocation first-byte progress before guarded update");
+    .expect("insert legacy invocation first-byte progress before guarded update");
 
     let finished_at = shanghai_now_string();
     let recovered = recover_stale_pool_upstream_request_attempt_candidates(

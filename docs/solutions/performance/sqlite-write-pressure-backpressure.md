@@ -13,8 +13,8 @@
 - 连接池等待超时本身就是 pressure signal，应触发后台 cooldown，而不是继续并发重试。
 - `proxy capture follow-up` 也必须遵守这个分级：没有 SSE 订阅者时，不得再消耗 summary/quota 或 hourly rollup refresh 预算。
 - 对请求收尾里的同一实体写入，要优先消除“重复唯一键探测 + 紧跟二次更新”“先重算 rollup 再补 timing 再重算一次”这类单请求内自我放大；SQLite 压力常常不是来自单条大 SQL，而是来自几条语义重复的写语句连发。
-- 当并发不能降低且主事实必须同步落盘时，用进程内短窗口 batch writer 承接派生写：terminal invocation / terminal attempt 仍同步写，attempt 中间进度、rollup/live progress、account touch、system task finish 等可延迟项按 key coalesce 后批量写入。
-- 高频 runtime snapshot 不应默认等同于主事实写。`running` / first-byte / response-ready 这类 UI 新鲜度事件可以先走进程内共享 runtime store + SSE/HTTP overlay；只有最小恢复面才需要占位落库，terminal success/failure 才是必须同步覆盖的主事实。
+- 当并发不能降低且业务成功率高于观测记录完整性时，用进程内短窗口 write controller 承接所有观测记录写：terminal invocation 进入 P1 best-effort 队列，attempt 中间进度、rollup/live progress、account touch、system task finish 等可延迟项进入 P2 并按 key coalesce。记录入队/flush 失败必须报警和计数，但不得让已经完成的业务响应失败。
+- 高频 runtime snapshot 不应默认等同于主事实写。`running` / first-byte / response-ready 这类 UI 新鲜度事件可以先走进程内共享 runtime store + SSE/HTTP overlay；如果服务选择业务优先于记录，terminal success/failure 也可以先进入 P1 write controller，并用 SSE terminal payload + runtime tombstone 支撑短暂最终一致窗口。
 - 路由公平性字段如果不是路由正确性的硬状态，可以拆成“进程内立即生效 + batch 落库”。例如 `last_selected_at` 可先写内存锚点并叠加候选排序，账号 status/cooldown/failure 则继续同步写。
 - raw payload 完整保留属于观测合同，不应作为 SQLite 止血手段被截断或丢弃；只能补齐 raw IO / gzip / metadata 写入证据，并通过调度、窄写或配置化压缩策略减压。
 
@@ -23,13 +23,13 @@
 ### 1. 写入分级
 
 - 前台关键写入：OAuth callback、请求路由状态、用户可见设置保存；优先拿连接，失败需返回明确业务错误。
-- 请求收尾写入：invocation 记录、usage、raw metadata；允许有界降级和异步旁路。
+- 请求收尾写入：invocation 记录、usage、raw metadata；若产品决策是业务优先于记录，应进入 P1 write controller 队列，业务响应不等待 SQLite。入队失败、flush 失败和 dropped 记录必须结构化记录。
 - 请求收尾若已经存在对应 `running/pending` 行，优先原地更新而不是先 `INSERT OR IGNORE` 再走 repair/update；这样可以少一次唯一键冲突写尝试与后续锁竞争。
-- terminal invocation 主事实必须继续同步落盘；安全做法是“已存在 running row 时窄 `UPDATE`，缺行时 `INSERT OR IGNORE`，冲突后重读并按同一状态守卫更新”，避免宽 `ON CONFLICT DO UPDATE` 在竞态下覆盖已终态记录。
-- `running` snapshot 如果只是为 UI/SSE 提供进度，应避免每次同步写主表。可广播 `id=0` 的内存记录，并让 HTTP current-window reconcile 在 DB 结果上 overlay 同一份内存 store；terminal 主事实在请求结束时同步覆盖并清除内存行。这样 DB 不需要为每个 first-byte/response-ready 刷新写 `status='running'`。
+- terminal invocation 如果仍被定义为审计/计费强主事实，安全做法是同步“已存在 running row 时窄 `UPDATE`，缺行时 `INSERT OR IGNORE`，冲突后重读并按同一状态守卫更新”。如果当前服务明确选择业务优先于记录，则 terminal invocation 可以降级为 P1 best-effort 队列写，但必须保留完整 terminal record、raw metadata、失败分类和结构化失败证据。
+- `running` snapshot 如果只是为 UI/SSE 提供进度，应避免每次同步写主表。可广播 `id=0` 的内存记录，并让 HTTP current-window reconcile 在 DB 结果上 overlay 同一份内存 store；terminal record 入队后 tombstone/remove 内存行，DB terminal 行稍后通过 write controller 最终一致补齐。这样 DB 不需要为每个 first-byte/response-ready 刷新写 `status='running'`。
 - 对同一 attempt 的 phase、latency、capability/compact-support 等进度字段，优先并入同一条前台更新，而不是拆成 `phase bump -> latency patch -> finalize` 的多段慢写；减少单请求尾部把 SQLite 单写者预算切碎。
 - 对同一 attempt 的中间 phase、latency、capability/compact-support 等进度字段，如果不需要立刻作为业务决策真相源，可进入 250ms 级短窗口缓冲并按 `attempt_id` 只保留最新值；terminal finalize 必须同步一次写全并通过 `status=pending AND finished_at IS NULL` 防止未 flush 进度覆盖终态。
-- Invocation 派生写可以按 `invocation_id` coalesce：hourly rollup/live progress 与 upstream account last activity touch 同事务批量执行。队列满时应优先同步补偿 invocation 派生写，而不是静默丢弃会影响后续统计的 truth maintenance。
+- Invocation 派生写可以按 `invocation_id` coalesce：hourly rollup/live progress 与 upstream account last activity touch 批量执行。terminal 记录 flush 产生的派生写不应强行复用同一个 SQLite 锁窗口；更稳妥的做法是把派生写放回 pending，在后续 P2 flush 中收敛。
 - `system_task_runs` 的 begin 仍同步记录 running 审计入口；finish 可以进入 batch writer，pressure 下延迟或合并，但 shutdown 需要 drain 或记录未 flush 证据。
 - 后台维护写入：rollup、retention、account maintenance；pressure 下 fail-soft skip。
 - 历史回填写入：startup backfill、archive materialization；pressure 下延后，不阻塞 readiness。
@@ -58,7 +58,7 @@
 - 后台任务拿到连接后再判断是否要运行，已经太晚；pressure gate 必须在 acquire DB connection 前。
 - 后台任务拿到唯一 background slot 后再判断是否 due，会把“未到期的空跑 tick”变成对其他维护任务的饥饿源。
 - skip 必须有日志和后续 ticker，否则会变成静默丢任务。
-- batch writer 必须有有界队列、flush 触发（时间窗口 / row count / 最大等待）、coalesced row count、oldest age、flush elapsed、queue depth 与 dropped count 证据；否则只是把 SQLite 锁问题藏到内存里。
+- write controller 必须有有界队列、flush 触发（时间窗口 / row count / 最大等待）、coalesced row count、oldest age、flush elapsed、queue depth、enqueue failed 与 dropped count 证据；否则只是把 SQLite 锁问题藏到内存里。
 - buffered progress 不能立刻广播“已持久化”的 DB snapshot；要么广播内存态，要么等后续 reconcile/terminal 更新。否则会把 stale DB state 伪装成实时状态。
 - 如果选择内存态广播，就必须让所有相关读方共享同一个 runtime store，包括 SSE、records open-resync、current summary、current timeseries 与账号活动 in-flight 统计；否则去掉 DB running 写后会产生多套不一致实时视图。
 - `INSERT OR IGNORE` 会静默吞掉 `NOT NULL` 约束错误；用于占位写时必须绑定所有 NOT NULL 默认列，或者检查 `rows_affected` 并记录结构化证据，否则会误以为 batch flush 成功。
@@ -67,6 +67,7 @@
 - 对 proxy 收尾这类 SSE follow-up，`receiver_count()==0` 应该直接意味着“跳过 follow-up”，而不是继续排队 summary/quota 或 rollup refresh；否则会把没有任何订阅者的请求变成纯数据库放大器。
 - proxy snapshot/broadcast 在 `database is locked` 下应 fail-soft skip 并记录结构化证据，依赖已发出的 SSE 事件和后续 HTTP reconcile 补齐 UI；不要在请求尾部立即重试并放大锁争用。
 - write-side live read model 只有在维护成本本身也受控时才值得做：前台请求内同步维护最小必要 working-set / in-progress truth，后台 rebuild 和补偿刷新则继续挂到统一 pressure gate/cooldown，避免为了止住读热点又新增一组不受控维护写入。
+- 不要让 P1 terminal flush 在同一锁窗口内继续执行 P2 rollup/account-touch 派生写；这会把“记录最终一致”重新变成“请求尾锁放大”。P1 成功后把 P2 放回队列，等待下一轮时间窗口或 pressure 允许。
 
 ## 何时升级方案
 

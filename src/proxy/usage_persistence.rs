@@ -49,6 +49,12 @@ fn payload_i64(payload: Option<&str>, key: &str) -> Option<i64> {
     value.get(key).and_then(Value::as_i64)
 }
 
+fn payload_f64(payload: Option<&str>, key: &str) -> Option<f64> {
+    let payload = payload?;
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    value.get(key).and_then(Value::as_f64)
+}
+
 pub(crate) fn shanghai_now_string() -> String {
     format_naive(Utc::now().with_timezone(&Shanghai).naive_local())
 }
@@ -1012,6 +1018,76 @@ pub(crate) async fn clean_up_pool_route_after_orphan_recovery(
     }
 }
 
+async fn should_record_route_failure_after_attempt_recovery(
+    state: &AppState,
+    invoke_id: &str,
+    occurred_at: &str,
+    recovered_invocation: bool,
+) -> bool {
+    if state
+        .proxy_runtime_invocations
+        .contains_terminal(invoke_id, occurred_at)
+    {
+        debug!(
+            invoke_id,
+            occurred_at,
+            "skipping route failure cleanup because terminal runtime overlay already exists"
+        );
+        return false;
+    }
+
+    if recovered_invocation {
+        return true;
+    }
+
+    let latest_status = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT status
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_optional(&state.pool)
+    .await;
+
+    match latest_status {
+        Ok(Some(status)) => matches!(
+            status.as_str(),
+            INVOCATION_STATUS_RUNNING | INVOCATION_STATUS_PENDING
+        ),
+        Ok(None) => true,
+        Err(err) => {
+            warn!(
+                invoke_id,
+                occurred_at,
+                error = %err,
+                "failed to inspect invocation terminal state during pool orphan cleanup"
+            );
+            true
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn should_record_route_failure_after_attempt_recovery_for_test(
+    state: &AppState,
+    invoke_id: &str,
+    occurred_at: &str,
+    recovered_invocation: bool,
+) -> bool {
+    should_record_route_failure_after_attempt_recovery(
+        state,
+        invoke_id,
+        occurred_at,
+        recovered_invocation,
+    )
+    .await
+}
+
 pub(crate) async fn clean_up_recovered_pool_routes(
     state: &AppState,
     recovered_attempts: &[RecoveredPoolAttemptRow],
@@ -1023,8 +1099,15 @@ pub(crate) async fn clean_up_recovered_pool_routes(
         .map(|row| (row.invoke_id.as_str(), row.occurred_at.as_str()))
         .collect::<BTreeSet<_>>();
     for row in recovered_attempts {
-        let record_route_failure = recovered_invocation_keys
+        let recovered_invocation = recovered_invocation_keys
             .contains(&(row.invoke_id.as_str(), row.occurred_at.as_str()));
+        let record_route_failure = should_record_route_failure_after_attempt_recovery(
+            state,
+            &row.invoke_id,
+            &row.occurred_at,
+            recovered_invocation,
+        )
+        .await;
         clean_up_pool_route_after_orphan_recovery(
             state,
             &row.invoke_id,
@@ -1091,12 +1174,26 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
     };
     tx.commit().await?;
 
+    remove_proxy_runtime_snapshot_by_key(
+        state,
+        &pending_attempt_record.invoke_id,
+        &pending_attempt_record.occurred_at,
+        "drop_guard",
+    );
+
     if recovered_attempts.is_empty() && recovered_invocations.is_empty() {
         return Ok(());
     }
 
-    let record_route_failure = !recovered_invocations.is_empty()
-        && (pending_attempt_record.attempt_id.is_none() || !recovered_attempts.is_empty());
+    let record_route_failure =
+        (pending_attempt_record.attempt_id.is_none() || !recovered_attempts.is_empty())
+            && should_record_route_failure_after_attempt_recovery(
+                state,
+                &pending_attempt_record.invoke_id,
+                &pending_attempt_record.occurred_at,
+                !recovered_invocations.is_empty(),
+            )
+            .await;
     clean_up_pool_route_after_orphan_recovery(
         state,
         &pending_attempt_record.invoke_id,
@@ -2035,150 +2132,15 @@ async fn update_existing_proxy_invocation_record_tx(
     Ok(result.rows_affected() > 0)
 }
 
-pub(crate) async fn insert_running_proxy_snapshot_placeholder_tx(
-    tx: &mut SqliteConnection,
-    record: &ProxyCaptureRecord,
-) -> Result<u64> {
-    let created_at = format_utc_iso_millis(Utc::now());
-    let insert_result = sqlx::query(
-        r#"
-        INSERT OR IGNORE INTO codex_invocations (
-            invoke_id,
-            occurred_at,
-            source,
-            model,
-            input_tokens,
-            output_tokens,
-            cache_input_tokens,
-            reasoning_tokens,
-            total_tokens,
-            cost,
-            cost_estimated,
-            price_version,
-            status,
-            error_message,
-            failure_kind,
-            failure_class,
-            is_actionable,
-            payload,
-            raw_response,
-            request_raw_path,
-            request_raw_codec,
-            request_raw_size,
-            request_raw_truncated,
-            request_raw_truncated_reason,
-            response_raw_path,
-            response_raw_codec,
-            response_raw_size,
-            response_raw_truncated,
-            response_raw_truncated_reason,
-            t_total_ms,
-            t_req_read_ms,
-            t_req_parse_ms,
-            t_upstream_connect_ms,
-            t_upstream_ttfb_ms,
-            t_upstream_stream_ms,
-            t_resp_parse_ms,
-            t_persist_ms,
-            created_at
-        )
-        VALUES (
-            ?1, ?2, ?3, ?4, 0, 0, 0, 0, 0, NULL, 0, NULL, ?5, NULL, NULL, 'none', 0, ?6, '{}',
-            ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17, ?18, ?19, ?20, NULL,
-            NULL, NULL, ?21
-        )
-        "#,
-    )
-    .bind(&record.invoke_id)
-    .bind(&record.occurred_at)
-    .bind(SOURCE_PROXY)
-    .bind(&record.model)
-    .bind(&record.status)
-    .bind(record.payload.as_deref())
-    .bind(record.req_raw.path.as_deref())
-    .bind(raw_payload_meta_codec(&record.req_raw))
-    .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
-    .bind(record.req_raw.truncated as i64)
-    .bind(record.req_raw.truncated_reason.as_deref())
-    .bind(record.resp_raw.path.as_deref())
-    .bind(raw_payload_meta_codec(&record.resp_raw))
-    .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
-    .bind(record.resp_raw.truncated as i64)
-    .bind(record.resp_raw.truncated_reason.as_deref())
-    .bind(nullable_runtime_timing_value(record.timings.t_req_read_ms))
-    .bind(nullable_runtime_timing_value(record.timings.t_req_parse_ms))
-    .bind(nullable_runtime_timing_value(record.timings.t_upstream_connect_ms))
-    .bind(nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms))
-    .bind(created_at)
-    .execute(&mut *tx)
-    .await?;
-    let updated_rows = if insert_result.rows_affected() == 0 {
-        sqlx::query(
-            r#"
-            UPDATE codex_invocations
-            SET
-                source = ?3,
-                model = ?4,
-                status = ?5,
-                payload = ?6,
-                request_raw_path = ?7,
-                request_raw_codec = ?8,
-                request_raw_size = ?9,
-                request_raw_truncated = ?10,
-                request_raw_truncated_reason = ?11,
-                response_raw_path = ?12,
-                response_raw_codec = ?13,
-                response_raw_size = ?14,
-                response_raw_truncated = ?15,
-                response_raw_truncated_reason = ?16,
-                t_req_read_ms = ?17,
-                t_req_parse_ms = ?18,
-                t_upstream_connect_ms = ?19,
-                t_upstream_ttfb_ms = ?20
-            WHERE invoke_id = ?1
-              AND occurred_at = ?2
-              AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
-            "#,
-        )
-        .bind(&record.invoke_id)
-        .bind(&record.occurred_at)
-        .bind(SOURCE_PROXY)
-        .bind(&record.model)
-        .bind(&record.status)
-        .bind(record.payload.as_deref())
-        .bind(record.req_raw.path.as_deref())
-        .bind(raw_payload_meta_codec(&record.req_raw))
-        .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
-        .bind(record.req_raw.truncated as i64)
-        .bind(record.req_raw.truncated_reason.as_deref())
-        .bind(record.resp_raw.path.as_deref())
-        .bind(raw_payload_meta_codec(&record.resp_raw))
-        .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
-        .bind(record.resp_raw.truncated as i64)
-        .bind(record.resp_raw.truncated_reason.as_deref())
-        .bind(nullable_runtime_timing_value(record.timings.t_req_read_ms))
-        .bind(nullable_runtime_timing_value(record.timings.t_req_parse_ms))
-        .bind(nullable_runtime_timing_value(record.timings.t_upstream_connect_ms))
-        .bind(nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms))
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-    } else {
-        0
-    };
-    debug!(
-        invoke_id = %record.invoke_id,
-        occurred_at = %record.occurred_at,
-        status = %record.status,
-        rows_affected = insert_result.rows_affected(),
-        updated_rows,
-        "running proxy capture snapshot placeholder flushed"
-    );
-    Ok(insert_result.rows_affected() + updated_rows)
-}
-
 pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) -> ApiInvocation {
     let payload = record.payload.as_deref();
+    let failure = resolve_failure_classification(
+        Some(record.status.as_str()),
+        record.error_message.as_deref(),
+        record.failure_kind.as_deref(),
+        None,
+        None,
+    );
     ApiInvocation {
         id: 0,
         invoke_id: record.invoke_id.clone(),
@@ -2187,7 +2149,7 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         proxy_display_name: payload_text(payload, "proxyDisplayName"),
         model: record.model.clone(),
         request_model: payload_text(payload, "requestModel"),
-        response_model: None,
+        response_model: payload_text(payload, "responseModel"),
         input_tokens: record.usage.input_tokens,
         output_tokens: record.usage.output_tokens,
         cache_input_tokens: record.usage.cache_input_tokens,
@@ -2197,18 +2159,18 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         cost: record.cost,
         status: Some(record.status.clone()),
         error_message: record.error_message.clone(),
-        downstream_status_code: None,
-        failure_kind: record.failure_kind.clone(),
-        stream_terminal_event: None,
-        upstream_error_code: None,
-        upstream_error_message: None,
-        downstream_error_message: None,
-        upstream_request_id: None,
-        failure_class: Some("none".to_string()),
-        is_actionable: Some(false),
+        downstream_status_code: payload_i64(payload, "downstreamStatusCode"),
+        failure_kind: failure.failure_kind.clone().or_else(|| record.failure_kind.clone()),
+        stream_terminal_event: payload_text(payload, "streamTerminalEvent"),
+        upstream_error_code: payload_text(payload, "upstreamErrorCode"),
+        upstream_error_message: payload_text(payload, "upstreamErrorMessage"),
+        downstream_error_message: payload_text(payload, "downstreamErrorMessage"),
+        upstream_request_id: payload_text(payload, "upstreamRequestId"),
+        failure_class: Some(failure.failure_class.as_str().to_string()),
+        is_actionable: Some(failure.is_actionable),
         endpoint: payload_text(payload, "endpoint"),
         compaction_request_kind: payload_text(payload, "compactionRequestKind"),
-        compaction_response_kind: None,
+        compaction_response_kind: payload_text(payload, "compactionResponseKind"),
         image_intent: payload_text(payload, "imageIntent"),
         requester_ip: payload_text(payload, "requesterIp"),
         prompt_cache_key: prompt_cache_key_from_payload(payload),
@@ -2222,9 +2184,9 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         pool_distinct_account_count: payload_i64(payload, "poolDistinctAccountCount"),
         pool_attempt_terminal_reason: payload_text(payload, "poolAttemptTerminalReason"),
         requested_service_tier: payload_text(payload, "requestedServiceTier"),
-        service_tier: None,
-        billing_service_tier: None,
-        proxy_weight_delta: None,
+        service_tier: payload_text(payload, "serviceTier"),
+        billing_service_tier: payload_text(payload, "billingServiceTier"),
+        proxy_weight_delta: payload_f64(payload, "proxyWeightDelta"),
         cost_estimated: Some(record.cost_estimated as i64),
         price_version: record.price_version.clone(),
         request_raw_path: record.req_raw.path.clone(),
@@ -2238,14 +2200,14 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         detail_level: DETAIL_LEVEL_FULL.to_string(),
         detail_pruned_at: None,
         detail_prune_reason: None,
-        t_total_ms: None,
+        t_total_ms: nullable_runtime_timing_value(record.timings.t_total_ms),
         t_req_read_ms: nullable_runtime_timing_value(record.timings.t_req_read_ms),
         t_req_parse_ms: nullable_runtime_timing_value(record.timings.t_req_parse_ms),
         t_upstream_connect_ms: nullable_runtime_timing_value(record.timings.t_upstream_connect_ms),
         t_upstream_ttfb_ms: nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms),
-        t_upstream_stream_ms: None,
-        t_resp_parse_ms: None,
-        t_persist_ms: None,
+        t_upstream_stream_ms: nullable_runtime_timing_value(record.timings.t_upstream_stream_ms),
+        t_resp_parse_ms: nullable_runtime_timing_value(record.timings.t_resp_parse_ms),
+        t_persist_ms: nullable_runtime_timing_value(record.timings.t_persist_ms),
         created_at: format_utc_iso_millis(Utc::now()),
     }
 }
@@ -2422,25 +2384,6 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
         );
         return Ok(());
     }
-    let mut running_placeholder_enqueued = false;
-    if store_outcome.inserted_new {
-        let snapshot = BatchedRunningProxySnapshot {
-            invoke_id: record.invoke_id.clone(),
-            occurred_at: record.occurred_at.clone(),
-            record: record.clone(),
-        };
-        running_placeholder_enqueued = state
-            .sqlite_batch_writer
-            .enqueue(SqliteBatchWrite::RunningProxySnapshot(snapshot));
-        if !running_placeholder_enqueued {
-            debug!(
-                invoke_id = %invoke_id,
-                occurred_at = %occurred_at,
-                running_snapshot_db_placeholder_dropped = true,
-                "running proxy capture recovery placeholder dropped by sqlite batch writer"
-            );
-        }
-    }
     if state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
             records: vec![persisted_record],
@@ -2461,7 +2404,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
         runtime_store_running_count = store_outcome.running_count,
         runtime_store_pruned_count = store_outcome.pruned_count,
         running_snapshot_db_write_skipped = true,
-        running_snapshot_recovery_placeholder_enqueued = running_placeholder_enqueued,
+        running_snapshot_recovery_placeholder_enqueued = false,
         "running proxy capture snapshot stored in memory and broadcast"
     );
 
@@ -2472,54 +2415,96 @@ pub(crate) fn remove_proxy_runtime_snapshot_for_terminal(
     state: &AppState,
     record: &ApiInvocation,
 ) -> bool {
-    let removed_runtime_snapshot = state
+    let remove_outcome = state
         .proxy_runtime_invocations
-        .remove(&record.invoke_id, &record.occurred_at);
+        .upsert_terminal(record.clone());
     debug!(
         invoke_id = %record.invoke_id,
         occurred_at = %record.occurred_at,
-        terminal_removed_runtime_snapshot = removed_runtime_snapshot,
-        "terminal proxy capture record removed memory runtime snapshot"
+        terminal_removed_runtime_snapshot = remove_outcome.removed,
+        terminal_already_tombstoned = remove_outcome.already_terminal,
+        "terminal proxy capture record stored in memory runtime overlay"
     );
-    removed_runtime_snapshot
+    remove_outcome.already_terminal
+}
+
+pub(crate) fn remove_proxy_runtime_snapshot_by_key(
+    state: &AppState,
+    invoke_id: &str,
+    occurred_at: &str,
+    reason: &'static str,
+) -> bool {
+    let removed_runtime_snapshot = state
+        .proxy_runtime_invocations
+        .remove_non_terminal(invoke_id, occurred_at);
+    debug!(
+        invoke_id,
+        occurred_at,
+        reason,
+        terminal_removed_runtime_snapshot = removed_runtime_snapshot,
+        terminal_already_tombstoned = false,
+        "non-terminal proxy runtime snapshot removed by key"
+    );
+    false
 }
 
 pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
     state: &AppState,
     record: ProxyCaptureRecord,
 ) -> Result<()> {
-    let derived_payload = record.payload.clone();
-    let persisted = persist_proxy_capture_runtime_record_core(&state.pool, record, false).await?;
-    let Some(persisted_record) = persisted else {
-        return Ok(());
-    };
-
-    if persisted_record
-        .prompt_cache_key
-        .as_deref()
-        .is_some_and(|key| !key.trim().is_empty())
-    {
-        invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
-    }
-
+    let enqueue_started = Instant::now();
+    let persisted_record = api_invocation_from_runtime_record(&record);
     let invoke_id = persisted_record.invoke_id.clone();
-    remove_proxy_runtime_snapshot_for_terminal(state, &persisted_record);
-    let derived = BatchedInvocationDerivedWrites {
-        invocation_id: persisted_record.id,
-        occurred_at: persisted_record.occurred_at.clone(),
-        payload: derived_payload,
-    };
-    if !state
-        .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::InvocationDerived(derived.clone()))
-        && let Err(err) =
-            SqliteBatchWriter::flush_invocation_derived_inline(&state.pool, derived).await
-    {
-        warn!(
-            error = %err,
+    let duplicate_terminal = remove_proxy_runtime_snapshot_for_terminal(state, &persisted_record);
+    if duplicate_terminal {
+        debug!(
             invoke_id = %invoke_id,
-            "failed to synchronously compensate dropped terminal proxy derived write"
+            occurred_at = %persisted_record.occurred_at,
+            business_unblocked_record_write = true,
+            "duplicate terminal proxy capture record skipped before sqlite enqueue"
         );
+        schedule_proxy_capture_follow_up_after_terminal_flush(
+            state,
+            &invoke_id,
+            "duplicate_runtime_terminal",
+        );
+        return Ok(());
+    }
+    let terminal_enqueued = state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::TerminalInvocation(
+            BatchedTerminalInvocationWrite {
+                record,
+                capture_started: None,
+                raw_capture: false,
+            },
+        ));
+    if !terminal_enqueued {
+        let terminal_tombstone_cleared = state
+            .proxy_runtime_invocations
+            .clear_terminal_tombstone(&persisted_record.invoke_id, &persisted_record.occurred_at);
+        warn!(
+            invoke_id = %invoke_id,
+            occurred_at = %persisted_record.occurred_at,
+            enqueue_failed_by_class = "terminal_invocation",
+            terminal_tombstone_cleared,
+            business_unblocked_record_write = true,
+            "terminal proxy capture record dropped by sqlite write controller"
+        );
+    } else {
+        debug!(
+            invoke_id = %invoke_id,
+            terminal_record_enqueue_elapsed = enqueue_started.elapsed().as_millis() as u64,
+            business_unblocked_record_write = true,
+            "terminal proxy capture record queued for sqlite write controller"
+        );
+    }
+    #[cfg(test)]
+    if terminal_enqueued && state.sqlite_batch_writer.auto_flush_terminal_for_test() {
+        state
+            .sqlite_batch_writer
+            .flush_buffered_for_test(&state.pool)
+            .await;
     }
     if state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
@@ -2532,6 +2517,9 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             "failed to broadcast terminal proxy capture record"
         );
     }
+    if terminal_enqueued {
+        schedule_proxy_capture_follow_up_after_terminal_flush(state, &invoke_id, "runtime_terminal");
+    }
 
     Ok(())
 }
@@ -2543,7 +2531,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record(
     persist_proxy_capture_runtime_record_core(pool, record, true).await
 }
 
-async fn persist_proxy_capture_runtime_record_core(
+pub(crate) async fn persist_proxy_capture_runtime_record_core(
     pool: &Pool<Sqlite>,
     record: ProxyCaptureRecord,
     write_derived_inline: bool,

@@ -44,12 +44,13 @@
 - summary publish 当前窗口里的 `inProgressConversationCount` distinct-count 现在也直接复用 live table truth source，而不是在 maintenance 路径里对 `codex_invocations` 再做一次 `COUNT(DISTINCT prompt_cache_key)`；这让 summary 广播与账号详情共用同一份 bounded in-progress truth。
 - 第三轮 SQLite 止血进一步把 prompt cache working-conversation 的 snapshot count/page 从 `codex_invocations` 热表扫描切到 write-side working-set truth；虽然公开 API shape 不变，但相关详情/工作区入口现在统一接受 `<=5s` bounded freshness，而不再为严格 snapshot membership 付出请求级扫表代价。
 - proxy capture 请求尾写路径也继续收敛：`codex_invocations` 终态持久化改为单路径 upsert/finalize，`pool_upstream_request_attempts` 的 phase / latency / compact-support 进度尽量并入同一条更新，减少账号详情和 Dashboard 与请求尾写争用 SQLite 单写者预算。
-- 第四轮止血把账号详情依赖的 upstream account touch、invocation hourly rollup/live progress 与 attempt 中间进度迁入进程内 SQLite batch writer。账号详情仍以同步 terminal invocation 主事实为可靠来源；派生统计和进度展示接受 `<=5s` bounded freshness，队列满时 invocation 派生写会做同步补偿以降低数据漂移风险。
+- 第四轮止血把账号详情依赖的 upstream account touch、invocation hourly rollup/live progress 与 attempt 中间进度迁入进程内 SQLite batch writer。派生统计和进度展示接受 `<=5s` bounded freshness。
 - 第六轮止血继续收窄账号相关写锁：路由账号选择的 `last_selected_at` 不再在前台同步更新账号表，而是先记录到进程内公平性锚点并叠加到候选排序，再通过 batch writer 按账号 coalesce 落库。账号 status、cooldown 与 failure 仍保持同步写，因为它们是路由正确性的主事实。
 - Storybook 现有详情抽屉 overlay stories 继续作为 page-fallback 证据面，覆盖 owner-facing 概览页活动总览、records 表格本体与 records 无限滚动场景。
 - 第七轮止血把账号详情 records/current summary/account-activity 的 running 视图统一改为 DB 结果 + 进程内 runtime store overlay。`running/pending` 过程态不再依赖 `codex_invocations` 的常规刷新写；terminal 主事实落库后仍会覆盖并移除对应内存行，账号详情公开字段不变。
 - summary live augmentation 在叠加进程内 runtime store 前会先查询同 key 的 terminal DB rows；即使某条内存 `running` 快照未被 terminal cleanup 清掉，也不会继续贡献 in-progress 总数、retry 总数或 wait 平均值。
 - 自然日 summary 测试夹具会把 `earlier_today` 限定在当前 Asia/Shanghai 自然日内且不落到未来，避免自然日开始后的前半小时造出未来行并误排除非成功用量。
+- 第八轮止血把 terminal invocation 记录也移出代理业务等待路径：records/current summary/account-activity 先消费 SSE + runtime-store/tombstone overlay，SQLite terminal 记录通过 write controller 最终一致补齐。账号详情公开字段不变，短时间内允许记录尚未落库但不得闪断 visible running/terminal 行。
 
 ## Verification
 

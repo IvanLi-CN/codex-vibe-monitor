@@ -814,14 +814,16 @@ async fn test_state_from_config_with_pool_no_available_wait(
         .expect("pricing catalog should initialize");
     let prompt_cache_conversation_cache =
         Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
+    let sqlite_batch_writer =
+        SqliteBatchWriter::spawn_for_test_with_prompt_cache(prompt_cache_conversation_cache.clone());
+    let proxy_runtime_invocations = Arc::new(ProxyRuntimeInvocationStore::default());
+    sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
 
     Arc::new(AppState {
         config: config.clone(),
-        sqlite_batch_writer: SqliteBatchWriter::spawn_for_test_with_prompt_cache(
-            prompt_cache_conversation_cache.clone(),
-        ),
+        sqlite_batch_writer,
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
-        proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
+        proxy_runtime_invocations,
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,
