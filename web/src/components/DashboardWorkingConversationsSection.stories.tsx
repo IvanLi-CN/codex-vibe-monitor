@@ -344,6 +344,13 @@ function createUpstreamAccountActivityStoryResponse(
           Math.min(recentInvocationCount, 16),
         ),
         retryInvocationCount: 1,
+        activeConversationCount: Math.max(
+          0,
+          Math.min(
+            promptCacheKeys.length > 0 ? promptCacheKeys.length : recentInvocationCount,
+            16,
+          ),
+        ),
         effectiveRoutingRule: {
           blockNewConversations: true,
           allowCutOut: true,

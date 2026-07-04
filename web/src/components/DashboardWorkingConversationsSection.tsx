@@ -2196,6 +2196,11 @@ function DashboardUpstreamAccountActivityCard({
         </div>
         <div className="flex min-w-0 flex-1 flex-wrap items-start justify-end gap-x-5 gap-y-1.5 text-right">
           <AccountInlineMetric
+            label={t("dashboard.today.parallelConversations")}
+            value={formatAccountNumberValue(account.activeConversationCount, localeTag, 0)}
+            tone="secondary"
+          />
+          <AccountInlineMetric
             label="TPM"
             value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
             tone="primary"
