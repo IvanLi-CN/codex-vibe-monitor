@@ -1174,6 +1174,19 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
     };
     tx.commit().await?;
 
+    let should_clean_up_route = pending_attempt_record.attempt_id.is_none()
+        || !recovered_attempts.is_empty()
+        || !recovered_invocations.is_empty();
+    let record_route_failure = (pending_attempt_record.attempt_id.is_none()
+        || !recovered_attempts.is_empty())
+        && should_record_route_failure_after_attempt_recovery(
+            state,
+            &pending_attempt_record.invoke_id,
+            &pending_attempt_record.occurred_at,
+            !recovered_invocations.is_empty(),
+        )
+        .await;
+
     if recovered_invocations.is_empty() {
         terminalize_proxy_runtime_snapshot_by_key(
             state,
@@ -1190,28 +1203,21 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
         );
     }
 
+    if should_clean_up_route {
+        clean_up_pool_route_after_orphan_recovery(
+            state,
+            &pending_attempt_record.invoke_id,
+            pending_attempt_record.sticky_key.as_deref(),
+            Some(pending_attempt_record.upstream_account_id),
+            "drop_guard",
+            record_route_failure,
+        )
+        .await;
+    }
+
     if recovered_attempts.is_empty() && recovered_invocations.is_empty() {
         return Ok(());
     }
-
-    let record_route_failure =
-        (pending_attempt_record.attempt_id.is_none() || !recovered_attempts.is_empty())
-            && should_record_route_failure_after_attempt_recovery(
-                state,
-                &pending_attempt_record.invoke_id,
-                &pending_attempt_record.occurred_at,
-                !recovered_invocations.is_empty(),
-            )
-            .await;
-    clean_up_pool_route_after_orphan_recovery(
-        state,
-        &pending_attempt_record.invoke_id,
-        pending_attempt_record.sticky_key.as_deref(),
-        Some(pending_attempt_record.upstream_account_id),
-        "drop_guard",
-        record_route_failure,
-    )
-    .await;
 
     if !recovered_attempts.is_empty()
         && let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, &pending_attempt_record.invoke_id).await
