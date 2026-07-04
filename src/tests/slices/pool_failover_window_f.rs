@@ -3398,10 +3398,13 @@ async fn prompt_cache_conversations_activity_minutes_paginated_overlays_memory_r
     }
 
     for index in 0..3 {
+        let runtime_started_at = if index == 2 {
+            now - ChronoDuration::minutes(15)
+        } else {
+            now - ChronoDuration::seconds(index * 10)
+        };
         let occurred_at = format_naive(
-            (now - ChronoDuration::seconds(index * 10))
-                .with_timezone(&Shanghai)
-                .naive_local(),
+            runtime_started_at.with_timezone(&Shanghai).naive_local(),
         );
         let prompt_cache_key = format!("memory-overlay-running-{}", index + 1);
         let running_record = build_running_proxy_capture_record(
