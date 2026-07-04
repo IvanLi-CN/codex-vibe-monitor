@@ -1,4 +1,110 @@
 describe("UpstreamAccountsPage api key details", () => {
+  it("hides OAuth probe and local quota overview fields for api key account details while keeping editable api key settings", async () => {
+    const saveAccount = vi.fn().mockResolvedValue({});
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: "api_key_codex",
+          provider: "codex",
+          displayName: "Gateway Key",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          maskedApiKey: "sk-gate••••",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      detail: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        email: "gateway@example.com",
+        chatgptAccountId: "org_should_not_render",
+        chatgptUserId: "user_should_not_render",
+        imageToolCapability: "supported",
+        maskedApiKey: "sk-gate••••",
+        history: [],
+        note: null,
+        upstreamBaseUrl: "https://proxy.example.com/gateway",
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: "requests",
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickFirstRosterRow();
+
+    const overviewText = document.body.textContent ?? "";
+    expect(overviewText).not.toMatch(/Image tool capability/i);
+    expect(overviewText).not.toMatch(/Account ID/i);
+    expect(overviewText).not.toMatch(/User ID/i);
+    expect(overviewText).not.toMatch(/org_should_not_render/i);
+    expect(overviewText).not.toMatch(/user_should_not_render/i);
+    expect(overviewText).not.toMatch(/5h window|5 小时窗口/i);
+    expect(overviewText).not.toMatch(/7d window|7 天窗口/i);
+
+    clickTab(/Edit/i);
+
+    expect(document.body.querySelector('input[name="detailEmail"]')).toBeInstanceOf(
+      HTMLInputElement,
+    );
+    expect(
+      document.body.querySelector('input[name="detailUpstreamBaseUrl"]'),
+    ).toBeInstanceOf(HTMLInputElement);
+    expect(
+      document.body.querySelector('input[name="detailRotateApiKey"]'),
+    ).toBeInstanceOf(HTMLInputElement);
+    expect(
+      document.body.querySelector('input[name="detailPrimaryLimit"]'),
+    ).toBeInstanceOf(HTMLInputElement);
+  });
+
   it("does not clear another account's pending api key draft when an earlier save resolves", async () => {
     const saveRequest = deferred();
     const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise);
