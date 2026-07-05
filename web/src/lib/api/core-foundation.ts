@@ -345,6 +345,7 @@ export interface ApiInvocation {
   totalTokens?: number;
   cost?: number;
   status?: string;
+  livePhase?: InvocationLivePhase | null;
   errorMessage?: string;
   downstreamStatusCode?: number | null;
   downstreamErrorMessage?: string;
@@ -394,6 +395,14 @@ export interface ApiInvocation {
   detailPrunedAt?: string | null;
   detailPruneReason?: string | null;
   createdAt: string;
+}
+
+export type InvocationLivePhase = "queued" | "requesting" | "responding";
+
+export interface InvocationPhaseCounts {
+  queued: number;
+  requesting: number;
+  responding: number;
 }
 
 export interface ApiInvocationTimings {
@@ -586,6 +595,7 @@ export interface StatsResponse {
   inProgressConversationCount?: number | null;
   inProgressRetryConversationCount?: number | null;
   inProgressAvgWaitMs?: number | null;
+  inProgressPhaseCounts?: InvocationPhaseCounts | null;
   nonSuccessCost?: number | null;
   nonSuccessTokens?: number | null;
   maintenance?: StatsMaintenanceResponse;
@@ -613,6 +623,7 @@ export interface UpstreamAccountActivityAccount {
   firstResponseByteTotalAvgMs?: number | null;
   avgTotalMs?: number | null;
   inProgressInvocationCount?: number | null;
+  inProgressPhaseCounts?: InvocationPhaseCounts | null;
   retryInvocationCount?: number | null;
   effectiveRoutingRule: EffectiveRoutingRule;
   recentInvocations: PromptCacheConversationInvocationPreview[];
@@ -1137,6 +1148,7 @@ export interface PromptCacheConversationInvocationPreview {
   promptCacheKey?: string | null;
   occurredAt: string;
   status: string;
+  livePhase?: InvocationLivePhase | null;
   failureClass: Exclude<ApiInvocation["failureClass"], undefined> | null;
   routeMode: string | null;
   model: string | null;
@@ -1449,6 +1461,25 @@ export function normalizeStringArray(value: unknown): string[] {
 export function normalizeFiniteNumber(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return value;
+}
+
+function normalizeInvocationLivePhase(value: unknown): InvocationLivePhase | null {
+  if (typeof value !== "string") return null;
+  const phase = value.trim().toLowerCase();
+  if (phase === "queued" || phase === "requesting" || phase === "responding") {
+    return phase;
+  }
+  return null;
+}
+
+function normalizeInvocationPhaseCounts(value: unknown): InvocationPhaseCounts | null {
+  if (!value || typeof value !== "object") return null;
+  const payload = value as Record<string, unknown>;
+  return {
+    queued: Math.max(0, normalizeFiniteNumber(payload.queued) ?? 0),
+    requesting: Math.max(0, normalizeFiniteNumber(payload.requesting) ?? 0),
+    responding: Math.max(0, normalizeFiniteNumber(payload.responding) ?? 0),
+  };
 }
 
 function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
@@ -2082,6 +2113,7 @@ function normalizePromptCacheConversationInvocationPreview(
       typeof payload.status === "string" && payload.status.trim()
         ? payload.status.trim()
         : "unknown",
+    livePhase: normalizeInvocationLivePhase(payload.livePhase),
     failureClass:
       failureClass === "none" ||
       failureClass === "service_failure" ||
@@ -2689,6 +2721,9 @@ function normalizeUpstreamAccountActivityAccount(
     avgTotalMs: normalizeFiniteNumber(payload.avgTotalMs),
     inProgressInvocationCount: normalizeFiniteNumber(
       payload.inProgressInvocationCount,
+    ),
+    inProgressPhaseCounts: normalizeInvocationPhaseCounts(
+      payload.inProgressPhaseCounts,
     ),
     retryInvocationCount: normalizeFiniteNumber(payload.retryInvocationCount),
     effectiveRoutingRule: normalizeEffectiveRoutingRule(

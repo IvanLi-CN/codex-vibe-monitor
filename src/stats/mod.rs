@@ -1423,6 +1423,7 @@ where
     query
         .push(crate::api::invocation_display_status_sql())
         .push(" AS status, ")
+        .push("NULL AS live_phase, ")
         .push(crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(" AS failure_class, ")
         .push(crate::api::INVOCATION_ROUTE_MODE_SQL)

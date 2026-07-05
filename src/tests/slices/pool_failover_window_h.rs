@@ -11174,36 +11174,54 @@ async fn summary_reports_invocation_based_in_progress_counts() {
     .await;
     let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
 
-    for (id, invoke_id, status, payload) in [
+    for (id, invoke_id, status, payload, t_req_read_ms, t_upstream_ttfb_ms) in [
         (
             401_i64,
             "in-progress-running-a",
             "running",
             Some(json!({ "promptCacheKey": "pck-live-a" }).to_string()),
+            Some(8.0_f64),
+            None,
         ),
         (
             402_i64,
             "in-progress-pending-a",
             "pending",
             Some(json!({ "promptCacheKey": "pck-live-a" }).to_string()),
+            None,
+            None,
         ),
         (
             403_i64,
             "in-progress-running-b",
             "running",
             Some(json!({ "promptCacheKey": "pck-live-b" }).to_string()),
+            None,
+            Some(120.0_f64),
+        ),
+        (
+            406_i64,
+            "in-progress-running-zero-placeholder",
+            "running",
+            Some(json!({ "promptCacheKey": "pck-live-zero" }).to_string()),
+            None,
+            Some(0.0_f64),
         ),
         (
             404_i64,
             "in-progress-success-a",
             "success",
             Some(json!({ "promptCacheKey": "pck-live-a" }).to_string()),
+            None,
+            None,
         ),
         (
             405_i64,
             "in-progress-success-c",
             "success",
             Some(json!({ "promptCacheKey": "pck-finished-c" }).to_string()),
+            None,
+            None,
         ),
     ] {
         sqlx::query(
@@ -11216,10 +11234,12 @@ async fn summary_reports_invocation_based_in_progress_counts() {
                 status,
                 total_tokens,
                 cost,
+                t_req_read_ms,
+                t_upstream_ttfb_ms,
                 payload,
                 raw_response
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             "#,
         )
         .bind(id)
@@ -11229,6 +11249,8 @@ async fn summary_reports_invocation_based_in_progress_counts() {
         .bind(status)
         .bind(10_i64)
         .bind(0.01_f64)
+        .bind(t_req_read_ms)
+        .bind(t_upstream_ttfb_ms)
         .bind(payload)
         .bind("{}")
         .execute(&state.pool)
@@ -11239,7 +11261,13 @@ async fn summary_reports_invocation_based_in_progress_counts() {
     let Json(stats) = fetch_stats(State(state.clone()))
         .await
         .expect("fetch stats with in-progress invocations");
-    assert_eq!(stats.in_progress_conversation_count, Some(3));
+    assert_eq!(stats.in_progress_conversation_count, Some(4));
+    let stats_phase_counts = stats
+        .in_progress_phase_counts
+        .expect("stats should include live phase counts");
+    assert_eq!(stats_phase_counts.queued, 2);
+    assert_eq!(stats_phase_counts.requesting, 1);
+    assert_eq!(stats_phase_counts.responding, 1);
 
     let Json(summary) = fetch_summary(
         State(state),
@@ -11252,7 +11280,13 @@ async fn summary_reports_invocation_based_in_progress_counts() {
     )
     .await
     .expect("fetch today summary with in-progress invocations");
-    assert_eq!(summary.in_progress_conversation_count, Some(3));
+    assert_eq!(summary.in_progress_conversation_count, Some(4));
+    let summary_phase_counts = summary
+        .in_progress_phase_counts
+        .expect("summary should include live phase counts");
+    assert_eq!(summary_phase_counts.queued, 2);
+    assert_eq!(summary_phase_counts.requesting, 1);
+    assert_eq!(summary_phase_counts.responding, 1);
 }
 
 #[tokio::test]
@@ -12235,7 +12269,7 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
             phase,
             created_at
         )
-        VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, ?5, 1, 1, 0, '127.0.0.1', ?2, 'running', 'streaming', datetime('now'))
+        VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, ?5, 1, 1, 0, '127.0.0.1', ?2, 'running', 'streaming_response', datetime('now'))
         "#,
     )
     .bind("pool-running-selected-before-payload-update")
@@ -12269,15 +12303,22 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
     assert_eq!(account.tokens_per_minute, Some(0.0));
     assert_eq!(account.spend_rate, Some(0.0));
     assert_eq!(account.in_progress_invocation_count, Some(1));
+    let account_phase_counts = account
+        .in_progress_phase_counts
+        .expect("account should include live phase counts");
+    assert_eq!(account_phase_counts.queued, 0);
+    assert_eq!(account_phase_counts.requesting, 0);
+    assert_eq!(account_phase_counts.responding, 1);
     assert_eq!(account.retry_invocation_count, Some(1));
+    let recent_invocation = account
+        .recent_invocations
+        .first()
+        .expect("fallback recent invocation");
     assert_eq!(
-        account
-            .recent_invocations
-            .first()
-            .expect("fallback recent invocation")
-            .invoke_id,
+        recent_invocation.invoke_id,
         "pool-running-selected-before-payload-update"
     );
+    assert_eq!(recent_invocation.live_phase.as_deref(), Some("responding"));
 
     let Json(account_summary) = fetch_summary(
         State(state),
@@ -12292,6 +12333,12 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
     .expect("fetch fallback account summary");
     assert_eq!(account_summary.in_progress_conversation_count, Some(1));
     assert_eq!(account_summary.in_progress_retry_conversation_count, Some(1));
+    let account_summary_phase_counts = account_summary
+        .in_progress_phase_counts
+        .expect("account summary should include live phase counts");
+    assert_eq!(account_summary_phase_counts.queued, 0);
+    assert_eq!(account_summary_phase_counts.requesting, 0);
+    assert_eq!(account_summary_phase_counts.responding, 1);
 }
 
 #[tokio::test]
@@ -12439,6 +12486,12 @@ async fn upstream_account_activity_overlays_memory_runtime_running_rows_without_
     assert_eq!(account.success_count, 0);
     assert_eq!(account.failure_count, 0);
     assert_eq!(account.in_progress_invocation_count, Some(1));
+    let account_phase_counts = account
+        .in_progress_phase_counts
+        .expect("runtime account should include live phase counts");
+    assert_eq!(account_phase_counts.queued, 0);
+    assert_eq!(account_phase_counts.requesting, 0);
+    assert_eq!(account_phase_counts.responding, 1);
     assert_eq!(account.retry_invocation_count, Some(1));
     let preview = account
         .recent_invocations
@@ -12447,11 +12500,64 @@ async fn upstream_account_activity_overlays_memory_runtime_running_rows_without_
     assert_eq!(preview.invoke_id, "runtime-account-activity-running");
     assert_eq!(preview.id, 0);
     assert_eq!(preview.status, "running");
+    assert_eq!(preview.live_phase.as_deref(), Some("responding"));
     assert_eq!(
         preview.prompt_cache_key.as_deref(),
         Some("pck-runtime-activity")
     );
     assert_eq!(preview.upstream_account_id, Some(89));
+}
+
+#[tokio::test]
+async fn runtime_summary_phase_ignores_zero_placeholder_before_positive_timing() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.5".to_string()),
+        prompt_cache_key: Some("pck-runtime-phase".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let record = build_running_proxy_capture_record(
+        "runtime-phase-zero-connect",
+        &occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("203.0.113.90"),
+        None,
+        Some("pck-runtime-phase"),
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        9.0,
+        2.0,
+        0.0,
+        0.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, record)
+        .await
+        .expect("store runtime phase snapshot in memory");
+
+    let Json(stats) = fetch_stats(State(state))
+        .await
+        .expect("fetch stats with memory runtime phase snapshot");
+    assert_eq!(stats.in_progress_conversation_count, Some(1));
+    let phase_counts = stats
+        .in_progress_phase_counts
+        .expect("stats should include memory runtime phase counts");
+    assert_eq!(phase_counts.queued, 0);
+    assert_eq!(phase_counts.requesting, 1);
+    assert_eq!(phase_counts.responding, 0);
 }
 
 #[tokio::test]

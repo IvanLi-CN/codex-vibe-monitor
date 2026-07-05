@@ -358,6 +358,7 @@ const endpointBadgeRecords: ApiInvocation[] = [
     imageIntent: 'yes',
     model: 'gpt-5.4',
     status: 'running',
+    livePhase: 'requesting',
     totalTokens: 512,
     requestedServiceTier: 'priority',
   },

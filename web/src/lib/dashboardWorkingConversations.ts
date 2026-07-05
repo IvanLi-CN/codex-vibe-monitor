@@ -5,6 +5,7 @@ import type {
   PromptCacheConversationsResponse,
 } from "./api";
 import { resolveInvocationDisplayStatus } from "./invocationStatus";
+import { resolveInvocationLivePhase } from "./invocationPhase";
 import { buildInvocationFromPromptCachePreview } from "./promptCacheLive";
 
 export const DASHBOARD_WORKING_CONVERSATIONS_LIMIT = 20;
@@ -27,6 +28,7 @@ export interface DashboardWorkingConversationInvocationModel {
   preview: PromptCacheConversationInvocationPreview;
   record: ApiInvocation;
   displayStatus: string;
+  livePhase: ApiInvocation["livePhase"];
   occurredAtEpoch: number | null;
   isInFlight: boolean;
   isTerminal: boolean;
@@ -117,6 +119,7 @@ export function buildDashboardWorkingConversationInvocationModel(
 ): DashboardWorkingConversationInvocationModel {
   const record = buildInvocationFromPromptCachePreview(preview);
   const displayStatus = resolveInvocationDisplayStatus(record) || "unknown";
+  const livePhase = resolveInvocationLivePhase(record);
   const normalizedStatus = displayStatus.trim().toLowerCase();
   const isInFlight = isInFlightStatus(normalizedStatus);
   const tone: DashboardWorkingConversationTone =
@@ -138,6 +141,7 @@ export function buildDashboardWorkingConversationInvocationModel(
     preview,
     record,
     displayStatus,
+    livePhase,
     occurredAtEpoch: parseEpoch(preview.occurredAt),
     isInFlight,
     isTerminal: !isInFlight,

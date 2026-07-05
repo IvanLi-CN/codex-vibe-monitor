@@ -20,9 +20,11 @@ import {
   type InvocationImageIntentDisplay,
 } from "../lib/invocation";
 import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
+import { resolveInvocationLivePhase } from "../lib/invocationPhase";
 import { useTranslation } from "../i18n";
 import type { TranslationKey } from "../i18n";
 import { Badge } from "./ui/badge";
+import { InvocationPhaseBadge } from "./InvocationPhaseBadge";
 import { cn } from "../lib/utils";
 import {
   FALLBACK_CELL,
@@ -98,6 +100,7 @@ interface InvocationRowViewModel {
   recordId: number;
   meta: StatusMeta;
   statusLabel: string;
+  livePhase: ApiInvocation["livePhase"];
   isInFlight: boolean;
   occurredTime: string;
   occurredDate: string;
@@ -341,6 +344,7 @@ export function InvocationTable({
         const displayStatus = resolveInvocationDisplayStatus(record);
         const normalizedStatus = (displayStatus || "unknown").toLowerCase();
         const meta = resolveStatusMeta(displayStatus);
+        const livePhase = resolveInvocationLivePhase(record);
         const statusLabel = meta.labelKey
           ? t(meta.labelKey)
           : (meta.label ?? t("table.status.unknown"));
@@ -372,6 +376,7 @@ export function InvocationTable({
           recordId,
           meta,
           statusLabel,
+          livePhase,
           isInFlight,
           occurredTime,
           occurredDate,
@@ -653,7 +658,11 @@ export function InvocationTable({
               </div>
 
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
-                <Badge variant={row.meta.variant}>{row.statusLabel}</Badge>
+                {row.livePhase ? (
+                  <InvocationPhaseBadge phase={row.livePhase} />
+                ) : (
+                  <Badge variant={row.meta.variant}>{row.statusLabel}</Badge>
+                )}
                 <div className="min-w-0 flex-1">
                   <div data-testid="invocation-account-name">
                     {renderAccountValue(
@@ -932,6 +941,12 @@ export function InvocationTable({
                       </td>
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
                         <div className="flex min-w-0 flex-col items-center justify-center gap-1 leading-tight text-center">
+                          {row.livePhase ? (
+                            <InvocationPhaseBadge
+                              phase={row.livePhase}
+                              className="h-6 px-2.5 py-0 text-[11px] font-semibold"
+                            />
+                          ) : null}
                           <Badge
                             variant={row.meta.variant}
                             className="mx-auto h-6 w-fit max-w-full items-center justify-center overflow-hidden px-2.5 py-0 text-[11px] font-semibold text-center leading-none"

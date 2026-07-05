@@ -32,6 +32,7 @@ type PromptCacheConversationPreviewExtras = Partial<
   Pick<
     ApiInvocation,
     | "source"
+    | "livePhase"
     | "inputTokens"
     | "outputTokens"
     | "cacheInputTokens"
@@ -264,6 +265,7 @@ export function buildInvocationFromPromptCachePreview(
     promptCacheKey: preview.promptCacheKey ?? undefined,
     source: extras.source,
     status: preview.status,
+    livePhase: preview.livePhase ?? extras.livePhase,
     failureClass: preview.failureClass ?? undefined,
     failureKind: extras.failureKind,
     isActionable: extras.isActionable,
@@ -314,6 +316,7 @@ export function buildPromptCachePreviewFromInvocation(
     promptCacheKey: record.promptCacheKey?.trim() || null,
     occurredAt: record.occurredAt,
     status: record.status?.trim() || "unknown",
+    livePhase: record.livePhase ?? null,
     failureClass: normalizeFailureClass(record.failureClass),
     routeMode: record.routeMode?.trim() || null,
     model: record.model?.trim() || null,

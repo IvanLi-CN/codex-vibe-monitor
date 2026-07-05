@@ -1336,6 +1336,7 @@ async fn broadcast_summary_if_changed_skips_duplicate_payloads() {
         in_progress_conversation_count: Some(3),
         in_progress_retry_conversation_count: Some(0),
         in_progress_avg_wait_ms: None,
+        in_progress_phase_counts: None,
         non_success_cost: None,
         non_success_tokens: None,
         maintenance: None,

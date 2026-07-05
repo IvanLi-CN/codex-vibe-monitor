@@ -229,6 +229,7 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         firstResponseByteTotalAvgMs: 2_867.5,
         avgTotalMs: 860,
         inProgressInvocationCount: 3,
+        inProgressPhaseCounts: { queued: 1, requesting: 1, responding: 1 },
         retryInvocationCount: 1,
         recentInvocations: [
           createPreview({
@@ -680,10 +681,12 @@ describe("DashboardWorkingConversationsSection", () => {
     const recentBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-recent-breakdown"]',
     );
-    expect(recentBreakdown?.textContent).toContain("进行中");
+    expect(recentBreakdown?.textContent).toContain("排队中");
+    expect(recentBreakdown?.textContent).toContain("请求中");
+    expect(recentBreakdown?.textContent).toContain("响应中");
     expect(recentBreakdown?.textContent).toContain("失败");
     expect(recentBreakdown?.textContent).toContain("成功");
-    expect(recentBreakdown?.textContent).toContain("2");
+    expect(recentBreakdown?.textContent).toContain("6");
     expect(recentBreakdown?.textContent).toContain("1");
   });
 
@@ -695,6 +698,7 @@ describe("DashboardWorkingConversationsSection", () => {
         {
           ...response.accounts[0],
           inProgressInvocationCount: null,
+          inProgressPhaseCounts: null,
           retryInvocationCount: null,
         },
       ],
@@ -1484,7 +1488,7 @@ describe("DashboardWorkingConversationsSection", () => {
       hour12: false,
     }).format(new Date("2026-04-04T10:04:00Z"));
 
-    expect(card.textContent).toContain("运行中");
+    expect(card.textContent).toContain("响应中");
     expect(card.textContent).toContain(expectedSortAnchorLabel);
     expect(card.textContent).toContain("请求");
     expect(card.textContent).toContain("Token");
@@ -2661,11 +2665,11 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error("missing dashboard card");
     }
 
-    const statusLabel = Array.from(card.querySelectorAll("span")).find(
-      (node) => node.textContent === "运行中",
+    const statusLabel = card.querySelector(
+      '[data-testid="invocation-phase-badge"]',
     );
     if (!(statusLabel instanceof HTMLElement)) {
-      throw new Error("missing status label");
+      throw new Error(`missing phase label in card: ${card.textContent ?? ""}`);
     }
 
     const requestMetric = Array.from(card.querySelectorAll("span")).find(

@@ -39,6 +39,10 @@ import { resolveActiveRoutingPolicyBadges } from "../lib/tagRoutingRule";
 import { Alert } from "./ui/alert";
 import { AnimatedDigits } from "./AnimatedDigits";
 import { Badge } from "./ui/badge";
+import {
+  InvocationPhaseBadge,
+  InvocationPhaseSegments,
+} from "./InvocationPhaseBadge";
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Spinner } from "./ui/spinner";
 import { Tooltip } from "./ui/tooltip";
@@ -347,6 +351,46 @@ function resolveStatusMeta(
     };
   }
   return base;
+}
+
+function statusInlineToneClassName(variant: StatusMeta["badgeVariant"]) {
+  if (variant === "success") return "text-success";
+  if (variant === "warning") return "text-warning";
+  if (variant === "error") return "text-error";
+  if (variant === "info") return "text-info";
+  if (variant === "default") return "text-primary";
+  return "text-base-content/62";
+}
+
+function InlineInvocationStatus({
+  meta,
+  label,
+  className,
+}: {
+  meta: StatusMeta;
+  label: string;
+  className?: string;
+}) {
+  const toneClassName = statusInlineToneClassName(meta.badgeVariant);
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold leading-none",
+        toneClassName,
+        className,
+      )}
+    >
+      <AppIcon
+        name={meta.icon}
+        className={cn(
+          "h-3.5 w-3.5 shrink-0",
+          meta.icon === "loading" && "animate-spin",
+        )}
+        aria-hidden
+      />
+      <span>{label}</span>
+    </span>
+  );
 }
 
 function formatAccountPercentValue(
@@ -790,6 +834,7 @@ function AccountSegmentList({
     label: string;
     value: ReactNode;
     tone: AccountMetricTone;
+    iconName?: AppIconName;
   }>;
   className?: string;
   testId?: string;
@@ -806,17 +851,39 @@ function AccountSegmentList({
         showLabel ? "gap-1.5" : "gap-1.5",
       )}
     >
-      <span
-        className={cn(
-          "h-1.5 w-1.5 rounded-full",
-          ACCOUNT_METRIC_DOT_TONE_CLASSNAMES[segment.tone],
-        )}
-        aria-hidden="true"
-      />
       {showLabel ? (
-        <span className="text-[11px] font-semibold leading-none text-base-content/72">
-          {segment.label}
-        </span>
+        <>
+          {segment.iconName ? (
+            <AppIcon
+              name={segment.iconName}
+              className={cn(
+                "h-3.5 w-3.5 shrink-0",
+                ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[segment.tone],
+              )}
+              aria-hidden
+            />
+          ) : (
+            <span
+              className={cn(
+                "h-1.5 w-1.5 rounded-full",
+                ACCOUNT_METRIC_DOT_TONE_CLASSNAMES[segment.tone],
+              )}
+              aria-hidden="true"
+            />
+          )}
+          <span className="text-[11px] font-semibold leading-none text-base-content/72">
+            {segment.label}
+          </span>
+        </>
+      ) : null}
+      {!showLabel ? (
+        <span
+          className={cn(
+            "h-1.5 w-1.5 rounded-full",
+            ACCOUNT_METRIC_DOT_TONE_CLASSNAMES[segment.tone],
+          )}
+          aria-hidden="true"
+        />
       ) : null}
       <span
         className={cn(
@@ -1113,21 +1180,15 @@ function AccountRecentInvocationRow({
                 {invocation.record.invokeId}
               </span>
             </div>
-            <Badge
-              variant={statusMeta.badgeVariant}
-              className="min-h-5 gap-1 border-transparent bg-base-200/82 px-2 py-0.5 text-[9px] font-semibold leading-none shadow-none"
-            >
-              <AppIcon
-                name={statusMeta.icon}
-                className={cn(
-                  "h-2.25 w-2.25 shrink-0",
-                  invocation.isInFlight &&
-                    "motion-safe:animate-spin motion-reduce:animate-none",
-                )}
-                aria-hidden
+            {invocation.livePhase ? (
+              <InvocationPhaseBadge
+                phase={invocation.livePhase}
+                appearance="inline"
+                className="text-[11px]"
               />
-              <span>{statusLabel}</span>
-            </Badge>
+            ) : (
+              <InlineInvocationStatus meta={statusMeta} label={statusLabel} />
+            )}
             {renderInvocationTransportBadge(
               invocation.record,
               "min-h-5 border-[rgba(148,163,184,0.24)] bg-primary/8 px-2 py-0.5 text-[9px]",
@@ -1195,37 +1256,6 @@ function AccountRecentInvocationRow({
         </div>
       ) : null}
     </button>
-  );
-}
-
-function summarizeRecentInvocations(
-  invocations: DashboardWorkingConversationInvocationModel[],
-) {
-  return invocations.reduce(
-    (summary, invocation) => {
-      if (invocation.isInFlight) {
-        summary.inFlightCount += 1;
-        return summary;
-      }
-      if (invocation.tone === "warning" || invocation.tone === "error") {
-        summary.nonSuccessCount += 1;
-        if (invocation.tone === "error") {
-          summary.failureCount += 1;
-        }
-        return summary;
-      }
-      if (invocation.tone === "success") {
-        summary.successCount += 1;
-      }
-      return summary;
-    },
-    {
-      totalCount: invocations.length,
-      inFlightCount: 0,
-      nonSuccessCount: 0,
-      failureCount: 0,
-      successCount: 0,
-    },
   );
 }
 
@@ -1577,21 +1607,24 @@ function InvocationSlot({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5 self-start">
-          <Badge
-            variant={statusMeta.badgeVariant}
-            className="h-4.5 gap-1 border-transparent bg-base-100/12 px-1.5 py-0 text-[8.5px] font-semibold leading-none shadow-none"
-          >
-            <AppIcon
-              name={statusMeta.icon}
-              className={cn(
-                "h-2.5 w-2.5 shrink-0",
-                invocation.isInFlight &&
-                  "motion-safe:animate-spin motion-reduce:animate-none",
-              )}
-              aria-hidden
+          {invocation.livePhase ? (
+            <InvocationPhaseBadge
+              phase={invocation.livePhase}
+              className="h-4.5 px-1.5 py-0 text-[8.5px] font-semibold leading-none shadow-none"
             />
-            <span>{statusLabel}</span>
-          </Badge>
+          ) : (
+            <Badge
+              variant={statusMeta.badgeVariant}
+              className="h-4.5 gap-1 border-transparent bg-base-100/12 px-1.5 py-0 text-[8.5px] font-semibold leading-none shadow-none"
+            >
+              <AppIcon
+                name={statusMeta.icon}
+                className="h-2.5 w-2.5 shrink-0"
+                aria-hidden
+              />
+              <span>{statusLabel}</span>
+            </Badge>
+          )}
           {renderInvocationTransportBadge(
             invocation.record,
             "h-4.5 border-primary/45 bg-primary/10 px-1.5 text-[8.5px]",
@@ -1880,10 +1913,6 @@ function DashboardUpstreamAccountActivityCard({
     () => resolveAccountActivityStatus({ account, locale, localeTag }),
     [account, locale, localeTag],
   );
-  const recentSummary = useMemo(
-    () => summarizeRecentInvocations(recentInvocations),
-    [recentInvocations],
-  );
   const requestSummarySegments = useMemo(
     () => [
       {
@@ -1943,40 +1972,36 @@ function DashboardUpstreamAccountActivityCard({
   );
   const recentBridgeSegments = useMemo(() => {
     const segments = [];
-    if (recentSummary.inFlightCount > 0) {
-      segments.push({
-        label: locale === "zh" ? "进行中" : "In flight",
-        value: formatAccountNumberValue(recentSummary.inFlightCount, localeTag, 0),
-        tone: "info" as const,
-      });
-    }
-    if (recentSummary.failureCount > 0) {
+    if (account.failureCount > 0) {
       segments.push({
         label: locale === "zh" ? "失败" : "Failure",
-        value: formatAccountNumberValue(recentSummary.failureCount, localeTag, 0),
+        value: formatAccountNumberValue(account.failureCount, localeTag, 0),
         tone: "error" as const,
+        iconName: "alert-circle-outline" as const,
       });
     }
-    if (recentSummary.nonSuccessCount > recentSummary.failureCount) {
+    if (account.nonSuccessCount > account.failureCount) {
       segments.push({
         label: locale === "zh" ? "非成功" : "Non-success",
         value: formatAccountNumberValue(
-          recentSummary.nonSuccessCount - recentSummary.failureCount,
+          account.nonSuccessCount - account.failureCount,
           localeTag,
           0,
         ),
         tone: "warning" as const,
+        iconName: "alert-outline" as const,
       });
     }
-    if (recentSummary.successCount > 0) {
+    if (account.successCount > 0) {
       segments.push({
         label: locale === "zh" ? "成功" : "Success",
-        value: formatAccountNumberValue(recentSummary.successCount, localeTag, 0),
+        value: formatAccountNumberValue(account.successCount, localeTag, 0),
         tone: "success" as const,
+        iconName: "check-circle-outline" as const,
       });
     }
     return segments;
-  }, [locale, localeTag, recentSummary.failureCount, recentSummary.inFlightCount, recentSummary.nonSuccessCount, recentSummary.successCount]);
+  }, [account.failureCount, account.nonSuccessCount, account.successCount, locale, localeTag]);
   const firstByteValue =
     (account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs) == null
       ? FALLBACK_CELL
@@ -2361,14 +2386,23 @@ function DashboardUpstreamAccountActivityCard({
               count: recentPreviewLimit,
             })}
           </div>
-          {recentBridgeSegments.length > 0 ? (
-            <AccountSegmentList
-              segments={recentBridgeSegments}
-              testId="dashboard-upstream-account-recent-breakdown"
-              showLabel
+          <div
+            className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5"
+            data-testid="dashboard-upstream-account-recent-breakdown"
+          >
+            <InvocationPhaseSegments
+              counts={account.inProgressPhaseCounts}
+              appearance="inline"
               className="justify-end"
             />
-          ) : null}
+            {recentBridgeSegments.length > 0 ? (
+              <AccountSegmentList
+                segments={recentBridgeSegments}
+                showLabel
+                className="justify-end"
+              />
+            ) : null}
+          </div>
         </div>
         <div className="grid flex-1 auto-rows-fr gap-1.5">
           {recentInvocations.map((invocation: DashboardWorkingConversationInvocationModel) => (
@@ -3016,18 +3050,25 @@ export function DashboardWorkingConversationsSection({
                                   <span className="font-mono">
                                     {sortAnchorLabel}
                                   </span>
-                                  <span className="font-semibold uppercase tracking-[0.14em] text-base-content/76">
-                                    {currentStatusLabel}
-                                  </span>
-                                  <span
-                                    className={cn(
-                                      "inline-flex h-2 w-2 rounded-full",
-                                      currentStatusMeta.beaconClassName,
-                                      card.currentInvocation.isInFlight &&
-                                        "motion-safe:animate-pulse motion-reduce:animate-none",
-                                    )}
-                                    aria-hidden
-                                  />
+                                  {card.currentInvocation.livePhase ? (
+                                    <InvocationPhaseBadge
+                                      phase={card.currentInvocation.livePhase}
+                                      className="h-5 px-2 py-0 text-[9px] font-semibold"
+                                    />
+                                  ) : (
+                                    <>
+                                      <span className="font-semibold uppercase tracking-[0.14em] text-base-content/76">
+                                        {currentStatusLabel}
+                                      </span>
+                                      <span
+                                        className={cn(
+                                          "inline-flex h-2 w-2 rounded-full",
+                                          currentStatusMeta.beaconClassName,
+                                        )}
+                                        aria-hidden
+                                      />
+                                    </>
+                                  )}
                                 </div>
                               </div>
 

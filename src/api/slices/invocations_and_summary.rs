@@ -39,11 +39,81 @@ const PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT: usize = 3;
 const PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT: usize = 5;
 const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
 const INVOCATION_RESPONSE_BODY_PREVIEW_CHAR_LIMIT: usize = 2_000;
+const INVOCATION_LIVE_PHASE_QUEUED: &str = "queued";
+const INVOCATION_LIVE_PHASE_REQUESTING: &str = "requesting";
+const INVOCATION_LIVE_PHASE_RESPONDING: &str = "responding";
 
 // Legacy records can carry `failure_class=none` or NULL while still representing failures.
 // Keep classification consistent with `resolve_failure_classification` without requiring a
 // backfill pass to complete before the summary + filters become accurate.
 pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = "CASE   WHEN LOWER(TRIM(COALESCE(failure_class, ''))) IN ('service_failure', 'client_failure', 'client_abort')     THEN LOWER(TRIM(COALESCE(failure_class, '')))   ELSE     CASE       WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed')         AND LOWER(TRIM(COALESCE(error_message, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' THEN 'none'       WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')         AND LOWER(TRIM(COALESCE(error_message, ''))) = '' THEN 'none'       WHEN LOWER(TRIM(COALESCE(status, ''))) = ''         AND LOWER(TRIM(COALESCE(error_message, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' THEN 'none'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'downstream_closed'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%'         OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) LIKE '%downstream closed while streaming upstream response%'         THEN 'client_abort'       WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_429'         OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'upstream_http_429'         THEN 'service_failure'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('request_body_stream_error_client_closed', 'invalid_api_key', 'api_key_not_found', 'api_key_missing')         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key format is invalid%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%incorrect api key provided%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key not found%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%'         OR (LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' AND LOWER(TRIM(COALESCE(status, ''))) != 'http_429')         OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403')         THEN 'client_failure'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout')         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_read_timeout]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_handshake_timeout]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to contact upstream%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream response stream reported failure%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream stream error%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%request body read timed out%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%'         OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%'         THEN 'service_failure'       WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') THEN 'none'       WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200'         AND LOWER(TRIM(COALESCE(error_message, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' THEN 'none'       ELSE 'service_failure'     END END";
+
+fn latest_pool_attempt_phase_sql(invocation_ref: &str) -> String {
+    format!(
+        "(SELECT LOWER(TRIM(COALESCE(attempt.phase, ''))) \
+            FROM pool_upstream_request_attempts attempt \
+           WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
+             AND attempt.occurred_at = {invocation_ref}.occurred_at \
+           ORDER BY attempt.attempt_index DESC, attempt.id DESC \
+           LIMIT 1)"
+    )
+}
+
+fn invocation_live_phase_sql(invocation_ref: &str) -> String {
+    let attempt_phase_sql = latest_pool_attempt_phase_sql(invocation_ref);
+    let upstream_account_id_sql =
+        format!("CASE WHEN json_valid({invocation_ref}.payload) THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END");
+    format!(
+        "CASE \
+           WHEN LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) NOT IN ('running', 'pending') THEN NULL \
+           WHEN LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'pending' THEN '{queued}' \
+           WHEN {attempt_phase} = 'streaming_response' \
+             OR ({invocation_ref}.t_upstream_ttfb_ms IS NOT NULL AND {invocation_ref}.t_upstream_ttfb_ms > 0) \
+             OR ({invocation_ref}.t_upstream_stream_ms IS NOT NULL AND {invocation_ref}.t_upstream_stream_ms > 0) THEN '{responding}' \
+           WHEN {attempt_phase} IN ('connecting', 'sending_request', 'waiting_first_byte') \
+             OR {upstream_account_id} IS NOT NULL \
+             OR ({invocation_ref}.t_upstream_connect_ms IS NOT NULL AND {invocation_ref}.t_upstream_connect_ms > 0) \
+             OR ({invocation_ref}.t_req_read_ms IS NOT NULL AND {invocation_ref}.t_req_read_ms > 0) \
+             OR ({invocation_ref}.t_req_parse_ms IS NOT NULL AND {invocation_ref}.t_req_parse_ms > 0) THEN '{requesting}' \
+           ELSE '{queued}' \
+         END",
+        attempt_phase = attempt_phase_sql,
+        upstream_account_id = upstream_account_id_sql,
+        queued = INVOCATION_LIVE_PHASE_QUEUED,
+        requesting = INVOCATION_LIVE_PHASE_REQUESTING,
+        responding = INVOCATION_LIVE_PHASE_RESPONDING,
+    )
+}
+
+fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str> {
+    fn has_positive_timing(values: &[Option<f64>]) -> bool {
+        values
+            .iter()
+            .flatten()
+            .any(|value| value.is_finite() && *value > 0.0)
+    }
+
+    match normalized_runtime_text(record.status.as_deref()).as_str() {
+        "pending" => Some(INVOCATION_LIVE_PHASE_QUEUED),
+        "running" => {
+            if has_positive_timing(&[record.t_upstream_ttfb_ms, record.t_upstream_stream_ms])
+            {
+                Some(INVOCATION_LIVE_PHASE_RESPONDING)
+            } else if record.upstream_account_id.is_some()
+                || has_positive_timing(&[
+                    record.t_upstream_connect_ms,
+                    record.t_req_read_ms,
+                    record.t_req_parse_ms,
+                ])
+            {
+                Some(INVOCATION_LIVE_PHASE_REQUESTING)
+            } else {
+                Some(INVOCATION_LIVE_PHASE_QUEUED)
+            }
+        }
+        _ => None,
+    }
+}
 
 fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
     let mut query = QueryBuilder::new(
@@ -68,7 +138,12 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
         .push(INVOCATION_REASONING_EFFORT_SQL)
         .push(
             " AS reasoning_effort, \
-         total_tokens, cost, status, error_message, \
+         total_tokens, cost, status, \
+         ",
+        )
+        .push(invocation_live_phase_sql("codex_invocations"))
+        .push(
+            " AS live_phase, error_message, \
          ",
         )
         .push(INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
@@ -2456,7 +2531,7 @@ async fn load_in_progress_conversation_count(
 ) -> Result<i64, ApiError> {
     Ok(load_in_progress_summary_snapshot(state, source_scope, upstream_account_id)
         .await?
-        .0)
+        .in_progress_count)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2464,6 +2539,7 @@ struct SummaryLiveAugmentation {
     in_progress_conversation_count: Option<i64>,
     in_progress_retry_conversation_count: Option<i64>,
     in_progress_avg_wait_ms: Option<f64>,
+    in_progress_phase_counts: Option<InvocationPhaseCountsResponse>,
     non_success_tokens: Option<i64>,
 }
 
@@ -2502,9 +2578,14 @@ async fn load_summary_live_augmentation(
 ) -> Result<SummaryLiveAugmentation, ApiError> {
     let in_progress = if policy.include_in_progress {
         let snapshot = load_in_progress_summary_snapshot(state, source_scope, upstream_account_id).await?;
-        (Some(snapshot.0), Some(snapshot.1), snapshot.2)
+        (
+            Some(snapshot.in_progress_count),
+            Some(snapshot.retry_count),
+            snapshot.avg_wait_ms,
+            Some(snapshot.phase_counts),
+        )
     } else {
-        (None, None, None)
+        (None, None, None, None)
     };
     let non_success_tokens = if policy.include_non_success_tokens {
         if let Some((start, end)) = range {
@@ -2527,6 +2608,7 @@ async fn load_summary_live_augmentation(
         in_progress_conversation_count: in_progress.0,
         in_progress_retry_conversation_count: in_progress.1,
         in_progress_avg_wait_ms: in_progress.2,
+        in_progress_phase_counts: in_progress.3,
         non_success_tokens,
     })
 }
@@ -2539,20 +2621,30 @@ fn apply_summary_live_augmentation(
     response.in_progress_retry_conversation_count =
         augmentation.in_progress_retry_conversation_count;
     response.in_progress_avg_wait_ms = augmentation.in_progress_avg_wait_ms;
+    response.in_progress_phase_counts = augmentation.in_progress_phase_counts;
     response.non_success_tokens = augmentation.non_success_tokens;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct InProgressSummarySnapshot {
+    in_progress_count: i64,
+    retry_count: i64,
+    avg_wait_ms: Option<f64>,
+    phase_counts: InvocationPhaseCountsResponse,
 }
 
 async fn load_in_progress_summary_snapshot(
     state: &AppState,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-) -> Result<(i64, i64, Option<f64>), ApiError> {
+) -> Result<InProgressSummarySnapshot, ApiError> {
     #[derive(Debug, FromRow)]
     struct RuntimeKeyRow {
         invoke_id: String,
         occurred_at: String,
         retry_count: i64,
         upstream_ttfb_ms: Option<f64>,
+        live_phase: Option<String>,
     }
 
     let resolved_upstream_account_id_sql =
@@ -2601,7 +2693,10 @@ async fn load_in_progress_summary_snapshot(
         "SELECT inv.invoke_id AS invoke_id, inv.occurred_at AS occurred_at, ",
     );
     db_key_query.push(retry_sql.as_str()).push(
-        " AS retry_count, live.upstream_ttfb_ms AS upstream_ttfb_ms \
+        " AS retry_count, live.upstream_ttfb_ms AS upstream_ttfb_ms, ",
+    );
+    db_key_query.push(invocation_live_phase_sql("inv")).push(
+        " AS live_phase \
          FROM invocation_in_progress_live live \
          JOIN codex_invocations inv ON inv.id = live.invocation_id \
          WHERE 1 = 1",
@@ -2622,6 +2717,10 @@ async fn load_in_progress_summary_snapshot(
         .build_query_as::<RuntimeKeyRow>()
         .fetch_all(&state.pool)
         .await?;
+    let mut phase_counts = InvocationPhaseCountsResponse::default();
+    for row in &db_runtime_rows {
+        phase_counts.increment_phase_name(row.live_phase.as_deref());
+    }
     let runtime_snapshot = state.proxy_runtime_invocations.snapshot();
     let db_terminal_keys =
         query_terminal_db_keys_for_runtime_records(&state.pool, &runtime_snapshot, None).await?;
@@ -2645,9 +2744,18 @@ async fn load_in_progress_summary_snapshot(
             continue;
         };
         if runtime_in_flight_record_matches_filters(runtime_record, &filter, source_scope) {
+            let runtime_phase = runtime_record
+                .live_phase
+                .as_deref()
+                .or_else(|| runtime_invocation_live_phase(runtime_record));
+            if runtime_phase != row.live_phase.as_deref() {
+                phase_counts.decrement_phase_name(row.live_phase.as_deref());
+                phase_counts.increment_phase_name(runtime_phase);
+            }
             continue;
         }
         db_in_progress_count = db_in_progress_count.saturating_sub(1);
+        phase_counts.decrement_phase_name(row.live_phase.as_deref());
         if row.retry_count > 0 {
             retry_count = retry_count.saturating_sub(1);
         }
@@ -2683,6 +2791,23 @@ async fn load_in_progress_summary_snapshot(
             runtime_record_is_retry(record) && !db_runtime_keys.get(&key).copied().unwrap_or(false)
         })
         .count() as i64;
+    let runtime_phase_counts = runtime_records
+        .iter()
+        .filter(|record| {
+            !db_runtime_keys.contains_key(&(record.invoke_id.clone(), record.occurred_at.clone()))
+        })
+        .fold(
+            InvocationPhaseCountsResponse::default(),
+            |mut counts, record| {
+                counts.increment_phase_name(
+                    record
+                        .live_phase
+                        .as_deref()
+                        .or_else(|| runtime_invocation_live_phase(record)),
+                );
+                counts
+            },
+        );
     let (ttfb_sum, ttfb_count) = runtime_records
         .iter()
         .filter(|record| {
@@ -2704,11 +2829,15 @@ async fn load_in_progress_summary_snapshot(
             "overlayed memory runtime in-progress records into summary live augmentation"
         );
     }
-    Ok((
-        db_in_progress_count + runtime_in_progress_count,
-        retry_count + runtime_retry_count,
-        combined_avg_wait_ms,
-    ))
+    phase_counts.queued += runtime_phase_counts.queued;
+    phase_counts.requesting += runtime_phase_counts.requesting;
+    phase_counts.responding += runtime_phase_counts.responding;
+    Ok(InProgressSummarySnapshot {
+        in_progress_count: db_in_progress_count + runtime_in_progress_count,
+        retry_count: retry_count + runtime_retry_count,
+        avg_wait_ms: combined_avg_wait_ms,
+        phase_counts,
+    })
 }
 
 async fn load_live_invocation_ids_in_range(
@@ -2974,6 +3103,7 @@ pub(crate) async fn build_empty_summary_response(
         in_progress_conversation_count: None,
         in_progress_retry_conversation_count: None,
         in_progress_avg_wait_ms: None,
+        in_progress_phase_counts: None,
         non_success_cost: Some(0.0),
         non_success_tokens: None,
         maintenance: Some(load_stats_maintenance_response(state).await?),
@@ -3001,11 +3131,29 @@ struct UpstreamAccountActivityMetaRow {
     plan_type: Option<String>,
 }
 
-#[derive(Debug, Clone, FromRow)]
-struct UpstreamAccountInProgressRow {
-    upstream_account_id: i64,
+#[derive(Debug, Default, Clone, Copy)]
+struct UpstreamAccountInProgressSummary {
     in_progress_count: i64,
     retry_count: i64,
+    phase_counts: InvocationPhaseCountsResponse,
+}
+
+impl UpstreamAccountInProgressSummary {
+    fn add(&mut self, retry: bool, phase: Option<&str>) {
+        self.in_progress_count += 1;
+        if retry {
+            self.retry_count += 1;
+        }
+        self.phase_counts.increment_phase_name(phase);
+    }
+
+    fn subtract(&mut self, retry: bool, phase: Option<&str>) {
+        self.in_progress_count = self.in_progress_count.saturating_sub(1);
+        if retry {
+            self.retry_count = self.retry_count.saturating_sub(1);
+        }
+        self.phase_counts.decrement_phase_name(phase);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -3204,6 +3352,8 @@ async fn query_live_upstream_account_activity_preview_rows(
         .push(" AS prompt_cache_key, occurred_at, ")
         .push(invocation_display_status_sql())
         .push(" AS status, ")
+        .push(invocation_live_phase_sql("codex_invocations"))
+        .push(" AS live_phase, ")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(" AS failure_class, ")
         .push(INVOCATION_ROUTE_MODE_SQL)
@@ -3294,6 +3444,10 @@ fn runtime_upstream_account_activity_preview_row(
     let Some(upstream_account_id) = record.upstream_account_id else {
         return None;
     };
+    let live_phase = record
+        .live_phase
+        .clone()
+        .or_else(|| runtime_invocation_live_phase(&record).map(str::to_string));
     Some(UpstreamAccountInvocationPreviewRow {
         upstream_account_id,
         id: record.id,
@@ -3301,6 +3455,7 @@ fn runtime_upstream_account_activity_preview_row(
         prompt_cache_key: record.prompt_cache_key,
         occurred_at: record.occurred_at,
         status: record.status.unwrap_or_else(|| "running".to_string()),
+        live_phase,
         failure_class: record.failure_class,
         route_mode: record.route_mode,
         model: record.model,
@@ -3409,13 +3564,14 @@ async fn query_upstream_account_activity_meta(
 async fn query_upstream_account_in_progress_counts(
     state: &AppState,
     source_scope: InvocationSourceScope,
-) -> Result<HashMap<i64, (i64, i64)>, ApiError> {
+) -> Result<HashMap<i64, UpstreamAccountInProgressSummary>, ApiError> {
     #[derive(Debug, FromRow)]
     struct RuntimeKeyRow {
         invoke_id: String,
         occurred_at: String,
         upstream_account_id: i64,
         retry_count: i64,
+        live_phase: Option<String>,
     }
 
     let resolved_upstream_account_id_sql =
@@ -3424,53 +3580,20 @@ async fn query_upstream_account_in_progress_counts(
         resolved_upstream_account_id_sql.as_str(),
         source_scope,
     );
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
-    query
-        .push(resolved_upstream_account_id_sql.as_str())
-        .push(
-            " AS upstream_account_id, \
-                COUNT(*) AS in_progress_count, \
-                COALESCE(SUM(",
-        );
-    query.push(retry_sql.as_str()).push(
-        "), 0) AS retry_count \
-         FROM invocation_in_progress_live live \
-         JOIN codex_invocations inv ON inv.id = live.invocation_id \
-         WHERE ",
-    );
-    query
-        .push(resolved_upstream_account_id_sql.as_str())
-        .push(" IS NOT NULL");
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND live.source = ").push_bind(SOURCE_PROXY);
-    }
-    query
-        .push(" GROUP BY ")
-        .push(resolved_upstream_account_id_sql.as_str());
-
-    let mut counts = query
-        .build_query_as::<UpstreamAccountInProgressRow>()
-        .fetch_all(&state.pool)
-        .await?
-        .into_iter()
-        .map(|row| {
-            (
-                row.upstream_account_id,
-                (row.in_progress_count.max(0), row.retry_count.max(0)),
-            )
-        })
-        .collect::<HashMap<_, _>>();
     let mut db_key_query = QueryBuilder::<Sqlite>::new("SELECT inv.invoke_id AS invoke_id, inv.occurred_at AS occurred_at, ");
     db_key_query
         .push(resolved_upstream_account_id_sql.as_str())
         .push(" AS upstream_account_id, ")
         .push(retry_sql.as_str())
         .push(
-            " AS retry_count \
+            " AS retry_count, ",
+        );
+    db_key_query.push(invocation_live_phase_sql("inv")).push(
+        " AS live_phase \
          FROM invocation_in_progress_live live \
          JOIN codex_invocations inv ON inv.id = live.invocation_id \
          WHERE ",
-        );
+    );
     db_key_query
         .push(resolved_upstream_account_id_sql.as_str())
         .push(" IS NOT NULL");
@@ -3479,20 +3602,38 @@ async fn query_upstream_account_in_progress_counts(
             .push(" AND live.source = ")
             .push_bind(SOURCE_PROXY);
     }
-    let db_runtime_keys = db_key_query
+    let db_rows = db_key_query
         .build_query_as::<RuntimeKeyRow>()
         .fetch_all(&state.pool)
-        .await?
+        .await?;
+    let mut counts = HashMap::<i64, UpstreamAccountInProgressSummary>::new();
+    for row in &db_rows {
+        counts
+            .entry(row.upstream_account_id)
+            .or_default()
+            .add(row.retry_count > 0, row.live_phase.as_deref());
+    }
+    let db_runtime_keys = db_rows
         .into_iter()
         .map(|row| {
             (
                 (row.invoke_id, row.occurred_at),
-                (row.upstream_account_id, row.retry_count > 0),
+                (
+                    row.upstream_account_id,
+                    row.retry_count > 0,
+                    row.live_phase,
+                ),
             )
         })
         .collect::<HashMap<_, _>>();
+    let runtime_snapshot = state.proxy_runtime_invocations.snapshot();
+    let db_terminal_keys =
+        query_terminal_db_keys_for_runtime_records(&state.pool, &runtime_snapshot, None).await?;
     let mut runtime_overlay_row_count = 0_i64;
-    for record in state.proxy_runtime_invocations.snapshot() {
+    for record in runtime_snapshot {
+        if db_terminal_keys.contains(&(record.invoke_id.clone(), record.occurred_at.clone())) {
+            continue;
+        }
         if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
             continue;
         }
@@ -3506,32 +3647,38 @@ async fn query_upstream_account_in_progress_counts(
             continue;
         };
         let key = (record.invoke_id.clone(), record.occurred_at.clone());
-        if let Some((db_upstream_account_id, db_is_retry)) = db_runtime_keys.get(&key).copied() {
+        let runtime_phase = record
+            .live_phase
+            .as_deref()
+            .or_else(|| runtime_invocation_live_phase(&record));
+        if let Some((db_upstream_account_id, db_is_retry, db_phase)) = db_runtime_keys.get(&key) {
             let runtime_is_retry = runtime_record_is_retry(&record);
-            if db_upstream_account_id != upstream_account_id {
-                if let Some(entry) = counts.get_mut(&db_upstream_account_id) {
-                    entry.0 = entry.0.saturating_sub(1);
-                    if db_is_retry {
-                        entry.1 = entry.1.saturating_sub(1);
-                    }
+            if *db_upstream_account_id != upstream_account_id {
+                if let Some(entry) = counts.get_mut(db_upstream_account_id) {
+                    entry.subtract(*db_is_retry, db_phase.as_deref());
                 }
-                let entry = counts.entry(upstream_account_id).or_insert((0, 0));
-                entry.0 += 1;
-                if runtime_is_retry {
-                    entry.1 += 1;
-                }
+                counts
+                    .entry(upstream_account_id)
+                    .or_default()
+                    .add(runtime_is_retry, runtime_phase);
                 runtime_overlay_row_count += 1;
-            } else if runtime_is_retry && !db_is_retry {
-                let entry = counts.entry(upstream_account_id).or_insert((0, 0));
-                entry.1 += 1;
+            } else {
+                let entry = counts.entry(upstream_account_id).or_default();
+                if runtime_is_retry && !*db_is_retry {
+                    entry.retry_count += 1;
+                }
+                if runtime_phase != db_phase.as_deref() {
+                    entry.phase_counts.decrement_phase_name(db_phase.as_deref());
+                    entry.phase_counts.increment_phase_name(runtime_phase);
+                    runtime_overlay_row_count += 1;
+                }
             }
             continue;
         }
-        let entry = counts.entry(upstream_account_id).or_insert((0, 0));
-        entry.0 += 1;
-        if runtime_record_is_retry(&record) {
-            entry.1 += 1;
-        }
+        counts
+            .entry(upstream_account_id)
+            .or_default()
+            .add(runtime_record_is_retry(&record), runtime_phase);
         runtime_overlay_row_count += 1;
     }
     if runtime_overlay_row_count > 0 {
@@ -3717,15 +3864,19 @@ pub(crate) async fn fetch_upstream_account_activity(
                 range.start,
                 range.end,
             );
-            let (in_progress_invocation_count, retry_invocation_count) =
+            let (in_progress_invocation_count, in_progress_phase_counts, retry_invocation_count) =
                 if params.range == "yesterday" {
-                    (None, None)
+                    (None, None, None)
                 } else {
-                    let (in_progress_count, retry_count) = in_progress_counts
+                    let summary = in_progress_counts
                         .get(&upstream_account_id)
                         .copied()
-                        .unwrap_or((0, 0));
-                    (Some(in_progress_count), Some(retry_count))
+                        .unwrap_or_default();
+                    (
+                        Some(summary.in_progress_count),
+                        Some(summary.phase_counts),
+                        Some(summary.retry_count),
+                    )
                 };
 
             UpstreamAccountActivityAccountResponse {
@@ -3772,6 +3923,7 @@ pub(crate) async fn fetch_upstream_account_activity(
                     aggregate.total_latency_sum_ms / aggregate.total_latency_sample_count as f64,
                 ),
                 in_progress_invocation_count,
+                in_progress_phase_counts,
                 retry_invocation_count,
                 effective_routing_rule: effective_routing_rules
                     .get(&upstream_account_id)
