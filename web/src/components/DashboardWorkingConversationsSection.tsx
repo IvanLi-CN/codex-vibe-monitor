@@ -614,7 +614,7 @@ function AccountHeroMetric({
             iconClassName,
           )}
         >
-          <AppIcon name={iconName} />
+          <AppIcon name={iconName} className={cn(iconName === "send" && "-rotate-45")} />
         </span>
         <div
           className={cn(
@@ -746,7 +746,7 @@ function AccountInlineMetric({
           iconClassName,
         )}
       >
-        <AppIcon name={iconName} />
+        <AppIcon name={iconName} className={cn(iconName === "send" && "-rotate-45")} />
       </span>
       <span
         className={cn(

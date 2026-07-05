@@ -171,7 +171,7 @@ function MetricTile({
         subdued ? 'text-base-content/45' : toneClass ?? 'text-base-content/65',
       )}
     >
-      <AppIcon name={iconName} />
+      <AppIcon name={iconName} className={cn(iconName === 'send' && '-rotate-45')} />
     </span>
   ) : null
 
