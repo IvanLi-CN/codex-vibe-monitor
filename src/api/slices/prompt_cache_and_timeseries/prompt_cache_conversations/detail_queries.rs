@@ -96,6 +96,8 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
             .push(" AS prompt_cache_key, id, invoke_id, occurred_at, ")
             .push(invocation_display_status_sql())
             .push(" AS status, ")
+            .push(invocation_live_phase_sql("codex_invocations"))
+            .push(" AS live_phase, ")
             .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
             .push(" AS failure_class, ")
             .push(INVOCATION_ROUTE_MODE_SQL)

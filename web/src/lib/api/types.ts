@@ -2,6 +2,8 @@ export type {
   ApiInvocation,
   ApiInvocationTimings,
   ApiInvocationRawMetadata,
+  InvocationLivePhase,
+  InvocationPhaseCounts,
   ListResponse,
   ApiPoolUpstreamRequestAttempt,
   InvocationRecordsQuery,

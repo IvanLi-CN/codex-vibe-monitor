@@ -27,6 +27,7 @@
 - 2026-07-02：账号活动接口补出账号当前 `effectiveRoutingRule`，并将账号卡标题区空位用于只读关键策略徽章；该区域只展示 `主力 / 兜底 / 禁新对话 / 禁出 / 禁入 / Fast / 并发 / 重试` 等策略信号，不展示普通系统 tag 名称。
 - 2026-07-04：成本周期统计中的“失败成本比率”锁定为失败成本占总成本的比例，即 `failureCost / totalCost`；请求失败率继续只属于请求数组，避免失败成本为 0 时成本卡仍显示非零失败成本比率。
 - 2026-07-05：账号卡标题区的文本型实时指标修正为 `进行中调用`，口径固定为账号活动接口的 `inProgressInvocationCount`；撤回 Dashboard 账号活动接口中误加的 `activeConversationCount` 依赖，避免把 sticky route 活跃对话数误当作当前调用压力。
+- 2026-07-05：运行态调用从笼统 `进行中` 拆成 `排队中 / 请求中 / 响应中`，并要求账号卡所有运行态统计只读后端账号级 live `inProgressPhaseCounts`；recent 列表是展示窗口，不再承担统计事实源职责。
 
 ## Key Reasons / Replacements
 

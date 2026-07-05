@@ -452,6 +452,10 @@ fn prompt_cache_invocation_preview_from_runtime_record(
             .status
             .clone()
             .unwrap_or_else(|| "unknown".to_string()),
+        live_phase: record
+            .live_phase
+            .clone()
+            .or_else(|| runtime_invocation_live_phase(&record).map(str::to_string)),
         failure_class: normalize_trimmed_optional_string(record.failure_class.clone()),
         route_mode: normalize_trimmed_optional_string(record.route_mode.clone()),
         model: normalize_trimmed_optional_string(record.model.clone()),
@@ -541,6 +545,7 @@ pub(crate) fn prompt_cache_invocation_preview_from_row(
         prompt_cache_key: Some(row.prompt_cache_key),
         occurred_at: row.occurred_at,
         status: row.status,
+        live_phase: normalize_trimmed_optional_string(row.live_phase),
         failure_class: normalize_trimmed_optional_string(row.failure_class),
         route_mode: normalize_trimmed_optional_string(row.route_mode),
         model: normalize_trimmed_optional_string(row.model),
@@ -594,6 +599,7 @@ pub(crate) fn upstream_account_invocation_preview_from_row(
         prompt_cache_key: row.prompt_cache_key,
         occurred_at: row.occurred_at,
         status: row.status,
+        live_phase: normalize_trimmed_optional_string(row.live_phase),
         failure_class: normalize_trimmed_optional_string(row.failure_class),
         route_mode: normalize_trimmed_optional_string(row.route_mode),
         model: normalize_trimmed_optional_string(row.model),

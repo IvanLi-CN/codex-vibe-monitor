@@ -1929,6 +1929,9 @@ pub(crate) struct ApiInvocation {
     pub(crate) total_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,
     pub(crate) status: Option<String>,
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) live_phase: Option<String>,
     pub(crate) error_message: Option<String>,
     #[sqlx(default)]
     pub(crate) downstream_status_code: Option<i64>,

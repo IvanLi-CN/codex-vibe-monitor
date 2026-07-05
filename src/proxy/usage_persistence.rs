@@ -2179,6 +2179,7 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         total_tokens: record.usage.total_tokens,
         cost: record.cost,
         status: Some(record.status.clone()),
+        live_phase: None,
         error_message: record.error_message.clone(),
         downstream_status_code: payload_i64(payload, "downstreamStatusCode"),
         failure_kind: failure.failure_kind.clone().or_else(|| record.failure_kind.clone()),

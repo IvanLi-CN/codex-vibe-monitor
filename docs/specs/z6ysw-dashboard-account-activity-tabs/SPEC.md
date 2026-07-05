@@ -49,12 +49,12 @@
 - `上游账号` tab 首次打开前不得发请求；首次激活后才加载，并在 tab 未激活时不参与 SSE/records 刷新预算。
 - `上游账号` 视图只展示当前共享 range 内“至少有 1 条调用”的账号；账号标题直接使用 `displayName`。
 - `上游账号` 视图仅支持 `today / yesterday / 1d / 7d`；当共享 range 为 `usage` 时，该 tab 必须 disabled，且若当前停留在账号 tab，必须自动回退到 `对话`。
-- 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`retryInvocationCount`、`effectiveRoutingRule` 与 `recentInvocations[4]`。
+- 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`inProgressPhaseCounts`、`retryInvocationCount`、`effectiveRoutingRule` 与 `recentInvocations[4]`。
 - `recentInvocations` 必须限制在当前所选范围内，按 `occurredAt DESC` 排序，并使用后端 bounded query 返回。
 - `recentInvocations[]` 必须额外返回真实 `promptCacheKey?: string | null`，供账号卡 recent 行生成稳定的对话短 ID 与详情抽屉 selection。
 - 账号卡不是折叠卡，也不是 `2 x 2` 小格子；它是单张放大卡片，桌面宽屏 `>=1660px` 时每行 2 张，其余断点为 1 列。
 - 账号卡必须保持紧凑信息卡定位；在桌面宽屏下允许按放大卡呈现，但不得因为固定高度或装饰性留白把视觉效果拉成整页面板。
-- 单账号卡标题行必须展示账号名、计划/状态、关键策略徽章、账号 ID，并把实时主指标 `进行中调用`、`TPM`、`消费速率` 作为文本型行内指标放在同一顶部区域；`进行中调用` 必须来自账号活动接口的 `inProgressInvocationCount`，当值为 `null` 时显示 `—`；不得用卡片型容器展示这些实时指标，且账号卡内不得再渲染 `渠道 xxx / 分组` 或顶部 `调用` 指标。
+- 单账号卡标题行必须展示账号名、计划/状态、关键策略徽章、账号 ID，并把实时主指标 `进行中调用`、`TPM`、`消费速率` 作为文本型行内指标放在同一顶部区域；`进行中调用` 必须来自账号活动接口的 `inProgressInvocationCount`，当值为 `null` 时显示 `—`；标题区还必须用紧凑 chips 拆分展示 `排队中 / 请求中 / 响应中`，数值只取账号活动接口的 `inProgressPhaseCounts`，不得从卡内 `recentInvocations` 推导；不得用卡片型容器展示这些实时指标，且账号卡内不得再渲染 `渠道 xxx / 分组` 或顶部 `调用` 指标。
 - 账号卡标题行的关键策略徽章必须来自 `effectiveRoutingRule`，仅显示 owner-facing 策略信号：`主力`、`兜底`、`禁新对话`、`禁出`、`禁入`、`补Fast`、`Fast`、`禁Fast`、`并发N`、`重试N`；普通系统 tag 名称不得进入该区域。
 - 账号活动接口中的 `tokensPerMinute` 与 `spendRate` 必须使用响应窗口末端最近 5 分钟活跃尾段口径：以当前响应 `rangeEnd` 为 anchor，仅看最近 5 分钟，跳过窗口前置空闲分钟，并分别以第一个有 Token / Cost 的分钟作为有效分母起点；`requestCount`、`totalTokens`、`totalCost`、recent 调用与排序继续使用所选 range 的总量口径。
 - 已选中上游账号的 pool running 调用必须在账号活动 live rows、账号卡 `inProgressInvocationCount` / `retryInvocationCount` 与 account-scoped summary 中归属到该账号；当 invocation payload 尚未写入 `upstreamAccountId` 时，可以用同 `invokeId` 的 `pool_upstream_request_attempts.upstream_account_id` 作为读侧 fallback，并且账号级 retry 计数必须基于该 fallback 后的账号重新判定。
@@ -66,7 +66,7 @@
 - 摘要区不得加入低价值说明型文案；“按调用计数，不按对话去重”、“仍在重试链路中的调用”、“账号状态说明条”之类解释性文字不得出现在卡面常驻内容里。
 - 请求数、成本与 Token 附加分解摘要在卡面常驻态只显示色点与数值；不得出现任何可见文字标签（包括单字、缩写、短标签）。完整 `label + value` 只通过 hover / title 暴露，不得额外占用版面。
 - 账号卡内部所有结构性描边（外框、摘要格子、recent 行、分隔线）必须统一使用低对比中性边框，不得把主题主色、语义色或任意彩色边框用于结构分割；颜色只保留给状态点、数值与徽章等语义元素。
-- recent bridge 作为 recent 区标题行右侧统计例外，必须显示完整状态文字（如“进行中 / 失败 / 成功”），并与左侧“最近 4 条调用”标题保持同一垂直对齐节奏。
+- recent bridge 作为 recent 区标题行右侧统计例外，必须显示完整状态文字；运行态必须拆成 `排队中 / 请求中 / 响应中`，数值来自账号级 `inProgressPhaseCounts`，终态继续使用账号级 `successCount / failureCount / nonSuccessCount`，并与左侧“最近 4 条调用”标题保持同一垂直对齐节奏。
 - 单账号卡下半部分必须展示当前范围内最近 4 条调用记录，复用现有紧凑调用行语言，而不是再做卡中卡；4 条记录必须在卡内完整可见，不得依赖展开、滚动或裁切。
 - 账号卡内每条 recent 调用记录的信息密度不得低于 Dashboard 对话卡片中的调用记录：至少需要覆盖状态、模型、endpoint、Token 用量摘要，以及 `RQ / UP / ED / TT` 时序摘要。
 - 账号卡 recent 调用记录的主标识行必须改为“对话短 ID + 分隔符/图标 + 请求 ID”；其中对话短 ID 固定基于真实 `promptCacheKey` 走既有 working-conversation 哈希与格式化规则，展示值去掉 `WC-` 前缀；请求 ID 显示完整 `invokeId` 并允许单行截断。
@@ -78,6 +78,8 @@
 - 账号卡 recent 调用记录中的紧凑 badge 必须统一高度、字号、圆角、padding 与 line-height；至少 `reasoning effort`、endpoint 与 recent 行双模型显示要复用同一 compact recipe，不得再出现同一行内视觉尺寸不一致。
 - 当 recent 调用记录的 `requestModel` 与 `responseModel` 规范化后仍不一致时，账号卡 recent 行必须同时显示“请求模型 + 模型切换图标 + 响应模型”；模型一致时继续显示单模型 badge。
 - `StatsResponse.inProgressConversationCount` 与 `StatsResponse.inProgressRetryConversationCount` 必须保留 wire name，但语义改为 invocation-based；所有 Dashboard owner-facing 文案同步改成“进行中调用 / 重试调用”。
+- `StatsResponse.inProgressPhaseCounts` 与账号活动接口的 `accounts[].inProgressPhaseCounts` 必须表示当前 live in-progress 调用的三阶段拆分：`queued` 表示尚未选定或开始上游请求，`requesting` 表示连接/发送请求/等待首字节，`responding` 表示已收到首字节并在流式响应中；该字段只代表当前 live 状态，不改写历史终态统计。
+- `recentInvocations[]` 与共享 `ApiInvocation` / prompt-cache invocation preview 可带 `livePhase?: queued | requesting | responding | null`；前端展示运行态时必须优先使用后端 `livePhase`，缺失时才允许用 `status`、timing 与 attempt phase 兜底推断，终态成功/失败/HTTP 状态不得强行归入三阶段。
 - `today / 1d / 7d` 的 `inProgressInvocationCount / retryInvocationCount` 允许使用 live augmentation 语义；`yesterday` 为 closed range，这两项必须返回 `null` 并在前端显示 `—`。
 
 ### SHOULD
@@ -117,14 +119,17 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name）                                     | 类型（Kind）        | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                       | 备注（Notes）                                                |
-| ------------------------------------------------ | ------------------- | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------------- | ------------------------------------------------------------ |
-| `GET /api/stats/upstream-account-activity`       | http-endpoint       | external      | Add            | None                     | backend/stats   | Dashboard account activity tab            | range 聚合 + effective routing rule + recent 4 bounded query |
-| `StatsResponse.inProgressConversationCount`      | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail | wire name 保留，语义改为 invocation-based                    |
-| `StatsResponse.inProgressRetryConversationCount` | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail | wire name 保留，语义改为 invocation-based retry              |
-| `DashboardActivityOverview` range contract       | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | Dashboard page, account detail overview   | 支持 controlled / uncontrolled 双模式                        |
-| `Dashboard workspace double-tab section`         | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | Dashboard page                            | `对话 / 上游账号` tabs + count badge                         |
-| `useDashboardUpstreamAccountActivity`            | ui-hook             | internal      | Add            | None                     | web/dashboard   | Dashboard account activity tab            | lazy load + tab-active refresh gate                          |
+| 接口（Name）                                           | 类型（Kind）        | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                       | 备注（Notes）                                                |
+| ------------------------------------------------------ | ------------------- | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------------- | ------------------------------------------------------------ |
+| `GET /api/stats/upstream-account-activity`             | http-endpoint       | external      | Add            | None                     | backend/stats   | Dashboard account activity tab            | range 聚合 + effective routing rule + recent 4 bounded query |
+| `StatsResponse.inProgressConversationCount`            | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail | wire name 保留，语义改为 invocation-based                    |
+| `StatsResponse.inProgressRetryConversationCount`       | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail | wire name 保留，语义改为 invocation-based retry              |
+| `StatsResponse.inProgressPhaseCounts`                  | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard natural-day KPI, account detail | live invocation 三阶段拆分                                   |
+| `UpstreamAccountActivityAccount.inProgressPhaseCounts` | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard account activity tab            | 账号级 live invocation 三阶段拆分，不从 recent 列表推导      |
+| `ApiInvocation.livePhase` / preview `livePhase`        | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard, Live, Prompt Cache             | 单调用 live 阶段，终态为空                                   |
+| `DashboardActivityOverview` range contract             | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | Dashboard page, account detail overview   | 支持 controlled / uncontrolled 双模式                        |
+| `Dashboard workspace double-tab section`               | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | Dashboard page                            | `对话 / 上游账号` tabs + count badge                         |
+| `useDashboardUpstreamAccountActivity`                  | ui-hook             | internal      | Add            | None                     | web/dashboard   | Dashboard account activity tab            | lazy load + tab-active refresh gate                          |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -195,6 +200,13 @@
 - `cd web && bun run build-storybook`
 
 ## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
+  scenario: `live phase split`
+  evidence_note: 验证 Dashboard 上游账号卡标题区与最近调用标题右侧都按账号级 `inProgressPhaseCounts` 显示 `排队中 2 / 请求中 3 / 响应中 4`；Storybook fixture 中 recent 列表只有 4 条，证明该统计不从卡内列表 reduce。
+  image:
+  ![Dashboard 上游账号三阶段实况统计证据](./assets/dashboard-upstream-account-live-phase-counts.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`

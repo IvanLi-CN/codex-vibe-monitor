@@ -85,6 +85,7 @@ function createPreview(
       "promptCacheKey" in overrides ? (overrides.promptCacheKey ?? null) : null,
     occurredAt: overrides.occurredAt,
     status: overrides.status,
+    livePhase: overrides.livePhase ?? null,
     failureClass: overrides.failureClass ?? "none",
     routeMode: overrides.routeMode ?? "pool",
     model: overrides.model ?? "gpt-5.4",
@@ -306,6 +307,14 @@ function createUpstreamAccountActivityStoryResponse(
         promptCacheKey: promptCacheKeys[index] ?? `pck-story-account-${index + 1}`,
         occurredAt: `2026-04-04T10:${String(Math.max(0, 5 - index)).padStart(2, "0")}:00Z`,
         status: statuses[index] ?? "success",
+        livePhase:
+          statuses[index] === "pending"
+            ? "queued"
+            : statuses[index] === "running" && index % 2 === 0
+              ? "responding"
+              : statuses[index] === "running"
+                ? "requesting"
+                : null,
         upstreamAccountId: 42,
         upstreamAccountName: "Pool Alpha",
         requestModel: index === 0 ? "gpt-5.5-mini" : undefined,
@@ -339,10 +348,12 @@ function createUpstreamAccountActivityStoryResponse(
         firstByteAvgMs: 420,
         firstResponseByteTotalAvgMs: 2_867.5,
         avgTotalMs: 860,
-        inProgressInvocationCount: Math.max(
-          0,
-          Math.min(recentInvocationCount, 16),
-        ),
+        inProgressInvocationCount: 9,
+        inProgressPhaseCounts: {
+          queued: 2,
+          requesting: 3,
+          responding: 4,
+        },
         retryInvocationCount: 1,
         effectiveRoutingRule: {
           blockNewConversations: true,
@@ -2511,6 +2522,13 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("禁入")).toBeInTheDocument();
     await expect(canvas.getByText("禁新对话")).toBeInTheDocument();
     await expect(canvas.getByText("进行中调用")).toBeInTheDocument();
+    const recentBreakdown = canvas.getByTestId(
+      "dashboard-upstream-account-recent-breakdown",
+    );
+    await expect(recentBreakdown).toHaveTextContent(/排队中\s*2/);
+    await expect(recentBreakdown).toHaveTextContent(/请求中\s*3/);
+    await expect(recentBreakdown).toHaveTextContent(/响应中\s*4/);
+    await expect(recentBreakdown).toHaveTextContent(/成功\s*6/);
     await expect(canvas.getByTestId("dashboard-upstream-account-policy-badges")).toHaveTextContent(
       "Fast",
     );
