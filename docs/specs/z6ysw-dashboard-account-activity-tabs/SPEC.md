@@ -206,6 +206,7 @@
   scenario: `live phase split`
   evidence_note: 验证 Dashboard 上游账号卡标题区与最近调用标题右侧都按账号级 `inProgressPhaseCounts` 显示 `排队中 2 / 请求中 3 / 响应中 4`；Storybook fixture 中 recent 列表只有 4 条，证明该统计不从卡内列表 reduce。
   image:
+  PR: include
   ![Dashboard 上游账号三阶段实况统计证据](./assets/dashboard-upstream-account-live-phase-counts.png)
 
 - source_type: storybook_canvas
