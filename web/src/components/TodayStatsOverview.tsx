@@ -9,6 +9,7 @@ import {
 } from './AdaptiveMetricValue'
 import {
   buildAdaptiveCurrencyTextSpec,
+  buildAdaptiveCurrencyAmountTextSpec,
   buildAdaptiveDurationTextSpec,
   buildAdaptiveNumberTextSpec,
   buildAdaptivePercentTextSpec,
@@ -18,6 +19,7 @@ import {
   type AdaptiveDisplayValueSpec,
   type AdaptiveMetricValueKind,
 } from './adaptiveMetricValueSpec'
+import { AppIcon, type AppIconName } from './AppIcon'
 import { Alert } from './ui/alert'
 import { Badge } from './ui/badge'
 import { Tooltip } from './ui/tooltip'
@@ -90,6 +92,7 @@ interface MetricTileProps {
   subdued?: boolean
   preserveLabelCase?: boolean
   labelTestId?: string
+  iconName?: AppIconName
   topRightItem?: MetricTileMetaItem | null
   secondaryItems?: MetricTileSecondaryItem[]
 }
@@ -109,6 +112,7 @@ function MetricTile({
   subdued = false,
   preserveLabelCase = false,
   labelTestId,
+  iconName,
   topRightItem,
   secondaryItems = [],
 }: MetricTileProps) {
@@ -158,13 +162,25 @@ function MetricTile({
         ...secondaryItems,
       ]
     : []
+  const icon = iconName ? (
+    <span
+      aria-hidden
+      data-testid={valueTestId ? `${valueTestId}-icon` : undefined}
+      className={cn(
+        'flex h-[1.65rem] w-[1.65rem] shrink-0 items-center justify-center text-[1.55rem] leading-none',
+        subdued ? 'text-base-content/45' : toneClass ?? 'text-base-content/65',
+      )}
+    >
+      <AppIcon name={iconName} className={cn(iconName === 'send' && '-rotate-45')} />
+    </span>
+  ) : null
 
   return (
     <div
       ref={tileRef}
       data-testid="today-stats-metric-tile"
       data-stack-meta={stackMeta ? 'true' : 'false'}
-      className="min-w-0 rounded-xl border border-base-300/75 bg-base-200/60 p-4"
+      className="min-w-0 rounded-xl border border-base-300/75 bg-base-200/60 px-4 py-4"
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
         <Tooltip
@@ -201,47 +217,55 @@ function MetricTile({
         ) : null}
       </div>
       {loading ? (
-        <div
-          data-testid={valueTestId ? `${valueTestId}-loading` : undefined}
-          className="mt-2 h-8 w-full max-w-[7.5rem] animate-pulse rounded bg-base-300/65"
-        />
+        <div className="mt-2 flex min-w-0 max-w-full items-center gap-2.5">
+          {icon}
+          <div
+            data-testid={valueTestId ? `${valueTestId}-loading` : undefined}
+            className="h-8 w-full max-w-[7.5rem] animate-pulse rounded bg-base-300/65"
+          />
+        </div>
       ) : displaySpec ? (
         <div
           className={cn(
-            'mt-2 min-w-0 max-w-full overflow-hidden text-[2.1rem] font-semibold leading-tight lg:text-[2rem]',
+            'mt-2 flex min-w-0 max-w-full items-center gap-2.5 overflow-hidden text-[2.1rem] font-semibold leading-tight lg:text-[2rem]',
             subdued ? 'text-base-content/55' : 'text-base-content',
             toneClass,
           )}
         >
+          {icon}
           <AdaptiveDisplayValue
             spec={displaySpec}
             data-testid={valueTestId}
-            className={cn(subdued && 'text-base-content/55')}
+            className={cn('min-w-0 flex-1', subdued && 'text-base-content/55')}
           />
         </div>
       ) : displayText != null ? (
         <div
-          data-testid={valueTestId}
           className={cn(
-            'mt-2 min-w-0 max-w-full overflow-hidden whitespace-nowrap text-[2.1rem] font-semibold leading-tight lg:text-[2rem]',
+            'mt-2 flex min-w-0 max-w-full items-center gap-2.5 overflow-hidden whitespace-nowrap text-[2.1rem] font-semibold leading-tight lg:text-[2rem]',
             subdued ? 'text-base-content/55' : 'text-base-content',
             toneClass,
           )}
         >
-          {displayText}
+          {icon}
+          <span data-testid={valueTestId} className="min-w-0 flex-1 overflow-hidden text-ellipsis">
+            {displayText}
+          </span>
         </div>
       ) : (
         <div
           className={cn(
-            'mt-2 min-w-0 max-w-full overflow-hidden text-[2.1rem] font-semibold leading-tight text-base-content lg:text-[2rem]',
+            'mt-2 flex min-w-0 max-w-full items-center gap-2.5 overflow-hidden text-[2.1rem] font-semibold leading-tight text-base-content lg:text-[2rem]',
             toneClass,
           )}
         >
+          {icon}
           <AdaptiveMetricValue
             value={value ?? 0}
             localeTag={localeTag}
             kind={kind}
             currencyProfile={currencyProfile}
+            className="min-w-0 flex-1"
             data-testid={valueTestId}
           />
         </div>
@@ -266,7 +290,7 @@ function MetricTile({
         </div>
       ) : null}
       {inlineSecondaryItems.length > 0 ? (
-        <div className="mt-3 grid min-h-[2.75rem] grid-cols-2 gap-x-4 gap-y-2 text-xs leading-5">
+        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs leading-5">
           {inlineSecondaryItems.map((item, index) => (
             <div
               key={`${item.label}-${index}`}
@@ -333,6 +357,10 @@ function buildNumberValueSpec(value: number | null, localeTag: string, maximumFr
 
 function buildCurrencyValueSpec(value: number | null, localeTag: string) {
   return buildAdaptiveCurrencyTextSpec(value, localeTag)
+}
+
+function buildCurrencyAmountValueSpec(value: number | null, localeTag: string) {
+  return buildAdaptiveCurrencyAmountTextSpec(value, localeTag)
 }
 
 function buildRateCurrencyValueSpec(value: number | null, localeTag: string) {
@@ -555,6 +583,7 @@ export function TodayStatsOverview({
             loading={loading || rateLoading}
             kind="integer"
             toneClass="text-primary"
+            iconName="speedometer"
             valueTestId="today-stats-value-tpm"
             displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
             subdued={rateUnavailable}
@@ -583,9 +612,14 @@ export function TodayStatsOverview({
             value={spendRate}
             localeTag={localeTag}
             loading={loading || rateLoading}
-            kind="currency"
-            currencyProfile="rate"
+            toneClass="text-accent"
+            iconName="cash-clock"
             valueTestId="today-stats-value-spend-rate"
+            displaySpec={
+              rateUnavailable
+                ? undefined
+                : buildCurrencyAmountValueSpec(spendRate, localeTag)
+            }
             displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
             subdued={rateUnavailable}
             topRightItem={{
@@ -614,6 +648,7 @@ export function TodayStatsOverview({
             localeTag={localeTag}
             loading={loading}
             toneClass="text-success"
+            iconName="check-circle-outline"
             valueTestId="today-stats-value-success"
             topRightItem={{
               label: comparisonLabel,
@@ -647,6 +682,7 @@ export function TodayStatsOverview({
               loading={loading}
               kind="integer"
               toneClass="text-info"
+              iconName="send"
               valueTestId="today-stats-value-in-progress-conversations"
               displayText={
                 parallelSnapshot.currentCount == null
@@ -683,6 +719,8 @@ export function TodayStatsOverview({
             description={t('dashboard.today.responseTimeDescription')}
             localeTag={localeTag}
             loading={loading || rateLoading}
+            toneClass="text-secondary"
+            iconName="timer-outline"
             valueTestId="today-stats-value-response-time"
             displaySpec={buildLatencyValueSpec(
               responseTimeCurrentUnavailable ? null : (responseTimeSnapshot?.responseTimeMs ?? null),
@@ -723,7 +761,9 @@ export function TodayStatsOverview({
             value={totalCost}
             localeTag={localeTag}
             loading={loading}
-            kind="currency"
+            toneClass="text-accent"
+            iconName="currency-usd"
+            displaySpec={buildCurrencyAmountValueSpec(totalCost, localeTag)}
             valueTestId="today-stats-value-total-cost"
             topRightItem={{
               label: comparisonLabel,
@@ -752,6 +792,8 @@ export function TodayStatsOverview({
             loading={loading}
             preserveLabelCase
             labelTestId="today-stats-label-total-tokens"
+            iconName="database-outline"
+            toneClass="text-secondary"
             valueTestId="today-stats-value-total-tokens"
             topRightItem={{
               label: comparisonLabel,

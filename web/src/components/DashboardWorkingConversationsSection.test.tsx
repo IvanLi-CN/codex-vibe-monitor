@@ -612,16 +612,18 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-live-call-breakdown"]'),
     ).toBeNull();
-    const accountHeaderText = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-header-row"]',
-    )?.textContent;
-    expect(accountHeaderText).toContain("TPM");
-    expect(accountHeaderText).toContain("消费速率");
-    expect(accountHeaderText).toContain("进行中调用");
+    const accountHeader = host?.querySelector('[data-testid="dashboard-upstream-account-header-row"]');
+    const accountHeaderText = accountHeader?.textContent;
     expect(accountHeaderText).toContain("3");
     expect(accountHeaderText).not.toContain("并行对话");
     expect(accountHeaderText).not.toContain("重试");
-
+    expect(accountHeader?.querySelector('[aria-label="进行中调用 3"]')).not.toBeNull();
+    expect(
+      accountHeader?.querySelector('[aria-label="TPM 640"]'),
+    ).not.toBeNull();
+    expect(
+      accountHeader?.querySelector('[aria-label="消费速率 0.12"]'),
+    ).not.toBeNull();
     const latencyBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-latency-breakdown"]',
     );
@@ -657,9 +659,16 @@ describe("DashboardWorkingConversationsSection", () => {
     const accountCardText = host?.querySelector(
       '[data-testid="dashboard-upstream-account-card"]',
     )?.textContent;
-    expect(accountCardText).toContain("$0.72");
+    expect(accountCardText).toContain("0.72");
+    expect(accountCardText).not.toContain("$0.72");
     expect(costBreakdown?.textContent).toContain("$0.22");
     expect(costBreakdown?.textContent).toContain("30.6%");
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-cost-icon"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-token-icon"]'),
+    ).not.toBeNull();
 
     const tokenBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-token-breakdown"]',
@@ -716,10 +725,9 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    const accountHeaderText = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-header-row"]',
-    )?.textContent;
-    expect(accountHeaderText).toContain("进行中调用");
+    const accountHeader = host?.querySelector('[data-testid="dashboard-upstream-account-header-row"]');
+    const accountHeaderText = accountHeader?.textContent;
+    expect(accountHeader?.querySelector('[aria-label="进行中调用 —"]')).not.toBeNull();
     expect(accountHeaderText).toContain("—");
     expect(accountHeaderText).not.toContain("并行对话");
   });
@@ -769,7 +777,7 @@ describe("DashboardWorkingConversationsSection", () => {
     await waitFor(() => {
       const tooltipText = document.body.textContent ?? "";
       expect(tooltipText).toContain("成本");
-      expect(tooltipText).toContain("$0.72");
+      expect(tooltipText).toContain("0.72");
       expect(tooltipText).toContain("失败成本");
       expect(tooltipText).toContain("$0.22");
       expect(tooltipText).toContain("失败成本比率");
