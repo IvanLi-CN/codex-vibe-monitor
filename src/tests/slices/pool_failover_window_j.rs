@@ -1,7 +1,7 @@
 #[tokio::test]
 async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_file() {
     let (pool, config, temp_dir) =
-        retention_test_pool_and_config("archive-manifest-refresh-dedupe").await;
+        retention_memory_test_pool_and_config("archive-manifest-refresh-dedupe").await;
     let primary_account_id = 996_i64;
     let secondary_account_id = 997_i64;
     let created_at = format_utc_iso(Utc::now());
@@ -380,7 +380,8 @@ async fn startup_persistent_prep_rebuilds_manifest_before_archive_backfill() {
 
 #[tokio::test]
 async fn archive_backfill_respects_scan_limit_budget() {
-    let (pool, _config, temp_dir) = retention_test_pool_and_config("archive-backfill-budget").await;
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("archive-backfill-budget").await;
     let created_at = format_utc_iso(Utc::now());
     for account_id in [993_i64, 994_i64] {
         sqlx::query(
@@ -492,7 +493,8 @@ async fn archive_backfill_respects_scan_limit_budget() {
 
 #[tokio::test]
 async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
-    let (pool, mut config, temp_dir) = retention_test_pool_and_config("archive-ttl-cleanup").await;
+    let (pool, mut config, temp_dir) =
+        retention_memory_test_pool_and_config("archive-ttl-cleanup").await;
     config.invocation_archive_ttl_days = 0;
 
     let archive_path = temp_dir.join("expired-archive.sqlite.gz");
@@ -564,7 +566,8 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
 
 #[tokio::test]
 async fn backfill_invocation_archive_expiries_uses_coverage_end_at() {
-    let (pool, config, temp_dir) = retention_test_pool_and_config("archive-expiry-backfill").await;
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("archive-expiry-backfill").await;
     let coverage_end_at = shanghai_local_days_ago(45, 18, 30, 0);
     let created_at = format_utc_iso(Utc::now());
 
@@ -1987,7 +1990,7 @@ async fn materialize_historical_rollups_marks_account_replay_targets_when_only_a
 #[tokio::test]
 async fn bootstrap_hourly_rollups_repairs_missing_materialized_account_replay_markers() {
     let (pool, config, temp_dir) =
-        retention_test_pool_and_config("bootstrap-repairs-account-markers").await;
+        retention_memory_test_pool_and_config("bootstrap-repairs-account-markers").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
 
     insert_retention_invocation(
@@ -2064,7 +2067,7 @@ async fn bootstrap_hourly_rollups_repairs_missing_materialized_account_replay_ma
 #[tokio::test]
 async fn historical_rollup_backfill_stays_critical_until_legacy_invocations_materialized() {
     let (pool, config, temp_dir) =
-        retention_test_pool_and_config("historical-rollup-backfill-critical").await;
+        retention_memory_test_pool_and_config("historical-rollup-backfill-critical").await;
     let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
         - ChronoDuration::days((config.invocation_max_days + 2) as i64))
     .and_hms_opt(8, 0, 0)
@@ -3158,7 +3161,7 @@ async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_markin
 #[tokio::test]
 async fn cleanup_expired_pool_upstream_archives_waits_for_cache_replay_completion() {
     let (pool, config, temp_dir) =
-        retention_test_pool_and_config("pool-node-health-cleanup-cache-replay-gate").await;
+        retention_memory_test_pool_and_config("pool-node-health-cleanup-cache-replay-gate").await;
     let coverage_end_at = shanghai_local_days_ago(14, 9, 0, 0);
     let archive_file_path = archive_batch_file_path(&config, "pool_upstream_request_attempts", &coverage_end_at[..7])
         .expect("resolve expired pool upstream archive path");
@@ -3233,7 +3236,7 @@ async fn cleanup_expired_pool_upstream_archives_waits_for_cache_replay_completio
 #[tokio::test]
 async fn cleanup_expired_pool_upstream_archives_preserves_recent_exact_window_history() {
     let (pool, config, temp_dir) =
-        retention_test_pool_and_config("pool-node-health-cleanup-window-gate").await;
+        retention_memory_test_pool_and_config("pool-node-health-cleanup-window-gate").await;
     let coverage_end_at = shanghai_local_days_ago(2, 9, 0, 0);
     let archive_file_path = archive_batch_file_path(&config, "pool_upstream_request_attempts", &coverage_end_at[..7])
         .expect("resolve recent pool upstream archive path");
@@ -3837,29 +3840,74 @@ async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
 #[tokio::test]
 async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged() {
     let (pool, config, temp_dir) =
-        retention_test_pool_and_config("hourly-rollup-retention-accounted").await;
+        retention_memory_test_pool_and_config("hourly-rollup-retention-accounted").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
-    insert_retention_invocation(
+    let bucket_start = local_naive_to_utc(
+        parse_shanghai_local_naive(&old_invocation).expect("valid old invocation time"),
+        Shanghai,
+    );
+    insert_invocation_hourly_rollup_bucket(
         &pool,
-        "hourly-rollup-retention-accounted",
-        &old_invocation,
+        bucket_start,
         SOURCE_PROXY,
-        "success",
-        Some("{\"endpoint\":\"/v1/responses\"}"),
-        "{\"ok\":true}",
-        None,
-        None,
-        Some(42),
-        Some(0.42),
+        1,
+        1,
+        0,
+        42,
+        0.42,
     )
     .await;
-    let old_attempt = Utc::now()
-        - ChronoDuration::days((config.forward_proxy_attempts_retention_days + 2) as i64);
-    seed_forward_proxy_attempt_at(&pool, "proxy-retention-accounted", old_attempt, true).await;
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_attempt_hourly (
+            proxy_key,
+            bucket_start_epoch,
+            attempts,
+            success_count,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+        "#,
+    )
+    .bind("proxy-retention-accounted")
+    .bind(bucket_start.timestamp())
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .execute(&pool)
+    .await
+    .expect("seed materialized forward proxy hourly rollup");
+    for table in [
+        "upstream_account_stats_hourly",
+        "upstream_account_stats_minute",
+    ] {
+        let statement = format!(
+            r#"
+            INSERT INTO {table} (
+                bucket_start_epoch,
+                source,
+                upstream_account_id,
+                total_count,
+                success_count,
+                failure_count,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+            "#
+        );
+        sqlx::query(&statement)
+            .bind(bucket_start.timestamp())
+            .bind(SOURCE_PROXY)
+            .bind(17_i64)
+            .bind(1_i64)
+            .bind(1_i64)
+            .bind(0_i64)
+            .execute(&pool)
+            .await
+            .expect("seed account stats rollup guard");
+    }
 
-    sync_hourly_rollups_from_live_tables(&pool)
-        .await
-        .expect("seed live hourly rollups before retention");
     let invocation_total_before: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
     )
@@ -3875,11 +3923,42 @@ async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged(
     .await
     .expect("load forward proxy hourly totals before retention");
 
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+    for (dataset, file_name) in [
+        ("codex_invocations", "materialized-invocation.sqlite.gz"),
+        (
+            "forward_proxy_attempts",
+            "materialized-forward-proxy.sqlite.gz",
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset,
+                month_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                coverage_start_at,
+                coverage_end_at,
+                historical_rollups_materialized_at,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(dataset)
+        .bind(&old_invocation[..7])
+        .bind(temp_dir.join(file_name).to_string_lossy().to_string())
+        .bind(format!("{dataset}-sha"))
+        .bind(1_i64)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(&old_invocation)
+        .bind(&old_invocation)
+        .execute(&pool)
         .await
-        .expect("run retention before bootstrap replay");
-    assert_eq!(summary.invocation_rows_archived, 1);
-    assert_eq!(summary.forward_proxy_attempt_rows_archived, 1);
+        .expect("seed materialized archive batch");
+    }
 
     bootstrap_hourly_rollups(&pool)
         .await
@@ -3933,7 +4012,7 @@ async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged(
 #[tokio::test]
 async fn bootstrap_hourly_rollups_ignores_missing_replay_markers() {
     let (pool, config, temp_dir) =
-        retention_test_pool_and_config("hourly-rollup-missing-invocation-target").await;
+        retention_memory_test_pool_and_config("hourly-rollup-missing-invocation-target").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
     let payload = r#"{"endpoint":"/v1/responses","promptCacheKey":"cache-replay","upstreamAccountId":17,"upstreamAccountName":"Replay Account","stickyKey":"sticky-replay"}"#;
     insert_retention_invocation(

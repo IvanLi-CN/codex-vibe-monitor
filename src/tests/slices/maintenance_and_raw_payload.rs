@@ -799,7 +799,9 @@ async fn test_state_from_config_with_pool_no_available_wait(
     let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let config = isolate_stateful_test_config_runtime_paths(config, db_id);
     let db_url = format!("sqlite:file:codex-vibe-monitor-test-{db_id}?mode=memory&cache=shared");
-    let pool = SqlitePool::connect(&db_url)
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect(&db_url)
         .await
         .expect("connect in-memory sqlite");
     ensure_schema(&pool)
