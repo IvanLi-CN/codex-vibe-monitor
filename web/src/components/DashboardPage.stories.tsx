@@ -9,8 +9,10 @@ import type {
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
   StatsResponse,
+  DashboardActivityResponse,
   TimeseriesPoint,
   TimeseriesResponse,
+  UpstreamAccountActivityAccount,
 } from '../lib/api'
 import App from '../App'
 import DashboardPage from '../pages/Dashboard'
@@ -118,6 +120,118 @@ function buildSummary(overrides: Partial<StatsResponse>): StatsResponse {
     totalCost: 0,
     totalTokens: 0,
     ...overrides,
+  }
+}
+
+function buildDashboardActivityResponse({
+  range,
+  summary,
+  includeAccounts,
+}: {
+  range: string
+  summary: StatsResponse
+  includeAccounts: boolean
+}): DashboardActivityResponse {
+  const accounts: UpstreamAccountActivityAccount[] = [
+    {
+      accountKey: 'upstream:42',
+      upstreamAccountId: 42,
+      displayName: 'dzw',
+      groupName: 'Primary',
+      planType: 'enterprise',
+      requestCount: 1920,
+      successCount: 1840,
+      failureCount: 80,
+      nonSuccessCount: 80,
+      totalTokens: 11_200_000,
+      successTokens: 10_850_000,
+      nonSuccessTokens: 350_000,
+      failureTokens: 350_000,
+      failureCost: 0.22,
+      totalCost: 24.32,
+      cacheHitRate: 0.927,
+      tokensPerMinute: 610,
+      spendRate: 0.73,
+      firstByteAvgMs: 2145,
+      firstResponseByteTotalAvgMs: 2145,
+      avgTotalMs: 12_650,
+      inProgressInvocationCount: 8,
+      retryInvocationCount: 1,
+      effectiveRoutingRule: {
+        blockNewConversations: true,
+        allowCutOut: false,
+        allowCutIn: false,
+        priorityTier: 'primary',
+        fastModeRewriteMode: 'force_add',
+        concurrencyLimit: 3,
+        upstream429RetryEnabled: true,
+        upstream429MaxRetries: 2,
+        sourceTagIds: [],
+        sourceTagNames: [],
+      },
+      recentInvocations: [],
+    },
+    {
+      accountKey: 'upstream:77',
+      upstreamAccountId: 77,
+      displayName: 'CIII',
+      groupName: 'Overflow',
+      planType: 'team',
+      requestCount: 1508,
+      successCount: 1456,
+      failureCount: 52,
+      nonSuccessCount: 52,
+      totalTokens: 7_564_200,
+      successTokens: 7_390_000,
+      nonSuccessTokens: 174_200,
+      failureTokens: 174_200,
+      failureCost: 0.12,
+      totalCost: 18.54,
+      cacheHitRate: 0.914,
+      tokensPerMinute: 490,
+      spendRate: 0.45,
+      firstByteAvgMs: 803,
+      firstResponseByteTotalAvgMs: 803,
+      avgTotalMs: 9140,
+      inProgressInvocationCount: 3,
+      retryInvocationCount: 0,
+      effectiveRoutingRule: {
+        blockNewConversations: false,
+        allowCutOut: true,
+        allowCutIn: true,
+        priorityTier: 'fallback',
+        fastModeRewriteMode: 'keep_original',
+        concurrencyLimit: null,
+        upstream429RetryEnabled: true,
+        upstream429MaxRetries: 1,
+        sourceTagIds: [],
+        sourceTagNames: [],
+      },
+      recentInvocations: [],
+    },
+  ]
+  return {
+    range,
+    rangeStart: '2026-04-09T00:00:00.000Z',
+    rangeEnd: '2026-04-09T12:24:00.000Z',
+    snapshotId: 1775718240000,
+    rateWindow: {
+      start: '2026-04-09T12:19:00.000Z',
+      end: '2026-04-09T12:24:00.000Z',
+      windowMinutes: 5,
+      mode: 'account_active_tail_sum',
+    },
+    summary: {
+      stats: {
+        ...summary,
+        inProgressConversationCount: 11,
+        inProgressRetryConversationCount: 1,
+        inProgressAvgWaitMs: 1779,
+      },
+      tokensPerMinute: 1100,
+      spendRate: 1.18,
+    },
+    accounts: includeAccounts ? accounts : undefined,
   }
 }
 
@@ -1093,6 +1207,15 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
       return jsonResponse(responses[window as keyof Pick<typeof responses, 'today' | 'yesterday' | '1d' | '7d'>] ?? responses.today)
     }
 
+    if (url.pathname === '/api/stats/dashboard-activity') {
+      const range = url.searchParams.get('range') ?? 'today'
+      const includeAccounts = url.searchParams.get('includeAccounts') === 'true'
+      const summary =
+        responses[range as keyof Pick<typeof responses, 'today' | 'yesterday' | '1d' | '7d'>] ??
+        responses.today
+      return jsonResponse(buildDashboardActivityResponse({ range, summary, includeAccounts }))
+    }
+
     if (url.pathname === '/api/stats/timeseries') {
       const range = url.searchParams.get('range')
       if (range === 'today') return jsonResponse(responses.timeseriesToday)
@@ -1187,6 +1310,29 @@ export const Default: Story = {
     await userEvent.click(todayTab)
     await expect(todayTab).toHaveAttribute('aria-selected', 'true')
     await expect(canvas.getByTestId('dashboard-activity-range-today')).toHaveAttribute('data-active', 'true')
+  },
+}
+
+export const UnifiedActivitySnapshot: Story = {
+  render: () => <DashboardPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByTestId('dashboard-activity-overview')).toBeVisible()
+    await expect(canvas.getByTestId('today-stats-value-tpm')).toBeVisible()
+
+    const accountTab = canvas.getByRole('tab', { name: '上游账号' })
+    await userEvent.click(accountTab)
+    await expect(accountTab).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() => {
+      expect(canvas.getAllByTestId('dashboard-upstream-account-card')).toHaveLength(2)
+    })
+    const accountHeaders = canvas.getAllByTestId('dashboard-upstream-account-header-row')
+    await expect(accountHeaders[0]).toHaveTextContent('dzw')
+    await expect(accountHeaders[1]).toHaveTextContent('CIII')
+    await expect(accountHeaders[0]?.querySelector('[aria-label="进行中调用 8"]')).not.toBeNull()
+    await expect(accountHeaders[1]?.querySelector('[aria-label="进行中调用 3"]')).not.toBeNull()
+    await expect(accountHeaders[0]?.querySelector('[aria-label="TPM 610"]')).not.toBeNull()
+    await expect(accountHeaders[1]?.querySelector('[aria-label="TPM 490"]')).not.toBeNull()
   },
 }
 

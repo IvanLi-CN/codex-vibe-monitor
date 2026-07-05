@@ -40,6 +40,10 @@
 - 已实现：Dashboard 相关的 working-set / account-activity 派生维护继续遵守 `<=5s` bounded freshness；proxy capture 请求尾的 rollup/live progress、upstream account touch 与 attempt 中间进度已迁入 SQLite batch writer，避免 Dashboard reconcile 与请求收尾派生写在 SQLite 单写者上持续争用。
 - 已实现：Dashboard current records、summary/timeseries、上游账号活动与工作区 `对话` tab 的 running 视图统一 overlay 进程内 runtime invocation store。SSE 仍即时广播 `running/pending` 记录，HTTP open-resync/current reconcile 即使 DB 不再刷新 running 行也不会短暂丢行；terminal DB 事实优先并会移除对应内存记录。
 - 已实现：terminal invocation 记录进入 SQLite write controller，代理业务响应不等待落库。Dashboard 继续先消费 SSE/runtime overlay，随后由 HTTP reconcile 读取最终一致的 DB terminal 行；running snapshot 不再产生 DB/batch 写入。
+- 已实现：新增 `GET /api/stats/dashboard-activity` 活动快照读路径；请求开始时固定 `rangeEnd`，一次读取 runtime overlay，并返回 summary-only 或 summary + accounts 两种形态。
+- 已实现：Dashboard 顶部当前 `TPM / 消费速率 / 进行中调用` 改读 `dashboard-activity.summary`；账号 tab 打开后升级为 `includeAccounts=true`，顶部 KPI 与账号卡片共享同一个 `snapshotId/rangeEnd` 响应。
+- 已实现：`dashboard-activity.summary` 的 `tokensPerMinute`、`spendRate` 与 in-progress 调用数由账号聚合结果求和得到；无账号流量进入 `unassigned` 聚合项，避免顶部数字无法由同屏明细解释。
+- 已实现：timeseries 继续只服务趋势图与兼容回退，不再作为 Dashboard 顶部当前速率类 KPI 的事实来源。
 
 ## Remaining Gaps
 
@@ -55,6 +59,7 @@
 - `web/src/components/DashboardWorkingConversationsSection.tsx`
 - `web/src/hooks/useDashboardUpstreamAccountActivity.ts`
 - `web/src/lib/api/core-foundation.ts`
+- `web/src/components/DashboardPage.stories.tsx`
 
 ## References
 

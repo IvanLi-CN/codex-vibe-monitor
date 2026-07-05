@@ -13,6 +13,7 @@ import { DashboardPerformanceDiagnostics } from "../components/DashboardPerforma
 import { DashboardWorkingConversationsSection } from "../components/DashboardWorkingConversationsSection";
 import { PromptCacheConversationHistoryDrawer } from "../components/PromptCacheConversationTable";
 import { useDashboardWorkingConversations } from "../hooks/useDashboardWorkingConversations";
+import { useDashboardActivitySnapshot } from "../hooks/useDashboardUpstreamAccountActivity";
 import { resetDashboardPerformanceDiagnostics } from "../lib/dashboardPerformanceDiagnostics";
 import {
   formatDashboardWorkingConversationSequenceId,
@@ -32,6 +33,8 @@ export default function DashboardPage() {
     useState<DashboardWorkingConversationInvocationSelection | null>(null);
   const [selectedConversation, setSelectedConversation] =
     useState<DashboardWorkingConversationSelection | null>(null);
+  const [includeUpstreamAccountActivity, setIncludeUpstreamAccountActivity] =
+    useState(false);
   const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
   const {
@@ -45,6 +48,18 @@ export default function DashboardPage() {
     recentPreviewLimit,
     setRefreshTargetCount,
   } = useDashboardWorkingConversations();
+  const dashboardActivityEnabled = activeRange !== "usage";
+  const {
+    data: dashboardActivity,
+    isLoading: dashboardActivityLoading,
+    error: dashboardActivityError,
+    recentInvocationLimit: upstreamAccountRecentPreviewLimit,
+  } = useDashboardActivitySnapshot(
+    activeRange,
+    dashboardActivityEnabled,
+    includeUpstreamAccountActivity,
+    recentPreviewLimit,
+  );
 
   useEffect(() => {
     if (upstreamAccountId != null) {
@@ -66,6 +81,9 @@ export default function DashboardPage() {
       <DashboardActivityOverview
         activeRange={activeRange}
         onActiveRangeChange={setActiveRange}
+        dashboardActivity={dashboardActivity}
+        dashboardActivityLoading={dashboardActivityLoading}
+        dashboardActivityError={dashboardActivityError}
       />
       <DashboardPerformanceDiagnostics />
 
@@ -95,6 +113,20 @@ export default function DashboardPage() {
           setSelectedConversation(null);
           setSelectedInvocation(selection);
         }}
+        upstreamAccountActivity={
+          dashboardActivity?.accounts
+            ? {
+                range: dashboardActivity.range,
+                rangeStart: dashboardActivity.rangeStart,
+                rangeEnd: dashboardActivity.rangeEnd,
+                accounts: dashboardActivity.accounts,
+              }
+            : null
+        }
+        upstreamAccountActivityLoading={dashboardActivityLoading}
+        upstreamAccountActivityError={dashboardActivityError}
+        upstreamAccountRecentPreviewLimit={upstreamAccountRecentPreviewLimit}
+        onUpstreamAccountActivityEnabledChange={setIncludeUpstreamAccountActivity}
       />
       <DashboardInvocationDetailDrawer
         open={selectedInvocation != null}

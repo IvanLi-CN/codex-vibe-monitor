@@ -1483,10 +1483,7 @@ where
         )
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
-        .push_bind(db_occurred_at_upper_bound(range.end))
-        .push(" AND ")
-        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-        .push(" IS NOT NULL");
+        .push_bind(db_occurred_at_upper_bound(range.end));
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }

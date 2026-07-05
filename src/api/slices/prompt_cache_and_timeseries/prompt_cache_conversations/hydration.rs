@@ -608,7 +608,7 @@ pub(crate) fn upstream_account_invocation_preview_from_row(
         total_tokens: row.total_tokens.max(0),
         cost: row.cost,
         proxy_display_name: normalize_trimmed_optional_string(row.proxy_display_name),
-        upstream_account_id: Some(row.upstream_account_id),
+        upstream_account_id: row.upstream_account_id,
         upstream_account_name: normalize_trimmed_optional_string(row.upstream_account_name),
         upstream_account_plan_type: normalize_trimmed_optional_string(row.upstream_account_plan_type),
         endpoint: normalize_trimmed_optional_string(row.endpoint),

@@ -11,6 +11,7 @@ tags:
 status: active
 related_specs:
   - docs/specs/5932d-sse-proxy-live-sync/SPEC.md
+  - docs/specs/z6ysw-dashboard-account-activity-tabs/SPEC.md
 ---
 
 # Realtime dashboard reconcile budget
@@ -39,6 +40,9 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 
 - Let SSE summary payloads drive KPI-style counters directly when the payload already contains the authoritative window.
 - Keep lightweight live KPI semantics separate from heavy aggregate endpoint semantics. If the KPI means “strictly in progress now”, expose that directly on the summary path instead of reusing the latest point from a historical bucket series.
+- When a top-level KPI and a visible breakdown explain the same live quantity, serve them from one backend activity snapshot with one `rangeEnd`, one runtime overlay read, and one aggregation algorithm. Do not let the top KPI use frontend timeseries math while the breakdown uses backend account aggregation.
+- Prefer account-first aggregation for visible account breakdowns: calculate account rows, add an explicit unassigned bucket for traffic without an account, then derive summary rates and live counts by summing the rows. This keeps the visible decomposition able to explain the top number.
+- Keep summary-only activity snapshots genuinely lightweight. A request that omits account rows should read bounded summary/read-model data plus the short active-tail rate window, not build and sort the full account preview/archive row set before dropping it from JSON.
 - When a dashboard card combines a live main value with historical comparison rows, keep the semantic split explicit: the main value can come from a strict real-time read model, while comparison rows can continue to use a stable historical aggregate as long as they remain clearly secondary and do not overwrite the live truth source.
 - Batch visible local patches separately from head/snapshot reconcile. A 1 second visible patch batch is responsive enough for card updates while avoiding per-record rerenders.
 - Put expensive HTTP reconcile and dense chart data commits behind a separate 5 second budget.
@@ -49,7 +53,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - Treat dashboard working-set surfaces the same way: the 5-minute working-conversations head/count and snapshot pagination/count can both read a write-side bounded working-set table. Keep the response shape and main ordering stable, but accept `<=5s` bounded freshness instead of strict historical snapshot recomputation from the raw invocation table.
 - Align write-side maintenance with the same freshness budget. If Dashboard accepts `<=5s` reconcile, request-tail derived writes that feed those read models can use short-window coalescing/batch flush, while terminal invocation and terminal attempt facts remain synchronous.
 - For high-frequency `running` process state, prefer one shared in-process runtime store plus SSE/HTTP overlay over writing every progress snapshot into SQLite. Create the first minimal running shell as soon as the service admits a tracked proxy request, then enrich the same runtime key after body parse and upstream attempt progress. Records/current summary/current timeseries/account-activity should read DB terminal facts first and overlay only `running/pending` memory rows; terminal DB facts always win.
-- Do not apply activity-window or natural-day filters to memory `running/pending` overlay rows. A request that started earlier than the current 5-minute working set is still “current” until terminal/tombstone; only terminal DB history should be constrained by the selected window.
+- Do not apply activity-window or natural-day filters to strict current-live counters backed by memory `running/pending` overlay rows. A request that started earlier than the current 5-minute working set is still “current” for in-progress counts until terminal/tombstone; range totals, rate input rows, and recent previews must remain bounded by the selected reporting window.
 - If terminal records are queued through a SQLite write controller, treat the immediate SSE terminal payload and runtime-store tombstone as the short-lived UI truth until the DB row catches up. HTTP reconcile must not interpret a temporarily missing terminal DB row as a deletion; it should preserve visible SSE state within the bounded freshness window.
 - For future regressions, slow-path evidence needs to identify the class of work, not just that something was slow: emit endpoint/window/source-scope plus key counts or cache-hit state so operators can tell apart request-time scans, maintenance-time rebuilds, and cache hydration misses.
 
@@ -57,6 +61,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 
 - Do not delay KPI counters if the SSE payload is already authoritative for the selected window.
 - Do not reuse a long-horizon aggregate endpoint as a shortcut for a real-time KPI when their semantic boundaries differ, even if the payload looks close enough.
+- Do not reuse chart timeseries as the source of a current KPI when the same screen also shows a live breakdown. The chart can legitimately differ because it is trend history; the current KPI should come from the shared activity snapshot.
 - Do not simplify chart visuals to solve render pressure; throttle the data commit feeding the chart instead.
 - Keep timer constants exported when tests need to assert cadence without duplicating magic numbers.
 - `304` handling must preserve the previous UI data and clear transient errors; it is a successful no-body response, not a failed fetch.
@@ -69,6 +74,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 ## References
 
 - `docs/specs/5932d-sse-proxy-live-sync/SPEC.md`
+- `docs/specs/z6ysw-dashboard-account-activity-tabs/SPEC.md`
 - `web/src/hooks/useStats.ts`
 - `web/src/hooks/useDashboardWorkingConversations.ts`
 - `web/src/hooks/useParallelWorkStats.ts`

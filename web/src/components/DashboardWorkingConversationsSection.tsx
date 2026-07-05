@@ -17,7 +17,10 @@ import type {
   DashboardWorkingConversationInvocationSelection,
   DashboardWorkingConversationTone,
 } from "../lib/dashboardWorkingConversations";
-import type { UpstreamAccountActivityAccount } from "../lib/api";
+import type {
+  UpstreamAccountActivityAccount,
+  UpstreamAccountActivityResponse,
+} from "../lib/api";
 import {
   DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
   buildDashboardWorkingConversationInvocationModel,
@@ -80,6 +83,11 @@ interface DashboardWorkingConversationsSectionProps {
   onOpenInvocation?: (
     selection: DashboardWorkingConversationInvocationSelection,
   ) => void;
+  upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
+  upstreamAccountActivityLoading?: boolean;
+  upstreamAccountActivityError?: string | null;
+  upstreamAccountRecentPreviewLimit?: number;
+  onUpstreamAccountActivityEnabledChange?: (enabled: boolean) => void;
 }
 
 export interface DashboardWorkingConversationSelection {
@@ -2256,10 +2264,17 @@ function DashboardUpstreamAccountActivityCard({
             <button
               type="button"
               data-motion-surface
-              className="inline-flex min-h-11 min-w-0 max-w-full cursor-pointer appearance-none items-center border-0 bg-transparent py-1 text-left text-[1rem] font-semibold text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:min-h-8 sm:py-0"
-              onClick={() =>
-                onOpenUpstreamAccount?.(account.upstreamAccountId, account.displayName)
-              }
+              disabled={account.upstreamAccountId == null}
+              className={cn(
+                "inline-flex min-h-11 min-w-0 max-w-full appearance-none items-center border-0 bg-transparent py-1 text-left text-[1rem] font-semibold text-base-content transition-opacity duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:min-h-8 sm:py-0",
+                account.upstreamAccountId == null
+                  ? "cursor-default"
+                  : "cursor-pointer hover:opacity-80",
+              )}
+              onClick={() => {
+                if (account.upstreamAccountId == null) return;
+                onOpenUpstreamAccount?.(account.upstreamAccountId, account.displayName);
+              }}
             >
               <span className="truncate">{account.displayName}</span>
             </button>
@@ -2302,7 +2317,7 @@ function DashboardUpstreamAccountActivityCard({
             iconName="cash-clock"
           />
           <div className="shrink-0 font-mono text-xs font-semibold text-base-content/72">
-            #{account.upstreamAccountId}
+            {account.upstreamAccountId == null ? "—" : `#${account.upstreamAccountId}`}
           </div>
         </div>
       </div>
@@ -2482,6 +2497,11 @@ export function DashboardWorkingConversationsSection({
   onOpenUpstreamAccount,
   onOpenConversation,
   onOpenInvocation,
+  upstreamAccountActivity: externalUpstreamAccountActivity,
+  upstreamAccountActivityLoading: externalUpstreamAccountActivityLoading,
+  upstreamAccountActivityError: externalUpstreamAccountActivityError,
+  upstreamAccountRecentPreviewLimit: externalUpstreamAccountRecentPreviewLimit,
+  onUpstreamAccountActivityEnabledChange,
 }: DashboardWorkingConversationsSectionProps) {
   const { t, locale } = useTranslation();
   const [preferredView, setPreferredView] = useState<DashboardWorkspaceView>(() =>
@@ -2543,16 +2563,30 @@ export function DashboardWorkingConversationsSection({
       : preferredView;
   const upstreamAccountActivityEnabled =
     !upstreamAccountsDisabled && activeView === "upstreamAccounts";
-  const {
-    data: upstreamAccountActivity,
-    isLoading: upstreamAccountActivityLoading,
-    error: upstreamAccountActivityError,
-    recentInvocationLimit: upstreamAccountRecentPreviewLimit,
-  } = useDashboardUpstreamAccountActivity(
+  const hasExternalUpstreamAccountActivity =
+    externalUpstreamAccountActivity !== undefined ||
+    externalUpstreamAccountActivityLoading !== undefined ||
+    externalUpstreamAccountActivityError !== undefined;
+  const hookUpstreamAccountActivity = useDashboardUpstreamAccountActivity(
     activeRange,
-    upstreamAccountActivityEnabled,
+    !hasExternalUpstreamAccountActivity && upstreamAccountActivityEnabled,
     recentPreviewLimit,
   );
+  const upstreamAccountActivity = hasExternalUpstreamAccountActivity
+    ? externalUpstreamAccountActivity ?? null
+    : hookUpstreamAccountActivity.data;
+  const upstreamAccountActivityLoading = hasExternalUpstreamAccountActivity
+    ? externalUpstreamAccountActivityLoading === true
+    : hookUpstreamAccountActivity.isLoading;
+  const upstreamAccountActivityError = hasExternalUpstreamAccountActivity
+    ? externalUpstreamAccountActivityError ?? null
+    : hookUpstreamAccountActivity.error;
+  const upstreamAccountRecentPreviewLimit = hasExternalUpstreamAccountActivity
+    ? externalUpstreamAccountRecentPreviewLimit ?? recentPreviewLimit
+    : hookUpstreamAccountActivity.recentInvocationLimit;
+  useEffect(() => {
+    onUpstreamAccountActivityEnabledChange?.(upstreamAccountActivityEnabled);
+  }, [onUpstreamAccountActivityEnabledChange, upstreamAccountActivityEnabled]);
   const upstreamAccounts = useMemo(
     () =>
       [...(upstreamAccountActivity?.accounts ?? [])].sort((left, right) => {
@@ -2563,7 +2597,8 @@ export function DashboardWorkingConversationsSection({
         const leftRecent = left.recentInvocations[0]?.occurredAt ?? "";
         const recentCompare = rightRecent.localeCompare(leftRecent);
         if (recentCompare !== 0) return recentCompare;
-        return right.upstreamAccountId - left.upstreamAccountId;
+        return (right.upstreamAccountId ?? Number.MIN_SAFE_INTEGER) -
+          (left.upstreamAccountId ?? Number.MIN_SAFE_INTEGER);
       }),
     [upstreamAccountActivity],
   );
@@ -2914,7 +2949,7 @@ export function DashboardWorkingConversationsSection({
               >
                 {upstreamAccountRows.flat().map((account) => (
                   <DashboardUpstreamAccountActivityCard
-                    key={account.upstreamAccountId}
+                    key={account.accountKey ?? account.upstreamAccountId ?? "unassigned"}
                     account={account}
                     locale={locale}
                     localeTag={localeTag}

@@ -22,6 +22,8 @@ const hookMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../hooks/useDashboardWorkingConversations", () => ({
+  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX: 16,
+  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN: 4,
   useDashboardWorkingConversations: hookMocks.useDashboardWorkingConversations,
 }));
 

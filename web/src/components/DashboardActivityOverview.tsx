@@ -3,6 +3,7 @@ import { useSummary } from '../hooks/useStats'
 import { useParallelWorkStats } from '../hooks/useParallelWorkStats'
 import { useTimeseries } from '../hooks/useTimeseries'
 import { useTranslation } from '../i18n'
+import type { DashboardActivityResponse } from '../lib/api'
 import { metricAccent } from '../lib/chartTheme'
 import { recordTodayChartDataCommit } from '../lib/dashboardPerformanceDiagnostics'
 import { useTheme } from '../theme'
@@ -130,12 +131,18 @@ function DashboardNaturalDayRangePanel({
   timeseriesRange,
   testId,
   upstreamAccountId,
+  dashboardActivity,
+  dashboardActivityLoading = false,
+  dashboardActivityError = null,
 }: {
   metric: NaturalDayChartMetric
   summaryWindow: 'today' | 'yesterday'
   timeseriesRange: 'today' | 'yesterday'
   testId: string
   upstreamAccountId?: number
+  dashboardActivity?: DashboardActivityResponse | null
+  dashboardActivityLoading?: boolean
+  dashboardActivityError?: string | null
 }) {
   const { data, isLoading, error } = useTimeseries(
     timeseriesRange,
@@ -159,6 +166,9 @@ function DashboardNaturalDayRangePanel({
           error={error}
           closedNaturalDay={timeseriesRange === 'yesterday'}
           upstreamAccountId={upstreamAccountId}
+          dashboardActivity={dashboardActivity}
+          dashboardActivityLoading={dashboardActivityLoading}
+          dashboardActivityError={dashboardActivityError}
         />
       ) : (
         <DashboardNaturalDayYesterdaySummaryOverview
@@ -167,6 +177,9 @@ function DashboardNaturalDayRangePanel({
           error={error}
           closedNaturalDay={timeseriesRange === 'yesterday'}
           upstreamAccountId={upstreamAccountId}
+          dashboardActivity={dashboardActivity}
+          dashboardActivityLoading={dashboardActivityLoading}
+          dashboardActivityError={dashboardActivityError}
         />
       )}
       <DashboardNaturalDayChartSection
@@ -186,12 +199,18 @@ function DashboardNaturalDayTodaySummaryOverview({
   error,
   closedNaturalDay,
   upstreamAccountId,
+  dashboardActivity,
+  dashboardActivityLoading = false,
+  dashboardActivityError = null,
 }: {
   response: ReturnType<typeof useTimeseries>['data']
   loading: boolean
   error: ReturnType<typeof useTimeseries>['error']
   closedNaturalDay: boolean
   upstreamAccountId?: number
+  dashboardActivity?: DashboardActivityResponse | null
+  dashboardActivityLoading?: boolean
+  dashboardActivityError?: string | null
 }) {
   const {
     summary,
@@ -242,15 +261,25 @@ function DashboardNaturalDayTodaySummaryOverview({
     }),
     [closedNaturalDay, rateNow, response],
   )
+  const snapshotActive =
+    upstreamAccountId == null && dashboardActivity?.range === 'today'
+  const snapshotRate = snapshotActive
+    ? {
+        tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
+        spendRate: dashboardActivity.summary.spendRate ?? 0,
+        windowMinutes: dashboardActivity.rateWindow.windowMinutes,
+        available: true,
+      }
+    : null
 
   return (
     <TodayStatsOverview
-      stats={summary}
-      loading={summaryLoading}
-      error={summaryError}
-      rate={rate}
-      rateLoading={loading}
-      rateError={error}
+      stats={snapshotActive ? dashboardActivity.summary.stats : summary}
+      loading={snapshotActive ? false : summaryLoading || dashboardActivityLoading}
+      error={snapshotActive ? null : summaryError ?? dashboardActivityError}
+      rate={snapshotRate ?? rate}
+      rateLoading={snapshotActive ? false : loading || dashboardActivityLoading}
+      rateError={snapshotActive ? null : error ?? dashboardActivityError}
       now={rateNow}
       timeseries={response}
       comparisonStats={comparisonSummary}
@@ -273,12 +302,18 @@ function DashboardNaturalDayYesterdaySummaryOverview({
   error,
   closedNaturalDay,
   upstreamAccountId,
+  dashboardActivity,
+  dashboardActivityLoading = false,
+  dashboardActivityError = null,
 }: {
   response: ReturnType<typeof useTimeseries>['data']
   loading: boolean
   error: ReturnType<typeof useTimeseries>['error']
   closedNaturalDay: boolean
   upstreamAccountId?: number
+  dashboardActivity?: DashboardActivityResponse | null
+  dashboardActivityLoading?: boolean
+  dashboardActivityError?: string | null
 }) {
   const {
     summary,
@@ -313,15 +348,25 @@ function DashboardNaturalDayYesterdaySummaryOverview({
     }),
     [closedNaturalDay, rateNow, response],
   )
+  const snapshotActive =
+    upstreamAccountId == null && dashboardActivity?.range === 'yesterday'
+  const snapshotRate = snapshotActive
+    ? {
+        tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
+        spendRate: dashboardActivity.summary.spendRate ?? 0,
+        windowMinutes: dashboardActivity.rateWindow.windowMinutes,
+        available: true,
+      }
+    : null
 
   return (
     <TodayStatsOverview
-      stats={summary}
-      loading={summaryLoading}
-      error={summaryError}
-      rate={rate}
-      rateLoading={loading}
-      rateError={error}
+      stats={snapshotActive ? dashboardActivity.summary.stats : summary}
+      loading={snapshotActive ? false : summaryLoading || dashboardActivityLoading}
+      error={snapshotActive ? null : summaryError ?? dashboardActivityError}
+      rate={snapshotRate ?? rate}
+      rateLoading={snapshotActive ? false : loading || dashboardActivityLoading}
+      rateError={snapshotActive ? null : error ?? dashboardActivityError}
       now={rateNow}
       timeseries={response}
       comparisonStats={null}
@@ -362,7 +407,19 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   )
 })
 
-function DashboardTodayRangePanel({ metric, upstreamAccountId }: { metric: NaturalDayChartMetric; upstreamAccountId?: number }) {
+function DashboardTodayRangePanel({
+  metric,
+  upstreamAccountId,
+  dashboardActivity,
+  dashboardActivityLoading,
+  dashboardActivityError,
+}: {
+  metric: NaturalDayChartMetric
+  upstreamAccountId?: number
+  dashboardActivity?: DashboardActivityResponse | null
+  dashboardActivityLoading?: boolean
+  dashboardActivityError?: string | null
+}) {
   return (
     <DashboardNaturalDayRangePanel
       metric={metric}
@@ -370,11 +427,26 @@ function DashboardTodayRangePanel({ metric, upstreamAccountId }: { metric: Natur
       timeseriesRange="today"
       testId="dashboard-activity-range-today"
       upstreamAccountId={upstreamAccountId}
+      dashboardActivity={dashboardActivity}
+      dashboardActivityLoading={dashboardActivityLoading}
+      dashboardActivityError={dashboardActivityError}
     />
   )
 }
 
-function DashboardYesterdayRangePanel({ metric, upstreamAccountId }: { metric: NaturalDayChartMetric; upstreamAccountId?: number }) {
+function DashboardYesterdayRangePanel({
+  metric,
+  upstreamAccountId,
+  dashboardActivity,
+  dashboardActivityLoading,
+  dashboardActivityError,
+}: {
+  metric: NaturalDayChartMetric
+  upstreamAccountId?: number
+  dashboardActivity?: DashboardActivityResponse | null
+  dashboardActivityLoading?: boolean
+  dashboardActivityError?: string | null
+}) {
   return (
     <DashboardNaturalDayRangePanel
       metric={metric}
@@ -382,12 +454,28 @@ function DashboardYesterdayRangePanel({ metric, upstreamAccountId }: { metric: N
       timeseriesRange="yesterday"
       testId="dashboard-activity-range-yesterday"
       upstreamAccountId={upstreamAccountId}
+      dashboardActivity={dashboardActivity}
+      dashboardActivityLoading={dashboardActivityLoading}
+      dashboardActivityError={dashboardActivityError}
     />
   )
 }
 
-function Dashboard24HourRangePanel({ metric, upstreamAccountId }: { metric: MetricKey; upstreamAccountId?: number }) {
+function Dashboard24HourRangePanel({
+  metric,
+  upstreamAccountId,
+  dashboardActivity,
+  dashboardActivityLoading,
+  dashboardActivityError,
+}: {
+  metric: MetricKey
+  upstreamAccountId?: number
+  dashboardActivity?: DashboardActivityResponse | null
+  dashboardActivityLoading?: boolean
+  dashboardActivityError?: string | null
+}) {
   const { summary, isLoading, error } = useScopedSummary('1d', upstreamAccountId)
+  const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === '1d'
 
   return (
     <div
@@ -395,7 +483,11 @@ function Dashboard24HourRangePanel({ metric, upstreamAccountId }: { metric: Metr
       data-testid="dashboard-activity-range-1d"
       data-active="true"
     >
-      <StatsCards stats={summary} loading={isLoading} error={error} />
+      <StatsCards
+        stats={snapshotActive ? dashboardActivity.summary.stats : summary}
+        loading={snapshotActive ? false : isLoading || dashboardActivityLoading === true}
+        error={snapshotActive ? null : error ?? dashboardActivityError}
+      />
       <Last24hTenMinuteHeatmap
         metric={metric}
         showHeader={false}
@@ -405,8 +497,21 @@ function Dashboard24HourRangePanel({ metric, upstreamAccountId }: { metric: Metr
   )
 }
 
-function Dashboard7DayRangePanel({ metric, upstreamAccountId }: { metric: MetricKey; upstreamAccountId?: number }) {
+function Dashboard7DayRangePanel({
+  metric,
+  upstreamAccountId,
+  dashboardActivity,
+  dashboardActivityLoading,
+  dashboardActivityError,
+}: {
+  metric: MetricKey
+  upstreamAccountId?: number
+  dashboardActivity?: DashboardActivityResponse | null
+  dashboardActivityLoading?: boolean
+  dashboardActivityError?: string | null
+}) {
   const { summary, isLoading, error } = useScopedSummary('7d', upstreamAccountId)
+  const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === '7d'
 
   return (
     <div
@@ -414,7 +519,11 @@ function Dashboard7DayRangePanel({ metric, upstreamAccountId }: { metric: Metric
       data-testid="dashboard-activity-range-7d"
       data-active="true"
     >
-      <StatsCards stats={summary} loading={isLoading} error={error} />
+      <StatsCards
+        stats={snapshotActive ? dashboardActivity.summary.stats : summary}
+        loading={snapshotActive ? false : isLoading || dashboardActivityLoading === true}
+        error={snapshotActive ? null : error ?? dashboardActivityError}
+      />
       <WeeklyHourlyHeatmap
         metric={metric}
         showHeader={false}
@@ -450,6 +559,9 @@ export interface DashboardActivityOverviewProps {
   className?: string
   activeRange?: DashboardActivityRangeKey
   onActiveRangeChange?: (range: DashboardActivityRangeKey) => void
+  dashboardActivity?: DashboardActivityResponse | null
+  dashboardActivityLoading?: boolean
+  dashboardActivityError?: string | null
 }
 
 export function DashboardActivityOverview({
@@ -460,6 +572,9 @@ export function DashboardActivityOverview({
   className = 'surface-panel overflow-visible',
   activeRange: controlledActiveRange,
   onActiveRangeChange,
+  dashboardActivity,
+  dashboardActivityLoading = false,
+  dashboardActivityError = null,
 }: DashboardActivityOverviewProps) {
   const { t } = useTranslation()
   const { themeMode } = useTheme()
@@ -573,10 +688,42 @@ export function DashboardActivityOverview({
             })}
           </SegmentedControl>
         </div>
-        {activeRange === 'today' ? <DashboardTodayRangePanel metric={metricToday} upstreamAccountId={upstreamAccountId} /> : null}
-        {activeRange === 'yesterday' ? <DashboardYesterdayRangePanel metric={metricYesterday} upstreamAccountId={upstreamAccountId} /> : null}
-        {activeRange === '1d' ? <Dashboard24HourRangePanel metric={metric24h} upstreamAccountId={upstreamAccountId} /> : null}
-        {activeRange === '7d' ? <Dashboard7DayRangePanel metric={metric7d} upstreamAccountId={upstreamAccountId} /> : null}
+        {activeRange === 'today' ? (
+          <DashboardTodayRangePanel
+            metric={metricToday}
+            upstreamAccountId={upstreamAccountId}
+            dashboardActivity={dashboardActivity}
+            dashboardActivityLoading={dashboardActivityLoading}
+            dashboardActivityError={dashboardActivityError}
+          />
+        ) : null}
+        {activeRange === 'yesterday' ? (
+          <DashboardYesterdayRangePanel
+            metric={metricYesterday}
+            upstreamAccountId={upstreamAccountId}
+            dashboardActivity={dashboardActivity}
+            dashboardActivityLoading={dashboardActivityLoading}
+            dashboardActivityError={dashboardActivityError}
+          />
+        ) : null}
+        {activeRange === '1d' ? (
+          <Dashboard24HourRangePanel
+            metric={metric24h}
+            upstreamAccountId={upstreamAccountId}
+            dashboardActivity={dashboardActivity}
+            dashboardActivityLoading={dashboardActivityLoading}
+            dashboardActivityError={dashboardActivityError}
+          />
+        ) : null}
+        {activeRange === '7d' ? (
+          <Dashboard7DayRangePanel
+            metric={metric7d}
+            upstreamAccountId={upstreamAccountId}
+            dashboardActivity={dashboardActivity}
+            dashboardActivityLoading={dashboardActivityLoading}
+            dashboardActivityError={dashboardActivityError}
+          />
+        ) : null}
         {activeRange === 'usage' ? <DashboardUsageRangePanel metric={metricUsage} upstreamAccountId={upstreamAccountId} /> : null}
       </div>
     </section>
