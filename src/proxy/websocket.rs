@@ -183,7 +183,8 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         requester_ip,
     };
 
-    let ws = match requested_websocket_subprotocol(&headers) {
+    let downstream_subprotocol = requested_websocket_subprotocol(&headers);
+    let ws = match downstream_subprotocol.clone() {
         Some(protocol) => ws.protocols([protocol]),
         None => ws,
     };
@@ -198,6 +199,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
             sticky_key,
             requested_model,
             header_prompt_cache_key,
+            downstream_subprotocol,
             trace,
             proxy_request_permit,
         )
@@ -273,6 +275,7 @@ pub(crate) async fn prepare_upstream_websocket(
     conversation_override: Option<ConversationRoutingOverride>,
     owner_auto_guard_active: bool,
     trace: &PoolUpstreamAttemptTraceContext,
+    required_subprotocol: Option<&str>,
 ) -> Result<PreparedUpstreamWebSocket, WsPrepareError> {
     let mut excluded_account_ids = Vec::new();
     let mut excluded_upstream_route_keys = HashSet::new();
@@ -527,6 +530,7 @@ pub(crate) async fn prepare_upstream_websocket(
             prompt_cache_key,
             account,
             ws_retry_account_ids.len() + 1,
+            required_subprotocol,
         )
         .await
         {
@@ -595,6 +599,7 @@ async fn prepare_single_upstream_websocket_attempt(
     prompt_cache_key: Option<&str>,
     account: PoolResolvedAccount,
     attempt_index: usize,
+    required_subprotocol: Option<&str>,
 ) -> Result<PreparedUpstreamWebSocket, WsAttemptFailure> {
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     reserve_pool_routing_account(state.as_ref(), &reservation_key, &account);
@@ -700,8 +705,15 @@ async fn prepare_single_upstream_websocket_attempt(
         connect_upstream_websocket(request, &upstream_url, selected_proxy.endpoint_url.as_ref()),
     )
     .await;
-    let upstream = match connect_result {
-        Ok(Ok((stream, _response))) => stream,
+    let (upstream, selected_subprotocol) = match connect_result {
+        Ok(Ok((stream, response))) => {
+            let selected_subprotocol = response
+                .headers()
+                .get(HeaderName::from_static("sec-websocket-protocol"))
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            (stream, selected_subprotocol)
+        }
         Ok(Err(err)) => {
             let message = format!("failed to contact websocket upstream: {err}");
             let should_mark_ws_unsupported =
@@ -810,6 +822,54 @@ async fn prepare_single_upstream_websocket_attempt(
             });
         }
     };
+    if let Some(required_subprotocol) = required_subprotocol
+        && selected_subprotocol.as_deref() != Some(required_subprotocol)
+    {
+        let message = match selected_subprotocol.as_deref() {
+            Some(selected) => format!(
+                "websocket upstream selected subprotocol {selected}, expected {required_subprotocol}"
+            ),
+            None => format!(
+                "websocket upstream did not select required subprotocol {required_subprotocol}"
+            ),
+        };
+        finalize_ws_attempt(
+            state.as_ref(),
+            pending_attempt_record.as_ref(),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
+            Some(message.as_str()),
+            Some(elapsed_ms(connect_started)),
+            None,
+            None,
+        )
+        .await;
+        complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
+        if let Err(err) = record_pool_route_transport_failure(
+            &state.pool,
+            account.account_id,
+            trace.sticky_key.as_deref(),
+            &message,
+            Some(trace.invoke_id.as_str()),
+        )
+        .await
+        {
+            warn!(
+                invoke_id = %trace.invoke_id,
+                account_id = account.account_id,
+                error = %err,
+                "failed to record websocket subprotocol mismatch route failure"
+            );
+        }
+        reservation_guard.release();
+        return Err(WsAttemptFailure {
+            status: StatusCode::BAD_GATEWAY,
+            message,
+            retryable: true,
+            account_id: Some(account.account_id),
+            upstream_route_key: Some(account.upstream_route_key()),
+        });
+    }
 
     if let Some(pending) = pending_attempt_record.as_ref()
         && let Err(err) = advance_pool_upstream_request_attempt_phase(
@@ -1219,6 +1279,7 @@ async fn proxy_websocket_tunnel_deferred_prepare(
     sticky_key: Option<String>,
     requested_model: Option<String>,
     header_prompt_cache_key: Option<String>,
+    required_subprotocol: Option<String>,
     trace: PoolUpstreamAttemptTraceContext,
     proxy_request_permit: ProxyRequestConcurrencyPermit,
 ) {
@@ -1317,6 +1378,7 @@ async fn proxy_websocket_tunnel_deferred_prepare(
         conversation_override,
         owner_auto_guard_active,
         &trace,
+        required_subprotocol.as_deref(),
     )
     .await
     {

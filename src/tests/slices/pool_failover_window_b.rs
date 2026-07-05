@@ -1634,6 +1634,7 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
             sticky_key: Some(prompt_cache_key.to_string()),
             requester_ip: None,
         },
+        None,
     )
     .await;
     let Err(err) = err else {
@@ -1756,6 +1757,7 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
             sticky_key: Some(prompt_cache_key.to_string()),
             requester_ip: None,
         },
+        None,
     )
     .await;
     let Err(err) = err else {
@@ -2760,6 +2762,200 @@ async fn websocket_handshake_failure_retries_next_candidate_with_retained_first_
 }
 
 #[tokio::test]
+async fn websocket_deferred_prepare_requires_upstream_subprotocol_match_before_relay() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+    use tungstenite::Message as TungsteniteMessage;
+
+    async fn websocket_protocol_capture_upstream(
+        ws: WebSocketUpgrade,
+        State(protocols): State<Arc<StdMutex<Vec<Option<String>>>>>,
+        headers: HeaderMap,
+    ) -> Response {
+        protocols
+            .lock()
+            .expect("lock websocket protocol captures")
+            .push(
+                headers
+                    .get(HeaderName::from_static("sec-websocket-protocol"))
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_string),
+            );
+        ws.on_upgrade(move |mut socket| async move {
+            while let Some(Ok(message)) = socket.next().await {
+                match message {
+                    AxumWsMessage::Text(_) => {
+                        let response = json!({
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp_ws_protocol",
+                                "status": "completed",
+                                "usage": {
+                                    "input_tokens": 4,
+                                    "output_tokens": 2,
+                                    "total_tokens": 6
+                                }
+                            }
+                        })
+                        .to_string();
+                        let _ = socket.send(AxumWsMessage::Text(response)).await;
+                        let _ = socket.send(AxumWsMessage::Close(None)).await;
+                        break;
+                    }
+                    AxumWsMessage::Binary(_) => break,
+                    AxumWsMessage::Close(_) => break,
+                    _ => {}
+                }
+            }
+        })
+        .into_response()
+    }
+
+    let captured_protocols = Arc::new(StdMutex::new(Vec::new()));
+    let upstream_app = Router::new()
+        .route("/v1/realtime", get(websocket_protocol_capture_upstream))
+        .with_state(captured_protocols.clone());
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind websocket upstream");
+    let upstream_addr = upstream_listener
+        .local_addr()
+        .expect("websocket upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream_app)
+            .await
+            .expect("websocket upstream should run");
+    });
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{upstream_addr}")).expect("valid websocket upstream base url");
+    config.openai_proxy_websocket_enabled = true;
+    config.openai_proxy_upstream_websocket_default_enabled = true;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "WebSocket Protocol",
+        "upstream-protocol",
+        None,
+        None,
+        Some(&format!("http://{upstream_addr}")),
+    )
+    .await;
+
+    let proxy_app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
+        .with_state(state.clone());
+    let proxy_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind websocket proxy server");
+    let proxy_addr = proxy_listener
+        .local_addr()
+        .expect("websocket proxy server addr");
+    let proxy_handle = tokio::spawn(async move {
+        axum::serve(proxy_listener, proxy_app)
+            .await
+            .expect("websocket proxy server should run");
+    });
+
+    let mut request = format!("ws://{proxy_addr}/v1/realtime")
+        .into_client_request()
+        .expect("websocket client request");
+    request.headers_mut().insert(
+        http_header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer pool-live-key"),
+    );
+    request.headers_mut().insert(
+        HeaderName::from_static("sec-websocket-protocol"),
+        HeaderValue::from_static("responses.realtime.v1"),
+    );
+    let (mut client, response) = connect_async(request)
+        .await
+        .expect("connect websocket proxy");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    assert_eq!(
+        response
+            .headers()
+            .get(HeaderName::from_static("sec-websocket-protocol"))
+            .and_then(|value| value.to_str().ok()),
+        Some("responses.realtime.v1")
+    );
+
+    client
+        .send(TungsteniteMessage::Text(
+            json!({
+                "type": "response.create",
+                "model": "gpt-5-realtime",
+                "input": [{
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "protocol" }]
+                }]
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send websocket response.create");
+    let close = client
+        .next()
+        .await
+        .expect("receive websocket close")
+        .expect("websocket close frame");
+    let TungsteniteMessage::Close(Some(frame)) = close else {
+        panic!("expected retryable close frame, got {close:?}");
+    };
+    assert_eq!(u16::from(frame.code), 1013);
+    assert!(frame.reason.contains("retry"));
+
+    assert_eq!(
+        captured_protocols
+            .lock()
+            .expect("lock websocket protocol captures")
+            .as_slice(),
+        &[Some("responses.realtime.v1".to_string())]
+    );
+
+    let attempt_row = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load websocket subprotocol mismatch attempt");
+    assert_eq!(
+        attempt_row.0,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+    );
+    let error_message = attempt_row.1.unwrap_or_default().to_ascii_lowercase();
+    assert!(
+        error_message.contains("subprotocol"),
+        "unexpected websocket subprotocol mismatch attempt error: {error_message}"
+    );
+
+    proxy_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
     let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let mut config = test_config();
@@ -2854,6 +3050,7 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
             sticky_key: trace_sticky_key,
             requester_ip: None,
         },
+        None,
     )
     .await;
     let Err(err) = err else {

@@ -37,6 +37,7 @@
 - Downstream gate: `websocketEnabled=false` 时返回 HTTP `503` JSON error，不进入 WS upgrade。
 - Upstream gate: `upstreamWebsocketDefaultEnabled=false` 时，已 upgrade 的 downstream WS 收到 retryable close，不建立不可靠上游隧道。
 - Initial frame: upgrade 成功后，第一个 downstream frame 必须是 text JSON，`type` 必须为 `response.create`。非 text、非 JSON 或非 `response.create` 首帧以 close `1011` 结束。
+- Subprotocol: 若 downstream 请求 `Sec-WebSocket-Protocol`，代理可为客户端兼容性选择第一个请求值，但上游握手必须返回同一 subprotocol 后才允许发送保留首帧；不匹配视为 retryable upstream transport failure 并进入 failover。
 - Routing keys: payload `prompt_cache_key` / `promptCacheKey` 优先；无 payload key 时才使用 header `x-prompt-cache-key` / `prompt-cache-key` / `x-openai-prompt-cache-key`；`x-sticky-key` 只影响 sticky routing，不参与 prompt-cache owner guard。
 - Model: payload `model` 优先于 query `model` 参与账号池模型约束选择。
 - Owner guard: 若首帧或后续 `response.create` payload 带 encrypted content 且 prompt-cache owner 已锁定，候选账号必须匹配 owner；不匹配时返回 retryable close `encrypted_session_owner_unavailable; retry`。
@@ -50,6 +51,7 @@
 - 无 header `prompt_cache_key` 时，首帧 payload 的 `prompt_cache_key` 能决定 owner/binding 路由。
 - sticky-only header 不会被当作 prompt cache key，也不会触发 encrypted owner guard。
 - 首个候选上游 handshake 失败时，同一 downstream WS session 内切到下一候选，并把保留首帧发送给成功候选。
+- downstream 请求 subprotocol 且上游未选择同一值时，代理不得 relay 首帧，应记录 retryable attempt failure 并向客户端返回 `1013 upstream_unavailable; retry` 或继续 failover 到匹配候选。
 - 多个 `response.create` turn 能逐 turn relay，terminal usage 分别落入 invocation/cost 统计。
 - 缺字段 usage 不产生半字段 usage/cost 记录。
 - downstream 已断开但 upstream 随后发出 terminal usage 时，系统完成 bounded drain、持久化 usage，并不再尝试写 downstream。

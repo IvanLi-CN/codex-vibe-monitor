@@ -7,6 +7,7 @@
 - 修正 turn 边界：relay 以 downstream `response.create` 和 upstream terminal event 维护 active turn，支持同一连接中的多 turn usage 记录。
 - 修正断连语义：downstream active turn 断开后 bounded drain upstream terminal/usage；upstream terminal 前 close/error 统一转成 `1013 upstream_unavailable; retry`。
 - 补齐握手 failover 测试：首个候选 handshake 失败时保留首帧并在同一 downstream session 内切到下一候选。
+- 修正 subprotocol 语义：downstream 请求 subprotocol 时，上游必须选择同一值后才发送保留首帧；不匹配候选按 retryable failure 处理。
 
 ## 2026-05-04
 

@@ -7,6 +7,7 @@
 - 已实现：payload `prompt_cache_key` 优先于 header prompt cache key；sticky-only header 不会进入 prompt-cache owner guard。
 - 已实现：首帧 payload `model` 优先于 query `model` 进入账号池选择；`previous_response_id` 作为 turn metadata 解析与日志观测输入保留。
 - 已实现：上游握手成功后发送保留首帧；握手失败、timeout、unsupported HTTP 状态和 transport error 仍复用账号池 failover，在同一个 downstream session 内尝试下一个候选。
+- 已实现：downstream 请求 subprotocol 时，代理为客户端兼容性选择第一个请求值，并在上游握手后要求上游返回同一 subprotocol；不匹配候选在发送首帧前被标记为 retryable transport failure。
 - 已实现：Responses WS turn-aware relay。downstream `response.create` 打开 active turn，上游 `response.completed` / `response.done` / `response.failed` terminal event 关闭 active turn。
 - 已实现：terminal usage 观察先于 downstream 写入；完整 `input_tokens` + `output_tokens` 才进入现有 invocation/cost 持久化路径，缺字段 usage 被跳过。
 - 已实现：downstream active turn 断开后进行 bounded upstream drain；drain 收到 terminal usage 时持久化 usage 并按成功 turn 收口。
@@ -27,3 +28,4 @@
 - downstream active turn 断开后 drain upstream terminal usage 并落库。
 - upstream terminal 前 close 转换为 downstream `1013` retryable close，并记录 attempt failure。
 - 上游 handshake failure 在同一 downstream session 内 failover 到下一候选，并发送保留首帧。
+- downstream subprotocol 与 upstream subprotocol 不匹配时不发送保留首帧，记录 attempt failure 并返回 retryable close。
