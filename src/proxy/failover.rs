@@ -1297,6 +1297,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             let mut early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>;
             let live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>;
             let prepared_request_body = match prepare_pool_request_body_for_account(
+                proxy_request_id,
                 body.as_ref(),
                 original_uri,
                 &method,
