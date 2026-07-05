@@ -682,7 +682,7 @@ export function TodayStatsOverview({
               loading={loading}
               kind="integer"
               toneClass="text-info"
-              iconName="paper-plane"
+              iconName="send"
               valueTestId="today-stats-value-in-progress-conversations"
               displayText={
                 parallelSnapshot.currentCount == null
