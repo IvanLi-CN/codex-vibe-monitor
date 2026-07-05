@@ -2032,6 +2032,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 original_uri.path(),
                 body_sticky_key.clone(),
             );
+            let request_body_snapshot =
+                pool_replay_snapshot_from_bytes(proxy_request_id, request_body_bytes.clone())
+                    .await;
             (
                 send_pool_request_with_failover_and_binding_constraint(
                     state.clone(),
@@ -2039,7 +2042,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     method,
                     original_uri,
                     &headers,
-                    Some(PoolReplayBodySnapshot::Memory(request_body_bytes)),
+                    Some(request_body_snapshot),
                     handshake_timeout,
                     Some(pool_attempt_trace_context),
                     Some(PoolAttemptRuntimeSnapshotContext {

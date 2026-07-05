@@ -1792,6 +1792,7 @@ pub(crate) enum PoolAccountResolutionWithWait {
 
 pub(crate) const POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS: u8 = 3;
 pub(crate) const OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES: usize = 8 * 1024 * 1024;
+static NEXT_POOL_REPLAY_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(1);
 
 impl PoolReplayBodyBuffer {
     pub(crate) fn new(proxy_request_id: u64) -> Self {
@@ -1854,18 +1855,76 @@ impl PoolReplayBodyBuffer {
     }
 }
 
+pub(crate) async fn pool_replay_snapshot_from_bytes(
+    proxy_request_id: u64,
+    bytes: Bytes,
+) -> PoolReplayBodySnapshot {
+    if bytes.is_empty() {
+        return PoolReplayBodySnapshot::Empty;
+    }
+    if bytes.len() <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES {
+        return PoolReplayBodySnapshot::Memory(bytes);
+    }
+
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(proxy_request_id),
+    });
+    match tokio::fs::File::create(&temp_file.path).await {
+        Ok(mut file) => {
+            if let Err(err) = file.write_all(&bytes).await {
+                warn!(
+                    proxy_request_id,
+                    bytes = bytes.len(),
+                    error = %err,
+                    "failed to write large replay snapshot; falling back to memory"
+                );
+                return PoolReplayBodySnapshot::Memory(bytes);
+            }
+            if let Err(err) = file.flush().await {
+                warn!(
+                    proxy_request_id,
+                    bytes = bytes.len(),
+                    error = %err,
+                    "failed to flush large replay snapshot; falling back to memory"
+                );
+                return PoolReplayBodySnapshot::Memory(bytes);
+            }
+            PoolReplayBodySnapshot::File {
+                temp_file,
+                size: bytes.len(),
+            }
+        }
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                bytes = bytes.len(),
+                error = %err,
+                "failed to create large replay snapshot; falling back to memory"
+            );
+            PoolReplayBodySnapshot::Memory(bytes)
+        }
+    }
+}
+
+pub(crate) async fn pool_replay_snapshot_from_vec(
+    proxy_request_id: u64,
+    bytes: Vec<u8>,
+) -> PoolReplayBodySnapshot {
+    pool_replay_snapshot_from_bytes(proxy_request_id, Bytes::from(bytes)).await
+}
+
 impl PoolReplayBodySnapshot {
     pub(crate) fn to_reqwest_body(&self) -> reqwest::Body {
         match self {
             Self::Empty => reqwest::Body::from(Bytes::new()),
             Self::Memory(bytes) => reqwest::Body::from(bytes.clone()),
             Self::File { temp_file, size } => {
-                let path = temp_file.path.clone();
+                let temp_file = temp_file.clone();
                 let expected_size = *size;
                 let stream = stream::unfold(
-                    Some((path, expected_size, None::<tokio::fs::File>)),
+                    Some((temp_file, expected_size, None::<tokio::fs::File>)),
                     |state| async move {
-                        let Some((path, remaining, file)) = state else {
+                        let Some((temp_file, remaining, file)) = state else {
                             return None;
                         };
                         if remaining == 0 {
@@ -1873,7 +1932,7 @@ impl PoolReplayBodySnapshot {
                         }
                         let mut file = match file {
                             Some(file) => file,
-                            None => match tokio::fs::File::open(&path).await {
+                            None => match tokio::fs::File::open(&temp_file.path).await {
                                 Ok(file) => file,
                                 Err(err) => {
                                     return Some((Err(io::Error::other(err.to_string())), None));
@@ -1887,7 +1946,7 @@ impl PoolReplayBodySnapshot {
                                 buf.truncate(read_len);
                                 Some((
                                     Ok(Bytes::from(buf)),
-                                    Some((path, remaining - read_len, Some(file))),
+                                    Some((temp_file, remaining - read_len, Some(file))),
                                 ))
                             }
                             Err(err) => Some((Err(io::Error::other(err.to_string())), None)),
@@ -2112,6 +2171,7 @@ fn rewrite_openai_responses_image_tools(
 }
 
 pub(crate) async fn prepare_pool_request_body_for_account(
+    proxy_request_id: u64,
     body: Option<&PoolReplayBodySnapshot>,
     original_uri: &Uri,
     method: &Method,
@@ -2174,7 +2234,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         .map_err(|err| format!("failed to materialize pool request body for rewrite: {err}"))?;
     let Some(target) = capture_target else {
         return Ok(PreparedPoolRequestBody {
-            snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
+            snapshot,
             request_body_for_capture: Some(original_bytes),
             requested_service_tier: None,
             requested_image_intent: ImageIntent::Unknown,
@@ -2184,7 +2244,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         Ok(value) => value,
         Err(_) => {
             return Ok(PreparedPoolRequestBody {
-                snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
+                snapshot,
                 request_body_for_capture: Some(original_bytes),
                 requested_service_tier: None,
                 requested_image_intent: ImageIntent::Unknown,
@@ -2214,7 +2274,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     let upstream_image_intent = infer_image_intent_from_request_body(target, &value);
     if !rewritten && !image_rewritten {
         return Ok(PreparedPoolRequestBody {
-            snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
+            snapshot,
             request_body_for_capture: Some(original_bytes),
             requested_service_tier,
             requested_image_intent: upstream_image_intent,
@@ -2224,8 +2284,10 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     let rewritten_bytes = serde_json::to_vec(&value)
         .map(Bytes::from)
         .map_err(|err| format!("failed to serialize rewritten pool request body: {err}"))?;
+    let rewritten_snapshot =
+        pool_replay_snapshot_from_bytes(proxy_request_id, rewritten_bytes.clone()).await;
     Ok(PreparedPoolRequestBody {
-        snapshot: PoolReplayBodySnapshot::Memory(rewritten_bytes.clone()),
+        snapshot: rewritten_snapshot,
         request_body_for_capture: Some(rewritten_bytes.clone()),
         requested_service_tier,
         requested_image_intent: upstream_image_intent,
@@ -2234,9 +2296,10 @@ pub(crate) async fn prepare_pool_request_body_for_account(
 
 pub(crate) fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
     let mut path = env::temp_dir();
+    let unique_id = NEXT_POOL_REPLAY_TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed);
     path.push(format!(
-        "cvm-pool-replay-{proxy_request_id}-{}.bin",
-        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        "cvm-pool-replay-{proxy_request_id}-{}-{unique_id}.bin",
+        Utc::now().timestamp_nanos_opt().unwrap_or_default(),
     ));
     path
 }

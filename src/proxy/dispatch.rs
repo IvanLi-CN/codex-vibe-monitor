@@ -534,17 +534,31 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let t_req_read_ms = elapsed_ms(req_read_started);
     let request_body_snapshot_kind = pool_request_snapshot_kind(&request_body_snapshot);
     let request_body_bytes_len = pool_request_snapshot_body_bytes(&request_body_snapshot);
-    debug!(
-        proxy_request_id,
-        body_read_done = true,
-        body_read_elapsed_ms = t_req_read_ms,
-        request_body_bytes = request_body_bytes_len,
-        body_size_bucket = request_body_size_bucket(request_body_bytes_len),
-        request_body_snapshot_kind,
-        live_first_eligible = false,
-        live_first_reason = "capture_requires_full_request_semantics",
-        "openai proxy capture request body read completed"
-    );
+    if capture_request_body_read_log_at_info(request_body_bytes_len, t_req_read_ms) {
+        info!(
+            proxy_request_id,
+            body_read_done = true,
+            body_read_elapsed_ms = t_req_read_ms,
+            request_body_bytes = request_body_bytes_len,
+            body_size_bucket = request_body_size_bucket(request_body_bytes_len),
+            request_body_snapshot_kind,
+            live_first_eligible = false,
+            live_first_reason = "capture_requires_full_request_semantics",
+            "openai proxy capture request body read completed"
+        );
+    } else {
+        debug!(
+            proxy_request_id,
+            body_read_done = true,
+            body_read_elapsed_ms = t_req_read_ms,
+            request_body_bytes = request_body_bytes_len,
+            body_size_bucket = request_body_size_bucket(request_body_bytes_len),
+            request_body_snapshot_kind,
+            live_first_eligible = false,
+            live_first_reason = "capture_requires_full_request_semantics",
+            "openai proxy capture request body read completed"
+        );
+    }
     let request_body_bytes = match request_body_snapshot.into_vec().await {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -793,6 +807,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let t_req_parse_ms = elapsed_ms(req_parse_started);
     let upstream_body_bytes = Bytes::from(upstream_body);
     let base_request_bytes_for_capture = upstream_body_bytes.clone();
+    let upstream_body_snapshot =
+        pool_replay_snapshot_from_bytes(proxy_request_id, upstream_body_bytes.clone()).await;
 
     let initial_running_record = build_running_proxy_capture_record(
         &invoke_id,
@@ -874,7 +890,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             Method::POST,
             &original_uri,
             &upstream_headers,
-            Some(PoolReplayBodySnapshot::Memory(upstream_body_bytes.clone())),
+            Some(upstream_body_snapshot),
             handshake_timeout,
             pool_attempt_trace_context.clone(),
             pool_attempt_runtime_snapshot.clone(),
@@ -1613,13 +1629,25 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     let _ = proxy_request_permit_for_task.take();
                 } else if !downstream_first_byte_logged {
                     downstream_first_byte_logged = true;
-                    debug!(
-                        invoke_id = %invoke_id_for_task,
-                        downstream_first_byte_elapsed = stream_started.elapsed().as_millis() as u64,
-                        upstream_ttfb_ms = t_upstream_ttfb_ms,
-                        forwarded_bytes,
-                        "openai proxy capture streamed first byte downstream"
-                    );
+                    let downstream_first_byte_elapsed =
+                        stream_started.elapsed().as_millis() as u64;
+                    if downstream_first_byte_log_at_info(downstream_first_byte_elapsed) {
+                        info!(
+                            invoke_id = %invoke_id_for_task,
+                            downstream_first_byte_elapsed,
+                            upstream_ttfb_ms = t_upstream_ttfb_ms,
+                            forwarded_bytes,
+                            "openai proxy capture streamed first byte downstream"
+                        );
+                    } else {
+                        debug!(
+                            invoke_id = %invoke_id_for_task,
+                            downstream_first_byte_elapsed,
+                            upstream_ttfb_ms = t_upstream_ttfb_ms,
+                            forwarded_bytes,
+                            "openai proxy capture streamed first byte downstream"
+                        );
+                    }
                 }
             }
         }
@@ -1770,13 +1798,25 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             let _ = proxy_request_permit_for_task.take();
                         } else if !downstream_first_byte_logged {
                             downstream_first_byte_logged = true;
-                            debug!(
-                                invoke_id = %invoke_id_for_task,
-                                downstream_first_byte_elapsed = stream_started.elapsed().as_millis() as u64,
-                                upstream_ttfb_ms = t_upstream_ttfb_ms,
-                                forwarded_bytes,
-                                "openai proxy capture streamed first byte downstream"
-                            );
+                            let downstream_first_byte_elapsed =
+                                stream_started.elapsed().as_millis() as u64;
+                            if downstream_first_byte_log_at_info(downstream_first_byte_elapsed) {
+                                info!(
+                                    invoke_id = %invoke_id_for_task,
+                                    downstream_first_byte_elapsed,
+                                    upstream_ttfb_ms = t_upstream_ttfb_ms,
+                                    forwarded_bytes,
+                                    "openai proxy capture streamed first byte downstream"
+                                );
+                            } else {
+                                debug!(
+                                    invoke_id = %invoke_id_for_task,
+                                    downstream_first_byte_elapsed,
+                                    upstream_ttfb_ms = t_upstream_ttfb_ms,
+                                    forwarded_bytes,
+                                    "openai proxy capture streamed first byte downstream"
+                                );
+                            }
                         }
                     }
                 }
@@ -1825,14 +1865,26 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let req_raw_for_task = req_raw_pending_for_task.finish().await;
         let raw_response_finish_started = Instant::now();
         let resp_raw = response_raw_writer.finish().await;
-        debug!(
-            invoke_id = %invoke_id_for_task,
-            raw_response_write_elapsed = raw_response_finish_started.elapsed().as_millis() as u64,
-            raw_response_bytes = resp_raw.size_bytes,
-            raw_response_codec = raw_payload_meta_codec(&resp_raw),
-            raw_response_truncated = resp_raw.truncated,
-            "openai proxy capture response raw writer finished"
-        );
+        let raw_response_write_elapsed = raw_response_finish_started.elapsed().as_millis() as u64;
+        if raw_response_write_log_at_info(raw_response_write_elapsed, resp_raw.size_bytes) {
+            info!(
+                invoke_id = %invoke_id_for_task,
+                raw_response_write_elapsed,
+                raw_response_bytes = resp_raw.size_bytes,
+                raw_response_codec = raw_payload_meta_codec(&resp_raw),
+                raw_response_truncated = resp_raw.truncated,
+                "openai proxy capture response raw writer finished"
+            );
+        } else {
+            debug!(
+                invoke_id = %invoke_id_for_task,
+                raw_response_write_elapsed,
+                raw_response_bytes = resp_raw.size_bytes,
+                raw_response_codec = raw_payload_meta_codec(&resp_raw),
+                raw_response_truncated = resp_raw.truncated,
+                "openai proxy capture response raw writer finished"
+            );
+        }
         let preview_bytes = response_preview.as_slice().to_vec();
         let raw_response_preview = response_preview.into_preview();
         let streamed_response_outcome = stream_response_parser.finish();
@@ -2685,6 +2737,18 @@ fn request_body_size_bucket(bytes: usize) -> &'static str {
         1048577..=8388608 => "le_8m",
         _ => "gt_8m",
     }
+}
+
+fn capture_request_body_read_log_at_info(bytes: usize, elapsed_ms: f64) -> bool {
+    bytes >= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES || elapsed_ms >= 1_000.0
+}
+
+fn downstream_first_byte_log_at_info(elapsed_ms: u64) -> bool {
+    elapsed_ms >= 2_000
+}
+
+fn raw_response_write_log_at_info(elapsed_ms: u64, bytes: i64) -> bool {
+    elapsed_ms >= 500 || bytes >= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES as i64
 }
 
 pub(crate) fn resolve_compaction_response_kind_for_payload(
