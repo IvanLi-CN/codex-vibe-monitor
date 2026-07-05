@@ -376,7 +376,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let proxy_settings = state.proxy_model_settings.read().await.clone();
 
     let req_read_started = Instant::now();
-    let request_body_bytes = match read_request_body_with_limit(
+    let request_body_snapshot = match read_request_body_snapshot_with_partial_limit(
         body,
         body_limit,
         runtime_timeouts.request_read_timeout,
@@ -532,6 +532,132 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         }
     };
     let t_req_read_ms = elapsed_ms(req_read_started);
+    let request_body_snapshot_kind = pool_request_snapshot_kind(&request_body_snapshot);
+    let request_body_bytes_len = pool_request_snapshot_body_bytes(&request_body_snapshot);
+    debug!(
+        proxy_request_id,
+        body_read_done = true,
+        body_read_elapsed_ms = t_req_read_ms,
+        request_body_bytes = request_body_bytes_len,
+        body_size_bucket = request_body_size_bucket(request_body_bytes_len),
+        request_body_snapshot_kind,
+        live_first_eligible = false,
+        live_first_reason = "capture_requires_full_request_semantics",
+        "openai proxy capture request body read completed"
+    );
+    let request_body_bytes = match request_body_snapshot.into_vec().await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            drop(proxy_request_permit);
+            let status = StatusCode::BAD_GATEWAY;
+            let message = format!("failed to materialize captured request body: {err}");
+            let request_info = RequestCaptureInfo::default();
+            let usage = ParsedUsage::default();
+            let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
+                &state.pricing_catalog,
+                None,
+                &usage,
+                None,
+                ProxyPricingMode::ResponseTier,
+            )
+            .await;
+            let req_raw = RawPayloadMeta::default();
+            let record = ProxyCaptureRecord {
+                invoke_id,
+                occurred_at,
+                model: None,
+                usage,
+                cost,
+                cost_estimated,
+                price_version,
+                status: "http_502".to_string(),
+                error_message: Some(message.clone()),
+                failure_kind: Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
+                payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
+                    target: capture_target,
+                    status,
+                    is_stream: request_info.is_stream,
+                    request_contains_encrypted_content: request_info.contains_encrypted_content,
+                    response_contains_encrypted_content: false,
+                    compaction_request_kind: request_info.compaction_request_kind,
+                    compaction_response_kind: None,
+                    image_intent: request_info.image_intent.as_deref(),
+                    request_model: None,
+                    requested_service_tier: request_info.requested_service_tier.as_deref(),
+                    billing_service_tier: None,
+                    reasoning_effort: request_info.reasoning_effort.as_deref(),
+                    response_model: None,
+                    usage_missing_reason: None,
+                    request_parse_error: Some("request_body_snapshot_materialize_failed"),
+                    failure_kind: Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
+                    requester_ip: requester_ip.as_deref(),
+                    upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
+                    route_mode: INVOCATION_ROUTE_MODE_POOL,
+                    sticky_key: header_sticky_key.as_deref(),
+                    prompt_cache_key: header_prompt_cache_key.as_deref(),
+                    prompt_cache_key_attribution_source: header_prompt_cache_key
+                        .as_ref()
+                        .map(|_| "request"),
+                    client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+                    client_header_fingerprints: Some(
+                        &client_attribution_context.header_fingerprints,
+                    )
+                    .filter(|fingerprints| !fingerprints.is_empty()),
+                    upstream_account_id: None,
+                    upstream_account_name: None,
+                    upstream_account_kind: None,
+                    upstream_base_url_host: None,
+                    oauth_account_header_attached: None,
+                    oauth_account_id_shape: None,
+                    oauth_forwarded_header_count: None,
+                    oauth_forwarded_header_names: None,
+                    oauth_fingerprint_version: None,
+                    oauth_forwarded_header_fingerprints: None,
+                    oauth_prompt_cache_header_forwarded: None,
+                    oauth_request_body_prefix_fingerprint: None,
+                    oauth_request_body_prefix_bytes: None,
+                    oauth_request_body_snapshot_kind: Some(request_body_snapshot_kind),
+                    oauth_responses_body_mode: None,
+                    oauth_responses_rewrite: None,
+                    service_tier: None,
+                    stream_terminal_event: None,
+                    upstream_error_code: None,
+                    upstream_error_message: None,
+                    downstream_status_code: None,
+                    downstream_error_message: None,
+                    upstream_request_id: None,
+                    response_content_encoding: None,
+                    proxy_display_name: None,
+                    proxy_weight_delta: None,
+                    pool_attempt_count: None,
+                    pool_distinct_account_count: None,
+                    pool_attempt_terminal_reason: None,
+                })),
+                raw_response: "{}".to_string(),
+                response_body_preview_enabled: false,
+                req_raw,
+                resp_raw: RawPayloadMeta::default(),
+                timings: StageTimings {
+                    t_total_ms: 0.0,
+                    t_req_read_ms,
+                    t_req_parse_ms: 0.0,
+                    t_upstream_connect_ms: 0.0,
+                    t_upstream_ttfb_ms: 0.0,
+                    t_upstream_stream_ms: 0.0,
+                    t_resp_parse_ms: 0.0,
+                    t_persist_ms: 0.0,
+                },
+            };
+            let terminal_invocation_persisted =
+                persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record)
+                    .await
+                    .is_ok();
+            if terminal_invocation_persisted {
+                disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
+            }
+            return Err((status, message));
+        }
+    };
 
     let req_parse_started = Instant::now();
     let (upstream_body, mut request_info, body_rewritten) = prepare_target_request_body(
@@ -1467,6 +1593,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         });
         let mut stream_error: Option<String> = None;
         let mut downstream_closed = false;
+        let mut downstream_first_byte_logged = false;
         let mut forwarded_chunks = 0usize;
         let mut forwarded_bytes = 0usize;
 
@@ -1480,9 +1607,20 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
             stream_started_at = Some(Instant::now());
-            if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
-                downstream_closed = true;
-                let _ = proxy_request_permit_for_task.take();
+            if !downstream_closed {
+                if tx.send(Ok(chunk)).await.is_err() {
+                    downstream_closed = true;
+                    let _ = proxy_request_permit_for_task.take();
+                } else if !downstream_first_byte_logged {
+                    downstream_first_byte_logged = true;
+                    debug!(
+                        invoke_id = %invoke_id_for_task,
+                        downstream_first_byte_elapsed = stream_started.elapsed().as_millis() as u64,
+                        upstream_ttfb_ms = t_upstream_ttfb_ms,
+                        forwarded_bytes,
+                        "openai proxy capture streamed first byte downstream"
+                    );
+                }
             }
         }
 
@@ -1626,9 +1764,20 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
-                    if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
-                        downstream_closed = true;
-                        let _ = proxy_request_permit_for_task.take();
+                    if !downstream_closed {
+                        if tx.send(Ok(chunk)).await.is_err() {
+                            downstream_closed = true;
+                            let _ = proxy_request_permit_for_task.take();
+                        } else if !downstream_first_byte_logged {
+                            downstream_first_byte_logged = true;
+                            debug!(
+                                invoke_id = %invoke_id_for_task,
+                                downstream_first_byte_elapsed = stream_started.elapsed().as_millis() as u64,
+                                upstream_ttfb_ms = t_upstream_ttfb_ms,
+                                forwarded_bytes,
+                                "openai proxy capture streamed first byte downstream"
+                            );
+                        }
                     }
                 }
                 Err(err) => {
@@ -1674,7 +1823,16 @@ pub(crate) async fn proxy_openai_v1_capture_target(
 
         let t_upstream_stream_ms = stream_started_at.map(elapsed_ms).unwrap_or(0.0);
         let req_raw_for_task = req_raw_pending_for_task.finish().await;
+        let raw_response_finish_started = Instant::now();
         let resp_raw = response_raw_writer.finish().await;
+        debug!(
+            invoke_id = %invoke_id_for_task,
+            raw_response_write_elapsed = raw_response_finish_started.elapsed().as_millis() as u64,
+            raw_response_bytes = resp_raw.size_bytes,
+            raw_response_codec = raw_payload_meta_codec(&resp_raw),
+            raw_response_truncated = resp_raw.truncated,
+            "openai proxy capture response raw writer finished"
+        );
         let preview_bytes = response_preview.as_slice().to_vec();
         let raw_response_preview = response_preview.into_preview();
         let streamed_response_outcome = stream_response_parser.finish();
@@ -2395,6 +2553,137 @@ pub(crate) async fn read_request_body_snapshot_with_limit(
                 failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 partial_body: Vec::new(),
             })?;
+    }
+}
+
+pub(crate) async fn read_request_body_snapshot_with_partial_limit(
+    body: Body,
+    body_limit: usize,
+    request_read_timeout: Duration,
+    proxy_request_id: u64,
+) -> Result<PoolReplayBodySnapshot, RequestBodyReadError> {
+    const ERROR_PARTIAL_BODY_LIMIT_BYTES: usize = 64 * 1024;
+
+    let mut buffer = PoolReplayBodyBuffer::new(proxy_request_id);
+    let mut partial_body = Vec::new();
+    let mut stream = body.into_data_stream();
+    let read_deadline = Instant::now() + request_read_timeout;
+    let mut data_len = 0usize;
+
+    loop {
+        let remaining = read_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            warn!(
+                proxy_request_id,
+                timeout_ms = request_read_timeout.as_millis(),
+                read_bytes = data_len,
+                "openai proxy request body read timed out"
+            );
+            return Err(RequestBodyReadError {
+                status: StatusCode::REQUEST_TIMEOUT,
+                message: format!(
+                    "request body read timed out after {}ms",
+                    request_read_timeout.as_millis()
+                ),
+                failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                partial_body,
+            });
+        }
+
+        let next_chunk = match timeout(remaining, stream.next()).await {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                warn!(
+                    proxy_request_id,
+                    timeout_ms = request_read_timeout.as_millis(),
+                    read_bytes = data_len,
+                    "openai proxy request body read timed out"
+                );
+                return Err(RequestBodyReadError {
+                    status: StatusCode::REQUEST_TIMEOUT,
+                    message: format!(
+                        "request body read timed out after {}ms",
+                        request_read_timeout.as_millis()
+                    ),
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    partial_body,
+                });
+            }
+        };
+
+        let Some(chunk) = next_chunk else {
+            return buffer.finish().await.map_err(|err| RequestBodyReadError {
+                status: StatusCode::BAD_GATEWAY,
+                message: format!("failed to cache request body for replay: {err}"),
+                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                partial_body,
+            });
+        };
+
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    error = %err,
+                    read_bytes = data_len,
+                    "openai proxy request body stream error"
+                );
+                return Err(RequestBodyReadError {
+                    status: StatusCode::BAD_REQUEST,
+                    message: format!("failed to read request body stream: {err}"),
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
+                    partial_body,
+                });
+            }
+        };
+
+        if data_len.saturating_add(chunk.len()) > body_limit {
+            let allowed = body_limit.saturating_sub(data_len);
+            if allowed > 0 {
+                append_bounded_partial_body(
+                    &mut partial_body,
+                    &chunk[..allowed.min(chunk.len())],
+                    ERROR_PARTIAL_BODY_LIMIT_BYTES,
+                );
+            }
+            return Err(RequestBodyReadError {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                message: format!("request body exceeds {body_limit} bytes"),
+                failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
+                partial_body,
+            });
+        }
+        data_len = data_len.saturating_add(chunk.len());
+        append_bounded_partial_body(&mut partial_body, &chunk, ERROR_PARTIAL_BODY_LIMIT_BYTES);
+
+        buffer
+            .append(&chunk)
+            .await
+            .map_err(|err| RequestBodyReadError {
+                status: StatusCode::BAD_GATEWAY,
+                message: format!("failed to cache request body for replay: {err}"),
+                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                partial_body: partial_body.clone(),
+            })?;
+    }
+}
+
+fn append_bounded_partial_body(partial_body: &mut Vec<u8>, chunk: &[u8], limit: usize) {
+    let remaining = limit.saturating_sub(partial_body.len());
+    if remaining > 0 {
+        partial_body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+}
+
+fn request_body_size_bucket(bytes: usize) -> &'static str {
+    match bytes {
+        0 => "empty",
+        1..=4096 => "le_4k",
+        4097..=65536 => "le_64k",
+        65537..=1048576 => "le_1m",
+        1048577..=8388608 => "le_8m",
+        _ => "gt_8m",
     }
 }
 
