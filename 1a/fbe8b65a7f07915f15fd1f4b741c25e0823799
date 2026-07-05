@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-05T07:19:00Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2e3fc116472bb7a1f3fd19061cfce219f2a9f658",
+  "pr_number": 535,
+  "pr_title": "test: reduce backend SQLite fixture runtime",
+  "registry": "ghcr.io",
+  "release_bump": "skip",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "",
+  "target_sha": "1afbe8b65a7f07915f15fd1f4b741c25e0823799",
+  "type_label": "type:skip"
+}
