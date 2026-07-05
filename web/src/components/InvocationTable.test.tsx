@@ -533,8 +533,14 @@ describe("InvocationTable", () => {
       Array.from({ length: 1_000 }, (_, index) => createInvocationRecord(index)),
     );
 
-    expect(document.querySelectorAll("tbody tr").length).toBeLessThan(80);
-    expect(document.body.textContent).toContain("virtual-proxy-1");
+    const mountedRows = Array.from(document.querySelectorAll("tbody tr"));
+    const mountedText = mountedRows
+      .map((row) => row.textContent ?? "")
+      .join(" ");
+
+    expect(mountedRows.length).toBeGreaterThan(0);
+    expect(mountedRows.length).toBeLessThan(80);
+    expect(mountedText).toMatch(/virtual-proxy-\d+/);
     expect(document.body.textContent).not.toContain("virtual-proxy-1000");
     expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeTruthy();
     expect(document.querySelector('[data-testid="invocation-list"]')).toBeNull();

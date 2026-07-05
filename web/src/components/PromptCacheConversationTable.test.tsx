@@ -332,6 +332,12 @@ describe("PromptCacheConversationTable", () => {
     );
   }
 
+  function findInputByAriaLabel(label: string) {
+    return document.querySelector(
+      `input[aria-label="${label}"]`,
+    ) as HTMLInputElement | null;
+  }
+
   async function clickDrawerTab(label: string) {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const tab = Array.from(document.querySelectorAll('[role="tab"]')).find(
@@ -1553,11 +1559,11 @@ describe("PromptCacheConversationTable", () => {
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(4),
     );
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 可用模型")!);
-    await user.clear(
-      document.querySelector('input[aria-label="可用模型"]') as HTMLInputElement,
-    );
+    await vi.waitFor(() => expect(findInputByAriaLabel("可用模型")).toBeTruthy());
+    const availableModelsInput = findInputByAriaLabel("可用模型")!;
+    await user.clear(availableModelsInput);
     await user.type(
-      document.querySelector('input[aria-label="可用模型"]') as HTMLInputElement,
+      availableModelsInput,
       "gpt-5.1-codex-max, gpt-5.1-codex-mini",
     );
     await user.click(findButtonByAriaLabel("应用覆盖")!);
