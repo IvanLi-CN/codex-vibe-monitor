@@ -537,7 +537,10 @@ describe('TodayStatsOverview', () => {
 
     expect(tpmText).toContain('1,001')
     expect(tpmText).not.toContain('.')
-    expect(spendRateText).toContain('$0.10')
+    expect(spendRateText).toContain('0.10')
+    expect(spendRateText).not.toContain('$')
+    expect(host?.querySelector('[data-testid="today-stats-value-tpm-icon"]')).not.toBeNull()
+    expect(host?.querySelector('[data-testid="today-stats-value-spend-rate-icon"]')).not.toBeNull()
   })
 
   it('keeps rate currency tiles on the shared two-decimal full candidate when width allows', () => {
@@ -582,7 +585,8 @@ describe('TodayStatsOverview', () => {
       />,
     )
 
-    expect(host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent).toContain('$1.00')
+    expect(host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent).toContain('1.00')
+    expect(host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent).not.toContain('$')
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-spend-rate-day-average"]')?.textContent,
     ).toContain('$1.48')

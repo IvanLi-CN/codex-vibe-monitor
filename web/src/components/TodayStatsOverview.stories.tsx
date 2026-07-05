@@ -206,7 +206,8 @@ export const Populated: Story = {
     await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
     await userEvent.click(canvas.getByRole('button', { name: /time to first byte|首字用时/i }))
     await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
-    await expect(canvas.getByTestId('today-stats-value-spend-rate')).toHaveTextContent('$0.10')
+    await expect(canvas.getByTestId('today-stats-value-spend-rate')).toHaveTextContent('0.10')
+    await expect(canvas.getByTestId('today-stats-value-spend-rate')).not.toHaveTextContent('$')
     await expect(canvas.getByTestId('today-stats-secondary-spend-rate-per-conversation')).toHaveTextContent(
       '$0.01',
     )
@@ -573,7 +574,8 @@ export const RatePrecisionGuard: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await waitFor(() => {
-      expect(canvas.getByTestId('today-stats-value-spend-rate')).toHaveTextContent('$1.00')
+      expect(canvas.getByTestId('today-stats-value-spend-rate')).toHaveTextContent('1.00')
+      expect(canvas.getByTestId('today-stats-value-spend-rate')).not.toHaveTextContent('$')
       expect(canvas.getByTestId('today-stats-secondary-spend-rate-day-average')).toHaveTextContent('$1.00')
       expect(canvas.getByTestId('today-stats-secondary-spend-rate-per-conversation')).toHaveTextContent(
         '$1.00',
