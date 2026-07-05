@@ -2262,7 +2262,7 @@ function DashboardUpstreamAccountActivityCard({
             label={t("dashboard.today.inProgressConversations")}
             value={formatAccountNumberValue(account.inProgressInvocationCount, localeTag, 0)}
             tone="secondary"
-            iconName="progress-clock"
+            iconName="paper-plane"
           />
           <AccountInlineMetric
             label="TPM"
