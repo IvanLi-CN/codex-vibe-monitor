@@ -1490,6 +1490,20 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             "failed to advance pool attempt into sending-request phase"
                         );
                     }
+                    debug!(
+                        invoke_id = trace_context
+                            .as_ref()
+                            .map(|trace| trace.invoke_id.as_str())
+                            .unwrap_or(""),
+                        account_id = account.account_id,
+                        endpoint = original_uri.path(),
+                        attempt_index = pending_attempt_record
+                            .as_ref()
+                            .map(|pending| pending.attempt_index),
+                        upstream_attempt_started = true,
+                        outbound_body_bytes,
+                        "pool upstream attempt started"
+                    );
                     match timeout(attempt_send_timeout, request.send()).await {
                         Ok(Ok(response)) => (
                             ProxyUpstreamResponseBody::Reqwest(response),

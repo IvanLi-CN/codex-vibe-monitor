@@ -827,7 +827,7 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
     Ok(())
 }
 
-pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_flush(
+pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_enqueue(
     state: &AppState,
     invoke_id: &str,
     trigger: &'static str,
@@ -841,7 +841,6 @@ pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_flush(
         return;
     }
 
-    let sqlite_batch_writer = state.sqlite_batch_writer.clone();
     let pool = state.pool.clone();
     let hourly_rollup_sync_lock = state.hourly_rollup_sync_lock.clone();
     let broadcaster = state.broadcaster.clone();
@@ -851,20 +850,18 @@ pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_flush(
     let shutdown = state.shutdown.clone();
     let invoke_id = invoke_id.to_string();
     tokio::spawn(async move {
-        if let Err(err) = sqlite_batch_writer.flush_now(&pool).await {
-            warn!(
-                error = %err,
-                invoke_id = %invoke_id,
-                trigger,
-                "proxy capture follow-up skipped because terminal sqlite flush barrier failed"
-            );
-            return;
-        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
         let mode = if shutdown.is_cancelled() {
             ProxyCaptureFollowUpBroadcastMode::ShutdownFlush
         } else {
             ProxyCaptureFollowUpBroadcastMode::ActiveSubscribers
         };
+        debug!(
+            invoke_id = %invoke_id,
+            trigger,
+            record_flush_deferred_or_failed = "deferred_follow_up_without_forced_sqlite_barrier",
+            "proxy capture follow-up deferred without forcing terminal sqlite flush"
+        );
         broadcast_proxy_capture_follow_up(
             &pool,
             hourly_rollup_sync_lock.as_ref(),
@@ -898,7 +895,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             business_unblocked_record_write = true,
             "duplicate raw proxy capture record skipped before sqlite enqueue"
         );
-        schedule_proxy_capture_follow_up_after_terminal_flush(
+        schedule_proxy_capture_follow_up_after_terminal_enqueue(
             state,
             &invoke_id,
             "duplicate_raw_terminal",
@@ -924,6 +921,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             enqueue_failed_by_class = "raw_terminal_invocation",
             terminal_tombstone_cleared,
             business_unblocked_record_write = true,
+            record_flush_deferred_or_failed = "raw_terminal_invocation_enqueue_failed",
             "raw proxy capture record dropped by sqlite write controller"
         );
     } else {
@@ -931,6 +929,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             invoke_id = %invoke_id,
             terminal_record_enqueue_elapsed = enqueue_started.elapsed().as_millis() as u64,
             business_unblocked_record_write = true,
+            record_flush_deferred_or_failed = "raw_terminal_invocation_enqueued_async",
             "raw proxy capture record queued for sqlite write controller"
         );
     }
@@ -953,7 +952,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         );
     }
     if terminal_enqueued {
-        schedule_proxy_capture_follow_up_after_terminal_flush(state, &invoke_id, "raw_terminal");
+        schedule_proxy_capture_follow_up_after_terminal_enqueue(state, &invoke_id, "raw_terminal");
     }
     Ok(())
 }

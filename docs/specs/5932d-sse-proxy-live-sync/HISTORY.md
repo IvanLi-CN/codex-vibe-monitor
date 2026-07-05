@@ -22,3 +22,4 @@
 - 2026-07-04: 修正 running 可见性边界：tracked proxy capture 请求在本服务 admit 后立即创建最小内存 running shell record，不再等 body 读完、body parse、账号路由或上游 attempt start；后续 snapshot 只补全同一 `invokeId + occurredAt` runtime key。
 - 2026-07-04: 修复 Dashboard 当前 working conversations 在 running snapshot 纯内存化后漏行的问题。`/api/stats/prompt-cache-conversations` 的 activity-window head/page 会把进程内 runtime store 合入 working-set aggregate 和 recent preview，并按 DB working-set key 去重 `totalMatched`，避免 open-resync 只显示已落库 terminal conversations。
 - 2026-07-04: 明确并修正 current in-flight 语义：进程内 `running/pending` overlay 不受 5 分钟 activity window 或自然日窗口限制。Dashboard 当前 summary、当前 working conversations 与上游账号活动都必须展示所有仍在内存中的进行中调用；历史 terminal DB 行继续按所选窗口过滤。
+- 2026-07-05: `/v1/*` 请求入口在 route context 解析前就创建 admit-time running shell；route validation failure 会 terminalize 同一 runtime key，避免前端看到假 running。terminal follow-up 不再强制 `flush_now` SQLite barrier，active subscriber 先依赖 terminal overlay 收敛，summary/quota 后续最终一致。
