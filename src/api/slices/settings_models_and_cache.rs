@@ -70,11 +70,39 @@ pub(crate) struct StatsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_avg_wait_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) in_progress_phase_counts: Option<InvocationPhaseCountsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) non_success_cost: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) non_success_tokens: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) maintenance: Option<StatsMaintenanceResponse>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationPhaseCountsResponse {
+    pub(crate) queued: i64,
+    pub(crate) requesting: i64,
+    pub(crate) responding: i64,
+}
+
+impl InvocationPhaseCountsResponse {
+    pub(crate) fn increment_phase_name(&mut self, phase: Option<&str>) {
+        match normalized_runtime_text(phase).as_str() {
+            "requesting" => self.requesting += 1,
+            "responding" => self.responding += 1,
+            _ => self.queued += 1,
+        }
+    }
+
+    pub(crate) fn decrement_phase_name(&mut self, phase: Option<&str>) {
+        match normalized_runtime_text(phase).as_str() {
+            "requesting" => self.requesting = self.requesting.saturating_sub(1),
+            "responding" => self.responding = self.responding.saturating_sub(1),
+            _ => self.queued = self.queued.saturating_sub(1),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -158,6 +186,7 @@ impl StatsTotals {
             in_progress_conversation_count: None,
             in_progress_retry_conversation_count: None,
             in_progress_avg_wait_ms: None,
+            in_progress_phase_counts: None,
             non_success_cost: None,
             non_success_tokens: None,
             maintenance: None,
@@ -670,6 +699,8 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) occurred_at: String,
     pub(crate) status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) live_phase: Option<String>,
     pub(crate) failure_class: Option<String>,
     pub(crate) route_mode: Option<String>,
     pub(crate) model: Option<String>,
@@ -1169,6 +1200,7 @@ pub(crate) struct PromptCacheConversationInvocationPreviewRow {
     pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
     pub(crate) status: String,
+    pub(crate) live_phase: Option<String>,
     pub(crate) failure_class: Option<String>,
     pub(crate) route_mode: Option<String>,
     pub(crate) model: Option<String>,
@@ -1218,6 +1250,7 @@ pub(crate) struct UpstreamAccountInvocationPreviewRow {
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) occurred_at: String,
     pub(crate) status: String,
+    pub(crate) live_phase: Option<String>,
     pub(crate) failure_class: Option<String>,
     pub(crate) route_mode: Option<String>,
     pub(crate) model: Option<String>,
@@ -1446,6 +1479,8 @@ pub(crate) struct UpstreamAccountActivityAccountResponse {
     pub(crate) avg_total_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_invocation_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) in_progress_phase_counts: Option<InvocationPhaseCountsResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) retry_invocation_count: Option<i64>,
     pub(crate) effective_routing_rule: crate::upstream_accounts::EffectiveRoutingRule,

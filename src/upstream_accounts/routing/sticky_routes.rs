@@ -146,6 +146,7 @@ pub(crate) async fn build_account_sticky_keys_response(
                     prompt_cache_key: Some(row.sticky_key.clone()),
                     occurred_at: row.occurred_at,
                     status: row.status,
+                    live_phase: None,
                     failure_class: row.failure_class,
                     route_mode: row.route_mode,
                     model: row.model,
