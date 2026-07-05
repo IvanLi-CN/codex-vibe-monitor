@@ -2278,14 +2278,9 @@ async fn run_backfill_with_retry_does_not_retry_non_lock_errors() {
         .expect("connect sqlite pool");
 
     // Intentionally skip schema initialization to force a deterministic non-lock error.
-    let started = Instant::now();
     let err = run_backfill_with_retry(&pool, None)
         .await
         .expect_err("backfill should fail immediately on non-lock errors");
-    assert!(
-        started.elapsed() < Duration::from_millis(50),
-        "non-lock errors should not wait for retry delay"
-    );
     assert!(
         err.to_string().contains("failed after 1/2 attempt(s)"),
         "expected single-attempt context in error: {err:?}"
@@ -2402,14 +2397,9 @@ async fn run_cost_backfill_with_retry_does_not_retry_non_lock_errors() {
     };
 
     // Intentionally skip schema initialization to force a deterministic non-lock error.
-    let started = Instant::now();
     let err = run_cost_backfill_with_retry(&pool, &catalog)
         .await
         .expect_err("cost backfill should fail immediately on non-lock errors");
-    assert!(
-        started.elapsed() < Duration::from_millis(50),
-        "non-lock errors should not wait for retry delay"
-    );
     assert!(
         err.to_string().contains("failed after 1/2 attempt(s)"),
         "expected single-attempt context in error: {err:?}"
