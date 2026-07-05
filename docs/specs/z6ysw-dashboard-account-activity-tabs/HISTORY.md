@@ -28,6 +28,7 @@
 - 2026-07-04：成本周期统计中的“失败成本比率”锁定为失败成本占总成本的比例，即 `failureCost / totalCost`；请求失败率继续只属于请求数组，避免失败成本为 0 时成本卡仍显示非零失败成本比率。
 - 2026-07-05：账号卡标题区的文本型实时指标修正为 `进行中调用`，口径固定为账号活动接口的 `inProgressInvocationCount`；撤回 Dashboard 账号活动接口中误加的 `activeConversationCount` 依赖，避免把 sticky route 活跃对话数误当作当前调用压力。
 - 2026-07-05：运行态调用从笼统 `进行中` 拆成 `排队中 / 请求中 / 响应中`，并要求账号卡所有运行态统计只读后端账号级 live `inProgressPhaseCounts`；recent 列表是展示窗口，不再承担统计事实源职责。
+- 2026-07-05：顶部实时 KPI 与上游账号卡片收敛到 `dashboard-activity` 同源快照；`TPM`、`消费速率` 与 `进行中调用` 由账号优先聚合结果求和得到，timeseries 退回趋势图职责，不再作为顶部当前值事实源。
 
 ## Key Reasons / Replacements
 

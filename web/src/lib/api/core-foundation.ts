@@ -602,8 +602,10 @@ export interface StatsResponse {
 }
 
 export interface UpstreamAccountActivityAccount {
-  upstreamAccountId: number;
+  accountKey?: string;
+  upstreamAccountId: number | null;
   displayName: string;
+  isUnassigned?: boolean;
   groupName?: string | null;
   planType?: string | null;
   requestCount: number;
@@ -634,6 +636,29 @@ export interface UpstreamAccountActivityResponse {
   rangeStart: string;
   rangeEnd: string;
   accounts: UpstreamAccountActivityAccount[];
+}
+
+export interface DashboardActivityRateWindow {
+  start: string;
+  end: string;
+  windowMinutes: number;
+  mode: string;
+}
+
+export interface DashboardActivitySummary {
+  stats: StatsResponse;
+  tokensPerMinute?: number | null;
+  spendRate?: number | null;
+}
+
+export interface DashboardActivityResponse {
+  range: string;
+  rangeStart: string;
+  rangeEnd: string;
+  snapshotId: number;
+  rateWindow: DashboardActivityRateWindow;
+  summary: DashboardActivitySummary;
+  accounts?: UpstreamAccountActivityAccount[];
 }
 
 export interface StatsMaintenanceResponse {
@@ -2684,9 +2709,10 @@ function normalizeUpstreamAccountActivityAccount(
 ): UpstreamAccountActivityAccount | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const upstreamAccountId = normalizeFiniteNumber(payload.upstreamAccountId);
+  const isUnassigned = payload.isUnassigned === true;
   const displayName =
     typeof payload.displayName === "string" ? payload.displayName.trim() : "";
-  if (upstreamAccountId == null || !displayName) {
+  if ((upstreamAccountId == null && !isUnassigned) || !displayName) {
     return null;
   }
   const recentInvocations = Array.isArray(payload.recentInvocations)
@@ -2695,8 +2721,15 @@ function normalizeUpstreamAccountActivityAccount(
         .filter((item): item is PromptCacheConversationInvocationPreview => item != null)
     : [];
   return {
-    upstreamAccountId,
+    accountKey:
+      typeof payload.accountKey === "string" && payload.accountKey.trim()
+        ? payload.accountKey.trim()
+        : upstreamAccountId == null
+          ? "unassigned"
+          : `upstream:${upstreamAccountId}`,
+    upstreamAccountId: upstreamAccountId ?? null,
     displayName,
+    isUnassigned,
     groupName:
       typeof payload.groupName === "string" ? payload.groupName.trim() : null,
     planType:
@@ -2733,6 +2766,27 @@ function normalizeUpstreamAccountActivityAccount(
   };
 }
 
+function normalizeStatsResponse(raw: unknown): StatsResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    totalCount: normalizeFiniteNumber(payload.totalCount) ?? 0,
+    successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
+    failureCount: normalizeFiniteNumber(payload.failureCount) ?? 0,
+    totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
+    totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
+    inProgressConversationCount: normalizeFiniteNumber(
+      payload.inProgressConversationCount,
+    ),
+    inProgressRetryConversationCount: normalizeFiniteNumber(
+      payload.inProgressRetryConversationCount,
+    ),
+    inProgressAvgWaitMs: normalizeFiniteNumber(payload.inProgressAvgWaitMs),
+    nonSuccessCost: normalizeFiniteNumber(payload.nonSuccessCost),
+    nonSuccessTokens: normalizeFiniteNumber(payload.nonSuccessTokens),
+    maintenance: payload.maintenance as StatsMaintenanceResponse | undefined,
+  };
+}
+
 function normalizeUpstreamAccountActivityResponse(
   raw: unknown,
 ): UpstreamAccountActivityResponse {
@@ -2746,6 +2800,44 @@ function normalizeUpstreamAccountActivityResponse(
           .map(normalizeUpstreamAccountActivityAccount)
           .filter((item): item is UpstreamAccountActivityAccount => item != null)
       : [],
+  };
+}
+
+function normalizeDashboardActivityResponse(raw: unknown): DashboardActivityResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const summaryPayload = (payload.summary ?? {}) as Record<string, unknown>;
+  const rateWindowPayload = (payload.rateWindow ?? {}) as Record<string, unknown>;
+  return {
+    range: typeof payload.range === "string" ? payload.range : "",
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    snapshotId: normalizeFiniteNumber(payload.snapshotId) ?? 0,
+    rateWindow: {
+      start:
+        typeof rateWindowPayload.start === "string"
+          ? rateWindowPayload.start
+          : "",
+      end:
+        typeof rateWindowPayload.end === "string"
+          ? rateWindowPayload.end
+          : "",
+      windowMinutes:
+        normalizeFiniteNumber(rateWindowPayload.windowMinutes) ?? 0,
+      mode:
+        typeof rateWindowPayload.mode === "string"
+          ? rateWindowPayload.mode
+          : "",
+    },
+    summary: {
+      stats: normalizeStatsResponse(summaryPayload.stats),
+      tokensPerMinute: normalizeFiniteNumber(summaryPayload.tokensPerMinute),
+      spendRate: normalizeFiniteNumber(summaryPayload.spendRate),
+    },
+    accounts: Array.isArray(payload.accounts)
+      ? payload.accounts
+          .map(normalizeUpstreamAccountActivityAccount)
+          .filter((item): item is UpstreamAccountActivityAccount => item != null)
+      : undefined,
   };
 }
 
@@ -3100,6 +3192,31 @@ export async function fetchUpstreamAccountActivity(
     { signal: options?.signal },
   );
   return normalizeUpstreamAccountActivityResponse(response);
+}
+
+export async function fetchDashboardActivity(
+  range: string,
+  options?: {
+    recentLimit?: number;
+    timeZone?: string;
+    includeAccounts?: boolean;
+    signal?: AbortSignal;
+  },
+) {
+  const search = new URLSearchParams();
+  search.set("range", range);
+  search.set("timeZone", options?.timeZone ?? getBrowserTimeZone());
+  if (options?.recentLimit !== undefined) {
+    search.set("recentLimit", String(options.recentLimit));
+  }
+  if (options?.includeAccounts !== undefined) {
+    search.set("includeAccounts", options.includeAccounts ? "true" : "false");
+  }
+  const response = await fetchJson<unknown>(
+    `/api/stats/dashboard-activity?${search.toString()}`,
+    { signal: options?.signal },
+  );
+  return normalizeDashboardActivityResponse(response);
 }
 
 export async function fetchForwardProxyLiveStats() {

@@ -295,6 +295,14 @@ fn assert_f64_close(actual: f64, expected: f64) {
     );
 }
 
+fn assert_f64_close_with_tolerance(actual: f64, expected: f64, tolerance: f64) {
+    let diff = (actual - expected).abs();
+    assert!(
+        diff < tolerance,
+        "expected {expected}, got {actual}, diff={diff}, tolerance={tolerance}"
+    );
+}
+
 #[tokio::test]
 async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
     let state = test_state_with_openai_base(
@@ -12156,6 +12164,452 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
 }
 
 #[tokio::test]
+async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    for (account_id, display_name) in [(42_i64, "Pool Alpha"), (77_i64, "Pool Beta")] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(account_id)
+        .bind("api_key_codex")
+        .bind("codex")
+        .bind(display_name)
+        .bind("Primary")
+        .bind("enterprise")
+        .bind("active")
+        .bind(1_i64)
+        .bind(&created_at)
+        .bind(&created_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert dashboard activity upstream account");
+    }
+
+    let base_local = Utc::now().with_timezone(&Shanghai).naive_local();
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(8_000_i64)
+    .bind("dashboard-activity-unassigned-failed")
+    .bind(format_naive(
+        base_local
+            .checked_sub_signed(ChronoDuration::seconds(50))
+            .expect("valid previous unassigned failure time"),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("failed")
+    .bind(500_i64)
+    .bind(0.05_f64)
+    .bind(json!({ "promptCacheKey": "pck-dashboard-activity-unassigned-running" }).to_string())
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert previous unassigned failure");
+    for (
+        id,
+        invoke_id,
+        upstream_account_id,
+        status,
+        total_tokens,
+        cost,
+        ttfb_ms,
+    ) in [
+        (
+            8_001_i64,
+            "dashboard-activity-alpha-success",
+            Some(42_i64),
+            "success",
+            1_000_i64,
+            0.10_f64,
+            Some(100.0_f64),
+        ),
+        (
+            8_002_i64,
+            "dashboard-activity-beta-running",
+            Some(77_i64),
+            "running",
+            2_000_i64,
+            0.20_f64,
+            Some(200.0_f64),
+        ),
+        (
+            8_003_i64,
+            "dashboard-activity-unassigned-running",
+            None,
+            "running",
+            3_000_i64,
+            0.30_f64,
+            Some(300.0_f64),
+        ),
+    ] {
+        let mut payload = json!({ "promptCacheKey": format!("pck-{invoke_id}") });
+        if let Some(account_id) = upstream_account_id {
+            payload["upstreamAccountId"] = json!(account_id);
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                t_upstream_ttfb_ms,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(format_naive(
+            base_local
+                .checked_sub_signed(ChronoDuration::seconds((8_004_i64 - id) * 10))
+                .expect("valid dashboard activity time"),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(ttfb_ms)
+        .bind(payload.to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert dashboard activity invocation");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(8_004_i64)
+    .bind("dashboard-activity-yesterday-success")
+    .bind(format_naive(
+        base_local
+            .checked_sub_signed(ChronoDuration::days(1))
+            .expect("valid yesterday dashboard activity time"),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(4_000_i64)
+    .bind(0.40_f64)
+    .bind(json!({
+        "promptCacheKey": "pck-dashboard-activity-yesterday-success",
+        "upstreamAccountId": 42_i64,
+    })
+    .to_string())
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert yesterday dashboard activity invocation");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(8_005_i64)
+    .bind("dashboard-activity-runtime-today-running")
+    .bind(format_naive(base_local))
+    .bind(SOURCE_PROXY)
+    .bind("running")
+    .bind(0_i64)
+    .bind(0.0_f64)
+    .bind(json!({ "promptCacheKey": "pck-dashboard-activity-runtime-today-running" }).to_string())
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert stale runtime db shell for dashboard activity");
+    let runtime_today = crate::api::ApiInvocation {
+        id: 8_005_i64,
+        invoke_id: "dashboard-activity-runtime-today-running".to_string(),
+        occurred_at: format_naive(base_local),
+        source: SOURCE_PROXY.to_string(),
+        proxy_display_name: None,
+        model: Some("gpt-5".to_string()),
+        request_model: Some("gpt-5".to_string()),
+        response_model: Some("gpt-5".to_string()),
+        input_tokens: Some(10_i64),
+        output_tokens: Some(20_i64),
+        cache_input_tokens: Some(0_i64),
+        reasoning_tokens: Some(0_i64),
+        reasoning_effort: None,
+        total_tokens: Some(9_999_i64),
+        cost: Some(9.99_f64),
+        status: Some("running".to_string()),
+        live_phase: None,
+        error_message: None,
+        downstream_status_code: None,
+        failure_kind: None,
+        stream_terminal_event: None,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        downstream_error_message: None,
+        upstream_request_id: None,
+        failure_class: None,
+        is_actionable: None,
+        endpoint: Some("/v1/chat/completions".to_string()),
+        compaction_request_kind: None,
+        compaction_response_kind: None,
+        image_intent: None,
+        requester_ip: None,
+        prompt_cache_key: Some("pck-dashboard-activity-runtime-today-running".to_string()),
+        sticky_key: None,
+        route_mode: None,
+        upstream_account_id: None,
+        upstream_account_name: None,
+        response_content_encoding: None,
+        transport: None,
+        pool_attempt_count: None,
+        pool_distinct_account_count: None,
+        pool_attempt_terminal_reason: None,
+        requested_service_tier: None,
+        service_tier: None,
+        billing_service_tier: None,
+        proxy_weight_delta: None,
+        cost_estimated: None,
+        price_version: None,
+        request_raw_path: None,
+        request_raw_size: None,
+        request_raw_truncated: None,
+        request_raw_truncated_reason: None,
+        response_raw_path: None,
+        response_raw_size: None,
+        response_raw_truncated: None,
+        response_raw_truncated_reason: None,
+        detail_level: "full".to_string(),
+        detail_pruned_at: None,
+        detail_prune_reason: None,
+        t_total_ms: None,
+        t_req_read_ms: None,
+        t_req_parse_ms: None,
+        t_upstream_connect_ms: None,
+        t_upstream_ttfb_ms: Some(999.0_f64),
+        t_upstream_stream_ms: None,
+        t_resp_parse_ms: None,
+        t_persist_ms: None,
+        created_at: format_naive(base_local),
+    };
+    state.proxy_runtime_invocations.upsert(runtime_today.clone());
+    let mut runtime_before_today = runtime_today.clone();
+    runtime_before_today.id = 8_006_i64;
+    runtime_before_today.invoke_id =
+        "dashboard-activity-runtime-before-today-running".to_string();
+    runtime_before_today.occurred_at = format_naive(
+        base_local
+            .checked_sub_signed(ChronoDuration::days(2))
+            .expect("valid pre-range runtime time"),
+    );
+    runtime_before_today.total_tokens = Some(12_345_i64);
+    runtime_before_today.cost = Some(12.34_f64);
+    runtime_before_today.prompt_cache_key =
+        Some("pck-dashboard-activity-runtime-before-today-running".to_string());
+    state.proxy_runtime_invocations.upsert(runtime_before_today);
+
+    let Json(activity) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(4),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+        }),
+    )
+    .await
+    .expect("fetch dashboard activity snapshot");
+
+    let accounts = activity.accounts.expect("accounts included");
+    assert_eq!(accounts.len(), 3);
+    assert!(accounts.iter().any(|account| account.is_unassigned));
+    let unassigned = accounts
+        .iter()
+        .find(|account| account.is_unassigned)
+        .expect("unassigned account bucket");
+    assert_eq!(unassigned.retry_invocation_count, Some(1));
+    assert_eq!(
+        activity.summary.stats.total_count,
+        accounts.iter().map(|account| account.request_count).sum::<i64>(),
+    );
+    assert_eq!(
+        activity.summary.stats.total_tokens,
+        accounts.iter().map(|account| account.total_tokens).sum::<i64>(),
+    );
+    assert_eq!(activity.summary.stats.total_tokens, 16_499);
+    assert_f64_close(
+        activity.summary.stats.total_cost,
+        accounts.iter().map(|account| account.total_cost).sum::<f64>(),
+    );
+    assert_eq!(
+        activity.summary.stats.in_progress_conversation_count,
+        Some(
+            accounts
+                .iter()
+                .map(|account| account.in_progress_invocation_count.unwrap_or(0))
+                .sum::<i64>(),
+        ),
+    );
+    assert_eq!(activity.summary.stats.in_progress_conversation_count, Some(4));
+    assert_eq!(
+        activity.summary.stats.in_progress_retry_conversation_count,
+        Some(
+            accounts
+                .iter()
+                .map(|account| account.retry_invocation_count.unwrap_or(0))
+                .sum::<i64>(),
+        ),
+    );
+    assert_f64_close(
+        activity
+            .summary
+            .tokens_per_minute
+            .expect("summary token rate"),
+        accounts
+            .iter()
+            .map(|account| account.tokens_per_minute.unwrap_or(0.0))
+            .sum::<f64>(),
+    );
+    assert_f64_close(
+        activity.summary.spend_rate.expect("summary spend rate"),
+        accounts
+            .iter()
+            .map(|account| account.spend_rate.unwrap_or(0.0))
+            .sum::<f64>(),
+    );
+
+    let Json(summary_only_activity) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(4),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: false,
+        }),
+    )
+    .await
+    .expect("fetch summary-only dashboard activity snapshot");
+    assert!(summary_only_activity.accounts.is_none());
+    assert_eq!(
+        summary_only_activity
+            .summary
+            .stats
+            .in_progress_conversation_count,
+        activity.summary.stats.in_progress_conversation_count,
+    );
+    assert_eq!(
+        summary_only_activity
+            .summary
+            .stats
+            .in_progress_retry_conversation_count,
+        activity.summary.stats.in_progress_retry_conversation_count,
+    );
+    assert_f64_close_with_tolerance(
+        summary_only_activity
+            .summary
+            .tokens_per_minute
+            .expect("summary-only token rate"),
+        activity
+            .summary
+            .tokens_per_minute
+            .expect("full snapshot token rate"),
+        5.0,
+    );
+    assert_f64_close_with_tolerance(
+        summary_only_activity
+            .summary
+            .spend_rate
+            .expect("summary-only spend rate"),
+        activity.summary.spend_rate.expect("full snapshot spend rate"),
+        0.01,
+    );
+
+    let Json(yesterday_activity) = fetch_dashboard_activity(
+        State(state),
+        Query(DashboardActivityQuery {
+            range: "yesterday".to_string(),
+            recent_limit: Some(4),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+        }),
+    )
+    .await
+    .expect("fetch yesterday dashboard activity snapshot");
+    assert_eq!(
+        yesterday_activity
+            .summary
+            .stats
+            .in_progress_conversation_count,
+        None,
+    );
+    assert_eq!(
+        yesterday_activity
+            .summary
+            .stats
+            .in_progress_retry_conversation_count,
+        None,
+    );
+    let yesterday_accounts = yesterday_activity.accounts.expect("yesterday accounts included");
+    assert_eq!(yesterday_activity.summary.stats.total_tokens, 4_000);
+    assert_eq!(yesterday_accounts.len(), 1);
+    assert!(
+        yesterday_accounts
+            .iter()
+            .all(|account| account.in_progress_invocation_count.is_none())
+    );
+    assert!(
+        yesterday_accounts
+            .iter()
+            .all(|account| account.retry_invocation_count.is_none())
+    );
+}
+
+#[tokio::test]
 async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -12280,6 +12734,78 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
     .execute(&state.pool)
     .await
     .expect("insert selected pool attempt for running invocation");
+    state
+        .proxy_runtime_invocations
+        .upsert(crate::api::ApiInvocation {
+            id: 7_701_i64,
+            invoke_id: "pool-running-selected-before-payload-update".to_string(),
+            occurred_at: occurred_at.clone(),
+            source: SOURCE_PROXY.to_string(),
+            proxy_display_name: None,
+            model: Some("gpt-5".to_string()),
+            request_model: Some("gpt-5".to_string()),
+            response_model: Some("gpt-5".to_string()),
+            input_tokens: Some(0_i64),
+            output_tokens: Some(0_i64),
+            cache_input_tokens: Some(0_i64),
+            reasoning_tokens: Some(0_i64),
+            reasoning_effort: None,
+            total_tokens: Some(0_i64),
+            cost: Some(0.0_f64),
+            status: Some("running".to_string()),
+            live_phase: None,
+            error_message: None,
+            downstream_status_code: None,
+            failure_kind: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: None,
+            failure_class: None,
+            is_actionable: None,
+            endpoint: Some("/v1/responses".to_string()),
+            compaction_request_kind: None,
+            compaction_response_kind: None,
+            image_intent: None,
+            requester_ip: Some("127.0.0.1".to_string()),
+            prompt_cache_key: Some("pck-pool-fallback".to_string()),
+            sticky_key: Some("pck-pool-fallback".to_string()),
+            route_mode: Some("pool".to_string()),
+            upstream_account_id: None,
+            upstream_account_name: None,
+            response_content_encoding: None,
+            transport: None,
+            pool_attempt_count: None,
+            pool_distinct_account_count: None,
+            pool_attempt_terminal_reason: None,
+            requested_service_tier: None,
+            service_tier: None,
+            billing_service_tier: None,
+            proxy_weight_delta: None,
+            cost_estimated: None,
+            price_version: None,
+            request_raw_path: None,
+            request_raw_size: None,
+            request_raw_truncated: None,
+            request_raw_truncated_reason: None,
+            response_raw_path: None,
+            response_raw_size: None,
+            response_raw_truncated: None,
+            response_raw_truncated_reason: None,
+            detail_level: "full".to_string(),
+            detail_pruned_at: None,
+            detail_prune_reason: None,
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: Some(120.0_f64),
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+            created_at: occurred_at.clone(),
+        });
 
     let Json(activity) = fetch_upstream_account_activity(
         State(state.clone()),
@@ -12342,7 +12868,7 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
 }
 
 #[tokio::test]
-async fn upstream_account_activity_overlays_memory_runtime_running_rows_without_activity_window_limit() {
+async fn upstream_account_activity_keeps_memory_runtime_rows_range_bounded() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -12482,30 +13008,14 @@ async fn upstream_account_activity_overlays_memory_runtime_running_rows_without_
     let account = activity.accounts.first().expect("runtime activity account");
     assert_eq!(account.upstream_account_id, 89);
     assert_eq!(account.display_name, "Runtime Pool Retry");
-    assert_eq!(account.request_count, 1);
+    assert_eq!(account.request_count, 0);
     assert_eq!(account.success_count, 0);
     assert_eq!(account.failure_count, 0);
+    assert_eq!(account.total_tokens, 0);
+    assert_eq!(account.total_cost, 0.0);
+    assert_eq!(account.recent_invocations.len(), 0);
     assert_eq!(account.in_progress_invocation_count, Some(1));
-    let account_phase_counts = account
-        .in_progress_phase_counts
-        .expect("runtime account should include live phase counts");
-    assert_eq!(account_phase_counts.queued, 0);
-    assert_eq!(account_phase_counts.requesting, 0);
-    assert_eq!(account_phase_counts.responding, 1);
     assert_eq!(account.retry_invocation_count, Some(1));
-    let preview = account
-        .recent_invocations
-        .first()
-        .expect("memory runtime recent invocation");
-    assert_eq!(preview.invoke_id, "runtime-account-activity-running");
-    assert_eq!(preview.id, 0);
-    assert_eq!(preview.status, "running");
-    assert_eq!(preview.live_phase.as_deref(), Some("responding"));
-    assert_eq!(
-        preview.prompt_cache_key.as_deref(),
-        Some("pck-runtime-activity")
-    );
-    assert_eq!(preview.upstream_account_id, Some(89));
 }
 
 #[tokio::test]

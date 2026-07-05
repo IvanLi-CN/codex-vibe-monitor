@@ -417,6 +417,47 @@ function getFirstSeenSummaryWindows() {
 }
 
 describe('DashboardActivityOverview', () => {
+  it('uses a dashboard activity snapshot for the visible top KPI rate and live counts', () => {
+    installSummaryMocks()
+
+    render(
+      <DashboardActivityOverview
+        dashboardActivity={{
+          range: 'today',
+          rangeStart: '2026-07-05T00:00:00Z',
+          rangeEnd: '2026-07-05T12:00:00Z',
+          snapshotId: 1783233600000,
+          rateWindow: {
+            start: '2026-07-05T11:55:00Z',
+            end: '2026-07-05T12:00:00Z',
+            windowMinutes: 5,
+            mode: 'account_active_tail_sum',
+          },
+          summary: {
+            stats: {
+              totalCount: 21,
+              successCount: 18,
+              failureCount: 2,
+              totalCost: 0.42,
+              totalTokens: 4200,
+              inProgressConversationCount: 7,
+              inProgressRetryConversationCount: 1,
+              inProgressAvgWaitMs: 2500,
+              nonSuccessCost: 0.04,
+              nonSuccessTokens: 300,
+            },
+            tokensPerMinute: 1234,
+            spendRate: 0.45,
+          },
+        }}
+      />,
+    )
+
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
+      'total:21;inProgress:7;retry:1;wait:2500;nonSuccessCost:0.04;nonSuccessTokens:300;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
+    )
+  })
+
   it('loads only the active range and keeps per-range metric memory across all five tabs', () => {
     installSummaryMocks()
 

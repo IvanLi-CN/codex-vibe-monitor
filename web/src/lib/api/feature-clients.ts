@@ -25,6 +25,7 @@ export {
   normalizeForwardProxyLatencyTestStreamEvent,
   validateForwardProxyCandidate,
   fetchSummary,
+  fetchDashboardActivity,
   fetchUpstreamAccountActivity,
   fetchForwardProxyLiveStats,
   fetchForwardProxyTimeseries,
@@ -84,4 +85,7 @@ export type {
   UpstreamAccountActionEventListResponse,
   UpstreamAccountActivityAccount,
   UpstreamAccountActivityResponse,
+  DashboardActivityRateWindow,
+  DashboardActivitySummary,
+  DashboardActivityResponse,
 } from "./core";

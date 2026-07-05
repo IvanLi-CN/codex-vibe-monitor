@@ -7,6 +7,7 @@
 - Dashboard 当前“工作中对话”区域只支持按对话查看，无法在同一块工作区里观察“当前活跃的上游账号”及其范围内聚合指标。
 - 顶部总览已经拥有 `today / yesterday / 1d / 7d / usage` 的范围切换，但工作区部分没有共享这套状态，导致账号级视图无法与总览范围保持一致。
 - Dashboard / account-scoped summary 现有 `inProgressConversationCount` / `inProgressRetryConversationCount` 仍沿用“按对话去重”的旧语义，与 owner-facing 认知中的“进行中的调用数”不一致。
+- Dashboard 顶部实时 KPI 与工作区上游账号卡片必须共享同一个当前活动快照；同一屏内可见的 `TPM`、`消费速率` 与 `进行中调用` 不得分别由前端 timeseries rate 和后端 account-activity rate 两套算法生成。
 
 ## 目标 / 非目标
 
@@ -16,6 +17,7 @@
 - 新增懒加载的 `上游账号` 视图，只展示当前所选 Dashboard 总览范围内有调用的账号，并跟随 `today / yesterday / 1d / 7d` 聚合。
 - 提供一个 Dashboard 专用的后端批量读接口，一次返回账号级摘要与最近 4 条调用记录，禁止前端 fanout 账号详情或 `window-usage` 做 N+1 聚合。
 - 把 summary 中现有 `inProgressConversationCount` / `inProgressRetryConversationCount` 语义统一改成 invocation-based，并同步更新 owner-facing 文案为“进行中调用 / 重试调用”。
+- 新增 Dashboard 专用活动快照读路径，使顶部当前 KPI 与账号卡片使用同一个 `rangeEnd`、同一份 runtime overlay 与同一套账号优先聚合算法。
 
 ### Non-goals
 
@@ -23,6 +25,7 @@
 - 不把账号视图做成账号池 roster/table 的嵌入版，也不复用账号详情抽屉的整页布局。
 - 不支持 `usage` 范围下的账号活动聚合，也不为此新增替代语义。
 - 不引入账号卡展开态、二级 tabs、四小格内层卡片或额外 drill-down 交互。
+- 不要求趋势图与顶部瞬时 KPI 数值一致；趋势图继续展示 timeseries 历史走势，顶部实时 KPI 以活动快照为事实源。
 
 ## 范围（Scope）
 
@@ -33,6 +36,7 @@
 - `web/src/components/DashboardWorkingConversationsSection.tsx` 及新增账号视图组件：右上 tabs、badge、usage disabled 回退、账号卡布局与最近 4 条调用记录。
 - `web/src/hooks/useDashboardUpstreamAccountActivity.ts` 与 API 层：账号 tab 懒加载、范围跟随、激活态刷新预算。
 - `src/api/slices/invocations_and_summary.rs`、`src/api/slices/settings_models_and_cache.rs`、`src/maintenance/hourly_rollups.rs`：新增 `GET /api/stats/upstream-account-activity`，并修正 summary in-progress 语义。
+- `src/api/slices/invocations_and_summary.rs`、`src/api/slices/settings_models_and_cache.rs`、`src/maintenance/hourly_rollups.rs`：新增 `GET /api/stats/dashboard-activity`，返回同一次取数的 summary-only 或 summary + accounts 活动快照。
 - 相关 Storybook、前后端测试与视觉证据。
 
 ### Out of scope
@@ -40,6 +44,7 @@
 - 调整 Dashboard 顶部总览范围集合本身，或新增新的全局范围枚举。
 - 改造 working conversations 的卡片结构、详情抽屉、抽屉路由或 5 分钟工作集筛选逻辑。
 - 修改账号详情整页的布局范式。
+- 把历史 `usage`、自然日总量、成本或 Token 事实源全部迁入内存。
 
 ## 需求（Requirements）
 
@@ -81,6 +86,12 @@
 - `StatsResponse.inProgressPhaseCounts` 与账号活动接口的 `accounts[].inProgressPhaseCounts` 必须表示当前 live in-progress 调用的三阶段拆分：`queued` 表示尚未选定或开始上游请求，`requesting` 表示连接/发送请求/等待首字节，`responding` 表示已收到首字节并在流式响应中；该字段只代表当前 live 状态，不改写历史终态统计。
 - `recentInvocations[]` 与共享 `ApiInvocation` / prompt-cache invocation preview 可带 `livePhase?: queued | requesting | responding | null`；前端展示运行态时必须优先使用后端 `livePhase`，缺失时才允许用 `status`、timing 与 attempt phase 兜底推断，终态成功/失败/HTTP 状态不得强行归入三阶段。
 - `today / 1d / 7d` 的 `inProgressInvocationCount / retryInvocationCount` 允许使用 live augmentation 语义；`yesterday` 为 closed range，这两项必须返回 `null` 并在前端显示 `—`。
+- `GET /api/stats/dashboard-activity` 必须在请求开始时固定 `rangeEnd=now`，一次读取 runtime invocation overlay，并在同一个响应内返回 `rangeStart`、`rangeEnd`、`snapshotId`、`rateWindow`、`summary` 与可选 `accounts`。
+- Dashboard 顶部当前 `TPM`、`消费速率` 与 `进行中调用` 必须来自 `dashboard-activity.summary`；当账号 tab 已打开并请求 `includeAccounts=true` 时，顶部 KPI 与账号卡片必须消费同一个响应的 `snapshotId/rangeEnd`。
+- `dashboard-activity.summary.tokensPerMinute`、`summary.spendRate` 与 `summary.stats.inProgressConversationCount` 必须由账号聚合结果求和得到；同一响应内允许的差异仅限前端格式化取整。
+- `dashboard-activity.accounts[]` 必须包含真实上游账号聚合项；如果存在无法归属到账号的活动流量，必须返回明确的 `unassigned` 聚合项，而不是让顶部总数无法被明细解释。
+- `includeAccounts=false` 必须支持顶部轻量使用，只返回同源 `summary` 与快照元数据；该路径不得先构建、排序完整账号 preview/archive 明细再丢弃，只能读取 summary/read-model、live overlay 与短尾速率窗口所需数据；账号 tab 首次打开后升级为 `includeAccounts=true`，并用该 full snapshot 同步刷新顶部和账号卡片。
+- `DashboardActivityOverview` 不得再用 `buildDashboardTodayRateSnapshot` 作为顶部当前 KPI 的事实来源；该前端 timeseries rate 只能作为无活动快照上下文下的兼容回退或图表趋势辅助。
 
 ### SHOULD
 
@@ -121,6 +132,7 @@
 
 | 接口（Name）                                           | 类型（Kind）        | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                       | 备注（Notes）                                                |
 | ------------------------------------------------------ | ------------------- | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------------- | ------------------------------------------------------------ |
+| `GET /api/stats/dashboard-activity`                    | http-endpoint       | external      | Add            | None                     | backend/stats   | Dashboard top KPI, account activity tab   | 同一快照返回 summary 与可选 accounts；顶部实时 KPI 事实源    |
 | `GET /api/stats/upstream-account-activity`             | http-endpoint       | external      | Add            | None                     | backend/stats   | Dashboard account activity tab            | range 聚合 + effective routing rule + recent 4 bounded query |
 | `StatsResponse.inProgressConversationCount`            | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail | wire name 保留，语义改为 invocation-based                    |
 | `StatsResponse.inProgressRetryConversationCount`       | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail | wire name 保留，语义改为 invocation-based retry              |
@@ -139,6 +151,8 @@
 
 - `GET /api/stats/upstream-account-activity.recentInvocations[]` 复用现有 invocation preview wire shape，并额外包含 `promptCacheKey?: string | null`。
 - `GET /api/stats/upstream-account-activity.accounts[].effectiveRoutingRule` 复用账号池现有 `EffectiveRoutingRule` wire shape，只用于 Dashboard 标题区关键策略徽章；普通系统 tag 仍不在账号活动接口中展示。
+- `GET /api/stats/dashboard-activity.summary` 复用 `StatsResponse` wire shape，并额外返回 `tokensPerMinute` / `spendRate`；`accounts[]` 复用账号活动卡片所需字段，并允许 `upstreamAccountId: null` 的 `isUnassigned` 聚合项。
+- `GET /api/stats/dashboard-activity.rateWindow.mode` 固定描述当前速率算法来源；当前值为账号活跃尾段求和，不代表 timeseries 图上任一 bucket 的事实。
 - 前端共享 `PromptCacheConversationInvocationPreview` 合同同步包含 `promptCacheKey?: string | null`；`DashboardWorkingConversationInvocationSelection.promptCacheKey` 语义不变，仍表示真实对话键。
 
 ## 验收标准（Acceptance Criteria）
@@ -167,6 +181,12 @@
 - Given 点击账号卡 recent 调用记录打开详情，When 详情抽屉接收 selection，Then `selection.promptCacheKey` 必须等于真实 preview `promptCacheKey`，而不是 `invokeId`。
 - Given Dashboard 顶部 KPI 使用 `StatsResponse.inProgressConversationCount` / `inProgressRetryConversationCount`，When 显示 owner-facing 文案，Then 标签为“进行中调用 / 重试调用”，并按 invocation-based 计数，而不是按 prompt-cache 对话去重。
 - Given 后端账号活动接口需要账号摘要与最近 4 条记录，When 发起请求，Then 响应来自单个 batch endpoint，不依赖前端 fanout `upstream-account detail` 或 `window-usage`。
+- Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.inProgressInvocationCount === sum(accounts.inProgressInvocationCount)`。
+- Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.tokensPerMinute === sum(accounts.tokensPerMinute)`，允许仅因小数格式化产生显示级差异。
+- Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.spendRate === sum(accounts.spendRate)`，允许仅因货币格式化产生显示级差异。
+- Given 账号 tab 尚未打开，When Dashboard 顶部需要当前活动 KPI，Then 前端只请求 `includeAccounts=false` 的 summary-only 快照，不请求账号明细。
+- Given 账号 tab 打开，When Dashboard 同屏显示顶部 KPI 与账号卡片，Then 两者来自同一个 `snapshotId/rangeEnd` 的 full snapshot。
+- Given 图表趋势与顶部瞬时 KPI 数值不同，When 审查 UI 口径，Then 该差异被接受，因为 chart 是趋势展示，顶部 KPI 是活动快照事实源。
 
 ## 验收清单（Acceptance checklist）
 
@@ -181,6 +201,7 @@
 
 - Unit tests: 账号活动 hook / 账号视图组件 / Dashboard range 共享与回退行为。
 - Integration tests: summary invocation-based 计数、账号活动接口 range + recent query、Dashboard 页面 tabs / lazy load / disabled 回退。
+- Integration tests: `dashboard-activity` summary 的 `TPM`、`消费速率`、`进行中调用` 等于 accounts 加总，并覆盖同一 `rangeEnd`、runtime overlay 与 `unassigned` 流量。
 - E2E tests (if applicable): None。
 
 ### UI / Storybook (if applicable)

@@ -1244,7 +1244,7 @@ pub(crate) struct PromptCacheConversationInvocationPreviewRow {
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct UpstreamAccountInvocationPreviewRow {
-    pub(crate) upstream_account_id: i64,
+    pub(crate) upstream_account_id: Option<i64>,
     pub(crate) id: i64,
     pub(crate) invoke_id: String,
     pub(crate) prompt_cache_key: Option<String>,
@@ -1422,6 +1422,17 @@ pub(crate) struct UpstreamAccountActivityQuery {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardActivityQuery {
+    #[serde(default = "default_range")]
+    pub(crate) range: String,
+    pub(crate) recent_limit: Option<i64>,
+    pub(crate) time_zone: Option<String>,
+    #[serde(default)]
+    pub(crate) include_accounts: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PerfQuery {
     #[serde(default = "default_range")]
     pub(crate) range: String,
@@ -1444,6 +1455,86 @@ pub(crate) struct UpstreamAccountActivityResponse {
     pub(crate) range_start: String,
     pub(crate) range_end: String,
     pub(crate) accounts: Vec<UpstreamAccountActivityAccountResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardActivityRateWindowResponse {
+    pub(crate) start: String,
+    pub(crate) end: String,
+    pub(crate) window_minutes: i64,
+    pub(crate) mode: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardActivitySummaryResponse {
+    pub(crate) stats: StatsResponse,
+    pub(crate) tokens_per_minute: Option<f64>,
+    pub(crate) spend_rate: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardActivityResponse {
+    pub(crate) range: String,
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) snapshot_id: i64,
+    pub(crate) rate_window: DashboardActivityRateWindowResponse,
+    pub(crate) summary: DashboardActivitySummaryResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) accounts: Option<Vec<DashboardActivityAccountResponse>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardActivityAccountResponse {
+    pub(crate) account_key: String,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) display_name: String,
+    pub(crate) is_unassigned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) group_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) plan_type: Option<String>,
+    pub(crate) request_count: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) non_success_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) success_tokens: i64,
+    pub(crate) non_success_tokens: i64,
+    pub(crate) failure_tokens: i64,
+    pub(crate) failure_cost: f64,
+    #[serde(skip)]
+    pub(crate) non_success_cost: f64,
+    pub(crate) total_cost: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_hit_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) tokens_per_minute: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) spend_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) first_byte_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) first_response_byte_total_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) avg_total_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) in_progress_invocation_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) in_progress_phase_counts: Option<InvocationPhaseCountsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) retry_invocation_count: Option<i64>,
+    #[serde(skip)]
+    pub(crate) in_progress_wait_sum_ms: f64,
+    #[serde(skip)]
+    pub(crate) in_progress_wait_sample_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) effective_routing_rule: Option<crate::upstream_accounts::EffectiveRoutingRule>,
+    pub(crate) recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]

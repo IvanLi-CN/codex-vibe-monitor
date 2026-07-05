@@ -3,8 +3,8 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type {
+  DashboardActivityResponse,
   PromptCacheConversationInvocationPreview,
-  UpstreamAccountActivityResponse,
 } from "../lib/api";
 import {
   DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
@@ -12,16 +12,22 @@ import {
 } from "./useDashboardWorkingConversations";
 import {
   resolveUpstreamAccountRecentPreviewLimit,
+  useDashboardActivitySnapshot,
   useDashboardUpstreamAccountActivity,
 } from "./useDashboardUpstreamAccountActivity";
 
 const apiMocks = vi.hoisted(() => ({
-  fetchUpstreamAccountActivity:
+  fetchDashboardActivity:
     vi.fn<
       (
         range: string,
-        options?: { recentLimit?: number; timeZone?: string; signal?: AbortSignal },
-      ) => Promise<UpstreamAccountActivityResponse>
+        options?: {
+          recentLimit?: number;
+          timeZone?: string;
+          includeAccounts?: boolean;
+          signal?: AbortSignal;
+        },
+      ) => Promise<DashboardActivityResponse>
     >(),
 }));
 
@@ -30,7 +36,7 @@ vi.mock("../lib/api", async () => {
     await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
-    fetchUpstreamAccountActivity: apiMocks.fetchUpstreamAccountActivity,
+    fetchDashboardActivity: apiMocks.fetchDashboardActivity,
   };
 });
 
@@ -157,11 +163,35 @@ function createPreview(
 function createAccountResponse(
   inProgressInvocationCount: number,
   recentInvocations: PromptCacheConversationInvocationPreview[],
-): UpstreamAccountActivityResponse {
+): DashboardActivityResponse {
+  const totalTokens = recentInvocations.reduce(
+    (sum, item) => sum + item.totalTokens,
+    0,
+  );
   return {
     range: "today",
     rangeStart: "2026-04-04T10:00:00Z",
     rangeEnd: "2026-04-04T10:05:00Z",
+    snapshotId: 1,
+    rateWindow: {
+      start: "2026-04-04T10:00:00Z",
+      end: "2026-04-04T10:05:00Z",
+      windowMinutes: 5,
+      mode: "account_active_tail_sum",
+    },
+    summary: {
+      stats: {
+        totalCount: recentInvocations.length,
+        successCount: recentInvocations.filter((item) => item.status === "success").length,
+        failureCount: recentInvocations.filter((item) => item.status === "failed").length,
+        totalTokens,
+        totalCost: 0.12,
+        inProgressConversationCount: inProgressInvocationCount,
+        inProgressRetryConversationCount: 1,
+      },
+      tokensPerMinute: 250,
+      spendRate: 0.03,
+    },
     accounts: [
       {
         upstreamAccountId: 42,
@@ -176,10 +206,7 @@ function createAccountResponse(
         nonSuccessCount: recentInvocations.filter(
           (item) => item.status === "failed",
         ).length,
-        totalTokens: recentInvocations.reduce(
-          (sum, item) => sum + item.totalTokens,
-          0,
-        ),
+        totalTokens,
         successTokens: 480,
         nonSuccessTokens: 120,
         failureTokens: 120,
@@ -233,6 +260,24 @@ function Probe({
   );
 }
 
+function SnapshotProbe({
+  enabled = true,
+  range = "today",
+  includeAccounts = false,
+}: {
+  enabled?: boolean;
+  range?: string;
+  includeAccounts?: boolean;
+}) {
+  const { data } = useDashboardActivitySnapshot(range, enabled, includeAccounts);
+
+  return (
+    <div data-testid="snapshot-accounts">
+      {String(data?.accounts?.length ?? 0)}
+    </div>
+  );
+}
+
 describe("resolveUpstreamAccountRecentPreviewLimit", () => {
   it("clamps to the minimum when there is no in-flight activity", () => {
     expect(
@@ -263,6 +308,22 @@ describe("resolveUpstreamAccountRecentPreviewLimit", () => {
 });
 
 describe("useDashboardUpstreamAccountActivity", () => {
+  it("can fetch a summary-only dashboard snapshot without account details", async () => {
+    apiMocks.fetchDashboardActivity.mockResolvedValue({
+      ...createAccountResponse(0, []),
+      accounts: undefined,
+    });
+
+    render(<SnapshotProbe includeAccounts={false} />);
+    await flushAsync();
+
+    expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchDashboardActivity.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ recentLimit: 4, includeAccounts: false }),
+    );
+    expect(text("snapshot-accounts")).toBe("0");
+  });
+
   it("expands the recent limit after hydration when an account has more in-flight invocations", async () => {
     const first = createAccountResponse(
       9,
@@ -287,7 +348,7 @@ describe("useDashboardUpstreamAccountActivity", () => {
       ),
     );
 
-    apiMocks.fetchUpstreamAccountActivity
+    apiMocks.fetchDashboardActivity
       .mockResolvedValueOnce(first)
       .mockResolvedValueOnce(second);
 
@@ -295,12 +356,12 @@ describe("useDashboardUpstreamAccountActivity", () => {
     await flushAsync();
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(2);
-    expect(apiMocks.fetchUpstreamAccountActivity.mock.calls[0]?.[1]).toEqual(
-      expect.objectContaining({ recentLimit: 4 }),
+    expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledTimes(2);
+    expect(apiMocks.fetchDashboardActivity.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ recentLimit: 4, includeAccounts: true }),
     );
-    expect(apiMocks.fetchUpstreamAccountActivity.mock.calls[1]?.[1]).toEqual(
-      expect.objectContaining({ recentLimit: 9 }),
+    expect(apiMocks.fetchDashboardActivity.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({ recentLimit: 9, includeAccounts: true }),
     );
     expect(text("visible-limit")).toBe("9");
     expect(text("recent-count")).toBe("9");
@@ -308,7 +369,7 @@ describe("useDashboardUpstreamAccountActivity", () => {
   });
 
   it("does not shrink below an already discovered larger account limit", async () => {
-    apiMocks.fetchUpstreamAccountActivity.mockResolvedValue(
+    apiMocks.fetchDashboardActivity.mockResolvedValue(
       createAccountResponse(
         9,
         Array.from({ length: 9 }, (_, index) =>
@@ -330,7 +391,7 @@ describe("useDashboardUpstreamAccountActivity", () => {
   });
 
   it("does not shrink below the requested seed limit when the response resolves smaller", async () => {
-    apiMocks.fetchUpstreamAccountActivity.mockResolvedValue(
+    apiMocks.fetchDashboardActivity.mockResolvedValue(
       createAccountResponse(
         3,
         Array.from({ length: 7 }, (_, index) =>
@@ -348,18 +409,18 @@ describe("useDashboardUpstreamAccountActivity", () => {
     await flushAsync();
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountActivity).toHaveBeenCalledTimes(1);
-    expect(apiMocks.fetchUpstreamAccountActivity.mock.calls[0]?.[1]).toEqual(
-      expect.objectContaining({ recentLimit: 7 }),
+    expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchDashboardActivity.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ recentLimit: 7, includeAccounts: true }),
     );
     expect(text("visible-limit")).toBe("7");
     expect(text("recent-count")).toBe("7");
   });
 
   it("ignores stale smaller responses after a larger limit reload is queued", async () => {
-    const first = deferred<UpstreamAccountActivityResponse>();
-    const second = deferred<UpstreamAccountActivityResponse>();
-    apiMocks.fetchUpstreamAccountActivity
+    const first = deferred<DashboardActivityResponse>();
+    const second = deferred<DashboardActivityResponse>();
+    apiMocks.fetchDashboardActivity
       .mockImplementationOnce(async () => first.promise)
       .mockImplementationOnce(async () => second.promise);
 
