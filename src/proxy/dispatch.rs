@@ -11,6 +11,7 @@ pub(crate) async fn proxy_openai_v1_inner(
     pool_route_active: bool,
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
+    admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
 ) -> Result<Response, ProxyErrorResponse> {
     if !pool_route_active {
         // `/v1/*` is pool-only; non-pool traffic must stop here instead of reviving the
@@ -109,6 +110,7 @@ pub(crate) async fn proxy_openai_v1_inner(
             pool_route_active,
             runtime_timeouts,
             proxy_request_permit.take(),
+            admitted_runtime_snapshot,
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
@@ -306,6 +308,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     pool_route_active: bool,
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
+    admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
 ) -> Result<Response, (StatusCode, String)> {
     if !pool_route_active {
         return Err((
@@ -323,8 +326,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     )
     .await;
     let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-    let occurred_at_utc = Utc::now();
-    let occurred_at = format_naive(occurred_at_utc.with_timezone(&Shanghai).naive_local());
+    let occurred_at = admitted_runtime_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.occurred_at.clone())
+        .unwrap_or_else(|| format_naive(Utc::now().with_timezone(&Shanghai).naive_local()));
     let mut pool_invocation_cleanup_guard = pool_route_active.then(|| {
         PoolInvocationCleanupGuard::new(
             state.clone(),
@@ -337,23 +342,36 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
     let client_attribution_context = client_prompt_cache_attribution_context_from_headers(&headers);
-    let admitted_running_record = build_admitted_proxy_capture_runtime_snapshot(
-        &invoke_id,
-        &occurred_at,
-        capture_target,
-        requester_ip.as_deref(),
-        header_sticky_key.as_deref(),
-        header_prompt_cache_key.as_deref(),
-    );
-    if let Err(err) =
-        persist_and_broadcast_proxy_capture_runtime_snapshot(state.as_ref(), admitted_running_record)
-            .await
-    {
-        warn!(
-            ?err,
-            invoke_id = %invoke_id,
-            "failed to broadcast admitted running proxy capture snapshot"
+    if admitted_runtime_snapshot.is_none() {
+        let shell_started = Instant::now();
+        let admitted_running_record = build_admitted_proxy_capture_runtime_snapshot(
+            &invoke_id,
+            &occurred_at,
+            capture_target,
+            requester_ip.as_deref(),
+            header_sticky_key.as_deref(),
+            header_prompt_cache_key.as_deref(),
         );
+        if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
+            state.as_ref(),
+            admitted_running_record,
+        )
+        .await
+        {
+            warn!(
+                ?err,
+                invoke_id = %invoke_id,
+                "failed to broadcast admitted running proxy capture snapshot"
+            );
+        } else {
+            debug!(
+                invoke_id = %invoke_id,
+                occurred_at = %occurred_at,
+                running_shell_emitted = true,
+                running_shell_emit_elapsed = shell_started.elapsed().as_millis() as u64,
+                "admitted proxy capture handler emitted fallback running shell"
+            );
+        }
     }
     let proxy_settings = state.proxy_model_settings.read().await.clone();
 

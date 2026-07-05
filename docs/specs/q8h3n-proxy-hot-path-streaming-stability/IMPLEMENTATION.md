@@ -12,6 +12,8 @@
 
 - Status: 已完成
 - Note: 已移除错误的 whole-proxy admission gate，`PROXY_REQUEST_CONCURRENCY_*` 已进入 deprecated/ignored 兼容态；共享测试机 `codex-testbox` 100 并行压测通过，确认 `/v1/*` 不再因本地 admission gate 返回 `503`。
+- Note: `PROXY_REQUEST_CONCURRENCY_*` 不再参与 raw writer sizing；请求入口保留 `proxy_request_in_flight` 纯观测计数，并补充 `proxy_request_started`、`proxy_request_admitted_observed`、`max_proxy_in_flight_observed` 与 `running_shell_emitted` 证据。
+- Note: tracked proxy capture 请求在 route context 解析前创建内存 running shell；route validation failure 会发 terminal overlay 清理同一 runtime key，避免本地路由失败造成假 running。
 - Note: 号池候选评分会读取最近 5 分钟的 `pool_upstream_request_attempts`，对最新仍处于 timeout/transport failure 的 `upstream_route_key + proxy_binding_key_snapshot` 组合增加短期排序惩罚；后续成功尝试会清除该短期惩罚。
 - Note: `proxy capture follow-up` 的热路径门禁前移到 subscriber-aware 调度，避免无订阅者时每次代理收尾都触发重型 summary/quota 与 rollup 预算；对应回归测试与 `cargo check --tests` 已通过。
 
@@ -28,6 +30,9 @@
 - `scripts/shared-testbox-proxy-parallel-smoke`
 - `cargo test skips_follow_up_without_subscribers -- --nocapture`
 - `cargo test persist_and_broadcast_proxy_capture -- --nocapture`
+- `cargo test acquire_proxy_request_concurrency_permit_tracks_multiple_in_flight_requests -- --nocapture`
+- `cargo test acquire_proxy_request_concurrency_permit_tracks_100_in_flight_without_local_rejection -- --nocapture`
+- `cargo test proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure -- --nocapture`
 
 ## Migrated Task-Ticket Sections
 

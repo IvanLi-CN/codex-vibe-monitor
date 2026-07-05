@@ -12,6 +12,7 @@
 - 前台关键路径不应该和 rollup/backfill/retention/maintenance 使用同等重试预算。
 - 连接池等待超时本身就是 pressure signal，应触发后台 cooldown，而不是继续并发重试。
 - `proxy capture follow-up` 也必须遵守这个分级：没有 SSE 订阅者时，不得再消耗 summary/quota 或 hourly rollup refresh 预算。
+- 即使存在 active SSE 订阅者，terminal follow-up 也不应强制 `flush_now` 式 SQLite barrier；terminal overlay 是 UI 的立即收敛来源，summary/quota 可以在 write controller 后续 flush 后最终一致。
 - 对请求收尾里的同一实体写入，要优先消除“重复唯一键探测 + 紧跟二次更新”“先重算 rollup 再补 timing 再重算一次”这类单请求内自我放大；SQLite 压力常常不是来自单条大 SQL，而是来自几条语义重复的写语句连发。
 - 当并发不能降低且业务成功率高于观测记录完整性时，用进程内短窗口 write controller 承接所有观测记录写：terminal invocation 进入 P1 best-effort 队列，attempt 中间进度、rollup/live progress、account touch、system task finish 等可延迟项进入 P2 并按 key coalesce。记录入队/flush 失败必须报警和计数，但不得让已经完成的业务响应失败。
 - 高频 runtime snapshot 不应默认等同于主事实写。`running` / first-byte / response-ready 这类 UI 新鲜度事件可以先走进程内共享 runtime store + SSE/HTTP overlay；如果服务选择业务优先于记录，terminal success/failure 也可以先进入 P1 write controller，并用 SSE terminal payload + runtime tombstone 支撑短暂最终一致窗口。
@@ -65,6 +66,7 @@
 - 为每个后台入口单独做局部退避，容易遗漏同一压力窗口内的其他维护任务；进程级 gate 更容易统一行为。
 - `SELECT MAX(id) ... WHERE <稀疏条件>`、`NOT EXISTS` + 低选择性 phase 过滤这类查询，即使最终只返回 1 行，也可能在 SQLite 上吃掉秒级读锁预算；若它们会与前台 HTTP 共享同一数据库，必须先压成 cursor 读取或用 partial index 固定扫描面。
 - 对 proxy 收尾这类 SSE follow-up，`receiver_count()==0` 应该直接意味着“跳过 follow-up”，而不是继续排队 summary/quota 或 rollup refresh；否则会把没有任何订阅者的请求变成纯数据库放大器。
+- 对 proxy 收尾这类 SSE follow-up，active subscriber 也不等于可以强制同步 flush SQLite。若 terminal record 已进入 P1 write controller，follow-up 应避免把 UI 实时性需求重新变成写锁 barrier；先广播 terminal overlay，再让后续 reconcile/summary 在有界延迟内补齐。
 - proxy snapshot/broadcast 在 `database is locked` 下应 fail-soft skip 并记录结构化证据，依赖已发出的 SSE 事件和后续 HTTP reconcile 补齐 UI；不要在请求尾部立即重试并放大锁争用。
 - write-side live read model 只有在维护成本本身也受控时才值得做：前台请求内同步维护最小必要 working-set / in-progress truth，后台 rebuild 和补偿刷新则继续挂到统一 pressure gate/cooldown，避免为了止住读热点又新增一组不受控维护写入。
 - 不要让 P1 terminal flush 在同一锁窗口内继续执行 P2 rollup/account-touch 派生写；这会把“记录最终一致”重新变成“请求尾锁放大”。P1 成功后把 P2 放回队列，等待下一轮时间窗口或 pressure 允许。
