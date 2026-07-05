@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.12.3",
+  "base_stable_version": "2.12.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-05T02:10:57Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.12.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d6f6d4a9a938a7dce9477a3b9ad972146d515558",
+  "pr_number": 532,
+  "pr_title": "fix(web): show in-progress account calls",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.12.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.12.3",
+  "target_sha": "cebc8564335640733e0a2f45a38b3f58324d87b7",
+  "type_label": "type:patch"
+}
