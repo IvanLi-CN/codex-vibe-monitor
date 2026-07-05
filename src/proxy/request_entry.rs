@@ -1907,6 +1907,14 @@ impl PoolReplayBodySnapshot {
         }
     }
 
+    pub(crate) async fn into_vec(self) -> io::Result<Vec<u8>> {
+        match self {
+            Self::Empty => Ok(Vec::new()),
+            Self::Memory(bytes) => Ok(bytes.to_vec()),
+            Self::File { temp_file, .. } => tokio::fs::read(&temp_file.path).await,
+        }
+    }
+
     pub(crate) async fn to_prefix_bytes(&self, limit: usize) -> io::Result<Bytes> {
         match self {
             Self::Empty => Ok(Bytes::new()),
