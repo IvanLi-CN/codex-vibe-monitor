@@ -448,6 +448,7 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
     let body = Bytes::from(serde_json::to_vec(&expected).expect("serialize compact request body"));
 
     let prepared = prepare_pool_request_body_for_account(
+        450450,
         Some(&PoolReplayBodySnapshot::Memory(body)),
         &"/v1/responses/compact".parse().expect("valid compact uri"),
         &Method::POST,
@@ -464,6 +465,39 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
     let payload: Value = serde_json::from_slice(&request_body).expect("decode body");
     assert_eq!(payload, expected);
     assert!(payload.get("service_tier").is_none());
+}
+
+#[tokio::test]
+async fn prepare_pool_request_body_for_account_preserves_file_snapshot_when_rewrite_is_noop() {
+    let expected = json!({
+        "model": "gpt-5.1-codex-max",
+        "serviceTier": "flex",
+        "input": "summarize this thread",
+        "padding": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 64),
+    });
+    let body = Bytes::from(serde_json::to_vec(&expected).expect("serialize compact request body"));
+    let snapshot = pool_replay_snapshot_from_bytes(450451, body.clone()).await;
+    assert_eq!(pool_request_snapshot_kind(&snapshot), "file");
+
+    let prepared = prepare_pool_request_body_for_account(
+        450451,
+        Some(&snapshot),
+        &"/v1/responses".parse().expect("valid responses uri"),
+        &Method::POST,
+        TagFastModeRewriteMode::KeepOriginal,
+        crate::ImageToolRewriteMode::ForceRemove,
+    )
+    .await
+    .expect("prepare compact pool request body");
+
+    assert_eq!(pool_request_snapshot_kind(&prepared.snapshot), "file");
+    assert_eq!(prepared.requested_service_tier.as_deref(), Some("flex"));
+    assert_eq!(
+        prepared
+            .request_body_for_capture
+            .expect("capture request body should be materialized"),
+        body
+    );
 }
 
 #[tokio::test]
@@ -486,6 +520,7 @@ async fn prepare_pool_request_body_for_account_reports_rewritten_image_intent_af
     );
 
     let prepared = prepare_pool_request_body_for_account(
+        488488,
         Some(&PoolReplayBodySnapshot::Memory(body)),
         &"/v1/responses".parse().expect("valid responses uri"),
         &Method::POST,
@@ -495,6 +530,52 @@ async fn prepare_pool_request_body_for_account_reports_rewritten_image_intent_af
     .await
     .expect("prepare responses pool request body");
 
+    assert_eq!(prepared.requested_image_intent, crate::ImageIntent::No);
+    let request_body = prepared
+        .request_body_for_capture
+        .expect("capture request body should be materialized");
+    let payload: Value = serde_json::from_slice(&request_body).expect("decode body");
+    assert!(
+        !payload["tools"]
+            .as_array()
+            .expect("tools should remain an array")
+            .iter()
+            .any(|tool| tool["type"].as_str() == Some("image_generation"))
+    );
+    assert!(payload.get("tool_choice").is_none());
+}
+
+#[tokio::test]
+async fn prepare_pool_request_body_for_account_keeps_large_rewrite_file_backed() {
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 64),
+            "tools": [
+                {
+                    "type": "image_generation",
+                    "output_format": "png"
+                }
+            ],
+            "tool_choice": {
+                "type": "image_generation"
+            }
+        }))
+        .expect("serialize large responses request body"),
+    );
+
+    let prepared = prepare_pool_request_body_for_account(
+        488489,
+        Some(&PoolReplayBodySnapshot::Memory(body)),
+        &"/v1/responses".parse().expect("valid responses uri"),
+        &Method::POST,
+        TagFastModeRewriteMode::KeepOriginal,
+        crate::ImageToolRewriteMode::ForceRemove,
+    )
+    .await
+    .expect("prepare responses pool request body");
+
+    assert_eq!(pool_request_snapshot_kind(&prepared.snapshot), "file");
     assert_eq!(prepared.requested_image_intent, crate::ImageIntent::No);
     let request_body = prepared
         .request_body_for_capture

@@ -19,6 +19,9 @@
 - Note: capture 入口的 request body 读取改为 replay snapshot 控制面；大 body 先落 file-backed replay snapshot，再进入现有完整 parse/rewrite/owner-binding 路径。超限错误只保留有界 partial body，避免 raw failure 证据回退且不重新制造整包内存副本。
 - Note: file-backed capture snapshot 在进入现有 parse/rewrite 语义时只做一次 consume materialization；本轮没有把 capture pipeline 改成零拷贝 shared snapshot，因为这会牵涉 raw、failover、rewrite 与 terminal record 的共同数据模型。
 - Note: 本轮没有强开 capture live-first；对仍需完整 request 语义的 capture 请求输出 `live_first_reason=capture_requires_full_request_semantics`，并新增 `body_size_bucket`、`request_body_snapshot_kind`、`downstream_first_byte_elapsed`、`raw_response_write_elapsed` 证据，供 101 判断剩余慢点。
+- Note: pool failover replay snapshot 构造已收口到统一 helper：`Bytes` / `Vec<u8>` 小于等于 `POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES` 时保留 memory，大于阈值时写入 `cvm-pool-replay-*` 临时文件并返回 file snapshot；临时文件失败只 fail-soft 回退 memory 并输出 warning。
+- Note: capture pool outbound 与 route-selection prebuffer fallback 不再直接为大 body 构造 `PoolReplayBodySnapshot::Memory(...)`；rewrite required 但 no-op 的分支保留原 file snapshot，真实 rewrite 后按同一阈值重新选择 memory/file。
+- Note: `body_read_done/live_first_reason/request_body_snapshot_kind`、`downstream_first_byte_elapsed`、`raw_response_write_elapsed` 改为阈值化生产可见：大 body 或慢 body read、慢下游首字节、慢/大 raw response 在 `info` 输出，普通小请求继续保留 `debug`。
 
 ## 验证
 
@@ -37,6 +40,9 @@
 - `cargo test acquire_proxy_request_concurrency_permit_tracks_100_in_flight_without_local_rejection -- --nocapture`
 - `cargo test proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure -- --nocapture`
 - `cargo test capture_snapshot_reader_ -- --nocapture`
+- `cargo test pool_replay_snapshot_from_ -- --nocapture`
+- `cargo test prepare_pool_request_body_for_account_ -- --nocapture`
+- `cargo test capture_snapshot_reader_spills -- --nocapture`
 
 ## Migrated Task-Ticket Sections
 
