@@ -95,6 +95,7 @@ jobs:
             .github/scripts/release_snapshot.py \
             .github/scripts/verify_manifest_platforms.py
           bash -n .github/scripts/build-smoke-image-with-retry.sh
+          bash -n .github/scripts/run-backend-tests.sh
 
       - name: Resolve trusted quality-gates sources
         id: trusted-quality-gates
@@ -371,8 +372,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Run cargo test
-        run: cargo test --locked --all-features
+        run: bash .github/scripts/run-backend-tests.sh
 
   build:
     name: Build Artifacts

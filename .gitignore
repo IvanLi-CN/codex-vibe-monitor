@@ -25,3 +25,4 @@ design-system/
 logs/
 *-dev.log
 .serena
+.impeccable/
