@@ -33,6 +33,7 @@ The capture path historically used one full in-memory request body as both routi
 
 - Put capture request reads on the same replay snapshot control plane as pool routing: memory for small bodies, file-backed replay for large bodies.
 - Preserve bounded partial body evidence on read timeout, client stream errors, and body-limit failures; do not retain the whole body in memory after switching to file-backed replay.
+- Consume file-backed snapshots with a single materialization step only when the existing capture semantics require full JSON parse/rewrite; do not add an extra `Bytes -> Vec` full-body copy.
 - Log `body_read_done`, `body_size_bucket`, `request_body_snapshot_kind`, and `live_first_reason` before materializing the snapshot for full parse/rewrite.
 - Keep response streaming ordered as “forward chunk downstream first, finish raw writer later”; log `downstream_first_byte_elapsed` and `raw_response_write_elapsed` separately.
 - Enable live-first for capture only when tests prove encrypted owner binding, prompt-cache binding, body rewrite, failover replay, raw completeness, and terminal record fields remain identical to fallback behavior.
@@ -40,6 +41,7 @@ The capture path historically used one full in-memory request body as both routi
 ## Guardrails / Reuse notes
 
 - Do not claim a request is live-first just because it uses file-backed replay; upstream send still starts after full semantic checks unless eligibility is proven.
+- File-backed replay is not zero-copy for capture until the downstream capture pipeline can parse, rewrite, raw-capture, and failover from a shared replay snapshot without rebuilding a full request body.
 - Do not infer “no encrypted content” from a prefix scan; absence is only safe after full parse or an equivalent explicit contract.
 - Do not drop or truncate raw payload as a performance optimization. If raw writer fails, log and classify it, but keep business response semantics separate.
 - Keep fallback reason values stable enough for production log comparison.

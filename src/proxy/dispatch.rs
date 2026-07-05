@@ -545,8 +545,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         live_first_reason = "capture_requires_full_request_semantics",
         "openai proxy capture request body read completed"
     );
-    let request_body_bytes = match request_body_snapshot.to_bytes().await {
-        Ok(bytes) => bytes.to_vec(),
+    let request_body_bytes = match request_body_snapshot.into_vec().await {
+        Ok(bytes) => bytes,
         Err(err) => {
             drop(proxy_request_permit);
             let status = StatusCode::BAD_GATEWAY;

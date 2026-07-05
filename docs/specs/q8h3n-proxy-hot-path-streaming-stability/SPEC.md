@@ -62,6 +62,7 @@
 - response raw append 不再位于 chunk 转发之前；request raw 写盘不再阻塞上游发送。
 - 大于小体积阈值的 pool request body 不再默认整包内存物化；sticky 探测仅依赖前缀窗口或 replay snapshot 前缀。
 - capture 大 body 读取会产生 file-backed replay snapshot；超限/超时/客户端断开时仅保留有界 partial body 证据，不得因为切换 snapshot 控制面而丢 raw failure context，也不得把成功读取的大 body 同时整包留在内存。
+- capture 在现有完整语义仍要求 JSON parse/rewrite 时，只允许对 file-backed snapshot 做一次最终物化；不得再额外制造 `Bytes -> Vec` 级别的整包副本，也不得把该保守路径宣称为零拷贝 live-first。
 - capture 日志能解释 live-first eligibility：不能证明安全的请求必须显式记录 fallback reason；后续若启用 live-first，必须覆盖 encrypted owner、prompt-cache binding、body rewrite、failover replay 与 raw 完整性测试。
 - `/api/invocations` 的分页主查询只先选出当前页 id，再对当前页记录执行完整投影。
 - summary/quota follow-up 在 burst 写入时能够合并，不再对每条记录立即触发一次完整汇总。

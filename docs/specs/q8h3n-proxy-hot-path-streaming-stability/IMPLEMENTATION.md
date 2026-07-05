@@ -17,6 +17,7 @@
 - Note: 号池候选评分会读取最近 5 分钟的 `pool_upstream_request_attempts`，对最新仍处于 timeout/transport failure 的 `upstream_route_key + proxy_binding_key_snapshot` 组合增加短期排序惩罚；后续成功尝试会清除该短期惩罚。
 - Note: `proxy capture follow-up` 的热路径门禁前移到 subscriber-aware 调度，避免无订阅者时每次代理收尾都触发重型 summary/quota 与 rollup 预算；对应回归测试与 `cargo check --tests` 已通过。
 - Note: capture 入口的 request body 读取改为 replay snapshot 控制面；大 body 先落 file-backed replay snapshot，再进入现有完整 parse/rewrite/owner-binding 路径。超限错误只保留有界 partial body，避免 raw failure 证据回退且不重新制造整包内存副本。
+- Note: file-backed capture snapshot 在进入现有 parse/rewrite 语义时只做一次 consume materialization；本轮没有把 capture pipeline 改成零拷贝 shared snapshot，因为这会牵涉 raw、failover、rewrite 与 terminal record 的共同数据模型。
 - Note: 本轮没有强开 capture live-first；对仍需完整 request 语义的 capture 请求输出 `live_first_reason=capture_requires_full_request_semantics`，并新增 `body_size_bucket`、`request_body_snapshot_kind`、`downstream_first_byte_elapsed`、`raw_response_write_elapsed` 证据，供 101 判断剩余慢点。
 
 ## 验证
