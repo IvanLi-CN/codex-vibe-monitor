@@ -2637,7 +2637,8 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
 
 #[tokio::test]
 async fn archive_backfill_waits_for_manifest_until_rebuilt() {
-    let (pool, config, temp_dir) = retention_test_pool_and_config("archive-manifest-rebuild").await;
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("archive-manifest-rebuild").await;
     let account_id = 991_i64;
     let created_at = format_utc_iso(Utc::now());
     sqlx::query(
@@ -2771,7 +2772,7 @@ async fn archive_backfill_waits_for_manifest_until_rebuilt() {
 #[tokio::test]
 async fn archive_manifest_refresh_leaves_missing_batches_pending_for_retry() {
     let (pool, config, temp_dir) =
-        retention_test_pool_and_config("manifest-missing-terminal").await;
+        retention_memory_test_pool_and_config("manifest-missing-terminal").await;
     let account_id = 993_i64;
     let created_at = format_utc_iso(Utc::now());
     sqlx::query(

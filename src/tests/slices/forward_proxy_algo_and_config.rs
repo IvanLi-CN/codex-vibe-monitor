@@ -2266,10 +2266,37 @@ async fn retention_test_pool_and_config(prefix: &str) -> (SqlitePool, AppConfig,
     let db_path = temp_dir.join("codex-vibe-monitor.db");
     fs::File::create(&db_path).expect("create retention sqlite file");
     let db_url = sqlite_url_for_path(&db_path);
-    let pool = SqlitePool::connect(&db_url)
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url)
         .await
         .expect("connect retention sqlite");
     ensure_schema(&pool).await.expect("ensure retention schema");
+
+    let mut config = test_config();
+    config.database_path = db_path;
+    config.proxy_raw_dir = temp_dir.join("proxy_raw_payloads");
+    config.archive_dir = temp_dir.join("archives");
+    config.retention_batch_rows = 2;
+    config.invocation_archive_ttl_days = 365;
+    fs::create_dir_all(&config.proxy_raw_dir).expect("create retention raw dir");
+    fs::create_dir_all(&config.archive_dir).expect("create retention archive dir");
+    (pool, config, temp_dir)
+}
+
+async fn retention_memory_test_pool_and_config(prefix: &str) -> (SqlitePool, AppConfig, PathBuf) {
+    let temp_dir = make_temp_test_dir(prefix);
+    let db_path = temp_dir.join("codex-vibe-monitor.db");
+    let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let db_url = format!("sqlite:file:{prefix}-{db_id}?mode=memory&cache=shared");
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url)
+        .await
+        .expect("connect retention in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("ensure retention in-memory schema");
 
     let mut config = test_config();
     config.database_path = db_path;
@@ -2531,10 +2558,11 @@ async fn insert_stats_source_snapshot_row(pool: &SqlitePool, captured_at: &str, 
 
 #[tokio::test]
 async fn ensure_schema_backfills_raw_codecs_and_manifest_tables() {
-    let temp_dir = make_temp_test_dir("ensure-schema-raw-codecs");
-    let db_path = temp_dir.join("codex-vibe-monitor.db");
-    fs::File::create(&db_path).expect("create schema sqlite file");
-    let pool = SqlitePool::connect(&sqlite_url_for_path(&db_path))
+    let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let db_url = format!("sqlite:file:ensure-schema-raw-codecs-{db_id}?mode=memory&cache=shared");
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url)
         .await
         .expect("connect schema sqlite");
 
@@ -2601,8 +2629,6 @@ async fn ensure_schema_backfills_raw_codecs_and_manifest_tables() {
     assert!(manifest_columns.contains("archive_batch_id"));
     assert!(manifest_columns.contains("account_id"));
     assert!(manifest_columns.contains("last_activity_at"));
-
-    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
