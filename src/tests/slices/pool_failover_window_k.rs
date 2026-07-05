@@ -1,7 +1,7 @@
 #[tokio::test]
 async fn bootstrap_hourly_rollups_ignores_missing_invocation_archive_batch() {
     let (pool, _config, temp_dir) =
-        retention_test_pool_and_config("hourly-rollup-missing-invocation-archive").await;
+        retention_memory_test_pool_and_config("hourly-rollup-missing-invocation-archive").await;
     let missing_archive = temp_dir.join("missing-codex-invocations.sqlite.gz");
     let missing_archive_path = missing_archive.to_string_lossy().to_string();
 
@@ -31,7 +31,7 @@ async fn bootstrap_hourly_rollups_ignores_missing_invocation_archive_batch() {
 #[tokio::test]
 async fn bootstrap_hourly_rollups_ignores_missing_forward_proxy_archive_batch() {
     let (pool, _config, temp_dir) =
-        retention_test_pool_and_config("hourly-rollup-missing-forward-proxy-archive").await;
+        retention_memory_test_pool_and_config("hourly-rollup-missing-forward-proxy-archive").await;
     let missing_archive = temp_dir.join("missing-forward-proxy-attempts.sqlite.gz");
     let missing_archive_path = missing_archive.to_string_lossy().to_string();
 
