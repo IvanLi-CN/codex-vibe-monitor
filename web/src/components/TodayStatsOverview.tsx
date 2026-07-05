@@ -180,7 +180,7 @@ function MetricTile({
       ref={tileRef}
       data-testid="today-stats-metric-tile"
       data-stack-meta={stackMeta ? 'true' : 'false'}
-      className="min-w-0 rounded-xl border border-base-300/75 bg-base-200/60 px-4 pb-3 pt-4"
+      className="min-w-0 rounded-xl border border-base-300/75 bg-base-200/60 px-4 py-4"
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
         <Tooltip
@@ -290,7 +290,7 @@ function MetricTile({
         </div>
       ) : null}
       {inlineSecondaryItems.length > 0 ? (
-        <div className="mt-3 grid min-h-[2rem] grid-cols-2 gap-x-4 gap-y-2 text-xs leading-5">
+        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs leading-5">
           {inlineSecondaryItems.map((item, index) => (
             <div
               key={`${item.label}-${index}`}
