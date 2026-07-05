@@ -26,7 +26,7 @@
 - 已实现：上游账号 recent 行不再重复显示账号名；当 `requestModel` / `responseModel` 规范化后仍不一致时，recent 行改为同时展示请求模型、切换图标与响应模型。
 - 已实现：上游账号 recent 行的 endpoint、reasoning effort 与双模型 badge 统一复用 compact 尺寸 recipe，消除同一行内 badge 高度不一致问题。
 - 已实现：上游账号卡片标题区改为账号名 + 文本型实时 `TPM / 消费速率` 指标，删除卡内 `渠道 / 分组` 行和顶部 `调用` 指标；周期统计重排为首字用时、请求数、成本、Token 四组，并沿用滚动数字效果。
-- 已实现：上游账号卡片标题区补充文本型实时 `并行对话` 指标，取账号 sticky route 5 分钟活跃窗口内的 `activeConversationCount`，并与 `TPM / 消费速率` 保持同一行内读数语言。
+- 已实现：上游账号卡片标题区补充文本型实时 `进行中调用` 指标，取账号活动接口的 `inProgressInvocationCount`，并与 `TPM / 消费速率` 保持同一行内读数语言；Dashboard 账号活动接口不再返回 `activeConversationCount`。
 - 已实现：上游账号卡片四组周期统计改为整张统计卡触发结构化 tooltip；浮层按主值、当前字段、相关数据分层展示字段名和值，并关闭卡内分解段落的逐段 tooltip，避免嵌套触发区域。
 - 已实现：账号活动接口返回每个账号的 `effectiveRoutingRule`，Dashboard 账号卡标题区复用账号池关键策略徽章语义展示 `主力 / 兜底 / 禁新对话 / 禁出 / 禁入 / Fast / 并发 / 重试` 等信号；普通系统 tag 名称不进入该区域。
 - 已实现：账号活动接口补出 `avgTotalMs`、`totalCost`、严格失败 `failureCost` 与 `failureTokens`；请求组的非成功率由前端按 `nonSuccessCount / requestCount` 计算，成本组的失败成本比率由前端按 `failureCost / totalCost` 计算，`其他` 按 `nonSuccessCount - failureCount` 下限归零。

@@ -344,13 +344,6 @@ function createUpstreamAccountActivityStoryResponse(
           Math.min(recentInvocationCount, 16),
         ),
         retryInvocationCount: 1,
-        activeConversationCount: Math.max(
-          0,
-          Math.min(
-            promptCacheKeys.length > 0 ? promptCacheKeys.length : recentInvocationCount,
-            16,
-          ),
-        ),
         effectiveRoutingRule: {
           blockNewConversations: true,
           allowCutOut: true,
@@ -2517,6 +2510,7 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("主力")).toBeInTheDocument();
     await expect(canvas.getByText("禁入")).toBeInTheDocument();
     await expect(canvas.getByText("禁新对话")).toBeInTheDocument();
+    await expect(canvas.getByText("进行中调用")).toBeInTheDocument();
     await expect(canvas.getByTestId("dashboard-upstream-account-policy-badges")).toHaveTextContent(
       "Fast",
     );

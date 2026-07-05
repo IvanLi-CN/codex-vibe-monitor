@@ -230,7 +230,6 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         avgTotalMs: 860,
         inProgressInvocationCount: 3,
         retryInvocationCount: 1,
-        activeConversationCount: 2,
         recentInvocations: [
           createPreview({
             id: 9001,
@@ -618,9 +617,9 @@ describe("DashboardWorkingConversationsSection", () => {
     )?.textContent;
     expect(accountHeaderText).toContain("TPM");
     expect(accountHeaderText).toContain("消费速率");
-    expect(accountHeaderText).toContain("并行对话");
-    expect(accountHeaderText).toContain("2");
-    expect(accountHeaderText).not.toContain("调用");
+    expect(accountHeaderText).toContain("进行中调用");
+    expect(accountHeaderText).toContain("3");
+    expect(accountHeaderText).not.toContain("并行对话");
     expect(accountHeaderText).not.toContain("重试");
 
     const latencyBreakdown = host?.querySelector(
@@ -677,6 +676,52 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(recentBreakdown?.textContent).toContain("成功");
     expect(recentBreakdown?.textContent).toContain("2");
     expect(recentBreakdown?.textContent).toContain("1");
+  });
+
+  it("renders a fallback for upstream account in-progress invocations when live counts are unavailable", () => {
+    const response = createUpstreamAccountActivityResponse();
+    upstreamAccountActivityMock.data = {
+      ...response,
+      accounts: [
+        {
+          ...response.accounts[0],
+          inProgressInvocationCount: null,
+          retryInvocationCount: null,
+        },
+      ],
+    };
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-yesterday-live-counts", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-yesterday-live-counts",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "success",
+          }),
+        ]),
+      ]),
+      { activeRange: "yesterday" },
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const accountHeaderText = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-header-row"]',
+    )?.textContent;
+    expect(accountHeaderText).toContain("进行中调用");
+    expect(accountHeaderText).toContain("—");
+    expect(accountHeaderText).not.toContain("并行对话");
   });
 
   it("opens detailed metric tooltips from the whole upstream account metric cards", async () => {
@@ -1308,7 +1353,6 @@ describe("DashboardWorkingConversationsSection", () => {
           avgTotalMs: 860,
           inProgressInvocationCount: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
           retryInvocationCount: 0,
-          activeConversationCount: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
           recentInvocations: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.map(
             (promptCacheKey, index) =>
               createPreview({
