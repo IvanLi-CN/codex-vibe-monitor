@@ -28,6 +28,7 @@ import compareHorizontalIcon from '@iconify-icons/mdi/compare-horizontal'
 import counterIcon from '@iconify-icons/mdi/counter'
 import crownIcon from '@iconify-icons/mdi/crown'
 import crownOutlineIcon from '@iconify-icons/mdi/crown-outline'
+import cashClockIcon from '@iconify-icons/mdi/cash-clock'
 import currencyUsdIcon from '@iconify-icons/mdi/currency-usd'
 import databaseOutlineIcon from '@iconify-icons/mdi/database-outline'
 import deleteOutlineIcon from '@iconify-icons/mdi/delete-outline'
@@ -93,6 +94,7 @@ const appIconRegistry = {
   'counter': counterIcon,
   'crown': crownIcon,
   'crown-outline': crownOutlineIcon,
+  'cash-clock': cashClockIcon,
   'currency-usd': currencyUsdIcon,
   'database-outline': databaseOutlineIcon,
   'delete-outline': deleteOutlineIcon,

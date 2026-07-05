@@ -613,7 +613,7 @@ export function TodayStatsOverview({
             localeTag={localeTag}
             loading={loading || rateLoading}
             toneClass="text-accent"
-            iconName="currency-usd"
+            iconName="cash-clock"
             valueTestId="today-stats-value-spend-rate"
             displaySpec={
               rateUnavailable

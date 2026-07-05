@@ -2274,7 +2274,7 @@ function DashboardUpstreamAccountActivityCard({
             label={t("dashboard.today.spendRate")}
             value={formatAccountCurrencyAmountValue(account.spendRate, localeTag, 2)}
             tone="warning"
-            iconName="currency-usd"
+            iconName="cash-clock"
           />
           <div className="shrink-0 font-mono text-xs font-semibold text-base-content/72">
             #{account.upstreamAccountId}
