@@ -58,6 +58,9 @@ pub(crate) async fn backfill_proxy_missing_costs_up_to_id(
 }
 
 #[cfg(test)]
+const TEST_PROXY_COST_BACKFILL_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+#[cfg(test)]
 pub(crate) async fn run_cost_backfill_with_retry(
     pool: &Pool<Sqlite>,
     catalog: &PricingCatalog,
@@ -72,12 +75,12 @@ pub(crate) async fn run_cost_backfill_with_retry(
                 warn!(
                     attempt,
                     max_attempts = BACKFILL_LOCK_RETRY_MAX_ATTEMPTS,
-                    retry_delay_secs = BACKFILL_LOCK_RETRY_DELAY_SECS,
+                    retry_delay_ms = TEST_PROXY_COST_BACKFILL_LOCK_RETRY_DELAY.as_millis() as u64,
                     error = %err,
                     "proxy cost startup backfill hit sqlite lock; retrying"
                 );
                 attempt += 1;
-                sleep(Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS)).await;
+                sleep(TEST_PROXY_COST_BACKFILL_LOCK_RETRY_DELAY).await;
             }
             Err(err) => {
                 return Err(err).with_context(|| {

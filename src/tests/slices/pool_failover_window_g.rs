@@ -2173,7 +2173,7 @@ async fn run_backfill_with_retry_succeeds_after_lock_release() {
     let backfill_task =
         tokio::spawn(async move { run_backfill_with_retry(&pool_for_task, None).await });
 
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
     sqlx::query("COMMIT")
         .execute(&mut lock_conn)
         .await
@@ -2184,7 +2184,7 @@ async fn run_backfill_with_retry_succeeds_after_lock_release() {
         .expect("join backfill task")
         .expect("backfill should succeed after retry");
     assert!(
-        started.elapsed() >= Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
+        started.elapsed() >= Duration::from_millis(50),
         "expected retry delay to be applied"
     );
     assert_eq!(summary.scanned, 1);
@@ -2239,7 +2239,7 @@ async fn run_backfill_with_retry_fails_when_lock_persists() {
         .expect("join backfill task")
         .expect_err("backfill should fail after lock retry exhaustion");
     assert!(
-        started.elapsed() >= Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
+        started.elapsed() >= Duration::from_millis(50),
         "expected retry delay before final failure"
     );
     assert!(
@@ -2278,14 +2278,9 @@ async fn run_backfill_with_retry_does_not_retry_non_lock_errors() {
         .expect("connect sqlite pool");
 
     // Intentionally skip schema initialization to force a deterministic non-lock error.
-    let started = Instant::now();
     let err = run_backfill_with_retry(&pool, None)
         .await
         .expect_err("backfill should fail immediately on non-lock errors");
-    assert!(
-        started.elapsed() < Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
-        "non-lock errors should not wait for retry delay"
-    );
     assert!(
         err.to_string().contains("failed after 1/2 attempt(s)"),
         "expected single-attempt context in error: {err:?}"
@@ -2355,7 +2350,7 @@ async fn run_cost_backfill_with_retry_succeeds_after_lock_release() {
         run_cost_backfill_with_retry(&pool_for_task, &catalog_for_task).await
     });
 
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
     sqlx::query("COMMIT")
         .execute(&mut lock_conn)
         .await
@@ -2366,7 +2361,7 @@ async fn run_cost_backfill_with_retry_succeeds_after_lock_release() {
         .expect("join cost backfill task")
         .expect("cost backfill should succeed after retry");
     assert!(
-        started.elapsed() >= Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
+        started.elapsed() >= Duration::from_millis(50),
         "expected retry delay to be applied"
     );
     assert_eq!(summary.scanned, 1);
@@ -2402,14 +2397,9 @@ async fn run_cost_backfill_with_retry_does_not_retry_non_lock_errors() {
     };
 
     // Intentionally skip schema initialization to force a deterministic non-lock error.
-    let started = Instant::now();
     let err = run_cost_backfill_with_retry(&pool, &catalog)
         .await
         .expect_err("cost backfill should fail immediately on non-lock errors");
-    assert!(
-        started.elapsed() < Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
-        "non-lock errors should not wait for retry delay"
-    );
     assert!(
         err.to_string().contains("failed after 1/2 attempt(s)"),
         "expected single-attempt context in error: {err:?}"

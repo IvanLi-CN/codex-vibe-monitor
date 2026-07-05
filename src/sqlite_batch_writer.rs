@@ -1669,11 +1669,7 @@ mod tests {
         runtime_store.upsert_terminal(runtime_record);
         assert_eq!(runtime_store.snapshot().len(), 1);
 
-        let writer = SqliteBatchWriter::spawn(
-            pool.clone(),
-            CancellationToken::new(),
-            Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
-        );
+        let writer = SqliteBatchWriter::spawn_for_test();
         writer.set_terminal_runtime_store(runtime_store.clone());
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
