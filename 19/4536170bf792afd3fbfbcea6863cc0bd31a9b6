@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.12.2",
+  "base_stable_version": "2.12.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-05T01:38:54Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.12.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7a2df32d4bf651410d03ad482790fb6d9c7f78d6",
+  "pr_number": 531,
+  "pr_title": "Fix proxy admission visibility before local routing",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.12.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.12.2",
+  "target_sha": "194536170bf792afd3fbfbcea6863cc0bd31a9b6",
+  "type_label": "type:patch"
+}
