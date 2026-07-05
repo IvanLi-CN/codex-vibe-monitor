@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.12.5",
+  "base_stable_version": "2.12.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-05T04:07:19Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.12.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7b5392b322743e3dfe612a05f462a5bc6d25eb10",
+  "pr_number": 534,
+  "pr_title": "fix(proxy): preserve capture replay evidence",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.12.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.12.5",
+  "target_sha": "0719ab60ac9200aeb1d2f45374e11aea2a152740",
+  "type_label": "type:patch"
+}
