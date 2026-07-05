@@ -985,6 +985,43 @@ fn should_prebuffer_for_body_sticky_probe_respects_memory_threshold() {
     ));
 }
 
+#[tokio::test]
+async fn capture_snapshot_reader_spills_large_body_to_file_and_preserves_bytes() {
+    let body_bytes = Bytes::from(vec![b'x'; POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 1024]);
+
+    let snapshot = read_request_body_snapshot_with_partial_limit(
+        Body::from(body_bytes.clone()),
+        body_bytes.len() + 1024,
+        Duration::from_secs(5),
+        42,
+    )
+    .await
+    .expect("large body should read into replay snapshot");
+
+    assert_eq!(pool_request_snapshot_kind(&snapshot), "file");
+    assert_eq!(pool_request_snapshot_body_bytes(&snapshot), body_bytes.len());
+    assert_eq!(
+        snapshot.to_bytes().await.expect("read replay snapshot"),
+        body_bytes
+    );
+}
+
+#[tokio::test]
+async fn capture_snapshot_reader_keeps_partial_body_on_limit_error() {
+    let err = read_request_body_snapshot_with_partial_limit(
+        Body::from(Bytes::from_static(b"abcdef")),
+        3,
+        Duration::from_secs(5),
+        43,
+    )
+    .await
+    .expect_err("body should exceed test limit");
+
+    assert_eq!(err.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(err.failure_kind, PROXY_FAILURE_BODY_TOO_LARGE);
+    assert_eq!(err.partial_body, b"abc");
+}
+
 #[test]
 fn classify_invocation_failure_marks_invalid_key_as_client_failure() {
     let result = classify_invocation_failure(Some("http_401"), Some("Invalid API key format"));
