@@ -49,12 +49,12 @@
 - `上游账号` tab 首次打开前不得发请求；首次激活后才加载，并在 tab 未激活时不参与 SSE/records 刷新预算。
 - `上游账号` 视图只展示当前共享 range 内“至少有 1 条调用”的账号；账号标题直接使用 `displayName`。
 - `上游账号` 视图仅支持 `today / yesterday / 1d / 7d`；当共享 range 为 `usage` 时，该 tab 必须 disabled，且若当前停留在账号 tab，必须自动回退到 `对话`。
-- 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`retryInvocationCount`、`activeConversationCount`、`effectiveRoutingRule` 与 `recentInvocations[4]`。
+- 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`retryInvocationCount`、`effectiveRoutingRule` 与 `recentInvocations[4]`。
 - `recentInvocations` 必须限制在当前所选范围内，按 `occurredAt DESC` 排序，并使用后端 bounded query 返回。
 - `recentInvocations[]` 必须额外返回真实 `promptCacheKey?: string | null`，供账号卡 recent 行生成稳定的对话短 ID 与详情抽屉 selection。
 - 账号卡不是折叠卡，也不是 `2 x 2` 小格子；它是单张放大卡片，桌面宽屏 `>=1660px` 时每行 2 张，其余断点为 1 列。
 - 账号卡必须保持紧凑信息卡定位；在桌面宽屏下允许按放大卡呈现，但不得因为固定高度或装饰性留白把视觉效果拉成整页面板。
-- 单账号卡标题行必须展示账号名、计划/状态、关键策略徽章、账号 ID，并把实时主指标 `并行对话`、`TPM`、`消费速率` 作为文本型行内指标放在同一顶部区域；不得用卡片型容器展示这些实时指标，且账号卡内不得再渲染 `渠道 xxx / 分组` 或顶部 `调用` 指标。
+- 单账号卡标题行必须展示账号名、计划/状态、关键策略徽章、账号 ID，并把实时主指标 `进行中调用`、`TPM`、`消费速率` 作为文本型行内指标放在同一顶部区域；`进行中调用` 必须来自账号活动接口的 `inProgressInvocationCount`，当值为 `null` 时显示 `—`；不得用卡片型容器展示这些实时指标，且账号卡内不得再渲染 `渠道 xxx / 分组` 或顶部 `调用` 指标。
 - 账号卡标题行的关键策略徽章必须来自 `effectiveRoutingRule`，仅显示 owner-facing 策略信号：`主力`、`兜底`、`禁新对话`、`禁出`、`禁入`、`补Fast`、`Fast`、`禁Fast`、`并发N`、`重试N`；普通系统 tag 名称不得进入该区域。
 - 账号活动接口中的 `tokensPerMinute` 与 `spendRate` 必须使用响应窗口末端最近 5 分钟活跃尾段口径：以当前响应 `rangeEnd` 为 anchor，仅看最近 5 分钟，跳过窗口前置空闲分钟，并分别以第一个有 Token / Cost 的分钟作为有效分母起点；`requestCount`、`totalTokens`、`totalCost`、recent 调用与排序继续使用所选 range 的总量口径。
 - 已选中上游账号的 pool running 调用必须在账号活动 live rows、账号卡 `inProgressInvocationCount` / `retryInvocationCount` 与 account-scoped summary 中归属到该账号；当 invocation payload 尚未写入 `upstreamAccountId` 时，可以用同 `invokeId` 的 `pool_upstream_request_attempts.upstream_account_id` 作为读侧 fallback，并且账号级 retry 计数必须基于该 fallback 后的账号重新判定。
@@ -198,11 +198,11 @@
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
-  scenario: `account header parallel conversations`
-  evidence_note: 验证上游账号卡片标题区在关键策略徽章与实时 `TPM / 消费速率` 指标之间新增 `并行对话` 文本型读数，值来自账号 `activeConversationCount`，并保持同一行内紧凑扫描节奏。
+  scenario: `account header in-progress invocations`
+  evidence_note: 验证上游账号卡片标题区在关键策略徽章与实时 `TPM / 消费速率` 指标之间展示 `进行中调用` 文本型读数，值来自账号 `inProgressInvocationCount`，并保持同一行内紧凑扫描节奏。
   image:
   PR: include
-  ![Dashboard 上游账号并行对话标题区证据](./assets/dashboard-upstream-account-parallel-conversations.png)
+  ![Dashboard 上游账号进行中调用标题区证据](./assets/dashboard-upstream-account-in-progress-invocations.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-metric-tooltips`

@@ -11808,35 +11808,6 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     .execute(&state.pool)
     .await
     .expect("set upstream activity routing policy");
-    for (sticky_key, last_seen_at) in [
-        ("activity-active-a", format_utc_iso(Utc::now())),
-        (
-            "activity-active-b",
-            format_utc_iso(Utc::now() - ChronoDuration::minutes(2)),
-        ),
-        (
-            "activity-stale-c",
-            format_utc_iso(Utc::now() - ChronoDuration::minutes(6)),
-        ),
-    ] {
-        sqlx::query(
-            r#"
-            INSERT INTO pool_sticky_routes (
-                sticky_key, account_id, created_at, updated_at, last_seen_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            "#,
-        )
-        .bind(sticky_key)
-        .bind(42_i64)
-        .bind(&created_at)
-        .bind(&last_seen_at)
-        .bind(&last_seen_at)
-        .execute(&state.pool)
-        .await
-        .expect("insert upstream activity sticky route");
-    }
-
     let base_local = Utc::now().with_timezone(&Shanghai).naive_local();
     for (
         id,
@@ -12043,7 +12014,6 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     );
     assert_eq!(account.in_progress_invocation_count, Some(3));
     assert_eq!(account.retry_invocation_count, Some(1));
-    assert_eq!(account.active_conversation_count, 2);
     let effective_routing_rule =
         serde_json::to_value(&account.effective_routing_rule).expect("serialize routing rule");
     assert_eq!(

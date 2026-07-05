@@ -193,7 +193,6 @@ function createAccountResponse(
         avgTotalMs: 780,
         inProgressInvocationCount,
         retryInvocationCount: 1,
-        activeConversationCount: recentInvocations.length,
         recentInvocations,
       },
     ],

@@ -1448,7 +1448,6 @@ pub(crate) struct UpstreamAccountActivityAccountResponse {
     pub(crate) in_progress_invocation_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) retry_invocation_count: Option<i64>,
-    pub(crate) active_conversation_count: i64,
     pub(crate) effective_routing_rule: crate::upstream_accounts::EffectiveRoutingRule,
     pub(crate) recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
 }
