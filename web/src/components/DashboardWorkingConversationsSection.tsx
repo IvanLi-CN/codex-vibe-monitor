@@ -467,7 +467,7 @@ const ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES: Record<AccountMetricTone, string> = 
   primary: "text-primary",
   secondary: "text-secondary",
   success: "text-success",
-  warning: "text-warning-content",
+  warning: "text-accent",
   error: "text-error",
   info: "text-info",
 };
