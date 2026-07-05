@@ -612,25 +612,18 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-live-call-breakdown"]'),
     ).toBeNull();
-    const accountHeaderText = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-header-row"]',
-    )?.textContent;
-    expect(accountHeaderText).toContain("TPM");
-    expect(accountHeaderText).toContain("消费速率");
-    expect(accountHeaderText).toContain("进行中调用");
+    const accountHeader = host?.querySelector('[data-testid="dashboard-upstream-account-header-row"]');
+    const accountHeaderText = accountHeader?.textContent;
     expect(accountHeaderText).toContain("3");
     expect(accountHeaderText).not.toContain("并行对话");
     expect(accountHeaderText).not.toContain("重试");
+    expect(accountHeader?.querySelector('[aria-label="进行中调用 3"]')).not.toBeNull();
     expect(
-      host?.querySelector('[aria-label="TPM 640"]'),
+      accountHeader?.querySelector('[aria-label="TPM 640"]'),
     ).not.toBeNull();
     expect(
-      host?.querySelector('[aria-label="消费速率 0.12"]'),
+      accountHeader?.querySelector('[aria-label="消费速率 0.12"]'),
     ).not.toBeNull();
-    expect(
-      host?.querySelector('[aria-label="并行对话 2"]'),
-    ).not.toBeNull();
-
     const latencyBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-latency-breakdown"]',
     );
@@ -732,10 +725,9 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    const accountHeaderText = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-header-row"]',
-    )?.textContent;
-    expect(accountHeaderText).toContain("进行中调用");
+    const accountHeader = host?.querySelector('[data-testid="dashboard-upstream-account-header-row"]');
+    const accountHeaderText = accountHeader?.textContent;
+    expect(accountHeader?.querySelector('[aria-label="进行中调用 —"]')).not.toBeNull();
     expect(accountHeaderText).toContain("—");
     expect(accountHeaderText).not.toContain("并行对话");
   });
