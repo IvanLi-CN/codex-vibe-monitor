@@ -1919,12 +1919,12 @@ impl PoolReplayBodySnapshot {
             Self::Empty => reqwest::Body::from(Bytes::new()),
             Self::Memory(bytes) => reqwest::Body::from(bytes.clone()),
             Self::File { temp_file, size } => {
-                let path = temp_file.path.clone();
+                let temp_file = temp_file.clone();
                 let expected_size = *size;
                 let stream = stream::unfold(
-                    Some((path, expected_size, None::<tokio::fs::File>)),
+                    Some((temp_file, expected_size, None::<tokio::fs::File>)),
                     |state| async move {
-                        let Some((path, remaining, file)) = state else {
+                        let Some((temp_file, remaining, file)) = state else {
                             return None;
                         };
                         if remaining == 0 {
@@ -1932,7 +1932,7 @@ impl PoolReplayBodySnapshot {
                         }
                         let mut file = match file {
                             Some(file) => file,
-                            None => match tokio::fs::File::open(&path).await {
+                            None => match tokio::fs::File::open(&temp_file.path).await {
                                 Ok(file) => file,
                                 Err(err) => {
                                     return Some((Err(io::Error::other(err.to_string())), None));
@@ -1946,7 +1946,7 @@ impl PoolReplayBodySnapshot {
                                 buf.truncate(read_len);
                                 Some((
                                     Ok(Bytes::from(buf)),
-                                    Some((path, remaining - read_len, Some(file))),
+                                    Some((temp_file, remaining - read_len, Some(file))),
                                 ))
                             }
                             Err(err) => Some((Err(io::Error::other(err.to_string())), None)),

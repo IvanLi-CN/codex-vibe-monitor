@@ -1395,9 +1395,6 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             .clone()
                             .expect("api key pool route should always have an upstream url"),
                     );
-                    let preserve_content_length = pool_request_snapshot_preserves_content_length(
-                        &prepared_request_body.snapshot,
-                    );
                     let forwarded_content_length = headers
                         .get(header::CONTENT_LENGTH)
                         .and_then(|value| value.to_str().ok())
@@ -1406,6 +1403,12 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         pool_request_snapshot_kind(&prepared_request_body.snapshot);
                     let outbound_body_bytes =
                         pool_request_snapshot_body_bytes(&prepared_request_body.snapshot);
+                    let preserve_content_length = pool_request_snapshot_preserves_content_length(
+                        &prepared_request_body.snapshot,
+                    ) && forwarded_content_length
+                        .as_deref()
+                        .and_then(|value| value.parse::<usize>().ok())
+                        == Some(outbound_body_bytes);
                     for (name, value) in headers {
                         if *name == header::AUTHORIZATION {
                             continue;
@@ -1418,6 +1421,9 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         }
                     }
                     request = request.header(header::AUTHORIZATION, authorization.clone());
+                    if !preserve_content_length {
+                        request = request.header(header::CONTENT_LENGTH, outbound_body_bytes);
+                    }
                     request = request.body(prepared_request_body.snapshot.to_reqwest_body());
                     record_account_selected(state.as_ref(), account.account_id).await;
                     let group_name_snapshot =
