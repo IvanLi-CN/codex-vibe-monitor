@@ -32,7 +32,7 @@ The capture path historically used one full in-memory request body as both routi
 ## Resolution
 
 - Put capture request reads on the same replay snapshot control plane as pool routing: memory for small bodies, file-backed replay for large bodies.
-- Preserve partial body evidence on read timeout, client stream errors, and body-limit failures.
+- Preserve bounded partial body evidence on read timeout, client stream errors, and body-limit failures; do not retain the whole body in memory after switching to file-backed replay.
 - Log `body_read_done`, `body_size_bucket`, `request_body_snapshot_kind`, and `live_first_reason` before materializing the snapshot for full parse/rewrite.
 - Keep response streaming ordered as “forward chunk downstream first, finish raw writer later”; log `downstream_first_byte_elapsed` and `raw_response_write_elapsed` separately.
 - Enable live-first for capture only when tests prove encrypted owner binding, prompt-cache binding, body rewrite, failover replay, raw completeness, and terminal record fields remain identical to fallback behavior.

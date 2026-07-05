@@ -1022,6 +1022,25 @@ async fn capture_snapshot_reader_keeps_partial_body_on_limit_error() {
     assert_eq!(err.partial_body, b"abc");
 }
 
+#[tokio::test]
+async fn capture_snapshot_reader_bounds_partial_body_on_large_limit_error() {
+    let partial_limit = 64 * 1024;
+    let body_bytes = Bytes::from(vec![b'x'; partial_limit + 128]);
+
+    let err = read_request_body_snapshot_with_partial_limit(
+        Body::from(body_bytes),
+        partial_limit + 64,
+        Duration::from_secs(5),
+        44,
+    )
+    .await
+    .expect_err("body should exceed test limit");
+
+    assert_eq!(err.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(err.failure_kind, PROXY_FAILURE_BODY_TOO_LARGE);
+    assert_eq!(err.partial_body.len(), partial_limit);
+}
+
 #[test]
 fn classify_invocation_failure_marks_invalid_key_as_client_failure() {
     let result = classify_invocation_failure(Some("http_401"), Some("Invalid API key format"));

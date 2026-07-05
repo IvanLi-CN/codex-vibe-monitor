@@ -2562,6 +2562,8 @@ pub(crate) async fn read_request_body_snapshot_with_partial_limit(
     request_read_timeout: Duration,
     proxy_request_id: u64,
 ) -> Result<PoolReplayBodySnapshot, RequestBodyReadError> {
+    const ERROR_PARTIAL_BODY_LIMIT_BYTES: usize = 64 * 1024;
+
     let mut buffer = PoolReplayBodyBuffer::new(proxy_request_id);
     let mut partial_body = Vec::new();
     let mut stream = body.into_data_stream();
@@ -2639,7 +2641,11 @@ pub(crate) async fn read_request_body_snapshot_with_partial_limit(
         if data_len.saturating_add(chunk.len()) > body_limit {
             let allowed = body_limit.saturating_sub(data_len);
             if allowed > 0 {
-                partial_body.extend_from_slice(&chunk[..allowed.min(chunk.len())]);
+                append_bounded_partial_body(
+                    &mut partial_body,
+                    &chunk[..allowed.min(chunk.len())],
+                    ERROR_PARTIAL_BODY_LIMIT_BYTES,
+                );
             }
             return Err(RequestBodyReadError {
                 status: StatusCode::PAYLOAD_TOO_LARGE,
@@ -2649,7 +2655,7 @@ pub(crate) async fn read_request_body_snapshot_with_partial_limit(
             });
         }
         data_len = data_len.saturating_add(chunk.len());
-        partial_body.extend_from_slice(&chunk);
+        append_bounded_partial_body(&mut partial_body, &chunk, ERROR_PARTIAL_BODY_LIMIT_BYTES);
 
         buffer
             .append(&chunk)
@@ -2660,6 +2666,13 @@ pub(crate) async fn read_request_body_snapshot_with_partial_limit(
                 failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 partial_body: partial_body.clone(),
             })?;
+    }
+}
+
+fn append_bounded_partial_body(partial_body: &mut Vec<u8>, chunk: &[u8], limit: usize) {
+    let remaining = limit.saturating_sub(partial_body.len());
+    if remaining > 0 {
+        partial_body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
 }
 
