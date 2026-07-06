@@ -54,9 +54,9 @@ import {
   buildInvocationDetailViewModel,
   renderEndpointSummary,
   renderFastIndicator,
-  renderImageIntentBadge,
   renderInvocationModelBadge,
 } from "./invocation-details-shared";
+import type { InvocationImageIntentDisplay } from "../lib/invocation";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 import { useDashboardUpstreamAccountActivity } from "../hooks/useDashboardUpstreamAccountActivity";
 import {
@@ -253,6 +253,85 @@ function CompactReasoningEffortBadge({ value }: { value: string }) {
   );
 }
 
+function CompactLatencyPills({
+  firstResponseByteTotalValue,
+  responseTimeValue,
+  t,
+  className,
+}: {
+  firstResponseByteTotalValue: string;
+  responseTimeValue: string;
+  t: ReturnType<typeof useTranslation>["t"];
+  className?: string;
+}) {
+  const firstResponseTimeLabel = t("dashboard.today.firstResponseTime");
+  const responseTimeLabel = t("dashboard.today.responseTime");
+
+  return (
+    <div
+      data-testid="dashboard-compact-latency-pills"
+      className={cn(
+        "inline-flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2 font-mono text-[11px] font-semibold leading-none text-base-content/86",
+        className,
+      )}
+      aria-label={`${firstResponseTimeLabel} ${firstResponseByteTotalValue}; ${responseTimeLabel} ${responseTimeValue}`}
+      title={`${firstResponseTimeLabel}: ${firstResponseByteTotalValue} · ${responseTimeLabel}: ${responseTimeValue}`}
+    >
+      <span
+        data-testid="dashboard-compact-latency-first-byte"
+        className="inline-flex min-w-0 items-center gap-1 text-secondary"
+      >
+        <AppIcon name="timer-outline" className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span className="truncate whitespace-nowrap">{firstResponseByteTotalValue}</span>
+      </span>
+      <span
+        data-testid="dashboard-compact-latency-response-time"
+        className="inline-flex min-w-0 items-center gap-1 text-primary"
+      >
+        <AppIcon name="speedometer" className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span className="truncate whitespace-nowrap">{responseTimeValue}</span>
+      </span>
+    </div>
+  );
+}
+
+function DashboardImageToolIconBadge({
+  imageIntentDisplay,
+  t,
+  className,
+}: {
+  imageIntentDisplay: InvocationImageIntentDisplay;
+  t: ReturnType<typeof useTranslation>["t"];
+  className?: string;
+}) {
+  if (
+    !imageIntentDisplay.showsBadge ||
+    imageIntentDisplay.badgeVariant == null ||
+    imageIntentDisplay.badgeLabelKey == null
+  ) {
+    return null;
+  }
+
+  const label = t(imageIntentDisplay.badgeLabelKey);
+
+  return (
+    <Badge
+      variant={imageIntentDisplay.badgeVariant}
+      className={cn(
+        "h-5 w-5 justify-center overflow-hidden px-0 py-0 text-[11px] leading-none shadow-none",
+        className,
+      )}
+      data-testid="dashboard-image-tool-icon-badge"
+      data-image-intent-kind={imageIntentDisplay.kind}
+      aria-label={label}
+      title={label}
+      role="img"
+    >
+      <AppIcon name="image-outline" className="h-3.5 w-3.5" aria-hidden />
+    </Badge>
+  );
+}
+
 function renderUpstreamAccountRecentModelDisplay(
   hasMismatch: boolean,
   modelValue: string,
@@ -319,13 +398,6 @@ function CompactAccountPlanBadge({ planType }: { planType: string | null }) {
       {label}
     </Badge>
   );
-}
-
-function formatCompactMilliseconds(value: number | null | undefined) {
-  if (typeof value !== "number" || !Number.isFinite(value))
-    return FALLBACK_CELL;
-  if (Math.abs(value) >= 100) return `${Math.round(value)}`;
-  return `${Number(value.toFixed(1))}`;
 }
 
 function resolveStatusMeta(
@@ -1080,7 +1152,6 @@ function AccountRecentInvocationRow({
     : null;
   const requestModelValue = viewModel.requestModelValue;
   const responseModelValue = viewModel.responseModelValue;
-  const compactTimingSummary = `RQ ${formatCompactMilliseconds(invocation.record.tReqReadMs)}/${formatCompactMilliseconds(invocation.record.tReqParseMs)} · UP ${formatCompactMilliseconds(invocation.record.tUpstreamConnectMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamTtfbMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamStreamMs)} · ED ${formatCompactMilliseconds(invocation.record.tRespParseMs)}/${formatCompactMilliseconds(invocation.record.tPersistMs)} · TT ${typeof invocation.record.tTotalMs === "number" && Number.isFinite(invocation.record.tTotalMs) ? `${formatCompactMilliseconds(invocation.record.tTotalMs)}ms` : viewModel.totalLatencyValue}`;
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${invocation.record.invokeId}`;
   const conversationActionLabel = displayPromptCacheKey
     ? `${t("dashboard.workingConversations.openConversation")} · ${displayConversationSequenceId} · ${displayPromptCacheKey}`
@@ -1149,7 +1220,7 @@ function AccountRecentInvocationRow({
       onKeyDown={handleRowKeyDown}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <div
               className="flex min-w-0 items-center gap-1.5"
@@ -1199,11 +1270,25 @@ function AccountRecentInvocationRow({
             )}
             {renderInvocationTransportBadge(
               invocation.record,
-              "min-h-5 border-[rgba(148,163,184,0.24)] bg-primary/8 px-2 py-0.5 text-[9px]",
+              "min-h-5 border-[rgba(148,163,184,0.24)] bg-primary/8 px-2 py-0.5 text-[9.5px]",
             )}
+            {renderEndpointSummary(
+              viewModel.endpointDisplay,
+              t,
+              UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
+            )}
+            <DashboardImageToolIconBadge
+              imageIntentDisplay={viewModel.imageIntentDisplay}
+              t={t}
+            />
             {fastIndicator}
+            <CompactLatencyPills
+              firstResponseByteTotalValue={viewModel.firstResponseByteTotalValue}
+              responseTimeValue={viewModel.totalLatencyValue}
+              t={t}
+            />
           </div>
-          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-[1.45] text-base-content/70">
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[1.45] text-base-content/72">
             <span>{occurredAtShortLabel}</span>
             <span className="text-base-content/28">·</span>
             <span className="min-w-0">
@@ -1221,30 +1306,16 @@ function AccountRecentInvocationRow({
                 <CompactReasoningEffortBadge value={viewModel.reasoningEffortValue} />
               </>
             ) : null}
-            {renderEndpointSummary(
-              viewModel.endpointDisplay,
-              t,
-              UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
-            ) ? (
-              <>
-                <span className="text-base-content/28">·</span>
-                {renderEndpointSummary(
-                  viewModel.endpointDisplay,
-                  t,
-                  UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
-                )}
-              </>
-            ) : null}
           </div>
         </div>
         <div className="text-right">
-          <div className="font-mono text-[11px] font-semibold text-base-content/88">
+          <div className="font-mono text-[12px] font-semibold text-base-content/88">
             {viewModel.totalTokensValue}
           </div>
-          <div className="text-[10px] text-base-content/62">{compactCostValue}</div>
+          <div className="text-[10.5px] text-base-content/62">{compactCostValue}</div>
         </div>
       </div>
-      <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10px] leading-[1.45] text-base-content/72">
+      <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74">
         <span>IN {viewModel.inputTokensValue}</span>
         <span className="text-base-content/28">·</span>
         <span>C {viewModel.cacheInputTokensValue}</span>
@@ -1252,8 +1323,6 @@ function AccountRecentInvocationRow({
         <span>O {viewModel.outputTokensValue}</span>
         <span className="text-base-content/28">·</span>
         <span>T {viewModel.totalTokensValue}</span>
-        <span className="text-base-content/28">·</span>
-        <span>{compactTimingSummary}</span>
       </div>
       {viewModel.collapsedErrorSummary ? (
         <div
@@ -1333,12 +1402,12 @@ function InvocationMetaLine({
 }) {
   return (
     <div className="grid min-w-0 grid-cols-[2.2rem_minmax(0,1fr)] items-start gap-1.5">
-      <span className="pt-[1px] text-[8px] font-semibold uppercase tracking-[0.12em] text-base-content/42">
+      <span className="pt-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em] text-base-content/48">
         {label}
       </span>
       <div
         className={cn(
-          "min-w-0 font-mono text-[8.5px] font-semibold leading-[1.35] text-base-content/84",
+          "min-w-0 font-mono text-[9.5px] font-semibold leading-[1.35] text-base-content/86",
           toneClassName,
         )}
         title={title}
@@ -1552,17 +1621,9 @@ function InvocationSlot({
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const displayConversationSequenceId =
     formatDashboardWorkingConversationSequenceId(conversationSequenceId);
-  const requestReadValue = viewModel.timingPairs[0]?.value ?? FALLBACK_CELL;
-  const requestParseValue = viewModel.timingPairs[1]?.value ?? FALLBACK_CELL;
-  const upstreamConnectValue = viewModel.timingPairs[2]?.value ?? FALLBACK_CELL;
-  const upstreamTtfbValue = viewModel.timingPairs[3]?.value ?? FALLBACK_CELL;
-  const upstreamStreamValue = viewModel.timingPairs[4]?.value ?? FALLBACK_CELL;
-  const responseParseValue = viewModel.timingPairs[5]?.value ?? FALLBACK_CELL;
-  const persistValue = viewModel.timingPairs[6]?.value ?? FALLBACK_CELL;
   const compactCostValue = viewModel.costValue.startsWith("US$")
     ? `$${viewModel.costValue.slice(3)}`
     : viewModel.costValue;
-  const compactTimingSummary = `RQ ${formatCompactMilliseconds(invocation.record.tReqReadMs)}/${formatCompactMilliseconds(invocation.record.tReqParseMs)} · UP ${formatCompactMilliseconds(invocation.record.tUpstreamConnectMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamTtfbMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamStreamMs)} · ED ${formatCompactMilliseconds(invocation.record.tRespParseMs)}/${formatCompactMilliseconds(invocation.record.tPersistMs)} · TT ${typeof invocation.record.tTotalMs === "number" && Number.isFinite(invocation.record.tTotalMs) ? `${formatCompactMilliseconds(invocation.record.tTotalMs)}ms` : viewModel.totalLatencyValue}`;
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
 
   const handleOpenInvocation = useCallback(() => {
@@ -1605,26 +1666,26 @@ function InvocationSlot({
       onClick={handleOpenInvocation}
       onKeyDown={handleSlotKeyDown}
     >
-      <div className="flex min-h-5 items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <div className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
+      <div className="space-y-1">
+        <div className="flex min-h-5 min-w-0 items-center gap-1.5">
+          <div className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/62">
             {label}
           </div>
-          <div className="shrink-0 font-mono text-[9px] text-base-content/68">
+          <div className="shrink-0 font-mono text-[10px] text-base-content/72">
             {occurredAtShortLabel}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5 self-start">
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
           {invocation.livePhase ? (
             <InvocationPhaseBadge
               phase={invocation.livePhase}
               appearance="inline"
-              className="text-[8.5px]"
+              className="text-[9.5px]"
             />
           ) : (
             <Badge
               variant={statusMeta.badgeVariant}
-              className="h-4.5 gap-1 border-transparent bg-base-100/12 px-1.5 py-0 text-[8.5px] font-semibold leading-none shadow-none"
+              className="h-5 gap-1 border-transparent bg-base-100/12 px-1.5 py-0 text-[9.5px] font-semibold leading-none shadow-none"
             >
               <AppIcon
                 name={statusMeta.icon}
@@ -1636,25 +1697,30 @@ function InvocationSlot({
           )}
           {renderInvocationTransportBadge(
             invocation.record,
-            "h-4.5 border-primary/45 bg-primary/10 px-1.5 text-[8.5px]",
+            "h-5 border-primary/45 bg-primary/10 px-1.5 text-[9.5px]",
           )}
           <div className="flex h-5 shrink-0 items-center">
             <div className="flex items-center gap-1">
               {renderEndpointSummary(
                 viewModel.endpointDisplay,
                 t,
-                "h-4.5 rounded-full border-transparent bg-base-100/10 px-1.5 py-0 text-[8.5px] font-semibold leading-none text-base-content/72 shadow-none",
+                "h-5 rounded-full border-transparent bg-base-100/10 px-1.5 py-0 text-[9.5px] font-semibold leading-none text-base-content/76 shadow-none",
               )}
-              {renderImageIntentBadge(
-                viewModel.imageIntentDisplay,
-                t,
-                "h-4.5 border-transparent bg-base-100/10 px-1.5 py-0 text-[8.5px] font-semibold leading-none text-base-content/72 shadow-none",
-              )}
+              <DashboardImageToolIconBadge
+                imageIntentDisplay={viewModel.imageIntentDisplay}
+                t={t}
+              />
             </div>
           </div>
+          <CompactLatencyPills
+            firstResponseByteTotalValue={viewModel.firstResponseByteTotalValue}
+            responseTimeValue={viewModel.totalLatencyValue}
+            t={t}
+            className="text-[11.5px]"
+          />
           {viewModel.collapsedErrorSummary ? (
             <span
-              className="inline-flex h-4.5 w-4.5 items-center justify-center rounded-full bg-base-100/12 text-error/90"
+              className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-base-100/12 text-error/90"
               title={viewModel.collapsedErrorSummary}
               aria-label={viewModel.collapsedErrorSummary}
             >
@@ -1674,14 +1740,14 @@ function InvocationSlot({
           value={
             <div
               data-testid="dashboard-working-conversation-account-line"
-              className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[8.5px] leading-[1.3] text-base-content sm:flex-nowrap"
+              className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[9.5px] leading-[1.3] text-base-content sm:flex-nowrap"
             >
               <div className="flex min-w-[7rem] max-w-full flex-1 items-baseline gap-1.5 font-mono font-semibold">
                 {viewModel.accountClickable && viewModel.accountId != null ? (
                   <button
                     type="button"
                     data-testid="dashboard-working-conversation-account-chip"
-                    className="inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[8.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                    className="inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[9.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                     onClick={(event) => {
                       event.stopPropagation();
                       onOpenUpstreamAccount?.(
@@ -1765,16 +1831,6 @@ function InvocationSlot({
               <span>T {viewModel.totalTokensValue}</span>
               <span className="text-base-content/28">·</span>
               <span>{compactCostValue}</span>
-            </div>
-          }
-        />
-
-        <InvocationMetaLine
-          label={lineLabels.timing}
-          title={`${t("table.details.timingsTitle")}: REQ ${requestReadValue}/${requestParseValue} · UP ${upstreamConnectValue}/${upstreamTtfbValue}/${upstreamStreamValue} · END ${responseParseValue}/${persistValue} · TOT ${viewModel.totalLatencyValue}`}
-          value={
-            <div className="min-w-0 text-base-content/70">
-              {compactTimingSummary}
             </div>
           }
         />
@@ -2287,6 +2343,7 @@ function DashboardUpstreamAccountActivityCard({
             {shouldShowUpstreamPlanBadge(account.planType) ? (
               <Badge
                 variant={upstreamPlanBadgeRecipe(account.planType)?.variant ?? "secondary"}
+                data-plan={upstreamPlanBadgeRecipe(account.planType)?.dataPlan}
                 className={cn(
                   "h-5 px-2 py-0 text-[10px] font-semibold",
                   upstreamPlanBadgeRecipe(account.planType)?.className,

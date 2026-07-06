@@ -281,21 +281,21 @@ function createUpstreamAccountActivityStoryResponse(
     "pck-story-account-final",
   ];
   const statuses = [
-    "running",
-    "success",
-    "failed",
-    "pending",
-    "running",
     "success",
     "success",
     "failed",
+    "success",
+    "success",
+    "success",
+    "success",
+    "failed",
     "pending",
     "success",
-    "running",
+    "success",
     "success",
     "failed",
     "success",
-    "pending",
+    "success",
     "success",
   ];
   const recentInvocations = Array.from(
@@ -320,6 +320,8 @@ function createUpstreamAccountActivityStoryResponse(
         requestModel: index === 0 ? "gpt-5.5-mini" : undefined,
         responseModel: index === 0 ? "gpt-5.5" : undefined,
         model: index === 0 ? "gpt-5.5" : undefined,
+        imageIntent: index === 0 ? "yes" : undefined,
+        tTotalMs: index === 0 ? 20_000 : undefined,
       }),
   );
   return {
@@ -411,6 +413,8 @@ const currentAndPreviousResponse = createResponse([
       upstreamAccountName: "growth-alpha@example.com",
       upstreamAccountPlanType: "plus",
       reasoningEffort: "medium",
+      imageIntent: "yes",
+      tTotalMs: 20_000,
     }),
     createPreview({
       id: 11,
@@ -1991,6 +1995,66 @@ function DrawerPreviewStory({
         );
       }
 
+      if (url.pathname === "/api/stats/dashboard-activity") {
+        const activity = upstreamAccountActivity ?? {
+          range: "today",
+          rangeStart: "2026-04-04T10:00:00Z",
+          rangeEnd: "2026-04-04T10:05:00Z",
+          accounts: [],
+        };
+        const includeAccounts =
+          url.searchParams.get("includeAccounts") !== "false";
+        return jsonResponse({
+          range: activity.range,
+          rangeStart: activity.rangeStart,
+          rangeEnd: activity.rangeEnd,
+          snapshotId: Date.parse(activity.rangeEnd) || 0,
+          rateWindow: {
+            start: activity.rangeStart,
+            end: activity.rangeEnd,
+            windowMinutes: 5,
+            mode: "story",
+          },
+          summary: {
+            stats: {
+              totalCount: activity.accounts.reduce(
+                (sum, account) => sum + account.requestCount,
+                0,
+              ),
+              successCount: activity.accounts.reduce(
+                (sum, account) => sum + account.successCount,
+                0,
+              ),
+              failureCount: activity.accounts.reduce(
+                (sum, account) => sum + account.failureCount,
+                0,
+              ),
+              totalCost: activity.accounts.reduce(
+                (sum, account) => sum + account.totalCost,
+                0,
+              ),
+              totalTokens: activity.accounts.reduce(
+                (sum, account) => sum + account.totalTokens,
+                0,
+              ),
+              inProgressConversationCount: activity.accounts.reduce(
+                (sum, account) => sum + (account.inProgressInvocationCount ?? 0),
+                0,
+              ),
+            },
+            tokensPerMinute: activity.accounts.reduce(
+              (sum, account) => sum + (account.tokensPerMinute ?? 0),
+              0,
+            ),
+            spendRate: activity.accounts.reduce(
+              (sum, account) => sum + (account.spendRate ?? 0),
+              0,
+            ),
+          },
+          accounts: includeAccounts ? activity.accounts : undefined,
+        });
+      }
+
       const detailMatch = url.pathname.match(
         /^\/api\/invocations\/(\d+)\/detail$/,
       );
@@ -2144,6 +2208,39 @@ export const CurrentAndPrevious: Story = {
     cards: buildCards(currentAndPreviousResponse),
     isLoading: false,
     error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const currentSlot = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLElement)) {
+      throw new Error("missing current slot");
+    }
+
+    const firstByteLatency = currentSlot.querySelector(
+      '[data-testid="dashboard-compact-latency-first-byte"]',
+    );
+    const responseLatency = currentSlot.querySelector(
+      '[data-testid="dashboard-compact-latency-response-time"]',
+    );
+    if (!(firstByteLatency instanceof HTMLElement) || !(responseLatency instanceof HTMLElement)) {
+      throw new Error("missing compact latency readings");
+    }
+    await expect(firstByteLatency.className).not.toMatch(/rounded|border|bg-/);
+    await expect(responseLatency.className).not.toMatch(/rounded|border|bg-/);
+    const imageBadge = currentSlot.querySelector(
+      '[data-testid="dashboard-image-tool-icon-badge"]',
+    );
+    if (!(imageBadge instanceof HTMLElement)) {
+      throw new Error("missing image tool icon badge");
+    }
+    await expect(imageBadge).toHaveAttribute(
+      "aria-label",
+      expect.stringMatching(/图片工具|Image tool/),
+    );
+    await expect(imageBadge.className).toMatch(/rounded-full/);
+    await expect(imageBadge.className).toMatch(/border/);
+    await expect(currentSlot).not.toHaveTextContent(/RQ |UP |ED |TT /);
   },
 };
 
@@ -2547,6 +2644,36 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("story-account-1")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5-mini")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5")).toBeInTheDocument();
+    const firstRecentRow = canvas.getAllByTestId(
+      "dashboard-upstream-account-recent-row",
+    )[0];
+    if (!(firstRecentRow instanceof HTMLElement)) {
+      throw new Error("missing first upstream recent row");
+    }
+    const firstByteLatency = firstRecentRow.querySelector(
+      '[data-testid="dashboard-compact-latency-first-byte"]',
+    );
+    const responseLatency = firstRecentRow.querySelector(
+      '[data-testid="dashboard-compact-latency-response-time"]',
+    );
+    if (!(firstByteLatency instanceof HTMLElement) || !(responseLatency instanceof HTMLElement)) {
+      throw new Error("missing upstream compact latency readings");
+    }
+    await expect(firstByteLatency.className).not.toMatch(/rounded|border|bg-/);
+    await expect(responseLatency.className).not.toMatch(/rounded|border|bg-/);
+    const imageBadge = firstRecentRow.querySelector(
+      '[data-testid="dashboard-image-tool-icon-badge"]',
+    );
+    if (!(imageBadge instanceof HTMLElement)) {
+      throw new Error("missing upstream image tool icon badge");
+    }
+    await expect(imageBadge).toHaveAttribute(
+      "aria-label",
+      expect.stringMatching(/图片工具|Image tool/),
+    );
+    await expect(imageBadge.className).toMatch(/rounded-full/);
+    await expect(imageBadge.className).toMatch(/border/);
+    await expect(firstRecentRow).not.toHaveTextContent(/RQ |UP |ED |TT /);
     await expect(
       canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip"),
     ).toHaveLength(4);

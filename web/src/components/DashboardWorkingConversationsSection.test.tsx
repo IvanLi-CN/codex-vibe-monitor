@@ -606,9 +606,22 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(firstRecentRow?.textContent).toContain("Responses");
     expect(firstRecentRow?.textContent).toContain("T 200");
-    expect(firstRecentRow?.textContent).toContain("RQ 10/7");
-    expect(firstRecentRow?.textContent).toContain("UP 90/70/220");
-    expect(firstRecentRow?.textContent).toContain("ED 12/9");
+    expect(firstRecentRow?.textContent).not.toContain("RQ ");
+    expect(firstRecentRow?.textContent).not.toContain("UP ");
+    expect(firstRecentRow?.textContent).not.toContain("ED ");
+    expect(firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')).not.toBeNull();
+    expect(firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')).not.toBeNull();
+    expect(
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')?.className,
+    ).not.toMatch(/rounded|border|bg-/);
+    expect(
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')?.className,
+    ).not.toMatch(/rounded|border|bg-/);
+    expect(
+      firstRecentRow
+        ?.querySelector('[data-testid="dashboard-compact-latency-pills"]')
+        ?.getAttribute("aria-label"),
+    ).toMatch(/首字用时|Time to first byte/i);
 
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-live-call-breakdown"]'),
@@ -618,6 +631,10 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(accountHeaderText).toContain("3");
     expect(accountHeaderText).not.toContain("并行对话");
     expect(accountHeaderText).not.toContain("重试");
+    const headerPlanBadge = accountHeader?.querySelector(
+      ".upstream-plan-badge[data-plan='enterprise']",
+    );
+    expect(headerPlanBadge?.textContent).toBe("Ent");
     expect(accountHeader?.querySelector('[aria-label="进行中调用 3"]')).not.toBeNull();
     expect(
       accountHeader?.querySelector('[aria-label="TPM 640"]'),
@@ -1654,6 +1671,22 @@ describe("DashboardWorkingConversationsSection", () => {
     ).not.toBe(0);
     expect(compactBadge.textContent).toMatch(/远程压缩|Compact/);
     expect(currentSlot.textContent).toContain("Team");
+    expect(currentSlot.textContent).not.toContain("RQ ");
+    expect(currentSlot.textContent).not.toContain("UP ");
+    expect(currentSlot.textContent).not.toContain("ED ");
+    expect(currentSlot.textContent).not.toContain("TT ");
+    expect(
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-first-byte"]'),
+    ).not.toBeNull();
+    expect(
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-response-time"]'),
+    ).not.toBeNull();
+    expect(
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')?.className,
+    ).not.toMatch(/rounded|border|bg-/);
+    expect(
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-response-time"]')?.className,
+    ).not.toMatch(/rounded|border|bg-/);
   });
 
   it("shows the remote compaction v2 badge for running responses previews", () => {
@@ -1709,10 +1742,13 @@ describe("DashboardWorkingConversationsSection", () => {
     );
 
     const badges = host?.querySelectorAll(
-      '[data-testid="invocation-image-tool-badge"]',
+      '[data-testid="dashboard-image-tool-icon-badge"]',
     );
     expect(badges?.length ?? 0).toBe(1);
-    expect(host?.textContent).toMatch(/图片工具|Image tool/);
+    expect(badges?.[0]?.getAttribute("aria-label")).toMatch(/图片工具|Image tool/);
+    expect(badges?.[0]?.textContent).not.toMatch(/图片工具|Image tool/);
+    expect(badges?.[0]?.className).toContain("rounded-full");
+    expect(badges?.[0]?.className).toContain("border");
   });
 
   it("keeps image and remote_v2 badges visible together for mixed-signal previews", () => {
@@ -1736,7 +1772,7 @@ describe("DashboardWorkingConversationsSection", () => {
       '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="remote_v2"]',
     );
     const imageBadge = host?.querySelector(
-      '[data-testid="invocation-image-tool-badge"][data-image-intent-kind="direct_image"]',
+      '[data-testid="dashboard-image-tool-icon-badge"][data-image-intent-kind="direct_image"]',
     );
 
     if (!(remoteBadge instanceof HTMLElement) || !(imageBadge instanceof HTMLElement)) {
@@ -1744,7 +1780,8 @@ describe("DashboardWorkingConversationsSection", () => {
     }
 
     expect(remoteBadge.textContent).toMatch(/远程压缩V2|Remote compaction V2/);
-    expect(imageBadge.textContent).toMatch(/图片工具|Image tool/);
+    expect(imageBadge.getAttribute("aria-label")).toMatch(/图片工具|Image tool/);
+    expect(imageBadge.textContent).not.toMatch(/图片工具|Image tool/);
   });
 
   it("renders compact account plan badges and hides local or missing plans", () => {
