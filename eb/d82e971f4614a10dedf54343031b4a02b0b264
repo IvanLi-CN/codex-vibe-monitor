@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.15.1",
+  "base_stable_version": "2.15.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-06T10:49:07Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.15.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7c6e78b3976b798d781d6a16ab74ce7e7082ee88",
+  "pr_number": 548,
+  "pr_title": "fix(web): swap dashboard summary cards",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.15.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.15.1",
+  "target_sha": "ebd82e971f4614a10dedf54343031b4a02b0b264",
+  "type_label": "type:patch"
+}
