@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.15.7",
+  "base_stable_version": "2.15.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-06T17:59:31Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.15.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "00f1d793fee79a99371ac1aeb0a674892ba7b073",
+  "pr_number": 555,
+  "pr_title": "fix(proxy): isolate early-closing websocket upstreams",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.15.7",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.15.7",
+  "target_sha": "2de49c263caa051900f27ddb7eff7009394986b2",
+  "type_label": "type:patch"
+}
