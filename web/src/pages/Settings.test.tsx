@@ -32,6 +32,7 @@ function createSettingsPayload(): SettingsPayload {
       upstreamWebsocketDefaultEnabled: false,
       requestBodyLoggingEnabled: true,
       responseBodyLoggingEnabled: true,
+      encryptedSessionOwnerRoutingEnabled: true,
       defaultHijackEnabled: false,
       models: ['gpt-5.5'],
       enabledModels: ['gpt-5.5'],
@@ -162,5 +163,37 @@ describe('Settings forward proxy table', () => {
 
     expect(host?.textContent).toContain('记录请求 body')
     expect(host?.textContent).toContain('记录响应 body')
+  })
+
+  it('persists the encrypted owner routing toggle through proxy settings', () => {
+    const saveProxy = vi.fn()
+    hookMocks.useSettings.mockReturnValue({
+      settings: createSettingsPayload(),
+      isLoading: false,
+      isProxySaving: false,
+      isForwardProxySaving: false,
+      isPricingSaving: false,
+      pricingRollbackVersion: 0,
+      error: null,
+      refresh: vi.fn(),
+      saveProxy,
+      saveForwardProxy: vi.fn(),
+      savePricing: vi.fn(),
+    })
+
+    renderSettingsPage()
+
+    const toggle = host?.querySelector('button[aria-label="加密对话路由绑定"]')
+    if (!(toggle instanceof HTMLButtonElement)) {
+      throw new Error('Missing encrypted owner routing toggle')
+    }
+    act(() => {
+      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(saveProxy).toHaveBeenCalledTimes(1)
+    expect(saveProxy.mock.calls[0]?.[0]).toMatchObject({
+      encryptedSessionOwnerRoutingEnabled: false,
+    })
   })
 })

@@ -754,6 +754,21 @@ pub(crate) async fn load_prompt_cache_encrypted_session_owner_row(
     load_prompt_cache_encrypted_session_owner_row_executor(pool, prompt_cache_key).await
 }
 
+async fn load_prompt_cache_encrypted_session_owner_row_if_enabled(
+    state: &AppState,
+    prompt_cache_key: &str,
+) -> Result<Option<PromptCacheEncryptedSessionOwnerRow>> {
+    if !state
+        .proxy_model_settings
+        .read()
+        .await
+        .encrypted_session_owner_routing_enabled
+    {
+        return Ok(None);
+    }
+    load_prompt_cache_encrypted_session_owner_row(&state.pool, prompt_cache_key).await
+}
+
 pub(crate) async fn load_prompt_cache_encrypted_session_owner_account_id(
     pool: &Pool<Sqlite>,
     prompt_cache_key: Option<&str>,
@@ -1065,13 +1080,15 @@ pub(crate) async fn resolve_prompt_cache_effective_routing_constraint(
     pool: &Pool<Sqlite>,
     prompt_cache_key: Option<&str>,
     request_contains_encrypted_content: bool,
+    encrypted_session_owner_routing_enabled: bool,
 ) -> Result<(Option<PromptCacheConversationBindingConstraint>, bool)> {
-    if let Some(context) = resolve_prompt_cache_encrypted_session_routing_context(
-        pool,
-        prompt_cache_key,
-        request_contains_encrypted_content,
-    )
-    .await?
+    if encrypted_session_owner_routing_enabled
+        && let Some(context) = resolve_prompt_cache_encrypted_session_routing_context(
+            pool,
+            prompt_cache_key,
+            request_contains_encrypted_content,
+        )
+        .await?
     {
         // Clearing a manual binding only removes the dangerous override intent.
         // Automatic routing still stays on the encrypted-session owner until a
@@ -1258,7 +1275,7 @@ pub(crate) async fn get_prompt_cache_conversation_binding(
 ) -> Result<Json<PromptCacheConversationBindingResponse>, ApiError> {
     let prompt_cache_key = normalize_prompt_cache_conversation_key(&encoded_prompt_cache_key)?;
     let owner =
-        load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key).await?;
+        load_prompt_cache_encrypted_session_owner_row_if_enabled(state.as_ref(), &prompt_cache_key).await?;
     let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await? {
         Some(row) => binding_response_from_row(state.as_ref(), &state.config, row, owner.as_ref()).await?,
         None => apply_owner_to_none_response(
@@ -1448,7 +1465,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                 .await?;
             }
             let owner =
-                load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
+                load_prompt_cache_encrypted_session_owner_row_if_enabled(state.as_ref(), &prompt_cache_key)
                     .await?;
             let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await? {
                 Some(row) => binding_response_from_row(state.as_ref(), &state.config, row, owner.as_ref()).await?,
@@ -1518,7 +1535,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             .execute(&state.pool)
             .await?;
             let owner =
-                load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
+                load_prompt_cache_encrypted_session_owner_row_if_enabled(state.as_ref(), &prompt_cache_key)
                     .await?;
             Ok(Json(binding_response_from_row(
                 state.as_ref(),
@@ -1594,7 +1611,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             upsert_sticky_route(&state.pool, &prompt_cache_key, upstream_account_id, &now_iso)
                 .await?;
             let owner =
-                load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
+                load_prompt_cache_encrypted_session_owner_row_if_enabled(state.as_ref(), &prompt_cache_key)
                     .await?;
             Ok(Json(binding_response_from_row(
                 state.as_ref(),

@@ -716,10 +716,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     }
     let (prompt_cache_binding_constraint, encrypted_owner_auto_guard_active) =
         if pool_route_active {
+            let encrypted_owner_routing_enabled =
+                encrypted_session_owner_routing_enabled(state.as_ref()).await;
             let binding_constraint_result = resolve_prompt_cache_effective_routing_constraint(
                 &state.pool,
                 prompt_cache_key.as_deref(),
                 request_info.contains_encrypted_content,
+                encrypted_owner_routing_enabled,
             )
             .await;
             match binding_constraint_result {
@@ -2173,8 +2176,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             && (request_info_for_task.contains_encrypted_content
                 || response_info.contains_encrypted_content)
         {
-            match confirm_prompt_cache_encrypted_session_owner_success(
-                &state_for_task.pool,
+            match confirm_prompt_cache_encrypted_session_owner_success_if_enabled(
+                state_for_task.as_ref(),
                 prompt_cache_key,
                 account.account_id,
             )

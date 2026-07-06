@@ -172,19 +172,49 @@ pub(crate) async fn replay_snapshot_contains_encrypted_content(
     }
 }
 
+pub(crate) async fn encrypted_session_owner_routing_enabled(state: &AppState) -> bool {
+    state
+        .proxy_model_settings
+        .read()
+        .await
+        .encrypted_session_owner_routing_enabled
+}
+
+pub(crate) async fn confirm_prompt_cache_encrypted_session_owner_success_if_enabled(
+    state: &AppState,
+    prompt_cache_key: &str,
+    owner_upstream_account_id: i64,
+) -> Result<bool> {
+    if !encrypted_session_owner_routing_enabled(state).await {
+        return Ok(false);
+    }
+    confirm_prompt_cache_encrypted_session_owner_success(
+        &state.pool,
+        prompt_cache_key,
+        owner_upstream_account_id,
+    )
+    .await
+}
+
 async fn load_via_pool_prompt_cache_binding_constraint(
     state: &AppState,
     prompt_cache_key: Option<&str>,
 ) -> Result<Option<PromptCacheConversationBindingConstraint>, (StatusCode, String)> {
-    resolve_prompt_cache_effective_routing_constraint(&state.pool, prompt_cache_key, false)
-        .await
-        .map(|(constraint, _owner_auto_guard_active)| constraint)
-        .map_err(|err| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("failed to resolve prompt cache conversation binding: {err}"),
-            )
-        })
+    let encrypted_owner_routing_enabled = encrypted_session_owner_routing_enabled(state).await;
+    resolve_prompt_cache_effective_routing_constraint(
+        &state.pool,
+        prompt_cache_key,
+        false,
+        encrypted_owner_routing_enabled,
+    )
+    .await
+    .map(|(constraint, _owner_auto_guard_active)| constraint)
+    .map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed to resolve prompt cache conversation binding: {err}"),
+        )
+    })
 }
 
 pub(crate) async fn load_via_pool_effective_routing_constraint(
@@ -192,10 +222,12 @@ pub(crate) async fn load_via_pool_effective_routing_constraint(
     prompt_cache_key: Option<&str>,
     request_contains_encrypted_content: bool,
 ) -> Result<(Option<PromptCacheConversationBindingConstraint>, bool), (StatusCode, String)> {
+    let encrypted_owner_routing_enabled = encrypted_session_owner_routing_enabled(state).await;
     resolve_prompt_cache_effective_routing_constraint(
         &state.pool,
         prompt_cache_key,
         request_contains_encrypted_content,
+        encrypted_owner_routing_enabled,
     )
     .await
     .map_err(|err| {
@@ -3201,8 +3233,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                     && (request_contains_encrypted_content_for_task
                                         || response_contains_encrypted_content)
                                 {
-                                    match confirm_prompt_cache_encrypted_session_owner_success(
-                                        &state_for_record.pool,
+                                    match confirm_prompt_cache_encrypted_session_owner_success_if_enabled(
+                                        state_for_record.as_ref(),
                                         prompt_cache_key,
                                         account.account_id,
                                     )
@@ -3616,8 +3648,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             if let Some(prompt_cache_key) = prompt_cache_key.as_deref()
                 && request_contains_encrypted_content
             {
-                match confirm_prompt_cache_encrypted_session_owner_success(
-                    &state.pool,
+                match confirm_prompt_cache_encrypted_session_owner_success_if_enabled(
+                    state.as_ref(),
                     prompt_cache_key,
                     account.account_id,
                 )
@@ -3800,8 +3832,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 && (request_contains_encrypted_content_for_task
                     || response_contains_encrypted_content)
             {
-                match confirm_prompt_cache_encrypted_session_owner_success(
-                    &state_for_record.pool,
+                match confirm_prompt_cache_encrypted_session_owner_success_if_enabled(
+                    state_for_record.as_ref(),
                     prompt_cache_key,
                     account.account_id,
                 )

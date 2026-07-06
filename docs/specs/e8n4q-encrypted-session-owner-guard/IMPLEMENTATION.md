@@ -9,3 +9,5 @@
 - Updates Storybook/demo fixtures and optimistic live prompt-cache mocks so the new encrypted-owner fields remain type-safe under `bun run build` and `bun run test`.
 - Adds Storybook owner-lock coverage for the Prompt Cache conversation drawer and persists a mock visual-evidence capture in the spec assets.
 - Uses the shared project `Dialog` component for dangerous owner-rebinding confirmation in the Prompt Cache conversation drawer, with Storybook coverage that fails if native `window.confirm` is used.
+- Adds the `encryptedSessionOwnerRoutingEnabled` global proxy setting, persisted in `proxy_model_settings`, defaulting to enabled for compatibility.
+- Gates HTTP, WebSocket, binding API, and Prompt Cache conversation hydration paths so disabling the setting pauses owner enforcement, owner persistence, owner metadata, and the dangerous rebinding warning while retaining existing owner rows.

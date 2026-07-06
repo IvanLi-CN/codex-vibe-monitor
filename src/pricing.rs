@@ -9,6 +9,7 @@ async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<ProxyModelSett
             openai_proxy_upstream_websocket_default_enabled,
             request_body_logging_enabled,
             response_body_logging_enabled,
+            encrypted_session_owner_routing_enabled,
             enabled_preset_models_json
         FROM proxy_model_settings
         WHERE id = ?1
@@ -42,10 +43,11 @@ async fn save_proxy_model_settings(
             openai_proxy_upstream_websocket_default_enabled = ?5,
             request_body_logging_enabled = ?6,
             response_body_logging_enabled = ?7,
+            encrypted_session_owner_routing_enabled = ?8,
             websocket_settings_migrated = 1,
-            enabled_preset_models_json = ?8,
+            enabled_preset_models_json = ?9,
             updated_at = datetime('now')
-        WHERE id = ?9
+        WHERE id = ?10
         "#,
     )
     .bind(settings.hijack_enabled as i64)
@@ -55,6 +57,7 @@ async fn save_proxy_model_settings(
     .bind(settings.upstream_websocket_default_enabled as i64)
     .bind(settings.request_body_logging_enabled as i64)
     .bind(settings.response_body_logging_enabled as i64)
+    .bind(settings.encrypted_session_owner_routing_enabled as i64)
     .bind(enabled_models_json)
     .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
     .execute(pool)

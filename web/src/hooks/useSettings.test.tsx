@@ -22,6 +22,7 @@ const apiMocks = vi.hoisted(() => ({
     upstreamWebsocketDefaultEnabled: boolean;
     requestBodyLoggingEnabled: boolean;
     responseBodyLoggingEnabled: boolean;
+    encryptedSessionOwnerRoutingEnabled: boolean;
     enabledModels: string[];
   }) => Promise<ProxySettings>>(),
   updateForwardProxySettings: vi.fn<
@@ -73,6 +74,7 @@ function createSettingsPayload(
       upstreamWebsocketDefaultEnabled: false,
       requestBodyLoggingEnabled: true,
       responseBodyLoggingEnabled: true,
+      encryptedSessionOwnerRoutingEnabled: true,
       defaultHijackEnabled: false,
       models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
       enabledModels: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
@@ -135,6 +137,9 @@ function Probe() {
           ? `${settings.proxy.requestBodyLoggingEnabled}/${settings.proxy.responseBodyLoggingEnabled}`
           : ""}
       </div>
+      <div data-testid="proxy-encrypted-owner-routing">
+        {settings ? String(settings.proxy.encryptedSessionOwnerRoutingEnabled) : ""}
+      </div>
       <div data-testid="proxy-urls">
         {settings?.forwardProxy.proxyUrls.join(",") ?? ""}
       </div>
@@ -149,6 +154,7 @@ function Probe() {
             mergeUpstreamEnabled: true,
             requestBodyLoggingEnabled: false,
             responseBodyLoggingEnabled: false,
+            encryptedSessionOwnerRoutingEnabled: false,
             enabledModels: ["gpt-5.5", "gpt-5.5-pro"],
           });
         }}
@@ -190,6 +196,7 @@ beforeEach(() => {
     upstreamWebsocketDefaultEnabled: payload.upstreamWebsocketDefaultEnabled,
     requestBodyLoggingEnabled: payload.requestBodyLoggingEnabled,
     responseBodyLoggingEnabled: payload.responseBodyLoggingEnabled,
+    encryptedSessionOwnerRoutingEnabled: payload.encryptedSessionOwnerRoutingEnabled,
     defaultHijackEnabled: false,
     models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
     enabledModels: payload.enabledModels,
@@ -230,6 +237,10 @@ describe("useSettings", () => {
     expect(text("proxy-enabled-models")).toContain("gpt-5.5");
     expect(text("proxy-enabled-models")).toContain("gpt-5.5-pro");
     expect(text("proxy-body-logging")).toBe("false/false");
+    expect(text("proxy-encrypted-owner-routing")).toBe("false");
+    expect(apiMocks.updateProxySettings.mock.calls[0]?.[0]).toMatchObject({
+      encryptedSessionOwnerRoutingEnabled: false,
+    });
     expect(text("error")).toBe("");
 
     apiMocks.updateProxySettings.mockRejectedValueOnce(new Error("proxy save failed"));

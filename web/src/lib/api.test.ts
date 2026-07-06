@@ -1292,6 +1292,7 @@ describe("settings normalization", () => {
               upstreamWebsocketDefaultEnabled: false,
               requestBodyLoggingEnabled: true,
               responseBodyLoggingEnabled: true,
+              encryptedSessionOwnerRoutingEnabled: true,
               defaultHijackEnabled: false,
               models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
               enabledModels: ["gpt-5.5", "gpt-5.5-pro", "missing-model"],

@@ -2011,8 +2011,8 @@ async fn persist_ws_usage_event(
         && let Some(prompt_cache_key) = websocket_effective_prompt_cache_key(prompt_cache_key)
         && (request_contains_encrypted_content || event.contains_encrypted_content)
     {
-        if confirm_prompt_cache_encrypted_session_owner_success(
-            &state.pool,
+        if confirm_prompt_cache_encrypted_session_owner_success_if_enabled(
+            state,
             prompt_cache_key,
             account.account_id,
         )

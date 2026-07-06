@@ -86,6 +86,7 @@ export function useSettings() {
         upstreamWebsocketDefaultEnabled: nextProxy.upstreamWebsocketDefaultEnabled,
         requestBodyLoggingEnabled: nextProxy.requestBodyLoggingEnabled,
         responseBodyLoggingEnabled: nextProxy.responseBodyLoggingEnabled,
+        encryptedSessionOwnerRoutingEnabled: nextProxy.encryptedSessionOwnerRoutingEnabled,
         defaultHijackEnabled: nextProxy.defaultHijackEnabled,
         models: nextProxy.models,
         enabledModels: nextProxy.models.filter((candidate) =>
@@ -111,6 +112,7 @@ export function useSettings() {
           upstreamWebsocketDefaultEnabled: normalizedProxy.upstreamWebsocketDefaultEnabled,
           requestBodyLoggingEnabled: normalizedProxy.requestBodyLoggingEnabled,
           responseBodyLoggingEnabled: normalizedProxy.responseBodyLoggingEnabled,
+          encryptedSessionOwnerRoutingEnabled: normalizedProxy.encryptedSessionOwnerRoutingEnabled,
           enabledModels: normalizedProxy.enabledModels,
         })
         const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current

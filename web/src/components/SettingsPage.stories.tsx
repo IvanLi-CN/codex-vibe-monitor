@@ -53,6 +53,7 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   upstreamWebsocketDefaultEnabled: true,
   requestBodyLoggingEnabled: true,
   responseBodyLoggingEnabled: true,
+  encryptedSessionOwnerRoutingEnabled: true,
   defaultHijackEnabled: false,
   models: [
     'gpt-5.5',
@@ -423,6 +424,7 @@ function StorybookSettingsMock({
           upstreamWebsocketDefaultEnabled: boolean
           requestBodyLoggingEnabled: boolean
           responseBodyLoggingEnabled: boolean
+          encryptedSessionOwnerRoutingEnabled: boolean
           enabledModels: string[]
         }>({
           hijackEnabled: settingsRef.current.proxy.hijackEnabled,
@@ -433,6 +435,7 @@ function StorybookSettingsMock({
           upstreamWebsocketDefaultEnabled: settingsRef.current.proxy.upstreamWebsocketDefaultEnabled,
           requestBodyLoggingEnabled: settingsRef.current.proxy.requestBodyLoggingEnabled,
           responseBodyLoggingEnabled: settingsRef.current.proxy.responseBodyLoggingEnabled,
+          encryptedSessionOwnerRoutingEnabled: settingsRef.current.proxy.encryptedSessionOwnerRoutingEnabled,
           enabledModels: settingsRef.current.proxy.enabledModels,
         })
 
@@ -447,6 +450,7 @@ function StorybookSettingsMock({
           upstreamWebsocketDefaultEnabled: body.upstreamWebsocketDefaultEnabled === true,
           requestBodyLoggingEnabled: body.requestBodyLoggingEnabled !== false,
           responseBodyLoggingEnabled: body.responseBodyLoggingEnabled !== false,
+          encryptedSessionOwnerRoutingEnabled: body.encryptedSessionOwnerRoutingEnabled !== false,
           enabledModels: settingsRef.current.proxy.models.filter((model) => enabledSet.has(model)),
         }
         settingsRef.current.proxy = nextProxy
@@ -711,10 +715,28 @@ export const Default: Story = {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('heading', { name: '设置' })).toBeVisible()
     await expect(canvas.getByText('代理配置')).toBeVisible()
+    await expect(canvas.getByText('加密对话路由')).toBeVisible()
     await expect(canvas.getByText('正向代理路由')).toBeVisible()
     await expect(canvas.getByText('价格配置')).toBeVisible()
     await expect(canvas.getByText('gpt-5.5')).toBeVisible()
     await expect(canvas.getByText('External API Keys')).toBeVisible()
+  },
+}
+
+export const EncryptedOwnerRoutingDisabled: Story = {
+  parameters: {
+    mockSettings: createStorySettings({
+      proxy: {
+        encryptedSessionOwnerRoutingEnabled: false,
+      },
+    }),
+  },
+  render: () => <SettingsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('加密对话路由')).toBeVisible()
+    const toggle = canvas.getByRole('switch', { name: '加密对话路由绑定' })
+    await expect(toggle).toHaveAttribute('aria-checked', 'false')
   },
 }
 
