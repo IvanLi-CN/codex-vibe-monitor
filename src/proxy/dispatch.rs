@@ -2199,6 +2199,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 "[DEBUG-stream-rootcause-20260706] observed downstream transport write error after response body drained"
             );
         }
+        if let Some(observation) = downstream_request_observer_for_task.as_ref() {
+            observation.finish_response_monitoring();
+        }
 
         let terminal_state = if stream_error.is_some() {
             PROXY_STREAM_TERMINAL_ERROR

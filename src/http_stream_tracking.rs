@@ -33,6 +33,7 @@ pub(crate) struct DownstreamTransportObserver {
 struct DownstreamTransportObserverInner {
     state: Mutex<DownstreamTransportObserverState>,
     notify: Notify,
+    reset_monitor_notify: Notify,
 }
 
 #[derive(Debug, Default)]
@@ -41,7 +42,8 @@ struct DownstreamTransportObserverState {
     current_request_seq: Option<u64>,
     last_write_error: Option<DownstreamWriteErrorSnapshot>,
     reset_monitor_stream: Option<TcpStream>,
-    reset_monitor_started: bool,
+    active_reset_monitor_request_seq: Option<u64>,
+    connection_closed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -66,11 +68,13 @@ impl DownstreamTransportObserver {
                     ..DownstreamTransportObserverState::default()
                 }),
                 notify: Notify::new(),
+                reset_monitor_notify: Notify::new(),
             }),
         }
     }
 
     pub(crate) fn begin_request(&self) -> DownstreamRequestObserver {
+        let mut notify_reset_monitor = false;
         let mut state = self
             .inner
             .state
@@ -80,11 +84,22 @@ impl DownstreamTransportObserver {
         state.next_request_seq = state.next_request_seq.saturating_add(1);
         state.current_request_seq = Some(request_seq);
         if state
+            .active_reset_monitor_request_seq
+            .is_some_and(|active_request_seq| active_request_seq != request_seq)
+        {
+            state.active_reset_monitor_request_seq = None;
+            notify_reset_monitor = true;
+        }
+        if state
             .last_write_error
             .as_ref()
             .is_some_and(|snapshot| snapshot.request_seq < request_seq)
         {
             state.last_write_error = None;
+        }
+        drop(state);
+        if notify_reset_monitor {
+            self.inner.reset_monitor_notify.notify_waiters();
         }
         #[cfg(test)]
         eprintln!("[DEBUG-stream-rootcause-20260706] begin_request request_seq={request_seq}");
@@ -101,36 +116,114 @@ impl DownstreamTransportObserver {
             .lock()
             .expect("downstream transport observer mutex poisoned");
         state.reset_monitor_stream = Some(stream);
+        state.connection_closed = false;
     }
 
-    fn activate_reset_monitor(&self) {
-        let monitor_stream = {
-            let mut state = self
-                .inner
-                .state
-                .lock()
-                .expect("downstream transport observer mutex poisoned");
-            if state.reset_monitor_started {
-                return;
-            }
-            let Some(stream) = state.reset_monitor_stream.take() else {
-                return;
-            };
-            state.reset_monitor_started = true;
-            stream
-        };
-        spawn_downstream_reset_monitor(monitor_stream, self.clone());
-    }
-
-    fn record_write_error(&self, kind: &'static str, message: String) {
+    fn try_arm_reset_monitor(&self, request_seq: u64) -> Option<TcpStream> {
         let mut state = self
             .inner
             .state
             .lock()
             .expect("downstream transport observer mutex poisoned");
-        let Some(request_seq) = state.current_request_seq else {
+        if state.connection_closed || state.current_request_seq != Some(request_seq) {
+            return None;
+        }
+        if state.active_reset_monitor_request_seq == Some(request_seq) {
+            return None;
+        }
+        let monitor_stream =
+            duplicate_tcp_stream_for_monitor(state.reset_monitor_stream.as_ref()?).ok()?;
+        state.active_reset_monitor_request_seq = Some(request_seq);
+        Some(monitor_stream)
+    }
+
+    fn activate_reset_monitor(&self, request_seq: u64) {
+        let Some(monitor_stream) = self.try_arm_reset_monitor(request_seq) else {
             return;
         };
+        spawn_downstream_reset_monitor(monitor_stream, self.clone(), request_seq);
+    }
+
+    fn finish_request_monitoring(&self, request_seq: u64) {
+        let should_notify = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .expect("downstream transport observer mutex poisoned");
+            if state.active_reset_monitor_request_seq != Some(request_seq) {
+                false
+            } else {
+                state.active_reset_monitor_request_seq = None;
+                true
+            }
+        };
+        if should_notify {
+            self.inner.reset_monitor_notify.notify_waiters();
+        }
+    }
+
+    fn mark_connection_closed(&self) {
+        let should_notify = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .expect("downstream transport observer mutex poisoned");
+            if state.connection_closed {
+                false
+            } else {
+                state.connection_closed = true;
+                state.active_reset_monitor_request_seq = None;
+                state.reset_monitor_stream = None;
+                true
+            }
+        };
+        if should_notify {
+            self.inner.reset_monitor_notify.notify_waiters();
+        }
+    }
+
+    fn reset_monitor_should_continue(&self, request_seq: u64) -> bool {
+        let state = self
+            .inner
+            .state
+            .lock()
+            .expect("downstream transport observer mutex poisoned");
+        !state.connection_closed
+            && state.current_request_seq == Some(request_seq)
+            && state.active_reset_monitor_request_seq == Some(request_seq)
+    }
+
+    fn record_write_error(&self, kind: &'static str, message: String) {
+        let request_seq = {
+            let state = self
+                .inner
+                .state
+                .lock()
+                .expect("downstream transport observer mutex poisoned");
+            state.current_request_seq
+        };
+        let Some(request_seq) = request_seq else {
+            return;
+        };
+        self.record_write_error_for_request(request_seq, kind, message);
+    }
+
+    fn record_write_error_for_request(
+        &self,
+        request_seq: u64,
+        kind: &'static str,
+        message: String,
+    ) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("downstream transport observer mutex poisoned");
+        if state.current_request_seq != Some(request_seq) {
+            return;
+        }
         if state
             .last_write_error
             .as_ref()
@@ -178,7 +271,11 @@ impl DownstreamTransportObserver {
 
 impl DownstreamRequestObserver {
     pub(crate) fn activate_reset_monitor(&self) {
-        self.observer.activate_reset_monitor();
+        self.observer.activate_reset_monitor(self.request_seq);
+    }
+
+    pub(crate) fn finish_response_monitoring(&self) {
+        self.observer.finish_request_monitoring(self.request_seq);
     }
 
     pub(crate) async fn wait_for_write_error_window(
@@ -375,21 +472,41 @@ fn duplicate_tcp_stream_for_monitor(_stream: &TcpStream) -> io::Result<TcpStream
 fn spawn_downstream_reset_monitor(
     monitor_stream: TcpStream,
     observer: DownstreamTransportObserver,
+    request_seq: u64,
 ) {
-    tokio::spawn(monitor_downstream_reset_stream(monitor_stream, observer));
+    tokio::spawn(monitor_downstream_reset_stream(
+        monitor_stream,
+        observer,
+        request_seq,
+    ));
 }
 
 async fn monitor_downstream_reset_stream(
     monitor_stream: TcpStream,
     observer: DownstreamTransportObserver,
+    request_seq: u64,
 ) {
     let mut peek_buf = [0u8; 1];
     loop {
-        if monitor_stream.readable().await.is_err() {
+        if !observer.reset_monitor_should_continue(request_seq) {
+            break;
+        }
+        tokio::select! {
+            readable = monitor_stream.readable() => {
+                if readable.is_err() {
+                    break;
+                }
+            }
+            _ = observer.inner.reset_monitor_notify.notified() => {
+                continue;
+            }
+        }
+        if !observer.reset_monitor_should_continue(request_seq) {
             break;
         }
         if let Ok(Some(err)) = monitor_stream.take_error() {
-            observer.record_write_error(
+            observer.record_write_error_for_request(
+                request_seq,
                 downstream_transport_write_error_kind(&err),
                 format!("socket_take_error:{err}"),
             );
@@ -402,7 +519,8 @@ async fn monitor_downstream_reset_stream(
             Ok(_) => break,
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => continue,
             Err(err) => {
-                observer.record_write_error(
+                observer.record_write_error_for_request(
+                    request_seq,
                     downstream_transport_write_error_kind(&err),
                     format!("socket_peek_error:{err}"),
                 );
@@ -410,6 +528,7 @@ async fn monitor_downstream_reset_stream(
             }
         }
     }
+    observer.finish_request_monitoring(request_seq);
 }
 
 async fn tcp_accept(listener: &TcpListener) -> Option<(TcpStream, SocketAddr)> {
@@ -507,6 +626,7 @@ where
                 }
             }
 
+            observer_for_task.mark_connection_closed();
             drop(close_rx);
         });
     }
@@ -564,7 +684,17 @@ mod tests {
 
         let observer = DownstreamTransportObserver::new();
         let request = observer.begin_request();
-        let monitor = tokio::spawn(monitor_downstream_reset_stream(server, observer.clone()));
+        let source_stream =
+            duplicate_tcp_stream_for_monitor(&server).expect("duplicate keepalive test stream");
+        observer.set_reset_monitor_stream(source_stream);
+        let monitor_stream = observer
+            .try_arm_reset_monitor(request.request_seq)
+            .expect("arm keepalive reset monitor");
+        let monitor = tokio::spawn(monitor_downstream_reset_stream(
+            monitor_stream,
+            observer.clone(),
+            request.request_seq,
+        ));
 
         client
             .write_all(b"GET /next HTTP/1.1\r\nHost: keepalive\r\n\r\n")
@@ -580,5 +710,108 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn downstream_reset_monitor_stops_when_request_observation_finishes() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind idle test listener");
+        let addr = listener.local_addr().expect("idle test listener addr");
+        let accept = tokio::spawn(async move {
+            listener
+                .accept()
+                .await
+                .expect("accept idle test connection")
+                .0
+        });
+        let _client = TcpStream::connect(addr)
+            .await
+            .expect("connect idle test client");
+        let server = accept.await.expect("join idle accept task");
+
+        let observer = DownstreamTransportObserver::new();
+        let source_stream =
+            duplicate_tcp_stream_for_monitor(&server).expect("duplicate idle test stream");
+        observer.set_reset_monitor_stream(source_stream);
+        let request = observer.begin_request();
+        let monitor_stream = observer
+            .try_arm_reset_monitor(request.request_seq)
+            .expect("arm idle reset monitor");
+        let monitor = tokio::spawn(monitor_downstream_reset_stream(
+            monitor_stream,
+            observer.clone(),
+            request.request_seq,
+        ));
+
+        request.finish_response_monitoring();
+
+        tokio::time::timeout(Duration::from_millis(200), monitor)
+            .await
+            .expect("monitor should stop after observation finishes")
+            .expect("join idle monitor");
+        assert!(
+            request
+                .wait_for_write_error_window(Duration::from_millis(20))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn downstream_reset_monitor_can_rearm_for_reused_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind reused connection test listener");
+        let addr = listener
+            .local_addr()
+            .expect("reused connection test listener addr");
+        let accept =
+            tokio::spawn(
+                async move { listener.accept().await.expect("accept reused connection").0 },
+            );
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("connect reused connection client");
+        let server = accept.await.expect("join reused accept task");
+
+        let observer = DownstreamTransportObserver::new();
+        let source_stream =
+            duplicate_tcp_stream_for_monitor(&server).expect("duplicate reused test stream");
+        observer.set_reset_monitor_stream(source_stream);
+
+        let first_request = observer.begin_request();
+        let first_monitor_stream = observer
+            .try_arm_reset_monitor(first_request.request_seq)
+            .expect("arm first reused monitor");
+        let first_monitor = tokio::spawn(monitor_downstream_reset_stream(
+            first_monitor_stream,
+            observer.clone(),
+            first_request.request_seq,
+        ));
+
+        client
+            .write_all(b"GET /next HTTP/1.1\r\nHost: keepalive\r\n\r\n")
+            .await
+            .expect("write reused keepalive bytes");
+        tokio::time::timeout(Duration::from_millis(200), first_monitor)
+            .await
+            .expect("first reused monitor should stop on keepalive bytes")
+            .expect("join first reused monitor");
+
+        let second_request = observer.begin_request();
+        let second_monitor_stream = observer
+            .try_arm_reset_monitor(second_request.request_seq)
+            .expect("rearm second reused monitor");
+        let second_monitor = tokio::spawn(monitor_downstream_reset_stream(
+            second_monitor_stream,
+            observer.clone(),
+            second_request.request_seq,
+        ));
+        second_request.finish_response_monitoring();
+        tokio::time::timeout(Duration::from_millis(200), second_monitor)
+            .await
+            .expect("second reused monitor should stop when observation finishes")
+            .expect("join second reused monitor");
     }
 }
