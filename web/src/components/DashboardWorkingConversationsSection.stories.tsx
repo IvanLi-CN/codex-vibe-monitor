@@ -225,6 +225,10 @@ function createResponse(
   };
 }
 
+function createRelativeStoryIso(offsetMs: number) {
+  return new Date(Date.now() + offsetMs).toISOString();
+}
+
 function buildRecordFromPreview(
   preview: PromptCacheConversationInvocationPreview,
 ): ApiInvocation {
@@ -456,53 +460,57 @@ const currentOnlyResponse = createResponse([
   ]),
 ]);
 
-const runningOnlyResponse = createResponse([
-  createConversation("pck-running-only", [
-    createPreview({
-      id: 31,
-      invokeId: "invoke-31",
-      occurredAt: "2026-04-04T10:04:58Z",
-      status: "running",
-      livePhase: "responding",
-      upstreamAccountName: "watch-alpha@example.com",
-      reasoningEffort: "medium",
-      tTotalMs: null,
-    }),
-    createPreview({
-      id: 30,
-      invokeId: "invoke-30",
-      occurredAt: "2026-04-04T09:54:20Z",
-      status: "completed",
-      upstreamAccountName: "watch-alpha@example.com",
-      model: "gpt-5.4-mini",
-    }),
-  ]),
-]);
+function createRunningOnlyResponse() {
+  return createResponse([
+    createConversation("pck-running-only", [
+      createPreview({
+        id: 31,
+        invokeId: "invoke-31",
+        occurredAt: createRelativeStoryIso(-2_400),
+        status: "running",
+        livePhase: "responding",
+        upstreamAccountName: "watch-alpha@example.com",
+        reasoningEffort: "medium",
+        tTotalMs: null,
+      }),
+      createPreview({
+        id: 30,
+        invokeId: "invoke-30",
+        occurredAt: createRelativeStoryIso(-(11 * 60_000 + 39_000)),
+        status: "completed",
+        upstreamAccountName: "watch-alpha@example.com",
+        model: "gpt-5.4-mini",
+      }),
+    ]),
+  ]);
+}
 
-const requestingOnlyResponse = createResponse([
-  createConversation("pck-requesting-only", [
-    createPreview({
-      id: 32,
-      invokeId: "invoke-32",
-      occurredAt: "2026-04-04T10:04:59Z",
-      status: "running",
-      livePhase: "requesting",
-      upstreamAccountName: "request-alpha@example.com",
-      reasoningEffort: "medium",
-      tUpstreamTtfbMs: null,
-      tUpstreamStreamMs: null,
-      tTotalMs: null,
-    }),
-    createPreview({
-      id: 29,
-      invokeId: "invoke-29",
-      occurredAt: "2026-04-04T09:53:20Z",
-      status: "completed",
-      upstreamAccountName: "request-alpha@example.com",
-      model: "gpt-5.4-mini",
-    }),
-  ]),
-]);
+function createRequestingOnlyResponse() {
+  return createResponse([
+    createConversation("pck-requesting-only", [
+      createPreview({
+        id: 32,
+        invokeId: "invoke-32",
+        occurredAt: createRelativeStoryIso(-750),
+        status: "running",
+        livePhase: "requesting",
+        upstreamAccountName: "request-alpha@example.com",
+        reasoningEffort: "medium",
+        tUpstreamTtfbMs: null,
+        tUpstreamStreamMs: null,
+        tTotalMs: null,
+      }),
+      createPreview({
+        id: 29,
+        invokeId: "invoke-29",
+        occurredAt: createRelativeStoryIso(-(12 * 60_000 + 18_000)),
+        status: "completed",
+        upstreamAccountName: "request-alpha@example.com",
+        model: "gpt-5.4-mini",
+      }),
+    ]),
+  ]);
+}
 
 const accountPlanBadgeResponse = createResponse([
   createConversation("pck-plan-enterprise", [
@@ -2332,10 +2340,16 @@ export const CurrentOnlyPlaceholder: Story = {
 export const RunningOnlyConversation: Story = {
   args: {
     activeRange: "today",
-    cards: buildCards(runningOnlyResponse),
+    cards: [],
     isLoading: false,
     error: null,
   },
+  render: (args) => (
+    <DashboardWorkingConversationsSection
+      {...args}
+      cards={buildCards(createRunningOnlyResponse())}
+    />
+  ),
   play: async ({ canvasElement }) => {
     const currentSlot = canvasElement.querySelector(
       '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
@@ -2382,10 +2396,16 @@ export const RunningOnlyConversation: Story = {
 export const RequestingConversation: Story = {
   args: {
     activeRange: "today",
-    cards: buildCards(requestingOnlyResponse),
+    cards: [],
     isLoading: false,
     error: null,
   },
+  render: (args) => (
+    <DashboardWorkingConversationsSection
+      {...args}
+      cards={buildCards(createRequestingOnlyResponse())}
+    />
+  ),
   play: async ({ canvasElement }) => {
     const currentSlot = canvasElement.querySelector(
       '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
