@@ -1,3 +1,53 @@
+fn proxy_stream_usage_observed(response_info: &ResponseCaptureInfo) -> bool {
+    response_info.usage.total_tokens.is_some()
+        || response_info.usage.input_tokens.is_some()
+        || response_info.usage.output_tokens.is_some()
+}
+
+fn proxy_stream_failure_origin_from_usage_reason(
+    usage_missing_reason: Option<&str>,
+) -> Option<&'static str> {
+    let reason = usage_missing_reason?;
+    if reason.contains("response_decode_failed:") {
+        Some("content_decode")
+    } else if reason
+        .split(';')
+        .any(|part| part.trim().eq_ignore_ascii_case("stream_event_parse_error"))
+    {
+        Some("stream_parse")
+    } else {
+        None
+    }
+}
+
+fn proxy_stream_upstream_read_error_kind(err: &io::Error) -> &'static str {
+    if let Some(source) = err.get_ref()
+        && let Some(reqwest_err) = source.downcast_ref::<reqwest::Error>()
+    {
+        if reqwest_err.is_timeout() {
+            return "timeout";
+        }
+        if reqwest_err.is_decode() {
+            return "decode";
+        }
+        if reqwest_err.is_body() {
+            return "body";
+        }
+        if reqwest_err.is_request() {
+            return "request";
+        }
+    }
+
+    match err.kind() {
+        io::ErrorKind::TimedOut => "timeout",
+        io::ErrorKind::UnexpectedEof | io::ErrorKind::InvalidData => "decode",
+        io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::BrokenPipe => "connection",
+        _ => "other",
+    }
+}
+
 pub(crate) async fn proxy_openai_v1_inner(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -260,6 +310,15 @@ async fn persist_pre_attempt_proxy_capture_error(
             downstream_error_message: None,
             upstream_request_id: None,
             response_content_encoding: None,
+            stream_failure_origin: None,
+            upstream_read_error_kind: None,
+            content_encoding_chain: None,
+            forwarded_chunk_count: None,
+            forwarded_bytes: None,
+            usage_observed: None,
+            downstream_close_phase: None,
+            downstream_write_error_kind: None,
+            last_upstream_chunk_gap_ms: None,
             proxy_display_name: None,
             proxy_weight_delta: None,
             pool_attempt_count: Some(0),
@@ -496,6 +555,15 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     downstream_error_message: None,
                     upstream_request_id: None,
                     response_content_encoding: None,
+                    stream_failure_origin: None,
+                    upstream_read_error_kind: None,
+                    content_encoding_chain: None,
+                    forwarded_chunk_count: None,
+                    forwarded_bytes: None,
+                    usage_observed: None,
+                    downstream_close_phase: None,
+                    downstream_write_error_kind: None,
+                    last_upstream_chunk_gap_ms: None,
                     proxy_display_name: None,
                     proxy_weight_delta: None,
                     pool_attempt_count: None,
@@ -641,6 +709,15 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     downstream_error_message: None,
                     upstream_request_id: None,
                     response_content_encoding: None,
+                    stream_failure_origin: None,
+                    upstream_read_error_kind: None,
+                    content_encoding_chain: None,
+                    forwarded_chunk_count: None,
+                    forwarded_bytes: None,
+                    usage_observed: None,
+                    downstream_close_phase: None,
+                    downstream_write_error_kind: None,
+                    last_upstream_chunk_gap_ms: None,
                     proxy_display_name: None,
                     proxy_weight_delta: None,
                     pool_attempt_count: None,
@@ -1075,6 +1152,15 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         downstream_error_message: None,
                         upstream_request_id: err.upstream_request_id.as_deref(),
                         response_content_encoding: None,
+                        stream_failure_origin: None,
+                        upstream_read_error_kind: None,
+                        content_encoding_chain: None,
+                        forwarded_chunk_count: None,
+                        forwarded_bytes: None,
+                        usage_observed: None,
+                        downstream_close_phase: None,
+                        downstream_write_error_kind: None,
+                        last_upstream_chunk_gap_ms: None,
                         proxy_display_name: pool_proxy_display_name.as_deref(),
                         proxy_weight_delta: None,
                         pool_attempt_count: Some(err.attempt_summary.pool_attempt_count),
@@ -1257,6 +1343,15 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         downstream_error_message: None,
                         upstream_request_id: None,
                         response_content_encoding: None,
+                        stream_failure_origin: None,
+                        upstream_read_error_kind: None,
+                        content_encoding_chain: None,
+                        forwarded_chunk_count: None,
+                        forwarded_bytes: None,
+                        usage_observed: None,
+                        downstream_close_phase: None,
+                        downstream_write_error_kind: None,
+                        last_upstream_chunk_gap_ms: None,
                         proxy_display_name: Some(err.selected_proxy.display_name.as_str()),
                         proxy_weight_delta: proxy_attempt_update.delta(),
                         pool_attempt_count: None,
@@ -1440,6 +1535,15 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         )
                         .as_str(),
                     ),
+                    stream_failure_origin: None,
+                    upstream_read_error_kind: None,
+                    content_encoding_chain: None,
+                    forwarded_chunk_count: None,
+                    forwarded_bytes: None,
+                    usage_observed: None,
+                    downstream_close_phase: None,
+                    downstream_write_error_kind: None,
+                    last_upstream_chunk_gap_ms: None,
                     proxy_display_name: proxy_display_name.as_deref(),
                     proxy_weight_delta: if selected_proxy.is_some() {
                         proxy_attempt_update.delta()
@@ -1615,8 +1719,15 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let mut downstream_first_byte_logged = false;
         let mut forwarded_chunks = 0usize;
         let mut forwarded_bytes = 0usize;
+        let mut stream_failure_origin: Option<&'static str> = None;
+        let mut upstream_read_error_kind: Option<&'static str> = None;
+        let mut downstream_write_error_kind: Option<&'static str> = None;
+        let mut last_upstream_chunk_received_at: Option<Instant> = None;
+        let mut last_downstream_forwarded_chunk_at: Option<Instant> = None;
+        let mut last_upstream_chunk_gap_ms: Option<u64> = None;
 
         if let Some(chunk) = prefetched_first_chunk_for_task {
+            let chunk_received_at = Instant::now();
             response_preview.append(&chunk);
             response_raw_writer.append(&chunk);
             stream_response_parser.ingest_bytes(&chunk);
@@ -1626,30 +1737,35 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
             stream_started_at = Some(Instant::now());
+            last_upstream_chunk_received_at = Some(chunk_received_at);
             if !downstream_closed {
                 if tx.send(Ok(chunk)).await.is_err() {
                     downstream_closed = true;
+                    downstream_write_error_kind = Some("receiver_dropped");
                     let _ = proxy_request_permit_for_task.take();
-                } else if !downstream_first_byte_logged {
-                    downstream_first_byte_logged = true;
-                    let downstream_first_byte_elapsed =
-                        stream_started.elapsed().as_millis() as u64;
-                    if downstream_first_byte_log_at_info(downstream_first_byte_elapsed) {
-                        info!(
-                            invoke_id = %invoke_id_for_task,
-                            downstream_first_byte_elapsed,
-                            upstream_ttfb_ms = t_upstream_ttfb_ms,
-                            forwarded_bytes,
-                            "openai proxy capture streamed first byte downstream"
-                        );
-                    } else {
-                        debug!(
-                            invoke_id = %invoke_id_for_task,
-                            downstream_first_byte_elapsed,
-                            upstream_ttfb_ms = t_upstream_ttfb_ms,
-                            forwarded_bytes,
-                            "openai proxy capture streamed first byte downstream"
-                        );
+                } else {
+                    last_downstream_forwarded_chunk_at = Some(chunk_received_at);
+                    if !downstream_first_byte_logged {
+                        downstream_first_byte_logged = true;
+                        let downstream_first_byte_elapsed =
+                            stream_started.elapsed().as_millis() as u64;
+                        if downstream_first_byte_log_at_info(downstream_first_byte_elapsed) {
+                            info!(
+                                invoke_id = %invoke_id_for_task,
+                                downstream_first_byte_elapsed,
+                                upstream_ttfb_ms = t_upstream_ttfb_ms,
+                                forwarded_bytes,
+                                "openai proxy capture streamed first byte downstream"
+                            );
+                        } else {
+                            debug!(
+                                invoke_id = %invoke_id_for_task,
+                                downstream_first_byte_elapsed,
+                                upstream_ttfb_ms = t_upstream_ttfb_ms,
+                                forwarded_bytes,
+                                "openai proxy capture streamed first byte downstream"
+                            );
+                        }
                     }
                 }
             }
@@ -1666,10 +1782,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             "waiting for upstream stream completion",
                         );
                         stream_error = Some(message.clone());
+                        stream_failure_origin = Some("proxy_timeout");
+                        last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
+                            .map(|instant| instant.elapsed().as_millis() as u64);
                         if !downstream_closed
                             && tx.send(Err(io::Error::other(message))).await.is_err()
                         {
                             downstream_closed = true;
+                            downstream_write_error_kind = Some("receiver_dropped");
                         }
                         break;
                     };
@@ -1681,10 +1801,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                                 "waiting for upstream stream completion",
                             );
                             stream_error = Some(message.clone());
+                            stream_failure_origin = Some("proxy_timeout");
+                            last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
+                                .map(|instant| instant.elapsed().as_millis() as u64);
                             if !downstream_closed
                                 && tx.send(Err(io::Error::other(message))).await.is_err()
                             {
                                 downstream_closed = true;
+                                downstream_write_error_kind = Some("receiver_dropped");
                             }
                             break;
                         }
@@ -1702,9 +1826,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         "waiting for first upstream chunk",
                     );
                     stream_error = Some(message.clone());
+                    stream_failure_origin = Some("proxy_timeout");
                     if !downstream_closed && tx.send(Err(io::Error::other(message))).await.is_err()
                     {
                         downstream_closed = true;
+                        downstream_write_error_kind = Some("receiver_dropped");
                     }
                     break;
                 };
@@ -1716,10 +1842,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             "waiting for first upstream chunk",
                         );
                         stream_error = Some(message.clone());
+                        stream_failure_origin = Some("proxy_timeout");
                         if !downstream_closed
                             && tx.send(Err(io::Error::other(message))).await.is_err()
                         {
                             downstream_closed = true;
+                            downstream_write_error_kind = Some("receiver_dropped");
                         }
                         break;
                     }
@@ -1732,6 +1860,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             };
             match next_chunk {
                 Ok(chunk) => {
+                    let chunk_received_at = Instant::now();
+                    let gap_before_send_ms = last_downstream_forwarded_chunk_at
+                        .map(|instant| instant.elapsed().as_millis() as u64);
                     if stream_started_at.is_none() {
                         t_upstream_ttfb_ms = upstream_attempt_started_at_for_task
                             .map(elapsed_ms)
@@ -1795,30 +1926,37 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
+                    last_upstream_chunk_received_at = Some(chunk_received_at);
                     if !downstream_closed {
                         if tx.send(Ok(chunk)).await.is_err() {
                             downstream_closed = true;
+                            downstream_write_error_kind = Some("receiver_dropped");
+                            last_upstream_chunk_gap_ms = gap_before_send_ms;
                             let _ = proxy_request_permit_for_task.take();
-                        } else if !downstream_first_byte_logged {
-                            downstream_first_byte_logged = true;
-                            let downstream_first_byte_elapsed =
-                                stream_started.elapsed().as_millis() as u64;
-                            if downstream_first_byte_log_at_info(downstream_first_byte_elapsed) {
-                                info!(
-                                    invoke_id = %invoke_id_for_task,
-                                    downstream_first_byte_elapsed,
-                                    upstream_ttfb_ms = t_upstream_ttfb_ms,
-                                    forwarded_bytes,
-                                    "openai proxy capture streamed first byte downstream"
-                                );
-                            } else {
-                                debug!(
-                                    invoke_id = %invoke_id_for_task,
-                                    downstream_first_byte_elapsed,
-                                    upstream_ttfb_ms = t_upstream_ttfb_ms,
-                                    forwarded_bytes,
-                                    "openai proxy capture streamed first byte downstream"
-                                );
+                        } else {
+                            last_downstream_forwarded_chunk_at = Some(chunk_received_at);
+                            if !downstream_first_byte_logged {
+                                downstream_first_byte_logged = true;
+                                let downstream_first_byte_elapsed =
+                                    stream_started.elapsed().as_millis() as u64;
+                                if downstream_first_byte_log_at_info(downstream_first_byte_elapsed)
+                                {
+                                    info!(
+                                        invoke_id = %invoke_id_for_task,
+                                        downstream_first_byte_elapsed,
+                                        upstream_ttfb_ms = t_upstream_ttfb_ms,
+                                        forwarded_bytes,
+                                        "openai proxy capture streamed first byte downstream"
+                                    );
+                                } else {
+                                    debug!(
+                                        invoke_id = %invoke_id_for_task,
+                                        downstream_first_byte_elapsed,
+                                        upstream_ttfb_ms = t_upstream_ttfb_ms,
+                                        forwarded_bytes,
+                                        "openai proxy capture streamed first byte downstream"
+                                    );
+                                }
                             }
                         }
                     }
@@ -1826,8 +1964,15 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 Err(err) => {
                     let msg = format!("upstream stream error: {err}");
                     stream_error = Some(msg.clone());
+                    stream_failure_origin = Some("upstream_read");
+                    upstream_read_error_kind = Some(proxy_stream_upstream_read_error_kind(&err));
+                    last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
+                        .map(|instant| instant.elapsed().as_millis() as u64);
                     if !downstream_closed {
-                        let _ = tx.send(Err(io::Error::other(msg))).await;
+                        if tx.send(Err(io::Error::other(msg))).await.is_err() {
+                            downstream_closed = true;
+                            downstream_write_error_kind = Some("receiver_dropped");
+                        }
                     }
                     break;
                 }
@@ -1936,6 +2081,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         if response_info.usage_missing_reason.is_none() && stream_error.is_some() {
             response_info.usage_missing_reason = Some("upstream_stream_error".to_string());
         }
+        let usage_observed = proxy_stream_usage_observed(&response_info);
 
         let had_stream_error = stream_error.is_some();
         let had_logical_stream_failure = response_info.stream_terminal_event.is_some();
@@ -1974,6 +2120,40 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         };
         let status =
             proxy_capture_invocation_status(upstream_status, error_message.is_some(), pure_downstream_closed);
+        if stream_failure_origin.is_none() {
+            if had_logical_stream_failure {
+                stream_failure_origin = Some("logical_terminal");
+            } else if pure_downstream_closed {
+                stream_failure_origin = Some("downstream_write");
+            } else {
+                stream_failure_origin = proxy_stream_failure_origin_from_usage_reason(
+                    response_info.usage_missing_reason.as_deref(),
+                );
+            }
+        }
+        let downstream_close_phase = downstream_closed.then_some(if forwarded_chunks == 0 {
+            "before_first_byte"
+        } else {
+            "after_first_byte"
+        });
+        if had_stream_error || had_logical_stream_failure || pure_downstream_closed {
+            warn!(
+                invoke_id = %invoke_id_for_task,
+                failure_kind,
+                stream_failure_origin,
+                upstream_read_error_kind,
+                content_encoding_chain = response_content_encoding.as_str(),
+                forwarded_chunks,
+                forwarded_bytes,
+                usage_observed,
+                downstream_close_phase,
+                downstream_write_error_kind,
+                last_upstream_chunk_gap_ms,
+                stream_terminal_event = response_info.stream_terminal_event.as_deref(),
+                usage_missing_reason = response_info.usage_missing_reason.as_deref(),
+                "[DEBUG-stream-rootcause-20260706] proxy stream failure classified"
+            );
+        }
         let pending_pool_attempt_terminal_reason = if pool_account_for_task.is_none() {
             None
         } else if had_stream_error {
@@ -2329,6 +2509,15 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             downstream_error_message: downstream_error_message.as_deref(),
             upstream_request_id: response_info.upstream_request_id.as_deref(),
             response_content_encoding: Some(response_content_encoding.as_str()),
+            stream_failure_origin,
+            upstream_read_error_kind,
+            content_encoding_chain: Some(response_content_encoding.as_str()),
+            forwarded_chunk_count: Some(forwarded_chunks),
+            forwarded_bytes: Some(forwarded_bytes),
+            usage_observed: Some(usage_observed),
+            downstream_close_phase,
+            downstream_write_error_kind,
+            last_upstream_chunk_gap_ms,
             proxy_display_name: selected_proxy_display_name.as_deref(),
             proxy_weight_delta: if selected_proxy_for_task.is_some() {
                 proxy_attempt_update.delta()

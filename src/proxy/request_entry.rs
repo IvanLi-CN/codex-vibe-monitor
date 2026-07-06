@@ -552,7 +552,7 @@ impl ProxyUpstreamResponseBody {
             Self::Reqwest(response) => Box::pin(
                 response
                     .bytes_stream()
-                    .map_err(|err| io::Error::other(err.to_string())),
+                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err)),
             ),
             Self::Axum(response) => Box::pin(
                 response
