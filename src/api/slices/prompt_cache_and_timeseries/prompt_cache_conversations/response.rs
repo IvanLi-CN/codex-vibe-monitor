@@ -20,6 +20,16 @@ fn prompt_cache_runtime_record_is_in_flight(record: &ApiInvocation) -> bool {
     )
 }
 
+fn prompt_cache_runtime_record_is_in_working_window(
+    record: &ApiInvocation,
+    range_start_bound: &str,
+) -> bool {
+    prompt_cache_runtime_record_is_in_flight(record)
+        || parse_to_utc_datetime(&record.occurred_at).is_some_and(|occurred_at| {
+            db_occurred_at_lower_bound(occurred_at).as_str() >= range_start_bound
+        })
+}
+
 fn prompt_cache_runtime_record_sort_anchor(record: &ApiInvocation) -> String {
     record.occurred_at.clone()
 }
@@ -79,12 +89,16 @@ fn runtime_prompt_cache_aggregate_from_record(
 fn runtime_prompt_cache_overlay_records(
     state: &AppState,
     source_scope: InvocationSourceScope,
+    range_start_bound: &str,
 ) -> Vec<ApiInvocation> {
     state
         .proxy_runtime_invocations
         .snapshot()
         .into_iter()
         .filter(|record| prompt_cache_runtime_record_source_matches(record, source_scope))
+        .filter(|record| {
+            prompt_cache_runtime_record_is_in_working_window(record, range_start_bound)
+        })
         .filter(|record| {
             record
                 .prompt_cache_key
@@ -235,7 +249,8 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
         db_page_limit,
     )
     .await?;
-    let runtime_overlay_records = runtime_prompt_cache_overlay_records(state, source_scope);
+    let runtime_overlay_records =
+        runtime_prompt_cache_overlay_records(state, source_scope, &range_start_bound);
     let mut aggregates = merge_runtime_prompt_cache_aggregates(
         aggregates,
         &runtime_overlay_records,
@@ -347,6 +362,8 @@ async fn build_prompt_cache_conversations_response_with_recent_limit(
     let range_start = range_end - selection.activity_window_duration();
     let range_start_bound = db_occurred_at_lower_bound(range_start);
     let display_limit = selection.display_limit();
+    let runtime_overlay_records =
+        runtime_prompt_cache_overlay_records(state, source_scope, &range_start_bound);
 
     let (aggregates, active_filtered_count) = match selection {
         PromptCacheConversationSelection::Count(limit) => {
@@ -384,7 +401,6 @@ async fn build_prompt_cache_conversations_response_with_recent_limit(
             (aggregates, matched_count.saturating_sub(display_limit))
         }
         PromptCacheConversationSelection::ActivityWindowMinutes(_) => {
-            let runtime_overlay_records = runtime_prompt_cache_overlay_records(state, source_scope);
             let aggregates = query_prompt_cache_working_conversation_aggregates(
                 &state.pool,
                 &range_start_bound,
@@ -449,7 +465,7 @@ async fn build_prompt_cache_conversations_response_with_recent_limit(
         PromptCacheConversationDetailLevel::Full,
         recent_invocation_limit,
         None,
-        &runtime_prompt_cache_overlay_records(state, source_scope),
+        &runtime_overlay_records,
     )
     .await?;
 
