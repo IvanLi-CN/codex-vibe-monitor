@@ -56,7 +56,10 @@ import {
   renderFastIndicator,
   renderInvocationModelBadge,
 } from "./invocation-details-shared";
-import type { InvocationImageIntentDisplay } from "../lib/invocation";
+import {
+  resolveFirstResponseByteTotalMs,
+  type InvocationImageIntentDisplay,
+} from "../lib/invocation";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 import { useDashboardUpstreamAccountActivity } from "../hooks/useDashboardUpstreamAccountActivity";
 import {
@@ -552,6 +555,48 @@ function formatAccountDurationValue(
     return `${formatAccountNumberValue(seconds, localeTag, maximumFractionDigits)} s`;
   }
   return `${formatAccountNumberValue(value, localeTag, abs >= 100 ? 0 : 1)} ms`;
+}
+
+function countCompactDisplayDigits(value: number) {
+  const absoluteValue = Math.abs(value);
+  if (absoluteValue < 1) return 1;
+  return Math.trunc(absoluteValue).toString().length;
+}
+
+function resolveCompactSecondsFractionDigits(seconds: number) {
+  return Math.max(0, Math.min(2, 4 - countCompactDisplayDigits(seconds)));
+}
+
+function formatCompactLatencySecondsValue(
+  value: number | null | undefined,
+  localeTag: string,
+) {
+  if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
+
+  const seconds = value / 1000;
+  const firstPassFractionDigits = resolveCompactSecondsFractionDigits(seconds);
+  const firstPassRounded = Number(seconds.toFixed(firstPassFractionDigits));
+  const fractionDigits = resolveCompactSecondsFractionDigits(firstPassRounded);
+  const rounded = Number(seconds.toFixed(fractionDigits));
+
+  return `${rounded.toLocaleString(localeTag, {
+    useGrouping: false,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: fractionDigits,
+  })} s`;
+}
+
+function formatCompactElapsedSecondsFromTimestamp(
+  occurredAt: string | null | undefined,
+  localeTag: string,
+  nowMs: number,
+) {
+  const occurredMs = occurredAt ? Date.parse(occurredAt) : Number.NaN;
+  if (!Number.isFinite(occurredMs)) return FALLBACK_CELL;
+  return formatCompactLatencySecondsValue(
+    Math.max(0, nowMs - occurredMs),
+    localeTag,
+  );
 }
 
 function finiteNumber(value: number | null | undefined) {
@@ -1172,6 +1217,28 @@ function AccountRecentInvocationRow({
     : null;
   const requestModelValue = viewModel.requestModelValue;
   const responseModelValue = viewModel.responseModelValue;
+  const compactLatencyValues = useMemo(() => {
+    const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
+    return {
+      firstResponseByteTotalValue: formatCompactLatencySecondsValue(
+        resolveFirstResponseByteTotalMs(invocation.record),
+        localeTag,
+      ),
+      responseTimeValue:
+        normalizedStatus === "running" || normalizedStatus === "pending"
+          ? formatCompactElapsedSecondsFromTimestamp(
+              invocation.record.occurredAt,
+              localeTag,
+              nowMs,
+            )
+          : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
+    };
+  }, [
+    invocation.displayStatus,
+    invocation.record,
+    localeTag,
+    nowMs,
+  ]);
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${invocation.record.invokeId}`;
   const conversationActionLabel = displayPromptCacheKey
     ? `${t("dashboard.workingConversations.openConversation")} · ${displayConversationSequenceId} · ${displayPromptCacheKey}`
@@ -1309,8 +1376,10 @@ function AccountRecentInvocationRow({
             />
             {fastIndicator}
             <CompactLatencyPills
-              firstResponseByteTotalValue={viewModel.firstResponseByteTotalValue}
-              responseTimeValue={viewModel.totalLatencyValue}
+              firstResponseByteTotalValue={
+                compactLatencyValues.firstResponseByteTotalValue
+              }
+              responseTimeValue={compactLatencyValues.responseTimeValue}
               t={t}
             />
           </div>
@@ -1650,6 +1719,28 @@ function InvocationSlot({
   const compactCostValue = viewModel.costValue.startsWith("US$")
     ? `$${viewModel.costValue.slice(3)}`
     : viewModel.costValue;
+  const compactLatencyValues = useMemo(() => {
+    const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
+    return {
+      firstResponseByteTotalValue: formatCompactLatencySecondsValue(
+        resolveFirstResponseByteTotalMs(invocation.record),
+        localeTag,
+      ),
+      responseTimeValue:
+        normalizedStatus === "running" || normalizedStatus === "pending"
+          ? formatCompactElapsedSecondsFromTimestamp(
+              invocation.record.occurredAt,
+              localeTag,
+              nowMs,
+            )
+          : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
+    };
+  }, [
+    invocation.displayStatus,
+    invocation.record,
+    localeTag,
+    nowMs,
+  ]);
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
 
   const handleOpenInvocation = useCallback(() => {
@@ -1749,8 +1840,10 @@ function InvocationSlot({
             </div>
           </div>
           <CompactLatencyPills
-            firstResponseByteTotalValue={viewModel.firstResponseByteTotalValue}
-            responseTimeValue={viewModel.totalLatencyValue}
+            firstResponseByteTotalValue={
+              compactLatencyValues.firstResponseByteTotalValue
+            }
+            responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}
             className="text-[11.5px]"
           />

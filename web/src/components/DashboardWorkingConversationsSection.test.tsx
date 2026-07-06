@@ -3528,4 +3528,56 @@ describe("DashboardWorkingConversationsSection", () => {
       ),
     ).toHaveLength(1);
   });
+
+  it("formats dashboard latency pills with at most two decimals and without overflowing past four digits", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T10:05:00.000Z"));
+
+    renderSection(
+      createResponse([
+        createConversation("pck-latency-compact", [
+          createPreview({
+            id: 71,
+            invokeId: "invoke-latency-current",
+            occurredAt: "2026-04-04T10:04:57.744Z",
+            status: "running",
+            livePhase: "responding",
+            tReqReadMs: 400,
+            tReqParseMs: 100,
+            tUpstreamConnectMs: 700,
+            tUpstreamTtfbMs: 1_056,
+            tUpstreamStreamMs: null,
+            tTotalMs: null,
+          }),
+          createPreview({
+            id: 70,
+            invokeId: "invoke-latency-previous",
+            occurredAt: "2026-04-04T10:03:20.000Z",
+            status: "completed",
+            tReqReadMs: 120,
+            tReqParseMs: 36,
+            tUpstreamConnectMs: 100,
+            tUpstreamTtfbMs: 0,
+            tUpstreamStreamMs: 0,
+            tTotalMs: 8_028_073.3,
+          }),
+        ]),
+      ]),
+    );
+
+    const readings = Array.from(
+      host?.querySelectorAll(
+        '[data-testid="dashboard-working-conversation-slot-readings"]',
+      ) ?? [],
+    )
+      .map((element) => element.textContent ?? "")
+      .join(" ");
+
+    expect(readings).toContain("2.26 s");
+    expect(readings).toContain("8028 s");
+    expect(readings).not.toContain("2.256 s");
+    expect(readings).not.toContain("8,028");
+
+    vi.useRealTimers();
+  });
 });
