@@ -1741,7 +1741,7 @@ function normalizeProxySettings(raw: unknown): ProxySettings {
     requestBodyLoggingEnabled: payload.requestBodyLoggingEnabled !== false,
     responseBodyLoggingEnabled: payload.responseBodyLoggingEnabled !== false,
     encryptedSessionOwnerRoutingEnabled:
-      payload.encryptedSessionOwnerRoutingEnabled !== false,
+      payload.encryptedSessionOwnerRoutingEnabled === true,
     defaultHijackEnabled: payload.defaultHijackEnabled === true,
     models,
     enabledModels: models.filter((model) => enabledModelSet.has(model)),

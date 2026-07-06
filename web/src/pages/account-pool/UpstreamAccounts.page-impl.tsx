@@ -30,13 +30,22 @@ import {
 } from "../../components/ui/dialog";
 import { formFieldSpanVariants } from "../../components/ui/form-control";
 import { SelectField } from "../../components/ui/select-field";
-import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
+import {
+  SegmentedControl,
+  SegmentedControlItem,
+} from "../../components/ui/segmented-control";
 import { Spinner } from "../../components/ui/spinner";
 import { AccountTagFilterCombobox } from "../../components/AccountTagFilterCombobox";
 import { MultiSelectFilterCombobox } from "../../components/MultiSelectFilterCombobox";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
-import { UpstreamAccountsGroupedRoster, type UpstreamAccountsGroupedRosterGroup } from "../../components/UpstreamAccountsGroupedRoster";
-import { UpstreamAccountsTable, type UpstreamAccountsTableLabels } from "../../components/UpstreamAccountsTable";
+import {
+  UpstreamAccountsGroupedRoster,
+  type UpstreamAccountsGroupedRosterGroup,
+} from "../../components/UpstreamAccountsGroupedRoster";
+import {
+  UpstreamAccountsTable,
+  type UpstreamAccountsTableLabels,
+} from "../../components/UpstreamAccountsTable";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
@@ -61,9 +70,7 @@ import {
   buildGroupOptions,
 } from "../../lib/upstreamAccountGroups";
 import { generatePoolRoutingKey } from "../../lib/poolRouting";
-import {
-  buildAccountPoolGroupSummaries,
-} from "../../lib/accountPoolGroups";
+import { buildAccountPoolGroupSummaries } from "../../lib/accountPoolGroups";
 import { cn } from "../../lib/utils";
 import { useTranslation } from "../../i18n";
 import {
@@ -153,20 +160,27 @@ export default function UpstreamAccountsPage() {
   const location = useLocation();
   const locationState = location.state as UpstreamAccountsLocationState | null;
   const navigate = useNavigate();
-  const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
-    useUpstreamAccountDetailRoute();
+  const {
+    upstreamAccountId,
+    upstreamAccountTab,
+    openUpstreamAccount,
+    closeUpstreamAccount,
+  } = useUpstreamAccountDetailRoute();
   const [initialFilters] = useState(() =>
     readPersistedUpstreamAccountFilters(),
   );
   const initialGroupFilters = useMemo(
     () =>
-      groupFilterStateToGroupFilters(locationState?.presetGroupFilter).length > 0
+      groupFilterStateToGroupFilters(locationState?.presetGroupFilter).length >
+      0
         ? groupFilterStateToGroupFilters(locationState?.presetGroupFilter)
         : initialFilters.groupFilters,
     [initialFilters.groupFilters, locationState?.presetGroupFilter],
   );
   const [hasTransientPresetGroupFilter, setHasTransientPresetGroupFilter] =
-    useState(() => sanitizePresetGroupFilter(locationState?.presetGroupFilter) != null);
+    useState(
+      () => sanitizePresetGroupFilter(locationState?.presetGroupFilter) != null,
+    );
   const [groupFilters, setGroupFilters] = useState<string[]>(
     () => initialGroupFilters,
   );
@@ -184,8 +198,11 @@ export default function UpstreamAccountsPage() {
   );
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [rosterViewMode, setRosterViewMode] = useState<AccountRosterViewMode>("grid");
-  const [visibleGroupedAccountIds, setVisibleGroupedAccountIds] = useState<number[]>([]);
+  const [rosterViewMode, setRosterViewMode] =
+    useState<AccountRosterViewMode>("grid");
+  const [visibleGroupedAccountIds, setVisibleGroupedAccountIds] = useState<
+    number[]
+  >([]);
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
   const [, setSelectedAccountSummaries] = useState<
     Record<number, UpstreamAccountSummary>
@@ -437,7 +454,9 @@ export default function UpstreamAccountsPage() {
     if (rosterViewMode === "flat") {
       return visibleRosterItems.map((item) => item.id);
     }
-    const visibleRosterIdSet = new Set(visibleRosterItems.map((item) => item.id));
+    const visibleRosterIdSet = new Set(
+      visibleRosterItems.map((item) => item.id),
+    );
     return Array.from(
       new Set(
         visibleGroupedAccountIds.filter((accountId) =>
@@ -726,7 +745,9 @@ export default function UpstreamAccountsPage() {
     if (!state) return;
 
     const nextSearchParams = new URLSearchParams(location.search);
-    const presetGroupFilters = groupFilterStateToGroupFilters(state.presetGroupFilter);
+    const presetGroupFilters = groupFilterStateToGroupFilters(
+      state.presetGroupFilter,
+    );
     if (
       presetGroupFilters.length > 0 &&
       !areGroupFilterValuesEqual(groupFilters, presetGroupFilters)
@@ -741,6 +762,7 @@ export default function UpstreamAccountsPage() {
         "upstreamAccountId",
         String(state.selectedAccountId),
       );
+      nextSearchParams.delete("upstreamAccountTab");
       openUpstreamAccount(state.selectedAccountId, { replace: true });
     }
     setPostCreateWarning(state.postCreateWarning ?? null);
@@ -1013,14 +1035,22 @@ export default function UpstreamAccountsPage() {
       primary: t("accountPool.upstreamAccounts.primaryWindowLabel"),
       primaryShort: t("accountPool.upstreamAccounts.primaryWindowShortLabel"),
       secondary: t("accountPool.upstreamAccounts.secondaryWindowLabel"),
-      secondaryShort: t("accountPool.upstreamAccounts.secondaryWindowShortLabel"),
+      secondaryShort: t(
+        "accountPool.upstreamAccounts.secondaryWindowShortLabel",
+      ),
       nextReset: t("accountPool.upstreamAccounts.table.nextReset"),
-      nextResetCompact: t("accountPool.upstreamAccounts.table.nextResetCompact"),
+      nextResetCompact: t(
+        "accountPool.upstreamAccounts.table.nextResetCompact",
+      ),
       requestsMetric: t("accountPool.upstreamAccounts.table.requestsMetric"),
       tokensMetric: t("accountPool.upstreamAccounts.table.tokensMetric"),
       costMetric: t("accountPool.upstreamAccounts.table.costMetric"),
-      inputTokensMetric: t("accountPool.upstreamAccounts.table.inputTokensMetric"),
-      outputTokensMetric: t("accountPool.upstreamAccounts.table.outputTokensMetric"),
+      inputTokensMetric: t(
+        "accountPool.upstreamAccounts.table.inputTokensMetric",
+      ),
+      outputTokensMetric: t(
+        "accountPool.upstreamAccounts.table.outputTokensMetric",
+      ),
       cacheInputTokensMetric: t(
         "accountPool.upstreamAccounts.table.cacheInputTokensMetric",
       ),
@@ -1125,7 +1155,9 @@ export default function UpstreamAccountsPage() {
     },
     [t],
   );
-  const groupedRosterGroups = useMemo<UpstreamAccountsGroupedRosterGroup[]>(() => {
+  const groupedRosterGroups = useMemo<
+    UpstreamAccountsGroupedRosterGroup[]
+  >(() => {
     if (hideRosterDerivedUi) {
       return [];
     }
@@ -1139,52 +1171,57 @@ export default function UpstreamAccountsPage() {
           ? t("accountPool.upstreamAccounts.grouped.apiBadge")
           : groupedPlanLabel(planType),
     });
-  }, [forwardProxyNodes, groupedPlanLabel, groups, hideRosterDerivedUi, t, visibleRosterItems]);
-  const {
-    openEditor: openGroupSettingsEditor,
-    dialog: groupSettingsDialog,
-  } = useUpstreamAccountGroupSettingsDialog({
-    writesEnabled,
-    resolveGroupState: useCallback(
-      (groupName) => {
-        const normalizedGroupName = normalizeRosterGroupName(groupName);
-        if (!normalizedGroupName) return null;
-        const groupSummary =
-          groups.find((group) => group.groupName === normalizedGroupName) ??
-          null;
-        return {
-          groupName: normalizedGroupName,
-          note: groupSummary?.note ?? "",
-          existing: groupSummary != null,
-          accountCount: groupSummary?.accountCount ?? 0,
-          concurrencyLimit: groupSummary?.concurrencyLimit ?? 0,
-          boundProxyKeys: groupSummary?.boundProxyKeys ?? [],
-          nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
-          singleAccountRotationEnabled:
-            groupSummary?.singleAccountRotationEnabled ?? false,
-          upstream429RetryEnabled:
-            groupSummary?.upstream429RetryEnabled ?? false,
-          upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
-        };
-      },
-      [groups],
-    ),
-    saveGroupSettings: useCallback(
-      async (groupName, payload) => {
-        await saveGroupNote(groupName, payload);
-      },
-      [saveGroupNote],
-    ),
-    deleteGroupSettings: useCallback(
-      async (groupName: string) => {
-        await deleteGroupNote(groupName);
-        if (normalizeRosterGroupName(bulkGroupName) === groupName) {
-          setBulkGroupName("");
-        }
-      },
-      [bulkGroupName, deleteGroupNote],
-    ),
-  });
+  }, [
+    forwardProxyNodes,
+    groupedPlanLabel,
+    groups,
+    hideRosterDerivedUi,
+    t,
+    visibleRosterItems,
+  ]);
+  const { openEditor: openGroupSettingsEditor, dialog: groupSettingsDialog } =
+    useUpstreamAccountGroupSettingsDialog({
+      writesEnabled,
+      resolveGroupState: useCallback(
+        (groupName) => {
+          const normalizedGroupName = normalizeRosterGroupName(groupName);
+          if (!normalizedGroupName) return null;
+          const groupSummary =
+            groups.find((group) => group.groupName === normalizedGroupName) ??
+            null;
+          return {
+            groupName: normalizedGroupName,
+            note: groupSummary?.note ?? "",
+            existing: groupSummary != null,
+            accountCount: groupSummary?.accountCount ?? 0,
+            concurrencyLimit: groupSummary?.concurrencyLimit ?? 0,
+            boundProxyKeys: groupSummary?.boundProxyKeys ?? [],
+            nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
+            singleAccountRotationEnabled:
+              groupSummary?.singleAccountRotationEnabled ?? false,
+            upstream429RetryEnabled:
+              groupSummary?.upstream429RetryEnabled ?? false,
+            upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
+          };
+        },
+        [groups],
+      ),
+      saveGroupSettings: useCallback(
+        async (groupName, payload) => {
+          await saveGroupNote(groupName, payload);
+        },
+        [saveGroupNote],
+      ),
+      deleteGroupSettings: useCallback(
+        async (groupName: string) => {
+          await deleteGroupNote(groupName);
+          if (normalizeRosterGroupName(bulkGroupName) === groupName) {
+            setBulkGroupName("");
+          }
+        },
+        [bulkGroupName, deleteGroupNote],
+      ),
+    });
   const handleBulkGroupCreateRequest = useCallback(
     (groupName: string) => {
       openGroupSettingsEditor(groupName, {
@@ -1877,7 +1914,9 @@ export default function UpstreamAccountsPage() {
                   <SegmentedControl
                     size="compact"
                     role="tablist"
-                    aria-label={t("accountPool.upstreamAccounts.viewToggleAria")}
+                    aria-label={t(
+                      "accountPool.upstreamAccounts.viewToggleAria",
+                    )}
                   >
                     <SegmentedControlItem
                       type="button"
@@ -2232,7 +2271,9 @@ export default function UpstreamAccountsPage() {
                   selectedAccountIds={selectedAccountIdSet}
                   onSelect={handleSelectAccount}
                   onToggleSelected={handleToggleSelectedAccount}
-                  onToggleSelectAllCurrentPage={handleToggleSelectAllCurrentPage}
+                  onToggleSelectAllCurrentPage={
+                    handleToggleSelectAllCurrentPage
+                  }
                   emptyTitle={t("accountPool.upstreamAccounts.emptyTitle")}
                   emptyDescription={t(
                     "accountPool.upstreamAccounts.emptyDescription",
@@ -2292,11 +2333,21 @@ export default function UpstreamAccountsPage() {
                     selectVisible: t(
                       "accountPool.upstreamAccounts.bulk.selectFiltered",
                     ),
-                    infoTitle: t("accountPool.upstreamAccounts.grouped.infoTitle"),
-                    noteLabel: t("accountPool.upstreamAccounts.grouped.noteLabel"),
-                    noteEmpty: t("accountPool.upstreamAccounts.grouped.noteEmpty"),
-                    proxiesLabel: t("accountPool.upstreamAccounts.grouped.proxiesLabel"),
-                    proxiesEmpty: t("accountPool.upstreamAccounts.grouped.proxiesEmpty"),
+                    infoTitle: t(
+                      "accountPool.upstreamAccounts.grouped.infoTitle",
+                    ),
+                    noteLabel: t(
+                      "accountPool.upstreamAccounts.grouped.noteLabel",
+                    ),
+                    noteEmpty: t(
+                      "accountPool.upstreamAccounts.grouped.noteEmpty",
+                    ),
+                    proxiesLabel: t(
+                      "accountPool.upstreamAccounts.grouped.proxiesLabel",
+                    ),
+                    proxiesEmpty: t(
+                      "accountPool.upstreamAccounts.grouped.proxiesEmpty",
+                    ),
                     settingsLabel: t(
                       "accountPool.upstreamAccounts.groupNotes.actions.edit",
                     ),
@@ -2305,14 +2356,28 @@ export default function UpstreamAccountsPage() {
                     upstream429Disabled: t(
                       "accountPool.groups.upstream429Disabled",
                     ),
-                    policyPriorityPrimary: t("accountPool.policyBadges.primary"),
-                    policyPriorityFallback: t("accountPool.policyBadges.fallback"),
-                    policyFastFillMissing: t("accountPool.policyBadges.fastFill"),
+                    policyPriorityPrimary: t(
+                      "accountPool.policyBadges.primary",
+                    ),
+                    policyPriorityFallback: t(
+                      "accountPool.policyBadges.fallback",
+                    ),
+                    policyFastFillMissing: t(
+                      "accountPool.policyBadges.fastFill",
+                    ),
                     policyFastForceAdd: t("accountPool.policyBadges.fastAdd"),
-                    policyFastForceRemove: t("accountPool.policyBadges.fastRemove"),
-                    policyForbidCutOut: t("accountPool.policyBadges.forbidCutOut"),
-                    policyForbidCutIn: t("accountPool.policyBadges.forbidCutIn"),
-                    policyForbidNewConversation: t("accountPool.policyBadges.forbidNew"),
+                    policyFastForceRemove: t(
+                      "accountPool.policyBadges.fastRemove",
+                    ),
+                    policyForbidCutOut: t(
+                      "accountPool.policyBadges.forbidCutOut",
+                    ),
+                    policyForbidCutIn: t(
+                      "accountPool.policyBadges.forbidCutIn",
+                    ),
+                    policyForbidNewConversation: t(
+                      "accountPool.policyBadges.forbidNew",
+                    ),
                     policyConcurrency: (count) =>
                       t("accountPool.policyBadges.concurrency", { count }),
                     policyRetry: (count) =>
@@ -2472,9 +2537,12 @@ export default function UpstreamAccountsPage() {
                 )}
                 emptyLabel={t("accountPool.upstreamAccounts.groupFilterEmpty")}
                 createLabel={(value) =>
-                  t("accountPool.upstreamAccounts.fields.groupNameConfigureValue", {
-                    value,
-                  })
+                  t(
+                    "accountPool.upstreamAccounts.fields.groupNameConfigureValue",
+                    {
+                      value,
+                    },
+                  )
                 }
                 onCreateRequested={handleBulkGroupCreateRequest}
                 formatAccountCountLabel={formatGroupAccountCountLabel}
@@ -2670,6 +2738,7 @@ export default function UpstreamAccountsPage() {
       <SharedUpstreamAccountDetailDrawer
         open={upstreamAccountId != null}
         accountId={upstreamAccountId}
+        initialTab={upstreamAccountTab}
         initialDeleteConfirmOpen={pendingInitialDeleteConfirm}
         onInitialDeleteConfirmHandled={() =>
           setPendingInitialDeleteConfirm(false)

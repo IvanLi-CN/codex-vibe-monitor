@@ -1501,6 +1501,9 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                     <div className="min-w-0 space-y-1">
                       <div className="font-medium leading-snug">{t('settings.proxy.encryptedOwnerRoutingLabel')}</div>
                       <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.encryptedOwnerRoutingDescription')}</div>
+                      <div className="break-all font-mono text-[11px] text-base-content/55">
+                        OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED
+                      </div>
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-2">
                       <Switch

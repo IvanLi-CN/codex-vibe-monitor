@@ -56,7 +56,8 @@ function ForcedWorkspaceViewStory({
 function useStoryTheme(theme?: "vibe-light" | "vibe-dark") {
   useLayoutEffect(() => {
     if (!theme) return;
-    const previousHtmlTheme = document.documentElement.getAttribute("data-theme");
+    const previousHtmlTheme =
+      document.documentElement.getAttribute("data-theme");
     const previousBodyTheme = document.body.getAttribute("data-theme");
     document.documentElement.setAttribute("data-theme", theme);
     document.body.setAttribute("data-theme", theme);
@@ -104,7 +105,9 @@ function createPreview(
     routeMode: overrides.routeMode ?? "pool",
     model: overrides.model ?? "gpt-5.4",
     requestModel:
-      "requestModel" in overrides ? (overrides.requestModel ?? null) : "gpt-5.4",
+      "requestModel" in overrides
+        ? (overrides.requestModel ?? null)
+        : "gpt-5.4",
     responseModel:
       "responseModel" in overrides
         ? (overrides.responseModel ?? null)
@@ -322,7 +325,8 @@ function createUpstreamAccountActivityStoryResponse(
       createPreview({
         id: 9901 + index,
         invokeId: `story-account-${index + 1}`,
-        promptCacheKey: promptCacheKeys[index] ?? `pck-story-account-${index + 1}`,
+        promptCacheKey:
+          promptCacheKeys[index] ?? `pck-story-account-${index + 1}`,
         occurredAt: `2026-04-04T10:${String(Math.max(0, 5 - index)).padStart(2, "0")}:00Z`,
         status: statuses[index] ?? "success",
         livePhase:
@@ -883,7 +887,8 @@ function buildDashboardHistoryEvidenceFixtures() {
       const baseTokens = 82_000 + (recordIndex % 11) * 3_700;
       const totalTokens = baseTokens + (cycle % 2 === 0 ? 37 : 348);
       const cost = Number((0.062 + (recordIndex % 7) * 0.0037).toFixed(4));
-      const durationBase = slot.kind === "first" || slotIndex > 0 ? 46_000 : 17_000;
+      const durationBase =
+        slot.kind === "first" || slotIndex > 0 ? 46_000 : 17_000;
 
       if (slot.kind === "first") {
         fillerRecords.push(
@@ -1058,7 +1063,9 @@ function buildDashboardHistoryEvidenceFixtures() {
         ],
       }),
     ]),
-    historyInvocationsByPromptCacheKey: new Map([[promptCacheKey, historyInvocations]]),
+    historyInvocationsByPromptCacheKey: new Map([
+      [promptCacheKey, historyInvocations],
+    ]),
   };
 }
 
@@ -1588,73 +1595,73 @@ function buildStoryMockData(
     conversation: PromptCacheConversation,
     preview: PromptCacheConversationInvocationPreview,
   ) => {
-      const record = {
-        ...buildRecordFromPreview(preview),
-        promptCacheKey: conversation.promptCacheKey,
-      };
-      recordsByInvokeId.set(record.invokeId, record);
-      const promptCacheKey = record.promptCacheKey?.trim();
-      if (promptCacheKey) {
-        recordsByPromptCacheKey.set(promptCacheKey, [
-          ...(recordsByPromptCacheKey.get(promptCacheKey) ?? []),
-          record,
-        ]);
-      }
+    const record = {
+      ...buildRecordFromPreview(preview),
+      promptCacheKey: conversation.promptCacheKey,
+    };
+    recordsByInvokeId.set(record.invokeId, record);
+    const promptCacheKey = record.promptCacheKey?.trim();
+    if (promptCacheKey) {
+      recordsByPromptCacheKey.set(promptCacheKey, [
+        ...(recordsByPromptCacheKey.get(promptCacheKey) ?? []),
+        record,
+      ]);
+    }
 
-      const normalizedStatus = (record.status ?? "").trim().toLowerCase();
-      const isAbnormal =
-        record.failureClass === "service_failure" ||
-        normalizedStatus === "failed" ||
-        normalizedStatus.startsWith("http_");
+    const normalizedStatus = (record.status ?? "").trim().toLowerCase();
+    const isAbnormal =
+      record.failureClass === "service_failure" ||
+      normalizedStatus === "failed" ||
+      normalizedStatus.startsWith("http_");
 
-      if (isAbnormal) {
-        detailByRecordId.set(record.id, {
-          id: record.id,
-          abnormalResponseBody: {
-            available: true,
-            previewText: JSON.stringify({
-              error: {
-                message: record.errorMessage ?? "upstream failure",
-              },
-            }),
-            hasMore: false,
-          },
-        });
-        responseBodyByRecordId.set(record.id, {
+    if (isAbnormal) {
+      detailByRecordId.set(record.id, {
+        id: record.id,
+        abnormalResponseBody: {
           available: true,
-          bodyText: JSON.stringify({
+          previewText: JSON.stringify({
             error: {
               message: record.errorMessage ?? "upstream failure",
             },
-            invokeId: record.invokeId,
           }),
-        });
-      }
-
-      if (
-        (record.routeMode ?? "").trim().toLowerCase() === "pool" &&
-        typeof record.upstreamAccountId === "number"
-      ) {
-        poolAttemptsByInvokeId.set(record.invokeId, [
-          {
-            id: record.id * 10 + 1,
-            invokeId: record.invokeId,
-            occurredAt: record.occurredAt,
-            endpoint: record.endpoint ?? "/v1/responses",
-            attemptIndex: 1,
-            distinctAccountIndex: 1,
-            sameAccountRetryIndex: 1,
-            status: isAbnormal ? "failed" : "success",
-            httpStatus: normalizedStatus.startsWith("http_")
-              ? Number(normalizedStatus.slice("http_".length))
-              : 200,
-            createdAt: record.createdAt,
-            upstreamAccountId: record.upstreamAccountId ?? null,
-            upstreamAccountName: record.upstreamAccountName ?? null,
-            firstByteLatencyMs: record.tUpstreamTtfbMs ?? null,
+          hasMore: false,
+        },
+      });
+      responseBodyByRecordId.set(record.id, {
+        available: true,
+        bodyText: JSON.stringify({
+          error: {
+            message: record.errorMessage ?? "upstream failure",
           },
-        ]);
-      }
+          invokeId: record.invokeId,
+        }),
+      });
+    }
+
+    if (
+      (record.routeMode ?? "").trim().toLowerCase() === "pool" &&
+      typeof record.upstreamAccountId === "number"
+    ) {
+      poolAttemptsByInvokeId.set(record.invokeId, [
+        {
+          id: record.id * 10 + 1,
+          invokeId: record.invokeId,
+          occurredAt: record.occurredAt,
+          endpoint: record.endpoint ?? "/v1/responses",
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          status: isAbnormal ? "failed" : "success",
+          httpStatus: normalizedStatus.startsWith("http_")
+            ? Number(normalizedStatus.slice("http_".length))
+            : 200,
+          createdAt: record.createdAt,
+          upstreamAccountId: record.upstreamAccountId ?? null,
+          upstreamAccountName: record.upstreamAccountName ?? null,
+          firstByteLatencyMs: record.tUpstreamTtfbMs ?? null,
+        },
+      ]);
+    }
   };
 
   for (const conversation of response.conversations) {
@@ -1664,7 +1671,6 @@ function buildStoryMockData(
     for (const preview of historyInvocations) {
       ingestPreview(conversation, preview);
     }
-
   }
 
   return {
@@ -1709,8 +1715,10 @@ function buildStoryInvocationSummary(records: ApiInvocation[]) {
   const avgTotalMs =
     totalMsRecords.length === 0
       ? null
-      : totalMsRecords.reduce((sum, record) => sum + (record.tTotalMs ?? 0), 0) /
-        totalMsRecords.length;
+      : totalMsRecords.reduce(
+          (sum, record) => sum + (record.tTotalMs ?? 0),
+          0,
+        ) / totalMsRecords.length;
 
   return {
     snapshotId: 1,
@@ -1732,8 +1740,10 @@ function buildStoryInvocationSummary(records: ApiInvocation[]) {
       avgTokensPerRequest:
         records.length === 0
           ? 0
-          : records.reduce((sum, record) => sum + (record.totalTokens ?? 0), 0) /
-            records.length,
+          : records.reduce(
+              (sum, record) => sum + (record.totalTokens ?? 0),
+              0,
+            ) / records.length,
       cacheInputTokens: records.reduce(
         (sum, record) => sum + (record.cacheInputTokens ?? 0),
         0,
@@ -1793,7 +1803,7 @@ function StoryAccountDrawer({
   account,
   onClose,
 }: {
-  account: { id: number; label: string } | null;
+  account: { id: number; label: string; tab: "overview" | "routing" } | null;
   onClose: () => void;
 }) {
   const titleId = useId();
@@ -1824,6 +1834,12 @@ function StoryAccountDrawer({
             <p className="font-mono text-sm text-base-content/60">
               Account ID {account.id}
             </p>
+            <p
+              data-testid="story-account-drawer-tab"
+              className="font-mono text-sm text-base-content/60"
+            >
+              Tab {account.tab}
+            </p>
           </div>
           <p className="text-sm leading-6 text-base-content/70">
             Mock shared account detail drawer used to verify that Dashboard
@@ -1845,10 +1861,14 @@ class StoryNoopEventSource implements EventTarget {
   readonly withCredentials = false;
   readyState = StoryNoopEventSource.CONNECTING;
   onerror: ((this: EventSource, ev: Event) => unknown) | null = null;
-  onmessage: ((this: EventSource, ev: MessageEvent<string>) => unknown) | null = null;
+  onmessage: ((this: EventSource, ev: MessageEvent<string>) => unknown) | null =
+    null;
   onopen: ((this: EventSource, ev: Event) => unknown) | null = null;
 
-  private listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+  private listeners = new Map<
+    string,
+    Set<EventListenerOrEventListenerObject>
+  >();
 
   constructor(url: string | URL) {
     this.url = typeof url === "string" ? url : url.toString();
@@ -1933,11 +1953,7 @@ function DrawerPreviewStory({
   const { t } = useTranslation();
   const cards = useMemo(() => buildCards(response), [response]);
   const storyMocks = useMemo(
-    () =>
-      buildStoryMockData(
-        response,
-        historyInvocationsByPromptCacheKey,
-      ),
+    () => buildStoryMockData(response, historyInvocationsByPromptCacheKey),
     [historyInvocationsByPromptCacheKey, response],
   );
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
@@ -1963,6 +1979,7 @@ function DrawerPreviewStory({
   const [selectedAccount, setSelectedAccount] = useState<{
     id: number;
     label: string;
+    tab: "overview" | "routing";
   } | null>(null);
 
   useEffect(() => {
@@ -1997,8 +2014,9 @@ function DrawerPreviewStory({
     if (!originalFetchRef.current) {
       originalFetchRef.current = window.fetch.bind(window);
     }
-    (window as typeof window & { __dashboardStoryFetchLog?: string[] })
-      .__dashboardStoryFetchLog = [];
+    (
+      window as typeof window & { __dashboardStoryFetchLog?: string[] }
+    ).__dashboardStoryFetchLog = [];
 
     window.fetch = async (input, init) => {
       const request =
@@ -2008,10 +2026,11 @@ function DrawerPreviewStory({
             ? input.toString()
             : input.url;
       const url = new URL(request, window.location.origin);
-      (window as typeof window & { __dashboardStoryFetchLog?: string[] })
-        .__dashboardStoryFetchLog?.push(
-          `${url.pathname}?${url.searchParams.toString()}`,
-        );
+      (
+        window as typeof window & { __dashboardStoryFetchLog?: string[] }
+      ).__dashboardStoryFetchLog?.push(
+        `${url.pathname}?${url.searchParams.toString()}`,
+      );
 
       if (url.pathname === "/api/invocations") {
         const requestId = url.searchParams.get("requestId");
@@ -2032,9 +2051,13 @@ function DrawerPreviewStory({
             1,
             Number(url.searchParams.get("pageSize") ?? "200"),
           );
-          const records = (storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? [])
+          const records = (
+            storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? []
+          )
             .slice()
-            .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt));
+            .sort((left, right) =>
+              right.occurredAt.localeCompare(left.occurredAt),
+            );
           const start = (page - 1) * pageSize;
           return jsonResponse({
             snapshotId: 1,
@@ -2109,7 +2132,8 @@ function DrawerPreviewStory({
                 0,
               ),
               inProgressConversationCount: activity.accounts.reduce(
-                (sum, account) => sum + (account.inProgressInvocationCount ?? 0),
+                (sum, account) =>
+                  sum + (account.inProgressInvocationCount ?? 0),
                 0,
               ),
             },
@@ -2187,10 +2211,18 @@ function DrawerPreviewStory({
         cards={cards}
         isLoading={false}
         error={null}
-        onOpenUpstreamAccount={(accountId, accountLabel) => {
+        onOpenUpstreamAccount={(
+          accountId: number,
+          accountLabel: string,
+          options?: { tab?: "overview" | "routing" },
+        ) => {
           setSelectedInvocation(null);
           setSelectedConversation(null);
-          setSelectedAccount({ id: accountId, label: accountLabel });
+          setSelectedAccount({
+            id: accountId,
+            label: accountLabel,
+            tab: options?.tab ?? "overview",
+          });
         }}
         onOpenConversation={(selection) => {
           setSelectedInvocation(null);
@@ -2207,10 +2239,18 @@ function DrawerPreviewStory({
         open={selectedInvocation != null}
         selection={selectedInvocation}
         onClose={() => setSelectedInvocation(null)}
-        onOpenUpstreamAccount={(accountId, accountLabel) => {
+        onOpenUpstreamAccount={(
+          accountId: number,
+          accountLabel: string,
+          options?: { tab?: "overview" | "routing" },
+        ) => {
           setSelectedInvocation(null);
           setSelectedConversation(null);
-          setSelectedAccount({ id: accountId, label: accountLabel });
+          setSelectedAccount({
+            id: accountId,
+            label: accountLabel,
+            tab: options?.tab ?? "overview",
+          });
         }}
       />
       <PromptCacheConversationHistoryDrawer
@@ -2225,10 +2265,18 @@ function DrawerPreviewStory({
         }
         onClose={() => setSelectedConversation(null)}
         t={t}
-        onOpenUpstreamAccount={(accountId, accountLabel) => {
+        onOpenUpstreamAccount={(
+          accountId: number,
+          accountLabel: string,
+          options?: { tab?: "overview" | "routing" },
+        ) => {
           setSelectedInvocation(null);
           setSelectedConversation(null);
-          setSelectedAccount({ id: accountId, label: accountLabel });
+          setSelectedAccount({
+            id: accountId,
+            label: accountLabel,
+            tab: options?.tab ?? "overview",
+          });
         }}
       />
       <StoryAccountDrawer
@@ -2243,7 +2291,7 @@ function DrawerPreviewStory({
             : selectedConversation
               ? `conversation:${selectedConversation.promptCacheKey}`
               : selectedAccount
-                ? `account:${selectedAccount.id}`
+                ? `account:${selectedAccount.id}:${selectedAccount.tab}`
                 : "none"}
         </span>
       </div>
@@ -2294,7 +2342,10 @@ export const CurrentAndPrevious: Story = {
     const responseLatency = currentSlot.querySelector(
       '[data-testid="dashboard-compact-latency-response-time"]',
     );
-    if (!(firstByteLatency instanceof HTMLElement) || !(responseLatency instanceof HTMLElement)) {
+    if (
+      !(firstByteLatency instanceof HTMLElement) ||
+      !(responseLatency instanceof HTMLElement)
+    ) {
       throw new Error("missing compact latency readings");
     }
     const slotHeader = currentSlot.querySelector(
@@ -2364,7 +2415,9 @@ export const RunningOnlyConversation: Story = {
       "grid-cols-[auto_minmax(0,1fr)]",
     );
     expect(
-      currentSlotHeader?.querySelector('[data-testid="invocation-phase-badge"]'),
+      currentSlotHeader?.querySelector(
+        '[data-testid="invocation-phase-badge"]',
+      ),
     ).toBeInstanceOf(HTMLElement);
 
     const phaseLabels = Array.from(
@@ -2514,7 +2567,9 @@ export const AccountPlanBadges: Story = {
       expect.arrayContaining(["Ent", "Team", "Plus", "Free"]),
     );
     expect(
-      badges.find((badge) => badge.textContent === "Ent")?.getAttribute("title"),
+      badges
+        .find((badge) => badge.textContent === "Ent")
+        ?.getAttribute("title"),
     ).toBe("enterprise");
   },
 };
@@ -2693,7 +2748,7 @@ export const FailedWithClickableAccount: Story = {
       );
     });
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
-      "account:77",
+      "account:77:overview",
     );
   },
 };
@@ -2728,9 +2783,8 @@ export const SequenceButtonOpensConversationHistory: Story = {
 
     await waitFor(() => {
       expect(
-        document.body.querySelector(
-          '[data-testid="story-drawer-state"]',
-        )?.textContent,
+        document.body.querySelector('[data-testid="story-drawer-state"]')
+          ?.textContent,
       ).toContain("conversation:pck-dashboard-history-realistic");
     });
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
@@ -2753,7 +2807,9 @@ export const SequenceButtonOpensConversationHistory: Story = {
     const dialog = within(document.body).getByRole("dialog");
     expect(within(dialog).queryByRole("button", { name: "今日" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "昨日" })).toBeNull();
-    expect(within(dialog).queryByRole("button", { name: "24 小时" })).toBeNull();
+    expect(
+      within(dialog).queryByRole("button", { name: "24 小时" }),
+    ).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "7 日" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "历史" })).toBeNull();
     await waitFor(() => {
@@ -2882,7 +2938,10 @@ export const UpstreamAccountTab: Story = {
     const responseLatency = firstRecentRow.querySelector(
       '[data-testid="dashboard-compact-latency-response-time"]',
     );
-    if (!(firstByteLatency instanceof HTMLElement) || !(responseLatency instanceof HTMLElement)) {
+    if (
+      !(firstByteLatency instanceof HTMLElement) ||
+      !(responseLatency instanceof HTMLElement)
+    ) {
       throw new Error("missing upstream compact latency readings");
     }
     await expect(firstByteLatency.className).not.toMatch(/rounded|border|bg-/);
@@ -2906,11 +2965,15 @@ export const UpstreamAccountTab: Story = {
     const identityChips = canvas.getAllByTestId(
       "dashboard-upstream-account-recent-identity-chip",
     );
-    await expect(new Set(identityChips.map((chip) => chip.className)).size).toBe(4);
+    await expect(
+      new Set(identityChips.map((chip) => chip.className)).size,
+    ).toBe(4);
     await expect(canvas.queryByText("按调用计数，不按对话去重")).toBeNull();
     await expect(canvas.queryByText("仍在重试链路中的调用")).toBeNull();
     await expect(
-      canvas.queryByText("最近 4 条调用里仍有活动或异常，优先从下方最近记录继续排查。"),
+      canvas.queryByText(
+        "最近 4 条调用里仍有活动或异常，优先从下方最近记录继续排查。",
+      ),
     ).toBeNull();
     const identityChip = canvas.getAllByTestId(
       "dashboard-upstream-account-recent-identity-chip",
@@ -2984,6 +3047,60 @@ export const UpstreamAccountPhaseBreakdownStatic: Story = {
   },
 };
 
+export const UpstreamAccountRoutingBadgesOpenRoutingTab: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation("pck-story-upstream-routing-badges", [
+          createPreview({
+            id: 9861,
+            invokeId: "story-working-routing-badges",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ]),
+      ])}
+      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse()}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+
+    const statusBadge = await canvas.findByTestId(
+      "dashboard-upstream-account-status",
+    );
+    await userEvent.click(statusBadge);
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
+      "account:42:routing",
+    );
+    await expect(
+      within(document.body).getByTestId("story-account-drawer-tab"),
+    ).toHaveTextContent("Tab routing");
+
+    const policyBadge = await canvas.findByTestId(
+      "dashboard-upstream-account-policy-badge",
+    );
+    await userEvent.click(policyBadge);
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
+      "account:42:routing",
+    );
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Status and routing-policy badges in the upstream-account dashboard card open the shared account drawer directly on the routing tab, while the account name keeps the default overview entry.",
+      },
+    },
+  },
+};
+
 export const UpstreamAccountMetricTooltips: Story = {
   args: UpstreamAccountTab.args,
   render: () => (
@@ -3041,15 +3158,39 @@ export const UpstreamAccountMetricTooltips: Story = {
       await userEvent.unhover(trigger);
     };
 
-    await assertMetricTooltip("latency", ["首字用时", "2.87 s", "响应时间", "阶段首字节"]);
-    await assertMetricTooltip("requests", ["请求数", "成功率", "75%", "非成功率"]);
-    await assertMetricTooltip("cost", ["成本", "0.72", "失败成本", "失败成本比率", "30.6%", "成功/其他成本", "单次均价"]);
-    await assertMetricTooltip("token", ["Token", "缓存命中率", "成功 Token", "单请求 Token"]);
+    await assertMetricTooltip("latency", [
+      "首字用时",
+      "2.87 s",
+      "响应时间",
+      "阶段首字节",
+    ]);
+    await assertMetricTooltip("requests", [
+      "请求数",
+      "成功率",
+      "75%",
+      "非成功率",
+    ]);
+    await assertMetricTooltip("cost", [
+      "成本",
+      "0.72",
+      "失败成本",
+      "失败成本比率",
+      "30.6%",
+      "成功/其他成本",
+      "单次均价",
+    ]);
+    await assertMetricTooltip("token", [
+      "Token",
+      "缓存命中率",
+      "成功 Token",
+      "单请求 Token",
+    ]);
 
     const finalTrigger = canvasElement.querySelector(
       '[data-testid="dashboard-upstream-account-metric-card"][data-metric="cost"]',
     );
-    if (finalTrigger instanceof HTMLElement) await userEvent.click(finalTrigger);
+    if (finalTrigger instanceof HTMLElement)
+      await userEvent.click(finalTrigger);
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
@@ -3096,16 +3237,17 @@ export const UpstreamAccountRecentIdentityChipOpensConversation: Story = {
     await userEvent.click(identityChip);
     await waitFor(() => {
       expect(
-        document.body.querySelector(
-          '[data-testid="story-drawer-state"]',
-        )?.textContent,
+        document.body.querySelector('[data-testid="story-drawer-state"]')
+          ?.textContent,
       ).toContain("conversation:pck-upstream-running");
     });
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
       "conversation:pck-upstream-running",
     );
 
-    const firstRow = canvas.getAllByTestId("dashboard-upstream-account-recent-row")[0];
+    const firstRow = canvas.getAllByTestId(
+      "dashboard-upstream-account-recent-row",
+    )[0];
     if (!(firstRow instanceof HTMLButtonElement)) {
       throw new Error("expected upstream recent row button");
     }
@@ -3113,9 +3255,8 @@ export const UpstreamAccountRecentIdentityChipOpensConversation: Story = {
     await userEvent.click(firstRow);
     await waitFor(() => {
       expect(
-        document.body.querySelector(
-          '[data-testid="story-drawer-state"]',
-        )?.textContent,
+        document.body.querySelector('[data-testid="story-drawer-state"]')
+          ?.textContent,
       ).toContain("invocation:acct-invoke-1");
     });
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
@@ -3165,7 +3306,9 @@ export const UpstreamAccountTabDynamicSeven: Story = {
     const identityChips = canvas.getAllByTestId(
       "dashboard-upstream-account-recent-identity-chip",
     );
-    await expect(new Set(identityChips.map((chip) => chip.className)).size).toBeGreaterThan(3);
+    await expect(
+      new Set(identityChips.map((chip) => chip.className)).size,
+    ).toBeGreaterThan(3);
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },

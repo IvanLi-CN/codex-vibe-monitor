@@ -110,6 +110,7 @@ labels:
 - `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`：非 compact 代理路径的上游等待超时，默认 `60` 秒。
 - `OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS`：`/v1/responses/compact` 的上游等待超时，可选覆盖；默认 `180` 秒。
 - `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS`：请求体读取总超时，默认 `180` 秒；超时返回 `408`。
+- `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED`：加密对话路由绑定的首次初始化默认值；默认 `false`。只有当 SQLite 中该设置尚未初始化时才会写入数据库，之后运行期始终以设置页保存值为准，不会被 env 反复覆盖。
 - `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`：启用号池 / 上游账号写入的必填密钥；没有它时账号列表仍可读，但新增、更新、删除与 OAuth 绑定都会被拒绝。
 - `UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID` / `UPSTREAM_ACCOUNTS_OAUTH_ISSUER`：Codex OAuth 登录的 client / issuer；默认沿用官方 Codex CLI 当前参数。
 - `UPSTREAM_ACCOUNTS_USAGE_BASE_URL`：OAuth 账号 usage 抓取基址；默认 `https://chatgpt.com/backend-api`，会自动拼接 `/wham/usage`。

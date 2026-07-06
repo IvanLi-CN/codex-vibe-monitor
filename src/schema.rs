@@ -2504,6 +2504,39 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .context("failed to rebuild upstream account stats rollups from sources")?;
     }
 
+    let proxy_model_settings_existing_columns =
+        sqlx::query("PRAGMA table_info('proxy_model_settings')")
+            .fetch_all(pool)
+            .await
+            .context("failed to inspect proxy_model_settings columns")?
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect::<Vec<_>>();
+    let proxy_model_settings_had_owner_routing_column = proxy_model_settings_existing_columns
+        .iter()
+        .any(|column| column == "encrypted_session_owner_routing_enabled");
+    let proxy_model_settings_had_owner_routing_init_column =
+        proxy_model_settings_existing_columns
+            .iter()
+            .any(|column| column == "encrypted_session_owner_routing_initialized");
+    let proxy_model_settings_had_singleton_row = if proxy_model_settings_existing_columns.is_empty()
+    {
+        false
+    } else {
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM proxy_model_settings
+            WHERE id = ?1
+            "#,
+        )
+        .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+        .fetch_one(pool)
+        .await
+        .context("failed to inspect proxy_model_settings singleton existence")?
+            > 0
+    };
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS proxy_model_settings (
@@ -2516,7 +2549,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             openai_proxy_upstream_websocket_default_enabled INTEGER NOT NULL DEFAULT 0,
             request_body_logging_enabled INTEGER NOT NULL DEFAULT 1,
             response_body_logging_enabled INTEGER NOT NULL DEFAULT 1,
-            encrypted_session_owner_routing_enabled INTEGER NOT NULL DEFAULT 1,
+            encrypted_session_owner_routing_enabled INTEGER NOT NULL DEFAULT 0,
+            encrypted_session_owner_routing_initialized INTEGER NOT NULL DEFAULT 0,
             websocket_settings_migrated INTEGER NOT NULL DEFAULT 0,
             enabled_preset_models_json TEXT,
             preset_models_migrated INTEGER NOT NULL DEFAULT 0,
@@ -2636,7 +2670,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     if let Err(err) = sqlx::query(
         r#"
         ALTER TABLE proxy_model_settings
-        ADD COLUMN encrypted_session_owner_routing_enabled INTEGER NOT NULL DEFAULT 1
+        ADD COLUMN encrypted_session_owner_routing_enabled INTEGER NOT NULL DEFAULT 0
         "#,
     )
     .execute(pool)
@@ -2644,6 +2678,37 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         && !err.to_string().contains("duplicate column name")
     {
         return Err(err).context("failed to ensure encrypted_session_owner_routing_enabled column");
+    }
+
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE proxy_model_settings
+        ADD COLUMN encrypted_session_owner_routing_initialized INTEGER NOT NULL DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err)
+            .context("failed to ensure encrypted_session_owner_routing_initialized column");
+    }
+
+    if proxy_model_settings_had_owner_routing_column
+        && !proxy_model_settings_had_owner_routing_init_column
+        && proxy_model_settings_had_singleton_row
+    {
+        sqlx::query(
+            r#"
+            UPDATE proxy_model_settings
+            SET encrypted_session_owner_routing_initialized = 1
+            WHERE id = ?1
+            "#,
+        )
+        .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+        .execute(pool)
+        .await
+        .context("failed to preserve initialized encrypted owner routing settings")?;
     }
 
     if let Err(err) = sqlx::query(
@@ -2673,10 +2738,12 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             openai_proxy_upstream_websocket_default_enabled,
             request_body_logging_enabled,
             response_body_logging_enabled,
+            encrypted_session_owner_routing_enabled,
+            encrypted_session_owner_routing_initialized,
             websocket_settings_migrated,
             enabled_preset_models_json
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
         "#,
     )
     .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
@@ -2687,6 +2754,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .bind(DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED as i64)
     .bind(1_i64)
     .bind(1_i64)
+    .bind(DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED as i64)
+    .bind(0_i64)
     .bind(0_i64)
     .bind(default_enabled_models_json)
     .execute(pool)
