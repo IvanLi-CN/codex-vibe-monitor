@@ -124,6 +124,43 @@ fn proxy_stream_observe_downstream_body_terminal(
     }
 }
 
+async fn wait_for_downstream_body_terminal_until(
+    downstream_body_terminal_rx: &mut watch::Receiver<DownstreamBodyTerminalState>,
+    deadline: Instant,
+    downstream_closed: &mut bool,
+    downstream_write_error_kind: &mut Option<&'static str>,
+    last_upstream_chunk_received_at: Option<Instant>,
+    last_upstream_chunk_gap_ms: &mut Option<u64>,
+) {
+    loop {
+        let state = *downstream_body_terminal_rx.borrow_and_update();
+        match state {
+            DownstreamBodyTerminalState::Open => {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    break;
+                };
+                if tokio::time::timeout(remaining, downstream_body_terminal_rx.changed())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            DownstreamBodyTerminalState::Completed => break,
+            DownstreamBodyTerminalState::Dropped => {
+                proxy_stream_observe_downstream_body_terminal(
+                    state,
+                    downstream_closed,
+                    downstream_write_error_kind,
+                    last_upstream_chunk_received_at,
+                    last_upstream_chunk_gap_ms,
+                );
+                break;
+            }
+        }
+    }
+}
+
 pub(crate) async fn proxy_openai_v1_inner(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -2123,33 +2160,26 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         }
         drop(tx);
         drop(proxy_request_permit_for_task.take());
+        let downstream_terminal_grace_deadline =
+            Instant::now() + PROXY_DOWNSTREAM_WRITE_ERROR_GRACE_PERIOD;
         if !downstream_closed && stream_error.is_none() {
-            loop {
-                let state = *downstream_body_terminal_rx.borrow_and_update();
-                match state {
-                    DownstreamBodyTerminalState::Open => {
-                        if downstream_body_terminal_rx.changed().await.is_err() {
-                            break;
-                        }
-                    }
-                    DownstreamBodyTerminalState::Completed => break,
-                    DownstreamBodyTerminalState::Dropped => {
-                        downstream_closed = true;
-                        downstream_write_error_kind.get_or_insert("body_dropped");
-                        if last_upstream_chunk_gap_ms.is_none() {
-                            last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
-                                .map(|instant| instant.elapsed().as_millis() as u64);
-                        }
-                        break;
-                    }
-                }
-            }
+            wait_for_downstream_body_terminal_until(
+                &mut downstream_body_terminal_rx,
+                downstream_terminal_grace_deadline,
+                &mut downstream_closed,
+                &mut downstream_write_error_kind,
+                last_upstream_chunk_received_at,
+                &mut last_upstream_chunk_gap_ms,
+            )
+            .await;
         }
         if !downstream_closed
             && stream_error.is_none()
             && let Some(observation) = downstream_request_observer_for_task.as_ref()
+            && let Some(remaining_grace_period) =
+                downstream_terminal_grace_deadline.checked_duration_since(Instant::now())
             && let Some(write_error) = observation
-                .wait_for_write_error_window(PROXY_DOWNSTREAM_WRITE_ERROR_GRACE_PERIOD)
+                .wait_for_write_error_window(remaining_grace_period)
                 .await
         {
             downstream_closed = true;
@@ -2798,6 +2828,61 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 format!("failed to build proxy response: {err}"),
             )
         })
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn wait_for_downstream_body_terminal_until_times_out_when_body_stays_open() {
+        let (_tx, mut rx) = watch::channel(DownstreamBodyTerminalState::Open);
+        let mut downstream_closed = false;
+        let mut downstream_write_error_kind = None;
+        let mut last_upstream_chunk_gap_ms = None;
+
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            wait_for_downstream_body_terminal_until(
+                &mut rx,
+                Instant::now() + Duration::from_millis(25),
+                &mut downstream_closed,
+                &mut downstream_write_error_kind,
+                None,
+                &mut last_upstream_chunk_gap_ms,
+            ),
+        )
+        .await
+        .expect("body-terminal wait should not hang forever");
+        assert!(!downstream_closed);
+        assert!(downstream_write_error_kind.is_none());
+        assert!(last_upstream_chunk_gap_ms.is_none());
+    }
+
+    #[tokio::test]
+    async fn wait_for_downstream_body_terminal_until_marks_dropped_before_deadline() {
+        let (tx, mut rx) = watch::channel(DownstreamBodyTerminalState::Open);
+        let mut downstream_closed = false;
+        let mut downstream_write_error_kind = None;
+        let mut last_upstream_chunk_gap_ms = None;
+        let send_drop = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = tx.send(DownstreamBodyTerminalState::Dropped);
+        });
+
+        wait_for_downstream_body_terminal_until(
+            &mut rx,
+            Instant::now() + Duration::from_millis(200),
+            &mut downstream_closed,
+            &mut downstream_write_error_kind,
+            Some(Instant::now()),
+            &mut last_upstream_chunk_gap_ms,
+        )
+        .await;
+        send_drop.await.expect("join drop sender");
+        assert!(downstream_closed);
+        assert_eq!(downstream_write_error_kind, Some("body_dropped"));
+    }
 }
 
 pub(crate) async fn read_request_body_with_limit(

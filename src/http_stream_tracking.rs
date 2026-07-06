@@ -376,33 +376,40 @@ fn spawn_downstream_reset_monitor(
     monitor_stream: TcpStream,
     observer: DownstreamTransportObserver,
 ) {
-    tokio::spawn(async move {
-        let mut peek_buf = [0u8; 1];
-        loop {
-            if monitor_stream.readable().await.is_err() {
-                break;
-            }
-            if let Ok(Some(err)) = monitor_stream.take_error() {
+    tokio::spawn(monitor_downstream_reset_stream(monitor_stream, observer));
+}
+
+async fn monitor_downstream_reset_stream(
+    monitor_stream: TcpStream,
+    observer: DownstreamTransportObserver,
+) {
+    let mut peek_buf = [0u8; 1];
+    loop {
+        if monitor_stream.readable().await.is_err() {
+            break;
+        }
+        if let Ok(Some(err)) = monitor_stream.take_error() {
+            observer.record_write_error(
+                downstream_transport_write_error_kind(&err),
+                format!("socket_take_error:{err}"),
+            );
+            break;
+        }
+        match monitor_stream.peek(&mut peek_buf).await {
+            Ok(0) => break,
+            // Once ordinary readable bytes show up, this side channel can no longer
+            // distinguish a reset for the current response from later keep-alive traffic.
+            Ok(_) => break,
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(err) => {
                 observer.record_write_error(
                     downstream_transport_write_error_kind(&err),
-                    format!("socket_take_error:{err}"),
+                    format!("socket_peek_error:{err}"),
                 );
                 break;
             }
-            match monitor_stream.peek(&mut peek_buf).await {
-                Ok(0) => break,
-                Ok(_) => continue,
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => continue,
-                Err(err) => {
-                    observer.record_write_error(
-                        downstream_transport_write_error_kind(&err),
-                        format!("socket_peek_error:{err}"),
-                    );
-                    break;
-                }
-            }
         }
-    });
+    }
 }
 
 async fn tcp_accept(listener: &TcpListener) -> Option<(TcpStream, SocketAddr)> {
@@ -513,6 +520,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
 
     #[tokio::test]
     async fn downstream_request_observer_ignores_later_request_write_errors() {
@@ -534,5 +542,43 @@ mod tests {
             .expect("second request should observe its own write error");
         assert_eq!(second_snapshot.kind, "connection_reset");
         assert_eq!(second_snapshot.request_seq, 2);
+    }
+
+    #[tokio::test]
+    async fn downstream_reset_monitor_stops_on_readable_keepalive_data() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind keepalive test listener");
+        let addr = listener.local_addr().expect("keepalive test listener addr");
+        let accept = tokio::spawn(async move {
+            listener
+                .accept()
+                .await
+                .expect("accept keepalive test connection")
+                .0
+        });
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("connect keepalive test client");
+        let server = accept.await.expect("join keepalive accept task");
+
+        let observer = DownstreamTransportObserver::new();
+        let request = observer.begin_request();
+        let monitor = tokio::spawn(monitor_downstream_reset_stream(server, observer.clone()));
+
+        client
+            .write_all(b"GET /next HTTP/1.1\r\nHost: keepalive\r\n\r\n")
+            .await
+            .expect("write keepalive bytes");
+        tokio::time::timeout(Duration::from_millis(200), monitor)
+            .await
+            .expect("monitor should stop once keepalive bytes become readable")
+            .expect("join keepalive monitor");
+        assert!(
+            request
+                .wait_for_write_error_window(Duration::from_millis(20))
+                .await
+                .is_none()
+        );
     }
 }
