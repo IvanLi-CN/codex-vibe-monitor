@@ -1785,7 +1785,7 @@ function InvocationSlot({
     >
       <div
         data-testid="dashboard-working-conversation-slot-header"
-        className="grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 gap-y-1"
+        className="grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1"
       >
         <div className="flex min-w-0 shrink-0 items-center gap-1.5">
           <div
@@ -1803,9 +1803,9 @@ function InvocationSlot({
         </div>
         <div
           data-testid="dashboard-working-conversation-slot-readings"
-          className="flex min-w-0 flex-wrap items-center justify-end gap-1.5"
+          className="flex min-w-0 flex-nowrap items-center justify-end gap-1"
         >
-          <div className="flex min-w-0 items-center justify-end gap-1.5">
+          <div className="flex min-w-0 shrink items-center justify-end gap-1">
             {invocation.livePhase ? (
               <InvocationPhaseBadge
                 phase={invocation.livePhase}
@@ -1825,12 +1825,12 @@ function InvocationSlot({
               invocation.record,
               "h-5 border-primary/45 bg-primary/10 px-1.5 text-[9.5px]",
             )}
-            <div className="flex h-5 shrink-0 items-center">
+            <div className="flex h-5 shrink items-center">
               <div className="flex items-center gap-1">
                 {renderEndpointSummary(
                   viewModel.endpointDisplay,
                   t,
-                  "h-5 rounded-full border-transparent bg-base-100/10 px-1.5 py-0 text-[9.5px] font-semibold leading-none text-base-content/76 shadow-none",
+                  "h-5 rounded-full border-transparent bg-base-100/10 px-1 py-0 text-[9px] font-semibold leading-none text-base-content/76 shadow-none",
                 )}
                 <DashboardImageToolIconBadge
                   imageIntentDisplay={viewModel.imageIntentDisplay}
@@ -1845,7 +1845,7 @@ function InvocationSlot({
             }
             responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}
-            className="text-[11.5px]"
+            className="shrink-0 flex-nowrap gap-1 text-[11px]"
           />
         </div>
       </div>

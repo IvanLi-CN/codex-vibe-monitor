@@ -3529,6 +3529,62 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toHaveLength(1);
   });
 
+  it("keeps completed slot readings on a single no-wrap row", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-completed-slot-single-line", [
+          createPreview({
+            id: 91,
+            invokeId: "invoke-completed-slot-current",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "http_502",
+            failureClass: "service_failure",
+            errorMessage: "upstream gateway closed before first byte",
+            failureKind: "upstream_timeout",
+          }),
+          createPreview({
+            id: 90,
+            invokeId: "invoke-completed-slot-previous",
+            occurredAt: "2026-04-04T10:04:10Z",
+            status: "success",
+            tReqReadMs: 8,
+            tReqParseMs: 6,
+            tUpstreamConnectMs: 84,
+            tUpstreamTtfbMs: 96,
+            tUpstreamStreamMs: 240,
+            tRespParseMs: 10,
+            tPersistMs: 7,
+            tTotalMs: 431,
+          }),
+        ]),
+      ]),
+    );
+
+    const previousSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="previous"]',
+    );
+    if (!(previousSlot instanceof HTMLElement)) {
+      throw new Error("missing previous slot");
+    }
+
+    const slotReadings = previousSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-readings"]',
+    );
+    if (!(slotReadings instanceof HTMLElement)) {
+      throw new Error("missing previous slot readings");
+    }
+
+    const latencyPills = slotReadings.querySelector(
+      '[data-testid="dashboard-compact-latency-pills"]',
+    );
+    if (!(latencyPills instanceof HTMLElement)) {
+      throw new Error("missing previous slot latency pills");
+    }
+
+    expect(slotReadings.className).toContain("flex-nowrap");
+    expect(latencyPills.className).toContain("flex-nowrap");
+  });
+
   it("formats dashboard latency pills with at most two decimals and without overflowing past four digits", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-04T10:05:00.000Z"));
