@@ -29,6 +29,9 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
     let mut upstream_429_max_retries = 0_u8;
     let mut available_models: Option<Vec<String>> = None;
     let mut tag_available_models_defined = false;
+    let status_change_reasons = default_status_change_reasons();
+    let status_change_reason_field_sources =
+        default_status_change_reason_field_sources("root");
     let mut system_denied_models = BTreeSet::new();
 
     for tag in tags {
@@ -98,6 +101,8 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         ),
         available_models: available_models.unwrap_or_default(),
         available_models_defined: tag_available_models_defined,
+        status_change_reasons,
+        status_change_reason_field_sources,
         system_denied_models: system_denied_models.into_iter().collect(),
         source_tag_ids,
         source_tag_names,
@@ -141,6 +146,17 @@ struct RoutingPolicyOverrideRow {
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<String>,
+    policy_status_change_upstream_http_401: Option<i64>,
+    policy_status_change_upstream_http_402: Option<i64>,
+    policy_status_change_upstream_http_403: Option<i64>,
+    policy_status_change_reauth_required: Option<i64>,
+    policy_status_change_upstream_http_429_rate_limit: Option<i64>,
+    policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
+    policy_status_change_usage_snapshot_exhausted: Option<i64>,
+    policy_status_change_quota_still_exhausted: Option<i64>,
+    policy_status_change_transport_failure: Option<i64>,
+    policy_status_change_upstream_server_overloaded: Option<i64>,
+    policy_status_change_upstream_http_5xx: Option<i64>,
     policy_responses_first_byte_timeout_secs: Option<i64>,
     policy_compact_first_byte_timeout_secs: Option<i64>,
     policy_responses_stream_timeout_secs: Option<i64>,
@@ -164,6 +180,17 @@ struct GroupRoutingPolicyOverrideRow {
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<String>,
+    policy_status_change_upstream_http_401: Option<i64>,
+    policy_status_change_upstream_http_402: Option<i64>,
+    policy_status_change_upstream_http_403: Option<i64>,
+    policy_status_change_reauth_required: Option<i64>,
+    policy_status_change_upstream_http_429_rate_limit: Option<i64>,
+    policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
+    policy_status_change_usage_snapshot_exhausted: Option<i64>,
+    policy_status_change_quota_still_exhausted: Option<i64>,
+    policy_status_change_transport_failure: Option<i64>,
+    policy_status_change_upstream_server_overloaded: Option<i64>,
+    policy_status_change_upstream_http_5xx: Option<i64>,
     policy_responses_first_byte_timeout_secs: Option<i64>,
     policy_compact_first_byte_timeout_secs: Option<i64>,
     policy_responses_stream_timeout_secs: Option<i64>,
@@ -193,6 +220,23 @@ fn apply_routing_timeout_override(
     if let Some(value) = settings.compact_stream_timeout_secs {
         rule.timeouts.compact_stream_timeout_secs = Some(value);
         rule.timeout_field_sources.compact_stream_timeout_secs = source.to_string();
+    }
+}
+
+fn apply_status_change_reason_override(
+    rule: &mut EffectiveRoutingRule,
+    source: &str,
+    reason_code: &str,
+    value: Option<i64>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    if let Some(reason_code) = canonical_status_change_reason_code(reason_code) {
+        rule.status_change_reasons
+            .insert(reason_code.to_string(), value != 0);
+        rule.status_change_reason_field_sources
+            .insert(reason_code.to_string(), source.to_string());
     }
 }
 
@@ -315,6 +359,17 @@ async fn load_group_routing_policy_override_map(
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
             policy_available_models_json,
+            policy_status_change_upstream_http_401,
+            policy_status_change_upstream_http_402,
+            policy_status_change_upstream_http_403,
+            policy_status_change_reauth_required,
+            policy_status_change_upstream_http_429_rate_limit,
+            policy_status_change_upstream_http_429_quota_exhausted,
+            policy_status_change_usage_snapshot_exhausted,
+            policy_status_change_quota_still_exhausted,
+            policy_status_change_transport_failure,
+            policy_status_change_upstream_server_overloaded,
+            policy_status_change_upstream_http_5xx,
             policy_responses_first_byte_timeout_secs,
             policy_compact_first_byte_timeout_secs,
             policy_responses_stream_timeout_secs,
@@ -362,6 +417,17 @@ async fn load_account_routing_policy_override_map(
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
             policy_available_models_json,
+            policy_status_change_upstream_http_401,
+            policy_status_change_upstream_http_402,
+            policy_status_change_upstream_http_403,
+            policy_status_change_reauth_required,
+            policy_status_change_upstream_http_429_rate_limit,
+            policy_status_change_upstream_http_429_quota_exhausted,
+            policy_status_change_usage_snapshot_exhausted,
+            policy_status_change_quota_still_exhausted,
+            policy_status_change_transport_failure,
+            policy_status_change_upstream_server_overloaded,
+            policy_status_change_upstream_http_5xx,
             policy_responses_first_byte_timeout_secs,
             policy_compact_first_byte_timeout_secs,
             policy_responses_stream_timeout_secs,
@@ -419,6 +485,72 @@ fn apply_group_routing_policy_override(
             decode_group_upstream_429_max_retries(row.upstream_429_max_retries),
         );
     }
+    apply_status_change_reason_override(
+        rule,
+        "group",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401,
+        row.policy_status_change_upstream_http_401,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "group",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402,
+        row.policy_status_change_upstream_http_402,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "group",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403,
+        row.policy_status_change_upstream_http_403,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "group",
+        UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
+        row.policy_status_change_reauth_required,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "group",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT,
+        row.policy_status_change_upstream_http_429_rate_limit,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "group",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        row.policy_status_change_upstream_http_429_quota_exhausted,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "group",
+        UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED,
+        row.policy_status_change_usage_snapshot_exhausted,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "group",
+        UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
+        row.policy_status_change_quota_still_exhausted,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "group",
+        UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
+        row.policy_status_change_transport_failure,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "group",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+        row.policy_status_change_upstream_server_overloaded,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "group",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX,
+        row.policy_status_change_upstream_http_5xx,
+    );
     apply_routing_timeout_override(
         rule,
         "group",
@@ -440,6 +572,9 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     let inherited_available_models = rule.available_models.clone();
     let inherited_available_models_defined = rule.available_models_defined;
     let inherited_available_models_source = rule.field_sources.available_models.clone();
+    let inherited_status_change_reasons = rule.status_change_reasons.clone();
+    let inherited_status_change_reason_field_sources =
+        rule.status_change_reason_field_sources.clone();
     let inherited_timeouts = rule.timeouts.clone();
     let inherited_timeout_field_sources = rule.timeout_field_sources.clone();
     rule.block_new_conversations |= tag_rule.block_new_conversations;
@@ -465,6 +600,8 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     rule.source_tag_ids = tag_rule.source_tag_ids.clone();
     rule.source_tag_names = tag_rule.source_tag_names.clone();
     rule.field_sources = tag_rule.field_sources.clone();
+    rule.status_change_reasons = inherited_status_change_reasons;
+    rule.status_change_reason_field_sources = inherited_status_change_reason_field_sources;
     rule.timeouts = tag_rule.timeouts.clone();
     rule.timeout_field_sources = tag_rule.timeout_field_sources.clone();
     rule.image_tool_rewrite_mode = inherited_image_tool_rewrite_mode;
@@ -525,6 +662,72 @@ fn apply_account_routing_policy_override(
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
         row.policy_available_models_json.as_deref(),
+    );
+    apply_status_change_reason_override(
+        rule,
+        "account",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401,
+        row.policy_status_change_upstream_http_401,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "account",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402,
+        row.policy_status_change_upstream_http_402,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "account",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403,
+        row.policy_status_change_upstream_http_403,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "account",
+        UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
+        row.policy_status_change_reauth_required,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "account",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT,
+        row.policy_status_change_upstream_http_429_rate_limit,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "account",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        row.policy_status_change_upstream_http_429_quota_exhausted,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "account",
+        UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED,
+        row.policy_status_change_usage_snapshot_exhausted,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "account",
+        UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
+        row.policy_status_change_quota_still_exhausted,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "account",
+        UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
+        row.policy_status_change_transport_failure,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "account",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+        row.policy_status_change_upstream_server_overloaded,
+    );
+    apply_status_change_reason_override(
+        rule,
+        "account",
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX,
+        row.policy_status_change_upstream_http_5xx,
     );
     apply_routing_timeout_override(
         rule,
@@ -992,6 +1195,9 @@ fn derive_upstream_account_action_result(
     reason_code: Option<&str>,
     reason_message: Option<&str>,
 ) -> &'static str {
+    if action == UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED {
+        return "suppressed";
+    }
     if action == UPSTREAM_ACCOUNT_ACTION_SYNC_DEFERRED
         || reason_code == Some(UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED)
         || reason_message.is_some_and(|message| message.contains("remaining"))
@@ -1014,7 +1220,8 @@ async fn record_upstream_account_action(
     account_id: i64,
     payload: UpstreamAccountActionPayload<'_>,
 ) -> Result<()> {
-    record_upstream_account_action_with_proxy_snapshot(pool, account_id, payload, None).await
+    persist_upstream_account_action_with_proxy_snapshot(pool, account_id, payload, None, true)
+        .await
 }
 
 async fn record_upstream_account_action_with_proxy_snapshot(
@@ -1022,6 +1229,23 @@ async fn record_upstream_account_action_with_proxy_snapshot(
     account_id: i64,
     payload: UpstreamAccountActionPayload<'_>,
     proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
+) -> Result<()> {
+    persist_upstream_account_action_with_proxy_snapshot(
+        pool,
+        account_id,
+        payload,
+        proxy_snapshot,
+        true,
+    )
+    .await
+}
+
+async fn persist_upstream_account_action_with_proxy_snapshot(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    payload: UpstreamAccountActionPayload<'_>,
+    proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
+    update_latest_action: bool,
 ) -> Result<()> {
     let reason_message = payload
         .reason_message
@@ -1081,29 +1305,31 @@ async fn record_upstream_account_action_with_proxy_snapshot(
     .bind(created_at)
     .execute(pool)
     .await?;
-    sqlx::query(
-        r#"
-        UPDATE pool_upstream_accounts
-        SET last_action = ?2,
-            last_action_source = ?3,
-            last_action_reason_code = ?4,
-            last_action_reason_message = ?5,
-            last_action_http_status = ?6,
-            last_action_invoke_id = ?7,
-            last_action_at = ?8
-        WHERE id = ?1
-        "#,
-    )
-    .bind(account_id)
-    .bind(payload.action)
-    .bind(payload.source)
-    .bind(payload.reason_code)
-    .bind(&reason_message)
-    .bind(payload.http_status.map(|value| i64::from(value.as_u16())))
-    .bind(payload.invoke_id)
-    .bind(payload.occurred_at)
-    .execute(pool)
-    .await?;
+    if update_latest_action {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_action = ?2,
+                last_action_source = ?3,
+                last_action_reason_code = ?4,
+                last_action_reason_message = ?5,
+                last_action_http_status = ?6,
+                last_action_invoke_id = ?7,
+                last_action_at = ?8
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(payload.action)
+        .bind(payload.source)
+        .bind(payload.reason_code)
+        .bind(&reason_message)
+        .bind(payload.http_status.map(|value| i64::from(value.as_u16())))
+        .bind(payload.invoke_id)
+        .bind(payload.occurred_at)
+        .execute(pool)
+        .await?;
+    }
 
     let retention_cutoff = format_utc_iso(
         Utc::now() - ChronoDuration::days(upstream_account_history_retention_days() as i64),
@@ -1119,6 +1345,39 @@ async fn record_upstream_account_action_with_proxy_snapshot(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub(crate) async fn record_status_change_suppressed_event_with_proxy_snapshot(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    source: &str,
+    reason_code: &str,
+    reason_message: &str,
+    http_status: Option<StatusCode>,
+    failure_kind: Option<&str>,
+    invoke_id: Option<&str>,
+    sticky_key: Option<&str>,
+    occurred_at: &str,
+    proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
+) -> Result<()> {
+    persist_upstream_account_action_with_proxy_snapshot(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED,
+            source,
+            reason_code: Some(reason_code),
+            reason_message: Some(reason_message),
+            http_status,
+            failure_kind,
+            invoke_id,
+            sticky_key,
+            occurred_at,
+        },
+        proxy_snapshot,
+        false,
+    )
+    .await
 }
 
 pub(crate) async fn record_account_maintenance_deferred(
@@ -1361,6 +1620,19 @@ fn classify_sync_failure(
     )
 }
 
+pub(crate) async fn account_status_change_reason_is_enabled(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    reason_code: &str,
+) -> Result<bool> {
+    let Some(reason_code) = canonical_status_change_reason_code(reason_code) else {
+        return Ok(true);
+    };
+    Ok(load_effective_routing_rule_for_account(pool, account_id)
+        .await?
+        .status_change_reason_enabled(reason_code))
+}
+
 fn account_reason_is_rate_limited(reason_code: Option<&str>) -> bool {
     account_reason_is_quota_exhausted(reason_code)
 }
@@ -1379,12 +1651,22 @@ fn account_reason_is_temporary_failure(reason_code: Option<&str>) -> bool {
 fn account_reason_is_upstream_rejected(reason_code: Option<&str>) -> bool {
     matches!(
         reason_code,
-        Some("upstream_http_401" | "upstream_http_402" | "upstream_http_403")
+        Some(
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401
+                | UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402
+                | UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403
+        )
     )
 }
 
 fn account_reason_is_maintenance_upstream_rejected(reason_code: Option<&str>) -> bool {
-    matches!(reason_code, Some("upstream_http_402" | "upstream_rejected"))
+    matches!(
+        reason_code,
+        Some(
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402
+                | LEGACY_UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_REJECTED
+        )
+    )
 }
 
 fn account_reason_is_quota_exhausted(reason_code: Option<&str>) -> bool {
@@ -1784,9 +2066,57 @@ async fn mark_account_sync_success_with_proxy_snapshot(
     Ok(())
 }
 
+async fn record_suppressed_sync_status_change_with_proxy_snapshot(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    restored_status: &str,
+    source: &str,
+    reason_code: &str,
+    reason_message: &str,
+    http_status: Option<StatusCode>,
+    failure_kind: Option<&str>,
+    proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    let restored_status = restored_status
+        .trim()
+        .is_empty()
+        .then_some(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .unwrap_or(restored_status);
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_synced_at = ?3,
+            updated_at = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(restored_status)
+    .bind(&now_iso)
+    .execute(pool)
+    .await?;
+    record_status_change_suppressed_event_with_proxy_snapshot(
+        pool,
+        account_id,
+        source,
+        reason_code,
+        reason_message,
+        http_status,
+        failure_kind,
+        None,
+        None,
+        &now_iso,
+        proxy_snapshot,
+    )
+    .await
+}
+
 async fn record_account_sync_recovery_blocked(
     pool: &Pool<Sqlite>,
     account_id: i64,
+    restored_status: &str,
     source: &str,
     status: &str,
     reason_code: &'static str,
@@ -1794,6 +2124,20 @@ async fn record_account_sync_recovery_blocked(
     preserved_error: Option<&str>,
     failure_kind: Option<&str>,
 ) -> Result<()> {
+    if !account_status_change_reason_is_enabled(pool, account_id, reason_code).await? {
+        return record_suppressed_sync_status_change_with_proxy_snapshot(
+            pool,
+            account_id,
+            restored_status,
+            source,
+            reason_code,
+            reason_message,
+            None,
+            failure_kind,
+            None,
+        )
+        .await;
+    }
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -1815,8 +2159,8 @@ async fn record_account_sync_recovery_blocked(
     .bind(&now_iso)
     .bind(preserved_error)
     .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
-    .bind("upstream_http_402")
-    .bind("upstream_rejected")
+    .bind(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402)
+    .bind(LEGACY_UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_REJECTED)
     .execute(pool)
     .await?;
     record_upstream_account_action(
@@ -1841,11 +2185,26 @@ async fn record_account_sync_recovery_blocked(
 async fn record_account_sync_hard_unavailable(
     pool: &Pool<Sqlite>,
     account_id: i64,
+    restored_status: &str,
     source: &str,
     reason_code: &'static str,
     reason_message: &str,
     failure_kind: &'static str,
 ) -> Result<()> {
+    if !account_status_change_reason_is_enabled(pool, account_id, reason_code).await? {
+        return record_suppressed_sync_status_change_with_proxy_snapshot(
+            pool,
+            account_id,
+            restored_status,
+            source,
+            reason_code,
+            reason_message,
+            None,
+            Some(failure_kind),
+            None,
+        )
+        .await;
+    }
     let now_iso = format_utc_iso(Utc::now());
     let cooldown_until =
         maintenance_sync_rejected_cooldown_until(source, reason_code, reason_message, &now_iso);
@@ -1894,6 +2253,7 @@ async fn record_account_sync_hard_unavailable(
 async fn record_account_sync_failure(
     pool: &Pool<Sqlite>,
     account_id: i64,
+    restored_status: &str,
     source: &str,
     status: &str,
     error_message: &str,
@@ -1906,6 +2266,7 @@ async fn record_account_sync_failure(
     record_account_sync_failure_with_proxy_snapshot(
         pool,
         account_id,
+        restored_status,
         source,
         status,
         error_message,
@@ -1922,6 +2283,7 @@ async fn record_account_sync_failure(
 async fn record_account_sync_failure_with_proxy_snapshot(
     pool: &Pool<Sqlite>,
     account_id: i64,
+    restored_status: &str,
     source: &str,
     status: &str,
     error_message: &str,
@@ -1932,6 +2294,20 @@ async fn record_account_sync_failure_with_proxy_snapshot(
     clear_transient_route_failure_state: bool,
     proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
 ) -> Result<()> {
+    if !account_status_change_reason_is_enabled(pool, account_id, reason_code).await? {
+        return record_suppressed_sync_status_change_with_proxy_snapshot(
+            pool,
+            account_id,
+            restored_status,
+            source,
+            reason_code,
+            error_message,
+            http_status,
+            Some(failure_kind),
+            proxy_snapshot,
+        )
+        .await;
+    }
     let now_iso = format_utc_iso(Utc::now());
     let cooldown_until =
         maintenance_sync_rejected_cooldown_until(source, reason_code, error_message, &now_iso);
@@ -2001,12 +2377,14 @@ async fn record_account_sync_failure_with_proxy_snapshot(
 async fn record_classified_account_sync_failure(
     pool: &Pool<Sqlite>,
     row: &UpstreamAccountRow,
+    restored_status: &str,
     source: &str,
     error_message: &str,
 ) -> Result<()> {
     record_classified_account_sync_failure_with_proxy_snapshot(
         pool,
         row,
+        restored_status,
         source,
         error_message,
         None,
@@ -2017,6 +2395,7 @@ async fn record_classified_account_sync_failure(
 async fn record_classified_account_sync_failure_with_proxy_snapshot(
     pool: &Pool<Sqlite>,
     row: &UpstreamAccountRow,
+    restored_status: &str,
     source: &str,
     error_message: &str,
     proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
@@ -2052,6 +2431,7 @@ async fn record_classified_account_sync_failure_with_proxy_snapshot(
     record_account_sync_failure_with_proxy_snapshot(
         pool,
         row.id,
+        restored_status,
         source,
         next_status,
         error_message,

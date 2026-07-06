@@ -15,6 +15,10 @@ import type {
   UpstreamAccountDetail,
   UpstreamAccountSummary,
 } from '../lib/api'
+import {
+  buildDefaultStatusChangeReasonFieldSources,
+  buildDefaultStatusChangeReasons,
+} from '../lib/upstreamAccountStatusChangeReasons'
 import { duplicateReasons } from './UpstreamAccountsPage.story-data'
 
 export type StoryStore = {
@@ -293,6 +297,14 @@ const detailRichRoutingRule: EffectiveRoutingRule = {
   allowCutIn: false,
   availableModels: ['gpt-5.5', 'gpt-5.4-mini'],
   systemDeniedModels: ['gpt-5.5'],
+  statusChangeReasons: {
+    ...buildDefaultStatusChangeReasons(),
+    upstream_http_401: false,
+  },
+  statusChangeReasonFieldSources: {
+    ...buildDefaultStatusChangeReasonFieldSources(),
+    upstream_http_401: 'account',
+  },
   sourceTagIds: [1, 4, 20],
   sourceTagNames: ['vip', 'sticky-pool', 'priority-route'],
   priorityTier: 'fallback',

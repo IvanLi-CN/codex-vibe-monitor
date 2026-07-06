@@ -101,6 +101,44 @@ export type EffectiveRoutingRuleSource =
   | "conversation"
   | string;
 
+export const STATUS_CHANGE_REASON_CODES = [
+  "upstream_http_401",
+  "upstream_http_402",
+  "upstream_http_403",
+  "reauth_required",
+  "upstream_http_429_rate_limit",
+  "upstream_http_429_quota_exhausted",
+  "usage_snapshot_exhausted",
+  "quota_still_exhausted",
+  "transport_failure",
+  "upstream_server_overloaded",
+  "upstream_http_5xx",
+] as const;
+
+export type StatusChangeReasonCode =
+  (typeof STATUS_CHANGE_REASON_CODES)[number];
+
+export type StatusChangeReasons = Record<StatusChangeReasonCode, boolean>;
+
+export type StatusChangeReasonFieldSources = Record<
+  StatusChangeReasonCode,
+  EffectiveRoutingRuleSource
+>;
+
+export function buildDefaultStatusChangeReasons(): StatusChangeReasons {
+  return Object.fromEntries(
+    STATUS_CHANGE_REASON_CODES.map((reason) => [reason, true]),
+  ) as StatusChangeReasons;
+}
+
+export function buildDefaultStatusChangeReasonFieldSources(
+  source: EffectiveRoutingRuleSource = "root",
+): StatusChangeReasonFieldSources {
+  return Object.fromEntries(
+    STATUS_CHANGE_REASON_CODES.map((reason) => [reason, source]),
+  ) as StatusChangeReasonFieldSources;
+}
+
 export interface PoolRoutingTimeoutSettings {
   responsesFirstByteTimeoutSecs: number;
   compactFirstByteTimeoutSecs: number;
@@ -110,6 +148,7 @@ export interface PoolRoutingTimeoutSettings {
 
 export interface GroupAccountRoutingRule extends TagRoutingRule {
   imageToolRewriteMode?: ImageToolRewriteMode;
+  statusChangeReasons?: StatusChangeReasons;
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
 }
 
@@ -138,6 +177,7 @@ export interface EffectiveRoutingRule extends GroupAccountRoutingRule {
   sourceTagIds: number[];
   sourceTagNames: string[];
   fieldSources?: EffectiveRoutingRuleFieldSources;
+  statusChangeReasonFieldSources?: StatusChangeReasonFieldSources;
   timeouts?: PoolRoutingTimeoutSettings;
   timeoutFieldSources?: EffectiveRoutingTimeoutFieldSources;
 }
@@ -796,6 +836,9 @@ export interface UpdateGroupAccountRoutingRulePayload {
   upstream429RetryEnabled?: NullableRoutingRuleValue<boolean>;
   upstream429MaxRetries?: NullableRoutingRuleValue<number>;
   availableModels?: NullableRoutingRuleValue<string[]>;
+  statusChangeReasons?: Partial<
+    Record<StatusChangeReasonCode, NullableRoutingRuleValue<boolean>>
+  >;
   timeouts?: {
     responsesFirstByteTimeoutSecs?: NullableRoutingRuleValue<number>;
     compactFirstByteTimeoutSecs?: NullableRoutingRuleValue<number>;
@@ -1003,6 +1046,30 @@ function normalizeRoutingTimeoutFieldSources(
   };
 }
 
+function normalizeStatusChangeReasons(raw: unknown): StatusChangeReasons {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const next = buildDefaultStatusChangeReasons();
+  for (const reason of STATUS_CHANGE_REASON_CODES) {
+    if (typeof payload[reason] === "boolean") {
+      next[reason] = payload[reason] === true;
+    }
+  }
+  return next;
+}
+
+function normalizeStatusChangeReasonFieldSources(
+  raw: unknown,
+): StatusChangeReasonFieldSources {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const next = buildDefaultStatusChangeReasonFieldSources();
+  for (const reason of STATUS_CHANGE_REASON_CODES) {
+    if (typeof payload[reason] === "string" && payload[reason].trim()) {
+      next[reason] = payload[reason] as EffectiveRoutingRuleSource;
+    }
+  }
+  return next;
+}
+
 function normalizeGroupAccountRoutingRule(
   raw: unknown,
 ): GroupAccountRoutingRule {
@@ -1012,6 +1079,9 @@ function normalizeGroupAccountRoutingRule(
     ...payload,
     imageToolRewriteMode: normalizeImageToolRewriteMode(
       rawPayload.imageToolRewriteMode,
+    ),
+    statusChangeReasons: normalizeStatusChangeReasons(
+      rawPayload.statusChangeReasons,
     ),
     timeouts: normalizeOptionalPoolRoutingTimeoutSettings(rawPayload.timeouts),
   };
@@ -1070,6 +1140,9 @@ export function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRul
       availableModels: normalizeSource(rawSources.availableModels),
       systemDeniedModels: normalizeSource(rawSources.systemDeniedModels),
     },
+    statusChangeReasonFieldSources: normalizeStatusChangeReasonFieldSources(
+      payload.statusChangeReasonFieldSources,
+    ),
     timeoutFieldSources: {
       responsesFirstByteTimeoutSecs: normalizeSource(
         rawTimeoutFieldSources.responsesFirstByteTimeoutSecs,

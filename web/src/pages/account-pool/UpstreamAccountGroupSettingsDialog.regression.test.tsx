@@ -298,6 +298,41 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
     })
   })
 
+  it('preserves and clears per-reason status change overrides independently', () => {
+    const base = {
+      ...createGroupState('prod').routingRule,
+      statusChangeReasons: {
+        upstream_http_401: false,
+        upstream_http_402: true,
+        upstream_http_403: true,
+        reauth_required: true,
+        upstream_http_429_rate_limit: true,
+        upstream_http_429_quota_exhausted: true,
+        usage_snapshot_exhausted: true,
+        quota_still_exhausted: true,
+        transport_failure: true,
+        upstream_server_overloaded: true,
+        upstream_http_5xx: true,
+      },
+    }
+
+    expect(
+      mergeRoutingRulePatch(base, {
+        statusChangeReasons: {
+          upstream_http_402: false,
+          upstream_http_401: null,
+        },
+      }),
+    ).toEqual({
+      ...base,
+      statusChangeReasons: {
+        ...base.statusChangeReasons,
+        upstream_http_401: true,
+        upstream_http_402: false,
+      },
+    })
+  })
+
   it('clears the bulk draft field after deleting the active group', async () => {
     const deleteGroupNote = vi.fn().mockResolvedValue(undefined)
     render(<BulkDeleteHarness deleteGroupNote={deleteGroupNote} />)

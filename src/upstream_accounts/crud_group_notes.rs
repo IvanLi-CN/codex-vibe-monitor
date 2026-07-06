@@ -734,6 +734,41 @@ pub(crate) async fn update_upstream_account_group(
             &timeout_patch.compact_stream_timeout_secs,
             "compactStreamTimeoutSecs",
         )?;
+        let status_change_upstream_http_401 = routing_rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401)
+            .map_err(internal_error_tuple)?;
+        let status_change_upstream_http_402 = routing_rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402)
+            .map_err(internal_error_tuple)?;
+        let status_change_upstream_http_403 = routing_rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403)
+            .map_err(internal_error_tuple)?;
+        let status_change_reauth_required = routing_rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+            .map_err(internal_error_tuple)?;
+        let status_change_upstream_http_429_rate_limit = routing_rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT)
+            .map_err(internal_error_tuple)?;
+        let status_change_upstream_http_429_quota_exhausted = routing_rule
+            .status_change_reason_field(
+                UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            )
+            .map_err(internal_error_tuple)?;
+        let status_change_usage_snapshot_exhausted = routing_rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED)
+            .map_err(internal_error_tuple)?;
+        let status_change_quota_still_exhausted = routing_rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
+            .map_err(internal_error_tuple)?;
+        let status_change_transport_failure = routing_rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE)
+            .map_err(internal_error_tuple)?;
+        let status_change_upstream_server_overloaded = routing_rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED)
+            .map_err(internal_error_tuple)?;
+        let status_change_upstream_http_5xx = routing_rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX)
+            .map_err(internal_error_tuple)?;
         sqlx::query(
             r#"
             UPDATE pool_upstream_account_group_notes
@@ -751,10 +786,21 @@ pub(crate) async fn update_upstream_account_group(
                     WHEN ?22 != 0 THEN policy_available_models_json
                     ELSE ?23
                 END,
-                policy_responses_first_byte_timeout_secs = CASE WHEN ?24 != 0 THEN policy_responses_first_byte_timeout_secs ELSE ?25 END,
-                policy_compact_first_byte_timeout_secs = CASE WHEN ?26 != 0 THEN policy_compact_first_byte_timeout_secs ELSE ?27 END,
-                policy_responses_stream_timeout_secs = CASE WHEN ?28 != 0 THEN policy_responses_stream_timeout_secs ELSE ?29 END,
-                policy_compact_stream_timeout_secs = CASE WHEN ?30 != 0 THEN policy_compact_stream_timeout_secs ELSE ?31 END
+                policy_status_change_upstream_http_401 = CASE WHEN ?24 != 0 THEN policy_status_change_upstream_http_401 ELSE ?25 END,
+                policy_status_change_upstream_http_402 = CASE WHEN ?26 != 0 THEN policy_status_change_upstream_http_402 ELSE ?27 END,
+                policy_status_change_upstream_http_403 = CASE WHEN ?28 != 0 THEN policy_status_change_upstream_http_403 ELSE ?29 END,
+                policy_status_change_reauth_required = CASE WHEN ?30 != 0 THEN policy_status_change_reauth_required ELSE ?31 END,
+                policy_status_change_upstream_http_429_rate_limit = CASE WHEN ?32 != 0 THEN policy_status_change_upstream_http_429_rate_limit ELSE ?33 END,
+                policy_status_change_upstream_http_429_quota_exhausted = CASE WHEN ?34 != 0 THEN policy_status_change_upstream_http_429_quota_exhausted ELSE ?35 END,
+                policy_status_change_usage_snapshot_exhausted = CASE WHEN ?36 != 0 THEN policy_status_change_usage_snapshot_exhausted ELSE ?37 END,
+                policy_status_change_quota_still_exhausted = CASE WHEN ?38 != 0 THEN policy_status_change_quota_still_exhausted ELSE ?39 END,
+                policy_status_change_transport_failure = CASE WHEN ?40 != 0 THEN policy_status_change_transport_failure ELSE ?41 END,
+                policy_status_change_upstream_server_overloaded = CASE WHEN ?42 != 0 THEN policy_status_change_upstream_server_overloaded ELSE ?43 END,
+                policy_status_change_upstream_http_5xx = CASE WHEN ?44 != 0 THEN policy_status_change_upstream_http_5xx ELSE ?45 END,
+                policy_responses_first_byte_timeout_secs = CASE WHEN ?46 != 0 THEN policy_responses_first_byte_timeout_secs ELSE ?47 END,
+                policy_compact_first_byte_timeout_secs = CASE WHEN ?48 != 0 THEN policy_compact_first_byte_timeout_secs ELSE ?49 END,
+                policy_responses_stream_timeout_secs = CASE WHEN ?50 != 0 THEN policy_responses_stream_timeout_secs ELSE ?51 END,
+                policy_compact_stream_timeout_secs = CASE WHEN ?52 != 0 THEN policy_compact_stream_timeout_secs ELSE ?53 END
             WHERE group_name = ?1
             "#,
         )
@@ -781,6 +827,28 @@ pub(crate) async fn update_upstream_account_group(
         .bind(optional_retry_count_to_i64(&routing_rule.upstream_429_max_retries))
         .bind(if matches!(routing_rule.available_models, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(available_models_json)
+        .bind(if matches!(status_change_upstream_http_401, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&status_change_upstream_http_401))
+        .bind(if matches!(status_change_upstream_http_402, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&status_change_upstream_http_402))
+        .bind(if matches!(status_change_upstream_http_403, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&status_change_upstream_http_403))
+        .bind(if matches!(status_change_reauth_required, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&status_change_reauth_required))
+        .bind(if matches!(status_change_upstream_http_429_rate_limit, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&status_change_upstream_http_429_rate_limit))
+        .bind(if matches!(status_change_upstream_http_429_quota_exhausted, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&status_change_upstream_http_429_quota_exhausted))
+        .bind(if matches!(status_change_usage_snapshot_exhausted, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&status_change_usage_snapshot_exhausted))
+        .bind(if matches!(status_change_quota_still_exhausted, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&status_change_quota_still_exhausted))
+        .bind(if matches!(status_change_transport_failure, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&status_change_transport_failure))
+        .bind(if matches!(status_change_upstream_server_overloaded, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&status_change_upstream_server_overloaded))
+        .bind(if matches!(status_change_upstream_http_5xx, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(optional_bool_to_i64(&status_change_upstream_http_5xx))
         .bind(if responses_first_byte_timeout_secs.is_none() { 1_i64 } else { 0_i64 })
         .bind(responses_first_byte_timeout_secs.flatten())
         .bind(if compact_first_byte_timeout_secs.is_none() { 1_i64 } else { 0_i64 })

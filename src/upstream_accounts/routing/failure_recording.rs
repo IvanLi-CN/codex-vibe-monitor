@@ -176,6 +176,25 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
                 delete_sticky_route(pool, sticky_key).await?;
             }
             let now_iso = format_utc_iso(Utc::now());
+            if !account_status_change_reason_is_enabled(pool, account_id, classification.reason_code)
+                .await?
+            {
+                record_status_change_suppressed_event_with_proxy_snapshot(
+                    pool,
+                    account_id,
+                    UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+                    classification.reason_code,
+                    error_message,
+                    Some(status),
+                    Some(classification.failure_kind),
+                    invoke_id,
+                    sticky_key,
+                    &now_iso,
+                    None,
+                )
+                .await?;
+                return Ok(());
+            }
             sqlx::query(
                 r#"
                 UPDATE pool_upstream_accounts
@@ -371,6 +390,24 @@ pub(crate) async fn apply_pool_route_cooldown_failure(
     let row = load_upstream_account_row(pool, account_id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
+    let now_iso = format_utc_iso(Utc::now());
+    if !account_status_change_reason_is_enabled(pool, account_id, reason_code).await? {
+        record_status_change_suppressed_event_with_proxy_snapshot(
+            pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+            reason_code,
+            error_message,
+            Some(http_status),
+            Some(failure_kind),
+            invoke_id,
+            sticky_key,
+            &now_iso,
+            None,
+        )
+        .await?;
+        return Ok(());
+    }
     let now = Utc::now();
     let continuing_temporary_streak = row.consecutive_route_failures > 0
         && route_failure_kind_is_temporary(row.last_route_failure_kind.as_deref());

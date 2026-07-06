@@ -1631,6 +1631,129 @@ pub(crate) async fn update_upstream_account_inner(
             }
         }
     };
+    let status_change_upstream_http_401 = match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401)
+            .map_err(internal_error_tuple)?
+        {
+            OptionalField::Missing => row.policy_status_change_upstream_http_401,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_status_change_upstream_http_401,
+    };
+    let status_change_upstream_http_402 = match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402)
+            .map_err(internal_error_tuple)?
+        {
+            OptionalField::Missing => row.policy_status_change_upstream_http_402,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_status_change_upstream_http_402,
+    };
+    let status_change_upstream_http_403 = match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403)
+            .map_err(internal_error_tuple)?
+        {
+            OptionalField::Missing => row.policy_status_change_upstream_http_403,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_status_change_upstream_http_403,
+    };
+    let status_change_reauth_required = match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+            .map_err(internal_error_tuple)?
+        {
+            OptionalField::Missing => row.policy_status_change_reauth_required,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_status_change_reauth_required,
+    };
+    let status_change_upstream_http_429_rate_limit = match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT)
+            .map_err(internal_error_tuple)?
+        {
+            OptionalField::Missing => row.policy_status_change_upstream_http_429_rate_limit,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_status_change_upstream_http_429_rate_limit,
+    };
+    let status_change_upstream_http_429_quota_exhausted = match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .status_change_reason_field(
+                UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            )
+            .map_err(internal_error_tuple)?
+        {
+            OptionalField::Missing => row.policy_status_change_upstream_http_429_quota_exhausted,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_status_change_upstream_http_429_quota_exhausted,
+    };
+    let status_change_usage_snapshot_exhausted = match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED)
+            .map_err(internal_error_tuple)?
+        {
+            OptionalField::Missing => row.policy_status_change_usage_snapshot_exhausted,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_status_change_usage_snapshot_exhausted,
+    };
+    let status_change_quota_still_exhausted = match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
+            .map_err(internal_error_tuple)?
+        {
+            OptionalField::Missing => row.policy_status_change_quota_still_exhausted,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_status_change_quota_still_exhausted,
+    };
+    let status_change_transport_failure = match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE)
+            .map_err(internal_error_tuple)?
+        {
+            OptionalField::Missing => row.policy_status_change_transport_failure,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_status_change_transport_failure,
+    };
+    let status_change_upstream_server_overloaded = match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED)
+            .map_err(internal_error_tuple)?
+        {
+            OptionalField::Missing => row.policy_status_change_upstream_server_overloaded,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_status_change_upstream_server_overloaded,
+    };
+    let status_change_upstream_http_5xx = match payload.routing_rule.as_ref() {
+        Some(rule) => match rule
+            .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX)
+            .map_err(internal_error_tuple)?
+        {
+            OptionalField::Missing => row.policy_status_change_upstream_http_5xx,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
+        },
+        None => row.policy_status_change_upstream_http_5xx,
+    };
     let now_iso = format_utc_iso(Utc::now());
     let mut tx = state
         .pool
@@ -1681,12 +1804,23 @@ pub(crate) async fn update_upstream_account_inner(
             policy_upstream_429_retry_enabled = ?22,
             policy_upstream_429_max_retries = ?23,
             policy_available_models_json = ?24,
-            policy_responses_first_byte_timeout_secs = ?25,
-            policy_compact_first_byte_timeout_secs = ?26,
-            policy_responses_stream_timeout_secs = ?27,
-            policy_compact_stream_timeout_secs = ?28,
-            bound_proxy_keys_json = ?29,
-            updated_at = ?30
+            policy_status_change_upstream_http_401 = ?25,
+            policy_status_change_upstream_http_402 = ?26,
+            policy_status_change_upstream_http_403 = ?27,
+            policy_status_change_reauth_required = ?28,
+            policy_status_change_upstream_http_429_rate_limit = ?29,
+            policy_status_change_upstream_http_429_quota_exhausted = ?30,
+            policy_status_change_usage_snapshot_exhausted = ?31,
+            policy_status_change_quota_still_exhausted = ?32,
+            policy_status_change_transport_failure = ?33,
+            policy_status_change_upstream_server_overloaded = ?34,
+            policy_status_change_upstream_http_5xx = ?35,
+            policy_responses_first_byte_timeout_secs = ?36,
+            policy_compact_first_byte_timeout_secs = ?37,
+            policy_responses_stream_timeout_secs = ?38,
+            policy_compact_stream_timeout_secs = ?39,
+            bound_proxy_keys_json = ?40,
+            updated_at = ?41
         WHERE id = ?1
         "#,
     )
@@ -1816,6 +1950,17 @@ pub(crate) async fn update_upstream_account_inner(
         },
         None => row.policy_available_models_json.clone(),
     })
+    .bind(status_change_upstream_http_401)
+    .bind(status_change_upstream_http_402)
+    .bind(status_change_upstream_http_403)
+    .bind(status_change_reauth_required)
+    .bind(status_change_upstream_http_429_rate_limit)
+    .bind(status_change_upstream_http_429_quota_exhausted)
+    .bind(status_change_usage_snapshot_exhausted)
+    .bind(status_change_quota_still_exhausted)
+    .bind(status_change_transport_failure)
+    .bind(status_change_upstream_server_overloaded)
+    .bind(status_change_upstream_http_5xx)
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => match rule
             .timeouts
