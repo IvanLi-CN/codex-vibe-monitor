@@ -2226,6 +2226,19 @@ export const CurrentAndPrevious: Story = {
     if (!(firstByteLatency instanceof HTMLElement) || !(responseLatency instanceof HTMLElement)) {
       throw new Error("missing compact latency readings");
     }
+    const slotHeader = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-header"]',
+    );
+    if (!(slotHeader instanceof HTMLElement)) {
+      throw new Error("missing slot header");
+    }
+    await expect(
+      slotHeader.querySelector(
+        '[data-testid="dashboard-working-conversation-slot-label"]',
+      ),
+    ).toHaveTextContent(/当前调用|Current invocation/);
+    await expect(slotHeader).toContainElement(firstByteLatency);
+    await expect(slotHeader).toContainElement(responseLatency);
     await expect(firstByteLatency.className).not.toMatch(/rounded|border|bg-/);
     await expect(responseLatency.className).not.toMatch(/rounded|border|bg-/);
     const imageBadge = currentSlot.querySelector(
@@ -2261,11 +2274,31 @@ export const RunningOnlyConversation: Story = {
     error: null,
   },
   play: async ({ canvasElement }) => {
+    const currentSlot = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    expect(currentSlot).toBeInstanceOf(HTMLElement);
+    const currentSlotHeader = currentSlot?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-header"]',
+    );
+    expect(currentSlotHeader).toBeInstanceOf(HTMLElement);
+    expect(currentSlotHeader?.className).toContain("grid");
+    expect(currentSlotHeader?.className).toContain(
+      "grid-cols-[auto_minmax(0,1fr)]",
+    );
+    expect(
+      currentSlotHeader?.querySelector('[data-testid="invocation-phase-badge"]'),
+    ).toBeInstanceOf(HTMLElement);
+
     const phaseLabels = Array.from(
       canvasElement.querySelectorAll('[data-testid="invocation-phase-badge"]'),
     );
     expect(phaseLabels.length).toBeGreaterThanOrEqual(2);
     for (const phaseLabel of phaseLabels) {
+      const slotHeader = phaseLabel.closest(
+        '[data-testid="dashboard-working-conversation-slot-header"]',
+      );
+      expect(slotHeader).toBeInstanceOf(HTMLElement);
       expect(phaseLabel.className).toContain("inline-flex");
       expect(phaseLabel.className).not.toMatch(/\brounded/);
       expect(phaseLabel.className).not.toMatch(/\bborder/);

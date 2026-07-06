@@ -2631,7 +2631,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenInvocation).toHaveBeenCalledTimes(2);
   });
 
-  it("opens the conversation detail from the sequence id button only", () => {
+  it("opens conversation detail from the sequence id and invocation detail from the slot", () => {
     const onOpenInvocation = vi.fn();
     const onOpenConversation = vi.fn();
     const response = createResponse([
@@ -2702,12 +2702,44 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error("missing dashboard card");
     }
 
-    const statusLabel = card.querySelector(
+    const currentSlot = card.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLElement)) {
+      throw new Error("missing current slot");
+    }
+    const slotHeader = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-header"]',
+    );
+    if (!(slotHeader instanceof HTMLElement)) {
+      throw new Error("missing slot header");
+    }
+    expect(slotHeader.className).toContain("grid");
+    expect(slotHeader.className).toContain("grid-cols-[auto_minmax(0,1fr)]");
+    const statusLabel = currentSlot.querySelector(
       '[data-testid="invocation-phase-badge"]',
     );
     if (!(statusLabel instanceof HTMLElement)) {
-      throw new Error(`missing phase label in card: ${card.textContent ?? ""}`);
+      throw new Error(`missing phase label in slot: ${currentSlot.textContent ?? ""}`);
     }
+    expect(
+      slotHeader
+        .querySelector('[data-testid="dashboard-working-conversation-slot-label"]')
+        ?.textContent?.trim(),
+    ).toBe("当前调用");
+    expect(
+      slotHeader.querySelector('[data-testid="invocation-phase-badge"]'),
+    ).toBe(statusLabel);
+    expect(
+      slotHeader.querySelector(
+        '[data-testid="dashboard-compact-latency-first-byte"]',
+      ),
+    ).toBeInstanceOf(HTMLElement);
+    expect(
+      slotHeader.querySelector(
+        '[data-testid="dashboard-compact-latency-response-time"]',
+      ),
+    ).toBeInstanceOf(HTMLElement);
 
     const phaseLabels = Array.from(
       card.querySelectorAll('[data-testid="invocation-phase-badge"]'),
@@ -2729,11 +2761,26 @@ describe("DashboardWorkingConversationsSection", () => {
 
     act(() => {
       statusLabel.click();
-      requestMetric.click();
-      card.click();
     });
 
-    expect(onOpenInvocation).not.toHaveBeenCalled();
+    expect(onOpenInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationSequenceId: cards[0]?.conversationSequenceId,
+        promptCacheKey: "pck-sequence-open",
+        slotKind: "current",
+      }),
+    );
+    expect(onOpenInvocation).toHaveBeenCalledTimes(1);
+    expect(onOpenConversation).not.toHaveBeenCalled();
+
+    onOpenInvocation.mockClear();
+
+    act(() => {
+      requestMetric.click();
+      currentSlot.click();
+    });
+
+    expect(onOpenInvocation).toHaveBeenCalledTimes(1);
     expect(onOpenConversation).not.toHaveBeenCalled();
   });
 

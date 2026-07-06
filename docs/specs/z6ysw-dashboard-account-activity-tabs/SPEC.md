@@ -225,7 +225,7 @@
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--running-only-conversation`
   scenario: `inline invocation phase status`
-  evidence_note: 验证 Dashboard 对话卡片头部与当前调用槽位的运行态状态已改为 inline 图标 + 彩色文字；`响应中` 不再使用 badge 背景、边框或胶囊 padding，同时保留 endpoint、reasoning effort 等元信息 badge。
+  evidence_note: 验证 Dashboard 对话卡片头部与当前调用槽位的运行态状态已改为同一行 inline 图标 + 彩色文字；`响应中` 不再使用 badge 背景、边框或胶囊 padding，同时保留 endpoint、reasoning effort 等元信息 badge。
   image:
   PR: include
   ![Dashboard 对话卡片运行态 inline 状态证据](./assets/dashboard-working-conversation-inline-status.png)

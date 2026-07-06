@@ -1666,50 +1666,64 @@ function InvocationSlot({
       onClick={handleOpenInvocation}
       onKeyDown={handleSlotKeyDown}
     >
-      <div className="space-y-1">
-        <div className="flex min-h-5 min-w-0 items-center gap-1.5">
-          <div className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/62">
+      <div
+        data-testid="dashboard-working-conversation-slot-header"
+        className="grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 gap-y-1"
+      >
+        <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+          <div
+            data-testid="dashboard-working-conversation-slot-label"
+            className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/62"
+          >
             {label}
           </div>
-          <div className="shrink-0 font-mono text-[10px] text-base-content/72">
+          <div
+            data-testid="dashboard-working-conversation-slot-time"
+            className="shrink-0 font-mono text-[10px] text-base-content/72"
+          >
             {occurredAtShortLabel}
           </div>
         </div>
-        <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
-          {invocation.livePhase ? (
-            <InvocationPhaseBadge
-              phase={invocation.livePhase}
-              appearance="inline"
-              className="text-[9.5px]"
-            />
-          ) : (
-            <Badge
-              variant={statusMeta.badgeVariant}
-              className="h-5 gap-1 border-transparent bg-base-100/12 px-1.5 py-0 text-[9.5px] font-semibold leading-none shadow-none"
-            >
-              <AppIcon
-                name={statusMeta.icon}
-                className="h-2.5 w-2.5 shrink-0"
-                aria-hidden
+        <div
+          data-testid="dashboard-working-conversation-slot-readings"
+          className="flex min-w-0 flex-wrap items-center justify-end gap-1.5"
+        >
+          <div className="flex min-w-0 items-center justify-end gap-1.5">
+            {invocation.livePhase ? (
+              <InvocationPhaseBadge
+                phase={invocation.livePhase}
+                appearance="inline"
+                className="text-[9.5px]"
               />
-              <span>{statusLabel}</span>
-            </Badge>
-          )}
-          {renderInvocationTransportBadge(
-            invocation.record,
-            "h-5 border-primary/45 bg-primary/10 px-1.5 text-[9.5px]",
-          )}
-          <div className="flex h-5 shrink-0 items-center">
-            <div className="flex items-center gap-1">
-              {renderEndpointSummary(
-                viewModel.endpointDisplay,
-                t,
-                "h-5 rounded-full border-transparent bg-base-100/10 px-1.5 py-0 text-[9.5px] font-semibold leading-none text-base-content/76 shadow-none",
-              )}
-              <DashboardImageToolIconBadge
-                imageIntentDisplay={viewModel.imageIntentDisplay}
-                t={t}
-              />
+            ) : (
+              <Badge
+                variant={statusMeta.badgeVariant}
+                className="h-5 gap-1 border-transparent bg-base-100/12 px-1.5 py-0 text-[9.5px] font-semibold leading-none shadow-none"
+              >
+                <AppIcon
+                  name={statusMeta.icon}
+                  className="h-2.5 w-2.5 shrink-0"
+                  aria-hidden
+                />
+                <span>{statusLabel}</span>
+              </Badge>
+            )}
+            {renderInvocationTransportBadge(
+              invocation.record,
+              "h-5 border-primary/45 bg-primary/10 px-1.5 text-[9.5px]",
+            )}
+            <div className="flex h-5 shrink-0 items-center">
+              <div className="flex items-center gap-1">
+                {renderEndpointSummary(
+                  viewModel.endpointDisplay,
+                  t,
+                  "h-5 rounded-full border-transparent bg-base-100/10 px-1.5 py-0 text-[9.5px] font-semibold leading-none text-base-content/76 shadow-none",
+                )}
+                <DashboardImageToolIconBadge
+                  imageIntentDisplay={viewModel.imageIntentDisplay}
+                  t={t}
+                />
+              </div>
             </div>
           </div>
           <CompactLatencyPills
