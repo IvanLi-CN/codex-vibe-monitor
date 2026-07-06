@@ -1373,7 +1373,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     const endpointBadge = Array.from(firstRow.querySelectorAll("span")).find(
       (element) => element.textContent?.trim() === "Responses",
-    );
+    )?.parentElement;
     expect(reasoningBadge?.className).toContain("min-h-5");
     expect(endpointBadge?.className).toContain("min-h-5");
 

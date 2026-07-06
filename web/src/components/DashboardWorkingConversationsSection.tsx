@@ -653,6 +653,34 @@ function AccountStatusBadge({
     success: "bg-success/90",
   }[variant];
 
+  if (clickable && onClick) {
+    return (
+      <button
+        type="button"
+        data-testid="dashboard-upstream-account-status"
+        className={cn(
+          "inline-flex min-h-6 cursor-pointer items-center gap-2 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+          surfaceClassName,
+        )}
+        title={description}
+        aria-label={`${label} · 打开账号路由详情`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+        }}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+        }}
+      >
+        <span
+          className={cn("h-1.5 w-1.5 rounded-full", dotClassName)}
+          aria-hidden="true"
+        />
+        <span>{label}</span>
+      </button>
+    );
+  }
+
   const badge = (
     <Badge
       variant="secondary"
@@ -661,7 +689,6 @@ function AccountStatusBadge({
       data-motion-surface
       className={cn(
         "min-h-6 gap-2 border px-2.5 py-0.5 text-[11px] font-semibold text-base-content transition-opacity duration-200",
-        clickable ? "pointer-events-none group-hover:opacity-80" : null,
         surfaceClassName,
       )}
     >
@@ -673,28 +700,7 @@ function AccountStatusBadge({
     </Badge>
   );
 
-  if (!clickable || !onClick) {
-    return <div data-testid="dashboard-upstream-account-status">{badge}</div>;
-  }
-
-  return (
-    <button
-      type="button"
-      data-testid="dashboard-upstream-account-status"
-      className="group inline-flex cursor-pointer appearance-none rounded-full border-0 bg-transparent p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-      title={description}
-      aria-label={`${label} · 打开账号路由详情`}
-      onClick={(event) => {
-        event.stopPropagation();
-        onClick();
-      }}
-      onKeyDown={(event) => {
-        event.stopPropagation();
-      }}
-    >
-      {badge}
-    </button>
-  );
+  return <div data-testid="dashboard-upstream-account-status">{badge}</div>;
 }
 
 function AccountPolicyBadges({
@@ -720,42 +726,49 @@ function AccountPolicyBadges({
       className="flex min-w-0 flex-wrap items-center gap-1.5 overflow-hidden"
     >
       {badges.map((badge) => {
-        const renderedBadge = (
+        if (clickable && onBadgeClick) {
+          return (
+            <button
+              key={`policy:${badge.key}`}
+              type="button"
+              data-testid="dashboard-upstream-account-policy-badge"
+              data-policy-key={badge.key}
+              className={cn(
+                "inline-flex cursor-pointer items-center whitespace-nowrap rounded-full border px-2 py-px text-[11px] font-medium leading-4 transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                badge.variant === "secondary"
+                  ? "border-base-300 bg-base-200/70 text-base-content/85"
+                  : badge.variant === "warning"
+                    ? "border-warning/45 bg-warning/12 text-base-content"
+                    : badge.variant === "info"
+                      ? "border-info/35 bg-info/15 text-info"
+                      : badge.variant === "accent"
+                        ? "border-accent/35 bg-accent/15 text-accent-content"
+                        : "border-primary/40 bg-primary/10 text-primary",
+              )}
+              title={badge.title ?? badge.label}
+              aria-label={`${badge.label} · 打开账号路由详情`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onBadgeClick();
+              }}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+              }}
+            >
+              {badge.label}
+            </button>
+          );
+        }
+
+        return (
           <Badge
+            key={`policy:${badge.key}`}
             variant={badge.variant}
-            className={cn(
-              "shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4 transition-opacity duration-200",
-              clickable ? "pointer-events-none group-hover:opacity-80" : null,
-            )}
+            className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4 transition-opacity duration-200"
             title={badge.title ?? badge.label}
           >
             {badge.label}
           </Badge>
-        );
-
-        if (!clickable || !onBadgeClick) {
-          return <div key={`policy:${badge.key}`}>{renderedBadge}</div>;
-        }
-
-        return (
-          <button
-            key={`policy:${badge.key}`}
-            type="button"
-            data-testid="dashboard-upstream-account-policy-badge"
-            data-policy-key={badge.key}
-            className="group inline-flex cursor-pointer appearance-none rounded-full border-0 bg-transparent p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-            title={badge.title ?? badge.label}
-            aria-label={`${badge.label} · 打开账号路由详情`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onBadgeClick();
-            }}
-            onKeyDown={(event) => {
-              event.stopPropagation();
-            }}
-          >
-            {renderedBadge}
-          </button>
         );
       })}
     </div>
