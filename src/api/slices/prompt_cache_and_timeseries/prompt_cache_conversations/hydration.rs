@@ -150,16 +150,26 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         snapshot,
     )
     .await?;
-    let encrypted_owner_rows = if let Some(snapshot) = snapshot {
-        query_prompt_cache_conversation_encrypted_owner_summaries_at_snapshot(
-            &state.pool,
-            source_scope,
-            &selected_keys,
-            snapshot,
-        )
-        .await?
+    let encrypted_owner_rows = if state
+        .proxy_model_settings
+        .read()
+        .await
+        .encrypted_session_owner_routing_enabled
+    {
+        if let Some(snapshot) = snapshot {
+            query_prompt_cache_conversation_encrypted_owner_summaries_at_snapshot(
+                &state.pool,
+                source_scope,
+                &selected_keys,
+                snapshot,
+            )
+            .await?
+        } else {
+            query_prompt_cache_conversation_encrypted_owner_summaries(&state.pool, &selected_keys)
+                .await?
+        }
     } else {
-        query_prompt_cache_conversation_encrypted_owner_summaries(&state.pool, &selected_keys).await?
+        Vec::new()
     };
 
     let mut grouped_events: HashMap<String, Vec<PromptCacheConversationRequestPointResponse>> =

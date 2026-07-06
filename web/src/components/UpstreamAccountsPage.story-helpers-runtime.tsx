@@ -370,6 +370,7 @@ export function StorybookUpstreamAccountsMock({
             upstreamWebsocketDefaultEnabled: true,
             requestBodyLoggingEnabled: true,
             responseBodyLoggingEnabled: true,
+            encryptedSessionOwnerRoutingEnabled: true,
             defaultHijackEnabled: true,
             models: [
               'gpt-5.5',

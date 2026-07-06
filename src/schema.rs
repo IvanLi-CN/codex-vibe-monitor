@@ -2516,6 +2516,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             openai_proxy_upstream_websocket_default_enabled INTEGER NOT NULL DEFAULT 0,
             request_body_logging_enabled INTEGER NOT NULL DEFAULT 1,
             response_body_logging_enabled INTEGER NOT NULL DEFAULT 1,
+            encrypted_session_owner_routing_enabled INTEGER NOT NULL DEFAULT 1,
             websocket_settings_migrated INTEGER NOT NULL DEFAULT 0,
             enabled_preset_models_json TEXT,
             preset_models_migrated INTEGER NOT NULL DEFAULT 0,
@@ -2630,6 +2631,19 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         && !err.to_string().contains("duplicate column name")
     {
         return Err(err).context("failed to ensure response_body_logging_enabled column");
+    }
+
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE proxy_model_settings
+        ADD COLUMN encrypted_session_owner_routing_enabled INTEGER NOT NULL DEFAULT 1
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err).context("failed to ensure encrypted_session_owner_routing_enabled column");
     }
 
     if let Err(err) = sqlx::query(

@@ -3964,6 +3964,67 @@ async fn prompt_cache_conversation_binding_reports_encrypted_owner_and_clear_kee
 }
 
 #[tokio::test]
+async fn prompt_cache_conversation_binding_hides_encrypted_owner_when_routing_disabled() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-owner-hidden-group";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Hidden Owner",
+        "sk-prompt-cache-hidden-owner",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-owner-hidden-key";
+
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist encrypted session owner");
+
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.encrypted_session_owner_routing_enabled = false;
+    }
+
+    let Json(owner_response) = get_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+    )
+    .await
+    .expect("load binding with encrypted owner routing disabled");
+    assert_eq!(owner_response.binding_kind, "none");
+    assert!(!owner_response.has_encrypted_session_owner);
+    assert_eq!(owner_response.encrypted_owner_account_id, None);
+    assert_eq!(owner_response.encrypted_owner_account_name, None);
+    assert_eq!(owner_response.encrypted_owner_group_name, None);
+
+    let group_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "group",
+            "groupName": group_name,
+        }))
+        .expect("deserialize owner hidden group payload");
+    let Json(group_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(group_payload),
+    )
+    .await
+    .expect("save group binding while encrypted owner routing is disabled");
+    assert_eq!(group_response.binding_kind, "group");
+    assert_eq!(group_response.group_name.as_deref(), Some(group_name));
+    assert!(!group_response.has_encrypted_session_owner);
+    assert_eq!(group_response.encrypted_owner_account_id, None);
+    assert_eq!(group_response.encrypted_owner_account_name, None);
+    assert_eq!(group_response.encrypted_owner_group_name, None);
+}
+
+#[tokio::test]
 async fn prompt_cache_group_binding_promotes_to_account_after_encrypted_owner_lock() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -4035,6 +4096,7 @@ async fn prompt_cache_group_binding_promotes_to_account_after_encrypted_owner_lo
         &state.pool,
         Some(prompt_cache_key),
         true,
+        true,
     )
     .await
     .expect("resolve effective routing constraint after promotion");
@@ -4104,6 +4166,7 @@ async fn prompt_cache_same_account_binding_newer_than_owner_keeps_owner_guard_ac
     let (constraint, owner_auto_guard_active) = resolve_prompt_cache_effective_routing_constraint(
         &state.pool,
         Some(prompt_cache_key),
+        true,
         true,
     )
     .await
@@ -4178,6 +4241,7 @@ async fn prompt_cache_same_group_binding_overrides_owner_guard() {
         &state.pool,
         Some(prompt_cache_key),
         true,
+        true,
     )
     .await
     .expect("resolve same-group manual override after owner reconfirmation");
@@ -4250,6 +4314,7 @@ async fn prompt_cache_pre_owner_group_binding_keeps_owner_guard_active() {
     let (constraint, owner_auto_guard_active) = resolve_prompt_cache_effective_routing_constraint(
         &state.pool,
         Some(prompt_cache_key),
+        true,
         true,
     )
     .await
@@ -4333,6 +4398,7 @@ async fn prompt_cache_manual_override_wins_when_binding_and_owner_share_same_sec
         &state.pool,
         Some(prompt_cache_key),
         true,
+        true,
     )
     .await
     .expect("resolve same-second manual override");
@@ -4414,6 +4480,7 @@ async fn prompt_cache_manual_override_wins_even_after_owner_reconfirmation() {
     let (constraint, owner_auto_guard_active) = resolve_prompt_cache_effective_routing_constraint(
         &state.pool,
         Some(prompt_cache_key),
+        true,
         true,
     )
     .await

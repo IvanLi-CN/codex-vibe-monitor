@@ -1818,6 +1818,7 @@ pub(crate) async fn put_proxy_settings(
         upstream_websocket_default_enabled,
         request_body_logging_enabled,
         response_body_logging_enabled,
+        encrypted_session_owner_routing_enabled,
         enabled_models,
     } = payload;
 
@@ -1835,6 +1836,8 @@ pub(crate) async fn put_proxy_settings(
             .unwrap_or(current.request_body_logging_enabled),
         response_body_logging_enabled: response_body_logging_enabled
             .unwrap_or(current.response_body_logging_enabled),
+        encrypted_session_owner_routing_enabled: encrypted_session_owner_routing_enabled
+            .unwrap_or(current.encrypted_session_owner_routing_enabled),
         enabled_preset_models: enabled_models,
     }
     .normalized();

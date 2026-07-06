@@ -849,6 +849,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
             upstream_websocket_default_enabled: Some(true),
             request_body_logging_enabled: Some(false),
             response_body_logging_enabled: Some(false),
+            encrypted_session_owner_routing_enabled: Some(false),
             enabled_models: vec!["gpt-5.2-codex".to_string(), "unknown-model".to_string()],
         }),
     )
@@ -862,6 +863,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     assert!(updated.upstream_websocket_default_enabled);
     assert!(!updated.request_body_logging_enabled);
     assert!(!updated.response_body_logging_enabled);
+    assert!(!updated.encrypted_session_owner_routing_enabled);
     assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
 
     let persisted = load_proxy_model_settings(&state.pool)
@@ -874,6 +876,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     assert!(persisted.upstream_websocket_default_enabled);
     assert!(!persisted.request_body_logging_enabled);
     assert!(!persisted.response_body_logging_enabled);
+    assert!(!persisted.encrypted_session_owner_routing_enabled);
     assert_eq!(
         persisted.enabled_preset_models,
         vec!["gpt-5.2-codex".to_string()]
@@ -891,6 +894,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
             upstream_websocket_default_enabled: Some(false),
             request_body_logging_enabled: Some(true),
             response_body_logging_enabled: Some(true),
+            encrypted_session_owner_routing_enabled: Some(true),
             enabled_models: Vec::new(),
         }),
     )
@@ -906,6 +910,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     assert!(!normalized.upstream_websocket_default_enabled);
     assert!(normalized.request_body_logging_enabled);
     assert!(normalized.response_body_logging_enabled);
+    assert!(normalized.encrypted_session_owner_routing_enabled);
     assert!(normalized.enabled_models.is_empty());
 }
 
@@ -928,6 +933,7 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
             upstream_websocket_default_enabled: Some(true),
             request_body_logging_enabled: Some(false),
             response_body_logging_enabled: Some(false),
+            encrypted_session_owner_routing_enabled: Some(false),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -954,6 +960,7 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
     assert!(updated.upstream_websocket_default_enabled);
     assert!(!updated.request_body_logging_enabled);
     assert!(!updated.response_body_logging_enabled);
+    assert!(!updated.encrypted_session_owner_routing_enabled);
 
     let persisted = load_proxy_model_settings(&state.pool)
         .await
@@ -963,6 +970,7 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
     assert!(persisted.upstream_websocket_default_enabled);
     assert!(!persisted.request_body_logging_enabled);
     assert!(!persisted.response_body_logging_enabled);
+    assert!(!persisted.encrypted_session_owner_routing_enabled);
 }
 
 #[tokio::test]
@@ -1066,6 +1074,7 @@ async fn ensure_schema_keeps_legacy_fast_mode_rewrite_mode_column_inert() {
     );
     assert!(!settings.websocket_enabled);
     assert!(!settings.upstream_websocket_default_enabled);
+    assert!(settings.encrypted_session_owner_routing_enabled);
     let columns = sqlx::query("PRAGMA table_info('proxy_model_settings')")
         .fetch_all(&pool)
         .await
@@ -1102,6 +1111,12 @@ async fn ensure_schema_keeps_legacy_fast_mode_rewrite_mode_column_inert() {
             .iter()
             .any(|column| column == "response_body_logging_enabled"),
         "response body logging setting column should exist",
+    );
+    assert!(
+        columns
+            .iter()
+            .any(|column| column == "encrypted_session_owner_routing_enabled"),
+        "encrypted owner routing setting column should exist",
     );
 }
 
@@ -1427,6 +1442,7 @@ async fn proxy_model_settings_api_rejects_cross_origin_writes() {
             upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
+            encrypted_session_owner_routing_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -1469,6 +1485,7 @@ async fn proxy_model_settings_api_rejects_cross_site_request() {
             upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
+            encrypted_session_owner_routing_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -1507,6 +1524,7 @@ async fn proxy_model_settings_api_allows_loopback_proxy_origin_mismatch() {
             upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
+            encrypted_session_owner_routing_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -1559,6 +1577,7 @@ async fn proxy_model_settings_api_allows_forwarded_host_origin_match() {
             upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
+            encrypted_session_owner_routing_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -1615,6 +1634,7 @@ async fn proxy_model_settings_api_allows_forwarded_port_non_default_origin_port(
             upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
+            encrypted_session_owner_routing_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -1655,6 +1675,7 @@ async fn proxy_model_settings_api_allows_matching_origin_without_explicit_host_p
             upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
+            encrypted_session_owner_routing_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )

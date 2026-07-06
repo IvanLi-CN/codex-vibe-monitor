@@ -1667,6 +1667,12 @@ const baseTranslations = {
     "settings.proxy.websocketEnabled": "Enabled",
     "settings.proxy.websocketDisabled": "Disabled",
     "settings.proxy.websocketEnvLabel": "Global",
+    "settings.proxy.encryptedOwnerRoutingTitle": "Encrypted conversation routing",
+    "settings.proxy.encryptedOwnerRoutingHint":
+      "Control whether encrypted conversations are pinned to the upstream account that owns their encrypted session state.",
+    "settings.proxy.encryptedOwnerRoutingLabel": "Bind encrypted conversation routes",
+    "settings.proxy.encryptedOwnerRoutingDescription":
+      "When disabled, encrypted content no longer creates or enforces owner route bindings, and route-binding warnings stay hidden.",
     "settings.proxy.bodyLoggingTitle": "Invocation body retention",
     "settings.proxy.bodyLoggingHint":
       "Control whether new proxy invocations keep request or response body content.",
@@ -4053,6 +4059,11 @@ const baseTranslations = {
     "settings.proxy.websocketEnabled": "已开启",
     "settings.proxy.websocketDisabled": "已关闭",
     "settings.proxy.websocketEnvLabel": "全局设置",
+    "settings.proxy.encryptedOwnerRoutingTitle": "加密对话路由",
+    "settings.proxy.encryptedOwnerRoutingHint": "控制加密对话是否绑定到拥有该加密会话状态的上游账号。",
+    "settings.proxy.encryptedOwnerRoutingLabel": "加密对话路由绑定",
+    "settings.proxy.encryptedOwnerRoutingDescription":
+      "关闭后，加密内容不会创建或强制 owner 路由绑定，对话绑定风险提示也会静音。",
     "settings.proxy.bodyLoggingTitle": "调用 body 留存",
     "settings.proxy.bodyLoggingHint": "控制新的代理调用是否继续保留请求或响应 body 内容。",
     "settings.proxy.requestBodyLoggingLabel": "记录请求 body",

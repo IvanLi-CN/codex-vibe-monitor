@@ -1848,6 +1848,131 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
 }
 
 #[tokio::test]
+async fn encrypted_owner_routing_disabled_ignores_existing_owner_guard() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.encrypted_session_owner_routing_enabled = false;
+    }
+    let owner_account_id =
+        insert_test_pool_api_key_account(&state, "Owner", "upstream-owner").await;
+    let prompt_cache_key = "pck-owner-routing-disabled";
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist encrypted owner");
+
+    let (constraint, owner_auto_guard_active) = load_via_pool_effective_routing_constraint(
+        state.as_ref(),
+        Some(prompt_cache_key),
+        true,
+    )
+    .await
+    .expect("resolve prompt-cache routing with owner routing disabled");
+
+    assert!(constraint.is_none());
+    assert!(!owner_auto_guard_active);
+}
+
+#[tokio::test]
+async fn encrypted_owner_routing_disabled_does_not_persist_success_owner() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.encrypted_session_owner_routing_enabled = false;
+    }
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Owner Disabled", "upstream-owner").await;
+    let prompt_cache_key = "pck-owner-routing-disabled-success";
+
+    let updated = confirm_prompt_cache_encrypted_session_owner_success_if_enabled(
+        state.as_ref(),
+        prompt_cache_key,
+        account_id,
+    )
+    .await
+    .expect("disabled owner routing should not fail");
+    assert!(!updated);
+
+    let owner: Option<i64> = sqlx::query_scalar(
+        r#"
+        SELECT owner_upstream_account_id
+        FROM prompt_cache_encrypted_session_owners
+        WHERE prompt_cache_key = ?1
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .fetch_optional(&state.pool)
+    .await
+    .expect("query encrypted owner row");
+    assert_eq!(owner, None);
+}
+
+#[tokio::test]
+async fn websocket_payload_owner_guard_disabled_does_not_block_mismatched_payload_owner() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.encrypted_session_owner_routing_enabled = false;
+    }
+    let owner_account_id =
+        insert_test_pool_api_key_account(&state, "Owner", "upstream-owner").await;
+    let secondary_account_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    upsert_prompt_cache_encrypted_session_owner(
+        &state.pool,
+        "pck-websocket-owner-routing-disabled",
+        owner_account_id,
+    )
+    .await
+    .expect("persist websocket payload owner");
+
+    let secondary_account = PoolResolvedAccount {
+        account_id: secondary_account_id,
+        display_name: "Secondary".to_string(),
+        kind: "api_key".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer upstream-secondary".to_string(),
+        },
+        group_name: None,
+        bound_proxy_keys: Vec::new(),
+        forward_proxy_scope: ForwardProxyRouteScope::Automatic,
+        single_account_rotation_enabled: false,
+        upstream_429_retry_enabled: false,
+        upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
+        image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        image_tool_capability: ImageToolCapability::Unknown,
+        upstream_base_url: Url::parse("https://api.example.test").expect("valid base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
+    };
+
+    let outcome = inspect_ws_request_payload_guard(
+        state.as_ref(),
+        &secondary_account,
+        None,
+        br#"{"type":"conversation.item.create","promptCacheKey":"pck-websocket-owner-routing-disabled","item":{"type":"message","content":[{"type":"encrypted_content","encrypted_content":"opaque"}]}}"#,
+    )
+    .await
+    .expect("inspect websocket payload guard");
+
+    assert_eq!(
+        outcome.prompt_cache_key.as_deref(),
+        Some("pck-websocket-owner-routing-disabled")
+    );
+    assert!(outcome.contains_encrypted_content);
+    assert!(!outcome.owner_guard_blocked);
+}
+
+#[tokio::test]
 async fn websocket_payload_only_prompt_cache_key_routes_first_upgrade_to_owner_account() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
@@ -4975,6 +5100,7 @@ async fn proxy_openai_v1_responses_pool_remote_v2_request_kind_survives_disabled
             upstream_websocket_default_enabled: None,
             request_body_logging_enabled: Some(false),
             response_body_logging_enabled: Some(true),
+            encrypted_session_owner_routing_enabled: None,
             enabled_models: default_enabled_preset_models(),
         }),
     )
@@ -5248,6 +5374,7 @@ async fn proxy_openai_v1_responses_pool_image_intent_survives_disabled_request_b
             upstream_websocket_default_enabled: None,
             request_body_logging_enabled: Some(false),
             response_body_logging_enabled: Some(true),
+            encrypted_session_owner_routing_enabled: None,
             enabled_models: default_enabled_preset_models(),
         }),
     )

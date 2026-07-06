@@ -630,6 +630,14 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
     })
   }, [currentProxy, persistProxy])
 
+  const handleToggleEncryptedOwnerRouting = useCallback(() => {
+    if (!currentProxy) return
+    persistProxy({
+      ...currentProxy,
+      encryptedSessionOwnerRoutingEnabled: !currentProxy.encryptedSessionOwnerRoutingEnabled,
+    })
+  }, [currentProxy, persistProxy])
+
   const handleTogglePresetModel = useCallback(
     (modelId: string) => {
       if (!currentProxy) return
@@ -1472,6 +1480,40 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                         disabled={isProxySaving || !currentProxy.hijackEnabled}
                         onCheckedChange={() => handleToggleMergeUpstream()}
                       />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="font-medium leading-snug">{t('settings.proxy.encryptedOwnerRoutingTitle')}</div>
+                    <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.encryptedOwnerRoutingHint')}</div>
+                  </div>
+                  <Badge variant="secondary" className="shrink-0">
+                    {t('settings.autoSaved')}
+                  </Badge>
+                </div>
+
+                <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <div className="font-medium leading-snug">{t('settings.proxy.encryptedOwnerRoutingLabel')}</div>
+                      <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.encryptedOwnerRoutingDescription')}</div>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-2">
+                      <Switch
+                        checked={currentProxy.encryptedSessionOwnerRoutingEnabled}
+                        disabled={isProxySaving}
+                        aria-label={t('settings.proxy.encryptedOwnerRoutingLabel')}
+                        onCheckedChange={() => handleToggleEncryptedOwnerRouting()}
+                      />
+                      <Badge variant={currentProxy.encryptedSessionOwnerRoutingEnabled ? 'success' : 'secondary'}>
+                        {currentProxy.encryptedSessionOwnerRoutingEnabled
+                          ? t('settings.proxy.websocketEnabled')
+                          : t('settings.proxy.websocketDisabled')}
+                      </Badge>
                     </div>
                   </div>
                 </div>

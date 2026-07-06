@@ -535,6 +535,7 @@ struct ProxyModelSettings {
     upstream_websocket_default_enabled: bool,
     request_body_logging_enabled: bool,
     response_body_logging_enabled: bool,
+    encrypted_session_owner_routing_enabled: bool,
     enabled_preset_models: Vec<String>,
 }
 
@@ -558,6 +559,7 @@ impl Default for ProxyModelSettings {
             upstream_websocket_default_enabled: DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
             request_body_logging_enabled: true,
             response_body_logging_enabled: true,
+            encrypted_session_owner_routing_enabled: true,
             enabled_preset_models: default_enabled_preset_models(),
         }
     }
@@ -580,6 +582,8 @@ impl ProxyModelSettings {
             upstream_websocket_default_enabled: self.upstream_websocket_default_enabled,
             request_body_logging_enabled: self.request_body_logging_enabled,
             response_body_logging_enabled: self.response_body_logging_enabled,
+            encrypted_session_owner_routing_enabled: self
+                .encrypted_session_owner_routing_enabled,
             enabled_preset_models: normalize_enabled_preset_models(self.enabled_preset_models),
         }
     }
@@ -594,6 +598,7 @@ struct ProxyModelSettingsRow {
     openai_proxy_upstream_websocket_default_enabled: Option<i64>,
     request_body_logging_enabled: Option<i64>,
     response_body_logging_enabled: Option<i64>,
+    encrypted_session_owner_routing_enabled: Option<i64>,
     enabled_preset_models_json: Option<String>,
 }
 
@@ -612,6 +617,10 @@ impl From<ProxyModelSettingsRow> for ProxyModelSettings {
                 != 0,
             request_body_logging_enabled: value.request_body_logging_enabled.unwrap_or(1) != 0,
             response_body_logging_enabled: value.response_body_logging_enabled.unwrap_or(1) != 0,
+            encrypted_session_owner_routing_enabled: value
+                .encrypted_session_owner_routing_enabled
+                .unwrap_or(1)
+                != 0,
             enabled_preset_models: decode_enabled_preset_models(
                 value.enabled_preset_models_json.as_deref(),
             ),
@@ -637,6 +646,8 @@ struct ProxyModelSettingsUpdateRequest {
     request_body_logging_enabled: Option<bool>,
     #[serde(default)]
     response_body_logging_enabled: Option<bool>,
+    #[serde(default)]
+    encrypted_session_owner_routing_enabled: Option<bool>,
     #[serde(default = "default_enabled_preset_models")]
     enabled_models: Vec<String>,
 }
@@ -652,6 +663,7 @@ struct ProxyModelSettingsResponse {
     upstream_websocket_default_enabled: bool,
     request_body_logging_enabled: bool,
     response_body_logging_enabled: bool,
+    encrypted_session_owner_routing_enabled: bool,
     default_hijack_enabled: bool,
     models: Vec<String>,
     enabled_models: Vec<String>,
@@ -668,6 +680,8 @@ impl ProxyModelSettingsResponse {
             upstream_websocket_default_enabled: value.upstream_websocket_default_enabled,
             request_body_logging_enabled: value.request_body_logging_enabled,
             response_body_logging_enabled: value.response_body_logging_enabled,
+            encrypted_session_owner_routing_enabled: value
+                .encrypted_session_owner_routing_enabled,
             default_hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             models: PROXY_PRESET_MODEL_IDS
                 .iter()

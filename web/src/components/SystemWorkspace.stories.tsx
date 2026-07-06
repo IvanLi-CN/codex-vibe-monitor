@@ -130,6 +130,7 @@ const STORYBOOK_SETTINGS: SettingsPayload = {
     upstreamWebsocketDefaultEnabled: true,
     requestBodyLoggingEnabled: true,
     responseBodyLoggingEnabled: true,
+    encryptedSessionOwnerRoutingEnabled: true,
     defaultHijackEnabled: false,
     models: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4'],
     enabledModels: ['gpt-5.5', 'gpt-5.5-pro'],
