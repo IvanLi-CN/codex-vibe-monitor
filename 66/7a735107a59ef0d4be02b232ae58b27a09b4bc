@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.15.6",
+  "base_stable_version": "2.15.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-06T17:15:12Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.15.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ad00125e9a7d0643dda8db64af3ce9ab750904a6",
+  "pr_number": 554,
+  "pr_title": "fix(proxy): add downstream close correlation evidence",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.15.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.15.6",
+  "target_sha": "667a735107a59ef0d4be02b232ae58b27a09b4bc",
+  "type_label": "type:patch"
+}
