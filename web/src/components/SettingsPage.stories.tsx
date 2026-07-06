@@ -735,6 +735,7 @@ export const EncryptedOwnerRoutingDisabled: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByText('加密对话路由')).toBeVisible()
+    await expect(canvas.getByText('OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED')).toBeVisible()
     const toggle = canvas.getByRole('switch', { name: '加密对话路由绑定' })
     await expect(toggle).toHaveAttribute('aria-checked', 'false')
   },

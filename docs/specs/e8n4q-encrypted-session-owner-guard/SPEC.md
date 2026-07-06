@@ -134,7 +134,7 @@ Prompt Cache conversation binding currently models operator routing intent only.
   sensitive_exclusion: N/A
   story_id_or_title: Settings/SettingsPage/EncryptedOwnerRoutingDisabled
   state: encrypted owner routing disabled in system settings
-  evidence_note: verifies the System Settings proxy section exposes the encrypted conversation routing switch and renders the disabled state without route-binding warning UI
+  evidence_note: verifies the System Settings proxy section exposes the encrypted conversation routing switch, its first-init env name, and the disabled state without route-binding warning UI
   PR: include
   image:
   ![Encrypted owner routing disabled setting](./assets/encrypted-owner-routing-disabled-storybook.png)

@@ -183,6 +183,8 @@ describe('Settings forward proxy table', () => {
 
     renderSettingsPage()
 
+    expect(host?.textContent).toContain('OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED')
+
     const toggle = host?.querySelector('button[aria-label="加密对话路由绑定"]')
     if (!(toggle instanceof HTMLButtonElement)) {
       throw new Error('Missing encrypted owner routing toggle')
