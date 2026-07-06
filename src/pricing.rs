@@ -44,6 +44,7 @@ async fn save_proxy_model_settings(
             request_body_logging_enabled = ?6,
             response_body_logging_enabled = ?7,
             encrypted_session_owner_routing_enabled = ?8,
+            encrypted_session_owner_routing_initialized = 1,
             websocket_settings_migrated = 1,
             enabled_preset_models_json = ?9,
             updated_at = datetime('now')
@@ -172,6 +173,45 @@ async fn ensure_proxy_websocket_settings_initialized(
     .execute(pool)
     .await
     .context("failed to initialize websocket settings from deployment defaults")?;
+
+    Ok(())
+}
+
+async fn ensure_proxy_encrypted_session_owner_routing_setting_initialized(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+) -> Result<()> {
+    let initialized = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT encrypted_session_owner_routing_initialized
+        FROM proxy_model_settings
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .fetch_optional(pool)
+    .await
+    .context("failed to check encrypted owner routing initialization flag")?
+    .unwrap_or(0);
+    if initialized != 0 {
+        return Ok(());
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE proxy_model_settings
+        SET encrypted_session_owner_routing_enabled = ?1,
+            encrypted_session_owner_routing_initialized = 1,
+            updated_at = datetime('now')
+        WHERE id = ?2
+        "#,
+    )
+    .bind(config.openai_proxy_encrypted_session_owner_routing_enabled as i64)
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .execute(pool)
+    .await
+    .context("failed to initialize encrypted owner routing setting from deployment default")?;
 
     Ok(())
 }

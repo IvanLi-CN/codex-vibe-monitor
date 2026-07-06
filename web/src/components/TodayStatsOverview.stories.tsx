@@ -234,7 +234,8 @@ export const DesktopSingleRow: Story = {
     const tiles = canvas.getAllByTestId('today-stats-metric-tile')
     await expect(tiles).toHaveLength(7)
     const labels = tiles.map((tile) => tile.textContent ?? '')
-    expect(labels[3]).toMatch(/in-progress invocations|进行中调用/i)
+    expect(labels[2]).toMatch(/in-progress invocations|进行中调用/i)
+    expect(labels[3]).toMatch(/success|成功/i)
     expect(labels[4]).toMatch(/time to first byte|首字用时/i)
   },
 }

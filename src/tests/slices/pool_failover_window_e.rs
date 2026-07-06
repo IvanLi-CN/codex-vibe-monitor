@@ -3881,6 +3881,7 @@ async fn prompt_cache_conversation_binding_reports_encrypted_owner_and_clear_kee
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     let group_name = "prompt-cache-owner-reporting-group";
     ensure_test_group_binding(&state.pool, group_name, None).await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
@@ -4030,6 +4031,7 @@ async fn prompt_cache_group_binding_promotes_to_account_after_encrypted_owner_lo
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     let group_name = "prompt-cache-group-promote-owner";
     ensure_test_group_binding(&state.pool, group_name, None).await;
     let account_id = insert_test_pool_api_key_account_with_options(

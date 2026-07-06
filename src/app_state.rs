@@ -559,7 +559,8 @@ impl Default for ProxyModelSettings {
             upstream_websocket_default_enabled: DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
             request_body_logging_enabled: true,
             response_body_logging_enabled: true,
-            encrypted_session_owner_routing_enabled: true,
+            encrypted_session_owner_routing_enabled:
+                DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
             enabled_preset_models: default_enabled_preset_models(),
         }
     }
@@ -619,7 +620,7 @@ impl From<ProxyModelSettingsRow> for ProxyModelSettings {
             response_body_logging_enabled: value.response_body_logging_enabled.unwrap_or(1) != 0,
             encrypted_session_owner_routing_enabled: value
                 .encrypted_session_owner_routing_enabled
-                .unwrap_or(1)
+                .unwrap_or(DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED as i64)
                 != 0,
             enabled_preset_models: decode_enabled_preset_models(
                 value.enabled_preset_models_json.as_deref(),

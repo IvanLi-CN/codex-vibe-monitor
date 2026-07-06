@@ -1593,9 +1593,12 @@ fn app_config_from_sources_reads_websocket_enabled_env() {
     let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let previous = env::var_os(ENV_OPENAI_PROXY_WEBSOCKET_ENABLED);
     let previous_upstream = env::var_os(ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED);
+    let previous_owner_routing =
+        env::var_os(ENV_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED);
 
     unsafe { env::remove_var(ENV_OPENAI_PROXY_WEBSOCKET_ENABLED) };
     unsafe { env::remove_var(ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED) };
+    unsafe { env::remove_var(ENV_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED) };
     let default_config =
         AppConfig::from_sources(&CliArgs::default()).expect("default websocket config parses");
     assert_eq!(
@@ -1606,9 +1609,19 @@ fn app_config_from_sources_reads_websocket_enabled_env() {
         default_config.openai_proxy_upstream_websocket_default_enabled,
         DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED
     );
+    assert_eq!(
+        default_config.openai_proxy_encrypted_session_owner_routing_enabled,
+        DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED
+    );
 
     unsafe { env::set_var(ENV_OPENAI_PROXY_WEBSOCKET_ENABLED, "true") };
     unsafe { env::set_var(ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED, "true") };
+    unsafe {
+        env::set_var(
+            ENV_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
+            "true",
+        )
+    };
     let enabled_config =
         AppConfig::from_sources(&CliArgs::default()).expect("enabled websocket config parses");
 
@@ -1622,9 +1635,21 @@ fn app_config_from_sources_reads_websocket_enabled_env() {
         },
         None => unsafe { env::remove_var(ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED) },
     }
+    match previous_owner_routing {
+        Some(value) => unsafe {
+            env::set_var(
+                ENV_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
+                value,
+            )
+        },
+        None => unsafe {
+            env::remove_var(ENV_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED)
+        },
+    }
 
     assert!(enabled_config.openai_proxy_websocket_enabled);
     assert!(enabled_config.openai_proxy_upstream_websocket_default_enabled);
+    assert!(enabled_config.openai_proxy_encrypted_session_owner_routing_enabled);
 }
 
 #[test]
@@ -1678,6 +1703,8 @@ fn test_config() -> AppConfig {
         openai_proxy_websocket_enabled: DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED,
         openai_proxy_upstream_websocket_default_enabled:
             DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
+        openai_proxy_encrypted_session_owner_routing_enabled:
+            DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
         proxy_request_concurrency_limit: DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT,
         proxy_request_concurrency_wait_timeout: Duration::from_millis(
             DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,
