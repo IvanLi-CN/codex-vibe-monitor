@@ -2163,6 +2163,18 @@ export const RunningOnlyConversation: Story = {
     isLoading: false,
     error: null,
   },
+  play: async ({ canvasElement }) => {
+    const phaseLabels = Array.from(
+      canvasElement.querySelectorAll('[data-testid="invocation-phase-badge"]'),
+    );
+    expect(phaseLabels.length).toBeGreaterThanOrEqual(2);
+    for (const phaseLabel of phaseLabels) {
+      expect(phaseLabel.className).toContain("inline-flex");
+      expect(phaseLabel.className).not.toMatch(/\brounded/);
+      expect(phaseLabel.className).not.toMatch(/\bborder/);
+      expect(phaseLabel.className).not.toMatch(/\bbg-/);
+    }
+  },
 };
 
 export const AccountPlanBadges: Story = {

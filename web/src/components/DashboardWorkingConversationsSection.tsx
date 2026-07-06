@@ -1618,7 +1618,8 @@ function InvocationSlot({
           {invocation.livePhase ? (
             <InvocationPhaseBadge
               phase={invocation.livePhase}
-              className="h-4.5 px-1.5 py-0 text-[8.5px] font-semibold leading-none shadow-none"
+              appearance="inline"
+              className="text-[8.5px]"
             />
           ) : (
             <Badge
@@ -3088,7 +3089,8 @@ export function DashboardWorkingConversationsSection({
                                   {card.currentInvocation.livePhase ? (
                                     <InvocationPhaseBadge
                                       phase={card.currentInvocation.livePhase}
-                                      className="h-5 px-2 py-0 text-[9px] font-semibold"
+                                      appearance="inline"
+                                      className="text-[10px]"
                                     />
                                   ) : (
                                     <>

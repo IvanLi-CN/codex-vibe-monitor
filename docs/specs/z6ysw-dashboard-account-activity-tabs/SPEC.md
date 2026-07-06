@@ -223,6 +223,13 @@
 ## Visual Evidence
 
 - source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--running-only-conversation`
+  scenario: `inline invocation phase status`
+  evidence_note: 验证 Dashboard 对话卡片头部与当前调用槽位的运行态状态已改为 inline 图标 + 彩色文字；`响应中` 不再使用 badge 背景、边框或胶囊 padding，同时保留 endpoint、reasoning effort 等元信息 badge。
+  image:
+  ![Dashboard 对话卡片运行态 inline 状态证据](./assets/dashboard-working-conversation-inline-status.png)
+
+- source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
   scenario: `live phase split`
   evidence_note: 验证 Dashboard 上游账号卡标题区与最近调用标题右侧都按账号级 `inProgressPhaseCounts` 显示 `排队中 2 / 请求中 3 / 响应中 4`；Storybook fixture 中 recent 列表只有 4 条，证明该统计不从卡内列表 reduce。

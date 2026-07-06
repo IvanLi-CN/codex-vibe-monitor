@@ -2672,6 +2672,17 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error(`missing phase label in card: ${card.textContent ?? ""}`);
     }
 
+    const phaseLabels = Array.from(
+      card.querySelectorAll('[data-testid="invocation-phase-badge"]'),
+    );
+    expect(phaseLabels.length).toBeGreaterThanOrEqual(2);
+    for (const phaseLabel of phaseLabels) {
+      expect(phaseLabel.className).toContain("inline-flex");
+      expect(phaseLabel.className).not.toMatch(/\brounded/);
+      expect(phaseLabel.className).not.toMatch(/\bborder/);
+      expect(phaseLabel.className).not.toMatch(/\bbg-/);
+    }
+
     const requestMetric = Array.from(card.querySelectorAll("span")).find(
       (node) => node.textContent === "请求",
     );
