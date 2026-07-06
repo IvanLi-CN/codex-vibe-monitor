@@ -1124,7 +1124,11 @@ async fn proxy_websocket_tunnel(
             upstream_msg = upstream_rx.next() => {
                 match upstream_msg {
                     Some(Ok(message)) => {
-                        let close_seen = matches!(message, TungsteniteMessage::Close(_));
+                        let close_frame = match &message {
+                            TungsteniteMessage::Close(frame) => Some(frame.as_ref()),
+                            _ => None,
+                        };
+                        let close_seen = close_frame.is_some();
                         let upstream_text = match &message {
                             TungsteniteMessage::Text(text) => Some(text.as_str().to_owned()),
                             _ => None,
@@ -1153,6 +1157,7 @@ async fn proxy_websocket_tunnel(
                                 websocket_post_upgrade_close_marks_account_ws_unsupported(
                                     requires_response_create_first_frame,
                                     &usage_tracker.account,
+                                    close_frame.flatten(),
                                 );
                             let _ = downstream_tx
                                 .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
@@ -1205,6 +1210,7 @@ async fn proxy_websocket_tunnel(
                                 websocket_post_upgrade_close_marks_account_ws_unsupported(
                                     requires_response_create_first_frame,
                                     &usage_tracker.account,
+                                    None,
                                 );
                             let _ = downstream_tx
                                 .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
@@ -1832,12 +1838,20 @@ fn websocket_upstream_error_marks_account_ws_unsupported(err: &tungstenite::Erro
 fn websocket_post_upgrade_close_marks_account_ws_unsupported(
     requires_response_create_first_frame: bool,
     account: &PoolResolvedAccount,
+    close_frame: Option<&tungstenite::protocol::CloseFrame>,
 ) -> bool {
     requires_response_create_first_frame
         && account
             .kind
             .eq_ignore_ascii_case(API_KEYS_BILLING_ACCOUNT_KIND)
         && !account.auth.is_oauth()
+        && close_frame.is_none_or(|frame| {
+            matches!(
+                frame.code,
+                tungstenite::protocol::frame::coding::CloseCode::Normal
+                    | tungstenite::protocol::frame::coding::CloseCode::Away
+            )
+        })
 }
 
 fn ws_text_event_is_terminal(event_type: &str) -> bool {
@@ -3272,24 +3286,46 @@ mod websocket_tests {
         api_key_codex.kind = API_KEYS_BILLING_ACCOUNT_KIND.to_string();
         assert!(websocket_post_upgrade_close_marks_account_ws_unsupported(
             true,
-            &api_key_codex
+            &api_key_codex,
+            None
+        ));
+        let normal_close = tungstenite::protocol::CloseFrame {
+            code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+            reason: "".into(),
+        };
+        assert!(websocket_post_upgrade_close_marks_account_ws_unsupported(
+            true,
+            &api_key_codex,
+            Some(&normal_close)
+        ));
+        let transient_close = tungstenite::protocol::CloseFrame {
+            code: tungstenite::protocol::frame::coding::CloseCode::Again,
+            reason: "retry".into(),
+        };
+        assert!(!websocket_post_upgrade_close_marks_account_ws_unsupported(
+            true,
+            &api_key_codex,
+            Some(&transient_close)
         ));
         assert!(!websocket_post_upgrade_close_marks_account_ws_unsupported(
             false,
-            &api_key_codex
+            &api_key_codex,
+            None
         ));
 
         let generic_api_key = api_key_account(Url::parse("https://api.example.test").expect("url"));
         assert!(!websocket_post_upgrade_close_marks_account_ws_unsupported(
             true,
-            &generic_api_key
+            &generic_api_key,
+            None
         ));
 
         let mut oauth_codex = oauth_account(Url::parse("https://api.example.test").expect("url"));
         oauth_codex.kind = API_KEYS_BILLING_ACCOUNT_KIND.to_string();
         assert!(!websocket_post_upgrade_close_marks_account_ws_unsupported(
             true,
-            &oauth_codex
+            &oauth_codex,
+            None
         ));
     }
 
