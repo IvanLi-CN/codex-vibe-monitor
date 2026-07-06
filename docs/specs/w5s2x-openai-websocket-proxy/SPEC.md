@@ -4,7 +4,7 @@
 
 - Status: active
 - Created: 2026-05-04
-- Last: 2026-07-05
+- Last: 2026-07-06
 
 ## 背景 / 问题陈述
 
@@ -14,7 +14,8 @@
 
 ## Goals
 
-- `/v1/*` downstream WebSocket 在通过 HTTP 层鉴权、开关和并发门禁后，先读取首个 text JSON `response.create` payload，再执行账号池路由和上游 WS 握手。
+- `/v1/responses` downstream WebSocket 在通过 HTTP 层鉴权、开关和并发门禁后，先读取首个 text JSON `response.create` payload，再执行账号池路由和上游 WS 握手。
+- 非 Responses 的 `/v1/*` WebSocket（例如 `/v1/realtime`）在通过 HTTP 层鉴权、开关和并发门禁后立即执行账号池路由和上游 WS 握手，不等待 downstream 首帧。
 - 首帧 payload 的 `model`、`prompt_cache_key`、`previous_response_id` 和 encrypted content 参与路由、owner guard 和观测；header `prompt_cache_key` 只作为 fallback，sticky-only header 不得被当作 prompt cache key。
 - 上游握手成功后才发送被保留的首帧；握手、429、unsupported 或网络失败仍在同一个 downstream WS session 内按账号池 failover 尝试后续候选。
 - relay 以 `response.create` 到 terminal event 为 active turn 边界，继续透传 text、binary、ping、pong、close。
@@ -36,7 +37,9 @@
 - Downstream: `GET /v1/*` 携带标准 WebSocket upgrade headers，且必须携带现有 pool route key。
 - Downstream gate: `websocketEnabled=false` 时返回 HTTP `503` JSON error，不进入 WS upgrade。
 - Upstream gate: `upstreamWebsocketDefaultEnabled=false` 时，已 upgrade 的 downstream WS 收到 retryable close，不建立不可靠上游隧道。
-- Initial frame: upgrade 成功后，第一个 downstream frame 必须是 text JSON，`type` 必须为 `response.create`。非 text、非 JSON 或非 `response.create` 首帧以 close `1011` 结束。
+- Responses initial frame: `/v1/responses` upgrade 成功后，第一个 downstream frame 必须是 text JSON，`type` 必须为 `response.create`。非 text、非 JSON 或非 `response.create` 首帧以 close `1011` 结束。
+- Pre-upstream observability: `/v1/responses` 在上游建连前发生首帧读取超时、读取错误或首帧协议拒绝时，必须写入 `pool_upstream_request_attempts` 的 `transport_failure` / `failed` 记录，保留 `pool-ws-*` invoke id、failure kind 和 downstream error message；downstream 正常主动关闭且未开始 turn 时不制造失败记录。
+- Realtime passthrough: `/v1/realtime` upgrade 成功后必须立即连接上游并 relay 上游先发事件；不得等待 downstream `response.create`。
 - Subprotocol: 若 downstream 请求 `Sec-WebSocket-Protocol`，代理可为客户端兼容性选择第一个请求值，但上游握手必须返回同一 subprotocol 后才允许发送保留首帧；不匹配视为 retryable upstream transport failure 并进入 failover。
 - Routing keys: payload `prompt_cache_key` / `promptCacheKey` 优先；无 payload key 时才使用 header `x-prompt-cache-key` / `prompt-cache-key` / `x-openai-prompt-cache-key`；`x-sticky-key` 只影响 sticky routing，不参与 prompt-cache owner guard。
 - Model: payload `model` 优先于 query `model` 参与账号池模型约束选择。
@@ -51,6 +54,8 @@
 - 无 header `prompt_cache_key` 时，首帧 payload 的 `prompt_cache_key` 能决定 owner/binding 路由。
 - sticky-only header 不会被当作 prompt cache key，也不会触发 encrypted owner guard。
 - 首个候选上游 handshake 失败时，同一 downstream WS session 内切到下一候选，并把保留首帧发送给成功候选。
+- `/v1/realtime` downstream 建连后，即使 downstream 尚未发送业务帧，也能收到上游先发的 `session.created` 等事件。
+- `/v1/responses` 首帧协议拒绝或首帧读取超时后，失败在 pool attempt 视图中可查询，不再只剩请求日志。
 - downstream 请求 subprotocol 且上游未选择同一值时，代理不得 relay 首帧，应记录 retryable attempt failure 并向客户端返回 `1013 upstream_unavailable; retry` 或继续 failover 到匹配候选。
 - 多个 `response.create` turn 能逐 turn relay，terminal usage 分别落入 invocation/cost 统计。
 - 缺字段 usage 不产生半字段 usage/cost 记录。
