@@ -1501,6 +1501,7 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
 
 #[derive(sqlx::FromRow)]
 struct LatestInvocationPayloadRow {
+    invoke_id: String,
     status: Option<String>,
     error_message: Option<String>,
     failure_kind: Option<String>,
@@ -1512,7 +1513,7 @@ async fn load_latest_invocation_payload_row(
 ) -> (LatestInvocationPayloadRow, Value) {
     let row = sqlx::query_as::<_, LatestInvocationPayloadRow>(
         r#"
-        SELECT status, error_message, failure_kind, payload
+        SELECT invoke_id, status, error_message, failure_kind, payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -1719,6 +1720,12 @@ async fn pool_openai_v1_responses_marks_upstream_read_root_cause_for_truncated_e
         .await;
 
         assert_eq!(response.status(), StatusCode::OK);
+        let response_invoke_id = response
+            .headers()
+            .get(CVM_INVOKE_ID_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+            .expect("tracked streaming response should expose x-cvm-invoke-id");
         let err = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect_err("truncated encoded upstream stream should fail after first chunk");
@@ -1772,6 +1779,7 @@ async fn pool_openai_v1_responses_marks_upstream_read_root_cause_for_truncated_e
                 .is_some_and(|value| value.contains("response_decode_failed:")),
             "mode={mode} should preserve decode evidence in usageMissingReason"
         );
+        assert_eq!(row.invoke_id, response_invoke_id, "mode={mode}");
 
         upstream_handle.abort();
     }
@@ -2119,7 +2127,7 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
         .await
         .expect("connect downstream close client");
     let http_request = format!(
-        "POST /v1/responses?mode=slow-success HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer pool-live-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
+        "POST /v1/responses?mode=slow-success HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer pool-live-key\r\nContent-Type: application/json\r\nUser-Agent: codex-test-downstream-close/1.0\r\nX-Forwarded-For: 198.51.100.8, 192.168.31.1\r\nX-Real-IP: 198.51.100.9\r\nForwarded: for=198.51.100.10;proto=https;host=example.test\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
         request_body.len(),
         request_body
     );
@@ -2207,6 +2215,22 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
             .as_u64()
             .is_some_and(|value| value >= 250),
         "idle gap before downstream close should be observable"
+    );
+    assert_eq!(
+        payload["requestUserAgent"].as_str(),
+        Some("codex-test-downstream-close/1.0")
+    );
+    assert_eq!(
+        payload["requestXForwardedFor"].as_str(),
+        Some("198.51.100.8, 192.168.31.1")
+    );
+    assert_eq!(
+        payload["requestXRealIp"].as_str(),
+        Some("198.51.100.9")
+    );
+    assert_eq!(
+        payload["requestForwarded"].as_str(),
+        Some("for=198.51.100.10;proto=https;host=example.test")
     );
 
     server_handle.abort();

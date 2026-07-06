@@ -2426,6 +2426,44 @@ pub(crate) fn extract_requester_ip(headers: &HeaderMap, peer_ip: Option<IpAddr>)
     peer_ip.map(|ip| ip.to_string())
 }
 
+const REQUEST_CHAIN_METADATA_MAX_BYTES: usize = 512;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RequestChainMetadata {
+    pub(crate) user_agent: Option<String>,
+    pub(crate) x_forwarded_for: Option<String>,
+    pub(crate) forwarded: Option<String>,
+    pub(crate) x_real_ip: Option<String>,
+}
+
+fn truncate_header_value(raw: &str, max_bytes: usize) -> String {
+    if raw.len() <= max_bytes {
+        return raw.to_string();
+    }
+
+    let mut end = max_bytes;
+    while end > 0 && !raw.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    raw[..end].to_string()
+}
+
+fn bounded_request_header_value(headers: &HeaderMap, name: &'static str) -> Option<String> {
+    header_value_as_str(headers, name)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| truncate_header_value(value, REQUEST_CHAIN_METADATA_MAX_BYTES))
+}
+
+pub(crate) fn request_chain_metadata_from_headers(headers: &HeaderMap) -> RequestChainMetadata {
+    RequestChainMetadata {
+        user_agent: bounded_request_header_value(headers, "user-agent"),
+        x_forwarded_for: bounded_request_header_value(headers, "x-forwarded-for"),
+        forwarded: bounded_request_header_value(headers, "forwarded"),
+        x_real_ip: bounded_request_header_value(headers, "x-real-ip"),
+    }
+}
+
 pub(crate) fn extract_sticky_key_from_headers(headers: &HeaderMap) -> Option<String> {
     for header_name in [
         "x-sticky-key",
