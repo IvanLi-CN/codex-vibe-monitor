@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.13.6",
+  "base_stable_version": "2.13.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-06T04:29:22Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.13.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "b5b11df6705be30e252ad93d2a99fde502258db8",
+  "pr_number": 543,
+  "pr_title": "fix(web): render dashboard phase status inline",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.13.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.13.6",
+  "target_sha": "5d099f58d4396156c68cafe5a8c571819b8cd4c6",
+  "type_label": "type:patch"
+}
