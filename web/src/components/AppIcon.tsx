@@ -37,6 +37,7 @@ import earthIcon from '@iconify-icons/mdi/earth'
 import fileDocumentEditOutlineIcon from '@iconify-icons/mdi/file-document-edit-outline'
 import githubIcon from '@iconify-icons/mdi/github'
 import helpCircleOutlineIcon from '@iconify-icons/mdi/help-circle-outline'
+import imageOutlineIcon from '@iconify-icons/mdi/image-outline'
 import informationOutlineIcon from '@iconify-icons/mdi/information-outline'
 import keyChainVariantIcon from '@iconify-icons/mdi/key-chain-variant'
 import keyOutlineIcon from '@iconify-icons/mdi/key-outline'
@@ -103,6 +104,7 @@ const appIconRegistry = {
   'file-document-edit-outline': fileDocumentEditOutlineIcon,
   'github': githubIcon,
   'help-circle-outline': helpCircleOutlineIcon,
+  'image-outline': imageOutlineIcon,
   'information-outline': informationOutlineIcon,
   'key-chain-variant': keyChainVariantIcon,
   'key-outline': keyOutlineIcon,

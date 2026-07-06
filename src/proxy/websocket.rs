@@ -184,27 +184,51 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     };
 
     let downstream_subprotocol = requested_websocket_subprotocol(&headers);
+    let requires_response_create_first_frame =
+        websocket_requires_response_create_first_frame(original_uri.path());
     let ws = match downstream_subprotocol.clone() {
         Some(protocol) => ws.protocols([protocol]),
         None => ws,
     };
     ws.on_upgrade(move |downstream| async move {
-        proxy_websocket_tunnel_deferred_prepare(
-            state,
-            downstream,
-            proxy_request_id,
-            original_uri,
-            headers,
-            runtime_timeouts,
-            sticky_key,
-            requested_model,
-            header_prompt_cache_key,
-            downstream_subprotocol,
-            trace,
-            proxy_request_permit,
-        )
-        .await;
+        if requires_response_create_first_frame {
+            proxy_websocket_tunnel_deferred_prepare(
+                state,
+                downstream,
+                proxy_request_id,
+                original_uri,
+                headers,
+                runtime_timeouts,
+                sticky_key,
+                requested_model,
+                header_prompt_cache_key,
+                downstream_subprotocol,
+                trace,
+                proxy_request_permit,
+            )
+            .await;
+        } else {
+            proxy_websocket_tunnel_immediate_prepare(
+                state,
+                downstream,
+                proxy_request_id,
+                original_uri,
+                headers,
+                runtime_timeouts,
+                sticky_key,
+                requested_model,
+                header_prompt_cache_key,
+                downstream_subprotocol,
+                trace,
+                proxy_request_permit,
+            )
+            .await;
+        }
     })
+}
+
+fn websocket_requires_response_create_first_frame(path: &str) -> bool {
+    path == "/v1/responses" || path.starts_with("/v1/responses/")
 }
 
 pub(crate) struct PreparedUpstreamWebSocket {
@@ -671,7 +695,12 @@ async fn prepare_single_upstream_websocket_attempt(
         .as_ref()
         .map(|pending| PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone()));
 
-    let request = match build_upstream_ws_request(&upstream_url, headers, &account) {
+    let request = match build_upstream_ws_request(
+        &upstream_url,
+        headers,
+        &account,
+        websocket_requires_response_create_first_frame(original_uri.path()),
+    ) {
         Ok(request) => request,
         Err(err) => {
             let message = format!("failed to build upstream websocket request: {err}");
@@ -1287,19 +1316,48 @@ async fn proxy_websocket_tunnel_deferred_prepare(
         match timeout(runtime_timeouts.request_read_timeout, downstream.next()).await {
             Ok(Some(Ok(message))) => message,
             Ok(Some(Err(err))) => {
+                let message = format!(
+                    "failed to read websocket first response.create frame: {err}"
+                );
                 warn!(
                     proxy_request_id,
-                    error = %err,
+                    error = %message,
                     "downstream websocket closed before deferred upstream prepare"
+                );
+                record_ws_pre_upstream_failure(
+                    state.as_ref(),
+                    &trace,
+                    PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    message.as_str(),
+                )
+                .await;
+                return;
+            }
+            Ok(None) => {
+                debug!(
+                    proxy_request_id,
+                    "downstream websocket closed before first response.create frame"
                 );
                 return;
             }
-            Ok(None) => return,
             Err(_) => {
+                let message = "websocket first response.create timed out";
+                warn!(
+                    proxy_request_id,
+                    timeout_secs = runtime_timeouts.request_read_timeout.as_secs_f64(),
+                    "websocket first response.create timed out"
+                );
+                record_ws_pre_upstream_failure(
+                    state.as_ref(),
+                    &trace,
+                    PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    message,
+                )
+                .await;
                 let _ = downstream
                     .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
                         code: axum::extract::ws::close_code::ERROR,
-                        reason: "websocket first response.create timed out".into(),
+                        reason: message.into(),
                     })))
                     .await;
                 return;
@@ -1319,6 +1377,13 @@ async fn proxy_websocket_tunnel_deferred_prepare(
                 reason,
                 "websocket first downstream frame rejected"
             );
+            record_ws_pre_upstream_failure(
+                state.as_ref(),
+                &trace,
+                PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                reason,
+            )
+            .await;
             let _ = downstream
                 .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
                     code: axum::extract::ws::close_code::ERROR,
@@ -1405,6 +1470,141 @@ async fn proxy_websocket_tunnel_deferred_prepare(
         prepared,
         proxy_request_permit,
         Some(first_downstream_message),
+    )
+    .await;
+}
+
+async fn record_ws_pre_upstream_failure(
+    state: &AppState,
+    trace: &PoolUpstreamAttemptTraceContext,
+    failure_kind: &'static str,
+    message: &str,
+) {
+    let now = shanghai_now_string();
+    if let Err(err) = insert_pool_upstream_request_attempt_with_scope(
+        &state.pool,
+        trace,
+        None,
+        None,
+        None,
+        None,
+        1,
+        0,
+        0,
+        Some(now.as_str()),
+        Some(now.as_str()),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED),
+        None,
+        Some(StatusCode::BAD_REQUEST),
+        Some(failure_kind),
+        Some(message),
+        Some(message),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    {
+        warn!(
+            invoke_id = %trace.invoke_id,
+            error = %err,
+            "failed to record websocket pre-upstream failure"
+        );
+        return;
+    }
+    if let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, &trace.invoke_id).await {
+        warn!(
+            invoke_id = %trace.invoke_id,
+            error = %err,
+            "failed to broadcast websocket pre-upstream failure"
+        );
+    }
+}
+
+async fn proxy_websocket_tunnel_immediate_prepare(
+    state: Arc<AppState>,
+    mut downstream: WebSocket,
+    proxy_request_id: u64,
+    original_uri: Uri,
+    headers: HeaderMap,
+    runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
+    sticky_key: Option<String>,
+    requested_model: Option<String>,
+    header_prompt_cache_key: Option<String>,
+    required_subprotocol: Option<String>,
+    trace: PoolUpstreamAttemptTraceContext,
+    proxy_request_permit: ProxyRequestConcurrencyPermit,
+) {
+    debug!(
+        proxy_request_id,
+        requested_model = ?requested_model,
+        prompt_cache_key_present = header_prompt_cache_key.is_some(),
+        path = %original_uri.path(),
+        "websocket passthrough prepare without response.create first frame"
+    );
+    let (binding_constraint, owner_auto_guard_active, conversation_override) =
+        match load_via_pool_effective_routing(
+            state.as_ref(),
+            header_prompt_cache_key.as_deref(),
+            false,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err((_status, message)) => {
+                let _ = downstream
+                    .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::ERROR,
+                        reason: message.into(),
+                    })))
+                    .await;
+                return;
+            }
+        };
+    let prepared = match prepare_upstream_websocket(
+        state.clone(),
+        proxy_request_id,
+        &original_uri,
+        &headers,
+        &runtime_timeouts,
+        sticky_key.as_deref(),
+        requested_model.as_deref(),
+        header_prompt_cache_key.as_deref(),
+        binding_constraint,
+        conversation_override,
+        owner_auto_guard_active,
+        &trace,
+        required_subprotocol.as_deref(),
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            let close_frame = if err.message == ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE {
+                axum::extract::ws::CloseFrame {
+                    code: axum::extract::ws::close_code::AGAIN,
+                    reason: "encrypted_session_owner_unavailable; retry".into(),
+                }
+            } else {
+                axum::extract::ws::CloseFrame {
+                    code: axum::extract::ws::close_code::AGAIN,
+                    reason: "upstream_unavailable; retry".into(),
+                }
+            };
+            let _ = downstream.send(AxumWsMessage::Close(Some(close_frame))).await;
+            return;
+        }
+    };
+    proxy_websocket_tunnel(
+        state,
+        downstream,
+        prepared,
+        proxy_request_permit,
+        None,
     )
     .await;
 }
@@ -1955,6 +2155,7 @@ fn build_upstream_ws_request(
     upstream_url: &Url,
     headers: &HeaderMap,
     account: &PoolResolvedAccount,
+    force_responses_beta: bool,
 ) -> Result<TungsteniteRequest<()>> {
     let mut request = upstream_url
         .as_str()
@@ -1975,10 +2176,12 @@ fn build_upstream_ws_request(
             access_token,
             chatgpt_account_id,
         } => {
-            request.headers_mut().insert(
-                HeaderName::from_static("openai-beta"),
-                HeaderValue::from_static("responses=experimental"),
-            );
+            if force_responses_beta {
+                request.headers_mut().insert(
+                    HeaderName::from_static("openai-beta"),
+                    HeaderValue::from_static("responses=experimental"),
+                );
+            }
             if let Some(account_id) = chatgpt_account_id
                 .as_deref()
                 .map(str::trim)
@@ -2557,6 +2760,7 @@ mod websocket_tests {
             &Url::parse("wss://api.example.test/v1/responses").expect("valid target"),
             &headers,
             &account,
+            true,
         )
         .expect("request");
 
@@ -2596,6 +2800,7 @@ mod websocket_tests {
             &Url::parse("wss://api.example.test/v1/responses").expect("valid target"),
             &headers,
             &account,
+            true,
         )
         .expect("request");
 
@@ -2612,6 +2817,45 @@ mod websocket_tests {
                 .get("openai-beta")
                 .and_then(|value| value.to_str().ok()),
             Some("responses=experimental")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("chatgpt-account-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("acct-test")
+        );
+    }
+
+    #[test]
+    fn upstream_ws_request_preserves_oauth_realtime_beta_header() {
+        let account = oauth_account(Url::parse("https://api.example.test").expect("valid base"));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("openai-beta"),
+            HeaderValue::from_static("realtime=v1"),
+        );
+        let request = build_upstream_ws_request(
+            &Url::parse("wss://api.example.test/v1/realtime").expect("valid target"),
+            &headers,
+            &account,
+            false,
+        )
+        .expect("request");
+
+        assert_eq!(
+            request
+                .headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer oauth-upstream-token")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("openai-beta")
+                .and_then(|value| value.to_str().ok()),
+            Some("realtime=v1")
         );
         assert_eq!(
             request
