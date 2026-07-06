@@ -143,9 +143,12 @@ pub(crate) async fn proxy_openai_v1_common(
         .await,
     );
     let capture_target = capture_target_for_request(original_uri.path(), &method);
+    let transport_request_observer = downstream_transport
+        .as_ref()
+        .map(DownstreamTransportObserver::begin_request);
     let downstream_request_observer = capture_target
         .is_some()
-        .then(|| downstream_transport.as_ref().map(DownstreamTransportObserver::begin_request))
+        .then_some(transport_request_observer)
         .flatten();
     let admitted_runtime_snapshot = match capture_target {
         Some(target) => {

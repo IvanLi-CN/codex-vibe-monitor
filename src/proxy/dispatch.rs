@@ -110,9 +110,9 @@ fn proxy_stream_observe_downstream_body_terminal(
     downstream_write_error_kind: &mut Option<&'static str>,
     last_upstream_chunk_received_at: Option<Instant>,
     last_upstream_chunk_gap_ms: &mut Option<u64>,
-) -> bool {
+) {
     match state {
-        DownstreamBodyTerminalState::Open | DownstreamBodyTerminalState::Completed => false,
+        DownstreamBodyTerminalState::Open | DownstreamBodyTerminalState::Completed => {}
         DownstreamBodyTerminalState::Dropped => {
             *downstream_closed = true;
             downstream_write_error_kind.get_or_insert("body_dropped");
@@ -120,7 +120,6 @@ fn proxy_stream_observe_downstream_body_terminal(
                 *last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
                     .map(|instant| instant.elapsed().as_millis() as u64);
             }
-            true
         }
     }
 }
@@ -1764,6 +1763,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
     let (downstream_body_terminal_tx, mut downstream_body_terminal_rx) =
         watch::channel(DownstreamBodyTerminalState::Open);
+    if let Some(observation) = downstream_request_observer.as_ref() {
+        observation.activate_reset_monitor();
+    }
 
     tokio::spawn(async move {
         let _live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease_for_task;
@@ -1878,16 +1880,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     };
                     let next_chunk = tokio::select! {
                         changed = downstream_body_terminal_rx.changed() => {
-                            if changed.is_ok()
-                                && proxy_stream_observe_downstream_body_terminal(
+                            if changed.is_ok() {
+                                proxy_stream_observe_downstream_body_terminal(
                                     *downstream_body_terminal_rx.borrow(),
                                     &mut downstream_closed,
                                     &mut downstream_write_error_kind,
                                     last_upstream_chunk_received_at,
                                     &mut last_upstream_chunk_gap_ms,
-                                )
-                            {
-                                break;
+                                );
                             }
                             continue;
                         }
@@ -1916,16 +1916,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 } else {
                     tokio::select! {
                         changed = downstream_body_terminal_rx.changed() => {
-                            if changed.is_ok()
-                                && proxy_stream_observe_downstream_body_terminal(
+                            if changed.is_ok() {
+                                proxy_stream_observe_downstream_body_terminal(
                                     *downstream_body_terminal_rx.borrow(),
                                     &mut downstream_closed,
                                     &mut downstream_write_error_kind,
                                     last_upstream_chunk_received_at,
                                     &mut last_upstream_chunk_gap_ms,
-                                )
-                            {
-                                break;
+                                );
                             }
                             continue;
                         }
@@ -1952,16 +1950,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 };
                 let next_chunk = tokio::select! {
                     changed = downstream_body_terminal_rx.changed() => {
-                        if changed.is_ok()
-                            && proxy_stream_observe_downstream_body_terminal(
+                        if changed.is_ok() {
+                            proxy_stream_observe_downstream_body_terminal(
                                 *downstream_body_terminal_rx.borrow(),
                                 &mut downstream_closed,
                                 &mut downstream_write_error_kind,
                                 last_upstream_chunk_received_at,
                                 &mut last_upstream_chunk_gap_ms,
-                            )
-                        {
-                            break;
+                            );
                         }
                         continue;
                     }
@@ -1988,16 +1984,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             } else {
                 tokio::select! {
                     changed = downstream_body_terminal_rx.changed() => {
-                        if changed.is_ok()
-                            && proxy_stream_observe_downstream_body_terminal(
+                        if changed.is_ok() {
+                            proxy_stream_observe_downstream_body_terminal(
                                 *downstream_body_terminal_rx.borrow(),
                                 &mut downstream_closed,
                                 &mut downstream_write_error_kind,
                                 last_upstream_chunk_received_at,
                                 &mut last_upstream_chunk_gap_ms,
-                            )
-                        {
-                            break;
+                            );
                         }
                         continue;
                     }

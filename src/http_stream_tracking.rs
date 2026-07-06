@@ -40,6 +40,8 @@ struct DownstreamTransportObserverState {
     next_request_seq: u64,
     current_request_seq: Option<u64>,
     last_write_error: Option<DownstreamWriteErrorSnapshot>,
+    reset_monitor_stream: Option<TcpStream>,
+    reset_monitor_started: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +92,34 @@ impl DownstreamTransportObserver {
             observer: self.clone(),
             request_seq,
         }
+    }
+
+    fn set_reset_monitor_stream(&self, stream: TcpStream) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("downstream transport observer mutex poisoned");
+        state.reset_monitor_stream = Some(stream);
+    }
+
+    fn activate_reset_monitor(&self) {
+        let monitor_stream = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .expect("downstream transport observer mutex poisoned");
+            if state.reset_monitor_started {
+                return;
+            }
+            let Some(stream) = state.reset_monitor_stream.take() else {
+                return;
+            };
+            state.reset_monitor_started = true;
+            stream
+        };
+        spawn_downstream_reset_monitor(monitor_stream, self.clone());
     }
 
     fn record_write_error(&self, kind: &'static str, message: String) {
@@ -147,6 +177,10 @@ impl DownstreamTransportObserver {
 }
 
 impl DownstreamRequestObserver {
+    pub(crate) fn activate_reset_monitor(&self) {
+        self.observer.activate_reset_monitor();
+    }
+
     pub(crate) async fn wait_for_write_error_window(
         &self,
         grace_period: Duration,
@@ -420,7 +454,7 @@ where
 
         let observer = DownstreamTransportObserver::new();
         if let Ok(monitor_stream) = duplicate_tcp_stream_for_monitor(&tcp_stream) {
-            spawn_downstream_reset_monitor(monitor_stream, observer.clone());
+            observer.set_reset_monitor_stream(monitor_stream);
         }
         let tcp_stream = TokioIo::new(ObservedTcpStream::new(tcp_stream, observer.clone()));
 
@@ -474,4 +508,31 @@ where
     drop(tcp_listener);
     close_tx.closed().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn downstream_request_observer_ignores_later_request_write_errors() {
+        let observer = DownstreamTransportObserver::new();
+        let first_request = observer.begin_request();
+        let second_request = observer.begin_request();
+
+        observer.record_write_error("connection_reset", "late reset".to_string());
+
+        assert!(
+            first_request
+                .wait_for_write_error_window(Duration::from_millis(1))
+                .await
+                .is_none()
+        );
+        let second_snapshot = second_request
+            .wait_for_write_error_window(Duration::from_millis(1))
+            .await
+            .expect("second request should observe its own write error");
+        assert_eq!(second_snapshot.kind, "connection_reset");
+        assert_eq!(second_snapshot.request_seq, 2);
+    }
 }
