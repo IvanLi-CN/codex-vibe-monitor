@@ -53,9 +53,7 @@ import { Switch } from "../../components/ui/switch";
 import { EffectiveRoutingRuleCard } from "../../components/EffectiveRoutingRuleCard";
 import { ForwardProxyBindingSelector } from "../../components/ForwardProxyBindingSelector";
 import { InvocationTable } from "../../components/InvocationTable";
-import {
-  DashboardActivityOverview,
-} from "../../components/DashboardActivityOverview";
+import { DashboardActivityOverview } from "../../components/DashboardActivityOverview";
 import { ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX } from "../../components/dashboardActivityRange";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { UpstreamAccountUsageCard } from "../../components/UpstreamAccountUsageCard";
@@ -240,11 +238,7 @@ type OauthRecoveryHint = {
 };
 
 type AccountDetailTab =
-  | "overview"
-  | "records"
-  | "edit"
-  | "routing"
-  | "healthEvents";
+  "overview" | "records" | "edit" | "routing" | "healthEvents";
 
 const ACCOUNT_DETAIL_TABS_REQUIRING_ROSTER_CONTEXT = new Set<AccountDetailTab>([
   "edit",
@@ -279,7 +273,10 @@ function normalizeProxyKeys(values?: string[]): string[] {
   );
 }
 
-function proxyNodeLabel(node: ForwardProxyBindingNode | undefined, key: string) {
+function proxyNodeLabel(
+  node: ForwardProxyBindingNode | undefined,
+  key: string,
+) {
   if (node) {
     const protocol = node.protocolLabel ? ` · ${node.protocolLabel}` : "";
     return `${node.displayName}${protocol}`;
@@ -1219,9 +1216,9 @@ function SharedUpstreamAccountDetailDrawerInner({
   }, [initialDeleteConfirmOpen, onInitialDeleteConfirmHandled, open]);
 
   useEffect(() => {
-    setDetailTab("overview");
+    setDetailTab(initialTab);
     setExpandedStickyKeys([]);
-  }, [accountId]);
+  }, [accountId, initialTab]);
 
   useEffect(() => {
     setGroupDraftNotes((current) => {
@@ -2319,18 +2316,17 @@ function SharedUpstreamAccountDetailDrawerInner({
     if (saved) {
       setAccountProxyEditorOpen(false);
     }
-  }, [
-    accountProxyDraftKeys,
-    handleSaveAccountProxyBindings,
-    selectedDetail,
-  ]);
+  }, [accountProxyDraftKeys, handleSaveAccountProxyBindings, selectedDetail]);
   const handleSaveInlineAccountPolicy = useCallback(
     async (
       source: UpstreamAccountDetail,
       field: InlinePolicyField,
       payload: UpdateGroupAccountRoutingRulePayload,
     ) => {
-      if (inlinePolicyBusyField != null || hasBusyAccountAction(busyAction, source.id)) {
+      if (
+        inlinePolicyBusyField != null ||
+        hasBusyAccountAction(busyAction, source.id)
+      ) {
         return;
       }
       setInlinePolicyErrors((current) => ({ ...current, [field]: null }));
@@ -2347,7 +2343,9 @@ function SharedUpstreamAccountDetailDrawerInner({
           [field]: err instanceof Error ? err.message : String(err),
         }));
       } finally {
-        setInlinePolicyBusyField((current) => (current === field ? null : current));
+        setInlinePolicyBusyField((current) =>
+          current === field ? null : current,
+        );
       }
     },
     [
@@ -3067,12 +3065,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                         </span>
                       ) : (
                         <span>
-                          {t(
-                            "accountPool.upstreamAccounts.records.allLoaded",
-                            {
-                              count: accountRecords.length,
-                            },
-                          )}
+                          {t("accountPool.upstreamAccounts.records.allLoaded", {
+                            count: accountRecords.length,
+                          })}
                         </span>
                       )}
                     </div>
@@ -3581,10 +3576,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       disabled: !writesEnabled,
                       onEdit: openAccountProxyEditor,
                       onClear: () =>
-                        void handleSaveAccountProxyBindings(
-                          selectedDetail,
-                          [],
-                        ),
+                        void handleSaveAccountProxyBindings(selectedDetail, []),
                       onRemove: (key) =>
                         void handleSaveAccountProxyBindings(
                           selectedDetail,
@@ -3742,7 +3734,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                         "accountPool.tags.dialog.availableModelsAddCustom",
                       ),
                       availableModelsCustomLabel: (value) =>
-                        t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
+                        t(
+                          "accountPool.tags.dialog.availableModelsCustomLabel",
+                          { value },
+                        ),
                       availableModelsRemove: t(
                         "accountPool.tags.dialog.availableModelsRemove",
                       ),
