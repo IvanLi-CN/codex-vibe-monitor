@@ -74,7 +74,7 @@ function createSettingsPayload(
       upstreamWebsocketDefaultEnabled: false,
       requestBodyLoggingEnabled: true,
       responseBodyLoggingEnabled: true,
-      encryptedSessionOwnerRoutingEnabled: true,
+      encryptedSessionOwnerRoutingEnabled: false,
       defaultHijackEnabled: false,
       models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
       enabledModels: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],

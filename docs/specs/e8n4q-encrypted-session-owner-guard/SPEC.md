@@ -33,7 +33,8 @@ Prompt Cache conversation binding currently models operator routing intent only.
 - Manual rebinding does not move owner state immediately; owner moves only after the newly bound target succeeds.
 - Group binding used as a dangerous override must auto-promote to an account binding after the first encrypted-session success on a concrete account.
 - Binding read APIs and Prompt Cache conversation detail responses expose read-only owner metadata.
-- `proxy_model_settings.encrypted_session_owner_routing_enabled` defaults to enabled and is exposed through `GET /api/settings` and `PUT /api/settings/proxy` as `encryptedSessionOwnerRoutingEnabled`.
+- `proxy_model_settings.encrypted_session_owner_routing_enabled` defaults to disabled and is exposed through `GET /api/settings` and `PUT /api/settings/proxy` as `encryptedSessionOwnerRoutingEnabled`.
+- `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` may override that default only when the SQLite setting has not been initialized yet; once initialized, later restarts keep using the database value.
 - When encrypted owner routing is disabled, HTTP and WebSocket proxy paths ignore existing encrypted owner rows, do not write new owner rows after encrypted success, and do not return `encrypted_session_owner_unavailable` solely because an encrypted owner is unavailable.
 - When encrypted owner routing is disabled, binding read APIs and Prompt Cache conversation list/detail responses suppress encrypted owner metadata so the product UI behaves like ordinary manual route binding.
 
@@ -43,7 +44,8 @@ Prompt Cache conversation binding currently models operator routing intent only.
 
 `proxy_model_settings`
 
-- `encrypted_session_owner_routing_enabled INTEGER NOT NULL DEFAULT 1`
+- `encrypted_session_owner_routing_enabled INTEGER NOT NULL DEFAULT 0`
+- `encrypted_session_owner_routing_initialized INTEGER NOT NULL DEFAULT 0`
 
 `prompt_cache_encrypted_session_owners`
 
@@ -68,6 +70,7 @@ Prompt Cache conversation binding currently models operator routing intent only.
 - Request parsing records whether the inbound payload already contains `encrypted_content`.
 - Response parsing records whether the upstream response produced `encrypted_content`.
 - Automatic routing uses encrypted owner state before ordinary sticky/group/account pool fallback.
+- On first startup against a new or missing-field database row, the encrypted owner routing setting is initialized from `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` when present, otherwise `false`.
 - The global encrypted owner routing setting is read at routing/owner-confirmation boundaries. Disabled means pause enforcement and owner persistence while preserving the ledger for possible later re-enable.
 - Dangerous override remains an operator action expressed by the manual binding state, not by owner state.
 
@@ -80,6 +83,7 @@ Prompt Cache conversation binding currently models operator routing intent only.
 - Binding read APIs and Prompt Cache conversation detail responses expose encrypted owner metadata.
 - The dangerous manual-rebinding confirmation renders as an accessible product `alertdialog` and does not invoke browser-native `confirm` / `alert` / `prompt`.
 - Given encrypted owner routing is disabled globally, existing owner rows do not constrain routing, encrypted successes do not create owner rows, owner metadata is hidden from Prompt Cache owner-facing APIs, and the dangerous route-binding confirmation is not shown.
+- Given the setting has already been saved in SQLite, changing `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` and restarting does not override the saved value.
 
 ## Visual Evidence
 

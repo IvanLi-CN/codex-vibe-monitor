@@ -32,7 +32,7 @@ function createSettingsPayload(): SettingsPayload {
       upstreamWebsocketDefaultEnabled: false,
       requestBodyLoggingEnabled: true,
       responseBodyLoggingEnabled: true,
-      encryptedSessionOwnerRoutingEnabled: true,
+      encryptedSessionOwnerRoutingEnabled: false,
       defaultHijackEnabled: false,
       models: ['gpt-5.5'],
       enabledModels: ['gpt-5.5'],
@@ -193,7 +193,7 @@ describe('Settings forward proxy table', () => {
 
     expect(saveProxy).toHaveBeenCalledTimes(1)
     expect(saveProxy.mock.calls[0]?.[0]).toMatchObject({
-      encryptedSessionOwnerRoutingEnabled: false,
+      encryptedSessionOwnerRoutingEnabled: true,
     })
   })
 })

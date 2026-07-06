@@ -1016,6 +1016,41 @@ async fn proxy_websocket_settings_initialize_from_env_once_then_persist() {
 }
 
 #[tokio::test]
+async fn proxy_encrypted_owner_routing_setting_initialize_from_env_once_then_persist() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let mut config = test_config();
+    config.openai_proxy_encrypted_session_owner_routing_enabled = true;
+    ensure_proxy_encrypted_session_owner_routing_setting_initialized(&pool, &config)
+        .await
+        .expect("initialize encrypted owner routing setting");
+
+    let settings = load_proxy_model_settings(&pool)
+        .await
+        .expect("load proxy model settings");
+    assert!(settings.encrypted_session_owner_routing_enabled);
+
+    let mut next = settings.clone();
+    next.encrypted_session_owner_routing_enabled = false;
+    save_proxy_model_settings(&pool, next)
+        .await
+        .expect("save user encrypted owner routing settings");
+
+    config.openai_proxy_encrypted_session_owner_routing_enabled = true;
+    ensure_proxy_encrypted_session_owner_routing_setting_initialized(&pool, &config)
+        .await
+        .expect("second initialization should not override user settings");
+
+    let settings = load_proxy_model_settings(&pool)
+        .await
+        .expect("reload proxy model settings");
+    assert!(!settings.encrypted_session_owner_routing_enabled);
+}
+
+#[tokio::test]
 async fn ensure_schema_keeps_legacy_fast_mode_rewrite_mode_column_inert() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -1074,7 +1109,7 @@ async fn ensure_schema_keeps_legacy_fast_mode_rewrite_mode_column_inert() {
     );
     assert!(!settings.websocket_enabled);
     assert!(!settings.upstream_websocket_default_enabled);
-    assert!(settings.encrypted_session_owner_routing_enabled);
+    assert!(!settings.encrypted_session_owner_routing_enabled);
     let columns = sqlx::query("PRAGMA table_info('proxy_model_settings')")
         .fetch_all(&pool)
         .await
@@ -1118,6 +1153,165 @@ async fn ensure_schema_keeps_legacy_fast_mode_rewrite_mode_column_inert() {
             .any(|column| column == "encrypted_session_owner_routing_enabled"),
         "encrypted owner routing setting column should exist",
     );
+    assert!(
+        columns
+            .iter()
+            .any(|column| column == "encrypted_session_owner_routing_initialized"),
+        "encrypted owner routing initialization column should exist",
+    );
+}
+
+#[tokio::test]
+async fn ensure_schema_legacy_missing_owner_routing_column_can_seed_from_env_once() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE proxy_model_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            hijack_enabled INTEGER NOT NULL DEFAULT 0,
+            merge_upstream_enabled INTEGER NOT NULL DEFAULT 0,
+            enabled_preset_models_json TEXT,
+            preset_models_migrated INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy proxy_model_settings table");
+
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_model_settings (
+            id,
+            hijack_enabled,
+            merge_upstream_enabled,
+            enabled_preset_models_json,
+            preset_models_migrated
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(
+        serde_json::to_string(&default_enabled_preset_models())
+            .expect("serialize default enabled models"),
+    )
+    .bind(1_i64)
+    .execute(&pool)
+    .await
+    .expect("insert legacy proxy_model_settings row");
+
+    ensure_schema(&pool)
+        .await
+        .expect("ensure schema migration run");
+
+    let mut config = test_config();
+    config.openai_proxy_encrypted_session_owner_routing_enabled = true;
+    ensure_proxy_encrypted_session_owner_routing_setting_initialized(&pool, &config)
+        .await
+        .expect("seed encrypted owner routing from env");
+
+    let settings = load_proxy_model_settings(&pool)
+        .await
+        .expect("load proxy model settings after seed");
+    assert!(settings.encrypted_session_owner_routing_enabled);
+
+    let initialized = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT encrypted_session_owner_routing_initialized
+        FROM proxy_model_settings
+        WHERE id = ?1
+        "#,
+    )
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .fetch_one(&pool)
+    .await
+    .expect("load encrypted owner routing initialization flag");
+    assert_eq!(initialized, 1);
+}
+
+#[tokio::test]
+async fn ensure_schema_preserves_existing_owner_routing_setting_when_column_already_exists() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE proxy_model_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            hijack_enabled INTEGER NOT NULL DEFAULT 0,
+            merge_upstream_enabled INTEGER NOT NULL DEFAULT 0,
+            encrypted_session_owner_routing_enabled INTEGER NOT NULL DEFAULT 1,
+            enabled_preset_models_json TEXT,
+            preset_models_migrated INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy proxy_model_settings table with owner routing column");
+
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_model_settings (
+            id,
+            hijack_enabled,
+            merge_upstream_enabled,
+            encrypted_session_owner_routing_enabled,
+            enabled_preset_models_json,
+            preset_models_migrated
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(1_i64)
+    .bind(
+        serde_json::to_string(&default_enabled_preset_models())
+            .expect("serialize default enabled models"),
+    )
+    .bind(1_i64)
+    .execute(&pool)
+    .await
+    .expect("insert legacy proxy_model_settings row with owner routing enabled");
+
+    ensure_schema(&pool)
+        .await
+        .expect("ensure schema migration run");
+
+    let mut config = test_config();
+    config.openai_proxy_encrypted_session_owner_routing_enabled = false;
+    ensure_proxy_encrypted_session_owner_routing_setting_initialized(&pool, &config)
+        .await
+        .expect("legacy setting should be marked initialized and preserved");
+
+    let settings = load_proxy_model_settings(&pool)
+        .await
+        .expect("load preserved proxy model settings");
+    assert!(settings.encrypted_session_owner_routing_enabled);
+
+    let initialized = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT encrypted_session_owner_routing_initialized
+        FROM proxy_model_settings
+        WHERE id = ?1
+        "#,
+    )
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .fetch_one(&pool)
+    .await
+    .expect("load encrypted owner routing initialization flag");
+    assert_eq!(initialized, 1);
 }
 
 #[tokio::test]

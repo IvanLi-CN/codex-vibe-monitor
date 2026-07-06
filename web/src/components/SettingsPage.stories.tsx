@@ -53,7 +53,7 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   upstreamWebsocketDefaultEnabled: true,
   requestBodyLoggingEnabled: true,
   responseBodyLoggingEnabled: true,
-  encryptedSessionOwnerRoutingEnabled: true,
+  encryptedSessionOwnerRoutingEnabled: false,
   defaultHijackEnabled: false,
   models: [
     'gpt-5.5',
@@ -450,7 +450,7 @@ function StorybookSettingsMock({
           upstreamWebsocketDefaultEnabled: body.upstreamWebsocketDefaultEnabled === true,
           requestBodyLoggingEnabled: body.requestBodyLoggingEnabled !== false,
           responseBodyLoggingEnabled: body.responseBodyLoggingEnabled !== false,
-          encryptedSessionOwnerRoutingEnabled: body.encryptedSessionOwnerRoutingEnabled !== false,
+          encryptedSessionOwnerRoutingEnabled: body.encryptedSessionOwnerRoutingEnabled === true,
           enabledModels: settingsRef.current.proxy.models.filter((model) => enabledSet.has(model)),
         }
         settingsRef.current.proxy = nextProxy

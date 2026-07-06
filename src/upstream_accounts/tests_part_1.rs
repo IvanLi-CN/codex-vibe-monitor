@@ -3306,6 +3306,8 @@
             openai_proxy_websocket_enabled: DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED,
             openai_proxy_upstream_websocket_default_enabled:
                 DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
+            openai_proxy_encrypted_session_owner_routing_enabled:
+                DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
             proxy_request_concurrency_limit: DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT,
             proxy_request_concurrency_wait_timeout: Duration::from_millis(
                 DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,

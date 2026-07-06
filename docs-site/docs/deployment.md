@@ -42,14 +42,15 @@ services:
 
 ## 长期运行前，最先决定这些变量
 
-| 变量                                  | 作用                                     | 什么时候必须配                               |
-| ------------------------------------- | ---------------------------------------- | -------------------------------------------- |
-| `HTTP_BIND`                           | 服务监听地址                             | 容器部署或网关拓扑不同的时候                 |
-| `DATABASE_PATH`                       | SQLite 主库路径                          | 想把数据库放在持久化卷时                     |
-| `PUBLIC_ORIGIN`                       | 对外公开入口基址，用于社交预览等绝对 URL | 有稳定域名、要给 README / 分享卡片正确出图时 |
-| `OPENAI_UPSTREAM_BASE_URL`            | OpenAI 兼容上游地址                      | 不是转发到默认 OpenAI 上游时                 |
-| `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET` | Account Pool 写入与 OAuth 绑定密钥       | 需要账号池写能力时                           |
-| `RETENTION_ENABLED` / `ARCHIVE_DIR`   | 后台归档与离线目录                       | 想长期运行并控制主库体积时                   |
+| 变量                                                   | 作用                                     | 什么时候必须配                               |
+| ------------------------------------------------------ | ---------------------------------------- | -------------------------------------------- |
+| `HTTP_BIND`                                            | 服务监听地址                             | 容器部署或网关拓扑不同的时候                 |
+| `DATABASE_PATH`                                        | SQLite 主库路径                          | 想把数据库放在持久化卷时                     |
+| `PUBLIC_ORIGIN`                                        | 对外公开入口基址，用于社交预览等绝对 URL | 有稳定域名、要给 README / 分享卡片正确出图时 |
+| `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                      | 不是转发到默认 OpenAI 上游时                 |
+| `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` | 加密对话路由绑定首次初始化默认值         | 想让新库第一次启动时默认打开该开关时         |
+| `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`                  | Account Pool 写入与 OAuth 绑定密钥       | 需要账号池写能力时                           |
+| `RETENTION_ENABLED` / `ARCHIVE_DIR`                    | 后台归档与离线目录                       | 想长期运行并控制主库体积时                   |
 
 ## 网关与暴露面
 

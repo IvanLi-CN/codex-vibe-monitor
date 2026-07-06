@@ -1334,10 +1334,50 @@ describe("settings normalization", () => {
     expect(settings.proxy.upstream429MaxRetries).toBe(5);
     expect(settings.proxy.websocketEnabled).toBe(true);
     expect(settings.proxy.upstreamWebsocketDefaultEnabled).toBe(false);
+    expect(settings.proxy.encryptedSessionOwnerRoutingEnabled).toBe(true);
     expect(settings.proxy.enabledModels).toEqual(["gpt-5.5", "gpt-5.5-pro"]);
     expect(settings.forwardProxy.subscriptionUpdateIntervalSecs).toBe(900);
     expect(settings.forwardProxy.nodes).toHaveLength(1);
     expect(settings.forwardProxy.nodes[0].displayName).toBe("JP Edge 01");
+  });
+
+  it("defaults encrypted owner routing to disabled when the field is missing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            proxy: {
+              hijackEnabled: false,
+              mergeUpstreamEnabled: false,
+              fastModeRewriteMode: "disabled",
+              upstream429MaxRetries: 3,
+              websocketEnabled: false,
+              upstreamWebsocketDefaultEnabled: false,
+              requestBodyLoggingEnabled: true,
+              responseBodyLoggingEnabled: true,
+              defaultHijackEnabled: false,
+              models: ["gpt-5.5"],
+              enabledModels: ["gpt-5.5"],
+            },
+            forwardProxy: {
+              proxyUrls: [],
+              subscriptionUrls: [],
+              subscriptionUpdateIntervalSecs: 3600,
+              nodes: [],
+            },
+            pricing: {
+              catalogVersion: "v1",
+              entries: [],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const settings = await fetchSettings();
+    expect(settings.proxy.encryptedSessionOwnerRoutingEnabled).toBe(false);
   });
 
   it("normalizes proxy settings updates", async () => {
