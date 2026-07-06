@@ -659,7 +659,7 @@ export function InvocationTable({
 
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
                 {row.livePhase ? (
-                  <InvocationPhaseBadge phase={row.livePhase} />
+                  <InvocationPhaseBadge phase={row.livePhase} motion="dynamic" />
                 ) : (
                   <Badge variant={row.meta.variant}>{row.statusLabel}</Badge>
                 )}
@@ -944,6 +944,7 @@ export function InvocationTable({
                           {row.livePhase ? (
                             <InvocationPhaseBadge
                               phase={row.livePhase}
+                              motion="dynamic"
                               className="h-6 px-2.5 py-0 text-[11px] font-semibold"
                             />
                           ) : null}

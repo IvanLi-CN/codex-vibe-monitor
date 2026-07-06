@@ -56,7 +56,10 @@ import {
   renderFastIndicator,
   renderInvocationModelBadge,
 } from "./invocation-details-shared";
-import type { InvocationImageIntentDisplay } from "../lib/invocation";
+import {
+  resolveFirstResponseByteTotalMs,
+  type InvocationImageIntentDisplay,
+} from "../lib/invocation";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 import { useDashboardUpstreamAccountActivity } from "../hooks/useDashboardUpstreamAccountActivity";
 import {
@@ -461,23 +464,43 @@ function statusInlineToneClassName(variant: StatusMeta["badgeVariant"]) {
   return "text-base-content/62";
 }
 
+function buildStatusAssistiveLabel(
+  label: string,
+  detail?: string | null,
+) {
+  const resolvedDetail = detail?.trim();
+  if (!resolvedDetail) return label;
+  return `${label} · ${resolvedDetail}`;
+}
+
 function InlineInvocationStatus({
   meta,
   label,
   className,
+  showLabel = true,
+  detail,
 }: {
   meta: StatusMeta;
   label: string;
   className?: string;
+  showLabel?: boolean;
+  detail?: string | null;
 }) {
   const toneClassName = statusInlineToneClassName(meta.badgeVariant);
+  const assistiveLabel = buildStatusAssistiveLabel(label, detail);
   return (
     <span
+      data-testid="dashboard-inline-invocation-status"
       className={cn(
-        "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold leading-none",
+        showLabel
+          ? "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold leading-none"
+          : "inline-flex h-5 w-5 items-center justify-center rounded-full bg-base-100/12",
         toneClassName,
         className,
       )}
+      aria-label={showLabel ? undefined : assistiveLabel}
+      title={showLabel ? undefined : assistiveLabel}
+      role={showLabel ? undefined : "img"}
     >
       <AppIcon
         name={meta.icon}
@@ -487,7 +510,7 @@ function InlineInvocationStatus({
         )}
         aria-hidden
       />
-      <span>{label}</span>
+      {showLabel ? <span>{label}</span> : null}
     </span>
   );
 }
@@ -551,6 +574,48 @@ function formatAccountDurationValue(
     return `${formatAccountNumberValue(seconds, localeTag, maximumFractionDigits)} s`;
   }
   return `${formatAccountNumberValue(value, localeTag, abs >= 100 ? 0 : 1)} ms`;
+}
+
+function countCompactDisplayDigits(value: number) {
+  const absoluteValue = Math.abs(value);
+  if (absoluteValue < 1) return 1;
+  return Math.trunc(absoluteValue).toString().length;
+}
+
+function resolveCompactSecondsFractionDigits(seconds: number) {
+  return Math.max(0, Math.min(2, 4 - countCompactDisplayDigits(seconds)));
+}
+
+function formatCompactLatencySecondsValue(
+  value: number | null | undefined,
+  localeTag: string,
+) {
+  if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
+
+  const seconds = value / 1000;
+  const firstPassFractionDigits = resolveCompactSecondsFractionDigits(seconds);
+  const firstPassRounded = Number(seconds.toFixed(firstPassFractionDigits));
+  const fractionDigits = resolveCompactSecondsFractionDigits(firstPassRounded);
+  const rounded = Number(seconds.toFixed(fractionDigits));
+
+  return `${rounded.toLocaleString(localeTag, {
+    useGrouping: false,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: fractionDigits,
+  })} s`;
+}
+
+function formatCompactElapsedSecondsFromTimestamp(
+  occurredAt: string | null | undefined,
+  localeTag: string,
+  nowMs: number,
+) {
+  const occurredMs = occurredAt ? Date.parse(occurredAt) : Number.NaN;
+  if (!Number.isFinite(occurredMs)) return FALLBACK_CELL;
+  return formatCompactLatencySecondsValue(
+    Math.max(0, nowMs - occurredMs),
+    localeTag,
+  );
 }
 
 function finiteNumber(value: number | null | undefined) {
@@ -1292,6 +1357,28 @@ function AccountRecentInvocationRow({
     : null;
   const requestModelValue = viewModel.requestModelValue;
   const responseModelValue = viewModel.responseModelValue;
+  const compactLatencyValues = useMemo(() => {
+    const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
+    return {
+      firstResponseByteTotalValue: formatCompactLatencySecondsValue(
+        resolveFirstResponseByteTotalMs(invocation.record),
+        localeTag,
+      ),
+      responseTimeValue:
+        normalizedStatus === "running" || normalizedStatus === "pending"
+          ? formatCompactElapsedSecondsFromTimestamp(
+              invocation.record.occurredAt,
+              localeTag,
+              nowMs,
+            )
+          : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
+    };
+  }, [
+    invocation.displayStatus,
+    invocation.record,
+    localeTag,
+    nowMs,
+  ]);
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${invocation.record.invokeId}`;
   const conversationActionLabel = displayPromptCacheKey
     ? `${t("dashboard.workingConversations.openConversation")} · ${displayConversationSequenceId} · ${displayPromptCacheKey}`
@@ -1405,10 +1492,16 @@ function AccountRecentInvocationRow({
               <InvocationPhaseBadge
                 phase={invocation.livePhase}
                 appearance="inline"
-                className="text-[11px]"
+                motion="dynamic"
+                showLabel={false}
               />
             ) : (
-              <InlineInvocationStatus meta={statusMeta} label={statusLabel} />
+              <InlineInvocationStatus
+                meta={statusMeta}
+                label={statusLabel}
+                showLabel={false}
+                detail={viewModel.collapsedErrorSummary}
+              />
             )}
             {renderInvocationTransportBadge(
               invocation.record,
@@ -1426,9 +1519,9 @@ function AccountRecentInvocationRow({
             {fastIndicator}
             <CompactLatencyPills
               firstResponseByteTotalValue={
-                viewModel.firstResponseByteTotalValue
+                compactLatencyValues.firstResponseByteTotalValue
               }
-              responseTimeValue={viewModel.totalLatencyValue}
+              responseTimeValue={compactLatencyValues.responseTimeValue}
               t={t}
             />
           </div>
@@ -1772,6 +1865,28 @@ function InvocationSlot({
   const compactCostValue = viewModel.costValue.startsWith("US$")
     ? `$${viewModel.costValue.slice(3)}`
     : viewModel.costValue;
+  const compactLatencyValues = useMemo(() => {
+    const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
+    return {
+      firstResponseByteTotalValue: formatCompactLatencySecondsValue(
+        resolveFirstResponseByteTotalMs(invocation.record),
+        localeTag,
+      ),
+      responseTimeValue:
+        normalizedStatus === "running" || normalizedStatus === "pending"
+          ? formatCompactElapsedSecondsFromTimestamp(
+              invocation.record.occurredAt,
+              localeTag,
+              nowMs,
+            )
+          : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
+    };
+  }, [
+    invocation.displayStatus,
+    invocation.record,
+    localeTag,
+    nowMs,
+  ]);
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
 
   const handleOpenInvocation = useCallback(() => {
@@ -1816,7 +1931,7 @@ function InvocationSlot({
     >
       <div
         data-testid="dashboard-working-conversation-slot-header"
-        className="grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 gap-y-1"
+        className="grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1"
       >
         <div className="flex min-w-0 shrink-0 items-center gap-1.5">
           <div
@@ -1834,38 +1949,34 @@ function InvocationSlot({
         </div>
         <div
           data-testid="dashboard-working-conversation-slot-readings"
-          className="flex min-w-0 flex-wrap items-center justify-end gap-1.5"
+          className="flex min-w-0 flex-nowrap items-center justify-end gap-1"
         >
-          <div className="flex min-w-0 items-center justify-end gap-1.5">
+          <div className="flex min-w-0 shrink items-center justify-end gap-1">
             {invocation.livePhase ? (
               <InvocationPhaseBadge
                 phase={invocation.livePhase}
                 appearance="inline"
-                className="text-[9.5px]"
+                motion="dynamic"
+                showLabel={false}
               />
             ) : (
-              <Badge
-                variant={statusMeta.badgeVariant}
-                className="h-5 gap-1 border-transparent bg-base-100/12 px-1.5 py-0 text-[9.5px] font-semibold leading-none shadow-none"
-              >
-                <AppIcon
-                  name={statusMeta.icon}
-                  className="h-2.5 w-2.5 shrink-0"
-                  aria-hidden
-                />
-                <span>{statusLabel}</span>
-              </Badge>
+              <InlineInvocationStatus
+                meta={statusMeta}
+                label={statusLabel}
+                showLabel={false}
+                detail={viewModel.collapsedErrorSummary}
+              />
             )}
             {renderInvocationTransportBadge(
               invocation.record,
               "h-5 border-primary/45 bg-primary/10 px-1.5 text-[9.5px]",
             )}
-            <div className="flex h-5 shrink-0 items-center">
+            <div className="flex h-5 shrink items-center">
               <div className="flex items-center gap-1">
                 {renderEndpointSummary(
                   viewModel.endpointDisplay,
                   t,
-                  "h-5 rounded-full border-transparent bg-base-100/10 px-1.5 py-0 text-[9.5px] font-semibold leading-none text-base-content/76 shadow-none",
+                  "h-5 rounded-full border-transparent bg-base-100/10 px-1 py-0 text-[9px] font-semibold leading-none text-base-content/76 shadow-none",
                 )}
                 <DashboardImageToolIconBadge
                   imageIntentDisplay={viewModel.imageIntentDisplay}
@@ -1875,24 +1986,13 @@ function InvocationSlot({
             </div>
           </div>
           <CompactLatencyPills
-            firstResponseByteTotalValue={viewModel.firstResponseByteTotalValue}
-            responseTimeValue={viewModel.totalLatencyValue}
+            firstResponseByteTotalValue={
+              compactLatencyValues.firstResponseByteTotalValue
+            }
+            responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}
-            className="text-[11.5px]"
+            className="shrink-0 flex-nowrap gap-1 text-[11px]"
           />
-          {viewModel.collapsedErrorSummary ? (
-            <span
-              className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-base-100/12 text-error/90"
-              title={viewModel.collapsedErrorSummary}
-              aria-label={viewModel.collapsedErrorSummary}
-            >
-              <AppIcon
-                name="alert-circle-outline"
-                className="h-2.25 w-2.25"
-                aria-hidden
-              />
-            </span>
-          ) : null}
         </div>
       </div>
 
@@ -2729,6 +2829,7 @@ function DashboardUpstreamAccountActivityCard({
             <InvocationPhaseSegments
               counts={account.inProgressPhaseCounts}
               appearance="inline"
+              motion="static"
               className="justify-end"
             />
             {recentBridgeSegments.length > 0 ? (
@@ -3422,7 +3523,8 @@ export function DashboardWorkingConversationsSection({
                                     <InvocationPhaseBadge
                                       phase={card.currentInvocation.livePhase}
                                       appearance="inline"
-                                      className="text-[10px]"
+                                      motion="dynamic"
+                                      showLabel={false}
                                     />
                                   ) : (
                                     <>

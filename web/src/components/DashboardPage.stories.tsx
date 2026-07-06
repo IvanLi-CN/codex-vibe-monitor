@@ -56,6 +56,32 @@ type ReadmeWorkingConversationSeed = {
   >
 }
 
+const WORKING_CONVERSATION_STORY_BASE_SNAPSHOT = '2026-04-06T12:00:00.000Z'
+const WORKING_CONVERSATION_STORY_BASE_SNAPSHOT_MS = Date.parse(
+  WORKING_CONVERSATION_STORY_BASE_SNAPSHOT,
+)
+
+function shiftWorkingConversationStoryIso(value: string, snapshotAtMs: number) {
+  const occurredAtMs = Date.parse(value)
+  if (!Number.isFinite(occurredAtMs)) return value
+  const deltaMs = occurredAtMs - WORKING_CONVERSATION_STORY_BASE_SNAPSHOT_MS
+  return new Date(snapshotAtMs + deltaMs).toISOString()
+}
+
+function withRelativeOccurredAt<
+  T extends {
+    occurredAt: string
+  },
+>(value: T, snapshotAtMs: number): T {
+  return {
+    ...value,
+    occurredAt: shiftWorkingConversationStoryIso(
+      value.occurredAt,
+      snapshotAtMs,
+    ),
+  }
+}
+
 function DashboardRangeStorageReset({ children }: { children: ReactNode }) {
   useLayoutEffect(() => {
     const previousValue = window.localStorage.getItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY)
@@ -987,18 +1013,25 @@ function createReadmeDenseWorkingConversationSeeds(): ReadmeWorkingConversationS
 }
 
 function buildReadmeDenseWorkingConversationsResponse(): PromptCacheConversationsResponse {
+  const snapshotAt = new Date().toISOString()
+  const snapshotAtMs = Date.parse(snapshotAt)
   const conversations = createReadmeDenseWorkingConversationSeeds().map((seed) =>
     createConversation(seed.promptCacheKey, [
-      createPreview(seed.current),
-      createPreview(seed.previous),
-      ...(seed.extraHistory ?? []).map((invocation) => createPreview(invocation)),
+      createPreview(withRelativeOccurredAt(seed.current, snapshotAtMs)),
+      createPreview(withRelativeOccurredAt(seed.previous, snapshotAtMs)),
+      ...(seed.extraHistory ?? []).map((invocation) =>
+        createPreview(withRelativeOccurredAt(invocation, snapshotAtMs)),
+      ),
     ]),
   )
 
   return {
-    rangeStart: '2026-04-06T11:55:00.000Z',
-    rangeEnd: '2026-04-06T12:00:00.000Z',
-    snapshotAt: '2026-04-06T12:00:00.000Z',
+    rangeStart: shiftWorkingConversationStoryIso(
+      '2026-04-06T11:55:00.000Z',
+      snapshotAtMs,
+    ),
+    rangeEnd: snapshotAt,
+    snapshotAt,
     selectionMode: 'activityWindow',
     selectedLimit: null,
     selectedActivityHours: null,
@@ -1012,10 +1045,15 @@ function buildReadmeDenseWorkingConversationsResponse(): PromptCacheConversation
 }
 
 function buildWorkingConversationsResponse(empty = false): PromptCacheConversationsResponse {
+  const snapshotAt = new Date().toISOString()
+  const snapshotAtMs = Date.parse(snapshotAt)
   return {
-    rangeStart: '2026-04-06T11:55:00.000Z',
-    rangeEnd: '2026-04-06T12:00:00.000Z',
-    snapshotAt: '2026-04-06T12:00:00.000Z',
+    rangeStart: shiftWorkingConversationStoryIso(
+      '2026-04-06T11:55:00.000Z',
+      snapshotAtMs,
+    ),
+    rangeEnd: snapshotAt,
+    snapshotAt,
     selectionMode: 'activityWindow',
     selectedLimit: null,
     selectedActivityHours: null,
@@ -1028,24 +1066,24 @@ function buildWorkingConversationsResponse(empty = false): PromptCacheConversati
       ? []
       : [
           createConversation('wc-current-1', [
-            createPreview({
+            createPreview(withRelativeOccurredAt({
               id: 1,
               invokeId: 'wc-1-a',
               occurredAt: '2026-04-06T12:00:00.000Z',
               status: 'running',
               upstreamAccountName: 'pool-alpha@example.com',
               tTotalMs: null,
-            }),
-            createPreview({
+            }, snapshotAtMs)),
+            createPreview(withRelativeOccurredAt({
               id: 2,
               invokeId: 'wc-1-b',
               occurredAt: '2026-04-06T11:57:20.000Z',
               status: 'success',
               model: 'gpt-5.4-mini',
-            }),
+            }, snapshotAtMs)),
           ]),
           createConversation('wc-current-2', [
-            createPreview({
+            createPreview(withRelativeOccurredAt({
               id: 3,
               invokeId: 'wc-2-a',
               occurredAt: '2026-04-06T11:59:10.000Z',
@@ -1056,14 +1094,14 @@ function buildWorkingConversationsResponse(empty = false): PromptCacheConversati
               upstreamAccountName: 'pool-beta@example.com',
               requestedServiceTier: 'auto',
               serviceTier: 'auto',
-            }),
-            createPreview({
+            }, snapshotAtMs)),
+            createPreview(withRelativeOccurredAt({
               id: 4,
               invokeId: 'wc-2-b',
               occurredAt: '2026-04-06T11:56:10.000Z',
               status: 'success',
               upstreamAccountName: 'pool-beta@example.com',
-            }),
+            }, snapshotAtMs)),
           ]),
         ],
   }
