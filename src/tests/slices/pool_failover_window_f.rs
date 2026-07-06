@@ -3489,7 +3489,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_ignores_stale_ter
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let now = Utc::now();
+    let snapshot_at = Utc
+        .timestamp_opt(Utc::now().timestamp(), 500_000_000)
+        .single()
+        .expect("valid snapshot timestamp");
 
     sqlx::query(
         r#"
@@ -3501,7 +3504,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_ignores_stale_ter
     )
     .bind("working-runtime-window-recent")
     .bind(format_naive(
-        (now - ChronoDuration::minutes(1))
+        (snapshot_at - ChronoDuration::minutes(1))
             .with_timezone(&Shanghai)
             .naive_local(),
     ))
@@ -3514,8 +3517,46 @@ async fn prompt_cache_conversations_activity_minutes_paginated_ignores_stale_ter
     .await
     .expect("insert recent working prompt-cache row");
 
+    let boundary_terminal_occurred_at = format_naive(
+        (snapshot_at - ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let boundary_terminal = build_running_proxy_capture_record(
+        "working-runtime-window-boundary-terminal-invoke",
+        &boundary_terminal_occurred_at,
+        ProxyCaptureTarget::Responses,
+        &RequestCaptureInfo {
+            model: Some("gpt-5.5".to_string()),
+            prompt_cache_key: Some("working-runtime-window-boundary-terminal".to_string()),
+            ..RequestCaptureInfo::default()
+        },
+        Some("198.51.100.42"),
+        None,
+        Some("working-runtime-window-boundary-terminal"),
+        true,
+        Some(17),
+        Some("pool-account-17"),
+        None,
+        None,
+        Some("jp-relay-01"),
+        Some(1),
+        Some(1),
+        None,
+        None,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+    );
+    let mut boundary_terminal = api_invocation_from_runtime_record(&boundary_terminal);
+    boundary_terminal.status = Some("interrupted".to_string());
+    state
+        .proxy_runtime_invocations
+        .upsert_terminal(boundary_terminal);
+
     let stale_terminal_occurred_at = format_naive(
-        (now - ChronoDuration::minutes(15))
+        (snapshot_at - ChronoDuration::minutes(15))
             .with_timezone(&Shanghai)
             .naive_local(),
     );
@@ -3558,7 +3599,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_ignores_stale_ter
             activity_minutes: Some(5),
             page_size: Some(20),
             cursor: None,
-            snapshot_at: None,
+            snapshot_at: Some(format_utc_iso_precise(snapshot_at)),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
         }),
@@ -3572,8 +3613,9 @@ async fn prompt_cache_conversations_activity_minutes_paginated_ignores_stale_ter
         .map(|conversation| conversation.prompt_cache_key.as_str())
         .collect::<HashSet<_>>();
 
-    assert_eq!(response.total_matched, Some(1));
+    assert_eq!(response.total_matched, Some(2));
     assert!(prompt_cache_keys.contains("working-runtime-window-recent"));
+    assert!(prompt_cache_keys.contains("working-runtime-window-boundary-terminal"));
     assert!(!prompt_cache_keys.contains("working-runtime-window-stale-terminal"));
 }
 
