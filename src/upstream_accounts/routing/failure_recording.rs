@@ -170,30 +170,28 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
     let classification = classify_pool_account_http_failure(account_kind, status, error_message);
     match classification.disposition {
         UpstreamAccountFailureDisposition::HardUnavailable => {
-            if is_scope_permission_error_message(error_message)
-                && let Some(sticky_key) = sticky_key
-            {
-                delete_sticky_route(pool, sticky_key).await?;
-            }
             let now_iso = format_utc_iso(Utc::now());
             if !account_status_change_reason_is_enabled(pool, account_id, classification.reason_code)
                 .await?
             {
-                record_status_change_suppressed_event_with_proxy_snapshot(
+                record_suppressed_pool_route_status_change(
                     pool,
                     account_id,
-                    UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
-                    classification.reason_code,
                     error_message,
-                    Some(status),
-                    Some(classification.failure_kind),
-                    invoke_id,
                     sticky_key,
+                    classification.failure_kind,
+                    classification.reason_code,
+                    status,
+                    invoke_id,
                     &now_iso,
-                    None,
                 )
                 .await?;
                 return Ok(());
+            }
+            if is_scope_permission_error_message(error_message)
+                && let Some(sticky_key) = sticky_key
+            {
+                delete_sticky_route(pool, sticky_key).await?;
             }
             sqlx::query(
                 r#"
@@ -241,12 +239,6 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
         }
         UpstreamAccountFailureDisposition::RateLimited
         | UpstreamAccountFailureDisposition::Retryable => {
-            if single_account_rotation_enabled
-                && status == StatusCode::TOO_MANY_REQUESTS
-                && let Some(sticky_key) = sticky_key
-            {
-                delete_sticky_route(pool, sticky_key).await?;
-            }
             let base_secs = if status == StatusCode::TOO_MANY_REQUESTS {
                 15
             } else {
@@ -260,7 +252,7 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
             } else {
                 UPSTREAM_ACCOUNT_STATUS_ACTIVE
             };
-            apply_pool_route_cooldown_failure(
+            let applied_status_change = apply_pool_route_cooldown_failure(
                 pool,
                 account_id,
                 next_account_status,
@@ -272,7 +264,15 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
                 base_secs,
                 invoke_id,
             )
-            .await
+            .await?;
+            if applied_status_change
+                && single_account_rotation_enabled
+                && status == StatusCode::TOO_MANY_REQUESTS
+                && let Some(sticky_key) = sticky_key
+            {
+                delete_sticky_route(pool, sticky_key).await?;
+            }
+            Ok(())
         }
     }
 }
@@ -296,7 +296,8 @@ pub(crate) async fn record_pool_route_retryable_overload_failure(
         5,
         invoke_id,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn record_pool_route_transport_failure(
@@ -317,6 +318,34 @@ pub(crate) async fn record_pool_route_transport_failure(
         StatusCode::BAD_GATEWAY,
         5,
         invoke_id,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn record_suppressed_pool_route_status_change(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    error_message: &str,
+    sticky_key: Option<&str>,
+    failure_kind: &str,
+    reason_code: &str,
+    http_status: StatusCode,
+    invoke_id: Option<&str>,
+    occurred_at: &str,
+) -> Result<()> {
+    record_status_change_suppressed_event_with_proxy_snapshot(
+        pool,
+        account_id,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+        reason_code,
+        error_message,
+        Some(http_status),
+        Some(failure_kind),
+        invoke_id,
+        sticky_key,
+        occurred_at,
+        None,
     )
     .await
 }
@@ -386,27 +415,25 @@ pub(crate) async fn apply_pool_route_cooldown_failure(
     http_status: StatusCode,
     base_secs: i64,
     invoke_id: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     let row = load_upstream_account_row(pool, account_id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
     let now_iso = format_utc_iso(Utc::now());
     if !account_status_change_reason_is_enabled(pool, account_id, reason_code).await? {
-        record_status_change_suppressed_event_with_proxy_snapshot(
+        record_suppressed_pool_route_status_change(
             pool,
             account_id,
-            UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
-            reason_code,
             error_message,
-            Some(http_status),
-            Some(failure_kind),
-            invoke_id,
             sticky_key,
+            failure_kind,
+            reason_code,
+            http_status,
+            invoke_id,
             &now_iso,
-            None,
         )
         .await?;
-        return Ok(());
+        return Ok(false);
     }
     let now = Utc::now();
     let continuing_temporary_streak = row.consecutive_route_failures > 0
@@ -484,5 +511,5 @@ pub(crate) async fn apply_pool_route_cooldown_failure(
         },
     )
     .await?;
-    Ok(())
+    Ok(true)
 }
