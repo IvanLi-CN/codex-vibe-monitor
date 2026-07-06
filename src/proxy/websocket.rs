@@ -1845,6 +1845,7 @@ fn websocket_post_upgrade_close_marks_account_ws_unsupported(
             .kind
             .eq_ignore_ascii_case(API_KEYS_BILLING_ACCOUNT_KIND)
         && !account.auth.is_oauth()
+        && !websocket_account_uses_official_openai_base_url(account)
         && close_frame.is_none_or(|frame| {
             matches!(
                 frame.code,
@@ -1852,6 +1853,13 @@ fn websocket_post_upgrade_close_marks_account_ws_unsupported(
                     | tungstenite::protocol::frame::coding::CloseCode::Away
             )
         })
+}
+
+fn websocket_account_uses_official_openai_base_url(account: &PoolResolvedAccount) -> bool {
+    account
+        .upstream_base_url
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
 }
 
 fn ws_text_event_is_terminal(event_type: &str) -> bool {
@@ -3317,6 +3325,14 @@ mod websocket_tests {
         assert!(!websocket_post_upgrade_close_marks_account_ws_unsupported(
             true,
             &generic_api_key,
+            None
+        ));
+        let mut official_api_key =
+            api_key_account(Url::parse("https://api.openai.com").expect("url"));
+        official_api_key.kind = API_KEYS_BILLING_ACCOUNT_KIND.to_string();
+        assert!(!websocket_post_upgrade_close_marks_account_ws_unsupported(
+            true,
+            &official_api_key,
             None
         ));
 
