@@ -38,6 +38,7 @@ describe("InvocationPhaseBadge", () => {
     expect(html).toContain('data-phase="responding"');
     expect(html).toContain('data-phase-motion="dynamic"');
     expect(html).toContain('data-phase-label-visible="true"');
+    expect(html).toContain('data-phase-icon-name="loading"');
     expect(html).toContain("animate-spin");
     expect(html).toContain(">响应中<");
   });
@@ -56,7 +57,9 @@ describe("InvocationPhaseSegments", () => {
       3,
     );
     expect(html).toContain('data-phase-motion="static"');
+    expect(html).toContain('data-phase-icon-name="message-reply-outline"');
     expect(html).not.toContain("animate-pulse");
     expect(html).not.toContain("animate-spin");
+    expect(html).not.toContain('data-phase-icon-name="loading"');
   });
 });

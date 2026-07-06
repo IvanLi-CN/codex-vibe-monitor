@@ -47,6 +47,7 @@ import linkVariantPlusIcon from '@iconify-icons/mdi/link-variant-plus'
 import loadingIcon from '@iconify-icons/mdi/loading'
 import loginVariantIcon from '@iconify-icons/mdi/login-variant'
 import magnifyIcon from '@iconify-icons/mdi/magnify'
+import messageReplyOutlineIcon from '@iconify-icons/mdi/message-reply-outline'
 import noteTextOutlineIcon from '@iconify-icons/mdi/note-text-outline'
 import pencilOutlineIcon from '@iconify-icons/mdi/pencil-outline'
 import playlistPlusIcon from '@iconify-icons/mdi/playlist-plus'
@@ -114,6 +115,7 @@ const appIconRegistry = {
   'loading': loadingIcon,
   'login-variant': loginVariantIcon,
   'magnify': magnifyIcon,
+  'message-reply-outline': messageReplyOutlineIcon,
   'note-text-outline': noteTextOutlineIcon,
   'pencil-outline': pencilOutlineIcon,
   'playlist-plus': playlistPlusIcon,

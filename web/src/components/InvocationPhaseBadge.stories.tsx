@@ -98,5 +98,8 @@ export const SummarySegments: Story = {
       expect(icon.className).not.toContain("animate-pulse");
       expect(icon.className).not.toContain("animate-spin");
     }
+    expect(icons[2]?.getAttribute("data-phase-icon-name")).toBe(
+      "message-reply-outline",
+    );
   },
 };
