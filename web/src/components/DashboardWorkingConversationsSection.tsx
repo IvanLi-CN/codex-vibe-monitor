@@ -442,23 +442,43 @@ function statusInlineToneClassName(variant: StatusMeta["badgeVariant"]) {
   return "text-base-content/62";
 }
 
+function buildStatusAssistiveLabel(
+  label: string,
+  detail?: string | null,
+) {
+  const resolvedDetail = detail?.trim();
+  if (!resolvedDetail) return label;
+  return `${label} · ${resolvedDetail}`;
+}
+
 function InlineInvocationStatus({
   meta,
   label,
   className,
+  showLabel = true,
+  detail,
 }: {
   meta: StatusMeta;
   label: string;
   className?: string;
+  showLabel?: boolean;
+  detail?: string | null;
 }) {
   const toneClassName = statusInlineToneClassName(meta.badgeVariant);
+  const assistiveLabel = buildStatusAssistiveLabel(label, detail);
   return (
     <span
+      data-testid="dashboard-inline-invocation-status"
       className={cn(
-        "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold leading-none",
+        showLabel
+          ? "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold leading-none"
+          : "inline-flex h-5 w-5 items-center justify-center rounded-full bg-base-100/12",
         toneClassName,
         className,
       )}
+      aria-label={showLabel ? undefined : assistiveLabel}
+      title={showLabel ? undefined : assistiveLabel}
+      role={showLabel ? undefined : "img"}
     >
       <AppIcon
         name={meta.icon}
@@ -468,7 +488,7 @@ function InlineInvocationStatus({
         )}
         aria-hidden
       />
-      <span>{label}</span>
+      {showLabel ? <span>{label}</span> : null}
     </span>
   );
 }
@@ -1263,10 +1283,16 @@ function AccountRecentInvocationRow({
               <InvocationPhaseBadge
                 phase={invocation.livePhase}
                 appearance="inline"
-                className="text-[11px]"
+                motion="dynamic"
+                showLabel={false}
               />
             ) : (
-              <InlineInvocationStatus meta={statusMeta} label={statusLabel} />
+              <InlineInvocationStatus
+                meta={statusMeta}
+                label={statusLabel}
+                showLabel={false}
+                detail={viewModel.collapsedErrorSummary}
+              />
             )}
             {renderInvocationTransportBadge(
               invocation.record,
@@ -1693,20 +1719,16 @@ function InvocationSlot({
               <InvocationPhaseBadge
                 phase={invocation.livePhase}
                 appearance="inline"
-                className="text-[9.5px]"
+                motion="dynamic"
+                showLabel={false}
               />
             ) : (
-              <Badge
-                variant={statusMeta.badgeVariant}
-                className="h-5 gap-1 border-transparent bg-base-100/12 px-1.5 py-0 text-[9.5px] font-semibold leading-none shadow-none"
-              >
-                <AppIcon
-                  name={statusMeta.icon}
-                  className="h-2.5 w-2.5 shrink-0"
-                  aria-hidden
-                />
-                <span>{statusLabel}</span>
-              </Badge>
+              <InlineInvocationStatus
+                meta={statusMeta}
+                label={statusLabel}
+                showLabel={false}
+                detail={viewModel.collapsedErrorSummary}
+              />
             )}
             {renderInvocationTransportBadge(
               invocation.record,
@@ -1732,19 +1754,6 @@ function InvocationSlot({
             t={t}
             className="text-[11.5px]"
           />
-          {viewModel.collapsedErrorSummary ? (
-            <span
-              className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-base-100/12 text-error/90"
-              title={viewModel.collapsedErrorSummary}
-              aria-label={viewModel.collapsedErrorSummary}
-            >
-              <AppIcon
-                name="alert-circle-outline"
-                className="h-2.25 w-2.25"
-                aria-hidden
-              />
-            </span>
-          ) : null}
         </div>
       </div>
 
@@ -2480,6 +2489,7 @@ function DashboardUpstreamAccountActivityCard({
             <InvocationPhaseSegments
               counts={account.inProgressPhaseCounts}
               appearance="inline"
+              motion="static"
               className="justify-end"
             />
             {recentBridgeSegments.length > 0 ? (
@@ -3161,7 +3171,8 @@ export function DashboardWorkingConversationsSection({
                                     <InvocationPhaseBadge
                                       phase={card.currentInvocation.livePhase}
                                       appearance="inline"
-                                      className="text-[10px]"
+                                      motion="dynamic"
+                                      showLabel={false}
                                     />
                                   ) : (
                                     <>

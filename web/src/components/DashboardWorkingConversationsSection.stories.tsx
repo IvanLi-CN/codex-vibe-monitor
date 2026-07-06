@@ -30,6 +30,7 @@ import { DashboardInvocationDetailDrawer } from "./DashboardInvocationDetailDraw
 import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversationsSection";
 import { PromptCacheConversationHistoryDrawer } from "./PromptCacheConversationTable";
 import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
+import { DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY } from "./dashboardActivityRange";
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
@@ -37,6 +38,19 @@ function StorySurface({ children }: { children: ReactNode }) {
       <div className="app-shell-boundary">{children}</div>
     </div>
   );
+}
+
+function ForcedWorkspaceViewStory({
+  view,
+  children,
+}: {
+  view: "conversations" | "upstreamAccounts";
+  children: ReactNode;
+}) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY, view);
+  }
+  return <>{children}</>;
 }
 
 function useStoryTheme(theme?: "vibe-light" | "vibe-dark") {
@@ -449,6 +463,7 @@ const runningOnlyResponse = createResponse([
       invokeId: "invoke-31",
       occurredAt: "2026-04-04T10:04:58Z",
       status: "running",
+      livePhase: "responding",
       upstreamAccountName: "watch-alpha@example.com",
       reasoningEffort: "medium",
       tTotalMs: null,
@@ -459,6 +474,31 @@ const runningOnlyResponse = createResponse([
       occurredAt: "2026-04-04T09:54:20Z",
       status: "completed",
       upstreamAccountName: "watch-alpha@example.com",
+      model: "gpt-5.4-mini",
+    }),
+  ]),
+]);
+
+const requestingOnlyResponse = createResponse([
+  createConversation("pck-requesting-only", [
+    createPreview({
+      id: 32,
+      invokeId: "invoke-32",
+      occurredAt: "2026-04-04T10:04:59Z",
+      status: "running",
+      livePhase: "requesting",
+      upstreamAccountName: "request-alpha@example.com",
+      reasoningEffort: "medium",
+      tUpstreamTtfbMs: null,
+      tUpstreamStreamMs: null,
+      tTotalMs: null,
+    }),
+    createPreview({
+      id: 29,
+      invokeId: "invoke-29",
+      occurredAt: "2026-04-04T09:53:20Z",
+      status: "completed",
+      upstreamAccountName: "request-alpha@example.com",
       model: "gpt-5.4-mini",
     }),
   ]),
@@ -573,6 +613,29 @@ const failedClickableResponse = createResponse([
       upstreamAccountId: 77,
       upstreamAccountName: "pool-account-77@example.com",
       model: "gpt-5.4-mini",
+    }),
+  ]),
+]);
+
+const failedStatusDedupResponse = createResponse([
+  createConversation("pck-failed-status-dedup", [
+    createPreview({
+      id: 43,
+      invokeId: "invoke-failed-dedup",
+      occurredAt: "2026-04-04T10:03:58Z",
+      status: "http_502",
+      failureClass: "service_failure",
+      errorMessage: "upstream gateway closed before first byte",
+      failureKind: "upstream_timeout",
+      reasoningEffort: "medium",
+      upstreamAccountName: "pool-account-77@example.com",
+      endpoint: "/v1/responses",
+      tReqReadMs: 12,
+      tReqParseMs: 8,
+      tUpstreamConnectMs: 103,
+      tUpstreamTtfbMs: 1_640,
+      tUpstreamStreamMs: 0,
+      tTotalMs: 13_050,
     }),
   ]),
 ]);
@@ -2300,10 +2363,109 @@ export const RunningOnlyConversation: Story = {
       );
       expect(slotHeader).toBeInstanceOf(HTMLElement);
       expect(phaseLabel.className).toContain("inline-flex");
-      expect(phaseLabel.className).not.toMatch(/\brounded/);
+      expect(phaseLabel.className).toMatch(/\brounded-full\b/);
+      expect(phaseLabel.getAttribute("data-phase-label-visible")).toBe("false");
+      expect(phaseLabel.getAttribute("data-phase-motion")).toBe("dynamic");
       expect(phaseLabel.className).not.toMatch(/\bborder/);
-      expect(phaseLabel.className).not.toMatch(/\bbg-/);
     }
+    const respondingBadge = currentSlotHeader?.querySelector(
+      '[data-testid="invocation-phase-badge"][data-phase="responding"]',
+    );
+    expect(respondingBadge).toBeInstanceOf(HTMLElement);
+    const respondingIcon = respondingBadge?.querySelector(
+      '[data-testid="invocation-phase-icon"]',
+    );
+    expect(respondingIcon?.className).toContain("animate-spin");
+  },
+};
+
+export const RequestingConversation: Story = {
+  args: {
+    activeRange: "today",
+    cards: buildCards(requestingOnlyResponse),
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const currentSlot = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLElement)) {
+      throw new Error("missing current slot");
+    }
+    const requestingBadge = currentSlot.querySelector(
+      '[data-testid="invocation-phase-badge"][data-phase="requesting"]',
+    );
+    if (!(requestingBadge instanceof HTMLElement)) {
+      throw new Error("missing requesting phase badge");
+    }
+    await expect(requestingBadge).toHaveAttribute(
+      "data-phase-label-visible",
+      "false",
+    );
+    await expect(requestingBadge).toHaveAttribute(
+      "data-phase-motion",
+      "dynamic",
+    );
+    const requestingIcon = requestingBadge.querySelector(
+      '[data-testid="invocation-phase-icon"]',
+    );
+    if (!(requestingIcon instanceof HTMLElement)) {
+      throw new Error("missing requesting phase icon");
+    }
+    await expect(requestingIcon.className).toContain("animate-pulse");
+    await expect(currentSlot).not.toHaveTextContent(/请求中|Requesting/);
+  },
+};
+
+export const FailedStatusIconDedup: Story = {
+  args: {
+    activeRange: "today",
+    cards: buildCards(failedStatusDedupResponse),
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const currentSlot = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLElement)) {
+      throw new Error("missing failed current slot");
+    }
+    const slotHeader = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-header"]',
+    );
+    if (!(slotHeader instanceof HTMLElement)) {
+      throw new Error("missing failed slot header");
+    }
+    const statusIcon = slotHeader.querySelector(
+      '[data-testid="dashboard-inline-invocation-status"]',
+    );
+    if (!(statusIcon instanceof HTMLElement)) {
+      throw new Error("missing compact failed status icon");
+    }
+    await expect(statusIcon).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("失败"),
+    );
+    await expect(statusIcon).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("upstream gateway closed before first byte"),
+    );
+    expect(
+      slotHeader.querySelectorAll(
+        '[title*="upstream gateway closed before first byte"]',
+      ),
+    ).toHaveLength(1);
+    await expect(currentSlot).not.toHaveTextContent(/^失败$/);
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Failure slot compact status case that keeps exactly one owner-facing failed icon in the header while moving the collapsed error summary onto that single status affordance.",
+      },
+    },
   },
 };
 
@@ -2671,6 +2833,17 @@ export const UpstreamAccountTab: Story = {
     await expect(recentBreakdown).toHaveTextContent(/请求中\s*3/);
     await expect(recentBreakdown).toHaveTextContent(/响应中\s*4/);
     await expect(recentBreakdown).toHaveTextContent(/成功\s*6/);
+    const phaseSegments = Array.from(
+      recentBreakdown.querySelectorAll('[data-testid="invocation-phase-segment"]'),
+    );
+    expect(phaseSegments).toHaveLength(3);
+    for (const phaseSegment of phaseSegments) {
+      expect(phaseSegment.getAttribute("data-phase-motion")).toBe("static");
+      const icon = phaseSegment.querySelector('[data-testid="invocation-phase-icon"]');
+      expect(icon).toBeInstanceOf(HTMLElement);
+      expect(icon?.className).not.toContain("animate-pulse");
+      expect(icon?.className).not.toContain("animate-spin");
+    }
     await expect(canvas.getByTestId("dashboard-upstream-account-policy-badges")).toHaveTextContent(
       "Fast",
     );
@@ -2736,6 +2909,56 @@ export const UpstreamAccountTab: Story = {
       description: {
         story:
           "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the dynamic recent invocation window in the selected range, including lightweight short conversation identity chips and request/response model mismatch rows.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountPhaseBreakdownStatic: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([
+          createConversation("pck-story-upstream-account-static", [
+            createPreview({
+              id: 9841,
+              invokeId: "story-working-static",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ]),
+        ])}
+        upstreamAccountActivity={createUpstreamAccountActivityStoryResponse()}
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
+    const recentBreakdown = await canvas.findByTestId(
+      "dashboard-upstream-account-recent-breakdown",
+    );
+    const phaseSegments = Array.from(
+      recentBreakdown.querySelectorAll('[data-testid="invocation-phase-segment"]'),
+    );
+    expect(phaseSegments).toHaveLength(3);
+    for (const phaseSegment of phaseSegments) {
+      expect(phaseSegment.getAttribute("data-phase-motion")).toBe("static");
+      const icon = phaseSegment.querySelector('[data-testid="invocation-phase-icon"]');
+      expect(icon).toBeInstanceOf(HTMLElement);
+      expect(icon?.className).not.toContain("animate-pulse");
+      expect(icon?.className).not.toContain("animate-spin");
+    }
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Owner-facing static phase breakdown entry that opens directly on the upstream-account workspace view, so the queued/requesting/responding summary can be reviewed without relying on an interaction step first.",
       },
     },
   },

@@ -8,10 +8,14 @@ import { cn } from "../lib/utils";
 import { AppIcon, type AppIconName } from "./AppIcon";
 import { Badge } from "./ui/badge";
 
+export type InvocationPhaseMotion = "static" | "dynamic";
+
 interface InvocationPhaseBadgeProps {
   phase: InvocationLivePhase;
   className?: string;
   appearance?: "badge" | "inline";
+  showLabel?: boolean;
+  motion?: InvocationPhaseMotion;
 }
 
 const PHASE_ICON_NAMES: Record<InvocationLivePhase, AppIconName> = {
@@ -26,21 +30,36 @@ const PHASE_TEXT_CLASSNAMES: Record<InvocationLivePhase, string> = {
   responding: "text-teal-600 dark:text-teal-300",
 };
 
+function phaseMotionClassName(
+  phase: InvocationLivePhase,
+  motion: InvocationPhaseMotion,
+) {
+  if (motion !== "dynamic") return null;
+  if (phase === "requesting") return "animate-pulse";
+  if (phase === "responding") return "animate-spin";
+  return null;
+}
+
 export function InvocationPhaseBadge({
   phase,
   className,
   appearance = "badge",
+  showLabel = true,
+  motion = "dynamic",
 }: InvocationPhaseBadgeProps) {
   const { t } = useTranslation();
   const display = getInvocationPhaseDisplay(phase);
+  const label = t(display.labelKey);
+  const motionClassName = phaseMotionClassName(phase, motion);
   const icon = (
     <AppIcon
       name={PHASE_ICON_NAMES[phase]}
+      data-testid="invocation-phase-icon"
       className={cn(
         appearance === "inline" ? "h-3.5 w-3.5" : "h-3 w-3",
         "shrink-0",
         appearance === "inline" && PHASE_TEXT_CLASSNAMES[phase],
-        phase === "responding" && "animate-spin",
+        motionClassName,
       )}
       aria-hidden="true"
     />
@@ -50,14 +69,22 @@ export function InvocationPhaseBadge({
     return (
       <span
         data-testid="invocation-phase-badge"
+        data-phase={phase}
+        data-phase-label-visible={showLabel ? "true" : "false"}
+        data-phase-motion={motion}
         className={cn(
-          "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold leading-none",
+          showLabel
+            ? "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold leading-none"
+            : "inline-flex h-5 w-5 items-center justify-center rounded-full bg-base-100/12",
           PHASE_TEXT_CLASSNAMES[phase],
           className,
         )}
+        aria-label={showLabel ? undefined : label}
+        title={showLabel ? undefined : label}
+        role={showLabel ? undefined : "img"}
       >
         {icon}
-        <span>{t(display.labelKey)}</span>
+        {showLabel ? <span>{label}</span> : null}
       </span>
     );
   }
@@ -66,15 +93,21 @@ export function InvocationPhaseBadge({
     <Badge
       variant={display.badgeVariant}
       data-testid="invocation-phase-badge"
+      data-phase={phase}
+      data-phase-label-visible={showLabel ? "true" : "false"}
+      data-phase-motion={motion}
       className={cn(
-        "gap-1.5",
+        showLabel ? "gap-1.5" : "h-6 w-6 justify-center px-0",
         phase === "responding" &&
           "border-teal-500/40 bg-teal-500/10 text-teal-700 dark:text-teal-300",
         className,
       )}
+      aria-label={showLabel ? undefined : label}
+      title={showLabel ? undefined : label}
+      role={showLabel ? undefined : "img"}
     >
       {icon}
-      {t(display.labelKey)}
+      {showLabel ? label : null}
     </Badge>
   );
 }
@@ -85,6 +118,7 @@ interface InvocationPhaseSegmentsProps {
   itemClassName?: string;
   showZero?: boolean;
   appearance?: "badge" | "inline";
+  motion?: InvocationPhaseMotion;
 }
 
 export function InvocationPhaseSegments({
@@ -93,6 +127,7 @@ export function InvocationPhaseSegments({
   itemClassName,
   showZero = true,
   appearance = "badge",
+  motion = "static",
 }: InvocationPhaseSegmentsProps) {
   const { t } = useTranslation();
   if (counts == null) return null;
@@ -115,6 +150,9 @@ export function InvocationPhaseSegments({
           return (
             <span
               key={item.phase}
+              data-testid="invocation-phase-segment"
+              data-phase={item.phase}
+              data-phase-motion={motion}
               className={cn(
                 "inline-flex items-center gap-1.5 whitespace-nowrap text-[11px] font-semibold leading-none tabular-nums text-base-content/68",
                 itemClassName,
@@ -122,10 +160,11 @@ export function InvocationPhaseSegments({
             >
               <AppIcon
                 name={PHASE_ICON_NAMES[item.phase]}
+                data-testid="invocation-phase-icon"
                 className={cn(
                   "h-3.5 w-3.5 shrink-0",
                   PHASE_TEXT_CLASSNAMES[item.phase],
-                  item.phase === "responding" && "animate-spin",
+                  phaseMotionClassName(item.phase, motion),
                 )}
                 aria-hidden="true"
               />
@@ -146,6 +185,9 @@ export function InvocationPhaseSegments({
           <Badge
             key={item.phase}
             variant={display.badgeVariant}
+            data-testid="invocation-phase-segment"
+            data-phase={item.phase}
+            data-phase-motion={motion}
             className={cn(
               "gap-1.5 tabular-nums",
               item.phase === "responding" &&
@@ -155,9 +197,10 @@ export function InvocationPhaseSegments({
           >
             <AppIcon
               name={PHASE_ICON_NAMES[item.phase]}
+              data-testid="invocation-phase-icon"
               className={cn(
                 "h-3 w-3 shrink-0",
-                item.phase === "responding" && "animate-spin",
+                phaseMotionClassName(item.phase, motion),
               )}
               aria-hidden="true"
             />

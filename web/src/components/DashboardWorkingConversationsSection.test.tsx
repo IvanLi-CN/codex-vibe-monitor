@@ -705,6 +705,19 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(recentBreakdown?.textContent).toContain("成功");
     expect(recentBreakdown?.textContent).toContain("6");
     expect(recentBreakdown?.textContent).toContain("1");
+    const phaseSegments = Array.from(
+      recentBreakdown?.querySelectorAll(
+        '[data-testid="invocation-phase-segment"]',
+      ) ?? [],
+    );
+    expect(phaseSegments).toHaveLength(3);
+    for (const phaseSegment of phaseSegments) {
+      expect(phaseSegment.getAttribute("data-phase-motion")).toBe("static");
+      const icon = phaseSegment.querySelector('[data-testid="invocation-phase-icon"]');
+      expect(icon).toBeInstanceOf(HTMLElement);
+      expect(icon?.className).not.toContain("animate-pulse");
+      expect(icon?.className).not.toContain("animate-spin");
+    }
   });
 
   it("renders a fallback for upstream account in-progress invocations when live counts are unavailable", () => {
@@ -1505,7 +1518,14 @@ describe("DashboardWorkingConversationsSection", () => {
       hour12: false,
     }).format(new Date("2026-04-04T10:04:00Z"));
 
-    expect(card.textContent).toContain("响应中");
+    const currentPhaseBadge = card.querySelector(
+      '[data-testid="invocation-phase-badge"][data-phase="responding"]',
+    );
+    expect(currentPhaseBadge).toBeInstanceOf(HTMLElement);
+    expect(currentPhaseBadge?.getAttribute("aria-label")).toBe("响应中");
+    expect(currentPhaseBadge?.getAttribute("data-phase-label-visible")).toBe(
+      "false",
+    );
     expect(card.textContent).toContain(expectedSortAnchorLabel);
     expect(card.textContent).toContain("请求");
     expect(card.textContent).toContain("Token");
@@ -2730,6 +2750,8 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(
       slotHeader.querySelector('[data-testid="invocation-phase-badge"]'),
     ).toBe(statusLabel);
+    expect(statusLabel.getAttribute("data-phase-label-visible")).toBe("false");
+    expect(statusLabel.getAttribute("data-phase-motion")).toBe("dynamic");
     expect(
       slotHeader.querySelector(
         '[data-testid="dashboard-compact-latency-first-byte"]',
@@ -2747,10 +2769,18 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(phaseLabels.length).toBeGreaterThanOrEqual(2);
     for (const phaseLabel of phaseLabels) {
       expect(phaseLabel.className).toContain("inline-flex");
-      expect(phaseLabel.className).not.toMatch(/\brounded/);
+      expect(phaseLabel.className).toMatch(/\brounded-full\b/);
+      expect(phaseLabel.className).toContain("bg-base-100/12");
       expect(phaseLabel.className).not.toMatch(/\bborder/);
-      expect(phaseLabel.className).not.toMatch(/\bbg-/);
+      expect(phaseLabel.getAttribute("data-phase-motion")).toBe("dynamic");
+      expect(phaseLabel.getAttribute("data-phase-label-visible")).toBe("false");
     }
+    const phaseIcons = Array.from(
+      card.querySelectorAll('[data-testid="invocation-phase-icon"]'),
+    );
+    expect(phaseIcons.some((icon) => icon.className.includes("animate-spin"))).toBe(
+      true,
+    );
 
     const requestMetric = Array.from(card.querySelectorAll("span")).find(
       (node) => node.textContent === "请求",
@@ -3449,5 +3479,53 @@ describe("DashboardWorkingConversationsSection", () => {
     rerenderSectionWithCards(nextCards);
 
     expect(scrollBy).not.toHaveBeenCalled();
+  });
+
+  it("keeps a single failed status icon in the slot header and attaches the collapsed error summary to it", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-failed-status-dedup", [
+          createPreview({
+            id: 81,
+            invokeId: "invoke-failed-status-dedup",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "http_502",
+            failureClass: "service_failure",
+            errorMessage: "upstream gateway closed before first byte",
+            failureKind: "upstream_timeout",
+          }),
+        ]),
+      ]),
+    );
+
+    const currentSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLElement)) {
+      throw new Error("missing failed current slot");
+    }
+    const slotHeader = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-header"]',
+    );
+    if (!(slotHeader instanceof HTMLElement)) {
+      throw new Error("missing failed slot header");
+    }
+
+    const statusIcon = slotHeader.querySelector(
+      '[data-testid="dashboard-inline-invocation-status"]',
+    );
+    if (!(statusIcon instanceof HTMLElement)) {
+      throw new Error("missing compact failed status icon");
+    }
+
+    expect(statusIcon.getAttribute("aria-label")).toContain("失败");
+    expect(statusIcon.getAttribute("aria-label")).toContain(
+      "upstream gateway closed before first byte",
+    );
+    expect(
+      slotHeader.querySelectorAll(
+        '[title*="upstream gateway closed before first byte"]',
+      ),
+    ).toHaveLength(1);
   });
 });
