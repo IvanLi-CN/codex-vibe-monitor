@@ -420,6 +420,8 @@ dependencies = [
  "futures-util",
  "hmac",
  "httpdate",
+ "hyper",
+ "hyper-util",
  "libc",
  "nanoid",
  "once_cell",

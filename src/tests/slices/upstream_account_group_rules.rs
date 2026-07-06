@@ -2900,6 +2900,98 @@ async fn test_upstream_responses_gzip_stream() -> impl IntoResponse {
     )
 }
 
+fn encode_deflate_payload(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder =
+        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(bytes)
+        .expect("write deflate payload");
+    encoder.finish().expect("finish deflate payload")
+}
+
+fn encode_response_payload(bytes: &[u8], encoding: &str) -> Vec<u8> {
+    match encoding {
+        "gzip" => {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder
+                .write_all(bytes)
+                .expect("write gzip response payload");
+            encoder.finish().expect("finish gzip response payload")
+        }
+        "br" => {
+            let mut output = Vec::new();
+            {
+                let mut writer = brotli::CompressorWriter::new(&mut output, 4096, 5, 22);
+                writer
+                    .write_all(bytes)
+                    .expect("write brotli response payload");
+            }
+            output
+        }
+        "deflate" => encode_deflate_payload(bytes),
+        other => panic!("unsupported content encoding fixture: {other}"),
+    }
+}
+
+fn encoded_stream_fixture_payload() -> String {
+    [
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_encoded_fixture\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_encoded_fixture\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":17,\"output_tokens\":6,\"total_tokens\":23}}}\n\n",
+    ]
+    .concat()
+}
+
+async fn test_upstream_responses_truncated_encoded_stream(encoding: &'static str) -> Response {
+    let mut encoded = encode_response_payload(encoded_stream_fixture_payload().as_bytes(), encoding);
+    let split_at = encoded.len().saturating_div(2).clamp(1, encoded.len());
+    let corrupt_index = split_at.saturating_div(2).min(encoded.len().saturating_sub(1));
+    encoded[corrupt_index] ^= 0x5a;
+    let first_chunk = Bytes::copy_from_slice(&encoded[..split_at]);
+    let chunks = stream::unfold(0usize, move |state| {
+        let first_chunk = first_chunk.clone();
+        async move {
+            match state {
+                0 => Some((Ok::<Bytes, io::Error>(first_chunk), 1)),
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Some((
+                        Err::<Bytes, io::Error>(io::Error::other(format!(
+                            "{encoding}-truncated-after-first-chunk"
+                        ))),
+                        2,
+                    ))
+                }
+                _ => None,
+            }
+        }
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(http_header::CONTENT_TYPE, "text/event-stream")
+        .header(http_header::CONTENT_ENCODING, encoding)
+        .body(Body::from_stream(chunks))
+        .expect("build truncated encoded stream response")
+}
+
+async fn test_upstream_responses_corrupt_encoded_complete_stream(
+    encoding: &'static str,
+) -> Response {
+    let mut encoded = encode_response_payload(encoded_stream_fixture_payload().as_bytes(), encoding);
+    let corrupt_len = encoded.len().saturating_div(2).clamp(1, encoded.len());
+    encoded.truncate(corrupt_len);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(http_header::CONTENT_TYPE, "text/event-stream")
+        .header(http_header::CONTENT_ENCODING, encoding)
+        .body(Body::from(encoded))
+        .expect("build corrupt encoded stream response")
+}
+
 fn less_compressible_test_string(target_len: usize) -> String {
     use std::fmt::Write as _;
 
@@ -3250,6 +3342,48 @@ async fn test_upstream_responses(uri: Uri) -> Response {
         .is_some_and(|query| query.contains("mode=oversized-delta-stream"))
     {
         test_upstream_responses_oversized_delta_stream()
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=gzip-truncated-stream"))
+    {
+        test_upstream_responses_truncated_encoded_stream("gzip")
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=br-truncated-stream"))
+    {
+        test_upstream_responses_truncated_encoded_stream("br")
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=deflate-truncated-stream"))
+    {
+        test_upstream_responses_truncated_encoded_stream("deflate")
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=gzip-corrupt-complete"))
+    {
+        test_upstream_responses_corrupt_encoded_complete_stream("gzip")
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=br-corrupt-complete"))
+    {
+        test_upstream_responses_corrupt_encoded_complete_stream("br")
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=deflate-corrupt-complete"))
+    {
+        test_upstream_responses_corrupt_encoded_complete_stream("deflate")
             .await
             .into_response()
     } else if uri

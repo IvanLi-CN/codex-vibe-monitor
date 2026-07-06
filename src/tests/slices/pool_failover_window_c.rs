@@ -1499,6 +1499,37 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
     upstream_handle.abort();
 }
 
+#[derive(sqlx::FromRow)]
+struct LatestInvocationPayloadRow {
+    status: Option<String>,
+    error_message: Option<String>,
+    failure_kind: Option<String>,
+    payload: Option<String>,
+}
+
+async fn load_latest_invocation_payload_row(
+    state: &AppState,
+) -> (LatestInvocationPayloadRow, Value) {
+    let row = sqlx::query_as::<_, LatestInvocationPayloadRow>(
+        r#"
+        SELECT status, error_message, failure_kind, payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load latest invocation");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("latest invocation payload should exist"),
+    )
+    .expect("decode latest invocation payload");
+    (row, payload)
+}
+
 #[tokio::test]
 async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_disconnects() {
     #[derive(sqlx::FromRow)]
@@ -1645,6 +1676,199 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
 }
 
 #[tokio::test]
+async fn pool_openai_v1_responses_marks_upstream_read_root_cause_for_truncated_encoded_streams() {
+    for (mode, encoding) in [
+        ("gzip-truncated-stream", "gzip"),
+        ("br-truncated-stream", "br"),
+        ("deflate-truncated-stream", "deflate"),
+    ] {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+        let request_body = serde_json::to_vec(&json!({
+            "model": "gpt-5.4",
+            "stream": true,
+            "input": "hello",
+        }))
+        .expect("serialize truncated encoded request body");
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri(
+                format!("/v1/responses?mode={mode}")
+                    .parse()
+                    .expect("valid truncated stream uri"),
+            ),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(request_body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let err = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect_err("truncated encoded upstream stream should fail after first chunk");
+        assert!(
+            err.to_string().contains("upstream stream error"),
+            "unexpected truncated stream error text: {err}"
+        );
+
+        wait_for_codex_invocations(&state.pool, 1).await;
+        let (row, payload) = load_latest_invocation_payload_row(state.as_ref()).await;
+        assert_eq!(
+            row.failure_kind.as_deref(),
+            Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+            "mode={mode}"
+        );
+        assert!(
+            row.error_message
+                .as_deref()
+                .is_some_and(|value| value.contains("upstream_stream_error")),
+            "mode={mode}"
+        );
+        assert_eq!(
+            payload["streamFailureOrigin"].as_str(),
+            Some("upstream_read"),
+            "mode={mode}"
+        );
+        assert_eq!(
+            payload["contentEncodingChain"].as_str(),
+            Some(encoding),
+            "mode={mode}"
+        );
+        assert_eq!(
+            payload["responseContentEncoding"].as_str(),
+            Some(encoding),
+            "mode={mode}"
+        );
+        assert_eq!(payload["usageObserved"].as_bool(), Some(false), "mode={mode}");
+        assert!(
+            payload["upstreamReadErrorKind"].as_str().is_some(),
+            "mode={mode} should persist upstream read error kind"
+        );
+        assert!(
+            payload["forwardedChunkCount"]
+                .as_u64()
+                .is_some_and(|value| value >= 1),
+            "mode={mode} should forward at least one chunk before failing"
+        );
+        assert!(
+            payload["usageMissingReason"]
+                .as_str()
+                .is_some_and(|value| value.contains("response_decode_failed:")),
+            "mode={mode} should preserve decode evidence in usageMissingReason"
+        );
+
+        upstream_handle.abort();
+    }
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_marks_content_decode_root_cause_for_complete_corrupt_streams() {
+    for (mode, encoding) in [
+        ("gzip-corrupt-complete", "gzip"),
+        ("br-corrupt-complete", "br"),
+        ("deflate-corrupt-complete", "deflate"),
+    ] {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+        let request_body = serde_json::to_vec(&json!({
+            "model": "gpt-5.4",
+            "stream": true,
+            "input": "hello",
+        }))
+        .expect("serialize corrupt encoded request body");
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri(
+                format!("/v1/responses?mode={mode}")
+                    .parse()
+                    .expect("valid corrupt stream uri"),
+            ),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(request_body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("complete corrupt stream should still transfer bytes");
+        assert!(!body.is_empty(), "mode={mode} should forward raw encoded bytes");
+
+        wait_for_codex_invocations(&state.pool, 1).await;
+        let (row, payload) = load_latest_invocation_payload_row(state.as_ref()).await;
+        let expected_origin = if encoding == "deflate" {
+            "stream_parse"
+        } else {
+            "content_decode"
+        };
+        assert_eq!(row.status.as_deref(), Some("success"), "mode={mode}");
+        assert_eq!(row.failure_kind.as_deref(), None, "mode={mode}");
+        assert_eq!(
+            payload["streamFailureOrigin"].as_str(),
+            Some(expected_origin),
+            "mode={mode}"
+        );
+        assert_eq!(
+            payload["contentEncodingChain"].as_str(),
+            Some(encoding),
+            "mode={mode}"
+        );
+        assert_eq!(
+            payload["responseContentEncoding"].as_str(),
+            Some(encoding),
+            "mode={mode}"
+        );
+        assert_eq!(payload["usageObserved"].as_bool(), Some(false), "mode={mode}");
+        assert!(
+            payload["usageMissingReason"]
+                .as_str()
+                .is_some_and(|value| {
+                    if expected_origin == "content_decode" {
+                        value.contains("response_decode_failed:")
+                    } else {
+                        value.contains("stream_event_parse_error")
+                    }
+                }),
+            "mode={mode} should record the parser-stage evidence for {expected_origin}"
+        );
+
+        upstream_handle.abort();
+    }
+}
+
+#[tokio::test]
 async fn capture_target_pool_route_marks_server_overloaded_after_forward_as_retryable_without_cooldown()
 {
     #[derive(sqlx::FromRow)]
@@ -1772,6 +1996,220 @@ async fn capture_target_pool_route_marks_server_overloaded_after_forward_as_retr
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
     drop(attempts);
 
+    upstream_handle.abort();
+}
+
+async fn spawn_raw_slow_success_upstream() -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind raw slow-success upstream");
+    let addr = listener.local_addr().expect("raw slow-success upstream addr");
+    let handle = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept raw upstream connection");
+        stream
+            .set_nodelay(true)
+            .expect("enable TCP_NODELAY on raw upstream");
+        let mut request_bytes = Vec::new();
+        let mut read_buf = [0_u8; 1024];
+        let mut header_end = None;
+        while header_end.is_none() {
+            let read = tokio::io::AsyncReadExt::read(&mut stream, &mut read_buf)
+                .await
+                .expect("read raw upstream request");
+            assert!(read > 0, "raw upstream request closed before headers");
+            request_bytes.extend_from_slice(&read_buf[..read]);
+            header_end = request_bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4);
+        }
+
+        let header_end = header_end.expect("raw upstream headers should end");
+        let header_text = String::from_utf8_lossy(&request_bytes[..header_end]);
+        let content_length = header_text
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+            })
+            .unwrap_or(0);
+        let body_bytes_read = request_bytes.len().saturating_sub(header_end);
+        if body_bytes_read < content_length {
+            let mut remaining = vec![0_u8; content_length - body_bytes_read];
+            tokio::io::AsyncReadExt::read_exact(&mut stream, &mut remaining)
+                .await
+                .expect("read raw upstream request body");
+        }
+
+        let response_head = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "content-type: text/event-stream\r\n",
+            "transfer-encoding: chunked\r\n",
+            "connection: keep-alive\r\n\r\n",
+        );
+        let first = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}\n\n",
+        );
+        let second = concat!(
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n",
+        );
+        let first_chunk = format!("{:X}\r\n{first}\r\n", first.len());
+        let second_chunk = format!("{:X}\r\n{second}\r\n", second.len());
+
+        tokio::io::AsyncWriteExt::write_all(&mut stream, response_head.as_bytes())
+            .await
+            .expect("write raw upstream response headers");
+        tokio::io::AsyncWriteExt::write_all(&mut stream, first_chunk.as_bytes())
+            .await
+            .expect("write raw upstream first chunk");
+        tokio::io::AsyncWriteExt::flush(&mut stream)
+            .await
+            .expect("flush raw upstream first chunk");
+
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        tokio::io::AsyncWriteExt::write_all(&mut stream, second_chunk.as_bytes())
+            .await
+            .expect("write raw upstream second chunk");
+        tokio::io::AsyncWriteExt::write_all(&mut stream, b"0\r\n\r\n")
+            .await
+            .expect("write raw upstream terminator");
+        tokio::io::AsyncWriteExt::flush(&mut stream)
+            .await
+            .expect("flush raw upstream final chunk");
+    });
+
+    (format!("http://{addr}"), handle)
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_close() {
+    let (upstream_base, upstream_handle) = spawn_raw_slow_success_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
+        .with_state(state.clone());
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy test server");
+    let addr = listener.local_addr().expect("proxy test server addr");
+    let server_handle = tokio::spawn(async move {
+        crate::serve_router_with_graceful_shutdown(listener, app, std::future::pending())
+            .await
+            .expect("proxy test server should run");
+    });
+
+    let request_body = serde_json::to_string(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+    }))
+    .expect("serialize downstream close request body");
+    let mut client = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("connect downstream close client");
+    let http_request = format!(
+        "POST /v1/responses?mode=slow-success HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer pool-live-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
+        request_body.len(),
+        request_body
+    );
+    tokio::io::AsyncWriteExt::write_all(&mut client, http_request.as_bytes())
+        .await
+        .expect("write downstream close request");
+
+    let mut response_bytes = Vec::new();
+    let mut read_buf = [0_u8; 1024];
+    let read_started = Instant::now();
+    loop {
+        let read = tokio::io::AsyncReadExt::read(&mut client, &mut read_buf)
+            .await
+            .expect("read downstream close response");
+        assert!(read > 0, "socket closed before first response chunk");
+        response_bytes.extend_from_slice(&read_buf[..read]);
+        if response_bytes
+            .windows("response.created".len())
+            .any(|window| window == b"response.created")
+        {
+            break;
+        }
+        assert!(
+            read_started.elapsed() < Duration::from_secs(5),
+            "timed out waiting for first streamed response chunk"
+        );
+    }
+    let first_chunk_text = String::from_utf8_lossy(&response_bytes);
+    assert!(
+        first_chunk_text.contains("response.created"),
+        "expected first chunk to contain response.created, got: {first_chunk_text}"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    #[allow(deprecated)]
+    client
+        .set_linger(Some(Duration::ZERO))
+        .expect("enable zero linger for downstream reset");
+    drop(client);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let (row, payload) = load_latest_invocation_payload_row(state.as_ref()).await;
+    eprintln!(
+        "[DEBUG-stream-rootcause-20260706] row status={:?} failure_kind={:?} payload={payload}",
+        row.status,
+        row.failure_kind,
+    );
+    assert_eq!(row.status.as_deref(), Some("failed"));
+    assert_eq!(
+        row.failure_kind.as_deref(),
+        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+    );
+    assert_eq!(
+        payload["streamFailureOrigin"].as_str(),
+        Some("downstream_write")
+    );
+    assert_eq!(
+        payload["downstreamClosePhase"].as_str(),
+        Some("after_first_byte")
+    );
+    assert!(
+        matches!(
+            payload["downstreamWriteErrorKind"].as_str(),
+            Some("broken_pipe" | "connection_reset" | "connection_aborted")
+        ),
+        "unexpected downstream write error kind: {:?}",
+        payload["downstreamWriteErrorKind"].as_str()
+    );
+    let expected_forwarded_bytes = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n",
+    )
+    .len() as u64;
+    assert_eq!(payload["forwardedChunkCount"].as_u64(), Some(2));
+    assert!(
+        payload["forwardedBytes"]
+            .as_u64()
+            .is_some_and(|value| value >= expected_forwarded_bytes),
+        "forwarded bytes should include both upstream body chunks"
+    );
+    assert_eq!(payload["usageObserved"].as_bool(), Some(true));
+    assert!(
+        payload["lastUpstreamChunkGapMs"]
+            .as_u64()
+            .is_some_and(|value| value >= 250),
+        "idle gap before downstream close should be observable"
+    );
+
+    server_handle.abort();
     upstream_handle.abort();
 }
 

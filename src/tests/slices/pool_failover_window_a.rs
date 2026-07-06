@@ -2083,21 +2083,86 @@ async fn gate_pool_initial_response_stream_keeps_non_overload_response_failed_on
             .expect("gate initial response stream");
 
     let PoolInitialResponseGateOutcome::Forward {
-        prefetched_bytes, ..
+        response,
+        prefetched_bytes,
     } = outcome
     else {
         panic!("non-overload response.failed should stay on the original stream");
     };
 
-    let body_text = String::from_utf8(
-        prefetched_bytes
-            .expect("forwarded stream should keep prefetched metadata window")
-            .to_vec(),
-    )
-    .expect("utf8 gate prefetched bytes");
+    let mut full_body = prefetched_bytes
+        .expect("forwarded stream should keep prefetched metadata window")
+        .to_vec();
+    full_body.extend_from_slice(
+        response
+            .into_bytes()
+            .await
+            .expect("read rebuilt gate response body")
+            .as_ref(),
+    );
+    let body_text = String::from_utf8(full_body).expect("utf8 gate body");
     assert!(body_text.contains("response.created"));
     assert!(body_text.contains("server_error"));
     assert!(!body_text.contains("server_is_overloaded"));
+}
+
+#[tokio::test]
+async fn gate_pool_initial_response_stream_preserves_first_forward_event_boundary() {
+    let created = [
+        "event: response.created\n",
+        r#"data: {"type":"response.created","response":{"id":"resp_gate_boundary_test","model":"gpt-5.4","status":"in_progress"}}"#,
+        "\n\n",
+    ]
+    .concat();
+    let completed = [
+        "event: response.completed\n",
+        r#"data: {"type":"response.completed","response":{"id":"resp_gate_boundary_test","model":"gpt-5.4","status":"completed"},"usage":{"input_tokens":12,"output_tokens":34,"total_tokens":46}}"#,
+        "\n\n",
+    ]
+    .concat();
+    let response = ProxyUpstreamResponseBody::Axum(
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(http_header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from_stream(stream::iter(vec![
+                Ok::<Bytes, Infallible>(Bytes::from(created)),
+                Ok::<Bytes, Infallible>(Bytes::from(completed)),
+            ])))
+            .expect("build gate boundary response"),
+    );
+
+    let outcome =
+        gate_pool_initial_response_stream(response, None, Duration::from_secs(1), Instant::now())
+            .await
+            .expect("gate boundary response stream");
+
+    let PoolInitialResponseGateOutcome::Forward {
+        response,
+        prefetched_bytes,
+    } = outcome
+    else {
+        panic!("response.completed should stay on the original stream");
+    };
+
+    let prefetched_text = String::from_utf8(
+        prefetched_bytes
+            .expect("metadata prefix should remain prefetched")
+            .to_vec(),
+    )
+    .expect("utf8 gate prefetched metadata");
+    assert!(prefetched_text.contains("response.created"));
+    assert!(!prefetched_text.contains("response.completed"));
+
+    let remaining_text = String::from_utf8(
+        response
+            .into_bytes()
+            .await
+            .expect("read rebuilt boundary stream")
+            .to_vec(),
+    )
+    .expect("utf8 gate rebuilt response");
+    assert!(remaining_text.contains("response.completed"));
+    assert!(!remaining_text.contains("response.created"));
 }
 
 #[tokio::test]
