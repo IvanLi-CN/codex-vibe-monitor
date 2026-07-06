@@ -20,12 +20,13 @@ interface InvocationPhaseBadgeProps {
 
 const PHASE_ICON_NAMES: Record<InvocationLivePhase, AppIconName> = {
   queued: "timer-refresh-outline",
-  requesting: "send",
+  requesting: "send-clock-outline",
   responding: "loading",
 };
 
 const STATIC_PHASE_ICON_NAMES: Record<InvocationLivePhase, AppIconName> = {
   ...PHASE_ICON_NAMES,
+  requesting: "send",
   responding: "message-reply-outline",
 };
 

@@ -45,6 +45,9 @@ export const RecordPhases: Story = {
     const badges = await canvas.findAllByTestId("invocation-phase-badge");
     expect(badges).toHaveLength(3);
     const icons = await canvas.findAllByTestId("invocation-phase-icon");
+    expect(icons[1]?.getAttribute("data-phase-icon-name")).toBe(
+      "send-clock-outline",
+    );
     expect(icons[1]?.className).toContain("animate-pulse");
     expect(icons[2]?.className).toContain("animate-spin");
   },
@@ -98,6 +101,7 @@ export const SummarySegments: Story = {
       expect(icon.className).not.toContain("animate-pulse");
       expect(icon.className).not.toContain("animate-spin");
     }
+    expect(icons[1]?.getAttribute("data-phase-icon-name")).toBe("send");
     expect(icons[2]?.getAttribute("data-phase-icon-name")).toBe(
       "message-reply-outline",
     );

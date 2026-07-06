@@ -54,6 +54,7 @@ import playlistPlusIcon from '@iconify-icons/mdi/playlist-plus'
 import plusIcon from '@iconify-icons/mdi/plus'
 import plusCircleOutlineIcon from '@iconify-icons/mdi/plus-circle-outline'
 import sendIcon from '@iconify-icons/mdi/send'
+import sendClockOutlineIcon from '@iconify-icons/mdi/send-clock-outline'
 import refreshIcon from '@iconify-icons/mdi/refresh'
 import refreshCircleIcon from '@iconify-icons/mdi/refresh-circle'
 import serverNetworkOutlineIcon from '@iconify-icons/mdi/server-network-outline'
@@ -122,6 +123,7 @@ const appIconRegistry = {
   'plus': plusIcon,
   'plus-circle-outline': plusCircleOutlineIcon,
   'send': sendIcon,
+  'send-clock-outline': sendClockOutlineIcon,
   'refresh': refreshIcon,
   'refresh-circle': refreshCircleIcon,
   'server-network-outline': serverNetworkOutlineIcon,

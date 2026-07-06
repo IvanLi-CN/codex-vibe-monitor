@@ -26,6 +26,7 @@ describe("InvocationPhaseBadge", () => {
     expect(html).toContain('data-phase-motion="dynamic"');
     expect(html).toContain('data-phase-label-visible="false"');
     expect(html).toContain('aria-label="请求中"');
+    expect(html).toContain('data-phase-icon-name="send-clock-outline"');
     expect(html).toContain("animate-pulse");
     expect(html).not.toContain(">请求中<");
   });
@@ -57,6 +58,7 @@ describe("InvocationPhaseSegments", () => {
       3,
     );
     expect(html).toContain('data-phase-motion="static"');
+    expect(html).toContain('data-phase-icon-name="send"');
     expect(html).toContain('data-phase-icon-name="message-reply-outline"');
     expect(html).not.toContain("animate-pulse");
     expect(html).not.toContain("animate-spin");
