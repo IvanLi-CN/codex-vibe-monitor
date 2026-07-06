@@ -329,6 +329,7 @@ async fn persist_pre_attempt_proxy_capture_error(
     capture_target: ProxyCaptureTarget,
     request_info: &RequestCaptureInfo,
     requester_ip: Option<&str>,
+    request_chain_metadata: &RequestChainMetadata,
     sticky_key: Option<&str>,
     prompt_cache_key: Option<&str>,
     client_attribution_context: &ClientPromptCacheAttributionContext,
@@ -391,6 +392,10 @@ async fn persist_pre_attempt_proxy_capture_error(
             request_parse_error: request_info.parse_error.as_deref(),
             failure_kind: Some(failure_kind),
             requester_ip,
+            request_user_agent: request_chain_metadata.user_agent.as_deref(),
+            request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
+            request_forwarded: request_chain_metadata.forwarded.as_deref(),
+            request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
             upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
             route_mode: INVOCATION_ROUTE_MODE_POOL,
             sticky_key,
@@ -514,6 +519,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     });
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     let requester_ip = extract_requester_ip(&headers, peer_ip);
+    let request_chain_metadata = request_chain_metadata_from_headers(&headers);
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
     let client_attribution_context = client_prompt_cache_attribution_context_from_headers(&headers);
@@ -627,6 +633,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     request_parse_error: request_info.parse_error.as_deref(),
                     failure_kind: Some(read_err.failure_kind),
                     requester_ip: requester_ip.as_deref(),
+                    request_user_agent: request_chain_metadata.user_agent.as_deref(),
+                    request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
+                    request_forwarded: request_chain_metadata.forwarded.as_deref(),
+                    request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
                     upstream_scope: if pool_route_active {
                         INVOCATION_UPSTREAM_SCOPE_INTERNAL
                     } else {
@@ -789,6 +799,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     request_parse_error: Some("request_body_snapshot_materialize_failed"),
                     failure_kind: Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
                     requester_ip: requester_ip.as_deref(),
+                    request_user_agent: request_chain_metadata.user_agent.as_deref(),
+                    request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
+                    request_forwarded: request_chain_metadata.forwarded.as_deref(),
+                    request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
                     upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
                     route_mode: INVOCATION_ROUTE_MODE_POOL,
                     sticky_key: header_sticky_key.as_deref(),
@@ -933,6 +947,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         capture_target,
                         &request_info,
                         requester_ip.as_deref(),
+                        &request_chain_metadata,
                         sticky_key.as_deref(),
                         prompt_cache_key.as_deref(),
                         &client_attribution_context,
@@ -972,6 +987,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     capture_target,
                     &request_info,
                     requester_ip.as_deref(),
+                    &request_chain_metadata,
                     sticky_key.as_deref(),
                     prompt_cache_key.as_deref(),
                     &client_attribution_context,
@@ -1191,6 +1207,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         request_parse_error: request_info.parse_error.as_deref(),
                         failure_kind: Some(err.failure_kind),
                         requester_ip: requester_ip.as_deref(),
+                        request_user_agent: request_chain_metadata.user_agent.as_deref(),
+                        request_x_forwarded_for: request_chain_metadata
+                            .x_forwarded_for
+                            .as_deref(),
+                        request_forwarded: request_chain_metadata.forwarded.as_deref(),
+                        request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
                         upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
                         route_mode: INVOCATION_ROUTE_MODE_POOL,
                         sticky_key: sticky_key.as_deref(),
@@ -1423,6 +1445,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         request_parse_error: request_info.parse_error.as_deref(),
                         failure_kind: Some(err.failure_kind),
                         requester_ip: requester_ip.as_deref(),
+                        request_user_agent: request_chain_metadata.user_agent.as_deref(),
+                        request_x_forwarded_for: request_chain_metadata
+                            .x_forwarded_for
+                            .as_deref(),
+                        request_forwarded: request_chain_metadata.forwarded.as_deref(),
+                        request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
                         upstream_scope: INVOCATION_UPSTREAM_SCOPE_EXTERNAL,
                         route_mode: INVOCATION_ROUTE_MODE_FORWARD_PROXY,
                         sticky_key: sticky_key.as_deref(),
@@ -1591,6 +1619,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     request_parse_error: request_info.parse_error.as_deref(),
                     failure_kind: None,
                     requester_ip: requester_ip.as_deref(),
+                    request_user_agent: request_chain_metadata.user_agent.as_deref(),
+                    request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
+                    request_forwarded: request_chain_metadata.forwarded.as_deref(),
+                    request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
                     upstream_scope: if pool_route_active {
                         INVOCATION_UPSTREAM_SCOPE_INTERNAL
                     } else {
@@ -1762,6 +1794,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             }
         }
     }
+    if let Ok(header_value) = HeaderValue::from_str(&invoke_id) {
+        response_builder = response_builder.header(
+            HeaderName::from_static(CVM_INVOKE_ID_HEADER),
+            header_value,
+        );
+    }
 
     let state_for_task = state.clone();
     let request_info_for_task = request_info.clone();
@@ -1773,6 +1811,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let occurred_at_for_task = occurred_at.clone();
     let upstream_content_encoding_for_task = upstream_content_encoding.clone();
     let requester_ip_for_task = requester_ip.clone();
+    let request_chain_metadata_for_task = request_chain_metadata.clone();
     let sticky_key_for_task = sticky_key.clone();
     let reservation_key_for_task = pool_routing_reservation_key.clone();
     let prompt_cache_key_for_task = prompt_cache_key.clone();
@@ -2371,6 +2410,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 downstream_close_phase,
                 downstream_write_error_kind,
                 last_upstream_chunk_gap_ms,
+                request_user_agent = request_chain_metadata_for_task.user_agent.as_deref(),
+                request_x_forwarded_for = request_chain_metadata_for_task
+                    .x_forwarded_for
+                    .as_deref(),
+                request_forwarded = request_chain_metadata_for_task.forwarded.as_deref(),
+                request_x_real_ip = request_chain_metadata_for_task.x_real_ip.as_deref(),
                 stream_terminal_event = response_info.stream_terminal_event.as_deref(),
                 usage_missing_reason = response_info.usage_missing_reason.as_deref(),
                 "[DEBUG-stream-rootcause-20260706] proxy stream failure classified"
@@ -2629,6 +2674,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             pricing_mode,
         )
         .await;
+        let request_chain_metadata_for_payload = (had_stream_error
+            || had_logical_stream_failure
+            || pure_downstream_closed
+            || !upstream_status.is_success())
+        .then_some(&request_chain_metadata_for_task);
         let payload = build_proxy_payload_summary(ProxyPayloadSummary {
             target: capture_target,
             status: upstream_status,
@@ -2651,6 +2701,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             request_parse_error: request_info_for_task.parse_error.as_deref(),
             failure_kind,
             requester_ip: requester_ip_for_task.as_deref(),
+            request_user_agent: request_chain_metadata_for_payload
+                .and_then(|metadata| metadata.user_agent.as_deref()),
+            request_x_forwarded_for: request_chain_metadata_for_payload
+                .and_then(|metadata| metadata.x_forwarded_for.as_deref()),
+            request_forwarded: request_chain_metadata_for_payload
+                .and_then(|metadata| metadata.forwarded.as_deref()),
+            request_x_real_ip: request_chain_metadata_for_payload
+                .and_then(|metadata| metadata.x_real_ip.as_deref()),
             upstream_scope: if pool_account_for_task.is_some() {
                 INVOCATION_UPSTREAM_SCOPE_INTERNAL
             } else {
