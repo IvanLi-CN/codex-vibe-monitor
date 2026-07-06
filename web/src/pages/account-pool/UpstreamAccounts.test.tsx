@@ -354,6 +354,38 @@ beforeAll(() => {
   });
 });
 
+describe("UpstreamAccountsPage detail route tab query", () => {
+  it("opens the shared drawer on the routing tab when the query requests routing", async () => {
+    mockAccountsPage();
+    render(
+      "/account-pool/upstream-accounts?upstreamAccountId=5&upstreamAccountTab=routing",
+    );
+    await flushAsync();
+
+    expect(document.body.textContent ?? "").toMatch(
+      /最终生效规则|Effective routing rule/,
+    );
+    expect(document.body.textContent ?? "").toMatch(
+      /字段来源明细|Field source breakdown/,
+    );
+  });
+
+  it("defaults to the overview tab when only the account id is present", async () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts?upstreamAccountId=5");
+    await flushAsync();
+
+    const overviewTab = Array.from(
+      document.body.querySelectorAll('button[role="tab"]'),
+    ).find((candidate) => /概览|overview/i.test(candidate.textContent ?? ""));
+    if (!(overviewTab instanceof HTMLButtonElement)) {
+      throw new Error("missing overview tab");
+    }
+
+    expect(overviewTab.getAttribute("aria-selected")).toBe("true");
+  });
+});
+
 beforeEach(() => {
   virtualizerMocks.visibleIndexes = null;
   storage.clear();
@@ -594,9 +626,9 @@ async function flushTimers() {
 
 function setInputValue(selector: string, value: string) {
   const input = document.body.querySelector(selector);
-  if (
-    !(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)
-  ) {
+  if (!(
+    input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement
+  )) {
     throw new Error(`missing input: ${selector}`);
   }
   const prototype =
@@ -1302,6 +1334,11 @@ function mockAccountsPage(options?: {
     stopBulkSyncJob: vi.fn(),
     runSync: vi.fn(),
     removeAccount: vi.fn(),
+    forwardProxyNodes: [],
+    forwardProxyCatalogState: {
+      kind: "loaded",
+      freshness: "fresh",
+    },
     groups,
     routing:
       options && "routing" in options
@@ -2601,7 +2638,9 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       sortOrder: "desc",
     });
     expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
-    expect(document.body.textContent).toMatch(/Loading more records|正在加载更多记录/);
+    expect(document.body.textContent).toMatch(
+      /Loading more records|正在加载更多记录/,
+    );
 
     act(() => {
       secondFetch.resolve({

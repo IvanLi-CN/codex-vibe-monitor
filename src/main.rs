@@ -26,7 +26,9 @@ use axum::{
     Router,
     body::{Body, Bytes, HttpBody},
     extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
-    extract::{ConnectInfo, DefaultBodyLimit, OriginalUri, Path as AxumPath, Query, State},
+    extract::{
+        ConnectInfo, DefaultBodyLimit, Extension, OriginalUri, Path as AxumPath, Query, State,
+    },
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri, uri::Authority},
     response::{Html, IntoResponse, Json, Response, Sse},
     routing::{any, delete, get, post, put},
@@ -82,6 +84,7 @@ mod api;
 mod db_pressure;
 mod external_api;
 mod forward_proxy;
+mod http_stream_tracking;
 mod maintenance;
 mod oauth_bridge;
 mod proxy;
@@ -94,6 +97,7 @@ mod upstream_accounts;
 use api::*;
 use external_api::*;
 use forward_proxy::*;
+use http_stream_tracking::*;
 use proxy::*;
 use sqlite_batch_writer::*;
 use stats::*;
@@ -165,6 +169,7 @@ const DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED: bool = false;
 const DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED: bool = false;
+const DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED: bool = false;
 const DEFAULT_SQLITE_BUSY_TIMEOUT_SECS: u64 = 30;
 const CVM_INVOKE_ID_HEADER: &str = "x-cvm-invoke-id";
 const BACKFILL_BATCH_SIZE: i64 = 200;
@@ -234,6 +239,8 @@ const ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS: &str =
 const ENV_OPENAI_PROXY_WEBSOCKET_ENABLED: &str = "OPENAI_PROXY_WEBSOCKET_ENABLED";
 const ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED: &str =
     "OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED";
+const ENV_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED: &str =
+    "OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED";
 const ENV_HTTP_BIND: &str = "HTTP_BIND";
 const LEGACY_ENV_HTTP_BIND: &str = "XY_HTTP_BIND";
 const ENV_CORS_ALLOWED_ORIGINS: &str = "CORS_ALLOWED_ORIGINS";

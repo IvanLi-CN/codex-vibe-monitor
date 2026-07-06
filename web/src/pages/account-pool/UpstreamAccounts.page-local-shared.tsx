@@ -1222,9 +1222,9 @@ function SharedUpstreamAccountDetailDrawerInner({
   }, [initialDeleteConfirmOpen, onInitialDeleteConfirmHandled, open]);
 
   useEffect(() => {
-    setDetailTab("overview");
+    setDetailTab(initialTab);
     setExpandedStickyKeys([]);
-  }, [accountId]);
+  }, [accountId, initialTab]);
 
   useEffect(() => {
     setGroupDraftNotes((current) => {

@@ -14,6 +14,7 @@
 - 已实现：terminal usage 观察先于 downstream 写入；完整 `input_tokens` + `output_tokens` 才进入现有 invocation/cost 持久化路径，缺字段 usage 被跳过。
 - 已实现：downstream active turn 断开后进行 bounded upstream drain；drain 收到 terminal usage 时持久化 usage 并按成功 turn 收口。
 - 已实现：upstream 在 active turn terminal 前 close/error 时向 downstream 发送 close `1013 upstream_unavailable; retry`，并记录 pool route transport failure 与 attempt failure。
+- 已实现：`/v1/responses` 第三方兼容 API-key upstream 若已握手成功但在 terminal 前 clean close/EOF，系统在保留 retryable downstream close 和 route failure 记录的同时，自动给该账号打 `unsupported_transport:websocket` / `不支持 WS` tag，后续 WS 路由跳过该候选。
 - 已实现：`unsupported_transport:websocket` / `不支持 WS` 系统 tag、WS unsupported auto-tagging、API key/OAuth header 覆盖、安全 header 转发、`http/https` 到 `ws/wss` URL 映射和 forward proxy 隧道。
 
 ## Validation
@@ -29,6 +30,7 @@
 - 多 `response.create` turn 分别 relay 并分别持久化 terminal usage。
 - downstream active turn 断开后 drain upstream terminal usage 并落库。
 - upstream terminal 前 close 转换为 downstream `1013` retryable close，并记录 attempt failure。
+- upstream terminal 前 clean close/EOF 会把兼容 API-key 账号标记为 `unsupported_transport:websocket`，但不误标 OAuth、非 Responses WS 或 downstream 断开后的 drain 失败。
 - 上游 handshake failure 在同一 downstream session 内 failover 到下一候选，并发送保留首帧。
 - downstream subprotocol 与 upstream subprotocol 不匹配时不发送保留首帧，记录 attempt failure 并返回 retryable close。
 - `/v1/realtime` passthrough 建连后不等待 downstream 首帧即可 relay 上游 `session.created`。

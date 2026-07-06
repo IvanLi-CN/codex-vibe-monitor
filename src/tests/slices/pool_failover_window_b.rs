@@ -630,6 +630,7 @@ async fn proxy_openai_v1_responses_waits_for_body_before_encrypted_owner_guard()
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account_with_options(
         &state,
@@ -732,6 +733,7 @@ async fn proxy_openai_v1_responses_live_first_success_persists_encrypted_owner()
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -873,6 +875,7 @@ async fn proxy_openai_v1_responses_live_first_response_encryption_persists_encry
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -967,6 +970,7 @@ async fn proxy_openai_v1_responses_prebuffered_success_persists_encrypted_owner(
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -1243,6 +1247,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -1324,7 +1329,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
 
 #[tokio::test]
 async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_returns_owner_unavailable()
- {
+{
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -1332,6 +1337,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -1427,7 +1433,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
 
 #[tokio::test]
 async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_newer_than_owner_still_returns_owner_unavailable()
- {
+{
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -1435,6 +1441,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_n
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -1568,6 +1575,7 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
         },
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         settings.websocket_enabled = true;
@@ -1686,6 +1694,7 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
         },
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         settings.websocket_enabled = true;
@@ -1798,6 +1807,7 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     let owner_account_id =
         insert_test_pool_api_key_account(&state, "Owner", "upstream-owner").await;
     let secondary_account_id =
@@ -2058,6 +2068,7 @@ async fn websocket_payload_only_prompt_cache_key_routes_first_upgrade_to_owner_a
         },
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         settings.websocket_enabled = true;
@@ -2773,7 +2784,7 @@ async fn websocket_upstream_close_before_terminal_sends_retryable_close() {
         settings.upstream_websocket_default_enabled = true;
     }
     seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account_with_options(
+    let account_id = insert_test_pool_api_key_account_with_options(
         &state,
         "WebSocket Preterminal Close",
         "upstream-preterminal-close",
@@ -2864,6 +2875,30 @@ async fn websocket_upstream_close_before_terminal_sends_retryable_close() {
             .1
             .as_deref()
             .is_some_and(|message| message.contains("before response.completed"))
+    );
+    let mut no_ws_tag_count = 0;
+    for _ in 0..20 {
+        no_ws_tag_count = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM pool_tags tag
+            JOIN pool_upstream_account_tags link ON link.tag_id = tag.id
+            WHERE link.account_id = ?1
+              AND tag.system_key = 'unsupported_transport:websocket'
+            "#,
+        )
+        .bind(account_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load websocket unsupported tag count");
+        if no_ws_tag_count == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        no_ws_tag_count, 1,
+        "preterminal upstream close should isolate account from future websocket routing"
     );
 
     proxy_handle.abort();

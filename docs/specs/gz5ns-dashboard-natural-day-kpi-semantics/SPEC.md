@@ -77,7 +77,7 @@
 
 ### Core flows
 
-- 在 Dashboard `活动总览` 的 `今日` 与 `昨日` 页签中，七卡按同一顺序展示：`TPM`、`消费速率`、`成功`、`进行中对话`、`首字用时`、`今日成本`、`今日 Tokens`。
+- 在 Dashboard `活动总览` 的 `今日` 与 `昨日` 页签中，七卡按同一顺序展示：`TPM`、`消费速率`、`进行中对话`、`成功`、`首字用时`、`今日成本`、`今日 Tokens`。
 - 账号详情 `调用记录` tab 内复用同一个 `DashboardActivityOverview` / `TodayStatsOverview` 链路，样式与语义不分叉，只按 `upstreamAccountId` 切换数据作用域。
 - `TPM` 与 `消费速率` 左下仍展示工作分钟日均，右上展示 `较昨日`，右下展示 `每对话`。
 - `成功` 卡主值展示成功数，右上展示当前成功数相对昨日同进度成功数的比例，底部展示 `失败` 与 `失败率`。
@@ -172,6 +172,13 @@
   scenario: `account activity overview`
   evidence_note: `验证账号活动总览复用共享链路，卡片区与金额图在 account-scoped 场景下同时生效；当前截图为中文 locale。`
   ![Account-scoped cumulative cost stacked area](./assets/account-today-cost-cumulative-storybook-1280.png)
+- SHA `worktree`
+- source_type: `storybook_canvas`
+  story_id_or_title: `dashboard-todaystatsoverview--desktop-single-row`
+  scenario: `desktop single-row swapped cards`
+  evidence_note: `验证桌面单行七卡顺序已调整为 TPM、消费速率、进行中调用、成功、首字用时、今日成本、今日 Token。`
+  PR: include
+  ![TodayStatsOverview swapped cards](./assets/today-stats-overview-swapped-cards.png)
 - SHA `worktree`
 - source_type: `storybook_canvas`
   story_id_or_title: `dashboard-dashboardactivityoverview--today-view`

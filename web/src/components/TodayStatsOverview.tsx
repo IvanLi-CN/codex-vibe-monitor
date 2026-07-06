@@ -641,38 +641,6 @@ export function TodayStatsOverview({
               },
             ]}
           />
-          <MetricTile
-            label={t('stats.cards.success')}
-            description={t('dashboard.today.successDescription')}
-            value={successCount}
-            localeTag={localeTag}
-            loading={loading}
-            toneClass="text-success"
-            iconName="check-circle-outline"
-            valueTestId="today-stats-value-success"
-            topRightItem={{
-              label: comparisonLabel,
-              valueSpec: buildBaselineRatioValueSpec(successComparisonRatio, localeTag),
-              toneClass: comparisonTone(
-                successComparisonRatio == null ? null : successComparisonRatio - 1,
-              ),
-              valueTestId: 'today-stats-secondary-success-ratio',
-            }}
-            secondaryItems={[
-              {
-                label: t('stats.cards.failures'),
-                valueSpec: buildNumberValueSpec(failureCount, localeTag, 0),
-                toneClass: failureCount > 0 ? 'text-error' : undefined,
-                valueTestId: 'today-stats-secondary-failures',
-              },
-              {
-                label: t('dashboard.today.secondary.failureRate'),
-                valueSpec: buildRatioValueSpec(terminalFailureRate, localeTag),
-                toneClass: terminalFailureRate > 0 ? 'text-error' : undefined,
-                valueTestId: 'today-stats-secondary-failure-rate',
-              },
-            ]}
-          />
           {showInProgressConversations ? (
             <MetricTile
               label={parallelLabel}
@@ -752,6 +720,38 @@ export function TodayStatsOverview({
                   localeTag,
                 ),
                 valueTestId: 'today-stats-secondary-response-time-avg-total',
+              },
+            ]}
+          />
+          <MetricTile
+            label={t('stats.cards.success')}
+            description={t('dashboard.today.successDescription')}
+            value={successCount}
+            localeTag={localeTag}
+            loading={loading}
+            toneClass="text-success"
+            iconName="check-circle-outline"
+            valueTestId="today-stats-value-success"
+            topRightItem={{
+              label: comparisonLabel,
+              valueSpec: buildBaselineRatioValueSpec(successComparisonRatio, localeTag),
+              toneClass: comparisonTone(
+                successComparisonRatio == null ? null : successComparisonRatio - 1,
+              ),
+              valueTestId: 'today-stats-secondary-success-ratio',
+            }}
+            secondaryItems={[
+              {
+                label: t('stats.cards.failures'),
+                valueSpec: buildNumberValueSpec(failureCount, localeTag, 0),
+                toneClass: failureCount > 0 ? 'text-error' : undefined,
+                valueTestId: 'today-stats-secondary-failures',
+              },
+              {
+                label: t('dashboard.today.secondary.failureRate'),
+                valueSpec: buildRatioValueSpec(terminalFailureRate, localeTag),
+                toneClass: terminalFailureRate > 0 ? 'text-error' : undefined,
+                valueTestId: 'today-stats-secondary-failure-rate',
               },
             ]}
           />

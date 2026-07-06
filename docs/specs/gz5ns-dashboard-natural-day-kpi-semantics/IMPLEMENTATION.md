@@ -26,6 +26,7 @@
 - 已完成共享货币 profile 扩展：`default` 保持累计金额现有非补零语义，`rate` 固定走 `2 位小数 -> 1 位小数 -> 0 位小数 -> compact` 梯度，并把 full 候选固定成两位小数。
 - 已完成 `TodayStatsOverview` 的 `消费速率` 主值、`日均`、`每对话` 接入 `rate` profile；`今日成本`、`失败成本` 与其余累计金额调用保持 `default` profile，不扩散 `.00` 风格。
 - 已补齐 `AdaptiveMetricValue.test.tsx`、`TodayStatsOverview.test.tsx` 与 `TodayStatsOverview.stories.tsx` 的回归覆盖，并追加 rate 精度 / antijitter Storybook 证据。
+- 已调整 `TodayStatsOverview` 七卡顺序：`进行中调用` 位于 `成功` 之前，并同步更新 unit / Storybook 顺序断言。
 
 ## Remaining Gaps
 

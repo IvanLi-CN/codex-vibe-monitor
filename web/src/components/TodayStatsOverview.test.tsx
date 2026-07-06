@@ -211,7 +211,7 @@ function render(ui: React.ReactNode) {
 }
 
 describe('TodayStatsOverview', () => {
-  it('uses a seven-tile desktop grid with response time after parallel conversations', () => {
+  it('uses a seven-tile desktop grid with parallel conversations before success', () => {
     render(
       <TodayStatsOverview
         stats={{
@@ -240,6 +240,11 @@ describe('TodayStatsOverview', () => {
     expect(grid?.className).toContain('lg:grid-cols-4')
     expect(grid?.className).toContain('xl:grid-cols-7')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(7)
+    const tileLabels = Array.from(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]') ?? [])
+      .map((tile) => tile.textContent ?? '')
+    expect(tileLabels[2]).toContain('In-progress invocations')
+    expect(tileLabels[3]).toContain('Time to first byte')
+    expect(tileLabels[4]).toContain('Success')
     expect(host?.textContent).toContain('Today summary')
     expect(host?.textContent).toContain('TPM')
     expect(host?.textContent).toContain('Spend rate')
