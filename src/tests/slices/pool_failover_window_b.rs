@@ -2784,7 +2784,7 @@ async fn websocket_upstream_close_before_terminal_sends_retryable_close() {
         settings.upstream_websocket_default_enabled = true;
     }
     seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account_with_options(
+    let account_id = insert_test_pool_api_key_account_with_options(
         &state,
         "WebSocket Preterminal Close",
         "upstream-preterminal-close",
@@ -2875,6 +2875,30 @@ async fn websocket_upstream_close_before_terminal_sends_retryable_close() {
             .1
             .as_deref()
             .is_some_and(|message| message.contains("before response.completed"))
+    );
+    let mut no_ws_tag_count = 0;
+    for _ in 0..20 {
+        no_ws_tag_count = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM pool_tags tag
+            JOIN pool_upstream_account_tags link ON link.tag_id = tag.id
+            WHERE link.account_id = ?1
+              AND tag.system_key = 'unsupported_transport:websocket'
+            "#,
+        )
+        .bind(account_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load websocket unsupported tag count");
+        if no_ws_tag_count == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        no_ws_tag_count, 1,
+        "preterminal upstream close should isolate account from future websocket routing"
     );
 
     proxy_handle.abort();

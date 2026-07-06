@@ -4,7 +4,7 @@
 
 - Status: active
 - Created: 2026-05-04
-- Last: 2026-07-06
+- Last: 2026-07-07
 
 ## 背景 / 问题陈述
 
@@ -48,6 +48,7 @@
 - Relay: relay 继续透传 text/binary/ping/pong/close；上游 terminal text 在写 downstream 前先完成 terminal/usage 观察，避免 downstream 断开导致 usage 丢失。
 - Drain: downstream close/error/EOF 发生在 active turn 中时，代理停止读取 downstream，短窗口读取 upstream；若期间收到 terminal usage，则按成功 turn 持久化；若 upstream 在 terminal 前 close/error 或 drain 超时，则按 transport failure 收口。
 - Failure close: active turn terminal 前的 upstream close/error 必须转成 downstream close `1013 upstream_unavailable; retry`。
+- Capability isolation: `/v1/responses` 上游已完成 WS 握手并已收到 `response.create` 后，若兼容 API-key 上游在 terminal 前 clean close 或 EOF，代理必须在记录 route failure 后给该账号打 `unsupported_transport:websocket` / `不支持 WS` 系统 tag；OAuth/官方账号、非 Responses WS、普通 upstream error、downstream 主动断开后的 drain 失败不得自动打该 tag。
 
 ## 验收标准
 
@@ -61,6 +62,7 @@
 - 缺字段 usage 不产生半字段 usage/cost 记录。
 - downstream 已断开但 upstream 随后发出 terminal usage 时，系统完成 bounded drain、持久化 usage，并不再尝试写 downstream。
 - upstream terminal 前 close/error 时，downstream 收到 `1013` 且 reason 包含 `retry`，pool route failure 与 attempt status 可查询。
+- 第三方兼容 API-key upstream 若握手成功但在 `response.completed` 前 clean close/EOF，该账号后续 WebSocket 路由会被 `unsupported_transport:websocket` tag 排除；客户端重连后不应反复命中同一坏候选。
 
 ## 参考输入
 
