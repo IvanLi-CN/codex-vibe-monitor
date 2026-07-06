@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { DashboardWorkingConversationCardModel } from "../lib/dashboardWorkingConversations";
 import {
@@ -139,7 +139,11 @@ vi.mock("../components/DashboardWorkingConversationsSection", () => ({
   }: {
     cards: DashboardWorkingConversationCardModel[];
     setRefreshTargetCount?: (count: number) => void;
-    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenUpstreamAccount?: (
+      accountId: number,
+      accountLabel: string,
+      options?: { tab?: "overview" | "routing" },
+    ) => void;
     onOpenConversation?: (selection: {
       conversationSequenceId: string;
       promptCacheKey: string;
@@ -202,6 +206,17 @@ vi.mock("../components/DashboardWorkingConversationsSection", () => ({
           >
             open account
           </button>
+          <button
+            type="button"
+            data-testid="dashboard-open-account-routing"
+            onClick={() =>
+              onOpenUpstreamAccount?.(77, "section-account@example.com", {
+                tab: "routing",
+              })
+            }
+          >
+            open account routing
+          </button>
         </>
       ) : null}
     </div>
@@ -220,7 +235,11 @@ vi.mock("../components/PromptCacheConversationTable", () => ({
     conversationKey: string | null;
     conversationLabel?: string | null;
     onClose: () => void;
-    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenUpstreamAccount?: (
+      accountId: number,
+      accountLabel: string,
+      options?: { tab?: "overview" | "routing" },
+    ) => void;
   }) =>
     open ? (
       <div data-testid="dashboard-conversation-history-drawer-mock">
@@ -260,7 +279,11 @@ vi.mock("../components/DashboardInvocationDetailDrawer", () => ({
     open: boolean;
     selection: { invocation: { record: { invokeId: string } } } | null;
     onClose: () => void;
-    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenUpstreamAccount?: (
+      accountId: number,
+      accountLabel: string,
+      options?: { tab?: "overview" | "routing" },
+    ) => void;
   }) =>
     open ? (
       <div data-testid="dashboard-invocation-detail-drawer-mock">
@@ -291,16 +314,21 @@ vi.mock("./account-pool/UpstreamAccounts", () => ({
   SharedUpstreamAccountDetailDrawer: ({
     open,
     accountId,
+    initialTab,
     onClose,
   }: {
     open: boolean;
     accountId: number | null;
+    initialTab?: "overview" | "routing";
     onClose: () => void;
   }) =>
     open ? (
       <div data-testid="shared-upstream-account-detail-drawer-mock">
         <span data-testid="shared-upstream-account-drawer-account-id">
           {accountId}
+        </span>
+        <span data-testid="shared-upstream-account-drawer-tab">
+          {initialTab ?? "overview"}
         </span>
         <button
           type="button"
@@ -357,6 +385,11 @@ const localStorageMock = {
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="dashboard-location-search">{location.search}</div>;
+}
+
 beforeAll(() => {
   Object.defineProperty(window, "localStorage", {
     configurable: true,
@@ -382,12 +415,17 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(ui: React.ReactNode) {
+function render(ui: React.ReactNode, initialEntry = "/dashboard") {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   act(() => {
-    root?.render(<MemoryRouter>{ui}</MemoryRouter>);
+    root?.render(
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <LocationProbe />
+        {ui}
+      </MemoryRouter>,
+    );
   });
 }
 
@@ -606,7 +644,9 @@ describe("DashboardPage", () => {
         new Map([
           [
             "pck-drawer-switch",
-            new Map([["invoke-dashboard-current", { totalTokens: 120, cost: 0.01 }]]),
+            new Map([
+              ["invoke-dashboard-current", { totalTokens: 120, cost: 0.01 }],
+            ]),
           ],
         ]),
       );
@@ -859,6 +899,10 @@ describe("DashboardPage", () => {
         '[data-testid="shared-upstream-account-drawer-account-id"]',
       )?.textContent,
     ).toBe("77");
+    expect(
+      host?.querySelector('[data-testid="shared-upstream-account-drawer-tab"]')
+        ?.textContent,
+    ).toBe("overview");
 
     act(() => {
       openInvocationButton.click();
@@ -967,6 +1011,68 @@ describe("DashboardPage", () => {
     ).toBe("99");
   });
 
+  it("opens the shared drawer on the routing tab and keeps the tab in the URL", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />);
+
+    const openAccountRoutingButton = host?.querySelector(
+      '[data-testid="dashboard-open-account-routing"]',
+    );
+    if (!(openAccountRoutingButton instanceof HTMLButtonElement)) {
+      throw new Error("missing routing account trigger");
+    }
+
+    act(() => {
+      openAccountRoutingButton.click();
+    });
+
+    expect(
+      host?.querySelector(
+        '[data-testid="shared-upstream-account-drawer-account-id"]',
+      )?.textContent,
+    ).toBe("77");
+    expect(
+      host?.querySelector('[data-testid="shared-upstream-account-drawer-tab"]')
+        ?.textContent,
+    ).toBe("routing");
+    expect(
+      host?.querySelector('[data-testid="dashboard-location-search"]')
+        ?.textContent,
+    ).toBe("?upstreamAccountId=77&upstreamAccountTab=routing");
+
+    const closeAccountDrawerButton = host?.querySelector(
+      '[data-testid="shared-upstream-account-drawer-close"]',
+    );
+    if (!(closeAccountDrawerButton instanceof HTMLButtonElement)) {
+      throw new Error("missing account drawer close button");
+    }
+
+    act(() => {
+      closeAccountDrawerButton.click();
+    });
+
+    expect(
+      host?.querySelector(
+        '[data-testid="shared-upstream-account-detail-drawer-mock"]',
+      ),
+    ).toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-location-search"]')
+        ?.textContent,
+    ).toBe("");
+  });
+
   it("passes refresh target updates from the working conversations section back into the hook", () => {
     installSummaryMocks();
     const setRefreshTargetCount = vi.fn();
@@ -1003,8 +1109,7 @@ describe("DashboardPage", () => {
       cards: [
         createWorkingConversationCard({
           endpoint: "/v1/responses/compact",
-          upstreamAccountName:
-            "paisleeeinar5710 Team sandbox workflow monitor",
+          upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
         }),
       ],
       totalMatched: 1,
