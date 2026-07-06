@@ -2013,11 +2013,11 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
 
     let shutdown = state.shutdown.clone();
     let handle = tokio::spawn(async move {
-        if let Err(err) = axum::serve(
+        if let Err(err) = serve_router_with_graceful_shutdown(
             listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
+            router,
+            async move { shutdown.cancelled().await },
         )
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
         .await
         {
             error!(?err, "http server exited with error");

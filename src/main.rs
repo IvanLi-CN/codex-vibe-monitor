@@ -26,7 +26,9 @@ use axum::{
     Router,
     body::{Body, Bytes, HttpBody},
     extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
-    extract::{ConnectInfo, DefaultBodyLimit, OriginalUri, Path as AxumPath, Query, State},
+    extract::{
+        ConnectInfo, DefaultBodyLimit, Extension, OriginalUri, Path as AxumPath, Query, State,
+    },
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri, uri::Authority},
     response::{Html, IntoResponse, Json, Response, Sse},
     routing::{any, delete, get, post, put},
@@ -82,6 +84,7 @@ mod api;
 mod db_pressure;
 mod external_api;
 mod forward_proxy;
+mod http_stream_tracking;
 mod maintenance;
 mod oauth_bridge;
 mod proxy;
@@ -94,6 +97,7 @@ mod upstream_accounts;
 use api::*;
 use external_api::*;
 use forward_proxy::*;
+use http_stream_tracking::*;
 use proxy::*;
 use sqlite_batch_writer::*;
 use stats::*;

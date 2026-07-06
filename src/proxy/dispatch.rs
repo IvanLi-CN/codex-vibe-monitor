@@ -48,6 +48,83 @@ fn proxy_stream_upstream_read_error_kind(err: &io::Error) -> &'static str {
     }
 }
 
+const PROXY_DOWNSTREAM_WRITE_ERROR_GRACE_PERIOD: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DownstreamBodyTerminalState {
+    Open,
+    Completed,
+    Dropped,
+}
+
+struct TrackedDownstreamReceiverStream {
+    inner: ReceiverStream<Result<Bytes, io::Error>>,
+    terminal_tx: watch::Sender<DownstreamBodyTerminalState>,
+    terminal_state: DownstreamBodyTerminalState,
+}
+
+impl TrackedDownstreamReceiverStream {
+    fn new(
+        inner: ReceiverStream<Result<Bytes, io::Error>>,
+        terminal_tx: watch::Sender<DownstreamBodyTerminalState>,
+    ) -> Self {
+        Self {
+            inner,
+            terminal_tx,
+            terminal_state: DownstreamBodyTerminalState::Open,
+        }
+    }
+
+    fn mark_terminal(&mut self, state: DownstreamBodyTerminalState) {
+        if self.terminal_state == DownstreamBodyTerminalState::Open {
+            self.terminal_state = state;
+            let _ = self.terminal_tx.send(state);
+        }
+    }
+}
+
+impl futures_util::Stream for TrackedDownstreamReceiverStream {
+    type Item = Result<Bytes, io::Error>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let poll = Pin::new(&mut self.inner).poll_next(cx);
+        if matches!(poll, std::task::Poll::Ready(None)) {
+            self.mark_terminal(DownstreamBodyTerminalState::Completed);
+        }
+        poll
+    }
+}
+
+impl Drop for TrackedDownstreamReceiverStream {
+    fn drop(&mut self) {
+        self.mark_terminal(DownstreamBodyTerminalState::Dropped);
+    }
+}
+
+fn proxy_stream_observe_downstream_body_terminal(
+    state: DownstreamBodyTerminalState,
+    downstream_closed: &mut bool,
+    downstream_write_error_kind: &mut Option<&'static str>,
+    last_upstream_chunk_received_at: Option<Instant>,
+    last_upstream_chunk_gap_ms: &mut Option<u64>,
+) -> bool {
+    match state {
+        DownstreamBodyTerminalState::Open | DownstreamBodyTerminalState::Completed => false,
+        DownstreamBodyTerminalState::Dropped => {
+            *downstream_closed = true;
+            downstream_write_error_kind.get_or_insert("body_dropped");
+            if last_upstream_chunk_gap_ms.is_none() {
+                *last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
+                    .map(|instant| instant.elapsed().as_millis() as u64);
+            }
+            true
+        }
+    }
+}
+
 pub(crate) async fn proxy_openai_v1_inner(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -62,6 +139,7 @@ pub(crate) async fn proxy_openai_v1_inner(
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
     admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
+    downstream_request_observer: Option<DownstreamRequestObserver>,
 ) -> Result<Response, ProxyErrorResponse> {
     if !pool_route_active {
         // `/v1/*` is pool-only; non-pool traffic must stop here instead of reviving the
@@ -161,6 +239,7 @@ pub(crate) async fn proxy_openai_v1_inner(
             runtime_timeouts,
             proxy_request_permit.take(),
             admitted_runtime_snapshot,
+            downstream_request_observer,
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
@@ -368,6 +447,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
     admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
+    downstream_request_observer: Option<DownstreamRequestObserver>,
 ) -> Result<Response, (StatusCode, String)> {
     if !pool_route_active {
         return Err((
@@ -1664,6 +1744,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let selected_proxy_display_name_for_task = selected_proxy_display_name.clone();
     let pool_account_for_task = pool_account.clone();
     let oauth_responses_debug_for_task = oauth_responses_debug.clone();
+    let downstream_request_observer_for_task = downstream_request_observer.clone();
     let attempt_already_recorded_for_task = attempt_already_recorded;
     let final_attempt_update_for_task = final_attempt_update;
     let pending_pool_attempt_record_for_task = pending_pool_attempt_record.clone();
@@ -1681,6 +1762,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let response_is_event_stream_for_task = response_is_event_stream;
     let proxy_request_permit_for_task = proxy_request_permit;
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let (downstream_body_terminal_tx, mut downstream_body_terminal_rx) =
+        watch::channel(DownstreamBodyTerminalState::Open);
 
     tokio::spawn(async move {
         let _live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease_for_task;
@@ -1793,7 +1876,24 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         }
                         break;
                     };
-                    match timeout(timeout_budget, stream.next()).await {
+                    let next_chunk = tokio::select! {
+                        changed = downstream_body_terminal_rx.changed() => {
+                            if changed.is_ok()
+                                && proxy_stream_observe_downstream_body_terminal(
+                                    *downstream_body_terminal_rx.borrow(),
+                                    &mut downstream_closed,
+                                    &mut downstream_write_error_kind,
+                                    last_upstream_chunk_received_at,
+                                    &mut last_upstream_chunk_gap_ms,
+                                )
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+                        next_chunk = timeout(timeout_budget, stream.next()) => next_chunk,
+                    };
+                    match next_chunk {
                         Ok(next_chunk) => next_chunk,
                         Err(_) => {
                             let message = pool_upstream_timeout_message(
@@ -1814,7 +1914,23 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         }
                     }
                 } else {
-                    stream.next().await
+                    tokio::select! {
+                        changed = downstream_body_terminal_rx.changed() => {
+                            if changed.is_ok()
+                                && proxy_stream_observe_downstream_body_terminal(
+                                    *downstream_body_terminal_rx.borrow(),
+                                    &mut downstream_closed,
+                                    &mut downstream_write_error_kind,
+                                    last_upstream_chunk_received_at,
+                                    &mut last_upstream_chunk_gap_ms,
+                                )
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+                        next_chunk = stream.next() => next_chunk,
+                    }
                 }
             } else if let Some(attempt_started_at) = upstream_attempt_started_at_for_task {
                 let Some(timeout_budget) = remaining_timeout_budget(
@@ -1834,7 +1950,24 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }
                     break;
                 };
-                match timeout(timeout_budget, stream.next()).await {
+                let next_chunk = tokio::select! {
+                    changed = downstream_body_terminal_rx.changed() => {
+                        if changed.is_ok()
+                            && proxy_stream_observe_downstream_body_terminal(
+                                *downstream_body_terminal_rx.borrow(),
+                                &mut downstream_closed,
+                                &mut downstream_write_error_kind,
+                                last_upstream_chunk_received_at,
+                                &mut last_upstream_chunk_gap_ms,
+                            )
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                    next_chunk = timeout(timeout_budget, stream.next()) => next_chunk,
+                };
+                match next_chunk {
                     Ok(next_chunk) => next_chunk,
                     Err(_) => {
                         let message = pool_upstream_timeout_message(
@@ -1853,7 +1986,23 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }
                 }
             } else {
-                stream.next().await
+                tokio::select! {
+                    changed = downstream_body_terminal_rx.changed() => {
+                        if changed.is_ok()
+                            && proxy_stream_observe_downstream_body_terminal(
+                                *downstream_body_terminal_rx.borrow(),
+                                &mut downstream_closed,
+                                &mut downstream_write_error_kind,
+                                last_upstream_chunk_received_at,
+                                &mut last_upstream_chunk_gap_ms,
+                            )
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                    next_chunk = stream.next() => next_chunk,
+                }
             };
             let Some(next_chunk) = next_chunk else {
                 break;
@@ -1980,6 +2129,52 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         }
         drop(tx);
         drop(proxy_request_permit_for_task.take());
+        if !downstream_closed && stream_error.is_none() {
+            loop {
+                let state = *downstream_body_terminal_rx.borrow_and_update();
+                match state {
+                    DownstreamBodyTerminalState::Open => {
+                        if downstream_body_terminal_rx.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                    DownstreamBodyTerminalState::Completed => break,
+                    DownstreamBodyTerminalState::Dropped => {
+                        downstream_closed = true;
+                        downstream_write_error_kind.get_or_insert("body_dropped");
+                        if last_upstream_chunk_gap_ms.is_none() {
+                            last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
+                                .map(|instant| instant.elapsed().as_millis() as u64);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        if !downstream_closed
+            && stream_error.is_none()
+            && let Some(observation) = downstream_request_observer_for_task.as_ref()
+            && let Some(write_error) = observation
+                .wait_for_write_error_window(PROXY_DOWNSTREAM_WRITE_ERROR_GRACE_PERIOD)
+                .await
+        {
+            downstream_closed = true;
+            downstream_write_error_kind = Some(write_error.kind);
+            if last_upstream_chunk_gap_ms.is_none() {
+                last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
+                    .map(|instant| instant.elapsed().as_millis() as u64);
+            }
+            warn!(
+                proxy_request_id,
+                invoke_id = %invoke_id_for_task,
+                request_seq = write_error.request_seq,
+                downstream_write_error_kind = write_error.kind,
+                downstream_write_error = %write_error.message,
+                forwarded_chunks,
+                forwarded_bytes,
+                "[DEBUG-stream-rootcause-20260706] observed downstream transport write error after response body drained"
+            );
+        }
 
         let terminal_state = if stream_error.is_some() {
             PROXY_STREAM_TERMINAL_ERROR
@@ -2599,7 +2794,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
 
     response_builder
-        .body(Body::from_stream(ReceiverStream::new(rx)))
+        .body(Body::from_stream(TrackedDownstreamReceiverStream::new(
+            ReceiverStream::new(rx),
+            downstream_body_terminal_tx,
+        )))
         .map_err(|err| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

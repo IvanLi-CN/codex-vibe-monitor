@@ -21,6 +21,7 @@ pub(crate) async fn proxy_openai_v1(
         headers,
         body,
         None,
+        None,
     ))
     .await
 }
@@ -28,6 +29,7 @@ pub(crate) async fn proxy_openai_v1(
 pub(crate) async fn proxy_openai_v1_with_connect_info(
     State(state): State<Arc<AppState>>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
+    downstream_transport: Option<Extension<DownstreamTransportObserver>>,
     ws: Option<WebSocketUpgrade>,
     OriginalUri(original_uri): OriginalUri,
     method: Method,
@@ -69,6 +71,7 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
         headers,
         body,
         connect_info.map(|info| info.0.ip()),
+        downstream_transport.map(|Extension(observer)| observer),
     ))
     .await
 }
@@ -80,6 +83,7 @@ pub(crate) async fn proxy_openai_v1_common(
     headers: HeaderMap,
     body: Body,
     peer_ip: Option<IpAddr>,
+    downstream_transport: Option<DownstreamTransportObserver>,
 ) -> Response {
     let proxy_request_id = next_proxy_request_id();
     let started_at = Instant::now();
@@ -139,6 +143,10 @@ pub(crate) async fn proxy_openai_v1_common(
         .await,
     );
     let capture_target = capture_target_for_request(original_uri.path(), &method);
+    let downstream_request_observer = capture_target
+        .is_some()
+        .then(|| downstream_transport.as_ref().map(DownstreamTransportObserver::begin_request))
+        .flatten();
     let admitted_runtime_snapshot = match capture_target {
         Some(target) => {
             let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
@@ -259,6 +267,7 @@ pub(crate) async fn proxy_openai_v1_common(
         runtime_timeouts,
         proxy_request_permit,
         admitted_runtime_snapshot,
+        downstream_request_observer,
     ))
     .await
     {

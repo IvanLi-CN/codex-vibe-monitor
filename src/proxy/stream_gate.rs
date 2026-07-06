@@ -1555,6 +1555,7 @@ pub(crate) async fn gate_pool_initial_response_stream(
     let mut buffered = Vec::new();
     let mut scanned_bytes = 0usize;
     let mut saw_non_metadata_event = false;
+    let mut first_forward_event_start = None;
     if let Some(chunk) = prefetched_first_chunk {
         buffered.extend_from_slice(&chunk);
     }
@@ -1568,6 +1569,7 @@ pub(crate) async fn gate_pool_initial_response_stream(
                     scanned_bytes = event_end;
                 }
                 PoolInitialResponsesSseEventDecision::Forward => {
+                    first_forward_event_start = Some(scanned_bytes);
                     scanned_bytes = event_end;
                     saw_non_metadata_event = true;
                     break;
@@ -1612,10 +1614,26 @@ pub(crate) async fn gate_pool_initial_response_stream(
         }
     }
 
+    let mut replay_prefix = None;
+    if let Some(forward_event_start) = first_forward_event_start {
+        let replay_bytes = buffered.split_off(forward_event_start);
+        replay_prefix = (!replay_bytes.is_empty()).then_some(Bytes::from(replay_bytes));
+    }
+    let prefetched_bytes = (!buffered.is_empty()).then_some(Bytes::from(buffered));
+
     let remaining_stream: Pin<
         Box<dyn futures_util::Stream<Item = Result<Bytes, io::Error>> + Send>,
     > = if let Some(err) = gate_stream_error {
-        Box::pin(stream::once(async move { Err(err) }))
+        if let Some(prefix) = replay_prefix {
+            Box::pin(
+                stream::once(async move { Ok(prefix) })
+                    .chain(stream::once(async move { Err(err) })),
+            )
+        } else {
+            Box::pin(stream::once(async move { Err(err) }))
+        }
+    } else if let Some(prefix) = replay_prefix {
+        Box::pin(stream::once(async move { Ok(prefix) }).chain(stream))
     } else {
         stream
     };
@@ -1623,7 +1641,7 @@ pub(crate) async fn gate_pool_initial_response_stream(
         rebuild_proxy_upstream_response_stream(status, &headers, remaining_stream)?;
     Ok(PoolInitialResponseGateOutcome::Forward {
         response: rebuilt_response,
-        prefetched_bytes: (!buffered.is_empty()).then_some(Bytes::from(buffered)),
+        prefetched_bytes,
     })
 }
 

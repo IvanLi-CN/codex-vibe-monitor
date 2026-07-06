@@ -1999,10 +1999,97 @@ async fn capture_target_pool_route_marks_server_overloaded_after_forward_as_retr
     upstream_handle.abort();
 }
 
+async fn spawn_raw_slow_success_upstream() -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind raw slow-success upstream");
+    let addr = listener.local_addr().expect("raw slow-success upstream addr");
+    let handle = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept raw upstream connection");
+        stream
+            .set_nodelay(true)
+            .expect("enable TCP_NODELAY on raw upstream");
+        let mut request_bytes = Vec::new();
+        let mut read_buf = [0_u8; 1024];
+        let mut header_end = None;
+        while header_end.is_none() {
+            let read = tokio::io::AsyncReadExt::read(&mut stream, &mut read_buf)
+                .await
+                .expect("read raw upstream request");
+            assert!(read > 0, "raw upstream request closed before headers");
+            request_bytes.extend_from_slice(&read_buf[..read]);
+            header_end = request_bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4);
+        }
+
+        let header_end = header_end.expect("raw upstream headers should end");
+        let header_text = String::from_utf8_lossy(&request_bytes[..header_end]);
+        let content_length = header_text
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+            })
+            .unwrap_or(0);
+        let body_bytes_read = request_bytes.len().saturating_sub(header_end);
+        if body_bytes_read < content_length {
+            let mut remaining = vec![0_u8; content_length - body_bytes_read];
+            tokio::io::AsyncReadExt::read_exact(&mut stream, &mut remaining)
+                .await
+                .expect("read raw upstream request body");
+        }
+
+        let response_head = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "content-type: text/event-stream\r\n",
+            "transfer-encoding: chunked\r\n",
+            "connection: keep-alive\r\n\r\n",
+        );
+        let first = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}\n\n",
+        );
+        let second = concat!(
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n",
+        );
+        let first_chunk = format!("{:X}\r\n{first}\r\n", first.len());
+        let second_chunk = format!("{:X}\r\n{second}\r\n", second.len());
+
+        tokio::io::AsyncWriteExt::write_all(&mut stream, response_head.as_bytes())
+            .await
+            .expect("write raw upstream response headers");
+        tokio::io::AsyncWriteExt::write_all(&mut stream, first_chunk.as_bytes())
+            .await
+            .expect("write raw upstream first chunk");
+        tokio::io::AsyncWriteExt::flush(&mut stream)
+            .await
+            .expect("flush raw upstream first chunk");
+
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        tokio::io::AsyncWriteExt::write_all(&mut stream, second_chunk.as_bytes())
+            .await
+            .expect("write raw upstream second chunk");
+        tokio::io::AsyncWriteExt::write_all(&mut stream, b"0\r\n\r\n")
+            .await
+            .expect("write raw upstream terminator");
+        tokio::io::AsyncWriteExt::flush(&mut stream)
+            .await
+            .expect("flush raw upstream final chunk");
+    });
+
+    (format!("http://{addr}"), handle)
+}
+
 #[tokio::test]
-#[ignore = "red loop: hard downstream reset after first byte still persists as success on the current body adapter seam"]
 async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_close() {
-    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let (upstream_base, upstream_handle) = spawn_raw_slow_success_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
@@ -2010,14 +2097,14 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
 
     let app = Router::new()
-        .route("/v1/*path", any(proxy_openai_v1))
+        .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
         .with_state(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind proxy test server");
     let addr = listener.local_addr().expect("proxy test server addr");
     let server_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
+        crate::serve_router_with_graceful_shutdown(listener, app, std::future::pending())
             .await
             .expect("proxy test server should run");
     });
@@ -2074,6 +2161,11 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
 
     wait_for_codex_invocations(&state.pool, 1).await;
     let (row, payload) = load_latest_invocation_payload_row(state.as_ref()).await;
+    eprintln!(
+        "[DEBUG-stream-rootcause-20260706] row status={:?} failure_kind={:?} payload={payload}",
+        row.status,
+        row.failure_kind,
+    );
     assert_eq!(row.status.as_deref(), Some("failed"));
     assert_eq!(
         row.failure_kind.as_deref(),
@@ -2087,21 +2179,29 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
         payload["downstreamClosePhase"].as_str(),
         Some("after_first_byte")
     );
-    assert_eq!(
-        payload["downstreamWriteErrorKind"].as_str(),
-        Some("receiver_dropped")
-    );
     assert!(
-        payload["forwardedChunkCount"]
-            .as_u64()
-            .is_some_and(|value| value >= 1)
+        matches!(
+            payload["downstreamWriteErrorKind"].as_str(),
+            Some("broken_pipe" | "connection_reset" | "connection_aborted")
+        ),
+        "unexpected downstream write error kind: {:?}",
+        payload["downstreamWriteErrorKind"].as_str()
     );
+    let expected_forwarded_bytes = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n",
+    )
+    .len() as u64;
+    assert_eq!(payload["forwardedChunkCount"].as_u64(), Some(2));
     assert!(
         payload["forwardedBytes"]
             .as_u64()
-            .is_some_and(|value| value >= response_bytes.len() as u64)
+            .is_some_and(|value| value >= expected_forwarded_bytes),
+        "forwarded bytes should include both upstream body chunks"
     );
-    assert_eq!(payload["usageObserved"].as_bool(), Some(false));
+    assert_eq!(payload["usageObserved"].as_bool(), Some(true));
     assert!(
         payload["lastUpstreamChunkGapMs"]
             .as_u64()
