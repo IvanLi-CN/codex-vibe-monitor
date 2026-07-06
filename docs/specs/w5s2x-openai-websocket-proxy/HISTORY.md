@@ -1,5 +1,11 @@
 # OpenAI 兼容 WebSocket 代理演进记录（#w5s2x）
 
+## 2026-07-06
+
+- 修正协议分流：`/v1/responses` 保持首帧驱动的 turn-aware relay；`/v1/realtime` 等非 Responses WS 改为即时上游 passthrough，避免 Realtime 连接因等待 downstream `response.create` 而超时。
+- 补齐首帧前失败观测：`/v1/responses` 在上游建连前因首帧超时、读取错误或协议拒绝失败时写入 pool attempt failure，避免线上只看到请求日志而看不到失败 attempt。
+- 线上只读诊断确认：101 当前部署的 WebSocket 开关已启用，历史失败集中在第三方 `api_key_codex` 兼容上游的 `/v1/responses`，表现为 `426 Upgrade Required` 或握手后在 terminal 前 close；这类上游能力问题不应掩盖代理对 `/v1/realtime` 的 server-first passthrough 分流缺陷。
+
 ## 2026-07-05
 
 - 将历史透明隧道式 WS 契约提升为 Responses WS 协议感知 passthrough relay。

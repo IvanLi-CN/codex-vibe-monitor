@@ -3,7 +3,9 @@
 ## Coverage
 
 - 已实现：`/v1/*` WebSocket upgrade 检测、pool 鉴权、downstream/upstream 双开关和 proxy request concurrency gate。
-- 已实现：所有 downstream WS session 统一在 upgrade 后读取首个 text JSON `response.create`，再执行 prompt-cache routing、encrypted owner guard、账号池选择和上游 WS 握手。
+- 已实现：`/v1/responses` downstream WS session 在 upgrade 后读取首个 text JSON `response.create`，再执行 prompt-cache routing、encrypted owner guard、账号池选择和上游 WS 握手。
+- 已实现：非 Responses 的 `/v1/*` WebSocket（例如 `/v1/realtime`）在 upgrade 后立即执行账号池选择和上游 WS 握手，不等待 downstream `response.create`，支持上游先发事件 passthrough。
+- 已实现：`/v1/responses` 首帧读取超时、读取错误和首帧协议拒绝会写入 `pool_upstream_request_attempts` transport failure，并广播 attempt snapshot；客户端未开始 turn 的正常主动关闭不记失败。
 - 已实现：payload `prompt_cache_key` 优先于 header prompt cache key；sticky-only header 不会进入 prompt-cache owner guard。
 - 已实现：首帧 payload `model` 优先于 query `model` 进入账号池选择；`previous_response_id` 作为 turn metadata 解析与日志观测输入保留。
 - 已实现：上游握手成功后发送保留首帧；握手失败、timeout、unsupported HTTP 状态和 transport error 仍复用账号池 failover，在同一个 downstream session 内尝试下一个候选。
@@ -29,3 +31,5 @@
 - upstream terminal 前 close 转换为 downstream `1013` retryable close，并记录 attempt failure。
 - 上游 handshake failure 在同一 downstream session 内 failover 到下一候选，并发送保留首帧。
 - downstream subprotocol 与 upstream subprotocol 不匹配时不发送保留首帧，记录 attempt failure 并返回 retryable close。
+- `/v1/realtime` passthrough 建连后不等待 downstream 首帧即可 relay 上游 `session.created`。
+- `/v1/responses` 首帧协议拒绝会关闭 downstream，并留下 `pool-ws-*` pre-upstream attempt failure。
