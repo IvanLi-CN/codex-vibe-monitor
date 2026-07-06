@@ -3497,9 +3497,9 @@ async fn prompt_cache_conversations_activity_minutes_paginated_ignores_stale_ter
     sqlx::query(
         r#"
         INSERT INTO codex_invocations (
-            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
         )
-        VALUES (?1, ?2, ?3, 'success', ?4, ?5, ?6, ?7)
+        VALUES (?1, ?2, ?3, 'success', ?4, ?5, ?6, ?7, ?8)
         "#,
     )
     .bind("working-runtime-window-recent")
@@ -3513,6 +3513,9 @@ async fn prompt_cache_conversations_activity_minutes_paginated_ignores_stale_ter
     .bind(0.01_f64)
     .bind(json!({ "promptCacheKey": "working-runtime-window-recent", "routeMode": "pool" }).to_string())
     .bind("{}")
+    .bind(format_utc_iso_precise(
+        snapshot_at - ChronoDuration::seconds(1),
+    ))
     .execute(&state.pool)
     .await
     .expect("insert recent working prompt-cache row");
