@@ -58,6 +58,17 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
             policy_available_models_json TEXT,
+            policy_status_change_upstream_http_401 INTEGER,
+            policy_status_change_upstream_http_402 INTEGER,
+            policy_status_change_upstream_http_403 INTEGER,
+            policy_status_change_reauth_required INTEGER,
+            policy_status_change_upstream_http_429_rate_limit INTEGER,
+            policy_status_change_upstream_http_429_quota_exhausted INTEGER,
+            policy_status_change_usage_snapshot_exhausted INTEGER,
+            policy_status_change_quota_still_exhausted INTEGER,
+            policy_status_change_transport_failure INTEGER,
+            policy_status_change_upstream_server_overloaded INTEGER,
+            policy_status_change_upstream_http_5xx INTEGER,
             policy_responses_first_byte_timeout_secs INTEGER,
             policy_compact_first_byte_timeout_secs INTEGER,
             policy_responses_stream_timeout_secs INTEGER,
@@ -177,6 +188,23 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_accounts.policy_available_models_json")?;
+    for column in [
+        "policy_status_change_upstream_http_401",
+        "policy_status_change_upstream_http_402",
+        "policy_status_change_upstream_http_403",
+        "policy_status_change_reauth_required",
+        "policy_status_change_upstream_http_429_rate_limit",
+        "policy_status_change_upstream_http_429_quota_exhausted",
+        "policy_status_change_usage_snapshot_exhausted",
+        "policy_status_change_quota_still_exhausted",
+        "policy_status_change_transport_failure",
+        "policy_status_change_upstream_server_overloaded",
+        "policy_status_change_upstream_http_5xx",
+    ] {
+        ensure_nullable_integer_column(pool, "pool_upstream_accounts", column)
+            .await
+            .with_context(|| format!("failed to ensure pool_upstream_accounts.{column}"))?;
+    }
     for column in [
         "policy_responses_first_byte_timeout_secs",
         "policy_compact_first_byte_timeout_secs",
@@ -864,6 +892,17 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
             policy_available_models_json TEXT,
+            policy_status_change_upstream_http_401 INTEGER,
+            policy_status_change_upstream_http_402 INTEGER,
+            policy_status_change_upstream_http_403 INTEGER,
+            policy_status_change_reauth_required INTEGER,
+            policy_status_change_upstream_http_429_rate_limit INTEGER,
+            policy_status_change_upstream_http_429_quota_exhausted INTEGER,
+            policy_status_change_usage_snapshot_exhausted INTEGER,
+            policy_status_change_quota_still_exhausted INTEGER,
+            policy_status_change_transport_failure INTEGER,
+            policy_status_change_upstream_server_overloaded INTEGER,
+            policy_status_change_upstream_http_5xx INTEGER,
             policy_responses_first_byte_timeout_secs INTEGER,
             policy_compact_first_byte_timeout_secs INTEGER,
             policy_responses_stream_timeout_secs INTEGER,
@@ -992,6 +1031,25 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_account_group_notes.policy_available_models_json")?;
+    for column in [
+        "policy_status_change_upstream_http_401",
+        "policy_status_change_upstream_http_402",
+        "policy_status_change_upstream_http_403",
+        "policy_status_change_reauth_required",
+        "policy_status_change_upstream_http_429_rate_limit",
+        "policy_status_change_upstream_http_429_quota_exhausted",
+        "policy_status_change_usage_snapshot_exhausted",
+        "policy_status_change_quota_still_exhausted",
+        "policy_status_change_transport_failure",
+        "policy_status_change_upstream_server_overloaded",
+        "policy_status_change_upstream_http_5xx",
+    ] {
+        ensure_nullable_integer_column(pool, "pool_upstream_account_group_notes", column)
+            .await
+            .with_context(|| {
+                format!("failed to ensure pool_upstream_account_group_notes.{column}")
+            })?;
+    }
     for column in [
         "policy_responses_first_byte_timeout_secs",
         "policy_compact_first_byte_timeout_secs",

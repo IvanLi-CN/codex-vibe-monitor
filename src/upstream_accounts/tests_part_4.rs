@@ -2495,6 +2495,7 @@ async fn classified_sync_failure_preserves_existing_route_cooldown_across_new_er
     record_classified_account_sync_failure(
         &pool,
         &row,
+        row.status.as_str(),
         UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
         "usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable",
     )
@@ -2586,6 +2587,7 @@ async fn classified_sync_hard_unavailable_replaces_stale_quota_marker_from_curre
         record_classified_account_sync_failure(
             &pool,
             &current_row,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
             error_message,
         )
@@ -2664,6 +2666,7 @@ async fn classified_sync_wrapped_upstream_rejected_permission_keeps_existing_coo
     record_classified_account_sync_failure(
         &pool,
         &row,
+        row.status.as_str(),
         UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
         "oauth_upstream_rejected_request: pool upstream responded with 403: Forbidden",
     )
@@ -2690,6 +2693,72 @@ async fn classified_sync_wrapped_upstream_rejected_permission_keeps_existing_coo
 }
 
 #[tokio::test]
+async fn classified_sync_failure_emits_suppressed_event_when_reason_toggle_disabled() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Suppressed Sync 402").await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_status_change_upstream_http_402 = 0 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&pool)
+    .await
+    .expect("disable sync 402 status change toggle");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load fresh row")
+        .expect("fresh row exists");
+    record_classified_account_sync_failure(
+        &pool,
+        &row,
+        row.status.as_str(),
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+        "usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
+    )
+    .await
+    .expect("record suppressed sync failure");
+
+    let after = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row after suppressed sync failure")
+        .expect("row after suppressed sync failure exists");
+    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert_eq!(after.last_error, None);
+    assert_eq!(after.last_action, None);
+    assert_eq!(after.last_route_failure_kind, None);
+    assert_eq!(after.cooldown_until, None);
+
+    let detail = load_upstream_account_detail(&pool, account_id)
+        .await
+        .expect("load suppressed sync detail")
+        .expect("suppressed sync detail exists");
+    assert_eq!(detail.summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert_eq!(detail.summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
+    assert_eq!(detail.summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+    let event = detail
+        .recent_actions
+        .first()
+        .expect("suppressed sync event should be recorded");
+    assert_eq!(event.action, UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED);
+    assert_eq!(event.source, UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE);
+    assert_eq!(
+        event.reason_code.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402)
+    );
+    assert_eq!(event.http_status, Some(402));
+    assert_eq!(
+        event.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
+    );
+    assert!(
+        event
+            .reason_message
+            .as_deref()
+            .is_some_and(|value| value.contains("402 Payment Required"))
+    );
+}
+
+#[tokio::test]
 async fn classified_sync_non_rejected_failure_clears_existing_maintenance_rejected_cooldown() {
     let pool = test_pool().await;
     let account_id = insert_oauth_account(&pool, "Rejected Cooldown Replaced").await;
@@ -2697,6 +2766,7 @@ async fn classified_sync_non_rejected_failure_clears_existing_maintenance_reject
     record_account_sync_hard_unavailable(
             &pool,
             account_id,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
             "upstream_http_402",
             "usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
@@ -2714,6 +2784,7 @@ async fn classified_sync_non_rejected_failure_clears_existing_maintenance_reject
     record_classified_account_sync_failure(
             &pool,
             &before,
+            before.status.as_str(),
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
             "usage endpoint returned 403 Forbidden: You have insufficient permissions for this operation.",
         )
@@ -2739,6 +2810,7 @@ async fn mark_account_sync_success_clears_explicit_maintenance_upstream_rejected
     record_account_sync_hard_unavailable(
             &pool,
             account_id,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
             "upstream_http_402",
             "usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
@@ -2802,6 +2874,7 @@ async fn classified_sync_failure_preserves_quota_marker_from_current_syncing_row
     record_classified_account_sync_failure(
         &pool,
         &current_row,
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE,
         UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
         "usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable",
     )
@@ -3622,6 +3695,7 @@ async fn resolver_keeps_quota_exhausted_accounts_in_rate_limited_terminal_state_
     record_account_sync_recovery_blocked(
             &state.pool,
             account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
             UPSTREAM_ACCOUNT_STATUS_ERROR,
             UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED,

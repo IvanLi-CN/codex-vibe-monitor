@@ -1441,6 +1441,7 @@ fn normalize_group_account_routing_rule(
         upstream_429_max_retries,
         available_models: normalize_available_models(available_models, "availableModels")?,
         available_models_defined,
+        status_change_reasons: default_status_change_reasons(),
         timeouts: None,
     })
 }
@@ -1647,6 +1648,73 @@ fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
     }
 }
 
+fn status_change_reasons_from_columns(
+    policy_status_change_upstream_http_401: Option<i64>,
+    policy_status_change_upstream_http_402: Option<i64>,
+    policy_status_change_upstream_http_403: Option<i64>,
+    policy_status_change_reauth_required: Option<i64>,
+    policy_status_change_upstream_http_429_rate_limit: Option<i64>,
+    policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
+    policy_status_change_usage_snapshot_exhausted: Option<i64>,
+    policy_status_change_quota_still_exhausted: Option<i64>,
+    policy_status_change_transport_failure: Option<i64>,
+    policy_status_change_upstream_server_overloaded: Option<i64>,
+    policy_status_change_upstream_http_5xx: Option<i64>,
+) -> StatusChangeReasonSettings {
+    let mut reasons = default_status_change_reasons();
+    for (reason_code, value) in [
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401,
+            policy_status_change_upstream_http_401,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402,
+            policy_status_change_upstream_http_402,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403,
+            policy_status_change_upstream_http_403,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
+            policy_status_change_reauth_required,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT,
+            policy_status_change_upstream_http_429_rate_limit,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            policy_status_change_upstream_http_429_quota_exhausted,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED,
+            policy_status_change_usage_snapshot_exhausted,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
+            policy_status_change_quota_still_exhausted,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
+            policy_status_change_transport_failure,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+            policy_status_change_upstream_server_overloaded,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX,
+            policy_status_change_upstream_http_5xx,
+        ),
+    ] {
+        if let Some(value) = value {
+            reasons.insert(reason_code.to_string(), value != 0);
+        }
+    }
+    reasons
+}
+
 fn group_routing_rule_from_columns(
     legacy_concurrency_limit: i64,
     legacy_upstream_429_retry_enabled: bool,
@@ -1662,6 +1730,17 @@ fn group_routing_rule_from_columns(
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<&str>,
+    policy_status_change_upstream_http_401: Option<i64>,
+    policy_status_change_upstream_http_402: Option<i64>,
+    policy_status_change_upstream_http_403: Option<i64>,
+    policy_status_change_reauth_required: Option<i64>,
+    policy_status_change_upstream_http_429_rate_limit: Option<i64>,
+    policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
+    policy_status_change_usage_snapshot_exhausted: Option<i64>,
+    policy_status_change_quota_still_exhausted: Option<i64>,
+    policy_status_change_transport_failure: Option<i64>,
+    policy_status_change_upstream_server_overloaded: Option<i64>,
+    policy_status_change_upstream_http_5xx: Option<i64>,
     policy_responses_first_byte_timeout_secs: Option<i64>,
     policy_compact_first_byte_timeout_secs: Option<i64>,
     policy_responses_stream_timeout_secs: Option<i64>,
@@ -1696,6 +1775,19 @@ fn group_routing_rule_from_columns(
         ),
         available_models: parse_string_array_json(policy_available_models_json),
         available_models_defined: policy_available_models_json.is_some(),
+        status_change_reasons: status_change_reasons_from_columns(
+            policy_status_change_upstream_http_401,
+            policy_status_change_upstream_http_402,
+            policy_status_change_upstream_http_403,
+            policy_status_change_reauth_required,
+            policy_status_change_upstream_http_429_rate_limit,
+            policy_status_change_upstream_http_429_quota_exhausted,
+            policy_status_change_usage_snapshot_exhausted,
+            policy_status_change_quota_still_exhausted,
+            policy_status_change_transport_failure,
+            policy_status_change_upstream_server_overloaded,
+            policy_status_change_upstream_http_5xx,
+        ),
         timeouts: routing_timeout_settings_from_columns(
             policy_responses_first_byte_timeout_secs,
             policy_compact_first_byte_timeout_secs,
@@ -1725,6 +1817,17 @@ async fn load_group_routing_rule(
         policy_upstream_429_retry_enabled: Option<i64>,
         policy_upstream_429_max_retries: Option<i64>,
         policy_available_models_json: Option<String>,
+        policy_status_change_upstream_http_401: Option<i64>,
+        policy_status_change_upstream_http_402: Option<i64>,
+        policy_status_change_upstream_http_403: Option<i64>,
+        policy_status_change_reauth_required: Option<i64>,
+        policy_status_change_upstream_http_429_rate_limit: Option<i64>,
+        policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
+        policy_status_change_usage_snapshot_exhausted: Option<i64>,
+        policy_status_change_quota_still_exhausted: Option<i64>,
+        policy_status_change_transport_failure: Option<i64>,
+        policy_status_change_upstream_server_overloaded: Option<i64>,
+        policy_status_change_upstream_http_5xx: Option<i64>,
         policy_responses_first_byte_timeout_secs: Option<i64>,
         policy_compact_first_byte_timeout_secs: Option<i64>,
         policy_responses_stream_timeout_secs: Option<i64>,
@@ -1750,6 +1853,17 @@ async fn load_group_routing_rule(
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
             policy_available_models_json,
+            policy_status_change_upstream_http_401,
+            policy_status_change_upstream_http_402,
+            policy_status_change_upstream_http_403,
+            policy_status_change_reauth_required,
+            policy_status_change_upstream_http_429_rate_limit,
+            policy_status_change_upstream_http_429_quota_exhausted,
+            policy_status_change_usage_snapshot_exhausted,
+            policy_status_change_quota_still_exhausted,
+            policy_status_change_transport_failure,
+            policy_status_change_upstream_server_overloaded,
+            policy_status_change_upstream_http_5xx,
             policy_responses_first_byte_timeout_secs,
             policy_compact_first_byte_timeout_secs,
             policy_responses_stream_timeout_secs,
@@ -1768,6 +1882,17 @@ async fn load_group_routing_rule(
             0,
             false,
             0,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1806,6 +1931,17 @@ async fn load_group_routing_rule(
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
         row.policy_available_models_json.as_deref(),
+        row.policy_status_change_upstream_http_401,
+        row.policy_status_change_upstream_http_402,
+        row.policy_status_change_upstream_http_403,
+        row.policy_status_change_reauth_required,
+        row.policy_status_change_upstream_http_429_rate_limit,
+        row.policy_status_change_upstream_http_429_quota_exhausted,
+        row.policy_status_change_usage_snapshot_exhausted,
+        row.policy_status_change_quota_still_exhausted,
+        row.policy_status_change_transport_failure,
+        row.policy_status_change_upstream_server_overloaded,
+        row.policy_status_change_upstream_http_5xx,
         row.policy_responses_first_byte_timeout_secs,
         row.policy_compact_first_byte_timeout_secs,
         row.policy_responses_stream_timeout_secs,
