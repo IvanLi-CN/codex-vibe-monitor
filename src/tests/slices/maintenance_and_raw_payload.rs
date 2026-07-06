@@ -866,6 +866,11 @@ async fn test_state_from_config_with_pool_no_available_wait(
     })
 }
 
+async fn enable_encrypted_session_owner_routing_for_test(state: &Arc<AppState>) {
+    let mut settings = state.proxy_model_settings.write().await;
+    settings.encrypted_session_owner_routing_enabled = true;
+}
+
 fn clone_state_with_upstream_accounts(
     state: &Arc<AppState>,
     upstream_accounts: Arc<UpstreamAccountsRuntime>,

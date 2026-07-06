@@ -3866,6 +3866,7 @@ async fn prompt_cache_conversations_live_response_includes_encrypted_owner_metad
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     let group_name = "prompt-cache-live-owner-group";
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -3953,6 +3954,7 @@ async fn prompt_cache_conversations_snapshot_excludes_future_encrypted_owner_loc
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     let group_name = "prompt-cache-snapshot-owner-group";
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,

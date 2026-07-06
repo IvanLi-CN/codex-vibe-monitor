@@ -293,6 +293,7 @@ struct AppConfig {
     openai_proxy_max_request_body_bytes: usize,
     openai_proxy_websocket_enabled: bool,
     openai_proxy_upstream_websocket_default_enabled: bool,
+    openai_proxy_encrypted_session_owner_routing_enabled: bool,
     proxy_request_concurrency_limit: usize,
     proxy_request_concurrency_wait_timeout: Duration,
     proxy_enforce_stream_include_usage: bool,
@@ -439,6 +440,10 @@ impl AppConfig {
         let openai_proxy_upstream_websocket_default_enabled = parse_bool_env_var(
             ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
             DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
+        )?;
+        let openai_proxy_encrypted_session_owner_routing_enabled = parse_bool_env_var(
+            ENV_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
+            DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
         )?;
         let proxy_request_concurrency_limit =
             match env::var(ENV_PROXY_REQUEST_CONCURRENCY_LIMIT) {
@@ -794,6 +799,7 @@ impl AppConfig {
             openai_proxy_max_request_body_bytes,
             openai_proxy_websocket_enabled,
             openai_proxy_upstream_websocket_default_enabled,
+            openai_proxy_encrypted_session_owner_routing_enabled,
             proxy_request_concurrency_limit,
             proxy_request_concurrency_wait_timeout,
             proxy_enforce_stream_include_usage,

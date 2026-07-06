@@ -32,7 +32,7 @@ function createSettingsPayload(): SettingsPayload {
       upstreamWebsocketDefaultEnabled: false,
       requestBodyLoggingEnabled: true,
       responseBodyLoggingEnabled: true,
-      encryptedSessionOwnerRoutingEnabled: true,
+      encryptedSessionOwnerRoutingEnabled: false,
       defaultHijackEnabled: false,
       models: ['gpt-5.5'],
       enabledModels: ['gpt-5.5'],
@@ -183,6 +183,8 @@ describe('Settings forward proxy table', () => {
 
     renderSettingsPage()
 
+    expect(host?.textContent).toContain('OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED')
+
     const toggle = host?.querySelector('button[aria-label="加密对话路由绑定"]')
     if (!(toggle instanceof HTMLButtonElement)) {
       throw new Error('Missing encrypted owner routing toggle')
@@ -193,7 +195,7 @@ describe('Settings forward proxy table', () => {
 
     expect(saveProxy).toHaveBeenCalledTimes(1)
     expect(saveProxy.mock.calls[0]?.[0]).toMatchObject({
-      encryptedSessionOwnerRoutingEnabled: false,
+      encryptedSessionOwnerRoutingEnabled: true,
     })
   })
 })

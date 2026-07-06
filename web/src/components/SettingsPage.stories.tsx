@@ -53,7 +53,7 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   upstreamWebsocketDefaultEnabled: true,
   requestBodyLoggingEnabled: true,
   responseBodyLoggingEnabled: true,
-  encryptedSessionOwnerRoutingEnabled: true,
+  encryptedSessionOwnerRoutingEnabled: false,
   defaultHijackEnabled: false,
   models: [
     'gpt-5.5',
@@ -450,7 +450,7 @@ function StorybookSettingsMock({
           upstreamWebsocketDefaultEnabled: body.upstreamWebsocketDefaultEnabled === true,
           requestBodyLoggingEnabled: body.requestBodyLoggingEnabled !== false,
           responseBodyLoggingEnabled: body.responseBodyLoggingEnabled !== false,
-          encryptedSessionOwnerRoutingEnabled: body.encryptedSessionOwnerRoutingEnabled !== false,
+          encryptedSessionOwnerRoutingEnabled: body.encryptedSessionOwnerRoutingEnabled === true,
           enabledModels: settingsRef.current.proxy.models.filter((model) => enabledSet.has(model)),
         }
         settingsRef.current.proxy = nextProxy
@@ -735,6 +735,7 @@ export const EncryptedOwnerRoutingDisabled: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByText('加密对话路由')).toBeVisible()
+    await expect(canvas.getByText('OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED')).toBeVisible()
     const toggle = canvas.getByRole('switch', { name: '加密对话路由绑定' })
     await expect(toggle).toHaveAttribute('aria-checked', 'false')
   },

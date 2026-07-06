@@ -630,6 +630,7 @@ async fn proxy_openai_v1_responses_waits_for_body_before_encrypted_owner_guard()
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account_with_options(
         &state,
@@ -732,6 +733,7 @@ async fn proxy_openai_v1_responses_live_first_success_persists_encrypted_owner()
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -873,6 +875,7 @@ async fn proxy_openai_v1_responses_live_first_response_encryption_persists_encry
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -967,6 +970,7 @@ async fn proxy_openai_v1_responses_prebuffered_success_persists_encrypted_owner(
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -1243,6 +1247,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -1324,7 +1329,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
 
 #[tokio::test]
 async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_returns_owner_unavailable()
- {
+{
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -1332,6 +1337,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -1427,7 +1433,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
 
 #[tokio::test]
 async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_newer_than_owner_still_returns_owner_unavailable()
- {
+{
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -1435,6 +1441,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_n
         Duration::from_millis(10),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let owner_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -1568,6 +1575,7 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
         },
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         settings.websocket_enabled = true;
@@ -1686,6 +1694,7 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
         },
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         settings.websocket_enabled = true;
@@ -1798,6 +1807,7 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     let owner_account_id =
         insert_test_pool_api_key_account(&state, "Owner", "upstream-owner").await;
     let secondary_account_id =
@@ -2058,6 +2068,7 @@ async fn websocket_payload_only_prompt_cache_key_routes_first_upgrade_to_owner_a
         },
     )
     .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         settings.websocket_enabled = true;
