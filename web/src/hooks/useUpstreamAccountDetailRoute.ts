@@ -4,12 +4,14 @@ import { useSearchParams } from "react-router-dom";
 const UPSTREAM_ACCOUNT_ID_PARAM = "upstreamAccountId";
 const UPSTREAM_ACCOUNT_TAB_PARAM = "upstreamAccountTab";
 
-export type UpstreamAccountDetailRouteTab = "overview" | "routing";
+export type UpstreamAccountDetailRouteTab =
+  "overview" | "routing" | "healthEvents";
 
 function parseUpstreamAccountTab(
   raw: string | null,
 ): UpstreamAccountDetailRouteTab {
   if (raw === "routing") return "routing";
+  if (raw === "healthEvents") return "healthEvents";
   return "overview";
 }
 
@@ -42,8 +44,9 @@ export function useUpstreamAccountDetailRoute() {
     ) => {
       const next = new URLSearchParams(searchParams);
       next.set(UPSTREAM_ACCOUNT_ID_PARAM, String(Math.trunc(accountId)));
-      if ((options?.tab ?? "overview") === "routing") {
-        next.set(UPSTREAM_ACCOUNT_TAB_PARAM, "routing");
+      const tab = options?.tab ?? "overview";
+      if (tab !== "overview") {
+        next.set(UPSTREAM_ACCOUNT_TAB_PARAM, tab);
       } else {
         next.delete(UPSTREAM_ACCOUNT_TAB_PARAM);
       }

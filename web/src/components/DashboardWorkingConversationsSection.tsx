@@ -18,9 +18,12 @@ import type {
   DashboardWorkingConversationTone,
 } from "../lib/dashboardWorkingConversations";
 import type {
+  TagPriorityTier,
   UpstreamAccountActivityAccount,
   UpstreamAccountActivityResponse,
+  UpdateGroupAccountRoutingRulePayload,
 } from "../lib/api";
+import { updateUpstreamAccount } from "../lib/api";
 import {
   DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
   buildDashboardWorkingConversationInvocationModel,
@@ -38,7 +41,7 @@ import {
   shouldShowUpstreamPlanBadge,
   upstreamPlanBadgeRecipe,
 } from "../lib/upstreamAccountBadges";
-import { resolveActiveRoutingPolicyBadges } from "../lib/tagRoutingRule";
+import { emitUpstreamAccountsChanged } from "../lib/upstreamAccountsEvents";
 import { Alert } from "./ui/alert";
 import { AnimatedDigits } from "./AnimatedDigits";
 import { Badge } from "./ui/badge";
@@ -71,7 +74,7 @@ import {
 } from "./dashboardActivityRange";
 
 export interface DashboardOpenUpstreamAccountOptions {
-  tab?: "overview" | "routing";
+  tab?: "overview" | "routing" | "healthEvents";
 }
 
 interface DashboardWorkingConversationsSectionProps {
@@ -101,6 +104,7 @@ interface DashboardWorkingConversationsSectionProps {
   upstreamAccountActivityError?: string | null;
   upstreamAccountRecentPreviewLimit?: number;
   onUpstreamAccountActivityEnabledChange?: (enabled: boolean) => void;
+  onUpstreamAccountPolicyChanged?: () => void;
 }
 
 export interface DashboardWorkingConversationSelection {
@@ -464,10 +468,7 @@ function statusInlineToneClassName(variant: StatusMeta["badgeVariant"]) {
   return "text-base-content/62";
 }
 
-function buildStatusAssistiveLabel(
-  label: string,
-  detail?: string | null,
-) {
+function buildStatusAssistiveLabel(label: string, detail?: string | null) {
   const resolvedDetail = detail?.trim();
   if (!resolvedDetail) return label;
   return `${label} · ${resolvedDetail}`;
@@ -728,7 +729,7 @@ function AccountStatusBadge({
           surfaceClassName,
         )}
         title={description}
-        aria-label={`${label} · 打开账号路由详情`}
+        aria-label={`${label} · 打开账号健康事件`}
         onClick={(event) => {
           event.stopPropagation();
           onClick();
@@ -768,74 +769,336 @@ function AccountStatusBadge({
   return <div data-testid="dashboard-upstream-account-status">{badge}</div>;
 }
 
-function AccountPolicyBadges({
+type AccountQuickPolicyDraft = {
+  allowNewConversations: boolean;
+  priorityTier: TagPriorityTier;
+  allowCutOut: boolean;
+  allowCutIn: boolean;
+};
+
+type AccountAttentionBadge = {
+  key: string;
+  label: string;
+  tone: "warning" | "error" | "info";
+  title?: string;
+};
+
+function accountPolicyDraftFromRule(
+  account: UpstreamAccountActivityAccount,
+): AccountQuickPolicyDraft {
+  const rule = account.effectiveRoutingRule ?? {
+    blockNewConversations: false,
+    allowCutOut: true,
+    allowCutIn: true,
+    priorityTier: "normal" as TagPriorityTier,
+  };
+  return {
+    allowNewConversations: rule.blockNewConversations !== true,
+    priorityTier: rule.priorityTier ?? "normal",
+    allowCutOut: rule.allowCutOut !== false,
+    allowCutIn: rule.allowCutIn !== false,
+  };
+}
+
+function cycleAccountPriorityPolicy(
+  draft: AccountQuickPolicyDraft,
+): AccountQuickPolicyDraft {
+  if (!draft.allowNewConversations) {
+    return { ...draft, allowNewConversations: true, priorityTier: "normal" };
+  }
+  if (draft.priorityTier === "normal") {
+    return { ...draft, allowNewConversations: true, priorityTier: "fallback" };
+  }
+  if (draft.priorityTier === "fallback") {
+    return { ...draft, allowNewConversations: true, priorityTier: "primary" };
+  }
+  return { ...draft, allowNewConversations: false, priorityTier: "normal" };
+}
+
+function priorityPolicyLabel(
+  draft: AccountQuickPolicyDraft,
+  locale: "zh" | "en",
+) {
+  if (!draft.allowNewConversations) return locale === "zh" ? "禁新" : "No new";
+  if (draft.priorityTier === "primary")
+    return locale === "zh" ? "主力" : "Primary";
+  if (draft.priorityTier === "fallback")
+    return locale === "zh" ? "兜底" : "Fallback";
+  return locale === "zh" ? "普通" : "Normal";
+}
+
+function normalizeStatusToken(value: string | null | undefined) {
+  return value?.trim().toLowerCase().replace(/-/g, "_") ?? "";
+}
+
+function resolveAccountAttentionBadges(
+  account: UpstreamAccountActivityAccount,
+  locale: "zh" | "en",
+): AccountAttentionBadge[] {
+  const labels = {
+    disabled: locale === "zh" ? "禁用" : "Disabled",
+    syncing: locale === "zh" ? "同步中" : "Syncing",
+    upstreamRejected: locale === "zh" ? "上游拒绝" : "Rejected",
+    upstreamUnavailable: locale === "zh" ? "上游不可达" : "Unavailable",
+    needsReauth: locale === "zh" ? "需重登" : "Reauth",
+    rateLimited: locale === "zh" ? "限流" : "Limited",
+    degraded: locale === "zh" ? "降级" : "Degraded",
+    otherError: locale === "zh" ? "其它异常" : "Other error",
+    unavailable: locale === "zh" ? "不可用" : "Unavailable",
+  };
+  const detail =
+    account.lastActionReasonMessage || account.lastError || undefined;
+  const badges: AccountAttentionBadge[] = [];
+  const seen = new Set<string>();
+  const add = (badge: AccountAttentionBadge) => {
+    if (seen.has(badge.key)) return;
+    seen.add(badge.key);
+    badges.push(badge);
+  };
+  const enableStatus = normalizeStatusToken(account.enableStatus);
+  const displayStatus = normalizeStatusToken(account.displayStatus);
+  const healthStatus = normalizeStatusToken(account.healthStatus);
+  const syncState = normalizeStatusToken(account.syncState);
+  const workStatus = normalizeStatusToken(account.workStatus);
+
+  if (
+    account.enabled === false ||
+    enableStatus === "disabled" ||
+    displayStatus === "disabled"
+  ) {
+    add({
+      key: "disabled",
+      label: labels.disabled,
+      tone: "warning",
+      title: detail,
+    });
+  }
+  if (syncState === "syncing" || displayStatus === "syncing") {
+    add({ key: "syncing", label: labels.syncing, tone: "info", title: detail });
+  }
+
+  const healthSource = healthStatus || displayStatus;
+  if (healthSource === "upstream_rejected") {
+    add({
+      key: "upstream_rejected",
+      label: labels.upstreamRejected,
+      tone: "error",
+      title: detail,
+    });
+  } else if (healthSource === "upstream_unavailable") {
+    add({
+      key: "upstream_unavailable",
+      label: labels.upstreamUnavailable,
+      tone: "error",
+      title: detail,
+    });
+  } else if (healthSource === "needs_reauth") {
+    add({
+      key: "needs_reauth",
+      label: labels.needsReauth,
+      tone: "error",
+      title: detail,
+    });
+  } else if (healthSource === "error_other" || healthSource === "error") {
+    add({
+      key: "error_other",
+      label: labels.otherError,
+      tone: "error",
+      title: detail,
+    });
+  }
+
+  if (workStatus === "rate_limited" || displayStatus === "rate_limited") {
+    add({
+      key: "rate_limited",
+      label: labels.rateLimited,
+      tone: "warning",
+      title: detail,
+    });
+  }
+  if (workStatus === "degraded" || displayStatus === "degraded") {
+    add({
+      key: "degraded",
+      label: labels.degraded,
+      tone: "warning",
+      title: detail,
+    });
+  }
+  if (workStatus === "unavailable" && badges.length === 0) {
+    add({
+      key: "unavailable",
+      label: labels.unavailable,
+      tone: "error",
+      title: detail,
+    });
+  }
+  return badges;
+}
+
+function AccountAttentionBadges({
   account,
-  clickable = false,
-  onBadgeClick,
+  locale,
+  clickable,
+  onClick,
 }: {
   account: UpstreamAccountActivityAccount;
-  clickable?: boolean;
-  onBadgeClick?: () => void;
+  locale: "zh" | "en";
+  clickable: boolean;
+  onClick?: () => void;
 }) {
-  const badges = resolveActiveRoutingPolicyBadges(
-    account.effectiveRoutingRule,
-    {
-      policyForbidNewConversation: "禁新对话",
-    },
-  );
+  const badges = resolveAccountAttentionBadges(account, locale);
   if (badges.length === 0) return null;
+  const title = badges.map((badge) => badge.label).join(" · ");
+  return (
+    <button
+      type="button"
+      data-testid="dashboard-upstream-account-attention-badges"
+      disabled={!clickable}
+      className={cn(
+        "inline-flex min-h-6 max-w-full flex-wrap items-center gap-1.5 rounded-full border border-base-300/70 bg-base-100/86 px-1.5 py-0.5 text-[11px] font-semibold transition-opacity duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+        clickable ? "cursor-pointer hover:opacity-80" : "cursor-default",
+      )}
+      title={title}
+      aria-label={`${title} · ${locale === "zh" ? "打开账号健康事件" : "Open health events"}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick?.();
+      }}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+      }}
+    >
+      {badges.map((badge) => (
+        <span
+          key={badge.key}
+          data-testid="dashboard-upstream-account-attention-badge"
+          title={badge.title ?? badge.label}
+          className={cn(
+            "inline-flex h-5 shrink-0 items-center rounded-full border px-2 leading-none",
+            badge.tone === "error"
+              ? "border-error/38 bg-error/10 text-error"
+              : badge.tone === "warning"
+                ? "border-warning/45 bg-warning/12 text-base-content"
+                : "border-info/35 bg-info/12 text-info",
+          )}
+        >
+          {badge.label}
+        </span>
+      ))}
+    </button>
+  );
+}
 
+function AccountQuickPolicyChips({
+  draft,
+  locale,
+  disabled,
+  isSaving,
+  onCyclePriority,
+  onToggleCutOut,
+  onToggleCutIn,
+}: {
+  draft: AccountQuickPolicyDraft;
+  locale: "zh" | "en";
+  disabled: boolean;
+  isSaving: boolean;
+  onCyclePriority: () => void;
+  onToggleCutOut: () => void;
+  onToggleCutIn: () => void;
+}) {
+  const priorityActive =
+    !draft.allowNewConversations || draft.priorityTier !== "normal";
+  const cutOutActive = !draft.allowCutOut;
+  const cutInActive = !draft.allowCutIn;
+  const chipBase =
+    "inline-flex h-6 shrink-0 items-center justify-center rounded-full border px-2.5 text-[11px] font-semibold leading-none transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-55";
+  const activeClassName =
+    "border-warning/55 bg-warning/14 text-base-content shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]";
+  const inactiveClassName =
+    "border-base-300/85 bg-base-100/76 text-base-content/62";
   return (
     <div
       data-testid="dashboard-upstream-account-policy-badges"
+      data-saving={isSaving ? "true" : "false"}
       className="flex min-w-0 flex-wrap items-center gap-1.5 overflow-hidden"
     >
-      {badges.map((badge) => {
-        if (clickable && onBadgeClick) {
-          return (
-            <button
-              key={`policy:${badge.key}`}
-              type="button"
-              data-testid="dashboard-upstream-account-policy-badge"
-              data-policy-key={badge.key}
-              className={cn(
-                "inline-flex cursor-pointer items-center whitespace-nowrap rounded-full border px-2 py-px text-[11px] font-medium leading-4 transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                badge.variant === "secondary"
-                  ? "border-base-300 bg-base-200/70 text-base-content/85"
-                  : badge.variant === "warning"
-                    ? "border-warning/45 bg-warning/12 text-base-content"
-                    : badge.variant === "info"
-                      ? "border-info/35 bg-info/15 text-info"
-                      : badge.variant === "accent"
-                        ? "border-accent/35 bg-accent/15 text-accent-content"
-                        : "border-primary/40 bg-primary/10 text-primary",
-              )}
-              title={badge.title ?? badge.label}
-              aria-label={`${badge.label} · 打开账号路由详情`}
-              onClick={(event) => {
-                event.stopPropagation();
-                onBadgeClick();
-              }}
-              onKeyDown={(event) => {
-                event.stopPropagation();
-              }}
-            >
-              {badge.label}
-            </button>
-          );
+      <button
+        type="button"
+        data-testid="dashboard-upstream-account-policy-badge"
+        data-policy-key="priority-new-conversations"
+        disabled={disabled}
+        className={cn(
+          chipBase,
+          priorityActive ? activeClassName : inactiveClassName,
+        )}
+        title={
+          locale === "zh"
+            ? "点击切换 普通 / 兜底 / 主力 / 禁新"
+            : "Cycle normal / fallback / primary / no new"
         }
-
-        return (
-          <Badge
-            key={`policy:${badge.key}`}
-            variant={badge.variant}
-            className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4 transition-opacity duration-200"
-            title={badge.title ?? badge.label}
-          >
-            {badge.label}
-          </Badge>
-        );
-      })}
+        aria-label={
+          locale === "zh"
+            ? "切换新对话与优先级"
+            : "Cycle new conversation priority"
+        }
+        onClick={(event) => {
+          event.stopPropagation();
+          onCyclePriority();
+        }}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+        }}
+      >
+        {priorityPolicyLabel(draft, locale)}
+      </button>
+      <button
+        type="button"
+        data-testid="dashboard-upstream-account-policy-badge"
+        data-policy-key="allow-cut-out"
+        disabled={disabled}
+        className={cn(
+          chipBase,
+          cutOutActive ? activeClassName : inactiveClassName,
+        )}
+        title={
+          locale === "zh"
+            ? "点击切换账号级禁出"
+            : "Toggle account-level cut out"
+        }
+        aria-label={locale === "zh" ? "切换禁出" : "Toggle cut out"}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleCutOut();
+        }}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+        }}
+      >
+        {locale === "zh" ? "禁出" : "No out"}
+      </button>
+      <button
+        type="button"
+        data-testid="dashboard-upstream-account-policy-badge"
+        data-policy-key="allow-cut-in"
+        disabled={disabled}
+        className={cn(
+          chipBase,
+          cutInActive ? activeClassName : inactiveClassName,
+        )}
+        title={
+          locale === "zh" ? "点击切换账号级禁入" : "Toggle account-level cut in"
+        }
+        aria-label={locale === "zh" ? "切换禁入" : "Toggle cut in"}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleCutIn();
+        }}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+        }}
+      >
+        {locale === "zh" ? "禁入" : "No in"}
+      </button>
     </div>
   );
 }
@@ -1371,14 +1634,12 @@ function AccountRecentInvocationRow({
               localeTag,
               nowMs,
             )
-          : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
+          : formatCompactLatencySecondsValue(
+              invocation.record.tTotalMs,
+              localeTag,
+            ),
     };
-  }, [
-    invocation.displayStatus,
-    invocation.record,
-    localeTag,
-    nowMs,
-  ]);
+  }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${invocation.record.invokeId}`;
   const conversationActionLabel = displayPromptCacheKey
     ? `${t("dashboard.workingConversations.openConversation")} · ${displayConversationSequenceId} · ${displayPromptCacheKey}`
@@ -1879,14 +2140,12 @@ function InvocationSlot({
               localeTag,
               nowMs,
             )
-          : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
+          : formatCompactLatencySecondsValue(
+              invocation.record.tTotalMs,
+              localeTag,
+            ),
     };
-  }, [
-    invocation.displayStatus,
-    invocation.record,
-    localeTag,
-    nowMs,
-  ]);
+  }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
 
   const handleOpenInvocation = useCallback(() => {
@@ -2216,6 +2475,7 @@ function DashboardUpstreamAccountActivityCard({
   onOpenUpstreamAccount,
   onOpenConversation,
   onOpenInvocation,
+  onPolicyChanged,
 }: {
   account: UpstreamAccountActivityAccount;
   locale: "zh" | "en";
@@ -2233,8 +2493,25 @@ function DashboardUpstreamAccountActivityCard({
   onOpenInvocation?: (
     selection: DashboardWorkingConversationInvocationSelection,
   ) => void;
+  onPolicyChanged?: () => void;
 }) {
   const { t } = useTranslation();
+  const serverPolicyDraft = useMemo(
+    () => accountPolicyDraftFromRule(account),
+    [account],
+  );
+  const [policyDraft, setPolicyDraft] =
+    useState<AccountQuickPolicyDraft>(serverPolicyDraft);
+  const [policySaveError, setPolicySaveError] = useState<string | null>(null);
+  const [isSavingPolicy, setIsSavingPolicy] = useState(false);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPatchRef = useRef<UpdateGroupAccountRoutingRulePayload | null>(
+    null,
+  );
+  const pendingDraftRef = useRef<AccountQuickPolicyDraft | null>(null);
+  const lastCommittedPolicyRef =
+    useRef<AccountQuickPolicyDraft>(serverPolicyDraft);
+  const saveSeqRef = useRef(0);
   const recentInvocations = useMemo(
     () =>
       account.recentInvocations.map(
@@ -2253,6 +2530,100 @@ function DashboardUpstreamAccountActivityCard({
       tab: "routing",
     });
   }, [account.displayName, account.upstreamAccountId, onOpenUpstreamAccount]);
+  const handleOpenHealthEventsTab = useCallback(() => {
+    if (account.upstreamAccountId == null) return;
+    onOpenUpstreamAccount?.(account.upstreamAccountId, account.displayName, {
+      tab: "healthEvents",
+    });
+  }, [account.displayName, account.upstreamAccountId, onOpenUpstreamAccount]);
+  useEffect(() => {
+    lastCommittedPolicyRef.current = serverPolicyDraft;
+    if (!debounceTimerRef.current && !isSavingPolicy) {
+      setPolicyDraft(serverPolicyDraft);
+    }
+  }, [isSavingPolicy, serverPolicyDraft]);
+  useEffect(
+    () => () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    },
+    [],
+  );
+  const flushPolicySave = useCallback(async () => {
+    const accountId = account.upstreamAccountId;
+    const patch = pendingPatchRef.current;
+    const nextDraft = pendingDraftRef.current;
+    pendingPatchRef.current = null;
+    pendingDraftRef.current = null;
+    debounceTimerRef.current = null;
+    if (accountId == null || !patch || !nextDraft) return;
+    const seq = saveSeqRef.current + 1;
+    saveSeqRef.current = seq;
+    const rollbackDraft = lastCommittedPolicyRef.current;
+    setIsSavingPolicy(true);
+    try {
+      await updateUpstreamAccount(accountId, { routingRule: patch });
+      if (saveSeqRef.current !== seq) return;
+      lastCommittedPolicyRef.current = nextDraft;
+      setPolicySaveError(null);
+      emitUpstreamAccountsChanged();
+      onPolicyChanged?.();
+    } catch (err) {
+      if (saveSeqRef.current !== seq) return;
+      if (!pendingPatchRef.current) {
+        setPolicyDraft(rollbackDraft);
+      }
+      setPolicySaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (saveSeqRef.current === seq) {
+        setIsSavingPolicy(false);
+      }
+    }
+  }, [account.upstreamAccountId, onPolicyChanged]);
+  const schedulePolicySave = useCallback(
+    (
+      nextDraft: AccountQuickPolicyDraft,
+      patch: UpdateGroupAccountRoutingRulePayload,
+    ) => {
+      if (account.upstreamAccountId == null) return;
+      setPolicyDraft(nextDraft);
+      setPolicySaveError(null);
+      pendingPatchRef.current = {
+        ...(pendingPatchRef.current ?? {}),
+        ...patch,
+      };
+      pendingDraftRef.current = nextDraft;
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+      debounceTimerRef.current = setTimeout(() => {
+        void flushPolicySave();
+      }, 1000);
+    },
+    [account.upstreamAccountId, flushPolicySave],
+  );
+  const handleCyclePriorityPolicy = useCallback(() => {
+    const nextDraft = cycleAccountPriorityPolicy(policyDraft);
+    schedulePolicySave(nextDraft, {
+      allowNewConversations: nextDraft.allowNewConversations,
+      priorityTier: nextDraft.priorityTier,
+    });
+  }, [policyDraft, schedulePolicySave]);
+  const handleToggleCutOut = useCallback(() => {
+    const nextDraft = {
+      ...policyDraft,
+      allowCutOut: !policyDraft.allowCutOut,
+    };
+    schedulePolicySave(nextDraft, { allowCutOut: nextDraft.allowCutOut });
+  }, [policyDraft, schedulePolicySave]);
+  const handleToggleCutIn = useCallback(() => {
+    const nextDraft = {
+      ...policyDraft,
+      allowCutIn: !policyDraft.allowCutIn,
+    };
+    schedulePolicySave(nextDraft, { allowCutIn: nextDraft.allowCutIn });
+  }, [policyDraft, schedulePolicySave]);
   const requestSummarySegments = useMemo(
     () => [
       {
@@ -2675,12 +3046,18 @@ function DashboardUpstreamAccountActivityCard({
             >
               <span className="truncate">{account.displayName}</span>
             </button>
+            <AccountAttentionBadges
+              account={account}
+              locale={locale}
+              clickable={account.upstreamAccountId != null}
+              onClick={handleOpenHealthEventsTab}
+            />
             <AccountStatusBadge
               label={accountStatus.label}
               variant={accountStatus.badgeVariant}
               description={accountStatus.summary}
               clickable={account.upstreamAccountId != null}
-              onClick={handleOpenRoutingTab}
+              onClick={handleOpenHealthEventsTab}
             />
             {shouldShowUpstreamPlanBadge(account.planType) ? (
               <Badge
@@ -2697,12 +3074,26 @@ function DashboardUpstreamAccountActivityCard({
                 {compactUpstreamPlanLabel(account.planType)}
               </Badge>
             ) : null}
-            <AccountPolicyBadges
-              account={account}
-              clickable={account.upstreamAccountId != null}
-              onBadgeClick={handleOpenRoutingTab}
+            <AccountQuickPolicyChips
+              draft={policyDraft}
+              locale={locale}
+              disabled={account.upstreamAccountId == null}
+              isSaving={isSavingPolicy || debounceTimerRef.current != null}
+              onCyclePriority={handleCyclePriorityPolicy}
+              onToggleCutOut={handleToggleCutOut}
+              onToggleCutIn={handleToggleCutIn}
             />
           </div>
+          {policySaveError ? (
+            <div
+              role="alert"
+              data-testid="dashboard-upstream-account-policy-error"
+              className="mt-2 inline-flex max-w-full rounded-lg border border-error/30 bg-error/10 px-2.5 py-1 text-xs font-medium text-error"
+            >
+              {locale === "zh" ? "策略保存失败：" : "Policy save failed: "}
+              <span className="truncate">{policySaveError}</span>
+            </div>
+          ) : null}
         </div>
         <div className="flex min-w-0 flex-1 flex-wrap items-start justify-end gap-x-5 gap-y-1.5 text-right">
           <AccountInlineMetric
@@ -2740,6 +3131,36 @@ function DashboardUpstreamAccountActivityCard({
               ? "—"
               : `#${account.upstreamAccountId}`}
           </div>
+          <button
+            type="button"
+            data-testid="dashboard-upstream-account-routing-settings"
+            disabled={account.upstreamAccountId == null}
+            className={cn(
+              "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-base-300/70 bg-base-100/82 text-base-content/72 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+              account.upstreamAccountId == null
+                ? "cursor-not-allowed opacity-45"
+                : "hover:border-primary/45 hover:text-primary",
+            )}
+            title={
+              locale === "zh" ? "打开账号路由设置" : "Open routing settings"
+            }
+            aria-label={
+              locale === "zh" ? "打开账号路由设置" : "Open routing settings"
+            }
+            onClick={(event) => {
+              event.stopPropagation();
+              handleOpenRoutingTab();
+            }}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            <AppIcon
+              name="cog-outline"
+              className="h-[1.125rem] w-[1.125rem]"
+              aria-hidden="true"
+            />
+          </button>
         </div>
       </div>
 
@@ -2927,6 +3348,7 @@ export function DashboardWorkingConversationsSection({
   upstreamAccountActivityError: externalUpstreamAccountActivityError,
   upstreamAccountRecentPreviewLimit: externalUpstreamAccountRecentPreviewLimit,
   onUpstreamAccountActivityEnabledChange,
+  onUpstreamAccountPolicyChanged,
 }: DashboardWorkingConversationsSectionProps) {
   const { t, locale } = useTranslation();
   const [preferredView, setPreferredView] = useState<DashboardWorkspaceView>(
@@ -3010,6 +3432,17 @@ export function DashboardWorkingConversationsSection({
   const upstreamAccountRecentPreviewLimit = hasExternalUpstreamAccountActivity
     ? (externalUpstreamAccountRecentPreviewLimit ?? recentPreviewLimit)
     : hookUpstreamAccountActivity.recentInvocationLimit;
+  const refreshUpstreamAccountActivity = useCallback(() => {
+    if (hasExternalUpstreamAccountActivity) {
+      onUpstreamAccountPolicyChanged?.();
+      return;
+    }
+    void hookUpstreamAccountActivity.reload({ silent: true });
+  }, [
+    hasExternalUpstreamAccountActivity,
+    hookUpstreamAccountActivity,
+    onUpstreamAccountPolicyChanged,
+  ]);
   useEffect(() => {
     onUpstreamAccountActivityEnabledChange?.(upstreamAccountActivityEnabled);
   }, [onUpstreamAccountActivityEnabledChange, upstreamAccountActivityEnabled]);
@@ -3392,6 +3825,7 @@ export function DashboardWorkingConversationsSection({
                     onOpenUpstreamAccount={onOpenUpstreamAccount}
                     onOpenConversation={onOpenConversation}
                     onOpenInvocation={onOpenInvocation}
+                    onPolicyChanged={refreshUpstreamAccountActivity}
                   />
                 ))}
               </div>

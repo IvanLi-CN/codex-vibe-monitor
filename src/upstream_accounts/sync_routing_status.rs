@@ -555,7 +555,7 @@ fn effective_account_status(row: &UpstreamAccountRow) -> String {
     }
 }
 
-fn derive_upstream_account_enable_status(enabled: bool) -> &'static str {
+pub(crate) fn derive_upstream_account_enable_status(enabled: bool) -> &'static str {
     if enabled {
         UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED
     } else {
@@ -563,7 +563,7 @@ fn derive_upstream_account_enable_status(enabled: bool) -> &'static str {
     }
 }
 
-fn derive_upstream_account_sync_state(enabled: bool, raw_status: &str) -> &'static str {
+pub(crate) fn derive_upstream_account_sync_state(enabled: bool, raw_status: &str) -> &'static str {
     if !enabled {
         return UPSTREAM_ACCOUNT_SYNC_STATE_IDLE;
     }
@@ -577,7 +577,7 @@ fn derive_upstream_account_sync_state(enabled: bool, raw_status: &str) -> &'stat
     }
 }
 
-fn derive_upstream_account_health_status(
+pub(crate) fn derive_upstream_account_health_status(
     account_kind: &str,
     enabled: bool,
     raw_status: &str,
@@ -668,7 +668,7 @@ fn is_transient_route_failure_error(
         || route_failure_kind_is_rate_limited(failure_kind)
 }
 
-fn derive_upstream_account_work_status(
+pub(crate) fn derive_upstream_account_work_status(
     enabled: bool,
     raw_status: &str,
     health_status: &str,
@@ -722,7 +722,7 @@ fn derive_upstream_account_work_status(
     UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
 }
 
-fn classify_upstream_account_display_status(
+pub(crate) fn classify_upstream_account_display_status(
     account_kind: &str,
     enabled: bool,
     raw_status: &str,

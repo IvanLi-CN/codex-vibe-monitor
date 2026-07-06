@@ -35,6 +35,13 @@ function RouteProbe() {
       </button>
       <button
         type="button"
+        data-testid="open-health-events"
+        onClick={() => openUpstreamAccount(42, { tab: "healthEvents" })}
+      >
+        open health events
+      </button>
+      <button
+        type="button"
         data-testid="close-account"
         onClick={() => closeUpstreamAccount()}
       >
@@ -91,8 +98,19 @@ describe("useUpstreamAccountDetailRoute", () => {
     ).toBe("routing");
   });
 
-  it("falls back to overview when the query tab is invalid", () => {
+  it("parses the health events tab from the URL", () => {
     render("/dashboard?upstreamAccountId=42&upstreamAccountTab=healthEvents");
+
+    expect(
+      host?.querySelector('[data-testid="route-account-id"]')?.textContent,
+    ).toBe("42");
+    expect(
+      host?.querySelector('[data-testid="route-account-tab"]')?.textContent,
+    ).toBe("healthEvents");
+  });
+
+  it("falls back to overview when the query tab is invalid", () => {
+    render("/dashboard?upstreamAccountId=42&upstreamAccountTab=records");
 
     expect(
       host?.querySelector('[data-testid="route-account-id"]')?.textContent,
@@ -122,6 +140,24 @@ describe("useUpstreamAccountDetailRoute", () => {
     expect(
       host?.querySelector('[data-testid="route-account-tab"]')?.textContent,
     ).toBe("routing");
+
+    const openHealthEventsButton = host?.querySelector(
+      '[data-testid="open-health-events"]',
+    );
+    if (!(openHealthEventsButton instanceof HTMLButtonElement)) {
+      throw new Error("missing open health events button");
+    }
+
+    act(() => {
+      openHealthEventsButton.click();
+    });
+
+    expect(
+      host?.querySelector('[data-testid="route-search"]')?.textContent,
+    ).toBe("?upstreamAccountId=42&upstreamAccountTab=healthEvents");
+    expect(
+      host?.querySelector('[data-testid="route-account-tab"]')?.textContent,
+    ).toBe("healthEvents");
 
     const openOverviewButton = host?.querySelector(
       '[data-testid="open-overview"]',
