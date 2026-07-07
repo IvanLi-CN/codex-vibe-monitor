@@ -995,6 +995,87 @@ pub(crate) async fn load_account_routing_candidate(
     .map_err(Into::into)
 }
 
+pub(crate) async fn load_transport_decode_sticky_escape_account_ids(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<HashSet<i64>> {
+    if account_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    #[derive(Debug, FromRow)]
+    struct EscapeRow {
+        upstream_account_id: i64,
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        WITH ranked AS (
+            SELECT
+                upstream_account_id,
+                failure_kind,
+                ROW_NUMBER() OVER (
+                    PARTITION BY upstream_account_id
+                    ORDER BY occurred_at DESC, id DESC
+                ) AS attempt_rank
+            FROM pool_upstream_request_attempts
+            WHERE upstream_account_id IN (
+        "#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(
+        r#"
+            )
+              AND route_mode =
+        "#,
+    );
+    query.push_bind(INVOCATION_ROUTE_MODE_POOL).push(
+        r#"
+              AND endpoint = '/v1/responses'
+              AND phase IN (
+        "#,
+    );
+    query
+        .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED)
+        .push(", ")
+        .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+        .push(
+            r#"
+              )
+        )
+        SELECT upstream_account_id
+        FROM ranked
+        WHERE attempt_rank <= 2
+        GROUP BY upstream_account_id
+        HAVING COUNT(*) = 2
+           AND SUM(
+                CASE
+                    WHEN failure_kind =
+        "#,
+        );
+    query
+        .push_bind(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+        .push(
+            r#"
+                    THEN 1
+                    ELSE 0
+                END
+            ) = 2
+        "#,
+        );
+
+    let rows = query.build_query_as::<EscapeRow>().fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| row.upstream_account_id)
+        .collect())
+}
+
 pub(crate) fn compare_routing_candidates(
     lhs: &AccountRoutingCandidateRow,
     rhs: &AccountRoutingCandidateRow,
