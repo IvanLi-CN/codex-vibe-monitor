@@ -14,6 +14,26 @@ on:
         description: Commit SHA on main to release or backfill
         required: true
         type: string
+      version:
+        description: Explicit manual release version, such as 2.19.1 or v2.19.1. Mutually exclusive with bump.
+        required: false
+        type: string
+      bump:
+        description: Manual release bump when version is empty. Must be patch, minor, or major.
+        required: false
+        type: string
+      channel:
+        description: Manual release channel.
+        required: false
+        default: stable
+        type: choice
+        options:
+          - stable
+          - rc
+      reason:
+        description: Required for manual release overrides; written to the release audit trail.
+        required: false
+        type: string
 
 concurrency:
   group: release-main
@@ -62,13 +82,17 @@ jobs:
       release_tag: ${{ steps.snapshot.outputs.release_tag }}
       release_prerelease: ${{ steps.snapshot.outputs.release_prerelease }}
       tags_csv: ${{ steps.snapshot.outputs.tags_csv }}
+      snapshot_source: ${{ steps.snapshot.outputs.snapshot_source }}
+      manual_version: ${{ steps.snapshot.outputs.manual_version }}
+      manual_bump: ${{ steps.snapshot.outputs.manual_bump }}
+      manual_reason: ${{ steps.snapshot.outputs.manual_reason }}
+      manual_actor: ${{ steps.snapshot.outputs.manual_actor }}
+      manual_triggered_at: ${{ steps.snapshot.outputs.manual_triggered_at }}
       candidate_suffix: ${{ steps.candidate.outputs.candidate_suffix }}
     timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Configure git identity for release notes
         run: |
@@ -91,7 +115,11 @@ jobs:
             exit 1
           fi
 
-          git fetch --no-tags origin main
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --no-tags --prune --unshallow origin "+refs/heads/main:refs/remotes/origin/main"
+          else
+            git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          fi
           if ! git cat-file -e "${target_sha}^{commit}" 2>/dev/null; then
             git fetch --no-tags origin "${target_sha}"
           fi
@@ -162,8 +190,34 @@ jobs:
 
             core.notice(`Verified successful CI Main history for ${sha}`)
 
+      - name: Generate manual release override snapshot
+        if: github.event_name == 'workflow_dispatch' && (inputs.version != '' || inputs.bump != '' || inputs.reason != '')
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.requested-target.outputs.target_sha }}
+          MANUAL_VERSION: ${{ inputs.version }}
+          MANUAL_BUMP: ${{ inputs.bump }}
+          MANUAL_CHANNEL: ${{ inputs.channel || 'stable' }}
+          MANUAL_REASON: ${{ inputs.reason }}
+          MANUAL_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          manual_triggered_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 .github/scripts/release_snapshot.py manual-override \
+            --target-sha "${TARGET_SHA}" \
+            --github-repository "${GITHUB_REPOSITORY}" \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --registry "${REGISTRY}" \
+            --version "${MANUAL_VERSION}" \
+            --bump "${MANUAL_BUMP}" \
+            --channel "${MANUAL_CHANNEL}" \
+            --reason "${MANUAL_REASON}" \
+            --actor "${MANUAL_ACTOR}" \
+            --triggered-at "${manual_triggered_at}" \
+            --output "$RUNNER_TEMP/release-snapshot.json"
+
       - name: Ensure immutable release snapshot for manual backfill
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.version == '' && inputs.bump == '' && inputs.reason == ''
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -195,7 +249,11 @@ jobs:
             exit 0
           fi
 
-          git fetch --no-tags origin main
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --no-tags --prune --unshallow origin "+refs/heads/main:refs/remotes/origin/main"
+          else
+            git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          fi
           git fetch --tags origin
           git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}" || true
           python3 .github/scripts/release_snapshot.py next-pending \
@@ -400,7 +458,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.release-meta.outputs.target_sha }}
-          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -514,6 +571,12 @@ jobs:
           RELEASE_PR_TITLE: ${{ needs.release-meta.outputs.pr_title }}
           RELEASE_BUMP: ${{ needs.release-meta.outputs.release_bump }}
           RELEASE_CHANNEL: ${{ needs.release-meta.outputs.release_channel }}
+          SNAPSHOT_SOURCE: ${{ needs.release-meta.outputs.snapshot_source }}
+          MANUAL_VERSION: ${{ needs.release-meta.outputs.manual_version }}
+          MANUAL_BUMP: ${{ needs.release-meta.outputs.manual_bump }}
+          MANUAL_REASON: ${{ needs.release-meta.outputs.manual_reason }}
+          MANUAL_ACTOR: ${{ needs.release-meta.outputs.manual_actor }}
+          MANUAL_TRIGGERED_AT: ${{ needs.release-meta.outputs.manual_triggered_at }}
         with:
           script: |
             const { owner, repo } = context.repo
@@ -524,6 +587,12 @@ jobs:
             const bump = process.env.RELEASE_BUMP
             const channel = process.env.RELEASE_CHANNEL
             const targetSha = process.env.TARGET_SHA
+            const snapshotSource = process.env.SNAPSHOT_SOURCE
+            const manualVersion = process.env.MANUAL_VERSION
+            const manualBump = process.env.MANUAL_BUMP
+            const manualReason = process.env.MANUAL_REASON
+            const manualActor = process.env.MANUAL_ACTOR
+            const manualTriggeredAt = process.env.MANUAL_TRIGGERED_AT
 
             if (!tag) {
               core.setFailed('Missing RELEASE_TAG')
@@ -548,6 +617,18 @@ jobs:
               `Bump: ${bump || '(unknown)'}`,
               `Commit: ${targetSha || '(unknown)'}`,
             ]
+            if (snapshotSource === 'manual-release-override') {
+              bodyLines.push(
+                '',
+                'Manual release override:',
+                `- Source: ${snapshotSource}`,
+                `- Requested by: ${manualActor || '(unknown)'}`,
+                `- Requested at: ${manualTriggeredAt || '(unknown)'}`,
+                `- Version: ${manualVersion || '(not provided)'}`,
+                `- Bump: ${manualBump || '(not provided)'}`,
+                `- Reason: ${manualReason || '(missing)'}`,
+              )
+            }
 
             await github.rest.repos.createRelease({
               owner,
@@ -657,7 +738,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags origin main
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --no-tags --prune --unshallow origin "+refs/heads/main:refs/remotes/origin/main"
+          else
+            git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          fi
           git fetch --tags origin
           git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}" || true
           python3 .github/scripts/release_snapshot.py next-pending \

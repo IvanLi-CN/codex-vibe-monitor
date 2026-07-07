@@ -19,6 +19,7 @@ DEFAULT_NOTES_REF = "refs/notes/release-snapshots"
 ALLOWED_SNAPSHOT_SOURCES = {
     "ci-main",
     "manual-backfill",
+    "manual-release-override",
     "merged-pr",
     "pr-intent-artifact",
     "legacy-pr-labels",
@@ -95,6 +96,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Leave the generated snapshot in the local checkout and output file without pushing the notes ref.",
     )
+
+    manual_override = subparsers.add_parser(
+        "manual-override",
+        help="Create a job-local release snapshot from explicit workflow_dispatch override inputs.",
+    )
+    manual_override.add_argument("--target-sha", required=True)
+    manual_override.add_argument("--github-repository", required=True)
+    manual_override.add_argument("--notes-ref", default=DEFAULT_NOTES_REF)
+    manual_override.add_argument("--registry", default="ghcr.io")
+    manual_override.add_argument("--version", default="")
+    manual_override.add_argument("--bump", default="")
+    manual_override.add_argument("--channel", default="stable")
+    manual_override.add_argument("--reason", required=True)
+    manual_override.add_argument("--actor", required=True)
+    manual_override.add_argument("--triggered-at", required=True)
+    manual_override.add_argument("--output", required=True)
 
     export_cmd = subparsers.add_parser("export", help="Export a stored release snapshot into GitHub outputs.")
     export_cmd.add_argument("--target-sha", required=True)
@@ -204,6 +221,24 @@ def validate_snapshot(payload: Any, *, expected_sha: str | None = None) -> dict[
         raise SnapshotError(
             f"Release snapshot snapshot_source must be one of {', '.join(sorted(ALLOWED_SNAPSHOT_SOURCES))}"
         )
+    if payload.get("snapshot_source") == "manual-release-override":
+        manual_reason = payload.get("manual_reason")
+        if not isinstance(manual_reason, str) or not manual_reason.strip():
+            raise SnapshotError("Manual release override snapshot manual_reason must be a non-empty string")
+        manual_actor = payload.get("manual_actor")
+        if not isinstance(manual_actor, str) or not manual_actor.strip():
+            raise SnapshotError("Manual release override snapshot manual_actor must be a non-empty string")
+        manual_triggered_at = payload.get("manual_triggered_at")
+        if not isinstance(manual_triggered_at, str) or not manual_triggered_at.strip():
+            raise SnapshotError("Manual release override snapshot manual_triggered_at must be a non-empty string")
+        manual_version = payload.get("manual_version") or ""
+        manual_bump = payload.get("manual_bump") or ""
+        if bool(manual_version) == bool(manual_bump):
+            raise SnapshotError("Manual release override snapshot requires exactly one of manual_version or manual_bump")
+        if manual_version:
+            StableVersion.parse(str(manual_version))
+        if manual_bump and manual_bump not in {"patch", "minor", "major"}:
+            raise SnapshotError("Manual release override snapshot manual_bump must be patch, minor, or major")
 
     if payload["release_enabled"]:
         for key in ("base_stable_version", "next_stable_version", "app_effective_version", "release_tag", "tags_csv"):
@@ -398,6 +433,38 @@ def stable_versions_from_tags(target_sha: str) -> list[StableVersion]:
     return versions
 
 
+def latest_stable_version_from_tags() -> StableVersion | None:
+    latest = latest_stable_tag_record()
+    if latest is None:
+        return None
+    return latest[0]
+
+
+def stable_tag_records() -> list[tuple[StableVersion, str, str]]:
+    records: list[tuple[StableVersion, str, str]] = []
+    for tag in git_output("tag", "-l", "v*").splitlines():
+        tag_name = tag.strip()
+        version = StableVersion.from_tag(tag_name)
+        if version is not None:
+            commit = git_output("rev-list", "-n", "1", tag_name)
+            records.append((version, tag_name, commit))
+    return records
+
+
+def latest_stable_tag_record() -> tuple[StableVersion, str, str] | None:
+    records = stable_tag_records()
+    if not records:
+        return None
+    return max(records, key=lambda item: item[0])
+
+
+def tag_points_to_target(tag: str, target_sha: str) -> bool:
+    result = git("rev-parse", "-q", "--verify", f"refs/tags/{tag}", check=False)
+    if result.returncode != 0:
+        return False
+    return git_output("rev-list", "-n", "1", tag) == target_sha
+
+
 def stable_versions_from_snapshots(notes_ref: str, target_sha: str) -> list[StableVersion]:
     commits = git_output("rev-list", "--first-parent", target_sha).splitlines()
     versions: list[StableVersion] = []
@@ -455,6 +522,11 @@ def publication_tags(snapshot: dict[str, Any], *, notes_ref: str, main_ref: str)
         return ""
 
     tags = immutable_release_tags(snapshot)
+    if snapshot.get("snapshot_source") == "manual-release-override":
+        if snapshot.get("release_channel") == "stable":
+            tags.append(f"{release_image(snapshot)}:latest")
+        return ",".join(tags)
+
     if snapshot.get("release_channel") == "stable" and not has_newer_published_stable(
         notes_ref, main_ref, str(snapshot["target_sha"])
     ):
@@ -628,6 +700,120 @@ def build_snapshot(
     return validate_snapshot(snapshot, expected_sha=target_sha)
 
 
+def normalize_manual_version(value: str) -> StableVersion:
+    stripped = value.strip()
+    if stripped.startswith("v"):
+        stripped = stripped[1:]
+    return StableVersion.parse(stripped)
+
+
+def validate_release_tag_available(release_tag: str, target_sha: str) -> None:
+    result = git("rev-parse", "-q", "--verify", f"refs/tags/{release_tag}", check=False)
+    if result.returncode != 0:
+        return
+    existing = git_output("rev-list", "-n", "1", release_tag)
+    if existing != target_sha:
+        raise SnapshotError(f"Tag {release_tag} already exists but points to {existing} (expected {target_sha})")
+
+
+def build_manual_override_snapshot(
+    *,
+    target_sha: str,
+    repository: str,
+    notes_ref: str,
+    registry: str,
+    version: str,
+    bump: str,
+    channel: str,
+    reason: str,
+    actor: str,
+    triggered_at: str,
+) -> dict[str, Any]:
+    manual_version = version.strip()
+    manual_bump = bump.strip()
+    if bool(manual_version) == bool(manual_bump):
+        raise SnapshotError("Manual release override requires exactly one of version or bump")
+    if manual_bump and manual_bump not in {"patch", "minor", "major"}:
+        raise SnapshotError("Manual release override bump must be patch, minor, or major")
+    if channel not in {"stable", "rc"}:
+        raise SnapshotError("Manual release override channel must be stable or rc")
+    if not reason.strip():
+        raise SnapshotError("Manual release override reason is required")
+    if not actor.strip():
+        raise SnapshotError("Manual release override actor is required")
+    if not triggered_at.strip():
+        raise SnapshotError("Manual release override triggered_at is required")
+
+    latest_stable_record = latest_stable_tag_record()
+    latest_stable = latest_stable_record[0] if latest_stable_record else None
+    if manual_version:
+        next_stable = normalize_manual_version(manual_version)
+        requested_effective = next_stable.render()
+        if channel == "rc":
+            requested_effective = f"{requested_effective}-rc.{target_sha[:7]}"
+        requested_tag = f"v{requested_effective}"
+        validate_release_tag_available(requested_tag, target_sha)
+        idempotent_existing_tag = tag_points_to_target(requested_tag, target_sha)
+        if latest_stable is not None and next_stable <= latest_stable and not idempotent_existing_tag:
+            raise SnapshotError(
+                f"Manual release override version {next_stable.render()} must be greater than latest stable tag {latest_stable.render()}"
+            )
+        release_bump = "manual"
+        manual_version = next_stable.render()
+    else:
+        if latest_stable_record is not None and latest_stable_record[2] == target_sha:
+            next_stable = latest_stable_record[0]
+        else:
+            base = latest_stable or cargo_base_version(target_sha)
+            next_stable = base.bump(manual_bump)
+            if latest_stable is not None and next_stable <= latest_stable:
+                raise SnapshotError(
+                    f"Manual release override bump {manual_bump} produced {next_stable.render()}, not greater than latest stable tag {latest_stable.render()}"
+                )
+        release_bump = manual_bump
+
+    effective = next_stable.render()
+    prerelease = False
+    if channel == "rc":
+        effective = f"{effective}-rc.{target_sha[:7]}"
+        prerelease = True
+
+    release_tag = f"v{effective}"
+    validate_release_tag_available(release_tag, target_sha)
+
+    image_name_lower = repository.lower()
+    snapshot: dict[str, Any] = {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "target_sha": target_sha,
+        "pr_number": None,
+        "pr_title": "",
+        "registry": registry,
+        "pr_head_sha": "",
+        "type_label": "manual-release-override",
+        "channel_label": f"channel:{channel}",
+        "release_bump": release_bump,
+        "release_channel": channel,
+        "release_enabled": True,
+        "release_prerelease": prerelease,
+        "image_name_lower": image_name_lower,
+        "base_stable_version": latest_stable.render() if latest_stable else cargo_base_version(target_sha).render(),
+        "next_stable_version": next_stable.render(),
+        "app_effective_version": effective,
+        "release_tag": release_tag,
+        "tags_csv": "",
+        "notes_ref": notes_ref,
+        "snapshot_source": "manual-release-override",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "manual_version": manual_version,
+        "manual_bump": manual_bump,
+        "manual_reason": reason.strip(),
+        "manual_actor": actor.strip(),
+        "manual_triggered_at": triggered_at.strip(),
+    }
+    snapshot["tags_csv"] = ",".join(immutable_release_tags(snapshot))
+    return validate_snapshot(snapshot, expected_sha=target_sha)
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
@@ -714,6 +900,12 @@ def export_snapshot(snapshot: dict[str, Any], github_output: str) -> None:
         "release_tag",
         "release_prerelease",
         "tags_csv",
+        "snapshot_source",
+        "manual_version",
+        "manual_bump",
+        "manual_reason",
+        "manual_actor",
+        "manual_triggered_at",
     ):
         value = snapshot.get(key)
         if isinstance(value, bool):
@@ -803,6 +995,31 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
     raise SnapshotError("release snapshot retry loop exhausted unexpectedly")
 
 
+def export_manual_override_snapshot(args: argparse.Namespace) -> int:
+    target_sha = normalize_sha(args.target_sha)
+    fetch_tags()
+    snapshot = build_manual_override_snapshot(
+        target_sha=target_sha,
+        repository=args.github_repository,
+        notes_ref=args.notes_ref,
+        registry=args.registry,
+        version=args.version,
+        bump=args.bump,
+        channel=args.channel,
+        reason=args.reason,
+        actor=args.actor,
+        triggered_at=args.triggered_at,
+    )
+    write_json(Path(args.output), snapshot)
+    print(
+        "manual release override snapshot: "
+        f"target_sha={target_sha} release_tag={snapshot['release_tag']} "
+        f"channel={snapshot['release_channel']} actor={snapshot['manual_actor']}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def export_existing_snapshot(args: argparse.Namespace) -> int:
     target_sha = normalize_sha(args.target_sha)
     snapshot_file = Path(args.snapshot_file) if getattr(args, "snapshot_file", "") else None
@@ -864,6 +1081,8 @@ def main() -> int:
     try:
         if args.command == "ensure":
             return ensure_snapshot(args)
+        if args.command == "manual-override":
+            return export_manual_override_snapshot(args)
         if args.command == "export":
             return export_existing_snapshot(args)
         if args.command == "next-pending":
