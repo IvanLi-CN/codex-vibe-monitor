@@ -2789,13 +2789,21 @@ describe("DashboardWorkingConversationsSection", () => {
         throw new Error("missing upstream account policy badge");
       }
 
+      expect(policyBadge.textContent?.trim()).toBe("禁新");
+      expect(policyBadge.dataset.policyTone).toBe("warning");
+
       act(() => {
         policyBadge.click();
       });
       await act(async () => {});
+      expect(policyBadge.textContent?.trim()).toBe("普通");
+      expect(policyBadge.dataset.policyTone).toBe("neutral");
+
       act(() => {
         policyBadge.click();
       });
+      expect(policyBadge.textContent?.trim()).toBe("兜底");
+      expect(policyBadge.dataset.policyTone).toBe("success");
 
       expect(fetchMock).not.toHaveBeenCalled();
 
@@ -2858,6 +2866,7 @@ describe("DashboardWorkingConversationsSection", () => {
       }
 
       expect(fastBadge.textContent?.trim()).toBe("强制Fast");
+      expect(fastBadge.dataset.policyTone).toBe("primary");
       expect(fastBadge.getAttribute("title")).toContain("Fast 改写策略");
       expect(fastBadge.getAttribute("aria-label")).toContain(
         "Fast 改写策略：强制Fast",
@@ -2867,12 +2876,14 @@ describe("DashboardWorkingConversationsSection", () => {
         fastBadge.click();
       });
       expect(fastBadge.textContent?.trim()).toBe("禁Fast");
+      expect(fastBadge.dataset.policyTone).toBe("warning");
       expect(fastBadge.disabled).toBe(false);
 
       act(() => {
         fastBadge.click();
       });
       expect(fastBadge.textContent?.trim()).toBe("不改Fast");
+      expect(fastBadge.dataset.policyTone).toBe("neutral");
       expect(fastBadge.getAttribute("aria-label")).toContain(
         "Fast 改写策略：不改Fast",
       );
