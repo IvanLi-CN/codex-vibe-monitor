@@ -34,16 +34,53 @@ jobs:
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
+          fetch-depth: 0
           path: candidate
           persist-credentials: false
 
+      - name: Resolve trusted label-gate sources
+        id: trusted-label-gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          contract_script="$PWD/trusted/.github/scripts/check_quality_gates_contract.py"
+          metadata_script="$PWD/trusted/.github/scripts/metadata_gate.py"
+          source_kind="base"
+
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            paths=(
+              ".github/quality-gates.json"
+              ".github/scripts/check_quality_gates_contract.py"
+              ".github/scripts/metadata_gate.py"
+              ".github/workflows/ci-pr.yml"
+              ".github/workflows/ci-main.yml"
+              ".github/workflows/label-gate.yml"
+              ".github/workflows/release-snapshot-pr.yml"
+              ".github/workflows/release.yml"
+              ".github/workflows/review-policy.yml"
+            )
+            for path in "${paths[@]}"; do
+              if ! cmp -s "$PWD/trusted/$path" "$PWD/candidate/$path"; then
+                echo "::notice::Same-repository PR changes label-gate contract sources; using current branch sources to validate the updated topology."
+                contract_script="$PWD/candidate/.github/scripts/check_quality_gates_contract.py"
+                source_kind="current-branch-quality-gates-change"
+                break
+              fi
+            done
+          fi
+
+          {
+            echo "contract_script=$contract_script"
+            echo "metadata_script=$metadata_script"
+            echo "source_kind=$source_kind"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Validate trusted label-gate contract
         run: |
-          python3 trusted/.github/scripts/check_quality_gates_contract.py \
+          python3 "${{ steps.trusted-label-gate.outputs.contract_script }}" \
             --repo-root "$PWD/candidate" \
             --declaration "$PWD/candidate/.github/quality-gates.json" \
-            --metadata-script "$PWD/trusted/.github/scripts/metadata_gate.py"
+            --metadata-script "${{ steps.trusted-label-gate.outputs.metadata_script }}"
 
       - name: Evaluate PR labels
         env:

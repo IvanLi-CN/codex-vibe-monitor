@@ -370,6 +370,147 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             raise AssertionError("expected invalid type labels to fail")
 
         run("tag", "v0.1.1", sha1, cwd=repo)
+        manual_idempotent_version_snapshot = module.build_manual_override_snapshot(
+            target_sha=sha1,
+            repository="IvanLi-CN/codex-vibe-monitor",
+            notes_ref=module.DEFAULT_NOTES_REF,
+            registry="ghcr.io",
+            version="v0.1.1",
+            bump="",
+            channel="stable",
+            reason="Recover release assets for an existing tag",
+            actor="release-maintainer",
+            triggered_at="2026-07-07T00:00:00Z",
+        )
+        assert manual_idempotent_version_snapshot["release_tag"] == "v0.1.1"
+        assert manual_idempotent_version_snapshot["manual_version"] == "0.1.1"
+        run("tag", "v0.2.0", sha2, cwd=repo)
+        assert module.publication_tags(
+            manual_idempotent_version_snapshot,
+            notes_ref=module.DEFAULT_NOTES_REF,
+            main_ref=sha3,
+        ) == "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1"
+        run("tag", "-d", "v0.2.0", cwd=repo)
+
+        manual_bump_same_target_snapshot = module.build_manual_override_snapshot(
+            target_sha=sha1,
+            repository="IvanLi-CN/codex-vibe-monitor",
+            notes_ref=module.DEFAULT_NOTES_REF,
+            registry="ghcr.io",
+            version="",
+            bump="patch",
+            channel="stable",
+            reason="Publish a new patch from the latest stable tag on this commit",
+            actor="release-maintainer",
+            triggered_at="2026-07-07T00:00:00Z",
+        )
+        assert manual_bump_same_target_snapshot["base_stable_version"] == "0.1.1"
+        assert manual_bump_same_target_snapshot["next_stable_version"] == "0.1.2"
+        assert manual_bump_same_target_snapshot["release_tag"] == "v0.1.2"
+
+        manual_bump_snapshot = module.build_manual_override_snapshot(
+            target_sha=sha2,
+            repository="IvanLi-CN/codex-vibe-monitor",
+            notes_ref=module.DEFAULT_NOTES_REF,
+            registry="ghcr.io",
+            version="",
+            bump="patch",
+            channel="stable",
+            reason="Publish cleanup build for deployed stream root-cause diagnostics",
+            actor="release-maintainer",
+            triggered_at="2026-07-07T00:00:00Z",
+        )
+        assert manual_bump_snapshot["snapshot_source"] == "manual-release-override"
+        assert manual_bump_snapshot["release_enabled"] is True
+        assert manual_bump_snapshot["manual_bump"] == "patch"
+        assert manual_bump_snapshot["manual_version"] == ""
+        assert manual_bump_snapshot["base_stable_version"] == "0.1.1"
+        assert manual_bump_snapshot["next_stable_version"] == "0.1.2"
+        assert manual_bump_snapshot["release_tag"] == "v0.1.2"
+        assert module.publication_tags(manual_bump_snapshot, notes_ref=module.DEFAULT_NOTES_REF, main_ref=sha3) == (
+            "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.2,ghcr.io/ivanli-cn/codex-vibe-monitor:latest"
+        )
+
+        manual_version_snapshot = module.build_manual_override_snapshot(
+            target_sha=sha1,
+            repository="IvanLi-CN/codex-vibe-monitor",
+            notes_ref=module.DEFAULT_NOTES_REF,
+            registry="ghcr.io",
+            version="v0.2.0",
+            bump="",
+            channel="stable",
+            reason="Publish explicitly requested cleanup build",
+            actor="release-maintainer",
+            triggered_at="2026-07-07T00:00:00Z",
+        )
+        assert manual_version_snapshot["manual_version"] == "0.2.0"
+        assert manual_version_snapshot["manual_bump"] == ""
+        assert manual_version_snapshot["release_bump"] == "manual"
+        assert manual_version_snapshot["release_tag"] == "v0.2.0"
+
+        manual_rc_snapshot = module.build_manual_override_snapshot(
+            target_sha=sha1,
+            repository="IvanLi-CN/codex-vibe-monitor",
+            notes_ref=module.DEFAULT_NOTES_REF,
+            registry="ghcr.io",
+            version="0.2.1",
+            bump="",
+            channel="rc",
+            reason="Publish release candidate for diagnostics",
+            actor="release-maintainer",
+            triggered_at="2026-07-07T00:00:00Z",
+        )
+        assert manual_rc_snapshot["release_prerelease"] is True
+        assert manual_rc_snapshot["release_tag"] == f"v0.2.1-rc.{sha1[:7]}"
+        assert module.publication_tags(manual_rc_snapshot, notes_ref=module.DEFAULT_NOTES_REF, main_ref=sha3) == (
+            f"ghcr.io/ivanli-cn/codex-vibe-monitor:v0.2.1-rc.{sha1[:7]}"
+        )
+
+        invalid_manual_cases = [
+            {"version": "", "bump": "", "reason": "missing selector"},
+            {"version": "0.2.0", "bump": "patch", "reason": "too many selectors"},
+            {"version": "0.0.1", "bump": "", "reason": "version too old"},
+            {"version": "", "bump": "weird", "reason": "bad bump"},
+            {"version": "0.2.0", "bump": "", "reason": ""},
+        ]
+        for case in invalid_manual_cases:
+            try:
+                module.build_manual_override_snapshot(
+                    target_sha=sha1,
+                    repository="IvanLi-CN/codex-vibe-monitor",
+                    notes_ref=module.DEFAULT_NOTES_REF,
+                    registry="ghcr.io",
+                    version=case["version"],
+                    bump=case["bump"],
+                    channel="stable",
+                    reason=case["reason"],
+                    actor="release-maintainer",
+                    triggered_at="2026-07-07T00:00:00Z",
+                )
+            except module.SnapshotError:
+                pass
+            else:
+                raise AssertionError(f"expected invalid manual override case to fail: {case}")
+
+        run("tag", "v0.3.0", sha2, cwd=repo)
+        try:
+            module.build_manual_override_snapshot(
+                target_sha=sha1,
+                repository="IvanLi-CN/codex-vibe-monitor",
+                notes_ref=module.DEFAULT_NOTES_REF,
+                registry="ghcr.io",
+                version="0.3.0",
+                bump="",
+                channel="stable",
+                reason="tag conflict",
+                actor="release-maintainer",
+                triggered_at="2026-07-07T00:00:00Z",
+            )
+        except module.SnapshotError as exc:
+            assert "already exists but points to" in str(exc)
+        else:
+            raise AssertionError("expected tag conflict to fail")
+
         pending = module.pending_release_targets(module.DEFAULT_NOTES_REF, sha3)
         assert pending == [sha2, sha3], (pending, sha2, sha3)
         filtered_pending = module.pending_release_targets(
