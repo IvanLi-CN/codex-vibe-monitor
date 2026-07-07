@@ -20,8 +20,13 @@ interface InvocationPhaseBadgeProps {
 
 const PHASE_ICON_NAMES: Record<InvocationLivePhase, AppIconName> = {
   queued: "timer-refresh-outline",
-  requesting: "send",
-  responding: "loading",
+  requesting: "navigation-variant",
+  responding: "sync",
+};
+
+const STATIC_PHASE_ICON_NAMES: Record<InvocationLivePhase, AppIconName> = {
+  ...PHASE_ICON_NAMES,
+  responding: "chat-processing-outline",
 };
 
 const PHASE_TEXT_CLASSNAMES: Record<InvocationLivePhase, string> = {
@@ -35,9 +40,18 @@ function phaseMotionClassName(
   motion: InvocationPhaseMotion,
 ) {
   if (motion !== "dynamic") return null;
-  if (phase === "requesting") return "animate-pulse";
+  if (phase === "requesting") return "animate-invocation-phase-requesting";
   if (phase === "responding") return "animate-spin";
   return null;
+}
+
+function phaseIconName(
+  phase: InvocationLivePhase,
+  motion: InvocationPhaseMotion,
+) {
+  return motion === "static"
+    ? STATIC_PHASE_ICON_NAMES[phase]
+    : PHASE_ICON_NAMES[phase];
 }
 
 export function InvocationPhaseBadge({
@@ -51,10 +65,12 @@ export function InvocationPhaseBadge({
   const display = getInvocationPhaseDisplay(phase);
   const label = t(display.labelKey);
   const motionClassName = phaseMotionClassName(phase, motion);
+  const iconName = phaseIconName(phase, motion);
   const icon = (
     <AppIcon
-      name={PHASE_ICON_NAMES[phase]}
+      name={iconName}
       data-testid="invocation-phase-icon"
+      data-phase-icon-name={iconName}
       className={cn(
         appearance === "inline" ? "h-3.5 w-3.5" : "h-3 w-3",
         "shrink-0",
@@ -159,8 +175,9 @@ export function InvocationPhaseSegments({
               )}
             >
               <AppIcon
-                name={PHASE_ICON_NAMES[item.phase]}
+                name={phaseIconName(item.phase, motion)}
                 data-testid="invocation-phase-icon"
+                data-phase-icon-name={phaseIconName(item.phase, motion)}
                 className={cn(
                   "h-3.5 w-3.5 shrink-0",
                   PHASE_TEXT_CLASSNAMES[item.phase],
@@ -196,8 +213,9 @@ export function InvocationPhaseSegments({
             )}
           >
             <AppIcon
-              name={PHASE_ICON_NAMES[item.phase]}
+              name={phaseIconName(item.phase, motion)}
               data-testid="invocation-phase-icon"
+              data-phase-icon-name={phaseIconName(item.phase, motion)}
               className={cn(
                 "h-3 w-3 shrink-0",
                 phaseMotionClassName(item.phase, motion),

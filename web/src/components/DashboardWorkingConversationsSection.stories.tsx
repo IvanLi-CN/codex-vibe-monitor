@@ -2525,7 +2525,9 @@ export const RequestingConversation: Story = {
     if (!(requestingIcon instanceof HTMLElement)) {
       throw new Error("missing requesting phase icon");
     }
-    await expect(requestingIcon.className).toContain("animate-pulse");
+    await expect(requestingIcon.className).toContain(
+      "animate-invocation-phase-requesting",
+    );
     await expect(currentSlot).not.toHaveTextContent(/请求中|Requesting/);
   },
 };
@@ -2965,6 +2967,7 @@ export const UpstreamAccountTab: Story = {
         '[data-testid="invocation-phase-icon"]',
       );
       expect(icon).toBeInstanceOf(HTMLElement);
+      expect(icon?.className).not.toContain("animate-invocation-phase-requesting");
       expect(icon?.className).not.toContain("animate-pulse");
       expect(icon?.className).not.toContain("animate-spin");
     }
@@ -3084,6 +3087,7 @@ export const UpstreamAccountPhaseBreakdownStatic: Story = {
         '[data-testid="invocation-phase-icon"]',
       );
       expect(icon).toBeInstanceOf(HTMLElement);
+      expect(icon?.className).not.toContain("animate-invocation-phase-requesting");
       expect(icon?.className).not.toContain("animate-pulse");
       expect(icon?.className).not.toContain("animate-spin");
     }

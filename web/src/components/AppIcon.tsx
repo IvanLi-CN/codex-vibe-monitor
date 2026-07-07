@@ -30,6 +30,7 @@ import counterIcon from '@iconify-icons/mdi/counter'
 import crownIcon from '@iconify-icons/mdi/crown'
 import crownOutlineIcon from '@iconify-icons/mdi/crown-outline'
 import cashClockIcon from '@iconify-icons/mdi/cash-clock'
+import chatProcessingOutlineIcon from '@iconify-icons/mdi/chat-processing-outline'
 import currencyUsdIcon from '@iconify-icons/mdi/currency-usd'
 import databaseOutlineIcon from '@iconify-icons/mdi/database-outline'
 import deleteOutlineIcon from '@iconify-icons/mdi/delete-outline'
@@ -48,6 +49,8 @@ import linkVariantPlusIcon from '@iconify-icons/mdi/link-variant-plus'
 import loadingIcon from '@iconify-icons/mdi/loading'
 import loginVariantIcon from '@iconify-icons/mdi/login-variant'
 import magnifyIcon from '@iconify-icons/mdi/magnify'
+import messageReplyOutlineIcon from '@iconify-icons/mdi/message-reply-outline'
+import navigationVariantIcon from '@iconify-icons/mdi/navigation-variant'
 import noteTextOutlineIcon from '@iconify-icons/mdi/note-text-outline'
 import pencilOutlineIcon from '@iconify-icons/mdi/pencil-outline'
 import playlistPlusIcon from '@iconify-icons/mdi/playlist-plus'
@@ -59,6 +62,7 @@ import refreshCircleIcon from '@iconify-icons/mdi/refresh-circle'
 import serverNetworkOutlineIcon from '@iconify-icons/mdi/server-network-outline'
 import shieldKeyOutlineIcon from '@iconify-icons/mdi/shield-key-outline'
 import speedometerIcon from '@iconify-icons/mdi/speedometer'
+import syncIcon from '@iconify-icons/mdi/sync'
 import tagOutlineIcon from '@iconify-icons/mdi/tag-outline'
 import tagPlusOutlineIcon from '@iconify-icons/mdi/tag-plus-outline'
 import timerOutlineIcon from '@iconify-icons/mdi/timer-outline'
@@ -98,6 +102,7 @@ const appIconRegistry = {
   'crown': crownIcon,
   'crown-outline': crownOutlineIcon,
   'cash-clock': cashClockIcon,
+  'chat-processing-outline': chatProcessingOutlineIcon,
   'currency-usd': currencyUsdIcon,
   'database-outline': databaseOutlineIcon,
   'delete-outline': deleteOutlineIcon,
@@ -116,6 +121,8 @@ const appIconRegistry = {
   'loading': loadingIcon,
   'login-variant': loginVariantIcon,
   'magnify': magnifyIcon,
+  'message-reply-outline': messageReplyOutlineIcon,
+  'navigation-variant': navigationVariantIcon,
   'note-text-outline': noteTextOutlineIcon,
   'pencil-outline': pencilOutlineIcon,
   'playlist-plus': playlistPlusIcon,
@@ -127,6 +134,7 @@ const appIconRegistry = {
   'server-network-outline': serverNetworkOutlineIcon,
   'shield-key-outline': shieldKeyOutlineIcon,
   'speedometer': speedometerIcon,
+  'sync': syncIcon,
   'tag-outline': tagOutlineIcon,
   'tag-plus-outline': tagPlusOutlineIcon,
   'timer-outline': timerOutlineIcon,
