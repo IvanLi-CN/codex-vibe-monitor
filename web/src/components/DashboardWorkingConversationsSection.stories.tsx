@@ -3158,6 +3158,8 @@ export const UpstreamAccountHeaderActions: Story = {
       "dashboard-upstream-account-policy-badge",
     );
     await userEvent.click(policyBadges[0]!);
+    await expect(policyBadges[1]!).toHaveTextContent("Fast");
+    await userEvent.click(policyBadges[1]!);
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
       "none",
     );
@@ -3170,6 +3172,7 @@ export const UpstreamAccountHeaderActions: Story = {
         ).__dashboardStoryPolicyPatchLog;
         expect(patchLog?.[0]).toContain('"allowNewConversations":true');
         expect(patchLog?.[0]).toContain('"priorityTier":"normal"');
+        expect(patchLog?.[0]).toContain('"fastModeRewriteMode":"force_remove"');
       },
       { timeout: 1600 },
     );
@@ -3179,7 +3182,7 @@ export const UpstreamAccountHeaderActions: Story = {
     docs: {
       description: {
         story:
-          "Dashboard upstream-account card header actions: attention badges open health events, the gear opens routing, and quick policy chips save account-level overrides with a debounced PATCH.",
+          "Dashboard upstream-account card header actions: attention badges open health events, the gear opens routing, and quick policy chips including Fast mode save account-level overrides with a debounced PATCH.",
       },
     },
   },
