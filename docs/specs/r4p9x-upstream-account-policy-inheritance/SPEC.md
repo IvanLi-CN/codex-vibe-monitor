@@ -260,7 +260,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - Groups page opening the shared group routing policy dialog with flat status-change reason toggle tiles
 - Upstream Accounts grouped roster opening the shared group routing policy dialog with the same flat status-change reason toggle tiles
 - Upstream account detail Routing tab showing page-level status-change reason toggle tiles plus the panel-level account reset action inside the full drawer context
-- Group settings Routing tab showing the group-level upstream 429 retry count as the same integrated `0..5` selector used by account detail, with `0` representing no retry, in both desktop and narrow layouts
+- Group settings Routing tab showing the embedded routing-policy upstream 429 retry count as the same integrated `0..5` selector used by account detail, with `0` representing no retry, in both desktop and narrow layouts
 
 PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)

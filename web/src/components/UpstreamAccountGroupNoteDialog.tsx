@@ -300,10 +300,11 @@ export function UpstreamAccountGroupNoteDialog({
     Boolean(singleAccountRotationLabel) ||
     Boolean(singleAccountRotationHint);
   const showUpstream429RetrySection =
-    Boolean(onUpstream429RetryEnabledChange) ||
-    Boolean(onUpstream429MaxRetriesChange) ||
-    Boolean(upstream429RetryLabel) ||
-    Boolean(upstream429RetryHint);
+    !routingPolicyEditor &&
+    (Boolean(onUpstream429RetryEnabledChange) ||
+      Boolean(onUpstream429MaxRetriesChange) ||
+      Boolean(upstream429RetryLabel) ||
+      Boolean(upstream429RetryHint));
   const tabsBaseId = useId();
   const [activeTab, setActiveTab] = useState<GroupSettingsTab>("info");
   const tabIds = {

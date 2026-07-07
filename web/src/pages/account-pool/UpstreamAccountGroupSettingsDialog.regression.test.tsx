@@ -417,7 +417,7 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
     )
   })
 
-  it('saves 0 upstream 429 retries as disabled in the group settings payload', async () => {
+  it('saves 0 upstream 429 retries as disabled in the inline routing policy payload', async () => {
     const saveGroupSettings = vi.fn().mockResolvedValue(undefined)
 
     function Harness() {
@@ -427,6 +427,11 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
           ...createGroupState(groupName),
           upstream429RetryEnabled: true,
           upstream429MaxRetries: 3,
+          routingRule: {
+            ...createGroupState(groupName).routingRule,
+            upstream429RetryEnabled: true,
+            upstream429MaxRetries: 3,
+          },
         }),
         saveGroupSettings,
       })
@@ -469,8 +474,10 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
     expect(saveGroupSettings).toHaveBeenCalledWith(
       'prod',
       expect.objectContaining({
-        upstream429RetryEnabled: false,
-        upstream429MaxRetries: 0,
+        routingRule: expect.objectContaining({
+          upstream429RetryEnabled: false,
+          upstream429MaxRetries: 0,
+        }),
       }),
       { existing: true },
     )
