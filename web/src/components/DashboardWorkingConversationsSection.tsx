@@ -803,13 +803,13 @@ const ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES: Record<
   AccountQuickPolicyTone,
   string
 > = {
-  neutral: "border-base-300/85 bg-base-100/76 text-base-content/62",
+  neutral: "border-base-300/80 bg-base-100/75 text-base-content/60",
   success:
-    "border-success/45 bg-success/13 text-success shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+    "border-success/40 bg-success/15 text-success shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
   warning:
-    "border-warning/55 bg-warning/14 text-base-content shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+    "border-warning/50 bg-warning/15 text-base-content shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
   primary:
-    "border-primary/50 bg-primary/14 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+    "border-primary/50 bg-primary/15 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
 };
 
 function normalizeStatusToken(value: string | null | undefined) {
