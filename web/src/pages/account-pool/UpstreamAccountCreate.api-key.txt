@@ -223,4 +223,66 @@ describe("UpstreamAccountCreatePage api key", () => {
     expect(createApiKeyAccount).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalled();
   });
+
+  it("stores the API Key group only after successful account creation", async () => {
+    const createApiKeyAccount = vi.fn().mockResolvedValue({
+      id: 42,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: "alpha",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+    });
+    mockUpstreamAccounts({ createApiKeyAccount });
+    render("/account-pool/upstream-accounts/new?mode=apiKey");
+
+    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
+    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
+    setComboboxValue('input[name="apiKeyGroupName"]', "alpha");
+    await flushAsync();
+
+    expect(window.localStorage.setItem).not.toHaveBeenCalledWith(
+      UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
+      expect.any(String),
+    );
+
+    clickButton(/Create API Key account/i);
+    await flushAsync();
+
+    expect(createApiKeyAccount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        groupName: "alpha",
+        apiKey: "sk-gateway",
+      }),
+    );
+    expect(window.localStorage.setItem).toHaveBeenCalledWith(
+      UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
+      JSON.stringify({ groupName: "alpha" }),
+    );
+  });
+
+  it("does not store the API Key group when account creation fails", async () => {
+    const createApiKeyAccount = vi
+      .fn()
+      .mockRejectedValue(new Error("Request failed: 500 upstream rejected"));
+    mockUpstreamAccounts({ createApiKeyAccount });
+    render("/account-pool/upstream-accounts/new?mode=apiKey");
+
+    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
+    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
+    setComboboxValue('input[name="apiKeyGroupName"]', "beta");
+    await flushAsync();
+
+    clickButton(/Create API Key account/i);
+    await flushAsync();
+
+    expect(createApiKeyAccount).toHaveBeenCalled();
+    expect(window.localStorage.setItem).not.toHaveBeenCalledWith(
+      UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
+      expect.any(String),
+    );
+  });
 });

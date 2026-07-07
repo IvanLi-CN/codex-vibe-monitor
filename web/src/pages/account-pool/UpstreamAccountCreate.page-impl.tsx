@@ -26,6 +26,7 @@ import {
   isExistingGroup,
   markUpstreamAccountGroupUsed,
   normalizeGroupName,
+  readApiKeyLastGroupName,
   readUpstreamAccountGroupUsage,
   resolveMostRecentlyUsedGroupName,
   writeUpstreamAccountGroupUsage,
@@ -332,6 +333,7 @@ export default function UpstreamAccountCreatePage() {
   const [groupUsage, setGroupUsage] = useState(() =>
     readUpstreamAccountGroupUsage(),
   );
+  const initialApiKeyLastGroupNameRef = useRef(readApiKeyLastGroupName());
   const previousBatchTagIdsRef = useRef<number[] | null>(null);
   const previousCompletedSharedTagBaselineRef = useRef<string | null>(null);
   const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(
@@ -630,6 +632,31 @@ export default function UpstreamAccountCreatePage() {
     groupOptions,
     groupUsage,
   ]);
+  const rememberedApiKeyGroupAppliedRef = useRef(false);
+  useEffect(() => {
+    if (rememberedApiKeyGroupAppliedRef.current) return;
+    if (draft?.apiKey?.groupName) {
+      rememberedApiKeyGroupAppliedRef.current = true;
+      return;
+    }
+    if (apiKeyGroupName.trim()) {
+      rememberedApiKeyGroupAppliedRef.current = true;
+      return;
+    }
+    const rememberedGroupName = initialApiKeyLastGroupNameRef.current;
+    if (!rememberedGroupName) {
+      rememberedApiKeyGroupAppliedRef.current = true;
+      return;
+    }
+    if (isLoading) return;
+    if (groupOptions.length === 0) return;
+    const matchingGroup = groupOptions.find(
+      (option) => normalizeGroupName(option.groupName) === rememberedGroupName,
+    );
+    rememberedApiKeyGroupAppliedRef.current = true;
+    if (!matchingGroup) return;
+    setApiKeyGroupName(rememberedGroupName);
+  }, [apiKeyGroupName, draft?.apiKey?.groupName, groupOptions, isLoading]);
   const formatGroupAccountCountLabel = useCallback(
     (count: number) =>
       t("accountPool.upstreamAccounts.groupOptionCount", { count }),
@@ -1884,11 +1911,10 @@ export default function UpstreamAccountCreatePage() {
       openGroupNoteEditor(groupName, {
         onSaved: (savedGroupName) => {
           setApiKeyGroupName(savedGroupName);
-          markGroupUsed(savedGroupName);
         },
       });
     },
-    [markGroupUsed, openGroupNoteEditor],
+    [openGroupNoteEditor],
   );
 
   const handleBatchDefaultGroupCreateRequest = useCallback(
@@ -1950,9 +1976,8 @@ export default function UpstreamAccountCreatePage() {
   const setRememberingApiKeyGroupName = useCallback(
     (value: string) => {
       setApiKeyGroupName(value);
-      markGroupUsed(value);
     },
-    [markGroupUsed],
+    [],
   );
 
 
