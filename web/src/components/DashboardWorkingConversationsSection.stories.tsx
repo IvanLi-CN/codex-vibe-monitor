@@ -2945,6 +2945,9 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
     await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
     await expect(
+      canvas.getByTestId("dashboard-upstream-account-header-row"),
+    ).not.toHaveTextContent("#42");
+    await expect(
       canvasElement.querySelector(
         '[data-testid="dashboard-upstream-account-status"]',
       ),

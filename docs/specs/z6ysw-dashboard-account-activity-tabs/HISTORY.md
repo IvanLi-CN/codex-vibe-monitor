@@ -32,6 +32,7 @@
 - 2026-07-07：Dashboard 上游账号卡标题区从只读关键策略徽章演进为快捷操作面；状态 badge 只展示异常/注意态并跳转健康事件，齿轮跳转路由设置，快捷策略一律写账号级覆盖且不提供恢复继承，以避免 Dashboard 上下文里出现继承/覆盖的额外决策负担。
 - 2026-07-07：Dashboard 上游账号卡快捷操作面补齐 Fast 模式四档切换，沿用账号池已有 `fastModeRewriteMode` 语义并显示为 `不改Fast / 补Fast / 强制Fast / 禁Fast`；该入口继续只写账号级覆盖，避免在 Dashboard 快速操作区引入继承恢复决策。
 - 2026-07-07：Dashboard 上游账号快捷策略 chip 的颜色改为按策略意图映射，而不是按“是否激活”统一高亮：`普通 / 不改Fast` 为 neutral，`兜底 / 补Fast` 为 success，`主力 / 强制Fast` 为 primary，`禁新 / 禁Fast / 激活禁出 / 激活禁入` 为 warning。
+- 2026-07-08：Dashboard 上游账号卡标题区移除本地 `#<upstreamAccountId>` 编号，只保留齿轮作为账号路由入口；账号名和异常/策略/实时指标已经足够承载当前扫描任务，内部主键不再作为常驻视觉元素。
 
 ## Key Reasons / Replacements
 

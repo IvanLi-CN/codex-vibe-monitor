@@ -268,7 +268,7 @@
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
   scenario: `fast mode quick policy chip`
-  evidence_note: 验证 Dashboard 上游账号卡片标题区固定快捷策略 chip 已包含 Fast 模式入口；当前账号显示 `Fast` 态，策略 chip 与异常/注意状态 badge、计划 badge、右侧 `进行中调用 / TPM / 消费速率 / #ID / 齿轮` 保持同一行内扫描节奏。
+  evidence_note: 验证 Dashboard 上游账号卡片标题区固定快捷策略 chip 已包含 Fast 模式入口；当前账号显示 `强制Fast` 态，策略 chip 与异常/注意状态 badge、计划 badge、右侧 `进行中调用 / TPM / 消费速率 / 齿轮` 保持同一行内扫描节奏，且不再渲染本地账号编号。
   image:
   PR: include
   ![Dashboard 上游账号 Fast 快捷策略 chip 证据](./assets/dashboard-upstream-account-fast-policy-chip.png)
