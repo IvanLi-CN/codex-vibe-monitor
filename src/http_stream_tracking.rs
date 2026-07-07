@@ -56,7 +56,6 @@ pub(crate) struct DownstreamRequestObserver {
 pub(crate) struct DownstreamWriteErrorSnapshot {
     pub(crate) request_seq: u64,
     pub(crate) kind: &'static str,
-    pub(crate) message: String,
 }
 
 impl DownstreamTransportObserver {
@@ -101,8 +100,6 @@ impl DownstreamTransportObserver {
         if notify_reset_monitor {
             self.inner.reset_monitor_notify.notify_waiters();
         }
-        #[cfg(test)]
-        eprintln!("[DEBUG-stream-rootcause-20260706] begin_request request_seq={request_seq}");
         DownstreamRequestObserver {
             observer: self.clone(),
             request_seq,
@@ -195,7 +192,7 @@ impl DownstreamTransportObserver {
             && state.active_reset_monitor_request_seq == Some(request_seq)
     }
 
-    fn record_write_error(&self, kind: &'static str, message: String) {
+    fn record_write_error(&self, kind: &'static str) {
         let request_seq = {
             let state = self
                 .inner
@@ -207,15 +204,10 @@ impl DownstreamTransportObserver {
         let Some(request_seq) = request_seq else {
             return;
         };
-        self.record_write_error_for_request(request_seq, kind, message);
+        self.record_write_error_for_request(request_seq, kind);
     }
 
-    fn record_write_error_for_request(
-        &self,
-        request_seq: u64,
-        kind: &'static str,
-        message: String,
-    ) {
+    fn record_write_error_for_request(&self, request_seq: u64, kind: &'static str) {
         let mut state = self
             .inner
             .state
@@ -231,15 +223,7 @@ impl DownstreamTransportObserver {
         {
             return;
         }
-        state.last_write_error = Some(DownstreamWriteErrorSnapshot {
-            request_seq,
-            kind,
-            message,
-        });
-        #[cfg(test)]
-        eprintln!(
-            "[DEBUG-stream-rootcause-20260706] record_write_error request_seq={request_seq} kind={kind}"
-        );
+        state.last_write_error = Some(DownstreamWriteErrorSnapshot { request_seq, kind });
         drop(state);
         self.inner.notify.notify_waiters();
     }
@@ -283,58 +267,26 @@ impl DownstreamRequestObserver {
         grace_period: Duration,
     ) -> Option<DownstreamWriteErrorSnapshot> {
         if let Some(snapshot) = self.observer.current_write_error_for(self.request_seq) {
-            #[cfg(test)]
-            eprintln!(
-                "[DEBUG-stream-rootcause-20260706] wait_window immediate_hit request_seq={} kind={}",
-                self.request_seq, snapshot.kind
-            );
             return Some(snapshot);
         }
         if self.observer.request_advanced_past(self.request_seq) || grace_period.is_zero() {
-            #[cfg(test)]
-            eprintln!(
-                "[DEBUG-stream-rootcause-20260706] wait_window short_circuit request_seq={}",
-                self.request_seq
-            );
             return None;
         }
         let deadline = Instant::now() + grace_period;
         loop {
             let notified = self.observer.inner.notify.notified();
             if let Some(snapshot) = self.observer.current_write_error_for(self.request_seq) {
-                #[cfg(test)]
-                eprintln!(
-                    "[DEBUG-stream-rootcause-20260706] wait_window notified_hit request_seq={} kind={}",
-                    self.request_seq, snapshot.kind
-                );
                 return Some(snapshot);
             }
             if self.observer.request_advanced_past(self.request_seq) {
-                #[cfg(test)]
-                eprintln!(
-                    "[DEBUG-stream-rootcause-20260706] wait_window advanced request_seq={}",
-                    self.request_seq
-                );
                 return None;
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 let snapshot = self.observer.current_write_error_for(self.request_seq);
-                #[cfg(test)]
-                eprintln!(
-                    "[DEBUG-stream-rootcause-20260706] wait_window deadline request_seq={} hit={}",
-                    self.request_seq,
-                    snapshot.is_some()
-                );
                 return snapshot;
             };
             if tokio::time::timeout(remaining, notified).await.is_err() {
                 let snapshot = self.observer.current_write_error_for(self.request_seq);
-                #[cfg(test)]
-                eprintln!(
-                    "[DEBUG-stream-rootcause-20260706] wait_window timeout request_seq={} hit={}",
-                    self.request_seq,
-                    snapshot.is_some()
-                );
                 return snapshot;
             }
         }
@@ -354,7 +306,7 @@ impl ObservedTcpStream {
 
     fn record_write_error(&self, err: &io::Error) {
         self.observer
-            .record_write_error(downstream_transport_write_error_kind(err), err.to_string());
+            .record_write_error(downstream_transport_write_error_kind(err));
     }
 
     fn record_pending_socket_error(&self) {
@@ -508,7 +460,6 @@ async fn monitor_downstream_reset_stream(
             observer.record_write_error_for_request(
                 request_seq,
                 downstream_transport_write_error_kind(&err),
-                format!("socket_take_error:{err}"),
             );
             break;
         }
@@ -522,7 +473,6 @@ async fn monitor_downstream_reset_stream(
                 observer.record_write_error_for_request(
                     request_seq,
                     downstream_transport_write_error_kind(&err),
-                    format!("socket_peek_error:{err}"),
                 );
                 break;
             }
@@ -611,10 +561,7 @@ where
                 tokio::select! {
                     result = connection.as_mut() => {
                         if let Err(err) = result {
-                            observer_for_task.record_write_error(
-                                "connection_driver",
-                                format!("serve_connection:{err}"),
-                            );
+                            observer_for_task.record_write_error("connection_driver");
                             trace!("failed to serve connection: {err:#}");
                         }
                         break;
@@ -648,7 +595,7 @@ mod tests {
         let first_request = observer.begin_request();
         let second_request = observer.begin_request();
 
-        observer.record_write_error("connection_reset", "late reset".to_string());
+        observer.record_write_error("connection_reset");
 
         assert!(
             first_request
