@@ -2936,7 +2936,11 @@ export const UpstreamAccountTab: Story = {
     await userEvent.click(accountTab);
     await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
     await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
-    await expect(canvas.getByText("繁忙")).toBeInTheDocument();
+    await expect(
+      canvasElement.querySelector(
+        '[data-testid="dashboard-upstream-account-status"]',
+      ),
+    ).toBeNull();
     await expect(canvas.getByText("上游拒绝")).toBeInTheDocument();
     await expect(canvas.getByText("限流")).toBeInTheDocument();
     await expect(canvas.getByText("禁新")).toBeInTheDocument();
