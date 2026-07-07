@@ -27,6 +27,7 @@
 - Records 与 Dashboard 两个 owner-facing 列表同时显示独立“图片工具”徽标，避免同一条 invocation 在不同列表面出现语义漂移。
 - Live 展开详情与 Dashboard 调用详情抽屉必须共用同一套调用详情组件，并按“快速排障”组织信息：请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示。
 - 新 HTTP proxy invocation 的 `invokeId` 必须使用 10 位 NanoID 风格短格式，去掉历史 `proxy-...` 前缀、内部 counter 与时间戳尾巴；历史 `proxy-...` 记录继续兼容查询和展示。
+- 号池调用处于 `running` / `pending` 且已携带 `upstreamAccountName` 或 `upstreamAccountId` 时，所有共享 invocation 展示面必须用当前上游账号替代“号池路由中”fallback，并以蓝色呼吸文本表达正在路由中。
 
 ### Non-goals
 
@@ -79,6 +80,9 @@
 - 新 HTTP proxy invocation 的 `invokeId` 必须匹配 `^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$`，字符集固定为 `ABCDEFGHJKMNPQRSTUVWXYZ23456789`，不包含 `I`、`L`、`O`、`0`、`1`、连字符、业务前缀或时间戳。
 - 内部 `proxy_request_id` 继续作为日志、路由预约、临时文件、并发控制与 pool replay 的 numeric ID；不得从短 `invokeId` 反向解析内部 ID。
 - `pool_routing_reservation_key_for_invoke_id` 只对历史 `proxy-{numeric}-{timestamp}` 格式恢复 `pool-route-{numeric}`，新短格式不生成 reservation key。
+- 运行态号池账号提示只在 `routeMode=pool`、状态为 `running` / `pending`、且存在非空账号名或有限数值账号 ID 时成立；显示值只允许为账号名或 `账号 #<id>`，不得添加“路由中”前缀。
+- 运行态号池账号提示必须复用现有账号点击路径；存在账号 ID 时，Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉中的账号文本仍可打开上游账号详情。
+- 运行态号池账号提示必须是 text-only 蓝色语义状态，动画周期在 1500-2200ms 内；`prefers-reduced-motion: reduce` 下关闭呼吸动画但保留蓝色文本。
 
 ### SHOULD
 
@@ -177,6 +181,9 @@
 - Given 调用详情包含长 `invokeId`、`promptCacheKey`、endpoint、IPv6 或错误消息，When 页面在桌面和窄屏渲染，Then 文本在容器内换行或截断，不造成横向滚动或相邻内容遮挡。
 - Given 新 HTTP proxy invocation 被创建，When 查询 `/api/invocations`、接收 SSE `records` 或打开 Live/Dashboard 详情，Then `invokeId` 为 10 位短 ID，且不含 `proxy`、连字符、时间戳或内部 counter。
 - Given 历史 `proxy-9061-1783013997090` 记录存在，When 用户过滤、查询、展示或打开详情，Then 仍按完整历史 `invokeId` 兼容处理，不迁移、不回填。
+- Given 号池调用仍处于 `running` 或 `pending` 且已有 `upstreamAccountName`，When Live、Records、Dashboard working conversations 或 Dashboard 调用详情抽屉渲染该 invocation，Then 账号位置显示该账号名并使用蓝色呼吸文本，不显示“号池路由中”。
+- Given 号池运行态调用没有 `upstreamAccountName` 或 `upstreamAccountId`，When owner-facing 调用界面渲染，Then 继续显示既有“号池路由中”fallback，且不伪造账号、不启用呼吸状态。
+- Given 号池调用已进入成功或失败等终态，When owner-facing 调用界面渲染其账号字段，Then 保持普通账号显示与点击行为，不启用运行态呼吸状态。
 
 ### Manual verification
 
@@ -263,6 +270,30 @@
   image:
   PR: include
   ![Legacy response model fallback](./assets/invocation-model-routing-legacy.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Dashboard/WorkingConversationsSection/PoolRoutingAccountStates
+  state: dashboard running pool account routing states
+  evidence_note: verifies Dashboard working conversation slots show the concrete upstream account as breathing primary text while the request is running, keep the no-account fallback as `号池路由中`, and leave terminal account text static.
+  image:
+  PR: include
+  ![Dashboard pool routing account states](./assets/pool-routing-account-dashboard-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Monitoring/InvocationTable/PoolRoutingAccountStates
+  state: invocation table running pool account routing states
+  evidence_note: verifies the live invocation table renders the running concrete upstream account as blue text, preserves the no-account pool-routing fallback, and keeps terminal accounts as ordinary clickable account labels without changing row layout.
+  image:
+  PR: include
+  ![Invocation table pool routing account states](./assets/pool-routing-account-table-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Records/InvocationRecordsTable/PoolRoutingAccountStates
+  state: expanded records detail running pool account routing
+  evidence_note: verifies the shared expanded invocation detail also consumes the running-account routing state, including account identity cards and request detail fields, without overlapping timing, model, or pool-attempt diagnostics.
+  image:
+  PR: include
+  ![Invocation detail pool routing account states](./assets/pool-routing-account-detail-storybook.png)
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

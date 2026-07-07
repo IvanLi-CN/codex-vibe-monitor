@@ -172,12 +172,29 @@ body {
   will-change: transform, opacity;
 }
 
+@keyframes invocation-account-routing-breathe {
+  0%,
+  100% {
+    opacity: 0.72;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+.invocation-account-routing-in-progress {
+  animation: invocation-account-routing-breathe 1.8s ease-in-out infinite;
+  will-change: opacity;
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-motion-surface] {
     transition: none;
   }
 
-  .animate-invocation-phase-requesting {
+  .animate-invocation-phase-requesting,
+  .invocation-account-routing-in-progress {
     animation: none;
   }
 }

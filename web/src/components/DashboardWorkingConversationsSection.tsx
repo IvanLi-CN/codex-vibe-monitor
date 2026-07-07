@@ -55,6 +55,7 @@ import { Spinner } from "./ui/spinner";
 import { Tooltip } from "./ui/tooltip";
 import {
   FALLBACK_CELL,
+  INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   buildInvocationDetailViewModel,
   renderEndpointSummary,
   renderFastIndicator,
@@ -2246,7 +2247,11 @@ function InvocationSlot({
                   <button
                     type="button"
                     data-testid="dashboard-working-conversation-account-chip"
-                    className="inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[9.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                    className={cn(
+                      "inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[9.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                      viewModel.accountRoutingInProgress &&
+                        INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                    )}
                     onClick={(event) => {
                       event.stopPropagation();
                       onOpenUpstreamAccount?.(
@@ -2270,7 +2275,11 @@ function InvocationSlot({
                 ) : (
                   <span
                     data-testid="dashboard-working-conversation-account-chip"
-                    className="inline-flex min-w-0 max-w-full items-baseline"
+                    className={cn(
+                      "inline-flex min-w-0 max-w-full items-baseline",
+                      viewModel.accountRoutingInProgress &&
+                        INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                    )}
                     title={viewModel.accountLabel}
                   >
                     <span

@@ -530,6 +530,47 @@ function createRequestingOnlyResponse() {
   ]);
 }
 
+function createPoolRoutingAccountStatesResponse() {
+  return createResponse([
+    createConversation("pck-routing-account-named", [
+      createPreview({
+        id: 41,
+        invokeId: "invoke-routing-account-named",
+        occurredAt: createRelativeStoryIso(-1_600),
+        status: "running",
+        livePhase: "responding",
+        upstreamAccountId: 42,
+        upstreamAccountName: "pool-alpha@example.com",
+        tTotalMs: null,
+      }),
+    ]),
+    createConversation("pck-routing-account-missing", [
+      createPreview({
+        id: 42,
+        invokeId: "invoke-routing-account-missing",
+        occurredAt: createRelativeStoryIso(-3_200),
+        status: "pending",
+        livePhase: "requesting",
+        upstreamAccountId: null,
+        upstreamAccountName: null,
+        tUpstreamTtfbMs: null,
+        tUpstreamStreamMs: null,
+        tTotalMs: null,
+      }),
+    ]),
+    createConversation("pck-routing-account-terminal", [
+      createPreview({
+        id: 43,
+        invokeId: "invoke-routing-account-terminal",
+        occurredAt: createRelativeStoryIso(-8_000),
+        status: "completed",
+        upstreamAccountId: 42,
+        upstreamAccountName: "pool-alpha@example.com",
+      }),
+    ]),
+  ]);
+}
+
 const accountPlanBadgeResponse = createResponse([
   createConversation("pck-plan-enterprise", [
     createPreview({
@@ -2535,6 +2576,47 @@ export const RequestingConversation: Story = {
       "animate-invocation-phase-requesting",
     );
     await expect(currentSlot).not.toHaveTextContent(/请求中|Requesting/);
+  },
+};
+
+export const PoolRoutingAccountStates: Story = {
+  args: {
+    activeRange: "today",
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => <DrawerPreviewStory response={createPoolRoutingAccountStatesResponse()} />,
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Dashboard working-conversation state gallery for pool routing account attribution: the running concrete upstream account breathes in primary text, the pending no-account slot keeps the neutral pool-routing fallback, and the terminal account stays static.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountButtons = await canvas.findAllByRole("button", {
+      name: "pool-alpha@example.com",
+    });
+    const runningAccount = accountButtons[0]!;
+    await expect(runningAccount.className).toContain(
+      "invocation-account-routing-in-progress",
+    );
+    await expect(canvas.getByText(/号池路由中|pool routing/i)).toBeInTheDocument();
+
+    const terminalAccount = accountButtons[accountButtons.length - 1];
+    await expect(terminalAccount.className).not.toContain(
+      "invocation-account-routing-in-progress",
+    );
+
+    await userEvent.click(runningAccount);
+    await waitFor(() => {
+      expect(document.body.textContent ?? "").toContain(
+        "Mock shared account detail drawer used to verify",
+      );
+    });
   },
 };
 
