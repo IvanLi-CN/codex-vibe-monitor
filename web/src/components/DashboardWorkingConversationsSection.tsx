@@ -18,6 +18,7 @@ import type {
   DashboardWorkingConversationTone,
 } from "../lib/dashboardWorkingConversations";
 import type {
+  TagFastModeRewriteMode,
   TagPriorityTier,
   UpstreamAccountActivityAccount,
   UpstreamAccountActivityResponse,
@@ -693,6 +694,7 @@ type AccountQuickPolicyDraft = {
   priorityTier: TagPriorityTier;
   allowCutOut: boolean;
   allowCutIn: boolean;
+  fastModeRewriteMode: TagFastModeRewriteMode;
 };
 
 type AccountAttentionBadge = {
@@ -710,12 +712,14 @@ function accountPolicyDraftFromRule(
     allowCutOut: true,
     allowCutIn: true,
     priorityTier: "normal" as TagPriorityTier,
+    fastModeRewriteMode: "keep_original" as TagFastModeRewriteMode,
   };
   return {
     allowNewConversations: rule.blockNewConversations !== true,
     priorityTier: rule.priorityTier ?? "normal",
     allowCutOut: rule.allowCutOut !== false,
     allowCutIn: rule.allowCutIn !== false,
+    fastModeRewriteMode: rule.fastModeRewriteMode ?? "keep_original",
   };
 }
 
@@ -734,6 +738,21 @@ function cycleAccountPriorityPolicy(
   return { ...draft, allowNewConversations: false, priorityTier: "normal" };
 }
 
+function cycleAccountFastModePolicy(
+  draft: AccountQuickPolicyDraft,
+): AccountQuickPolicyDraft {
+  if (draft.fastModeRewriteMode === "keep_original") {
+    return { ...draft, fastModeRewriteMode: "fill_missing" };
+  }
+  if (draft.fastModeRewriteMode === "fill_missing") {
+    return { ...draft, fastModeRewriteMode: "force_add" };
+  }
+  if (draft.fastModeRewriteMode === "force_add") {
+    return { ...draft, fastModeRewriteMode: "force_remove" };
+  }
+  return { ...draft, fastModeRewriteMode: "keep_original" };
+}
+
 function priorityPolicyLabel(
   draft: AccountQuickPolicyDraft,
   locale: "zh" | "en",
@@ -744,6 +763,16 @@ function priorityPolicyLabel(
   if (draft.priorityTier === "fallback")
     return locale === "zh" ? "兜底" : "Fallback";
   return locale === "zh" ? "普通" : "Normal";
+}
+
+function fastModePolicyLabel(
+  mode: TagFastModeRewriteMode,
+  locale: "zh" | "en",
+) {
+  if (mode === "fill_missing") return locale === "zh" ? "补Fast" : "+Fast";
+  if (mode === "force_add") return "Fast";
+  if (mode === "force_remove") return locale === "zh" ? "禁Fast" : "No Fast";
+  return locale === "zh" ? "保持原样" : "Keep original";
 }
 
 function normalizeStatusToken(value: string | null | undefined) {
@@ -914,6 +943,7 @@ function AccountQuickPolicyChips({
   disabled,
   isSaving,
   onCyclePriority,
+  onCycleFastMode,
   onToggleCutOut,
   onToggleCutIn,
 }: {
@@ -922,11 +952,13 @@ function AccountQuickPolicyChips({
   disabled: boolean;
   isSaving: boolean;
   onCyclePriority: () => void;
+  onCycleFastMode: () => void;
   onToggleCutOut: () => void;
   onToggleCutIn: () => void;
 }) {
   const priorityActive =
     !draft.allowNewConversations || draft.priorityTier !== "normal";
+  const fastModeActive = draft.fastModeRewriteMode !== "keep_original";
   const cutOutActive = !draft.allowCutOut;
   const cutInActive = !draft.allowCutIn;
   const chipBase =
@@ -969,6 +1001,33 @@ function AccountQuickPolicyChips({
         }}
       >
         {priorityPolicyLabel(draft, locale)}
+      </button>
+      <button
+        type="button"
+        data-testid="dashboard-upstream-account-policy-badge"
+        data-policy-key="fast-mode-rewrite"
+        disabled={disabled}
+        className={cn(
+          chipBase,
+          fastModeActive ? activeClassName : inactiveClassName,
+        )}
+        title={
+          locale === "zh"
+            ? "点击切换 保持原样 / 补Fast / Fast / 禁Fast"
+            : "Cycle keep original / +Fast / Fast / No Fast"
+        }
+        aria-label={
+          locale === "zh" ? "切换 Fast 模式" : "Cycle Fast mode"
+        }
+        onClick={(event) => {
+          event.stopPropagation();
+          onCycleFastMode();
+        }}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+        }}
+      >
+        {fastModePolicyLabel(draft.fastModeRewriteMode, locale)}
       </button>
       <button
         type="button"
@@ -2504,6 +2563,12 @@ function DashboardUpstreamAccountActivityCard({
     };
     schedulePolicySave(nextDraft, { allowCutIn: nextDraft.allowCutIn });
   }, [policyDraft, schedulePolicySave]);
+  const handleCycleFastModePolicy = useCallback(() => {
+    const nextDraft = cycleAccountFastModePolicy(policyDraft);
+    schedulePolicySave(nextDraft, {
+      fastModeRewriteMode: nextDraft.fastModeRewriteMode,
+    });
+  }, [policyDraft, schedulePolicySave]);
   const requestSummarySegments = useMemo(
     () => [
       {
@@ -2952,6 +3017,7 @@ function DashboardUpstreamAccountActivityCard({
               disabled={account.upstreamAccountId == null}
               isSaving={isSavingPolicy || debounceTimerRef.current != null}
               onCyclePriority={handleCyclePriorityPolicy}
+              onCycleFastMode={handleCycleFastModePolicy}
               onToggleCutOut={handleToggleCutOut}
               onToggleCutIn={handleToggleCutIn}
             />
