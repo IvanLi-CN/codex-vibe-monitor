@@ -152,6 +152,16 @@ function bodyText() {
   return document.body.textContent ?? "";
 }
 
+function clickTab(label: RegExp) {
+  const tab = Array.from(document.querySelectorAll('[role="tab"]')).find(
+    (candidate) => label.test(candidate.textContent ?? ""),
+  ) as HTMLButtonElement | undefined;
+  expect(tab).toBeDefined();
+  act(() => {
+    tab?.click();
+  });
+}
+
 describe("UpstreamAccountGroupNoteDialog", () => {
   it("shows protocol badges, keeps direct available, and never renders raw subscription URLs", () => {
     renderDialog({
@@ -188,6 +198,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     const text = bodyText();
     expect(text).toContain("Direct");
@@ -250,6 +261,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     const text = bodyText();
     expect(text).not.toContain("legacy-missing-binding");
@@ -288,6 +300,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     const identityHints = Array.from(
       document.querySelectorAll('[title^="ID "]'),
@@ -310,6 +323,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("东京专线 A");
     expect(bodyText()).toContain("Unavailable");
@@ -321,6 +335,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       boundProxyKeys: ["fpn_missing_only"],
       availableProxyNodes: [],
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("fpn_missing_only");
     expect(bodyText()).toContain("Missing");
@@ -332,6 +347,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       proxyBindingsCatalogKind: "loading",
       proxyBindingsCatalogFreshness: "missing",
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("Loading proxy nodes…");
     expect(bodyText()).not.toContain("No proxy nodes available.");
@@ -352,6 +368,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       proxyBindingsCatalogKind: "loading",
       proxyBindingsCatalogFreshness: "missing",
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("Loading proxy nodes…");
     expect(bodyText()).toContain("fpn_missing_only");
@@ -378,6 +395,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       proxyBindingsCatalogKind: "missing",
       proxyBindingsCatalogFreshness: "missing",
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("Loading proxy nodes…");
     expect(bodyText()).not.toContain("No proxy nodes available.");
@@ -398,6 +416,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain(
       "Select at least one available proxy node or clear bindings before saving.",
@@ -430,6 +449,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("东京专线 A");
     expect(bodyText()).not.toContain(
@@ -471,51 +491,83 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("JP Edge 01");
     expect(bodyText()).not.toContain("别组遗留节点");
   });
 
-  it("disables retry count selection when upstream 429 retry is off", () => {
+  it("renders upstream 429 retry as a single 0..5 selector where 0 means off", () => {
+    const onUpstream429RetryEnabledChange = vi.fn();
+    const onUpstream429MaxRetriesChange = vi.fn();
     renderDialog({
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
+      onUpstream429RetryEnabledChange,
+      onUpstream429MaxRetriesChange,
+    });
+    clickTab(/routing settings/i);
+
+    expect(
+      document.querySelector(
+        '[role="switch"][aria-label="Retry the same account after upstream 429"]',
+      ),
+    ).toBeNull();
+    expect(
+      document.querySelector('[role="combobox"][aria-label="Retry count"]'),
+    ).toBeNull();
+
+    const retryGroup = document.querySelector(
+      '[role="radiogroup"][aria-label="Upstream 429 retry"]',
+    ) as HTMLElement | null;
+    expect(retryGroup).not.toBeNull();
+    const retryOptions = Array.from(
+      retryGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+    );
+    expect(retryOptions.map((option) => option.textContent)).toEqual([
+      "0",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+    ]);
+    expect(retryOptions[0]?.getAttribute("aria-checked")).toBe("true");
+
+    act(() => {
+      retryOptions[2]?.click();
     });
 
-    const retryToggle = document.querySelector(
-      '[role="switch"][aria-label="Retry the same account after upstream 429"]',
-    ) as HTMLElement | null;
-    expect(retryToggle).not.toBeNull();
-    expect(retryToggle?.getAttribute("aria-checked")).toBe("false");
-
-    const retryCount = document.querySelector(
-      '[role="combobox"][aria-label="Retry count"]',
-    ) as HTMLElement | null;
-    expect(retryCount).not.toBeNull();
-    expect(
-      retryCount?.getAttribute("aria-disabled") === "true" ||
-        retryCount?.hasAttribute("data-disabled") === true ||
-        retryCount?.hasAttribute("disabled") === true,
-    ).toBe(true);
+    expect(onUpstream429RetryEnabledChange).toHaveBeenCalledWith(true);
+    expect(onUpstream429MaxRetriesChange).toHaveBeenCalledWith(2);
   });
 
-  it("keeps retry count selection enabled when upstream 429 retry is on", () => {
+  it("selects 0 and emits no-retry payload when clearing upstream 429 retry", () => {
+    const onUpstream429RetryEnabledChange = vi.fn();
+    const onUpstream429MaxRetriesChange = vi.fn();
     renderDialog({
       upstream429RetryEnabled: true,
       upstream429MaxRetries: 3,
+      onUpstream429RetryEnabledChange,
+      onUpstream429MaxRetriesChange,
+    });
+    clickTab(/routing settings/i);
+
+    const retryGroup = document.querySelector(
+      '[role="radiogroup"][aria-label="Upstream 429 retry"]',
+    ) as HTMLElement | null;
+    expect(retryGroup).not.toBeNull();
+    const retryOptions = Array.from(
+      retryGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+    );
+    expect(retryOptions[3]?.getAttribute("aria-checked")).toBe("true");
+
+    act(() => {
+      retryOptions[0]?.click();
     });
 
-    const retryToggle = document.querySelector(
-      '[role="switch"][aria-label="Retry the same account after upstream 429"]',
-    ) as HTMLElement | null;
-    expect(retryToggle?.getAttribute("aria-checked")).toBe("true");
-
-    const retryCount = document.querySelector(
-      '[role="combobox"][aria-label="Retry count"]',
-    ) as HTMLElement | null;
-    expect(retryCount).not.toBeNull();
-    expect(retryCount?.getAttribute("aria-disabled")).not.toBe("true");
-    expect(bodyText()).toContain("3 retries");
+    expect(onUpstream429RetryEnabledChange).toHaveBeenCalledWith(false);
+    expect(onUpstream429MaxRetriesChange).toHaveBeenCalledWith(0);
   });
 
   it("renders the single-account rotation switch and preserves its checked state", () => {

@@ -2169,11 +2169,6 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
 
     wait_for_codex_invocations(&state.pool, 1).await;
     let (row, payload) = load_latest_invocation_payload_row(state.as_ref()).await;
-    eprintln!(
-        "[DEBUG-stream-rootcause-20260706] row status={:?} failure_kind={:?} payload={payload}",
-        row.status,
-        row.failure_kind,
-    );
     assert_eq!(row.status.as_deref(), Some("failed"));
     assert_eq!(
         row.failure_kind.as_deref(),

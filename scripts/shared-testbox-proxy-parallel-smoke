@@ -7,7 +7,7 @@ Usage: scripts/shared-testbox-proxy-parallel-smoke [options]
 
 Build the current repo on codex-testbox and run a 100-parallel proxy smoke test that verifies:
 - `/v1/*` no longer returns local admission 503s when 100 requests are in flight
-- deprecated PROXY_REQUEST_CONCURRENCY_* envs are ignored for /v1/* admission
+- no whole-proxy admission gate is active on the `/v1/*` hot path
 - raw async capture and large-body paths do not regress under mixed `/v1/responses` + `/v1/responses/compact`
 
 Options:
@@ -374,8 +374,6 @@ services:
       RUST_LOG: info
       PROXY_RAW_MAX_BYTES: "65536"
       UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: "$ENCRYPTION_SECRET"
-      PROXY_REQUEST_CONCURRENCY_LIMIT: "12"
-      PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS: "2000"
     volumes:
       - "$DATA_DIR:/srv/app/data"
   mock-upstream:
@@ -445,13 +443,6 @@ import sys
 log_path = pathlib.Path(sys.argv[1])
 text = log_path.read_text()
 text = re.sub(r'\x1b\[[0-9;]*m', '', text)
-required = [
-    'PROXY_REQUEST_CONCURRENCY_LIMIT is deprecated and ignored for /v1/* admission',
-    'PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS is deprecated and ignored for /v1/* admission',
-]
-for needle in required:
-    if needle not in text:
-        raise SystemExit(f'missing expected deprecation warning: {needle}')
 for needle in [
     'proxy request concurrency wait timed out',
     'proxy concurrency limit reached; retry later',

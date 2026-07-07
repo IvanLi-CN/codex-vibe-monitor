@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { AppIcon } from "./AppIcon";
 import { ConcurrencyLimitSlider } from "./ConcurrencyLimitSlider";
 import type { ForwardProxyBindingNode } from "../lib/api";
@@ -8,13 +9,17 @@ import { Button } from "./ui/button";
 import {
   ForwardProxyBindingSelector,
 } from "./ForwardProxyBindingSelector";
+import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
 import {
   canonicalizeForwardProxyBindingKeys,
   hasSelectableForwardProxyBindingSelection,
   normalizeForwardProxyBindingKeys,
   resolveForwardProxyBindingOptions,
 } from "./forwardProxyBindingSelectorUtils";
-import { SelectField } from "./ui/select-field";
+import {
+  SegmentedControl,
+  SegmentedControlItem,
+} from "./ui/segmented-control";
 import {
   Dialog,
   DialogCloseIcon,
@@ -36,6 +41,7 @@ interface UpstreamAccountGroupNoteDialogProps {
   concurrencyLimit?: number;
   busy?: boolean;
   deleting?: boolean;
+  saveDisabled?: boolean;
   error?: string | null;
   existing: boolean;
   boundProxyKeys?: string[];
@@ -52,6 +58,7 @@ interface UpstreamAccountGroupNoteDialogProps {
   onUpstream429RetryEnabledChange?: (value: boolean) => void;
   onUpstream429MaxRetriesChange?: (value: number) => void;
   onRoutingPolicyEdit?: () => void;
+  routingPolicyEditor?: ReactNode;
   onClose: () => void;
   onSave: () => void;
   onDelete?: () => void;
@@ -71,6 +78,10 @@ interface UpstreamAccountGroupNoteDialogProps {
   closeLabel: string;
   existingBadgeLabel: string;
   draftBadgeLabel: string;
+  infoTabLabel?: string;
+  routingTabLabel?: string;
+  proxyTabLabel?: string;
+  accountCountLabel?: string;
   nodeShuntLabel?: string;
   nodeShuntHint?: string;
   nodeShuntToggleLabel?: string;
@@ -108,6 +119,8 @@ interface UpstreamAccountGroupNoteDialogProps {
   proxyBindingsChartLocaleTag?: string;
 }
 
+type GroupSettingsTab = "info" | "routing" | "proxy";
+
 function sameOrderedKeys(left: string[], right: string[]): boolean {
   return (
     left.length === right.length &&
@@ -129,6 +142,7 @@ export function UpstreamAccountGroupNoteDialog({
   concurrencyLimit = apiConcurrencyLimitToSliderValue(0),
   busy = false,
   deleting = false,
+  saveDisabled = false,
   error,
   existing,
   boundProxyKeys,
@@ -145,6 +159,7 @@ export function UpstreamAccountGroupNoteDialog({
   onUpstream429RetryEnabledChange,
   onUpstream429MaxRetriesChange,
   onRoutingPolicyEdit,
+  routingPolicyEditor,
   onClose,
   onSave,
   onDelete,
@@ -164,6 +179,10 @@ export function UpstreamAccountGroupNoteDialog({
   closeLabel,
   existingBadgeLabel,
   draftBadgeLabel,
+  infoTabLabel,
+  routingTabLabel,
+  proxyTabLabel,
+  accountCountLabel,
   nodeShuntLabel,
   nodeShuntHint,
   nodeShuntToggleLabel,
@@ -175,7 +194,6 @@ export function UpstreamAccountGroupNoteDialog({
   upstream429RetryHint,
   upstream429RetryToggleLabel,
   upstream429RetryCountLabel,
-  upstream429RetryCountOptions,
   routingPolicyLabel,
   routingPolicyHint,
   routingPolicyEditLabel,
@@ -206,35 +224,22 @@ export function UpstreamAccountGroupNoteDialog({
   const normalizedUpstream429MaxRetries = normalizeUpstream429MaxRetries(
     upstream429MaxRetries,
   );
-  const retryCountOptions = useMemo(() => {
-    const fallback = [1, 2, 3, 4, 5].map((value) => ({
-      value,
-      label: value === 1 ? "1 retry" : `${value} retries`,
-    }));
-    if (
-      !Array.isArray(upstream429RetryCountOptions) ||
-      upstream429RetryCountOptions.length === 0
-    ) {
-      return fallback;
-    }
-    const options = upstream429RetryCountOptions
-      .map((option) => ({
-        value: normalizeUpstream429MaxRetries(option.value),
-        label: option.label,
-      }))
-      .filter((option) => option.value > 0 && option.label.trim().length > 0);
-    return options.length > 0 ? options : fallback;
-  }, [upstream429RetryCountOptions]);
-  const selectedRetryCount = useMemo(() => {
-    if (
-      retryCountOptions.some(
-        (option) => option.value === normalizedUpstream429MaxRetries,
-      )
-    ) {
-      return normalizedUpstream429MaxRetries;
-    }
-    return retryCountOptions[0]?.value ?? 1;
-  }, [normalizedUpstream429MaxRetries, retryCountOptions]);
+  const selectedRetryCount = normalizedUpstream429RetryEnabled
+    ? Math.max(1, normalizedUpstream429MaxRetries || 1)
+    : 0;
+  const retryCountOptions = useMemo(
+    () =>
+      [0, 1, 2, 3, 4, 5].map((value) => ({
+        value,
+        label: String(value),
+      })),
+    [],
+  );
+  const handleUpstream429RetryCountChange = (value: number) => {
+    const normalizedValue = normalizeUpstream429MaxRetries(value);
+    onUpstream429RetryEnabledChange?.(normalizedValue > 0);
+    onUpstream429MaxRetriesChange?.(normalizedValue);
+  };
   const canonicalBoundProxyKeys = useMemo(
     () =>
       canonicalizeForwardProxyBindingKeys(
@@ -295,16 +300,39 @@ export function UpstreamAccountGroupNoteDialog({
     Boolean(singleAccountRotationLabel) ||
     Boolean(singleAccountRotationHint);
   const showUpstream429RetrySection =
-    Boolean(onUpstream429RetryEnabledChange) ||
-    Boolean(onUpstream429MaxRetriesChange) ||
-    Boolean(upstream429RetryLabel) ||
-    Boolean(upstream429RetryHint);
+    !routingPolicyEditor &&
+    (Boolean(onUpstream429RetryEnabledChange) ||
+      Boolean(onUpstream429MaxRetriesChange) ||
+      Boolean(upstream429RetryLabel) ||
+      Boolean(upstream429RetryHint));
+  const tabsBaseId = useId();
+  const [activeTab, setActiveTab] = useState<GroupSettingsTab>("info");
+  const tabIds = {
+    info: {
+      tab: `${tabsBaseId}-info-tab`,
+      panel: `${tabsBaseId}-info-panel`,
+    },
+    routing: {
+      tab: `${tabsBaseId}-routing-tab`,
+      panel: `${tabsBaseId}-routing-panel`,
+    },
+    proxy: {
+      tab: `${tabsBaseId}-proxy-tab`,
+      panel: `${tabsBaseId}-proxy-panel`,
+    },
+  } as const;
 
   useEffect(() => {
     if (!open || !deleteBlockedPopoverEnabled) {
       setDeleteBlockedPopoverOpen(false);
     }
   }, [deleteBlockedPopoverEnabled, open]);
+
+  useEffect(() => {
+    if (!open) {
+      setActiveTab("info");
+    }
+  }, [open]);
 
   const handleDeleteClick = () => {
     if (deleteBlockedPopoverEnabled) {
@@ -356,6 +384,68 @@ export function UpstreamAccountGroupNoteDialog({
               </div>
             ) : null}
 
+            <SegmentedControl
+              role="tablist"
+              aria-label={title}
+              className="w-full flex-wrap justify-start"
+            >
+              <SegmentedControlItem
+                id={tabIds.info.tab}
+                role="tab"
+                active={activeTab === "info"}
+                aria-selected={activeTab === "info"}
+                aria-controls={tabIds.info.panel}
+                onClick={() => setActiveTab("info")}
+              >
+                {infoTabLabel ?? "Group info"}
+              </SegmentedControlItem>
+              <SegmentedControlItem
+                id={tabIds.routing.tab}
+                role="tab"
+                active={activeTab === "routing"}
+                aria-selected={activeTab === "routing"}
+                aria-controls={tabIds.routing.panel}
+                onClick={() => setActiveTab("routing")}
+              >
+                {routingTabLabel ?? "Routing settings"}
+              </SegmentedControlItem>
+              <SegmentedControlItem
+                id={tabIds.proxy.tab}
+                role="tab"
+                active={activeTab === "proxy"}
+                aria-selected={activeTab === "proxy"}
+                aria-controls={tabIds.proxy.panel}
+                onClick={() => setActiveTab("proxy")}
+              >
+                {proxyTabLabel ?? "Proxy nodes"}
+              </SegmentedControlItem>
+            </SegmentedControl>
+
+            <div
+              id={tabIds.info.panel}
+              role="tabpanel"
+              aria-labelledby={tabIds.info.tab}
+              hidden={activeTab !== "info"}
+              className="space-y-4"
+            >
+              <div className="grid gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4 sm:grid-cols-2">
+                <div>
+                  <p className="text-xs font-semibold text-base-content/55">
+                    {accountCountLabel ?? "Accounts"}
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-base-content">
+                    {accountCount}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-base-content/55">
+                    {existing ? existingBadgeLabel : draftBadgeLabel}
+                  </p>
+                  <p className="mt-1 break-all text-sm font-semibold text-base-content">
+                    {groupName}
+                  </p>
+                </div>
+              </div>
             <label className="field">
               <span className="field-label">{noteLabel}</span>
               <textarea
@@ -366,7 +456,15 @@ export function UpstreamAccountGroupNoteDialog({
                 onChange={(event) => onNoteChange(event.target.value)}
               />
             </label>
+            </div>
 
+            <div
+              id={tabIds.routing.panel}
+              role="tabpanel"
+              aria-labelledby={tabIds.routing.tab}
+              hidden={activeTab !== "routing"}
+              className="space-y-4"
+            >
             <ConcurrencyLimitSlider
               value={concurrencyLimit}
               disabled={busy}
@@ -379,30 +477,6 @@ export function UpstreamAccountGroupNoteDialog({
               unlimitedLabel={concurrencyLimitUnlimitedLabel ?? "Unlimited"}
               onChange={onConcurrencyLimitChange}
             />
-
-            {onRoutingPolicyEdit ? (
-              <section className="flex items-center justify-between gap-4 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
-                <div className="min-w-0 space-y-1">
-                  <h3 className="text-sm font-semibold text-base-content">
-                    {routingPolicyLabel ?? "Routing policy"}
-                  </h3>
-                  <p className="text-xs leading-5 text-base-content/68">
-                    {routingPolicyHint ??
-                      "Customize priority, FAST mode, block-new-conversations, cut-in/cut-out, concurrency, and upstream 429 retry for this group."}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  disabled={busy}
-                  onClick={onRoutingPolicyEdit}
-                >
-                  {routingPolicyEditLabel ?? "Edit policy"}
-                </Button>
-              </section>
-            ) : null}
-
             {showSingleAccountRotationSection ? (
               <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
                 <div className="space-y-1">
@@ -436,7 +510,6 @@ export function UpstreamAccountGroupNoteDialog({
                 </div>
               </section>
             ) : null}
-
             {showUpstream429RetrySection ? (
               <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
                 <div className="space-y-1">
@@ -449,47 +522,69 @@ export function UpstreamAccountGroupNoteDialog({
                   </p>
                 </div>
 
-                <div className="flex items-center justify-between gap-3 rounded-xl border border-base-300/80 bg-base-100/75 px-3 py-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-base-content">
-                      {upstream429RetryToggleLabel ??
-                        "Retry the same account after upstream 429"}
-                    </p>
-                  </div>
-                  <Switch
-                    checked={normalizedUpstream429RetryEnabled}
-                    onCheckedChange={(checked) =>
-                      onUpstream429RetryEnabledChange?.(checked)
-                    }
-                    disabled={busy || !onUpstream429RetryEnabledChange}
-                    aria-label={
-                      upstream429RetryToggleLabel ??
-                      "Retry the same account after upstream 429"
-                    }
-                  />
-                </div>
-
-                <SelectField
-                  label={upstream429RetryCountLabel ?? "Retry count"}
-                  value={String(selectedRetryCount)}
+                <PolicyInlineOptionGroup<number>
+                  ariaLabel={
+                    upstream429RetryLabel ??
+                    upstream429RetryToggleLabel ??
+                    upstream429RetryCountLabel ??
+                    "Upstream 429 retry"
+                  }
+                  value={selectedRetryCount}
                   disabled={
                     busy ||
-                    !normalizedUpstream429RetryEnabled ||
-                    !onUpstream429MaxRetriesChange
+                    (!onUpstream429RetryEnabledChange &&
+                      !onUpstream429MaxRetriesChange)
                   }
-                  options={retryCountOptions.map((option) => ({
-                    value: String(option.value),
-                    label: option.label,
-                  }))}
-                  onValueChange={(value) =>
-                    onUpstream429MaxRetriesChange?.(
-                      normalizeUpstream429MaxRetries(Number(value)),
-                    )
-                  }
+                  options={retryCountOptions}
+                  onChange={handleUpstream429RetryCountChange}
                 />
               </section>
             ) : null}
+              {routingPolicyEditor ? (
+                <section className="rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+                  <div className="mb-4 space-y-1">
+                    <h3 className="text-sm font-semibold text-base-content">
+                      {routingPolicyLabel ?? "Routing policy"}
+                    </h3>
+                    <p className="text-xs leading-5 text-base-content/68">
+                      {routingPolicyHint ??
+                        "Customize priority, FAST mode, block-new-conversations, cut-in/cut-out, concurrency, and upstream 429 retry for this group."}
+                    </p>
+                  </div>
+                  {routingPolicyEditor}
+                </section>
+              ) : null}
+            {onRoutingPolicyEdit ? (
+              <section className="flex items-center justify-between gap-4 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+                <div className="min-w-0 space-y-1">
+                  <h3 className="text-sm font-semibold text-base-content">
+                    {routingPolicyLabel ?? "Routing policy"}
+                  </h3>
+                  <p className="text-xs leading-5 text-base-content/68">
+                    {routingPolicyHint ??
+                      "Customize priority, FAST mode, block-new-conversations, cut-in/cut-out, concurrency, and upstream 429 retry for this group."}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  onClick={onRoutingPolicyEdit}
+                >
+                  {routingPolicyEditLabel ?? "Edit policy"}
+                </Button>
+              </section>
+            ) : null}
+            </div>
 
+            <div
+              id={tabIds.proxy.panel}
+              role="tabpanel"
+              aria-labelledby={tabIds.proxy.tab}
+              hidden={activeTab !== "proxy"}
+              className="space-y-4"
+            >
             {showProxyBindings ? (
               <section className="flex min-h-0 flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
                 <div className="space-y-1">
@@ -541,7 +636,6 @@ export function UpstreamAccountGroupNoteDialog({
                 />
               </section>
             ) : null}
-
             {showNodeShuntSection ? (
               <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
                 <div className="space-y-1">
@@ -580,6 +674,7 @@ export function UpstreamAccountGroupNoteDialog({
                 ) : null}
               </section>
             ) : null}
+            </div>
           </div>
         </div>
 
@@ -661,7 +756,10 @@ export function UpstreamAccountGroupNoteDialog({
               type="button"
               onClick={onSave}
               disabled={
-                busy || blockingBindingSelection || blockingNodeShuntSelection
+                busy ||
+                saveDisabled ||
+                blockingBindingSelection ||
+                blockingNodeShuntSelection
               }
             >
               {busy && !deleting ? (

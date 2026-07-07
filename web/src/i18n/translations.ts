@@ -632,6 +632,10 @@ const baseTranslations = {
       "Unlimited",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "Saved group",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "Draft group",
+    "accountPool.upstreamAccounts.groupNotes.tabs.info": "Group info",
+    "accountPool.upstreamAccounts.groupNotes.tabs.routing": "Routing settings",
+    "accountPool.upstreamAccounts.groupNotes.tabs.proxy": "Proxy nodes",
+    "accountPool.upstreamAccounts.groupNotes.accountCount": "Accounts",
     "accountPool.upstreamAccounts.groupNotes.deleteBlockedWithCount":
       "Move the remaining {{count}} account(s) out before deleting this group.",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.label":
@@ -651,7 +655,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.upstream429.label":
       "Upstream 429 retry",
     "accountPool.upstreamAccounts.groupNotes.upstream429.hint":
-      "When enabled, this group keeps the same account and retries after upstream 429 with a random 1-10 second delay before falling back to account cooldown and failover.",
+      "Choose 0 to disable retries. Otherwise, this group keeps the same account and retries after upstream 429 with a random 1-10 second delay before falling back to account cooldown and failover.",
     "accountPool.upstreamAccounts.groupNotes.upstream429.toggle":
       "Retry the same account after upstream 429",
     "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel":
@@ -3149,6 +3153,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.concurrency.unlimited": "无限",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "已存在分组",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "草稿分组",
+    "accountPool.upstreamAccounts.groupNotes.tabs.info": "分组信息",
+    "accountPool.upstreamAccounts.groupNotes.tabs.routing": "路由设置",
+    "accountPool.upstreamAccounts.groupNotes.tabs.proxy": "代理节点",
+    "accountPool.upstreamAccounts.groupNotes.accountCount": "账号数量",
     "accountPool.upstreamAccounts.groupNotes.deleteBlockedWithCount":
       "请先移走这 {{count}} 个账号，再删除该分组。",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.label": "节点分流策略",
@@ -3167,7 +3175,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.upstream429.label":
       "上游 429 重试",
     "accountPool.upstreamAccounts.groupNotes.upstream429.hint":
-      "开启后，这个分组遇到上游 429 时会先保留当前账号，并在随机 1-10 秒后重试；耗尽后再回到当前的账号冷却和切号流程。",
+      "0 表示不重试；选择 1-5 后，这个分组遇到上游 429 时会先保留当前账号，并在随机 1-10 秒后重试，耗尽后再回到当前的账号冷却和切号流程。",
     "accountPool.upstreamAccounts.groupNotes.upstream429.toggle":
       "上游 429 后继续重试当前账号",
     "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel":

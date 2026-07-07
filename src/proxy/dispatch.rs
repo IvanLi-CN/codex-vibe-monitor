@@ -2227,16 +2227,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
                     .map(|instant| instant.elapsed().as_millis() as u64);
             }
-            warn!(
-                proxy_request_id,
-                invoke_id = %invoke_id_for_task,
-                request_seq = write_error.request_seq,
-                downstream_write_error_kind = write_error.kind,
-                downstream_write_error = %write_error.message,
-                forwarded_chunks,
-                forwarded_bytes,
-                "[DEBUG-stream-rootcause-20260706] observed downstream transport write error after response body drained"
-            );
         }
         if let Some(observation) = downstream_request_observer_for_task.as_ref() {
             observation.finish_response_monitoring();
@@ -2397,30 +2387,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         } else {
             "after_first_byte"
         });
-        if had_stream_error || had_logical_stream_failure || pure_downstream_closed {
-            warn!(
-                invoke_id = %invoke_id_for_task,
-                failure_kind,
-                stream_failure_origin,
-                upstream_read_error_kind,
-                content_encoding_chain = response_content_encoding.as_str(),
-                forwarded_chunks,
-                forwarded_bytes,
-                usage_observed,
-                downstream_close_phase,
-                downstream_write_error_kind,
-                last_upstream_chunk_gap_ms,
-                request_user_agent = request_chain_metadata_for_task.user_agent.as_deref(),
-                request_x_forwarded_for = request_chain_metadata_for_task
-                    .x_forwarded_for
-                    .as_deref(),
-                request_forwarded = request_chain_metadata_for_task.forwarded.as_deref(),
-                request_x_real_ip = request_chain_metadata_for_task.x_real_ip.as_deref(),
-                stream_terminal_event = response_info.stream_terminal_event.as_deref(),
-                usage_missing_reason = response_info.usage_missing_reason.as_deref(),
-                "[DEBUG-stream-rootcause-20260706] proxy stream failure classified"
-            );
-        }
         let pending_pool_attempt_terminal_reason = if pool_account_for_task.is_none() {
             None
         } else if had_stream_error {

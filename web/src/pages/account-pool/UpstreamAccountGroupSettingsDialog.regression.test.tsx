@@ -117,15 +117,6 @@ function findGroupSettingsDialog() {
   ) as HTMLElement | undefined
 }
 
-function findDialogByHeading(pattern: RegExp) {
-  return Array.from(document.body.querySelectorAll('[role="dialog"]')).find(
-    (dialog) =>
-      Array.from(dialog.querySelectorAll('h1, h2, h3, [role="heading"]')).some(
-        (candidate) => pattern.test(candidate.textContent?.trim() ?? ''),
-      ),
-  ) as HTMLElement | undefined
-}
-
 function findButtonByPattern(
   pattern: RegExp,
   root: ParentNode = document.body,
@@ -133,6 +124,14 @@ function findButtonByPattern(
   return Array.from(root.querySelectorAll('button')).find((candidate) =>
     pattern.test(candidate.textContent ?? ''),
   ) as HTMLButtonElement | undefined
+}
+
+function clickTab(pattern: RegExp, root: ParentNode = document.body) {
+  const tab = Array.from(root.querySelectorAll('[role="tab"]')).find(
+    (candidate) => pattern.test(candidate.textContent ?? ''),
+  ) as HTMLButtonElement | undefined
+  expect(tab).toBeTruthy()
+  pressButton(tab!)
 }
 
 function deleteButtonFromOpenDialog() {
@@ -374,19 +373,12 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
 
     const groupDialog = findGroupSettingsDialog()
     expect(groupDialog).toBeTruthy()
-    const editRoutingPolicy = findButtonByPattern(
-      /edit policy|编辑策略/i,
-      groupDialog!,
-    )
-    expect(editRoutingPolicy).toBeTruthy()
-    pressButton(editRoutingPolicy!)
+    clickTab(/routing settings|路由设置/i, groupDialog!)
     await flushAsync()
 
-    const routingPolicyDialog = findDialogByHeading(
-      /group routing policy|分组路由策略/i,
-    )
-    expect(routingPolicyDialog).toBeTruthy()
-    const availableModelsTrigger = routingPolicyDialog?.querySelector(
+    const routingPolicyPanel = groupDialog?.querySelector('[role="tabpanel"]:not([hidden])')
+    expect(routingPolicyPanel).toBeTruthy()
+    const availableModelsTrigger = routingPolicyPanel?.querySelector(
       'button[role="combobox"][aria-label="Available models"], button[role="combobox"][aria-label="可用模型"]',
     ) as HTMLButtonElement | null
     expect(availableModelsTrigger).toBeTruthy()
@@ -402,14 +394,6 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
     act(() => {
       clearAndInherit?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    await flushAsync()
-
-    const savePolicy = findButtonByPattern(
-      /apply group policy|应用分组策略/i,
-      routingPolicyDialog!,
-    )
-    expect(savePolicy).toBeTruthy()
-    pressButton(savePolicy!)
     await flushAsync()
 
     const refreshedGroupDialog = findGroupSettingsDialog()
@@ -431,5 +415,149 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
       }),
       { existing: true },
     )
+  })
+
+  it('saves 0 upstream 429 retries as disabled in the inline routing policy payload', async () => {
+    const saveGroupSettings = vi.fn().mockResolvedValue(undefined)
+
+    function Harness() {
+      const { openEditor, dialog } = useUpstreamAccountGroupSettingsDialog({
+        writesEnabled: true,
+        resolveGroupState: (groupName) => ({
+          ...createGroupState(groupName),
+          upstream429RetryEnabled: true,
+          upstream429MaxRetries: 3,
+          routingRule: {
+            ...createGroupState(groupName).routingRule,
+            upstream429RetryEnabled: true,
+            upstream429MaxRetries: 3,
+          },
+        }),
+        saveGroupSettings,
+      })
+
+      return (
+        <>
+          <button type="button" onClick={() => openEditor('prod')}>
+            Open group settings
+          </button>
+          {dialog}
+        </>
+      )
+    }
+
+    render(<Harness />)
+    pressButton(openButtonByLabel('Open group settings'))
+    await flushAsync()
+
+    const groupDialog = findGroupSettingsDialog()
+    expect(groupDialog).toBeTruthy()
+    clickTab(/routing settings|路由设置/i, groupDialog!)
+    await flushAsync()
+
+    const retryGroup = groupDialog?.querySelector(
+      '[role="tabpanel"]:not([hidden]) [role="radiogroup"][aria-label="Upstream 429 retry"], [role="tabpanel"]:not([hidden]) [role="radiogroup"][aria-label="上游 429 重试"]',
+    ) as HTMLElement | null
+    expect(retryGroup).toBeTruthy()
+    const zeroRetry = Array.from(
+      retryGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+    ).find((button) => button.textContent?.trim() === '0')
+    expect(zeroRetry).toBeTruthy()
+    pressButton(zeroRetry!)
+    await flushAsync()
+
+    const saveGroup = findButtonByPattern(/save changes|保存修改/i, groupDialog!)
+    expect(saveGroup).toBeTruthy()
+    pressButton(saveGroup!)
+    await flushAsync()
+
+    expect(saveGroupSettings).toHaveBeenCalledWith(
+      'prod',
+      expect.objectContaining({
+        routingRule: expect.objectContaining({
+          upstream429RetryEnabled: false,
+          upstream429MaxRetries: 0,
+        }),
+      }),
+      { existing: true },
+    )
+  })
+
+  it('blocks the unified save while inline routing policy payload is invalid', async () => {
+    const saveGroupSettings = vi.fn().mockResolvedValue(undefined)
+
+    function Harness() {
+      const { openEditor, dialog } = useUpstreamAccountGroupSettingsDialog({
+        writesEnabled: true,
+        resolveGroupState: (groupName) => ({
+          ...createGroupState(groupName),
+          effectiveTimeouts: {
+            responsesFirstByteTimeoutSecs: 120,
+            compactFirstByteTimeoutSecs: 300,
+            responsesStreamTimeoutSecs: 300,
+            compactStreamTimeoutSecs: 300,
+          },
+          timeoutFieldSources: {
+            responsesFirstByteTimeoutSecs: 'root',
+            compactFirstByteTimeoutSecs: 'root',
+            responsesStreamTimeoutSecs: 'root',
+            compactStreamTimeoutSecs: 'root',
+          },
+        }),
+        saveGroupSettings,
+      })
+
+      return (
+        <>
+          <button type="button" onClick={() => openEditor('prod')}>
+            Open group settings
+          </button>
+          {dialog}
+        </>
+      )
+    }
+
+    render(<Harness />)
+    pressButton(openButtonByLabel('Open group settings'))
+    await flushAsync()
+
+    const groupDialog = findGroupSettingsDialog()
+    expect(groupDialog).toBeTruthy()
+    clickTab(/routing settings|路由设置/i, groupDialog!)
+    await flushAsync()
+
+    const editTimeout = Array.from(groupDialog!.querySelectorAll('button')).find(
+      (candidate) =>
+        /clear and inherit|清空并继承/i.test(
+          candidate.getAttribute('aria-label') ?? '',
+        ),
+    ) as HTMLButtonElement | undefined
+    expect(editTimeout).toBeTruthy()
+    pressButton(editTimeout!)
+    await flushAsync()
+
+    const activePanel = groupDialog?.querySelector('[role="tabpanel"]:not([hidden])')
+    const timeoutInput = activePanel?.querySelector(
+      'input[name="responsesFirstByteTimeoutSecs"]',
+    ) as HTMLInputElement | null
+    expect(timeoutInput).toBeTruthy()
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set
+      valueSetter?.call(timeoutInput, '')
+      timeoutInput!.dispatchEvent(new Event('input', { bubbles: true }))
+      timeoutInput!.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await flushAsync()
+
+    const saveGroup = findButtonByPattern(/save changes|保存修改/i, groupDialog!)
+    expect(saveGroup).toBeTruthy()
+    expect(saveGroup?.disabled).toBe(true)
+    pressButton(saveGroup!)
+    await flushAsync()
+
+    expect(saveGroupSettings).not.toHaveBeenCalled()
   })
 })

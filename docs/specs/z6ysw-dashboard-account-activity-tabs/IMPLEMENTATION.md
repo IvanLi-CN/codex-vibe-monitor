@@ -30,9 +30,12 @@
 - 已实现：运行中调用统一拆为 `queued / requesting / responding` 三阶段；`StatsResponse`、账号活动接口与 invocation preview 暴露 `inProgressPhaseCounts` / `livePhase`，Dashboard 上游账号卡标题区与 recent bridge 均读取账号级 live 统计，不再从卡内 recent 列表推导运行态数量。
 - 已实现：上游账号卡片四组周期统计改为整张统计卡触发结构化 tooltip；浮层按主值、当前字段、相关数据分层展示字段名和值，并关闭卡内分解段落的逐段 tooltip，避免嵌套触发区域。
 - 已实现：账号活动接口返回每个账号的 `effectiveRoutingRule` 与最小账号状态字段；Dashboard 账号卡标题区固定展示优先级/新对话、Fast 模式、`禁出`、`禁入` 快捷策略 chip，并只把异常/注意态状态渲染为可点击 badge 集合。
-- 已实现：Dashboard 账号卡快捷策略入口使用乐观 UI + 1 秒 debounce 写入账号级 `routingRule` 覆盖；优先级/新对话入口按 `普通 → 兜底 → 主力 → 禁新 → 普通` 轮换，Fast 模式按 `保持原样 → 补Fast → Fast → 禁Fast → 保持原样` 轮换，`禁出 / 禁入` 分别写账号级 `allowCutOut / allowCutIn`，该入口不提供恢复继承。
+- 已实现：Dashboard 账号卡快捷策略入口使用乐观 UI + 1 秒 debounce 写入账号级 `routingRule` 覆盖；优先级/新对话入口按 `普通 → 兜底 → 主力 → 禁新 → 普通` 轮换，Fast 模式按 `不改Fast → 补Fast → 强制Fast → 禁Fast → 不改Fast` 轮换，`禁出 / 禁入` 分别写账号级 `allowCutOut / allowCutIn`，该入口不提供恢复继承。
+- 已实现：Dashboard 账号卡快捷策略 chip 使用独立语义 tone helper；`普通 / 不改Fast` 为 neutral，`兜底 / 补Fast` 为 success，`主力 / 强制Fast` 为 primary，`禁新 / 禁Fast / 激活禁出 / 激活禁入` 为 warning，并通过 `data-policy-tone` 固化回归检查。
+- 已覆盖：Dashboard 上游账号快捷策略语义色在浅色与深色 Storybook 场景中同屏展示 success / primary / warning / neutral 四个色槽，并写入 `SPEC.md` 视觉证据。
 - 已覆盖：Dashboard 上游账号卡 Fast 模式快捷入口的组件测试断言 debounce 窗口内不会禁用 chip，可连续点击到最终目标态，并且 1 秒窗口内只提交最终 `fastModeRewriteMode`。
 - 已实现：账号卡异常/注意状态 badge 集合点击进入账号详情 `healthEvents` 标签页，右侧齿轮按钮进入账号详情 `routing` 标签页；`useUpstreamAccountDetailRoute` 已支持 `healthEvents` tab。
+- 已实现：Dashboard 上游账号卡标题区不再渲染本地 `#<upstreamAccountId>` 编号；标题区保留账号名、异常/注意状态 badge、快捷策略 chip、实时指标与齿轮路由入口，避免把内部主键暴露成主要扫描元素。
 - 已实现：账号活动接口补出 `avgTotalMs`、`totalCost`、严格失败 `failureCost` 与 `failureTokens`；请求组的非成功率由前端按 `nonSuccessCount / requestCount` 计算，成本组的失败成本比率由前端按 `failureCost / totalCost` 计算，`其他` 按 `nonSuccessCount - failureCount` 下限归零。
 - 已实现：账号活动接口中的 `tokensPerMinute` / `spendRate` 改为按每个账号最近 5 分钟活跃尾段计算；账号卡今日总量、recent 调用与排序仍使用所选 range 总量口径。
 - 已实现：账号活动 live rows、账号卡 `inProgressInvocationCount` 与 account-scoped summary 对 pool running 调用使用同 `invokeId` 的 pool attempt 账号作为 fallback，避免已选账号但 payload 尚未写入 `upstreamAccountId` 时形成未归属 running 行。

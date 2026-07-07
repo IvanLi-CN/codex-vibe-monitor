@@ -5,6 +5,11 @@ import type { ForwardProxyBindingNode } from "../lib/api";
 import { apiConcurrencyLimitToSliderValue } from "../lib/concurrencyLimit";
 import { UpstreamAccountGroupNoteDialog } from "./UpstreamAccountGroupNoteDialog";
 import {
+  GroupAccountRoutingRuleEditor,
+  type GroupAccountRoutingRuleLabels,
+} from "./GroupAccountRoutingRuleDialog";
+import { buildDefaultStatusChangeReasons } from "../lib/upstreamAccountStatusChangeReasons";
+import {
   PARITY_DIRECT_KEY,
   PARITY_JP_EDGE_KEY,
   PARITY_US_EDGE_KEY,
@@ -29,6 +34,7 @@ type DialogHarnessProps = {
   availableProxyNodes?: ForwardProxyBindingNode[];
   proxyBindingsCatalogKind?: "ready-empty" | "ready-with-data" | "loading" | "missing" | "deferred";
   proxyBindingsCatalogFreshness?: "fresh" | "stale" | "missing" | "deferred";
+  showRoutingPolicyEditor?: boolean;
 };
 
 function buildRequestBuckets(
@@ -235,10 +241,77 @@ function DialogHarness({
   const [upstream429MaxRetries, setUpstream429MaxRetries] = useState(
     initialUpstream429MaxRetries,
   );
+  const routingPolicyLabels: GroupAccountRoutingRuleLabels = {
+    allowNewConversations: "New conversations",
+    newConversationHint: "Allow new conversations on this group",
+    allowCutOut: "Cut out is not blocked",
+    allowCutIn: "Cut in is not blocked",
+    forbidCutOut: "Block cut out",
+    forbidCutIn: "Block cut in",
+    priorityTier: "Preferred usage",
+    priorityPrimary: "Primary",
+    priorityNormal: "Normal",
+    priorityFallback: "Fallback only",
+    fastModeRewriteMode: "Fast mode",
+    fastModeKeepOriginal: "Keep original",
+    fastModeFillMissing: "Fill when missing",
+    fastModeForceAdd: "Force add",
+    fastModeForceRemove: "Force remove",
+    imageToolRewriteMode: "Image tools",
+    imageToolKeepOriginal: "Keep original",
+    imageToolFillMissing: "Fill when missing",
+    imageToolForceAdd: "Force add",
+    imageToolForceRemove: "Force remove",
+    imageToolRewriteHint:
+      "Keep original follows the account's own image capability. Fill when missing only injects image tools when image intent is confirmed; force add always injects; force remove always strips it.",
+    concurrencyLimit: "Policy concurrency limit",
+    concurrencyHint:
+      "This route-policy limit overrides root defaults for matching group members.",
+    currentValue: "Current",
+    unlimited: "Unlimited",
+    upstream429Retry: "Policy upstream 429 retry",
+    upstream429RetryHint:
+      "Choose 0 to disable retries. Positive values are stored inside the routing rule.",
+    upstream429RetryToggle: "Retry after upstream 429 in policy",
+    upstream429RetryCount: "Policy retry count",
+    upstream429RetryCountOnce: "1 retry",
+    upstream429RetryCountMany: (count) => `${count} retries`,
+    availableModels: "Available models",
+    availableModelsHint: "Leave empty to inherit all model access.",
+    availableModelsSearchPlaceholder: "Search models",
+    availableModelsEmpty: "No matching models",
+    availableModelsAll: "Inherited / unrestricted",
+    availableModelsCustomLabel: (value) => value,
+    availableModelsAddCustom: "Add custom model id",
+    availableModelsInherited: "Clear and inherit",
+    availableModelsRemove: "Remove model",
+    statusChangeReasonSectionTitle: "Status change trigger reasons",
+    statusChangeReasonSectionHint:
+      "Disabled reasons keep evidence only and do not change account state.",
+    statusChangeReasonLabel: (reason) => reason.replaceAll("_", " "),
+    statusChangeReasonToggleEnabled: "On",
+    statusChangeReasonToggleDisabled: "Off",
+    timeoutSectionTitle: "Request path timeouts",
+    timeoutSectionHint: "Leave a field empty to inherit the current default.",
+    timeoutResponsesFirstByte: "Standard response first byte timeout",
+    timeoutCompactFirstByte: "Compact response first byte timeout",
+    timeoutResponsesStream: "Standard stream completion timeout",
+    timeoutCompactStream: "Compact stream completion timeout",
+    timeoutInheritedValue: "Inherited",
+    timeoutOverrideValue: "Group override",
+    timeoutClearField: "Clear group override",
+    timeoutInheritField: "Clear and inherit",
+    timeoutSourceGlobal: "Global",
+    timeoutSourceGroup: "Group",
+    timeoutSourceAccount: "Account",
+    timeoutSourceConversation: "Conversation",
+    cancel: "Cancel",
+    validation: "Review the routing policy before saving.",
+  };
 
   return (
     <div className="min-h-screen bg-base-200 px-6 py-10 text-base-content">
-      <div className="mx-auto max-w-3xl rounded-[28px] border border-base-300/70 bg-base-100/80 p-6 shadow-xl backdrop-blur">
+      <div className="mx-auto max-w-3xl rounded-2xl border border-base-300/70 bg-base-100 p-6">
         <div className="mb-4 space-y-2">
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-base-content/45">
             Shared Group Settings
@@ -298,6 +371,10 @@ function DialogHarness({
           closeLabel="Close dialog"
           existingBadgeLabel="Persisted group"
           draftBadgeLabel="Draft group"
+          infoTabLabel="Group info"
+          routingTabLabel="Routing settings"
+          proxyTabLabel="Proxy nodes"
+          accountCountLabel="Accounts"
           nodeShuntLabel="Node shunt strategy"
           nodeShuntHint="Each selected node becomes an exclusive slot. Selecting 3 nodes means the group can provide 3 upstream accounts at the same time."
           nodeShuntToggleLabel="Enable exclusive node slots"
@@ -306,7 +383,7 @@ function DialogHarness({
           singleAccountRotationHint="Successful conversations stay on the same account. After upstream 429 retry is exhausted, only that conversation moves to the next reset-time candidate."
           singleAccountRotationToggleLabel="Keep conversations on one account until final 429"
           upstream429RetryLabel="Upstream 429 retry"
-          upstream429RetryHint="When enabled, this group keeps the same account and retries after upstream 429 with a random 1-10 second delay."
+          upstream429RetryHint="Choose 0 to disable retries. Positive values keep the same account after upstream 429 with a random 1-10 second delay."
           upstream429RetryToggleLabel="Retry the same account after upstream 429"
           upstream429RetryCountLabel="Retry count"
           upstream429RetryCountOptions={[
@@ -316,6 +393,48 @@ function DialogHarness({
             { value: 4, label: "4 retries" },
             { value: 5, label: "5 retries" },
           ]}
+          routingPolicyLabel="Routing policy"
+          routingPolicyHint="Customize priority, FAST mode, model eligibility, cut-in/cut-out, policy concurrency, status-change triggers, and timeouts for this group."
+          routingPolicyEditor={
+            args.showRoutingPolicyEditor ? (
+              <GroupAccountRoutingRuleEditor
+                open
+                changedFieldsOnly
+                rule={{
+                  blockNewConversations: false,
+                  allowCutOut: true,
+                  allowCutIn: true,
+                  priorityTier: "normal",
+                  fastModeRewriteMode: "keep_original",
+                  imageToolRewriteMode: "keep_original",
+                  concurrencyLimit: 0,
+                  upstream429RetryEnabled: false,
+                  upstream429MaxRetries: 0,
+                  availableModels: ["gpt-5.5"],
+                  availableModelsDefined: true,
+                  statusChangeReasons: buildDefaultStatusChangeReasons(),
+                }}
+                effectiveTimeouts={{
+                  responsesFirstByteTimeoutSecs: 120,
+                  compactFirstByteTimeoutSecs: 300,
+                  responsesStreamTimeoutSecs: 300,
+                  compactStreamTimeoutSecs: 300,
+                }}
+                timeoutFieldSources={{
+                  responsesFirstByteTimeoutSecs: "root",
+                  compactFirstByteTimeoutSecs: "root",
+                  responsesStreamTimeoutSecs: "root",
+                  compactStreamTimeoutSecs: "root",
+                }}
+                labels={routingPolicyLabels}
+                availableModelOptions={[
+                  "gpt-5.5",
+                  "gpt-5.5-pro",
+                  "gpt-5.4",
+                ]}
+              />
+            ) : undefined
+          }
           proxyBindingsLabel="Bound proxy nodes"
           proxyBindingsHint="Leave empty to keep automatic routing. Selected nodes are used as a hard-bound pool for this group."
           proxyBindingsAutomaticLabel="No nodes bound. This group uses automatic routing."
@@ -370,6 +489,10 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+async function openStoryTab(label: RegExp) {
+  await userEvent.click(within(document.body).getByRole("tab", { name: label }));
+}
+
 export const AutomaticRouting: Story = {};
 
 export const Upstream429RetryEnabled: Story = {
@@ -379,13 +502,14 @@ export const Upstream429RetryEnabled: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await openStoryTab(/routing settings/i);
     await expect(canvas.getByText(/Upstream 429 retry/i)).toBeInTheDocument();
+    const retryGroup = canvas.getByRole("radiogroup", {
+      name: /Upstream 429 retry/i,
+    });
     await expect(
-      canvas.getByRole("switch", {
-        name: /Retry the same account after upstream 429/i,
-      }),
+      within(retryGroup).getByRole("radio", { name: "3" }),
     ).toHaveAttribute("aria-checked", "true");
-    await expect(canvas.getByText(/3 retries/i)).toBeInTheDocument();
   },
 };
 
@@ -397,6 +521,7 @@ export const SingleAccountRotationEnabled: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await openStoryTab(/routing settings/i);
     await expect(
       canvas.getByText(/Single-account rotation load/i),
     ).toBeInTheDocument();
@@ -411,6 +536,22 @@ export const SingleAccountRotationEnabled: Story = {
   },
 };
 
+export const RoutingPolicyInlineEditor: Story = {
+  args: {
+    showRoutingPolicyEditor: true,
+    upstream429RetryEnabled: true,
+    upstream429MaxRetries: 2,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await openStoryTab(/routing settings/i);
+    await expect(canvas.getByText(/Routing policy/i)).toBeInTheDocument();
+    await expect(canvas.getByText(/Preferred usage/i)).toBeInTheDocument();
+    await expect(canvas.getByText(/Available models/i)).toBeInTheDocument();
+    await expect(canvas.getByText(/Request path timeouts/i)).toBeInTheDocument();
+  },
+};
+
 export const NodeShuntEnabled: Story = {
   args: {
     boundProxyKeys: [directBindingKey, "fpn_5a7b0c1d2e3f4a10"],
@@ -418,6 +559,7 @@ export const NodeShuntEnabled: Story = {
   },
   play: async () => {
     const screen = within(document.body);
+    await openStoryTab(/proxy nodes/i);
     await expect(screen.getByText(/Node shunt strategy/i)).toBeInTheDocument();
     await expect(
       screen.getByRole("switch", { name: /Enable exclusive node slots/i }),
@@ -432,14 +574,13 @@ export const Upstream429RetryDisabled: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await openStoryTab(/routing settings/i);
+    const retryGroup = canvas.getByRole("radiogroup", {
+      name: /Upstream 429 retry/i,
+    });
     await expect(
-      canvas.getByRole("switch", {
-        name: /Retry the same account after upstream 429/i,
-      }),
-    ).toHaveAttribute("aria-checked", "false");
-    await expect(
-      canvas.getByRole("combobox", { name: /Retry count/i }),
-    ).toHaveAttribute("data-disabled");
+      within(retryGroup).getByRole("radio", { name: "0" }),
+    ).toHaveAttribute("aria-checked", "true");
   },
 };
 
@@ -453,6 +594,7 @@ export const HardBoundMultipleNodes: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await openStoryTab(/proxy nodes/i);
     const chart = await canvas.findByLabelText(
       /JP Edge 01 Last 24h request volume chart/i,
     );
@@ -495,6 +637,7 @@ export const GlobalNodeHealthParity: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await openStoryTab(/proxy nodes/i);
     await expect(canvas.getByText(/^JP Edge 01$/i)).toBeInTheDocument();
     await expect(canvas.getAllByText(/^2$/).length).toBeGreaterThan(0);
     await expect(canvas.getByText(/^Direct$/i)).toBeInTheDocument();
@@ -533,6 +676,7 @@ export const LoadingProxyCatalog: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await openStoryTab(/proxy nodes/i);
     await expect(canvas.getByText(/Loading proxy nodes/i)).toBeInTheDocument();
     await expect(
       canvas.queryByText(/No proxy nodes available/i),
@@ -579,6 +723,7 @@ export const SettingsSaveSyncRefresh: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await openStoryTab(/proxy nodes/i);
     await expect(canvas.getByText(/Loading proxy nodes/i)).toBeInTheDocument();
     await expect(
       canvas.queryByText(/No proxy nodes available/i),
@@ -598,6 +743,7 @@ export const UnavailableOnlyBindingsBlockSave: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await openStoryTab(/proxy nodes/i);
     await expect(
       canvas.getByText(
         /select at least one available proxy node or clear bindings before saving\./i,
@@ -628,6 +774,7 @@ export const LegacyAliasBindingsRemainSaveable: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await openStoryTab(/proxy nodes/i);
     await expect(canvas.getByText(/^Tokyo Edge A$/i)).toBeInTheDocument();
     await expect(
       canvas.queryByText(
