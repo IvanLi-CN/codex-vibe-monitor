@@ -632,6 +632,10 @@ const baseTranslations = {
       "Unlimited",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "Saved group",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "Draft group",
+    "accountPool.upstreamAccounts.groupNotes.tabs.info": "Group info",
+    "accountPool.upstreamAccounts.groupNotes.tabs.routing": "Routing settings",
+    "accountPool.upstreamAccounts.groupNotes.tabs.proxy": "Proxy nodes",
+    "accountPool.upstreamAccounts.groupNotes.accountCount": "Accounts",
     "accountPool.upstreamAccounts.groupNotes.deleteBlockedWithCount":
       "Move the remaining {{count}} account(s) out before deleting this group.",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.label":
@@ -3149,6 +3153,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.concurrency.unlimited": "无限",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "已存在分组",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "草稿分组",
+    "accountPool.upstreamAccounts.groupNotes.tabs.info": "分组信息",
+    "accountPool.upstreamAccounts.groupNotes.tabs.routing": "路由设置",
+    "accountPool.upstreamAccounts.groupNotes.tabs.proxy": "代理节点",
+    "accountPool.upstreamAccounts.groupNotes.accountCount": "账号数量",
     "accountPool.upstreamAccounts.groupNotes.deleteBlockedWithCount":
       "请先移走这 {{count}} 个账号，再删除该分组。",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.label": "节点分流策略",

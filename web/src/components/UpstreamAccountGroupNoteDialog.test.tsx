@@ -152,6 +152,16 @@ function bodyText() {
   return document.body.textContent ?? "";
 }
 
+function clickTab(label: RegExp) {
+  const tab = Array.from(document.querySelectorAll('[role="tab"]')).find(
+    (candidate) => label.test(candidate.textContent ?? ""),
+  ) as HTMLButtonElement | undefined;
+  expect(tab).toBeDefined();
+  act(() => {
+    tab?.click();
+  });
+}
+
 describe("UpstreamAccountGroupNoteDialog", () => {
   it("shows protocol badges, keeps direct available, and never renders raw subscription URLs", () => {
     renderDialog({
@@ -188,6 +198,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     const text = bodyText();
     expect(text).toContain("Direct");
@@ -250,6 +261,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     const text = bodyText();
     expect(text).not.toContain("legacy-missing-binding");
@@ -288,6 +300,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     const identityHints = Array.from(
       document.querySelectorAll('[title^="ID "]'),
@@ -310,6 +323,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("东京专线 A");
     expect(bodyText()).toContain("Unavailable");
@@ -321,6 +335,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       boundProxyKeys: ["fpn_missing_only"],
       availableProxyNodes: [],
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("fpn_missing_only");
     expect(bodyText()).toContain("Missing");
@@ -332,6 +347,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       proxyBindingsCatalogKind: "loading",
       proxyBindingsCatalogFreshness: "missing",
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("Loading proxy nodes…");
     expect(bodyText()).not.toContain("No proxy nodes available.");
@@ -352,6 +368,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       proxyBindingsCatalogKind: "loading",
       proxyBindingsCatalogFreshness: "missing",
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("Loading proxy nodes…");
     expect(bodyText()).toContain("fpn_missing_only");
@@ -378,6 +395,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       proxyBindingsCatalogKind: "missing",
       proxyBindingsCatalogFreshness: "missing",
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("Loading proxy nodes…");
     expect(bodyText()).not.toContain("No proxy nodes available.");
@@ -398,6 +416,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain(
       "Select at least one available proxy node or clear bindings before saving.",
@@ -430,6 +449,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("东京专线 A");
     expect(bodyText()).not.toContain(
@@ -471,6 +491,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         },
       ],
     });
+    clickTab(/proxy nodes/i);
 
     expect(bodyText()).toContain("JP Edge 01");
     expect(bodyText()).not.toContain("别组遗留节点");
@@ -481,6 +502,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });
+    clickTab(/routing settings/i);
 
     const retryToggle = document.querySelector(
       '[role="switch"][aria-label="Retry the same account after upstream 429"]',
@@ -504,6 +526,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       upstream429RetryEnabled: true,
       upstream429MaxRetries: 3,
     });
+    clickTab(/routing settings/i);
 
     const retryToggle = document.querySelector(
       '[role="switch"][aria-label="Retry the same account after upstream 429"]',
