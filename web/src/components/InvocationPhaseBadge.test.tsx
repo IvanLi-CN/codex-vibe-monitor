@@ -26,8 +26,8 @@ describe("InvocationPhaseBadge", () => {
     expect(html).toContain('data-phase-motion="dynamic"');
     expect(html).toContain('data-phase-label-visible="false"');
     expect(html).toContain('aria-label="请求中"');
-    expect(html).toContain('data-phase-icon-name="send-clock-outline"');
-    expect(html).toContain("animate-pulse");
+    expect(html).toContain('data-phase-icon-name="navigation-variant"');
+    expect(html).toContain("animate-invocation-phase-requesting");
     expect(html).not.toContain(">请求中<");
   });
 
@@ -39,7 +39,7 @@ describe("InvocationPhaseBadge", () => {
     expect(html).toContain('data-phase="responding"');
     expect(html).toContain('data-phase-motion="dynamic"');
     expect(html).toContain('data-phase-label-visible="true"');
-    expect(html).toContain('data-phase-icon-name="loading"');
+    expect(html).toContain('data-phase-icon-name="sync"');
     expect(html).toContain("animate-spin");
     expect(html).toContain(">响应中<");
   });
@@ -58,10 +58,12 @@ describe("InvocationPhaseSegments", () => {
       3,
     );
     expect(html).toContain('data-phase-motion="static"');
-    expect(html).toContain('data-phase-icon-name="send"');
-    expect(html).toContain('data-phase-icon-name="message-reply-outline"');
+    expect(html).toContain('data-phase-icon-name="navigation-variant"');
+    expect(html).toContain('data-phase-icon-name="chat-processing-outline"');
+    expect(html).not.toContain("animate-invocation-phase-requesting");
     expect(html).not.toContain("animate-pulse");
     expect(html).not.toContain("animate-spin");
     expect(html).not.toContain('data-phase-icon-name="loading"');
+    expect(html).not.toContain('data-phase-icon-name="sync"');
   });
 });

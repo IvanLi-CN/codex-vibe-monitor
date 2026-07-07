@@ -20,14 +20,13 @@ interface InvocationPhaseBadgeProps {
 
 const PHASE_ICON_NAMES: Record<InvocationLivePhase, AppIconName> = {
   queued: "timer-refresh-outline",
-  requesting: "send-clock-outline",
-  responding: "loading",
+  requesting: "navigation-variant",
+  responding: "sync",
 };
 
 const STATIC_PHASE_ICON_NAMES: Record<InvocationLivePhase, AppIconName> = {
   ...PHASE_ICON_NAMES,
-  requesting: "send",
-  responding: "message-reply-outline",
+  responding: "chat-processing-outline",
 };
 
 const PHASE_TEXT_CLASSNAMES: Record<InvocationLivePhase, string> = {
@@ -41,7 +40,7 @@ function phaseMotionClassName(
   motion: InvocationPhaseMotion,
 ) {
   if (motion !== "dynamic") return null;
-  if (phase === "requesting") return "animate-pulse";
+  if (phase === "requesting") return "animate-invocation-phase-requesting";
   if (phase === "responding") return "animate-spin";
   return null;
 }

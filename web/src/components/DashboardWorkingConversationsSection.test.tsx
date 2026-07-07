@@ -817,6 +817,7 @@ describe("DashboardWorkingConversationsSection", () => {
       expect(phaseSegment.getAttribute("data-phase-motion")).toBe("static");
       const icon = phaseSegment.querySelector('[data-testid="invocation-phase-icon"]');
       expect(icon).toBeInstanceOf(HTMLElement);
+      expect(icon?.className).not.toContain("animate-invocation-phase-requesting");
       expect(icon?.className).not.toContain("animate-pulse");
       expect(icon?.className).not.toContain("animate-spin");
     }
