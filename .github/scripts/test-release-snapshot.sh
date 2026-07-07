@@ -384,6 +384,13 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         )
         assert manual_idempotent_version_snapshot["release_tag"] == "v0.1.1"
         assert manual_idempotent_version_snapshot["manual_version"] == "0.1.1"
+        run("tag", "v0.2.0", sha2, cwd=repo)
+        assert module.publication_tags(
+            manual_idempotent_version_snapshot,
+            notes_ref=module.DEFAULT_NOTES_REF,
+            main_ref=sha3,
+        ) == "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1"
+        run("tag", "-d", "v0.2.0", cwd=repo)
 
         manual_bump_same_target_snapshot = module.build_manual_override_snapshot(
             target_sha=sha1,

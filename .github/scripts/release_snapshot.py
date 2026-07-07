@@ -523,7 +523,9 @@ def publication_tags(snapshot: dict[str, Any], *, notes_ref: str, main_ref: str)
 
     tags = immutable_release_tags(snapshot)
     if snapshot.get("snapshot_source") == "manual-release-override":
-        if snapshot.get("release_channel") == "stable":
+        if snapshot.get("release_channel") == "stable" and not has_newer_published_stable(
+            notes_ref, main_ref, str(snapshot["target_sha"])
+        ):
             tags.append(f"{release_image(snapshot)}:latest")
         return ",".join(tags)
 
