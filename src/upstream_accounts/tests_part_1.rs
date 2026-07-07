@@ -3326,10 +3326,6 @@
                 DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
             openai_proxy_encrypted_session_owner_routing_enabled:
                 DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
-            proxy_request_concurrency_limit: DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT,
-            proxy_request_concurrency_wait_timeout: Duration::from_millis(
-                DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,
-            ),
             proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
             proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
             proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,

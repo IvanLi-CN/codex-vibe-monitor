@@ -99,32 +99,9 @@ impl Drop for EnvVarGuard {
     }
 }
 
-#[test]
-fn app_config_from_sources_ignores_proxy_request_concurrency_envs() {
-    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
-    let _env = EnvVarGuard::set(&[
-        (ENV_PROXY_REQUEST_CONCURRENCY_LIMIT, Some("7")),
-        (ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS, Some("3456")),
-    ]);
-
-    let config = AppConfig::from_sources(&CliArgs::default())
-        .expect("proxy request concurrency envs should parse");
-
-    assert_eq!(
-        config.proxy_request_concurrency_limit,
-        DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT
-    );
-    assert_eq!(
-        config.proxy_request_concurrency_wait_timeout,
-        Duration::from_millis(DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS)
-    );
-}
-
 #[tokio::test]
 async fn acquire_proxy_request_concurrency_permit_tracks_multiple_in_flight_requests() {
-    let mut config = test_config();
-    config.proxy_request_concurrency_limit = 1;
-    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(25);
+    let config = test_config();
     let state = test_state_from_config(config, true).await;
     let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
 
@@ -159,9 +136,7 @@ async fn acquire_proxy_request_concurrency_permit_tracks_multiple_in_flight_requ
 
 #[tokio::test]
 async fn acquire_proxy_request_concurrency_permit_tracks_100_in_flight_without_local_rejection() {
-    let mut config = test_config();
-    config.proxy_request_concurrency_limit = 1;
-    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(25);
+    let config = test_config();
     let state = test_state_from_config(config, true).await;
     let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
 
@@ -197,9 +172,7 @@ async fn acquire_proxy_request_concurrency_permit_tracks_100_in_flight_without_l
 
 #[tokio::test]
 async fn proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure() {
-    let mut config = test_config();
-    config.proxy_request_concurrency_limit = 1;
-    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(25);
+    let config = test_config();
     let state = test_state_from_config(config, true).await;
     let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
     let mut rx = state.broadcaster.subscribe();
@@ -400,8 +373,6 @@ async fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stre
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
-    config.proxy_request_concurrency_limit = 1;
-    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
     let state = test_state_from_config(config, true).await;
     seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
     insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
