@@ -5,7 +5,7 @@ pre-commit:
       glob: "web/**/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
       run: cd web && bun run lint -- --max-warnings=0
     typecheck-web:
-      run: cd web && bun tsc -b
+      run: cd web && bunx tsc -b
     format-markdown:
       files: git diff --cached --name-only --diff-filter=ACMR -- '*.md'
       run: ./node_modules/.bin/dprint fmt {files}
