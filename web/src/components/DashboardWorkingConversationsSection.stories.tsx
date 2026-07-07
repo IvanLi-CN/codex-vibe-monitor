@@ -2966,7 +2966,7 @@ export const UpstreamAccountTab: Story = {
     }
     await expect(
       canvas.getByTestId("dashboard-upstream-account-policy-badges"),
-    ).toHaveTextContent("Fast");
+    ).toHaveTextContent("禁出");
     await expect(canvas.getByText("story-account-1")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5-mini")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5")).toBeInTheDocument();
@@ -3151,7 +3151,7 @@ export const UpstreamAccountHeaderActions: Story = {
     );
     await userEvent.click(policyBadges[0]!);
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
-      "account:42:routing",
+      "none",
     );
     await waitFor(
       () => {
