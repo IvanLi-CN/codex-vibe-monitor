@@ -282,6 +282,22 @@
   ![Dashboard 上游账号快捷策略与状态入口证据](./assets/dashboard-upstream-account-quick-policy-status.png)
 
 - source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-quick-policy-tone-palette`
+  scenario: `quick policy semantic tones light`
+  evidence_note: 验证 Dashboard 上游账号快捷策略 chip 在浅色主题下按语义配色：`兜底` 为 success、`Fast` 为 primary、激活 `禁出` 为 warning、未激活 `禁入` 为 neutral。
+  image:
+  PR: include
+  ![Dashboard 上游账号快捷策略语义色浅色证据](./assets/dashboard-upstream-account-policy-tones-light.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-quick-policy-tone-palette-dark`
+  scenario: `quick policy semantic tones dark`
+  evidence_note: 验证 Dashboard 上游账号快捷策略 chip 在深色主题下保持同一语义配色与可读性：success / primary / warning / neutral 四个色槽同屏可见。
+  image:
+  PR: include
+  ![Dashboard 上游账号快捷策略语义色深色证据](./assets/dashboard-upstream-account-policy-tones-dark.png)
+
+- source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
   scenario: `account header without legacy activity status badge`
   evidence_note: 验证 Dashboard 上游账号卡片标题区只保留异常/注意状态 badge 集合（`上游拒绝 / 限流`）与固定快捷策略 chip；旧的活动状态 badge（`关注 / 繁忙 / 稳定`）不再渲染，避免与账号健康状态入口重复。

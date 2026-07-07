@@ -697,6 +697,8 @@ type AccountQuickPolicyDraft = {
   fastModeRewriteMode: TagFastModeRewriteMode;
 };
 
+type AccountQuickPolicyTone = "neutral" | "success" | "warning" | "primary";
+
 type AccountAttentionBadge = {
   key: string;
   label: string;
@@ -774,6 +776,41 @@ function fastModePolicyLabel(
   if (mode === "force_remove") return locale === "zh" ? "禁Fast" : "No Fast";
   return locale === "zh" ? "保持原样" : "Keep original";
 }
+
+function priorityPolicyTone(
+  draft: AccountQuickPolicyDraft,
+): AccountQuickPolicyTone {
+  if (!draft.allowNewConversations) return "warning";
+  if (draft.priorityTier === "primary") return "primary";
+  if (draft.priorityTier === "fallback") return "success";
+  return "neutral";
+}
+
+function fastModePolicyTone(
+  mode: TagFastModeRewriteMode,
+): AccountQuickPolicyTone {
+  if (mode === "force_remove") return "warning";
+  if (mode === "force_add") return "primary";
+  if (mode === "fill_missing") return "success";
+  return "neutral";
+}
+
+function booleanBlockPolicyTone(isBlocked: boolean): AccountQuickPolicyTone {
+  return isBlocked ? "warning" : "neutral";
+}
+
+const ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES: Record<
+  AccountQuickPolicyTone,
+  string
+> = {
+  neutral: "border-base-300/80 bg-base-100/75 text-base-content/60",
+  success:
+    "border-success/40 bg-success/15 text-success shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+  warning:
+    "border-warning/50 bg-warning/15 text-base-content shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+  primary:
+    "border-primary/50 bg-primary/15 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+};
 
 function normalizeStatusToken(value: string | null | undefined) {
   return value?.trim().toLowerCase().replace(/-/g, "_") ?? "";
@@ -956,17 +993,14 @@ function AccountQuickPolicyChips({
   onToggleCutOut: () => void;
   onToggleCutIn: () => void;
 }) {
-  const priorityActive =
-    !draft.allowNewConversations || draft.priorityTier !== "normal";
-  const fastModeActive = draft.fastModeRewriteMode !== "keep_original";
   const cutOutActive = !draft.allowCutOut;
   const cutInActive = !draft.allowCutIn;
+  const priorityTone = priorityPolicyTone(draft);
+  const fastModeTone = fastModePolicyTone(draft.fastModeRewriteMode);
+  const cutOutTone = booleanBlockPolicyTone(cutOutActive);
+  const cutInTone = booleanBlockPolicyTone(cutInActive);
   const chipBase =
     "inline-flex h-6 shrink-0 items-center justify-center rounded-full border px-2.5 text-[11px] font-semibold leading-none transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-55";
-  const activeClassName =
-    "border-warning/55 bg-warning/14 text-base-content shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]";
-  const inactiveClassName =
-    "border-base-300/85 bg-base-100/76 text-base-content/62";
   return (
     <div
       data-testid="dashboard-upstream-account-policy-badges"
@@ -977,10 +1011,11 @@ function AccountQuickPolicyChips({
         type="button"
         data-testid="dashboard-upstream-account-policy-badge"
         data-policy-key="priority-new-conversations"
+        data-policy-tone={priorityTone}
         disabled={disabled}
         className={cn(
           chipBase,
-          priorityActive ? activeClassName : inactiveClassName,
+          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[priorityTone],
         )}
         title={
           locale === "zh"
@@ -1006,10 +1041,11 @@ function AccountQuickPolicyChips({
         type="button"
         data-testid="dashboard-upstream-account-policy-badge"
         data-policy-key="fast-mode-rewrite"
+        data-policy-tone={fastModeTone}
         disabled={disabled}
         className={cn(
           chipBase,
-          fastModeActive ? activeClassName : inactiveClassName,
+          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[fastModeTone],
         )}
         title={
           locale === "zh"
@@ -1033,10 +1069,11 @@ function AccountQuickPolicyChips({
         type="button"
         data-testid="dashboard-upstream-account-policy-badge"
         data-policy-key="allow-cut-out"
+        data-policy-tone={cutOutTone}
         disabled={disabled}
         className={cn(
           chipBase,
-          cutOutActive ? activeClassName : inactiveClassName,
+          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[cutOutTone],
         )}
         title={
           locale === "zh"
@@ -1058,10 +1095,11 @@ function AccountQuickPolicyChips({
         type="button"
         data-testid="dashboard-upstream-account-policy-badge"
         data-policy-key="allow-cut-in"
+        data-policy-tone={cutInTone}
         disabled={disabled}
         className={cn(
           chipBase,
-          cutInActive ? activeClassName : inactiveClassName,
+          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[cutInTone],
         )}
         title={
           locale === "zh" ? "点击切换账号级禁入" : "Toggle account-level cut in"
