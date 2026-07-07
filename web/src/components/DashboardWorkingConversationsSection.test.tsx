@@ -2865,8 +2865,12 @@ describe("DashboardWorkingConversationsSection", () => {
         throw new Error("missing upstream account Fast policy badge");
       }
 
-      expect(fastBadge.textContent?.trim()).toBe("Fast");
+      expect(fastBadge.textContent?.trim()).toBe("强制Fast");
       expect(fastBadge.dataset.policyTone).toBe("primary");
+      expect(fastBadge.getAttribute("title")).toContain("Fast 改写策略");
+      expect(fastBadge.getAttribute("aria-label")).toContain(
+        "Fast 改写策略：强制Fast",
+      );
 
       act(() => {
         fastBadge.click();
@@ -2878,8 +2882,11 @@ describe("DashboardWorkingConversationsSection", () => {
       act(() => {
         fastBadge.click();
       });
-      expect(fastBadge.textContent?.trim()).toBe("保持原样");
+      expect(fastBadge.textContent?.trim()).toBe("不改Fast");
       expect(fastBadge.dataset.policyTone).toBe("neutral");
+      expect(fastBadge.getAttribute("aria-label")).toContain(
+        "Fast 改写策略：不改Fast",
+      );
       expect(fastBadge.disabled).toBe(false);
       expect(fetchMock).not.toHaveBeenCalled();
 

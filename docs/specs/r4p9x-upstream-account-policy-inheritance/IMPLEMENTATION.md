@@ -100,6 +100,8 @@ Account-level forward-proxy bindings are now a first-class routing override.
 - account proxy lists use a dedicated `account:<id>` runtime scope so the current node remains sticky per account
 - explicit account proxy lists are hard constraints; all-unavailable lists fail through the existing proxy readiness path rather than falling back to group or automatic routing
 - the account detail Routing tab now shows the account proxy editor inline and no longer renders the separate "edit account policy" button
+- dashboard upstream-account Fast quick policy chips now label the four `fastModeRewriteMode` states as a parallel rewrite-policy axis: `不改Fast / 补Fast / 强制Fast / 禁Fast`
+- the Fast quick policy chip title and aria-label identify the control as the Fast rewrite policy and include the current state label
 
 ## Validation
 
@@ -118,6 +120,7 @@ Validation covers:
 - timeout source badges and clear-to-inherit controls work across group, account, and conversation layers without involving tags
 - timeout rows stay collapsed when the current layer does not override them; current-layer timeout overrides expand by default and can be cleared one field at a time without affecting untouched fields
 - account route proxy binding Storybook evidence proves the inline account proxy editor, inherited/effective proxy chips, and removal of the old edit policy button
+- dashboard upstream-account Fast quick policy unit and Storybook coverage verifies `强制Fast` and `不改Fast` labels, Fast rewrite policy tooltip/aria copy, debounce behavior, and persisted visual evidence
 - backend regressions proving disabled reasons suppress account-state side effects for both route and sync paths while still creating neutral account events
 - frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability
 - group settings regressions and Storybook states proving tab navigation, inline routing-policy draft save, proxy-node long-list readability, delete blocking, and explicit empty-model group policy payloads

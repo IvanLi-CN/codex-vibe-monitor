@@ -30,8 +30,8 @@
 - 2026-07-05：运行态调用从笼统 `进行中` 拆成 `排队中 / 请求中 / 响应中`，并要求账号卡所有运行态统计只读后端账号级 live `inProgressPhaseCounts`；recent 列表是展示窗口，不再承担统计事实源职责。
 - 2026-07-05：顶部实时 KPI 与上游账号卡片收敛到 `dashboard-activity` 同源快照；`TPM`、`消费速率` 与 `进行中调用` 由账号优先聚合结果求和得到，timeseries 退回趋势图职责，不再作为顶部当前值事实源。
 - 2026-07-07：Dashboard 上游账号卡标题区从只读关键策略徽章演进为快捷操作面；状态 badge 只展示异常/注意态并跳转健康事件，齿轮跳转路由设置，快捷策略一律写账号级覆盖且不提供恢复继承，以避免 Dashboard 上下文里出现继承/覆盖的额外决策负担。
-- 2026-07-07：Dashboard 上游账号卡快捷操作面补齐 Fast 模式四档切换，沿用账号池已有 `fastModeRewriteMode` 语义与 `保持原样 / 补Fast / Fast / 禁Fast` 文案；该入口继续只写账号级覆盖，避免在 Dashboard 快速操作区引入继承恢复决策。
-- 2026-07-07：Dashboard 上游账号快捷策略 chip 的颜色改为按策略意图映射，而不是按“是否激活”统一高亮：`普通 / 保持原样` 为 neutral，`兜底 / 补Fast` 为 success，`主力 / Fast` 为 primary，`禁新 / 禁Fast / 激活禁出 / 激活禁入` 为 warning。
+- 2026-07-07：Dashboard 上游账号卡快捷操作面补齐 Fast 模式四档切换，沿用账号池已有 `fastModeRewriteMode` 语义并显示为 `不改Fast / 补Fast / 强制Fast / 禁Fast`；该入口继续只写账号级覆盖，避免在 Dashboard 快速操作区引入继承恢复决策。
+- 2026-07-07：Dashboard 上游账号快捷策略 chip 的颜色改为按策略意图映射，而不是按“是否激活”统一高亮：`普通 / 不改Fast` 为 neutral，`兜底 / 补Fast` 为 success，`主力 / 强制Fast` 为 primary，`禁新 / 禁Fast / 激活禁出 / 激活禁入` 为 warning。
 
 ## Key Reasons / Replacements
 

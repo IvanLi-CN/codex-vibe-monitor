@@ -2952,6 +2952,7 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("上游拒绝")).toBeInTheDocument();
     await expect(canvas.getByText("限流")).toBeInTheDocument();
     await expect(canvas.getByText("禁新")).toBeInTheDocument();
+    await expect(canvas.getByText("强制Fast")).toBeInTheDocument();
     await expect(canvas.getByText("禁入")).toBeInTheDocument();
     await expect(canvas.getByText("进行中调用")).toBeInTheDocument();
     const recentBreakdown = canvas.getByTestId(
@@ -3164,7 +3165,11 @@ export const UpstreamAccountHeaderActions: Story = {
       "dashboard-upstream-account-policy-badge",
     );
     await userEvent.click(policyBadges[0]!);
-    await expect(policyBadges[1]!).toHaveTextContent("Fast");
+    await expect(policyBadges[1]!).toHaveTextContent("强制Fast");
+    await expect(policyBadges[1]!).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("Fast 改写策略：强制Fast"),
+    );
     await userEvent.click(policyBadges[1]!);
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
       "none",
@@ -3188,7 +3193,7 @@ export const UpstreamAccountHeaderActions: Story = {
     docs: {
       description: {
         story:
-          "Dashboard upstream-account card header actions: attention badges open health events, the gear opens routing, and quick policy chips including Fast mode save account-level overrides with a debounced PATCH.",
+          "Dashboard upstream-account card header actions: attention badges open health events, the gear opens routing, and quick policy chips including Fast rewrite labels save account-level overrides with a debounced PATCH.",
       },
     },
   },
