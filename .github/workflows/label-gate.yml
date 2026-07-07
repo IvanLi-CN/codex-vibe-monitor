@@ -59,8 +59,8 @@ jobs:
               ".github/workflows/release.yml"
               ".github/workflows/review-policy.yml"
             )
-            git -C candidate fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
-            changed_quality_gate_paths="$(git -C candidate diff --name-only "${{ github.event.pull_request.base.sha }}...HEAD" -- "${paths[@]}")"
+            git -C candidate fetch --no-tags --prune origin "+refs/heads/${{ github.event.pull_request.base.ref }}:refs/remotes/origin/${{ github.event.pull_request.base.ref }}"
+            changed_quality_gate_paths="$(git -C candidate diff --name-only "origin/${{ github.event.pull_request.base.ref }}...HEAD" -- "${paths[@]}")"
             if [ -n "${changed_quality_gate_paths}" ]; then
               echo "::notice::Same-repository PR changes label-gate contract sources; using current branch sources to validate the updated topology."
               contract_script="$PWD/candidate/.github/scripts/check_quality_gates_contract.py"

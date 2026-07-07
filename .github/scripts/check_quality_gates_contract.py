@@ -647,7 +647,11 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
         "label-gate.yml: same-repository quality-gates source detection drifted",
     )
     require(
-        'changed_quality_gate_paths="$(git -C candidate diff --name-only "${{ github.event.pull_request.base.sha }}...HEAD" -- "${paths[@]}")"' in trusted_run,
+        'git -C candidate fetch --no-tags --prune origin "+refs/heads/${{ github.event.pull_request.base.ref }}:refs/remotes/origin/${{ github.event.pull_request.base.ref }}"' in trusted_run,
+        "label-gate.yml: base branch fetch for trusted source detection drifted",
+    )
+    require(
+        'changed_quality_gate_paths="$(git -C candidate diff --name-only "origin/${{ github.event.pull_request.base.ref }}...HEAD" -- "${paths[@]}")"' in trusted_run,
         "label-gate.yml: quality-gates change detection drifted",
     )
     require(
