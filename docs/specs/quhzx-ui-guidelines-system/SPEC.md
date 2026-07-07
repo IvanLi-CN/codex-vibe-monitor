@@ -80,6 +80,7 @@
   state: full-page desktop dashboard
   evidence_note: verifies the moved page-level Storybook surface still renders from `web/src/features/*` after the frontend structure migration.
   image:
+  PR: include
   ![Dashboard page Storybook evidence](./assets/frontend-feature-structure-dashboard.png)
 
 ## 方案概述（Approach, high-level）
