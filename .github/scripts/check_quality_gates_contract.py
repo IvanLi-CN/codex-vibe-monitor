@@ -636,37 +636,44 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
     candidate_checkout = checkout_step(job, "Checkout candidate pull request", "label-gate.yml.jobs.validate-pr-labels")
     require(candidate_checkout.get("repository") == "${{ github.event.pull_request.head.repo.full_name }}", "label-gate.yml: candidate checkout repository drifted")
     require(candidate_checkout.get("ref") == "${{ github.event.pull_request.head.sha }}", "label-gate.yml: candidate checkout ref drifted")
+    require(candidate_checkout.get("fetch-depth") == 0, "label-gate.yml: candidate checkout must fetch full history for trusted source resolution")
     require(candidate_checkout.get("path") == "candidate", "label-gate.yml: candidate checkout path drifted")
     require(candidate_checkout.get("persist-credentials") is False, "label-gate.yml: candidate checkout must disable persisted credentials")
 
-    contract_step = step_config(job, "Validate trusted label-gate contract", "label-gate.yml.jobs.validate-pr-labels")
-    contract_command = require_command(
-        contract_step,
-        ["python3", "trusted/.github/scripts/check_quality_gates_contract.py"],
-        "label-gate.yml.jobs.validate-pr-labels.steps['Validate trusted label-gate contract']",
-        "label-gate.yml: trusted label gate must invoke the trusted contract checker",
+    trusted_step = step_config(job, "Resolve trusted label-gate sources", "label-gate.yml.jobs.validate-pr-labels")
+    trusted_run = str(trusted_step.get("run", ""))
+    require(
+        'github.event.pull_request.head.repo.full_name' in trusted_run,
+        "label-gate.yml: same-repository quality-gates source detection drifted",
     )
-    contract_options = command_option_map(contract_command[2:], "label-gate.yml: trusted label gate contract step")
-    require(contract_options.get("--repo-root") == "$PWD/candidate", "label-gate.yml: trusted label gate must validate the candidate checkout")
-    require(contract_options.get("--declaration") == "$PWD/candidate/.github/quality-gates.json", "label-gate.yml: trusted label gate declaration drifted")
-    require(contract_options.get("--metadata-script") == "$PWD/trusted/.github/scripts/metadata_gate.py", "label-gate.yml: trusted label gate metadata script drifted")
+    require(
+        'changed_quality_gate_paths="$(git -C candidate diff --name-only "${{ github.event.pull_request.base.sha }}...HEAD" -- "${paths[@]}")"' in trusted_run,
+        "label-gate.yml: quality-gates change detection drifted",
+    )
+    require(
+        'source_kind="current-branch-quality-gates-change"' in trusted_run,
+        "label-gate.yml: quality-gates change source kind drifted",
+    )
+    require(
+        'contract_script="$PWD/candidate/.github/scripts/check_quality_gates_contract.py"' in trusted_run,
+        "label-gate.yml: current-branch contract script selection drifted",
+    )
+
+    contract_step = step_config(job, "Validate trusted label-gate contract", "label-gate.yml.jobs.validate-pr-labels")
+    contract_run = str(contract_step.get("run", ""))
+    require('steps.trusted-label-gate.outputs.contract_script' in contract_run, "label-gate.yml: contract check must use resolved trusted source")
+    require("--repo-root \"$PWD/candidate\"" in contract_run, "label-gate.yml: trusted label gate must validate the candidate checkout")
+    require("--declaration \"$PWD/candidate/.github/quality-gates.json\"" in contract_run, "label-gate.yml: trusted label gate declaration drifted")
+    require('steps.trusted-label-gate.outputs.metadata_script' in contract_run, "label-gate.yml: trusted label gate metadata script drifted")
 
     label_step = step_config(job, "Evaluate PR labels", "label-gate.yml.jobs.validate-pr-labels")
     label_env = require_mapping(label_step.get("env"), "label-gate.yml.jobs.validate-pr-labels.steps['Evaluate PR labels'].env")
     require(label_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "label-gate.yml: Evaluate PR labels must pass GITHUB_TOKEN via env")
-    label_command = require_command(
-        label_step,
-        ["python3", "trusted/.github/scripts/metadata_gate.py", "label"],
-        "label-gate.yml.jobs.validate-pr-labels.steps['Evaluate PR labels']",
-        "label-gate.yml: Evaluate PR labels must execute the trusted metadata gate in label mode",
-    )
+    label_run = str(label_step.get("run", ""))
+    require('steps.trusted-label-gate.outputs.metadata_script' in label_run, "label-gate.yml: label gate must use resolved metadata script")
+    require(" label" in label_run, "label-gate.yml: label gate command drifted")
     require(
-        label_command[:3] == ["python3", "trusted/.github/scripts/metadata_gate.py", "label"],
-        "label-gate.yml: label gate command drifted",
-    )
-    label_options = command_option_map(label_command[3:], "label-gate.yml: label gate command options")
-    require(
-        "--write-intent" not in label_options,
+        "--write-intent" not in label_run,
         "label-gate.yml: Evaluate PR labels must validate labels before any release-intent write step",
     )
 

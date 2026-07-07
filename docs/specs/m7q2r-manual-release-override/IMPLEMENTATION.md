@@ -8,6 +8,7 @@
 - [x] M2: `release.yml` 支持手动覆盖 dispatch 输入，并保持内部 queue dispatch 的 immutable snapshot backfill 兼容。
 - [x] M3: GitHub Release body 输出手动覆盖审计字段。
 - [x] M4: release snapshot 与 quality-gates contract 回归测试覆盖新路径。
+- [x] M5: `label-gate.yml` 对同仓 quality-gates / workflow contract 变更使用当前分支 checker 自证，避免旧 base checker 永久挡住受控拓扑变更。
 
 ## Verification
 
