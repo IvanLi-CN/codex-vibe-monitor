@@ -1,5 +1,10 @@
 # OpenAI 兼容 WebSocket 代理演进记录（#w5s2x）
 
+## 2026-07-07
+
+- 101 线上只读诊断确认：CIII、TeeTime 等第三方兼容 API-key upstream 能完成 `/v1/responses` WS 握手，但会在 `response.completed` 前关闭连接，客户端表现为 `websocket closed by server before response.completed`。
+- 修正 post-upgrade capability 收口：这类 terminal 前 clean close/EOF 现在被识别为账号 WebSocket 能力缺失，自动打 `unsupported_transport:websocket` / `不支持 WS` 系统 tag，让后续客户端 retry 跳过坏候选；普通网络错误、OAuth/官方账号与 downstream 主动断开后的 drain 失败不参与自动 no-WS 标记。
+
 ## 2026-07-06
 
 - 修正协议分流：`/v1/responses` 保持首帧驱动的 turn-aware relay；`/v1/realtime` 等非 Responses WS 改为即时上游 passthrough，避免 Realtime 连接因等待 downstream `response.create` 而超时。

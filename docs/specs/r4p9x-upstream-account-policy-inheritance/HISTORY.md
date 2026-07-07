@@ -4,6 +4,9 @@
 
 Account-pool routing policy moved from isolated group/tag behavior to a layered effective policy model. The resolver now computes one effective policy per account and downstream routing code reads that policy instead of separate group or tag fragments.
 
+2026-07-06: Added inherited per-reason status-change toggles for upstream auth, quota, transport, overload, and 5xx failure families. Group and account policy now resolve `statusChangeReasons` with root defaults of all-enabled, route and sync state mutations consult the resolved toggle before touching account health/cooldown/latest-action fields, and suppressed reasons create neutral account events instead of mutating account state.
+2026-07-07: Refined the owner-facing status-change reason UI after review. Reason controls are now flat icon-and-label button tiles, category and batch-toggle rows were removed, the account detail Routing tab widened the tile layout for the available drawer width, and account-level rollback is exposed as one panel-level reset action instead of per-tile inherit buttons.
+
 2026-06-29: Added field-level request-path timeout inheritance for the existing four timeout fields. Group and account policy now persist nullable timeout overrides, UI surfaces expose timeout source badges and clear-to-inherit controls, and runtime recomputes effective timeouts for each newly selected target account during failover.
 2026-07-01: Reworked owner-facing timeout editing to match the effective-rule interaction model. Group/account dialogs and the account effective-rule card now render timeout rows as collapsed summaries by default, treat field expansion as the local override affordance, auto-expand existing local timeout overrides, and preserve explicit overrides even when the entered value matches the inherited number.
 

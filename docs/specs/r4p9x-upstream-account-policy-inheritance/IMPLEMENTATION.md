@@ -46,6 +46,18 @@ The account detail Routing tab exposes final effective rules as field-level inli
 - available-model overrides may store an empty list to explicitly allow no models
 - `systemDeniedModels` stays a read-only system result and has no account override control
 - timeout editors are shared across group/account surfaces and now use the same summary-row + source-badge + field-local expand interaction model as the effective routing rule card
+- status-change reason toggles render as flat icon-and-label button tiles on both the group dialog and the account effective-rule card
+- the group dialog no longer shows category headers or batch toggle rows for this policy family
+- the account effective-rule card keeps the resolved badge summary and reason tiles, and adds one panel-level reset action that clears only account-layer reason overrides for this family
+
+Status-change side effects are now gated by the resolved per-reason policy.
+
+- both route-time failures and maintenance/manual sync failures consult the effective `statusChangeReasons` map after reason classification
+- the root default for every listed reason is `true`, so unchanged deployments preserve existing behavior
+- group and account storage persist one nullable override column per listed reason; system tags and conversation overrides do not write this family
+- legacy `upstream_rejected` reads through the `upstream_http_402` toggle and is not exposed as a separate operator control
+- when a reason is disabled, runtime preserves invocation / attempt evidence but writes a neutral suppression event instead of changing account status, cooldown, route-failure bookkeeping, counters, or latest-action state
+- suppressed sync failures still advance the non-health sync timestamp so maintenance cadence does not collapse into immediate retries
 
 ## API and Resolution
 
@@ -56,6 +68,13 @@ Account and group routing policy writes distinguish missing, `null`, and value f
 - value writes the override, including boolean `false`
 
 Effective routing resolution applies group policy, read-only system signals, then account policy. Account-level `new conversations`, `cut-out`, and `cut-in` values replace inherited values directly; they no longer use a most-conservative merge at the account layer.
+
+Effective routing now also exports:
+
+- `statusChangeReasons`
+- `statusChangeReasonFieldSources`
+
+Group routing payloads and account routing payloads now accept `statusChangeReasons`, keyed by canonical `reasonCode`.
 
 Request-path timeout resolution is evaluated after the final target account is known.
 
@@ -96,6 +115,8 @@ Validation covers:
 - timeout source badges and clear-to-inherit controls work across group, account, and conversation layers without involving tags
 - timeout rows stay collapsed when the current layer does not override them; current-layer timeout overrides expand by default and can be cleared one field at a time without affecting untouched fields
 - account route proxy binding Storybook evidence proves the inline account proxy editor, inherited/effective proxy chips, and removal of the old edit policy button
+- backend regressions proving disabled reasons suppress account-state side effects for both route and sync paths while still creating neutral account events
+- frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability
 - `cargo test prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots -- --nocapture`
 - `cd web && npm test -- --run UpstreamAccounts.test.tsx`
 - `cd web && npm run build`

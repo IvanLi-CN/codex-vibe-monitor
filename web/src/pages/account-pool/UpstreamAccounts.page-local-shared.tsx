@@ -76,6 +76,10 @@ import type {
 } from "../../lib/api";
 import { fetchInvocationRecords } from "../../lib/api";
 import { invocationStableKey } from "../../lib/invocation";
+import type {
+  StatusChangeReasonCode,
+  StatusChangeReasonFieldKey,
+} from "../../lib/upstreamAccountStatusChangeReasons";
 import {
   buildGroupOptions,
   isExistingGroup,
@@ -335,7 +339,9 @@ type InlinePolicyField =
   | "timeoutResponsesFirstByte"
   | "timeoutCompactFirstByte"
   | "timeoutResponsesStream"
-  | "timeoutCompactStream";
+  | "timeoutCompactStream"
+  | "statusChangeReasons"
+  | StatusChangeReasonFieldKey;
 
 function createBusyActionKey(type: AccountBusyActionType, accountId: number) {
   return `${type}:${accountId}`;
@@ -3678,6 +3684,38 @@ function SharedUpstreamAccountDetailDrawerInner({
                       fieldProxyBindings: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings",
                       ),
+                      statusChangeReasonSectionTitle: t(
+                        "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle",
+                      ),
+                      statusChangeReasonSectionHint: t(
+                        "accountPool.upstreamAccounts.statusChangeReasons.sectionHint",
+                      ),
+                      statusChangeReasonLabel: (
+                        reason: StatusChangeReasonCode,
+                      ) =>
+                        t(
+                          `accountPool.upstreamAccounts.statusChangeReasons.reasons.${reason}`,
+                        ),
+                      statusChangeReasonSummary: (
+                        enabled: number,
+                        total: number,
+                      ) =>
+                        t(
+                          "accountPool.upstreamAccounts.statusChangeReasons.summary",
+                          { enabled, total },
+                        ),
+                      statusChangeReasonEnabledValue: t(
+                        "accountPool.upstreamAccounts.statusChangeReasons.enabledValue",
+                      ),
+                      statusChangeReasonDisabledValue: t(
+                        "accountPool.upstreamAccounts.statusChangeReasons.disabledValue",
+                      ),
+                      statusChangeReasonToggleEnabled: t(
+                        "accountPool.upstreamAccounts.statusChangeReasons.toggleEnabled",
+                      ),
+                      statusChangeReasonToggleDisabled: t(
+                        "accountPool.upstreamAccounts.statusChangeReasons.toggleDisabled",
+                      ),
                       availableModelsInherited: t(
                         "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited",
                       ),
@@ -3713,6 +3751,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                       ),
                       overrideClear: t(
                         "accountPool.upstreamAccounts.effectiveRule.overrideClear",
+                      ),
+                      statusChangeReasonResetAction: t(
+                        "accountPool.upstreamAccounts.statusChangeReasons.resetAction",
                       ),
                       overrideSaving: t(
                         "accountPool.upstreamAccounts.effectiveRule.overrideSaving",

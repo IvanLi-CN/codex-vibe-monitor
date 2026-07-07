@@ -240,6 +240,7 @@ pub(crate) struct PreparedUpstreamWebSocket {
     trace: PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<String>,
     connect_latency_ms: f64,
+    requires_response_create_first_frame: bool,
 }
 
 struct PoolRoutingReservationGuard {
@@ -948,6 +949,9 @@ async fn prepare_single_upstream_websocket_attempt(
         trace: trace.clone(),
         prompt_cache_key: prompt_cache_key.map(str::to_string),
         connect_latency_ms: elapsed_ms(connect_started),
+        requires_response_create_first_frame: websocket_requires_response_create_first_frame(
+            original_uri.path(),
+        ),
     })
 }
 
@@ -967,6 +971,7 @@ async fn proxy_websocket_tunnel(
         trace,
         prompt_cache_key,
         connect_latency_ms,
+        requires_response_create_first_frame,
     } = prepared;
     let stream_started = Instant::now();
     let (mut downstream_tx, mut downstream_rx) = downstream.split();
@@ -974,6 +979,7 @@ async fn proxy_websocket_tunnel(
     let mut failure: Option<String> = None;
     let mut failure_kind_override: Option<&'static str> = None;
     let mut upstream_route_failure: Option<String> = None;
+    let mut mark_account_ws_unsupported_after_close = false;
     let mut usage_tracker = WsUsageTracker::new(account, trace, prompt_cache_key);
     let mut active_turn_waiting_terminal = false;
     let mut saw_terminal_upstream_event = false;
@@ -1118,7 +1124,11 @@ async fn proxy_websocket_tunnel(
             upstream_msg = upstream_rx.next() => {
                 match upstream_msg {
                     Some(Ok(message)) => {
-                        let close_seen = matches!(message, TungsteniteMessage::Close(_));
+                        let close_frame = match &message {
+                            TungsteniteMessage::Close(frame) => Some(frame.as_ref()),
+                            _ => None,
+                        };
+                        let close_seen = close_frame.is_some();
                         let upstream_text = match &message {
                             TungsteniteMessage::Text(text) => Some(text.as_str().to_owned()),
                             _ => None,
@@ -1143,6 +1153,12 @@ async fn proxy_websocket_tunnel(
                                 "upstream websocket closed before response.completed".to_string();
                             upstream_route_failure = Some(message.clone());
                             failure = Some(message);
+                            mark_account_ws_unsupported_after_close =
+                                websocket_post_upgrade_close_marks_account_ws_unsupported(
+                                    requires_response_create_first_frame,
+                                    &usage_tracker.account,
+                                    close_frame.flatten(),
+                                );
                             let _ = downstream_tx
                                 .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
                                     code: axum::extract::ws::close_code::AGAIN,
@@ -1190,6 +1206,12 @@ async fn proxy_websocket_tunnel(
                                 "upstream websocket closed before response.completed".to_string();
                             upstream_route_failure = Some(message.clone());
                             failure = Some(message);
+                            mark_account_ws_unsupported_after_close =
+                                websocket_post_upgrade_close_marks_account_ws_unsupported(
+                                    requires_response_create_first_frame,
+                                    &usage_tracker.account,
+                                    None,
+                                );
                             let _ = downstream_tx
                                 .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
                                     code: axum::extract::ws::close_code::AGAIN,
@@ -1292,6 +1314,20 @@ async fn proxy_websocket_tunnel(
             account_id = usage_tracker.account.account_id,
             error = %err,
             "failed to record post-upgrade websocket pool route transport failure"
+        );
+    }
+    if mark_account_ws_unsupported_after_close
+        && let Err(err) = ensure_account_has_websocket_unsupported_tag(
+            &state.pool,
+            usage_tracker.account.account_id,
+        )
+        .await
+    {
+        warn!(
+            invoke_id = %usage_tracker.trace.invoke_id,
+            account_id = usage_tracker.account.account_id,
+            error = %err,
+            "failed to mark post-upgrade websocket account as unsupported"
         );
     }
     complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
@@ -1799,6 +1835,33 @@ fn websocket_upstream_error_marks_account_ws_unsupported(err: &tungstenite::Erro
     }
 }
 
+fn websocket_post_upgrade_close_marks_account_ws_unsupported(
+    requires_response_create_first_frame: bool,
+    account: &PoolResolvedAccount,
+    close_frame: Option<&tungstenite::protocol::CloseFrame>,
+) -> bool {
+    requires_response_create_first_frame
+        && account
+            .kind
+            .eq_ignore_ascii_case(API_KEYS_BILLING_ACCOUNT_KIND)
+        && !account.auth.is_oauth()
+        && !websocket_account_uses_official_openai_base_url(account)
+        && close_frame.is_none_or(|frame| {
+            matches!(
+                frame.code,
+                tungstenite::protocol::frame::coding::CloseCode::Normal
+                    | tungstenite::protocol::frame::coding::CloseCode::Away
+            )
+        })
+}
+
+fn websocket_account_uses_official_openai_base_url(account: &PoolResolvedAccount) -> bool {
+    account
+        .upstream_base_url
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
+}
+
 fn ws_text_event_is_terminal(event_type: &str) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(event_type) else {
         return false;
@@ -1963,6 +2026,10 @@ async fn persist_ws_usage_event(
         request_parse_error: None,
         failure_kind: None,
         requester_ip: trace.requester_ip.as_deref(),
+        request_user_agent: None,
+        request_x_forwarded_for: None,
+        request_forwarded: None,
+        request_x_real_ip: None,
         upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
         route_mode: INVOCATION_ROUTE_MODE_POOL,
         sticky_key: trace.sticky_key.as_deref(),
@@ -3217,6 +3284,64 @@ mod websocket_tests {
         ));
         assert!(!websocket_upstream_error_marks_account_ws_unsupported(
             &tungstenite::Error::ConnectionClosed
+        ));
+    }
+
+    #[test]
+    fn websocket_post_upgrade_close_marks_only_responses_api_key_codex_no_ws() {
+        let mut api_key_codex =
+            api_key_account(Url::parse("https://api.example.test").expect("url"));
+        api_key_codex.kind = API_KEYS_BILLING_ACCOUNT_KIND.to_string();
+        assert!(websocket_post_upgrade_close_marks_account_ws_unsupported(
+            true,
+            &api_key_codex,
+            None
+        ));
+        let normal_close = tungstenite::protocol::CloseFrame {
+            code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+            reason: "".into(),
+        };
+        assert!(websocket_post_upgrade_close_marks_account_ws_unsupported(
+            true,
+            &api_key_codex,
+            Some(&normal_close)
+        ));
+        let transient_close = tungstenite::protocol::CloseFrame {
+            code: tungstenite::protocol::frame::coding::CloseCode::Again,
+            reason: "retry".into(),
+        };
+        assert!(!websocket_post_upgrade_close_marks_account_ws_unsupported(
+            true,
+            &api_key_codex,
+            Some(&transient_close)
+        ));
+        assert!(!websocket_post_upgrade_close_marks_account_ws_unsupported(
+            false,
+            &api_key_codex,
+            None
+        ));
+
+        let generic_api_key = api_key_account(Url::parse("https://api.example.test").expect("url"));
+        assert!(!websocket_post_upgrade_close_marks_account_ws_unsupported(
+            true,
+            &generic_api_key,
+            None
+        ));
+        let mut official_api_key =
+            api_key_account(Url::parse("https://api.openai.com").expect("url"));
+        official_api_key.kind = API_KEYS_BILLING_ACCOUNT_KIND.to_string();
+        assert!(!websocket_post_upgrade_close_marks_account_ws_unsupported(
+            true,
+            &official_api_key,
+            None
+        ));
+
+        let mut oauth_codex = oauth_account(Url::parse("https://api.example.test").expect("url"));
+        oauth_codex.kind = API_KEYS_BILLING_ACCOUNT_KIND.to_string();
+        assert!(!websocket_post_upgrade_close_marks_account_ws_unsupported(
+            true,
+            &oauth_codex,
+            None
         ));
     }
 
