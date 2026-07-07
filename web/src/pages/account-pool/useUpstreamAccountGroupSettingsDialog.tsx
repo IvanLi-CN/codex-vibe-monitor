@@ -22,7 +22,7 @@ import { useTranslation } from "../../i18n";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccountGroupNoteDialog";
-import { GroupAccountRoutingRuleDialog } from "../../components/GroupAccountRoutingRuleDialog";
+import { GroupAccountRoutingRuleEditor } from "../../components/GroupAccountRoutingRuleDialog";
 import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh";
 
 type GroupSettingsEditorState = {
@@ -38,8 +38,9 @@ type GroupSettingsEditorState = {
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
   routingRule: GroupAccountRoutingRule;
+  routingRulePatch: UpdateGroupAccountRoutingRulePayload | null;
   routingRuleDirty: boolean;
-  policyEditorOpen: boolean;
+  routingRulePayloadValid: boolean;
   onSaved?: ((groupName: string) => void) | null;
   onDeleted?: ((groupName: string) => void) | null;
 };
@@ -159,8 +160,9 @@ function createInitialEditorState(): GroupSettingsEditorState {
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
     routingRule: defaultRoutingRule,
+    routingRulePatch: null,
     routingRuleDirty: false,
-    policyEditorOpen: false,
+    routingRulePayloadValid: true,
     onSaved: null,
     onDeleted: null,
   };
@@ -182,6 +184,13 @@ function normalizeUpstream429MaxRetries(value?: number | null) {
 
 function normalizeEnabledUpstream429MaxRetries(value?: number | null) {
   return Math.max(1, normalizeUpstream429MaxRetries(value) || 1);
+}
+
+function areRoutingRulePayloadsEqual(
+  a: UpdateGroupAccountRoutingRulePayload | null,
+  b: UpdateGroupAccountRoutingRulePayload | null,
+) {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
 interface UseUpstreamAccountGroupSettingsDialogOptions {
@@ -280,8 +289,9 @@ export function useUpstreamAccountGroupSettingsDialog(
         upstream429RetryEnabled: snapshot?.upstream429RetryEnabled === true,
         upstream429MaxRetries: snapshot?.upstream429MaxRetries ?? 0,
         routingRule: snapshot?.routingRule ?? defaultRoutingRule,
+        routingRulePatch: null,
         routingRuleDirty: false,
-        policyEditorOpen: false,
+        routingRulePayloadValid: true,
         onSaved: openOptions?.onSaved ?? null,
         onDeleted: openOptions?.onDeleted ?? null,
       });
@@ -329,8 +339,8 @@ export function useUpstreamAccountGroupSettingsDialog(
           singleAccountRotationEnabled: normalizedSingleAccountRotationEnabled,
           upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
           upstream429MaxRetries: normalizedUpstream429MaxRetries,
-          ...(editor.routingRuleDirty
-            ? { routingRule: editor.routingRule }
+          ...(editor.routingRuleDirty && editor.routingRulePatch
+            ? { routingRule: editor.routingRulePatch }
             : {}),
         },
         { existing: editor.existing },
@@ -363,8 +373,142 @@ export function useUpstreamAccountGroupSettingsDialog(
   }, [deleteGroupSettings, editor, writesEnabled]);
 
   const dialog = useMemo(
-    () => (
-      <>
+    () => {
+      const routingPolicyLabels = {
+        allowNewConversations: t(
+          "accountPool.tags.dialog.allowNewConversations",
+        ),
+        newConversationHint: t(
+          "accountPool.tags.dialog.newConversationHint",
+        ),
+        allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
+        allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
+        forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
+        forbidCutIn: t("accountPool.tags.dialog.forbidCutIn"),
+        priorityTier: t("accountPool.tags.dialog.priorityTier"),
+        priorityPrimary: t("accountPool.tags.dialog.priorityPrimary"),
+        priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
+        priorityFallback: t("accountPool.tags.dialog.priorityFallback"),
+        fastModeRewriteMode: t("accountPool.tags.dialog.fastModeRewriteMode"),
+        fastModeKeepOriginal: t("accountPool.tags.dialog.fastModeKeepOriginal"),
+        fastModeFillMissing: t("accountPool.tags.dialog.fastModeFillMissing"),
+        fastModeForceAdd: t("accountPool.tags.dialog.fastModeForceAdd"),
+        fastModeForceRemove: t("accountPool.tags.dialog.fastModeForceRemove"),
+        imageToolRewriteMode: t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode",
+        ),
+        imageToolKeepOriginal: t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal",
+        ),
+        imageToolFillMissing: t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing",
+        ),
+        imageToolForceAdd: t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd",
+        ),
+        imageToolForceRemove: t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove",
+        ),
+        imageToolRewriteHint: t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint",
+        ),
+        statusChangeReasonSectionTitle: t(
+          "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle",
+        ),
+        statusChangeReasonSectionHint: t(
+          "accountPool.upstreamAccounts.statusChangeReasons.sectionHint",
+        ),
+        statusChangeReasonLabel: (reason: StatusChangeReasonCode) =>
+          t(
+            `accountPool.upstreamAccounts.statusChangeReasons.reasons.${reason}`,
+          ),
+        statusChangeReasonToggleEnabled: t(
+          "accountPool.upstreamAccounts.statusChangeReasons.toggleEnabled",
+        ),
+        statusChangeReasonToggleDisabled: t(
+          "accountPool.upstreamAccounts.statusChangeReasons.toggleDisabled",
+        ),
+        upstream429Retry: t(
+          "accountPool.upstreamAccounts.groupNotes.upstream429.label",
+        ),
+        upstream429RetryHint: t(
+          "accountPool.upstreamAccounts.groupNotes.upstream429.hint",
+        ),
+        upstream429RetryToggle: t(
+          "accountPool.upstreamAccounts.groupNotes.upstream429.toggle",
+        ),
+        upstream429RetryCount: t(
+          "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel",
+        ),
+        upstream429RetryCountOnce: t(
+          "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce",
+        ),
+        upstream429RetryCountMany: (count: number) =>
+          t("accountPool.upstreamAccounts.groupNotes.upstream429.countMany", {
+            count,
+          }),
+        concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
+        concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
+        currentValue: t("accountPool.tags.dialog.currentValue"),
+        unlimited: t("accountPool.tags.dialog.unlimited"),
+        availableModels: t("accountPool.tags.dialog.availableModels"),
+        availableModelsHint: t("accountPool.tags.dialog.availableModelsHint"),
+        availableModelsSearchPlaceholder: t(
+          "accountPool.tags.dialog.availableModelsSearchPlaceholder",
+        ),
+        availableModelsEmpty: t("accountPool.tags.dialog.availableModelsEmpty"),
+        availableModelsAll: t("accountPool.tags.dialog.availableModelsAll"),
+        availableModelsCustomLabel: (value: string) =>
+          t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
+        availableModelsAddCustom: t(
+          "accountPool.tags.dialog.availableModelsAddCustom",
+        ),
+        availableModelsInherited: t(
+          "accountPool.tags.dialog.availableModelsInherited",
+        ),
+        availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
+        timeoutSectionTitle: t(
+          "accountPool.upstreamAccounts.routing.timeout.sectionTitle",
+        ),
+        timeoutSectionHint: t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.description",
+        ),
+        timeoutResponsesFirstByte: t(
+          "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte",
+        ),
+        timeoutCompactFirstByte: t(
+          "accountPool.upstreamAccounts.routing.timeout.compactFirstByte",
+        ),
+        timeoutResponsesStream: t(
+          "accountPool.upstreamAccounts.routing.timeout.responsesStream",
+        ),
+        timeoutCompactStream: t(
+          "accountPool.upstreamAccounts.routing.timeout.compactStream",
+        ),
+        timeoutInheritedValue: t(
+          "accountPool.upstreamAccounts.timeoutEditor.inherited",
+        ),
+        timeoutOverrideValue: t(
+          "accountPool.upstreamAccounts.timeoutEditor.groupOverride",
+        ),
+        timeoutClearField: t(
+          "accountPool.upstreamAccounts.effectiveRule.overrideClear",
+        ),
+        timeoutInheritField: t("accountPool.tags.dialog.availableModelsInherited"),
+        timeoutSourceGlobal: t(
+          "accountPool.upstreamAccounts.effectiveRule.sourceRoot",
+        ),
+        timeoutSourceGroup: t(
+          "accountPool.upstreamAccounts.effectiveRule.sourceGroup",
+        ),
+        timeoutSourceAccount: t(
+          "accountPool.upstreamAccounts.effectiveRule.sourceAccount",
+        ),
+        cancel: t("accountPool.tags.dialog.cancel"),
+        validation: t("accountPool.tags.dialog.validation"),
+      };
+
+      return (
         <UpstreamAccountGroupNoteDialog
           open={editor.open}
           container={container}
@@ -377,14 +521,51 @@ export function useUpstreamAccountGroupSettingsDialog(
           singleAccountRotationEnabled={editor.singleAccountRotationEnabled}
           upstream429RetryEnabled={editor.upstream429RetryEnabled}
           upstream429MaxRetries={editor.upstream429MaxRetries}
-          onRoutingPolicyEdit={() =>
-            setEditor((current) => ({ ...current, policyEditorOpen: true }))
+          routingPolicyEditor={
+            <GroupAccountRoutingRuleEditor
+              open={editor.open}
+              changedFieldsOnly
+              timeoutOverrideSource="group"
+              availableModelOptions={availableModelOptions}
+              rule={editor.routingRule}
+              effectiveTimeouts={currentGroupSnapshot?.effectiveTimeouts ?? null}
+              timeoutFieldSources={
+                currentGroupSnapshot?.timeoutFieldSources ?? null
+              }
+              busy={busyAction != null}
+              labels={routingPolicyLabels}
+              onPayloadChange={(payload) => {
+                setEditor((current) => {
+                  const nextPayload = payload ?? null;
+                  const nextValid = payload != null;
+                  const nextDirty =
+                    nextPayload != null && Object.keys(nextPayload).length > 0;
+                  if (
+                    current.routingRulePayloadValid === nextValid &&
+                    current.routingRuleDirty === nextDirty &&
+                    areRoutingRulePayloadsEqual(
+                      current.routingRulePatch,
+                      nextPayload,
+                    )
+                  ) {
+                    return current;
+                  }
+                  return {
+                    ...current,
+                    routingRulePayloadValid: nextValid,
+                    routingRuleDirty: nextDirty,
+                    routingRulePatch: nextPayload,
+                  };
+                });
+              }}
+            />
           }
           availableProxyNodes={forwardProxyNodes}
           proxyBindingsCatalogKind={forwardProxyCatalogState.kind}
           proxyBindingsCatalogFreshness={forwardProxyCatalogState.freshness}
           busy={busyAction != null}
           deleting={busyAction === "delete"}
+          saveDisabled={!editor.routingRulePayloadValid}
           error={error}
           existing={editor.existing}
           onNoteChange={(value) => {
@@ -486,6 +667,14 @@ export function useUpstreamAccountGroupSettingsDialog(
           draftBadgeLabel={t(
             "accountPool.upstreamAccounts.groupNotes.badges.draft",
           )}
+          infoTabLabel={t("accountPool.upstreamAccounts.groupNotes.tabs.info")}
+          routingTabLabel={t(
+            "accountPool.upstreamAccounts.groupNotes.tabs.routing",
+          )}
+          proxyTabLabel={t("accountPool.upstreamAccounts.groupNotes.tabs.proxy")}
+          accountCountLabel={t(
+            "accountPool.upstreamAccounts.groupNotes.accountCount",
+          )}
           nodeShuntLabel={t(
             "accountPool.upstreamAccounts.groupNotes.nodeShunt.label",
           )}
@@ -558,193 +747,8 @@ export function useUpstreamAccountGroupSettingsDialog(
           )}
           proxyBindingsChartLocaleTag={locale === "zh" ? "zh-CN" : "en-US"}
         />
-        <GroupAccountRoutingRuleDialog
-          open={editor.open && editor.policyEditorOpen}
-          timeoutOverrideSource="group"
-          availableModelOptions={availableModelOptions}
-          title={t(
-            "accountPool.upstreamAccounts.groupNotes.routingPolicy.title",
-          )}
-          description={t(
-            "accountPool.upstreamAccounts.groupNotes.routingPolicy.description",
-          )}
-          submitLabel={t(
-            "accountPool.upstreamAccounts.groupNotes.routingPolicy.save",
-          )}
-          rule={editor.routingRule}
-          effectiveTimeouts={currentGroupSnapshot?.effectiveTimeouts ?? null}
-          timeoutFieldSources={
-            currentGroupSnapshot?.timeoutFieldSources ?? null
-          }
-          busy={busyAction != null}
-          onClose={() =>
-            setEditor((current) => ({ ...current, policyEditorOpen: false }))
-          }
-          onSubmit={(payload) => {
-            setEditor((current) => ({
-              ...current,
-              policyEditorOpen: false,
-              routingRuleDirty: true,
-              routingRule: mergeRoutingRulePatch(current.routingRule, payload),
-            }));
-          }}
-          labels={{
-            allowNewConversations: t(
-              "accountPool.tags.dialog.allowNewConversations",
-            ),
-            newConversationHint: t(
-              "accountPool.tags.dialog.newConversationHint",
-            ),
-            allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
-            allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
-            forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
-            forbidCutIn: t("accountPool.tags.dialog.forbidCutIn"),
-            priorityTier: t("accountPool.tags.dialog.priorityTier"),
-            priorityPrimary: t("accountPool.tags.dialog.priorityPrimary"),
-            priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
-            priorityFallback: t("accountPool.tags.dialog.priorityFallback"),
-            fastModeRewriteMode: t(
-              "accountPool.tags.dialog.fastModeRewriteMode",
-            ),
-            fastModeKeepOriginal: t(
-              "accountPool.tags.dialog.fastModeKeepOriginal",
-            ),
-            fastModeFillMissing: t(
-              "accountPool.tags.dialog.fastModeFillMissing",
-            ),
-            fastModeForceAdd: t("accountPool.tags.dialog.fastModeForceAdd"),
-            fastModeForceRemove: t(
-              "accountPool.tags.dialog.fastModeForceRemove",
-            ),
-            imageToolRewriteMode: t(
-              "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode",
-            ),
-            imageToolKeepOriginal: t(
-              "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal",
-            ),
-            imageToolFillMissing: t(
-              "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing",
-            ),
-            imageToolForceAdd: t(
-              "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd",
-            ),
-            imageToolForceRemove: t(
-              "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove",
-            ),
-            imageToolRewriteHint: t(
-              "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint",
-            ),
-            statusChangeReasonSectionTitle: t(
-              "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle",
-            ),
-            statusChangeReasonSectionHint: t(
-              "accountPool.upstreamAccounts.statusChangeReasons.sectionHint",
-            ),
-            statusChangeReasonLabel: (reason: StatusChangeReasonCode) =>
-              t(
-                `accountPool.upstreamAccounts.statusChangeReasons.reasons.${reason}`,
-              ),
-            statusChangeReasonToggleEnabled: t(
-              "accountPool.upstreamAccounts.statusChangeReasons.toggleEnabled",
-            ),
-            statusChangeReasonToggleDisabled: t(
-              "accountPool.upstreamAccounts.statusChangeReasons.toggleDisabled",
-            ),
-            upstream429Retry: t(
-              "accountPool.upstreamAccounts.groupNotes.upstream429.label",
-            ),
-            upstream429RetryHint: t(
-              "accountPool.upstreamAccounts.groupNotes.upstream429.hint",
-            ),
-            upstream429RetryToggle: t(
-              "accountPool.upstreamAccounts.groupNotes.upstream429.toggle",
-            ),
-            upstream429RetryCount: t(
-              "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel",
-            ),
-            upstream429RetryCountOnce: t(
-              "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce",
-            ),
-            upstream429RetryCountMany: (count: number) =>
-              t(
-                "accountPool.upstreamAccounts.groupNotes.upstream429.countMany",
-                {
-                  count,
-                },
-              ),
-            concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
-            concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
-            currentValue: t("accountPool.tags.dialog.currentValue"),
-            unlimited: t("accountPool.tags.dialog.unlimited"),
-            availableModels: t("accountPool.tags.dialog.availableModels"),
-            availableModelsHint: t(
-              "accountPool.tags.dialog.availableModelsHint",
-            ),
-            availableModelsSearchPlaceholder: t(
-              "accountPool.tags.dialog.availableModelsSearchPlaceholder",
-            ),
-            availableModelsEmpty: t(
-              "accountPool.tags.dialog.availableModelsEmpty",
-            ),
-            availableModelsAll: t("accountPool.tags.dialog.availableModelsAll"),
-            availableModelsCustomLabel: (value) =>
-              t("accountPool.tags.dialog.availableModelsCustomLabel", {
-                value,
-              }),
-            availableModelsAddCustom: t(
-              "accountPool.tags.dialog.availableModelsAddCustom",
-            ),
-            availableModelsInherited: t(
-              "accountPool.tags.dialog.availableModelsInherited",
-            ),
-            availableModelsRemove: t(
-              "accountPool.tags.dialog.availableModelsRemove",
-            ),
-            timeoutSectionTitle: t(
-              "accountPool.upstreamAccounts.routing.timeout.sectionTitle",
-            ),
-            timeoutSectionHint: t(
-              "accountPool.upstreamAccounts.groupNotes.routingPolicy.description",
-            ),
-            timeoutResponsesFirstByte: t(
-              "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte",
-            ),
-            timeoutCompactFirstByte: t(
-              "accountPool.upstreamAccounts.routing.timeout.compactFirstByte",
-            ),
-            timeoutResponsesStream: t(
-              "accountPool.upstreamAccounts.routing.timeout.responsesStream",
-            ),
-            timeoutCompactStream: t(
-              "accountPool.upstreamAccounts.routing.timeout.compactStream",
-            ),
-            timeoutInheritedValue: t(
-              "accountPool.upstreamAccounts.timeoutEditor.inherited",
-            ),
-            timeoutOverrideValue: t(
-              "accountPool.upstreamAccounts.timeoutEditor.groupOverride",
-            ),
-            timeoutClearField: t(
-              "accountPool.upstreamAccounts.effectiveRule.overrideClear",
-            ),
-            timeoutInheritField: t(
-              "accountPool.tags.dialog.availableModelsInherited",
-            ),
-            timeoutSourceGlobal: t(
-              "accountPool.upstreamAccounts.effectiveRule.sourceRoot",
-            ),
-            timeoutSourceGroup: t(
-              "accountPool.upstreamAccounts.effectiveRule.sourceGroup",
-            ),
-            timeoutSourceAccount: t(
-              "accountPool.upstreamAccounts.effectiveRule.sourceAccount",
-            ),
-            cancel: t("accountPool.tags.dialog.cancel"),
-            validation: t("accountPool.tags.dialog.validation"),
-          }}
-        />
-      </>
-    ),
+      );
+    },
     [
       busyAction,
       availableModelOptions,
@@ -759,8 +763,8 @@ export function useUpstreamAccountGroupSettingsDialog(
       editor.nodeShuntEnabled,
       editor.note,
       editor.open,
-      editor.policyEditorOpen,
       editor.routingRule,
+      editor.routingRulePayloadValid,
       editor.singleAccountRotationEnabled,
       editor.upstream429MaxRetries,
       editor.upstream429RetryEnabled,

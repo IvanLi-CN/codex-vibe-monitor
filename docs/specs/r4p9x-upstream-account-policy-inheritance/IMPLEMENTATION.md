@@ -46,6 +46,9 @@ The account detail Routing tab exposes final effective rules as field-level inli
 - available-model overrides may store an empty list to explicitly allow no models
 - `systemDeniedModels` stays a read-only system result and has no account override control
 - timeout editors are shared across group/account surfaces and now use the same summary-row + source-badge + field-local expand interaction model as the effective routing rule card
+- the group settings dialog is split into `Group info`, `Routing settings`, and `Proxy nodes` tabs so group metadata, routing policy, and proxy-node binding are edited in separate panels under one save action
+- the group `Routing settings` tab embeds the shared routing-rule editor directly; changes remain draft-local across tab switches and are submitted through the same group settings save payload
+- group-level upstream 429 retry controls use the same single `0..5` inline selector as account detail routing controls; choosing `0` submits disabled retry semantics
 - status-change reason toggles render as flat icon-and-label button tiles on both the group dialog and the account effective-rule card
 - the group dialog no longer shows category headers or batch toggle rows for this policy family
 - the account effective-rule card keeps the resolved badge summary and reason tiles, and adds one panel-level reset action that clears only account-layer reason overrides for this family
@@ -117,6 +120,7 @@ Validation covers:
 - account route proxy binding Storybook evidence proves the inline account proxy editor, inherited/effective proxy chips, and removal of the old edit policy button
 - backend regressions proving disabled reasons suppress account-state side effects for both route and sync paths while still creating neutral account events
 - frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability
+- group settings regressions and Storybook states proving tab navigation, inline routing-policy draft save, proxy-node long-list readability, delete blocking, and explicit empty-model group policy payloads
 - `cargo test prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots -- --nocapture`
 - `cd web && npm test -- --run UpstreamAccounts.test.tsx`
 - `cd web && npm run build`

@@ -21,6 +21,7 @@ import {
 import { Input } from "./ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Switch } from "./ui/switch";
+import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
 import { StatusChangeToggleButton } from "./StatusChangeToggleButton";
 import { statusChangeReasonIconName } from "./statusChangeReasonIcons";
 import type {
@@ -97,59 +98,6 @@ const editableFieldSourceKeys: Array<
   ["upstream429Retry", "upstream429Retry"],
   ["availableModels", "availableModels"],
 ];
-
-interface InlineOption<T extends string | number> {
-  value: T;
-  label: string;
-}
-
-interface InlineOptionGroupProps<T extends string | number> {
-  ariaLabel: string;
-  value: T;
-  options: InlineOption<T>[];
-  disabled?: boolean;
-  onChange: (value: T) => void;
-}
-
-function InlineOptionGroup<T extends string | number>({
-  ariaLabel,
-  value,
-  options,
-  disabled,
-  onChange,
-}: InlineOptionGroupProps<T>) {
-  const activeIndex = Math.max(
-    0,
-    options.findIndex((option) => option.value === value),
-  );
-  return (
-    <div
-      className="policy-inline-radio"
-      role="radiogroup"
-      aria-label={ariaLabel}
-      style={{
-        ["--option-count" as string]: options.length,
-        ["--active-index" as string]: activeIndex,
-      }}
-    >
-      <span className="policy-inline-radio-indicator" aria-hidden />
-      {options.map((option) => (
-        <button
-          key={String(option.value)}
-          type="button"
-          role="radio"
-          aria-checked={option.value === value}
-          disabled={disabled}
-          className="policy-inline-radio-item"
-          data-active={option.value === value}
-          onClick={() => onChange(option.value)}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 interface EditablePolicyConfig {
   busyField?: EditablePolicyField | null;
@@ -915,7 +863,7 @@ export function EffectiveRoutingRuleCard({
       source: fieldSources.priorityTier,
       clearPayload: { priorityTier: null },
       editor: (
-        <InlineOptionGroup<TagPriorityTier>
+        <PolicyInlineOptionGroup<TagPriorityTier>
           ariaLabel={labels.fieldPriority ?? "Priority"}
           value={resolvedRule.priorityTier ?? "normal"}
           disabled={isBusy("priorityTier")}
@@ -940,7 +888,7 @@ export function EffectiveRoutingRuleCard({
       source: fieldSources.fastModeRewriteMode,
       clearPayload: { fastModeRewriteMode: null },
       editor: (
-        <InlineOptionGroup<TagFastModeRewriteMode>
+        <PolicyInlineOptionGroup<TagFastModeRewriteMode>
           ariaLabel={labels.fieldFastMode ?? "FAST mode"}
           value={resolvedRule.fastModeRewriteMode ?? "keep_original"}
           disabled={isBusy("fastModeRewriteMode")}
@@ -970,7 +918,7 @@ export function EffectiveRoutingRuleCard({
       source: fieldSources.imageToolRewriteMode ?? "root",
       clearPayload: { imageToolRewriteMode: null },
       editor: (
-        <InlineOptionGroup<ImageToolRewriteMode>
+        <PolicyInlineOptionGroup<ImageToolRewriteMode>
           ariaLabel={labels.fieldImageToolRewriteMode ?? "Image tools"}
           value={resolvedRule.imageToolRewriteMode ?? "keep_original"}
           disabled={isBusy("imageToolRewriteMode")}
@@ -1681,7 +1629,7 @@ function RetryInlineEditor({
 }: RetryInlineEditorProps) {
   const value = Math.min(5, Math.max(0, Math.trunc(retries)));
   return (
-    <InlineOptionGroup<number>
+    <PolicyInlineOptionGroup<number>
       ariaLabel={labels.fieldUpstream429 ?? "Upstream 429 retry"}
       value={value}
       disabled={disabled}

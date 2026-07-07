@@ -199,6 +199,53 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
   });
 
+  it("saves upstream 429 retry as a single 0..5 selector where 0 disables retry", () => {
+    const onSubmit = vi.fn();
+    render(
+      <GroupAccountRoutingRuleDialog
+        open
+        title="Group policy"
+        description="Shared routing policy"
+        submitLabel="Apply group policy"
+        rule={{
+          ...defaultRule,
+          upstream429RetryEnabled: true,
+          upstream429MaxRetries: 3,
+        }}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    );
+
+    const retryGroup = document.querySelector(
+      '[role="radiogroup"][aria-label="Upstream 429 retry"]',
+    ) as HTMLElement | null;
+    expect(retryGroup).not.toBeNull();
+    const zeroRetry = Array.from(
+      retryGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+    ).find((button) => button.textContent?.trim() === "0");
+    expect(zeroRetry).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      zeroRetry!.click();
+    });
+
+    const submit = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Apply group policy",
+    );
+    expect(submit).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      submit!.click();
+    });
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        upstream429RetryEnabled: false,
+        upstream429MaxRetries: 0,
+      }),
+    );
+  });
+
   it("preserves an explicit empty model override after clearing existing models", () => {
     const onSubmit = vi.fn();
     render(
@@ -245,6 +292,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
         title="Group policy"
         description="Shared routing policy"
         submitLabel="Apply group policy"
+        changedFieldsOnly
         rule={defaultRule}
         availableModelOptions={["gpt-5.5"]}
         onClose={() => undefined}

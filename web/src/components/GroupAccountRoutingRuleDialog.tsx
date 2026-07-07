@@ -18,6 +18,7 @@ import {
   MultiSelectFilterCombobox,
   type MultiSelectFilterOption,
 } from "./MultiSelectFilterCombobox";
+import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
 import { RoutingTimeoutOverridesEditor } from "./RoutingTimeoutOverridesEditor";
 import { StatusChangeToggleButton } from "./StatusChangeToggleButton";
 import { statusChangeReasonIconName } from "./statusChangeReasonIcons";
@@ -241,8 +242,9 @@ function buildPayload(
       changedPayload.upstream429MaxRetries = payload.upstream429MaxRetries;
     }
     if (
+      draft.availableModelsTouched ||
       JSON.stringify(payload.availableModels ?? []) !==
-      JSON.stringify(normalizeModelIds(base.availableModels ?? []))
+        JSON.stringify(normalizeModelIds(base.availableModels ?? []))
     ) {
       changedPayload.availableModels = payload.availableModels;
     }
@@ -289,23 +291,7 @@ function buildPayload(
   return payload;
 }
 
-interface GroupAccountRoutingRuleDialogProps {
-  open: boolean;
-  title: string;
-  description: string;
-  submitLabel: string;
-  rule?: GroupAccountRoutingRule | null;
-  busy?: boolean;
-  error?: string | null;
-  changedFieldsOnly?: boolean;
-  effectiveTimeouts?: PoolRoutingTimeoutSettings | null;
-  timeoutFieldSources?: EffectiveRoutingTimeoutFieldSources | null;
-  timeoutOverrideSource?: "group" | "account";
-  onClose: () => void;
-  onSubmit: (
-    payload: UpdateGroupAccountRoutingRulePayload,
-  ) => Promise<void> | void;
-  labels: {
+export interface GroupAccountRoutingRuleLabels {
     allowNewConversations: string;
     newConversationHint?: string;
     allowCutOut: string;
@@ -367,15 +353,41 @@ interface GroupAccountRoutingRuleDialogProps {
     timeoutSourceConversation?: string;
     cancel: string;
     validation: string;
-  };
-  availableModelOptions?: string[];
 }
 
-export function GroupAccountRoutingRuleDialog({
+interface GroupAccountRoutingRuleEditorProps {
+  open: boolean;
+  rule?: GroupAccountRoutingRule | null;
+  busy?: boolean;
+  error?: string | null;
+  changedFieldsOnly?: boolean;
+  effectiveTimeouts?: PoolRoutingTimeoutSettings | null;
+  timeoutFieldSources?: EffectiveRoutingTimeoutFieldSources | null;
+  timeoutOverrideSource?: "group" | "account";
+  labels: GroupAccountRoutingRuleLabels;
+  availableModelOptions?: string[];
+  className?: string;
+  onPayloadChange?: (
+    payload: UpdateGroupAccountRoutingRulePayload | null,
+  ) => void;
+}
+
+interface GroupAccountRoutingRuleDialogProps
+  extends Omit<
+    GroupAccountRoutingRuleEditorProps,
+    "className" | "onPayloadChange"
+  > {
+  title: string;
+  description: string;
+  submitLabel: string;
+  onClose: () => void;
+  onSubmit: (
+    payload: UpdateGroupAccountRoutingRulePayload,
+  ) => Promise<void> | void;
+}
+
+export function GroupAccountRoutingRuleEditor({
   open,
-  title,
-  description,
-  submitLabel,
   rule,
   busy = false,
   error,
@@ -383,11 +395,11 @@ export function GroupAccountRoutingRuleDialog({
   effectiveTimeouts,
   timeoutFieldSources,
   timeoutOverrideSource = "group",
-  onClose,
-  onSubmit,
   labels,
   availableModelOptions = [],
-}: GroupAccountRoutingRuleDialogProps) {
+  className,
+  onPayloadChange,
+}: GroupAccountRoutingRuleEditorProps) {
   const [draft, setDraft] = useState<GroupAccountRoutingRuleDraft>(() =>
     buildDraft(rule, {
       changedFieldsOnly,
@@ -482,7 +494,9 @@ export function GroupAccountRoutingRuleDialog({
       timeoutOverrideSource,
     ],
   );
-  const disabled = !payload || busy;
+  useEffect(() => {
+    onPayloadChange?.(payload);
+  }, [onPayloadChange, payload]);
   const availableModelComboboxOptions = useMemo<
     MultiSelectFilterOption[]
   >(() => {
@@ -514,18 +528,7 @@ export function GroupAccountRoutingRuleDialog({
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => (!busy && !nextOpen ? onClose() : undefined)}
-    >
-      <DialogContent className="flex w-[min(48rem,calc(100vw-2rem))] max-h-[min(90vh,calc(100vh-2rem))] max-w-none flex-col overflow-hidden p-0">
-        <div className="shrink-0 border-b border-base-300/80 px-6 py-5">
-          <DialogHeader>
-            <DialogTitle>{title}</DialogTitle>
-            <DialogDescription>{description}</DialogDescription>
-          </DialogHeader>
-        </div>
-        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
+        <div className={className ?? "space-y-5"}>
           <SelectField
             className="field"
             label={labels.priorityTier}
@@ -821,7 +824,7 @@ export function GroupAccountRoutingRuleDialog({
           </div>
 
           <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
-            <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
               <div className="space-y-1">
                 <p className="font-medium text-base-content">
                   {labels.upstream429Retry}
@@ -830,40 +833,32 @@ export function GroupAccountRoutingRuleDialog({
                   {labels.upstream429RetryHint}
                 </p>
               </div>
-              <Switch
-                checked={draft.upstream429RetryEnabled}
-                onCheckedChange={(checked) =>
+            </div>
+            <div className="mt-4">
+              <PolicyInlineOptionGroup<number>
+                ariaLabel={labels.upstream429Retry}
+                value={
+                  draft.upstream429RetryEnabled
+                    ? Math.max(
+                        1,
+                        normalizeRetryCount(draft.upstream429MaxRetries) || 1,
+                      )
+                    : 0
+                }
+                disabled={busy}
+                options={[0, 1, 2, 3, 4, 5].map((value) => ({
+                  value,
+                  label: String(value),
+                }))}
+                onChange={(value) =>
                   setDraft((current) => ({
                     ...current,
-                    upstream429RetryEnabled: checked,
-                    upstream429MaxRetries: checked
-                      ? Math.max(1, current.upstream429MaxRetries || 1)
-                      : 0,
+                    upstream429RetryEnabled: value > 0,
+                    upstream429MaxRetries: normalizeRetryCount(value),
                   }))
                 }
-                aria-label={labels.upstream429RetryToggle}
               />
             </div>
-            <SelectField
-              className="mt-4"
-              label={labels.upstream429RetryCount}
-              name="groupUpstream429MaxRetries"
-              value={String(Math.max(1, draft.upstream429MaxRetries || 1))}
-              disabled={busy || !draft.upstream429RetryEnabled}
-              options={[1, 2, 3, 4, 5].map((value) => ({
-                value: String(value),
-                label:
-                  value === 1
-                    ? labels.upstream429RetryCountOnce
-                    : labels.upstream429RetryCountMany(value),
-              }))}
-              onValueChange={(value) =>
-                setDraft((current) => ({
-                  ...current,
-                  upstream429MaxRetries: normalizeRetryCount(Number(value)),
-                }))
-              }
-            />
           </div>
 
           <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
@@ -914,6 +909,57 @@ export function GroupAccountRoutingRuleDialog({
           ) : !payload ? (
             <p className="text-sm text-warning">{labels.validation}</p>
           ) : null}
+        </div>
+  );
+}
+
+export function GroupAccountRoutingRuleDialog({
+  open,
+  title,
+  description,
+  submitLabel,
+  rule,
+  busy = false,
+  error,
+  changedFieldsOnly = false,
+  effectiveTimeouts,
+  timeoutFieldSources,
+  timeoutOverrideSource = "group",
+  onClose,
+  onSubmit,
+  labels,
+  availableModelOptions = [],
+}: GroupAccountRoutingRuleDialogProps) {
+  const [payload, setPayload] =
+    useState<UpdateGroupAccountRoutingRulePayload | null>(null);
+  const disabled = !payload || busy;
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => (!busy && !nextOpen ? onClose() : undefined)}
+    >
+      <DialogContent className="flex w-[min(48rem,calc(100vw-2rem))] max-h-[min(90vh,calc(100vh-2rem))] max-w-none flex-col overflow-hidden p-0">
+        <div className="shrink-0 border-b border-base-300/80 px-6 py-5">
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription>{description}</DialogDescription>
+          </DialogHeader>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          <GroupAccountRoutingRuleEditor
+            open={open}
+            rule={rule}
+            busy={busy}
+            error={error}
+            changedFieldsOnly={changedFieldsOnly}
+            effectiveTimeouts={effectiveTimeouts}
+            timeoutFieldSources={timeoutFieldSources}
+            timeoutOverrideSource={timeoutOverrideSource}
+            labels={labels}
+            availableModelOptions={availableModelOptions}
+            onPayloadChange={setPayload}
+          />
         </div>
         <div className="shrink-0 border-t border-base-300/80 px-6 py-4">
           <DialogFooter>
