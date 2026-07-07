@@ -11,6 +11,7 @@ import { ListBodyState } from "./ListBodyState";
 import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
 import {
   FALLBACK_CELL,
+  INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   InvocationExpandedDetails,
   buildInvocationDetailViewModel,
   formatOptionalText,
@@ -59,6 +60,7 @@ interface InvocationRecordsRowViewModel {
   accountLabel: string;
   accountId: number | null;
   accountClickable: boolean;
+  accountRoutingInProgress: boolean;
   proxyDisplayName: string;
   modelValue: string;
   modelHasMismatch: boolean;
@@ -326,6 +328,9 @@ function renderDetailSummaryStrip(
             row.accountLabel,
             row.accountId,
             row.accountClickable,
+            row.accountRoutingInProgress
+              ? INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME
+              : undefined,
           )}
         </div>
         <div

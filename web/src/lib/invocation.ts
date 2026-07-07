@@ -202,6 +202,24 @@ export function isPoolRouteMode(value: string | null | undefined): boolean {
   return normalizeRouteMode(value) === ROUTE_MODE_POOL;
 }
 
+export function isInvocationPoolAccountRoutingInProgress(
+  routeMode: string | null | undefined,
+  status: string | null | undefined,
+  upstreamAccountName: string | null | undefined,
+  upstreamAccountId: number | null | undefined,
+): boolean {
+  if (!isPoolRouteMode(routeMode)) return false;
+  const normalizedStatus = status?.trim().toLowerCase();
+  if (normalizedStatus !== "running" && normalizedStatus !== "pending") {
+    return false;
+  }
+  const name = upstreamAccountName?.trim();
+  if (name) return true;
+  return (
+    typeof upstreamAccountId === "number" && Number.isFinite(upstreamAccountId)
+  );
+}
+
 export function resolveInvocationAccountLabel(
   routeMode: string | null | undefined,
   status: string | null | undefined,

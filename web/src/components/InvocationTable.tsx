@@ -28,6 +28,7 @@ import { InvocationPhaseBadge } from "./InvocationPhaseBadge";
 import { cn } from "../lib/utils";
 import {
   FALLBACK_CELL,
+  INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   InvocationExpandedDetails,
   buildInvocationDetailViewModel,
   renderEndpointSummary,
@@ -107,6 +108,7 @@ interface InvocationRowViewModel {
   accountLabel: string;
   accountId: number | null;
   accountClickable: boolean;
+  accountRoutingInProgress: boolean;
   proxyDisplayName: string;
   modelValue: string;
   modelHasMismatch: boolean;
@@ -659,7 +661,11 @@ export function InvocationTable({
 
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
                 {row.livePhase ? (
-                  <InvocationPhaseBadge phase={row.livePhase} motion="dynamic" />
+                  <InvocationPhaseBadge
+                    phase={row.livePhase}
+                    appearance="inline"
+                    motion="dynamic"
+                  />
                 ) : (
                   <Badge variant={row.meta.variant}>{row.statusLabel}</Badge>
                 )}
@@ -669,7 +675,11 @@ export function InvocationTable({
                       row.accountLabel,
                       row.accountId,
                       row.accountClickable,
-                      "text-xs font-medium text-base-content",
+                      cn(
+                        "text-xs font-medium text-base-content",
+                        row.accountRoutingInProgress &&
+                          INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                      ),
                     )}
                   </div>
                   <div
@@ -944,13 +954,13 @@ export function InvocationTable({
                           {row.livePhase ? (
                             <InvocationPhaseBadge
                               phase={row.livePhase}
+                              appearance="inline"
                               motion="dynamic"
-                              className="h-6 px-2.5 py-0 text-[11px] font-semibold"
+                              className="justify-center text-[11px] font-semibold"
                             />
                           ) : null}
-                          <Badge
-                            variant={row.meta.variant}
-                            className="mx-auto h-6 w-fit max-w-full items-center justify-center overflow-hidden px-2.5 py-0 text-[11px] font-semibold text-center leading-none"
+                          <div
+                            className="mx-auto flex w-fit max-w-full items-center justify-center overflow-hidden text-center text-[11px] font-semibold leading-none text-base-content"
                             data-testid="invocation-proxy-badge"
                           >
                             <span
@@ -961,10 +971,13 @@ export function InvocationTable({
                                 row.accountLabel,
                                 row.accountId,
                                 row.accountClickable,
+                                row.accountRoutingInProgress
+                                  ? INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME
+                                  : undefined,
                               )}
                             </span>
                             <span className="sr-only">{row.statusLabel}</span>
-                          </Badge>
+                          </div>
                           <span
                             className="block w-full truncate whitespace-nowrap text-center text-[11px] text-base-content/70"
                             title={row.proxyDisplayName}

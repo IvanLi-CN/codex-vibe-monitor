@@ -17,6 +17,7 @@ import {
   formatResponseContentEncoding,
   formatServiceTier,
   getFastIndicatorState,
+  isInvocationPoolAccountRoutingInProgress,
   isPoolRouteMode,
   resolveInvocationModelDisplay,
   resolveFirstResponseByteTotalMs,
@@ -37,6 +38,8 @@ import {
 import { subscribeToSse } from "../lib/sse";
 
 export const FALLBACK_CELL = "—";
+export const INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME =
+  "invocation-account-routing-in-progress text-primary";
 
 type Translator = (
   key: TranslationKey,
@@ -49,6 +52,7 @@ export interface InvocationDetailViewModel {
   accountLabel: string;
   accountId: number | null;
   accountClickable: boolean;
+  accountRoutingInProgress: boolean;
   accountPlanType: string | null;
   proxyDisplayName: string;
   modelValue: string;
@@ -696,6 +700,17 @@ export function buildInvocationDetailViewModel({
     t("table.account.poolAccountUnavailable"),
   );
   const accountClickable = canOpenInvocationAccount(record);
+  const accountRoutingInProgress = isInvocationPoolAccountRoutingInProgress(
+    record.routeMode,
+    normalizedStatus,
+    record.upstreamAccountName,
+    record.upstreamAccountId,
+  );
+  const accountValueClassName = cn(
+    "font-mono text-sm",
+    accountRoutingInProgress &&
+      INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+  );
   const requestedServiceTierValue = formatServiceTier(
     record.requestedServiceTier,
   );
@@ -811,7 +826,7 @@ export function buildInvocationDetailViewModel({
         accountLabel,
         record.upstreamAccountId ?? null,
         accountClickable,
-        "font-mono text-sm",
+        accountValueClassName,
       ),
     },
     { key: "proxy", label: t("table.details.proxy"), value: proxyDisplayName },
@@ -1032,6 +1047,7 @@ export function buildInvocationDetailViewModel({
         ? Math.trunc(record.upstreamAccountId)
         : null,
     accountClickable,
+    accountRoutingInProgress,
     accountPlanType: record.upstreamAccountPlanType?.trim() || null,
     proxyDisplayName,
     modelValue: modelDisplay.primaryValue,

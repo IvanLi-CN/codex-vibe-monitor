@@ -993,6 +993,36 @@ describe("InvocationRecordsTable", () => {
     );
   });
 
+  it("marks expanded running pool account labels as routing in progress", async () => {
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([]);
+
+    render(
+      <InvocationRecordsTable
+        focus="network"
+        isLoading={false}
+        records={[
+          createRecord({
+            id: 30,
+            invokeId: "invoke-records-routing-account",
+            routeMode: "pool",
+            status: "running",
+            upstreamAccountId: 42,
+            upstreamAccountName: "pool-account-42",
+          }),
+        ]}
+      />,
+    );
+
+    clickFirstToggle();
+    await flushAsyncWork();
+
+    const accountLabel = host?.querySelector('[title="pool-account-42"]');
+    expect(accountLabel).not.toBeNull();
+    expect(accountLabel?.className).toContain(
+      "invocation-account-routing-in-progress",
+    );
+  });
+
   it("refetches pool attempts when in-flight detail fields change without counter changes", async () => {
     apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([]);
 

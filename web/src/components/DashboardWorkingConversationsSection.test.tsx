@@ -2987,7 +2987,36 @@ describe("DashboardWorkingConversationsSection", () => {
       '[title="sticky-account-52@example.com"]',
     );
     expect(accountLabel).not.toBeNull();
+    expect(accountLabel?.className).not.toContain(
+      "invocation-account-routing-in-progress",
+    );
     expect(host?.textContent ?? "").not.toContain("未分配上游账号");
+  });
+
+  it("marks the concrete upstream account as routing in progress on running dashboard cards", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-routing-account", [
+          createPreview({
+            id: 81,
+            invokeId: "invoke-routing-account",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+            upstreamAccountId: 52,
+            upstreamAccountName: "sticky-account-52@example.com",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountLabel = host?.querySelector(
+      '[title="sticky-account-52@example.com"]',
+    );
+    expect(accountLabel).not.toBeNull();
+    expect(accountLabel?.className).toContain(
+      "invocation-account-routing-in-progress",
+    );
+    expect(host?.textContent ?? "").not.toContain("号池路由中");
   });
 
   it("uses the unassigned-account fallback only for true no-account dashboard cards", () => {

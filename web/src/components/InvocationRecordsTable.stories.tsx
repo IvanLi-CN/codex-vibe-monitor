@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import type {
+  ApiInvocation,
   ApiInvocationRecordDetailResponse,
   ApiInvocationResponseBodyResponse,
   ApiPoolUpstreamRequestAttempt,
@@ -21,6 +22,36 @@ import {
 type PoolAttemptsByInvokeId = Record<string, ApiPoolUpstreamRequestAttempt[]>
 type InvocationRecordDetailsById = Record<number, ApiInvocationRecordDetailResponse>
 type InvocationResponseBodiesById = Record<number, ApiInvocationResponseBodyResponse>
+
+const POOL_ROUTING_ACCOUNT_STATE_RECORDS: ApiInvocation[] = [
+  {
+    ...STORYBOOK_INVOCATION_RECORDS.find((record) => record.invokeId === 'inv_story_6106')!,
+    id: 6206,
+    invokeId: 'inv_story_pool_routing_account_named',
+    status: 'running',
+    upstreamAccountId: 58,
+    upstreamAccountName: 'Pool Zeta 58',
+  },
+  {
+    ...STORYBOOK_INVOCATION_RECORDS[0]!,
+    id: 6207,
+    invokeId: 'inv_story_pool_routing_account_missing',
+    status: 'pending',
+    upstreamAccountId: undefined,
+    upstreamAccountName: undefined,
+    totalTokens: 0,
+    cost: undefined,
+    tTotalMs: null,
+  },
+  {
+    ...STORYBOOK_INVOCATION_RECORDS[0]!,
+    id: 6208,
+    invokeId: 'inv_story_pool_routing_account_terminal',
+    status: 'success',
+    upstreamAccountId: 17,
+    upstreamAccountName: 'Pool Alpha 17',
+  },
+]
 
 type StorybookPoolAttemptsRegistry = {
   originalFetch: typeof window.fetch
@@ -256,6 +287,37 @@ export const ModelRoutingMismatch: Story = {
       expect(canvasElement.querySelector('[data-testid="invocation-model-route-summary"]')).not.toBeNull()
       expect(document.body.textContent ?? '').toContain('gpt-5.4')
       expect(document.body.textContent ?? '').toContain('gpt-5.5')
+    })
+  },
+}
+
+export const PoolRoutingAccountStates: Story = {
+  args: {
+    focus: 'network',
+    records: POOL_ROUTING_ACCOUNT_STATE_RECORDS,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Records table state gallery for a pool request currently routed to a concrete upstream account, a pending request with no account yet, and a terminal account record. The expanded detail panel shares the same routing-in-progress text class.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const runningAccount = await canvas.findByRole('button', { name: 'Pool Zeta 58' })
+    await expect(runningAccount.className).toContain('invocation-account-routing-in-progress')
+    await expect(canvas.getByText(/号池路由中|pool routing/i)).toBeInTheDocument()
+    const terminalAccount = await canvas.findByRole('button', { name: 'Pool Alpha 17' })
+    await expect(terminalAccount.className).not.toContain('invocation-account-routing-in-progress')
+
+    await userEvent.click(canvas.getAllByRole('button', { name: /展开详情|show details/i })[0]!)
+    await waitFor(() => {
+      const expandedAccount = canvasElement.querySelector('[title="Pool Zeta 58"]')
+      expect(expandedAccount?.className ?? '').toContain('invocation-account-routing-in-progress')
     })
   },
 }

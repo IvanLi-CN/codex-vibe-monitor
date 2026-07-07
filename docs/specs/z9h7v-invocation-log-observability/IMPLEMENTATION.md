@@ -15,6 +15,7 @@
 - 新 HTTP proxy invocation 的 `invokeId` 由 `nanoid` 使用固定 10 位大写可读 alphabet 生成，格式为 `^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$`；历史 `proxy-...` ID 不迁移，旧 reservation recovery 解析只对历史格式生效。
 - 调用详情现在固定展示“请求模型 / 响应模型”两个 badge；旧记录仅有历史 `model` 时，响应模型回填旧值，请求模型显示 `—`。
 - `InvocationExpandedDetails` 现已按快速排障路径重组为请求身份、路由与模型、失败信号、细节保留、阶段耗时分组；Live 展开区与 Dashboard 调用详情抽屉继续复用同一共享组件，长 ID、endpoint、IPv6 与错误文本在桌面和窄屏内换行或截断。
+- 共享 invocation display view-model 现已区分 `accountRoutingInProgress`：当号池调用处于 `running` / `pending` 且已有上游账号名或账号 ID 时，Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉显示当前账号，并使用 text-only primary 蓝色呼吸动画；缺账号仍显示“号池路由中”，终态账号不启用呼吸。
 - 本次修复是 future-only：不改 SQLite schema，不对历史 invocation 回填 `imageIntent` 或 `compactionRequestKind`。
 - 运行态 V2 识别来自 request body 的 `context_management[type=compaction][compact_threshold]`，终态识别来自响应内实际出现的 compaction item；两者独立写入 payload，不回填历史记录。
 - raw request/response payload 的完整保留合同不作为 SQLite 止血牺牲项；本轮只补充 raw file write 的 `raw_kind`、codec、file bytes、observed bytes、truncated、path 与 elapsed 证据，并继续同步持久化 terminal usage/status/failure/raw metadata。
@@ -49,6 +50,9 @@
 - `cd web && bun run test InvocationTable.test.tsx DashboardWorkingConversationsSection.test.tsx`
 - `cd web && bun run test -- --run InvocationTable.test.tsx InvocationRecordsTable.test.tsx DashboardWorkingConversationsSection.test.tsx DashboardInvocationDetailDrawer.test.tsx promptCacheLive.test.ts invocationLiveMerge.test.ts`
 - `cd web && bun run test -- InvocationTable.test.tsx InvocationRecordsTable.test.tsx DashboardInvocationDetailDrawer.test.tsx`
+- `cd web && bun run test -- InvocationTable.test.tsx InvocationRecordsTable.test.tsx DashboardWorkingConversationsSection.test.tsx`
+- `cd web && bun run test`
+- `cd web && bun run test-storybook`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
 
@@ -71,3 +75,4 @@
 - [x] M13: 为 Records、InvocationTable、Dashboard working conversations 与详情抽屉补齐 routed-model 差异图标与双模型详情展示，并保留 legacy `model` 记录的降级显示。
 - [x] M14: 重组共享调用详情组件的信息架构与视觉层级，补齐成功、运行中、异常、号池终态、长字段、light/dark 与窄屏 Storybook 证据。
 - [x] M15: 保留完整 raw payload 合同，为 raw 文件写入与 terminal raw metadata 写入补齐低开销耗时证据。
+- [x] M16: 为运行态号池调用补齐当前上游账号呼吸提示，并覆盖 Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉的共享账号展示路径。
