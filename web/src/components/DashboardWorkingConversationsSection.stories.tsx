@@ -2597,17 +2597,15 @@ export const PoolRoutingAccountStates: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const runningAccount = await canvas.findByRole("button", {
+    const accountButtons = await canvas.findAllByRole("button", {
       name: "pool-alpha@example.com",
     });
+    const runningAccount = accountButtons[0]!;
     await expect(runningAccount.className).toContain(
       "invocation-account-routing-in-progress",
     );
     await expect(canvas.getByText(/号池路由中|pool routing/i)).toBeInTheDocument();
 
-    const accountButtons = await canvas.findAllByRole("button", {
-      name: "pool-alpha@example.com",
-    });
     const terminalAccount = accountButtons[accountButtons.length - 1];
     await expect(terminalAccount.className).not.toContain(
       "invocation-account-routing-in-progress",
