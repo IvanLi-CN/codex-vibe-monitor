@@ -608,6 +608,14 @@ export interface UpstreamAccountActivityAccount {
   isUnassigned?: boolean;
   groupName?: string | null;
   planType?: string | null;
+  enabled?: boolean | null;
+  displayStatus?: string | null;
+  enableStatus?: string | null;
+  workStatus?: string | null;
+  healthStatus?: string | null;
+  syncState?: string | null;
+  lastError?: string | null;
+  lastActionReasonMessage?: string | null;
   requestCount: number;
   successCount: number;
   failureCount: number;
@@ -2737,6 +2745,29 @@ function normalizeUpstreamAccountActivityAccount(
       typeof payload.groupName === "string" ? payload.groupName.trim() : null,
     planType:
       typeof payload.planType === "string" ? payload.planType.trim() : null,
+    enabled: typeof payload.enabled === "boolean" ? payload.enabled : null,
+    displayStatus:
+      typeof payload.displayStatus === "string"
+        ? payload.displayStatus.trim()
+        : null,
+    enableStatus:
+      typeof payload.enableStatus === "string"
+        ? payload.enableStatus.trim()
+        : null,
+    workStatus:
+      typeof payload.workStatus === "string" ? payload.workStatus.trim() : null,
+    healthStatus:
+      typeof payload.healthStatus === "string"
+        ? payload.healthStatus.trim()
+        : null,
+    syncState:
+      typeof payload.syncState === "string" ? payload.syncState.trim() : null,
+    lastError:
+      typeof payload.lastError === "string" ? payload.lastError.trim() : null,
+    lastActionReasonMessage:
+      typeof payload.lastActionReasonMessage === "string"
+        ? payload.lastActionReasonMessage.trim()
+        : null,
     requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
     successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
     failureCount: normalizeFiniteNumber(payload.failureCount) ?? 0,

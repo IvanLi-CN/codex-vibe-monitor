@@ -1940,6 +1940,157 @@
     }
 
     #[tokio::test]
+    async fn record_pool_route_http_failure_emits_suppressed_event_when_reason_toggle_disabled() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Suppressed Scope OAuth").await;
+        upsert_sticky_route(
+            &pool,
+            "sticky-suppressed-scope",
+            account_id,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("seed suppressed sticky route");
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET policy_status_change_upstream_http_401 = 0 WHERE id = ?1",
+        )
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .expect("disable 401 status change toggle");
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            false,
+            Some("sticky-suppressed-scope"),
+            StatusCode::UNAUTHORIZED,
+            "pool upstream responded with 401: Missing scopes: api.responses.write",
+            Some("invk_suppressed_scope"),
+        )
+        .await
+        .expect("record suppressed route failure");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load suppressed row")
+            .expect("suppressed row exists");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(row.last_error, None);
+        assert_eq!(row.last_action, None);
+        assert_eq!(row.last_route_failure_kind, None);
+        assert_eq!(row.cooldown_until, None);
+        assert_eq!(row.consecutive_route_failures, 0);
+        assert_eq!(
+            load_sticky_route(&pool, "sticky-suppressed-scope")
+                .await
+                .expect("load suppressed sticky route")
+                .map(|route| route.account_id),
+            Some(account_id),
+        );
+
+        let detail = load_upstream_account_detail(&pool, account_id)
+            .await
+            .expect("load suppressed detail")
+            .expect("suppressed detail exists");
+        let event = detail
+            .recent_actions
+            .first()
+            .expect("suppressed event should be recorded");
+        assert_eq!(event.action, UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED);
+        assert_eq!(event.source, UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL);
+        assert_eq!(
+            event.reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401)
+        );
+        assert_eq!(event.http_status, Some(401));
+        assert_eq!(
+            event.failure_kind.as_deref(),
+            Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
+        );
+        assert!(
+            event
+                .reason_message
+                .as_deref()
+                .is_some_and(|value| value.contains("Missing scopes: api.responses.write"))
+        );
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_preserves_sticky_route_when_single_account_rotation_429_is_suppressed()
+    {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Suppressed Single Rotation 429").await;
+        upsert_sticky_route(
+            &pool,
+            "sticky-suppressed-429",
+            account_id,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("seed suppressed 429 sticky route");
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET policy_status_change_upstream_http_429_rate_limit = 0 WHERE id = ?1",
+        )
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .expect("disable 429 rate-limit status change toggle");
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            true,
+            Some("sticky-suppressed-429"),
+            StatusCode::TOO_MANY_REQUESTS,
+            "pool upstream responded with 429: too many requests",
+            Some("invk_suppressed_429"),
+        )
+        .await
+        .expect("record suppressed single-account rotation 429");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load suppressed 429 row")
+            .expect("suppressed 429 row exists");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(row.last_error, None);
+        assert_eq!(row.last_action, None);
+        assert_eq!(row.last_route_failure_kind, None);
+        assert_eq!(row.cooldown_until, None);
+        assert_eq!(row.consecutive_route_failures, 0);
+        assert_eq!(
+            load_sticky_route(&pool, "sticky-suppressed-429")
+                .await
+                .expect("load suppressed 429 sticky route")
+                .map(|route| route.account_id),
+            Some(account_id),
+        );
+
+        let detail = load_upstream_account_detail(&pool, account_id)
+            .await
+            .expect("load suppressed 429 detail")
+            .expect("suppressed 429 detail exists");
+        let event = detail
+            .recent_actions
+            .first()
+            .expect("suppressed 429 event should be recorded");
+        assert_eq!(event.action, UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED);
+        assert_eq!(event.source, UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL);
+        assert_eq!(
+            event.reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT)
+        );
+        assert_eq!(event.http_status, Some(429));
+        assert_eq!(
+            event.failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+        );
+    }
+
+    #[tokio::test]
     async fn record_pool_route_http_failure_clears_sticky_route_on_single_account_rotation_429() {
         let pool = test_pool().await;
         let account_id = insert_oauth_account(&pool, "Single Rotation 429").await;
@@ -2607,6 +2758,7 @@
         record_account_sync_recovery_blocked(
             &pool,
             account_id,
+            &route_failure_row.status,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
             &route_failure_row.status,
             UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
@@ -2740,6 +2892,7 @@
         record_account_sync_hard_unavailable(
             &pool,
             account_id,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
             "upstream_http_402",
             "initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
@@ -2871,6 +3024,7 @@
         record_account_sync_failure(
             &pool,
             account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
             UPSTREAM_ACCOUNT_STATUS_ERROR,
             "usage snapshot parse error after refresh",
@@ -2958,6 +3112,7 @@
         record_account_sync_failure(
             &pool,
             account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
             UPSTREAM_ACCOUNT_STATUS_ERROR,
             "initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
@@ -3045,6 +3200,7 @@
         record_account_sync_recovery_blocked(
             &pool,
             account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
             UPSTREAM_ACCOUNT_STATUS_ERROR,
             UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED,

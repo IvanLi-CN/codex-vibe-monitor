@@ -54,13 +54,16 @@
 - `上游账号` tab 首次打开前不得发请求；首次激活后才加载，并在 tab 未激活时不参与 SSE/records 刷新预算。
 - `上游账号` 视图只展示当前共享 range 内“至少有 1 条调用”的账号；账号标题直接使用 `displayName`。
 - `上游账号` 视图仅支持 `today / yesterday / 1d / 7d`；当共享 range 为 `usage` 时，该 tab 必须 disabled，且若当前停留在账号 tab，必须自动回退到 `对话`。
-- 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`inProgressPhaseCounts`、`retryInvocationCount`、`effectiveRoutingRule` 与 `recentInvocations[4]`。
+- 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`enabled`、`displayStatus`、`enableStatus`、`workStatus`、`healthStatus`、`syncState`、`lastError`、`lastActionReasonMessage`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`inProgressPhaseCounts`、`retryInvocationCount`、`effectiveRoutingRule` 与 `recentInvocations[4]`。
 - `recentInvocations` 必须限制在当前所选范围内，按 `occurredAt DESC` 排序，并使用后端 bounded query 返回。
 - `recentInvocations[]` 必须额外返回真实 `promptCacheKey?: string | null`，供账号卡 recent 行生成稳定的对话短 ID 与详情抽屉 selection。
 - 账号卡不是折叠卡，也不是 `2 x 2` 小格子；它是单张放大卡片，桌面宽屏 `>=1660px` 时每行 2 张，其余断点为 1 列。
 - 账号卡必须保持紧凑信息卡定位；在桌面宽屏下允许按放大卡呈现，但不得因为固定高度或装饰性留白把视觉效果拉成整页面板。
-- 单账号卡标题行必须展示账号名、计划/状态、关键策略徽章、账号 ID，并把实时主指标 `进行中调用`、`TPM`、`消费速率` 作为文本型行内指标放在同一顶部区域；`进行中调用` 必须来自账号活动接口的 `inProgressInvocationCount`，当值为 `null` 时显示 `—`；标题区还必须用紧凑 chips 拆分展示 `排队中 / 请求中 / 响应中`，数值只取账号活动接口的 `inProgressPhaseCounts`，不得从卡内 `recentInvocations` 推导；不得用卡片型容器展示这些实时指标，且账号卡内不得再渲染 `渠道 xxx / 分组` 或顶部 `调用` 指标。
-- 账号卡标题行的关键策略徽章必须来自 `effectiveRoutingRule`，仅显示 owner-facing 策略信号：`主力`、`兜底`、`禁新对话`、`禁出`、`禁入`、`补Fast`、`Fast`、`禁Fast`、`并发N`、`重试N`；普通系统 tag 名称不得进入该区域。
+- 单账号卡标题行必须展示账号名、异常/注意状态 badge 集合、计划/活动状态、固定快捷策略 chip、账号 ID 与路由设置按钮，并把实时主指标 `进行中调用`、`TPM`、`消费速率` 作为文本型行内指标放在同一顶部区域；`进行中调用` 必须来自账号活动接口的 `inProgressInvocationCount`，当值为 `null` 时显示 `—`；标题区还必须用紧凑 chips 拆分展示 `排队中 / 请求中 / 响应中`，数值只取账号活动接口的 `inProgressPhaseCounts`，不得从卡内 `recentInvocations` 推导；不得用卡片型容器展示这些实时指标，且账号卡内不得再渲染 `渠道 xxx / 分组` 或顶部 `调用` 指标。
+- 账号卡标题行的状态 badge 集合只显示异常/注意态，不为正常/空闲状态保留占位；集合至少覆盖 `禁用`、`同步中`、`上游拒绝`、`上游不可达`、`需重登`、`限流`、`降级`、`其它异常` 等状态，点击集合必须打开当前账号详情的 `healthEvents` 标签页。
+- 账号卡标题行的快捷策略 chip 必须固定展示账号级快速操作入口：优先级/新对话合并入口、`禁出`、`禁入`；优先级/新对话入口按 `普通 → 兜底 → 主力 → 禁新 → 普通` 轮换。前三态写账号级 `allowNewConversations=true` 并设置对应 `priorityTier`，`禁新` 写账号级 `allowNewConversations=false` 且 `priorityTier=normal`；`禁出 / 禁入` 分别切换账号级 `allowCutOut / allowCutIn`。Dashboard 快捷入口不得清除账号覆盖或恢复继承。
+- Dashboard 快捷策略保存必须使用乐观 UI 与 1 秒 debounce；debounce 窗口内只提交最终值，失败时回滚到最近已提交状态，并在账号卡内暴露可见错误。保存复用 `PATCH /api/pool/upstream-accounts/:id` 的 `routingRule` payload，不新增 mutation endpoint。
+- 账号卡右侧必须提供齿轮 icon button；点击后打开当前账号详情的 `routing` 标签页。
 - 账号活动接口中的 `tokensPerMinute` 与 `spendRate` 必须使用响应窗口末端最近 5 分钟活跃尾段口径：以当前响应 `rangeEnd` 为 anchor，仅看最近 5 分钟，跳过窗口前置空闲分钟，并分别以第一个有 Token / Cost 的分钟作为有效分母起点；`requestCount`、`totalTokens`、`totalCost`、recent 调用与排序继续使用所选 range 的总量口径。
 - 已选中上游账号的 pool running 调用必须在账号活动 live rows、账号卡 `inProgressInvocationCount` / `retryInvocationCount` 与 account-scoped summary 中归属到该账号；当 invocation payload 尚未写入 `upstreamAccountId` 时，可以用同 `invokeId` 的 `pool_upstream_request_attempts.upstream_account_id` 作为读侧 fallback，并且账号级 retry 计数必须基于该 fallback 后的账号重新判定。
 - 单账号卡周期统计必须改为四组：`首字用时 + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`。前者为主参数，后者为附加参数；成本组里的失败成本比率必须按 `failureCost / totalCost` 计算，不得复用请求失败率。
@@ -90,6 +93,7 @@
 - Dashboard 顶部当前 `TPM`、`消费速率` 与 `进行中调用` 必须来自 `dashboard-activity.summary`；当账号 tab 已打开并请求 `includeAccounts=true` 时，顶部 KPI 与账号卡片必须消费同一个响应的 `snapshotId/rangeEnd`。
 - `dashboard-activity.summary.tokensPerMinute`、`summary.spendRate` 与 `summary.stats.inProgressConversationCount` 必须由账号聚合结果求和得到；同一响应内允许的差异仅限前端格式化取整。
 - `dashboard-activity.accounts[]` 必须包含真实上游账号聚合项；如果存在无法归属到账号的活动流量，必须返回明确的 `unassigned` 聚合项，而不是让顶部总数无法被明细解释。
+- `dashboard-activity.accounts[]` 与 `upstream-account-activity.accounts[]` 必须携带最小账号状态快照字段：`enabled/displayStatus/enableStatus/workStatus/healthStatus/syncState/lastError/lastActionReasonMessage`；这些字段只服务 Dashboard 状态 badge 与健康入口，不改变账号活动聚合口径。
 - `includeAccounts=false` 必须支持顶部轻量使用，只返回同源 `summary` 与快照元数据；该路径不得先构建、排序完整账号 preview/archive 明细再丢弃，只能读取 summary/read-model、live overlay 与短尾速率窗口所需数据；账号 tab 首次打开后升级为 `includeAccounts=true`，并用该 full snapshot 同步刷新顶部和账号卡片。
 - `DashboardActivityOverview` 不得再用 `buildDashboardTodayRateSnapshot` 作为顶部当前 KPI 的事实来源；该前端 timeseries rate 只能作为无活动快照上下文下的兼容回退或图表趋势辅助。
 
@@ -150,7 +154,9 @@
 ### Shared preview contract notes
 
 - `GET /api/stats/upstream-account-activity.recentInvocations[]` 复用现有 invocation preview wire shape，并额外包含 `promptCacheKey?: string | null`。
-- `GET /api/stats/upstream-account-activity.accounts[].effectiveRoutingRule` 复用账号池现有 `EffectiveRoutingRule` wire shape，只用于 Dashboard 标题区关键策略徽章；普通系统 tag 仍不在账号活动接口中展示。
+- `GET /api/stats/upstream-account-activity.accounts[].effectiveRoutingRule` 与 `GET /api/stats/dashboard-activity.accounts[].effectiveRoutingRule` 复用账号池现有 `EffectiveRoutingRule` wire shape，用于 Dashboard 标题区固定快捷策略 chip 的初始状态；普通系统 tag 仍不在账号活动接口中展示。
+- `GET /api/stats/upstream-account-activity.accounts[]` 与 `GET /api/stats/dashboard-activity.accounts[]` 的状态字段复用账号池状态模型：`enabled/displayStatus/enableStatus/workStatus/healthStatus/syncState/lastError/lastActionReasonMessage`，前端只把异常/注意态渲染为状态 badge。
+- Dashboard 快捷策略写入复用 `PATCH /api/pool/upstream-accounts/:id`，payload 仅包含 `routingRule` 中被触碰过的账号级覆盖字段；该入口不支持恢复继承。
 - `GET /api/stats/dashboard-activity.summary` 复用 `StatsResponse` wire shape，并额外返回 `tokensPerMinute` / `spendRate`；`accounts[]` 复用账号活动卡片所需字段，并允许 `upstreamAccountId: null` 的 `isUnassigned` 聚合项。
 - `GET /api/stats/dashboard-activity.rateWindow.mode` 固定描述当前速率算法来源；当前值为账号活跃尾段求和，不代表 timeseries 图上任一 bucket 的事实。
 - 前端共享 `PromptCacheConversationInvocationPreview` 合同同步包含 `promptCacheKey?: string | null`；`DashboardWorkingConversationInvocationSelection.promptCacheKey` 语义不变，仍表示真实对话键。
@@ -163,8 +169,12 @@
 - Given 用户上次主动选择了 `上游账号`，When 刷新页面、重新打开 Dashboard，或从其他页面切回 Dashboard，Then 在当前 range 允许账号视图时，工作区默认恢复到 `上游账号`。
 - Given 用户上次主动选择了 `上游账号`，When 当前 range 临时切到 `usage` 后再切回 `today / yesterday / 1d / 7d`，Then 工作区应重新恢复到 `上游账号`，而不是把偏好永久改写成 `对话`。
 - Given 从未打开过账号 tab，When 停留在 `对话` tab，Then 前端不会请求账号活动接口。
-- Given 某账号有范围内调用，When 查看账号卡，Then 标题使用 `displayName`，顶部同一行包含关键策略徽章、文本型 `TPM`、`消费速率` 实时指标和账号 ID，且卡内不再出现 `渠道 xxx / 分组` 行或顶部 `调用` 指标。
-- Given 账号活动接口返回的 `effectiveRoutingRule` 命中关键策略，When 账号卡渲染，Then 标题区显示对应策略徽章，至少覆盖 `主力`、`禁入`、`禁新对话`，且不显示普通系统 tag 名称。
+- Given 某账号有范围内调用，When 查看账号卡，Then 标题使用 `displayName`，顶部同一行包含异常/注意状态 badge、固定快捷策略 chip、文本型 `TPM`、`消费速率` 实时指标、账号 ID 与齿轮入口，且卡内不再出现 `渠道 xxx / 分组` 行或顶部 `调用` 指标。
+- Given 账号活动接口返回的 `effectiveRoutingRule` 命中快捷策略，When 账号卡渲染，Then 标题区固定显示优先级/新对话入口、`禁出`、`禁入`，其中优先级/新对话入口至少覆盖 `普通`、`兜底`、`主力`、`禁新` 四态，且不显示普通系统 tag 名称。
+- Given 用户连续点击优先级/新对话入口，When 状态轮换，Then 顺序必须为 `普通 → 兜底 → 主力 → 禁新 → 普通`，且 1 秒 debounce 内只提交最终账号级 `routingRule`。
+- Given 用户点击 `禁出 / 禁入`，When 状态切换，Then UI 立即乐观更新，并在 1 秒后保存账号级 `allowCutOut / allowCutIn` 覆盖；失败时回滚并显示卡内错误。
+- Given 账号状态为异常/注意态，When 账号卡渲染，Then 状态 badge 集合只显示异常/注意态；点击该集合打开账号详情 `healthEvents` 标签页。
+- Given 用户点击账号卡齿轮按钮，When 打开账号详情，Then 必须进入 `routing` 标签页。
 - Given 查看账号卡周期统计，When 卡片渲染完成，Then 可见四组统计：`首字用时 + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`，且所有数值使用滚动数字效果；当 `failureCost=0` 时，成本组失败成本比率显示为 `0%`。
 - Given 查看账号卡四组周期统计，When 对任一统计卡 hover、focus、点击或移动端长按，Then 整张统计卡打开结构化浮层，浮层明确展示主字段名和值、卡面已有分解字段名和值，以及 0 到 3 个相关补充数据。
 - Given 查看账号卡四组周期统计，When 卡片常驻态渲染完成，Then 卡内分解段落不再各自创建独立 tooltip trigger，避免和整卡浮层形成嵌套触发区域。
@@ -256,11 +266,11 @@
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
-  scenario: `account policy badges`
-  evidence_note: 验证 Dashboard 上游账号卡片标题区显示来自 `effectiveRoutingRule` 的关键策略徽章，包括 `主力`、`Fast`、`禁新对话`、`禁入`、`并发3`、`重试2`，且普通系统 tag 不进入该区域。
+  scenario: `quick policy chips and account attention badges`
+  evidence_note: 验证 Dashboard 上游账号卡片标题区显示异常/注意状态 badge 集合（`上游拒绝 / 限流`）、固定快捷策略 chip（`禁新 / 禁出 / 禁入`）与右侧齿轮路由入口；高亮/弱化态可在同一张账号卡内扫描。
   image:
   PR: include
-  ![Dashboard 上游账号关键策略徽章证据](./assets/dashboard-upstream-account-policy-badges.png)
+  ![Dashboard 上游账号快捷策略与状态入口证据](./assets/dashboard-upstream-account-quick-policy-status.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`

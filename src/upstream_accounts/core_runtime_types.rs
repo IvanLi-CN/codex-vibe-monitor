@@ -14,7 +14,11 @@ use futures_util::FutureExt;
 use rand::Rng;
 use rand::{RngCore, rngs::OsRng};
 use sqlx::Transaction;
-use std::{any::Any, collections::BTreeSet, panic::AssertUnwindSafe};
+use std::{
+    any::Any,
+    collections::{BTreeMap, BTreeSet},
+    panic::AssertUnwindSafe,
+};
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
     "UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET";
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID: &str = "UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID";
@@ -87,6 +91,7 @@ const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovered";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE: &str = "route_retryable_failure";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
+const UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED: &str = "status_change_suppressed";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_DEFERRED: &str = "sync_deferred";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE: &str = "sync_hard_unavailable";
@@ -107,6 +112,9 @@ const UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED: &str = "usage_sna
 const UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED: &str = "quota_still_exhausted";
 const UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED: &str =
     "recovery_unconfirmed_manual_required";
+const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401: &str = "upstream_http_401";
+const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402: &str = "upstream_http_402";
+const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403: &str = "upstream_http_403";
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT: &str =
     "upstream_http_429_rate_limit";
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED: &str =
@@ -115,6 +123,8 @@ const UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE: &str = "transport_failur
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED: &str =
     "upstream_server_overloaded";
 const UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED: &str = "reauth_required";
+const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
+const LEGACY_UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_REJECTED: &str = "upstream_rejected";
 const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED: &str =
     "group_node_shunt_unassigned";
 const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED_MESSAGE: &str =
@@ -165,6 +175,19 @@ const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 5;
 const POOL_ROUTE_TEMPORARY_FAILURE_STREAK_THRESHOLD: i64 = 5;
 const POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS: i64 = 30;
 const POOL_ROUTE_TEMPORARY_FAILURE_COOLDOWN_MAX_SECS: i64 = 60;
+const STATUS_CHANGE_REASON_CODES: [&str; 11] = [
+    UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401,
+    UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402,
+    UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403,
+    UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
+    UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT,
+    UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+    UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED,
+    UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
+    UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
+    UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+    UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX,
+];
 pub(crate) const COMPACT_SUPPORT_STATUS_UNKNOWN: &str = "unknown";
 pub(crate) const COMPACT_SUPPORT_STATUS_SUPPORTED: &str = "supported";
 pub(crate) const COMPACT_SUPPORT_STATUS_UNSUPPORTED: &str = "unsupported";
@@ -1139,6 +1162,65 @@ pub(crate) struct AccountTagSummary {
     protected: bool,
 }
 
+pub(crate) type StatusChangeReasonSettings = BTreeMap<String, bool>;
+pub(crate) type StatusChangeReasonFieldSources = BTreeMap<String, String>;
+
+pub(crate) fn canonical_status_change_reason_code(reason_code: &str) -> Option<&'static str> {
+    match reason_code.trim() {
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401 => {
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401)
+        }
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402
+        | LEGACY_UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_REJECTED => {
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402)
+        }
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403 => {
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403)
+        }
+        UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED => {
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+        }
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT => {
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT)
+        }
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED => {
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        }
+        UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED => {
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED)
+        }
+        UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED => {
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
+        }
+        UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE => {
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE)
+        }
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED => {
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED)
+        }
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX => {
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn default_status_change_reasons() -> StatusChangeReasonSettings {
+    STATUS_CHANGE_REASON_CODES
+        .into_iter()
+        .map(|reason_code| (reason_code.to_string(), true))
+        .collect()
+}
+
+pub(crate) fn default_status_change_reason_field_sources(
+    source: &str,
+) -> StatusChangeReasonFieldSources {
+    STATUS_CHANGE_REASON_CODES
+        .into_iter()
+        .map(|reason_code| (reason_code.to_string(), source.to_string()))
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EffectiveRoutingRuleFieldSources {
@@ -1191,6 +1273,8 @@ pub(crate) struct EffectiveRoutingRule {
     available_models: Vec<String>,
     #[serde(skip)]
     pub(crate) available_models_defined: bool,
+    status_change_reasons: StatusChangeReasonSettings,
+    status_change_reason_field_sources: StatusChangeReasonFieldSources,
     system_denied_models: Vec<String>,
     source_tag_ids: Vec<i64>,
     source_tag_names: Vec<String>,
@@ -1223,6 +1307,13 @@ impl EffectiveRoutingRule {
 
     pub(crate) fn available_models_source(&self) -> &str {
         &self.field_sources.available_models
+    }
+
+    pub(crate) fn status_change_reason_enabled(&self, reason_code: &str) -> bool {
+        canonical_status_change_reason_code(reason_code)
+            .and_then(|reason_code| self.status_change_reasons.get(reason_code))
+            .copied()
+            .unwrap_or(true)
     }
 }
 
@@ -1278,6 +1369,7 @@ pub(crate) struct GroupAccountRoutingRule {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     available_models: Vec<String>,
     available_models_defined: bool,
+    status_change_reasons: StatusChangeReasonSettings,
     #[serde(skip_serializing_if = "Option::is_none")]
     timeouts: Option<RoutingTimeoutSettings>,
 }
@@ -2429,6 +2521,8 @@ pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     available_models: OptionalField<Vec<String>>,
     #[serde(default)]
+    status_change_reasons: Option<UpdateStatusChangeReasonSettingsRequest>,
+    #[serde(default)]
     timeouts: Option<UpdateRoutingTimeoutSettingsRequest>,
 }
 
@@ -2465,6 +2559,14 @@ impl UpdateGroupAccountRoutingRuleRequest {
             OptionalField::Missing | OptionalField::Null => None,
         }
     }
+
+    fn status_change_reason_field(&self, reason_code: &str) -> Result<OptionalField<bool>> {
+        self.status_change_reasons
+            .as_ref()
+            .map(|value| value.field(reason_code))
+            .transpose()
+            .map(|value| value.unwrap_or(OptionalField::Missing))
+    }
 }
 
 fn optional_bool_to_i64(value: &OptionalField<bool>) -> Option<i64> {
@@ -2485,6 +2587,39 @@ fn optional_retry_count_to_i64(value: &OptionalField<u8>) -> Option<i64> {
     match value {
         OptionalField::Value(value) => Some(i64::from(normalize_group_upstream_429_max_retries(*value))),
         OptionalField::Missing | OptionalField::Null => None,
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct UpdateStatusChangeReasonSettingsRequest {
+    values: BTreeMap<String, Option<bool>>,
+}
+
+impl UpdateStatusChangeReasonSettingsRequest {
+    fn validate_keys(&self) -> Result<()> {
+        for reason_code in self.values.keys() {
+            match canonical_status_change_reason_code(reason_code) {
+                Some(canonical) if canonical == reason_code => {}
+                Some(_) => bail!(
+                    "legacy status change reason keys are read-only; use canonical reasonCode values"
+                ),
+                None => bail!("unknown status change reason: {reason_code}"),
+            }
+        }
+        Ok(())
+    }
+
+    fn field(&self, reason_code: &str) -> Result<OptionalField<bool>> {
+        self.validate_keys()?;
+        let Some(reason_code) = canonical_status_change_reason_code(reason_code) else {
+            bail!("unknown status change reason: {reason_code}");
+        };
+        Ok(match self.values.get(reason_code) {
+            Some(Some(value)) => OptionalField::Value(*value),
+            Some(None) => OptionalField::Null,
+            None => OptionalField::Missing,
+        })
     }
 }
 
@@ -2721,4 +2856,42 @@ struct ChatgptJwtAuthClaims {
     user_id: Option<String>,
     #[serde(default)]
     chatgpt_account_id: Option<String>,
+}
+
+#[cfg(test)]
+mod status_change_reason_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn default_status_change_reasons_enable_every_reason_code() {
+        let settings = default_status_change_reasons();
+
+        assert_eq!(settings.len(), STATUS_CHANGE_REASON_CODES.len());
+        for reason_code in STATUS_CHANGE_REASON_CODES {
+            assert_eq!(settings.get(reason_code), Some(&true));
+        }
+    }
+
+    #[test]
+    fn legacy_upstream_rejected_alias_maps_to_402_reason() {
+        assert_eq!(
+            canonical_status_change_reason_code(
+                LEGACY_UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_REJECTED,
+            ),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402)
+        );
+    }
+
+    #[test]
+    fn status_change_reason_patch_rejects_legacy_alias_keys() {
+        let request = UpdateStatusChangeReasonSettingsRequest {
+            values: BTreeMap::from([(
+                LEGACY_UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_REJECTED.to_string(),
+                Some(false),
+            )]),
+        };
+
+        assert!(request.validate_keys().is_err());
+    }
 }

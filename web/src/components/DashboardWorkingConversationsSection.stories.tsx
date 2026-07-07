@@ -356,6 +356,14 @@ function createUpstreamAccountActivityStoryResponse(
         displayName: "Pool Alpha",
         groupName: "Primary",
         planType: "enterprise",
+        enabled: true,
+        displayStatus: "upstream_rejected",
+        enableStatus: "enabled",
+        workStatus: "rate_limited",
+        healthStatus: "upstream_rejected",
+        syncState: "idle",
+        lastError: "upstream rejected the request",
+        lastActionReasonMessage: "上游拒绝最近一次路由请求",
         requestCount: 8,
         successCount: 6,
         failureCount: 2,
@@ -1803,7 +1811,11 @@ function StoryAccountDrawer({
   account,
   onClose,
 }: {
-  account: { id: number; label: string; tab: "overview" | "routing" } | null;
+  account: {
+    id: number;
+    label: string;
+    tab: "overview" | "routing" | "healthEvents";
+  } | null;
   onClose: () => void;
 }) {
   const titleId = useId();
@@ -1979,7 +1991,7 @@ function DrawerPreviewStory({
   const [selectedAccount, setSelectedAccount] = useState<{
     id: number;
     label: string;
-    tab: "overview" | "routing";
+    tab: "overview" | "routing" | "healthEvents";
   } | null>(null);
 
   useEffect(() => {
@@ -2017,6 +2029,9 @@ function DrawerPreviewStory({
     (
       window as typeof window & { __dashboardStoryFetchLog?: string[] }
     ).__dashboardStoryFetchLog = [];
+    (
+      window as typeof window & { __dashboardStoryPolicyPatchLog?: string[] }
+    ).__dashboardStoryPolicyPatchLog = [];
 
     window.fetch = async (input, init) => {
       const request =
@@ -2031,6 +2046,30 @@ function DrawerPreviewStory({
       ).__dashboardStoryFetchLog?.push(
         `${url.pathname}?${url.searchParams.toString()}`,
       );
+
+      const upstreamAccountPatchMatch = url.pathname.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)$/,
+      );
+      if (upstreamAccountPatchMatch && init?.method === "PATCH") {
+        (
+          window as typeof window & {
+            __dashboardStoryPolicyPatchLog?: string[];
+          }
+        ).__dashboardStoryPolicyPatchLog = [
+          ...((
+            window as typeof window & {
+              __dashboardStoryPolicyPatchLog?: string[];
+            }
+          ).__dashboardStoryPolicyPatchLog ?? []),
+          typeof init.body === "string" ? init.body : "",
+        ];
+        return jsonResponse({
+          id: Number(upstreamAccountPatchMatch[1]),
+          displayName: "Pool Alpha",
+          status: "active",
+          routingRule: {},
+        });
+      }
 
       if (url.pathname === "/api/invocations") {
         const requestId = url.searchParams.get("requestId");
@@ -2214,7 +2253,7 @@ function DrawerPreviewStory({
         onOpenUpstreamAccount={(
           accountId: number,
           accountLabel: string,
-          options?: { tab?: "overview" | "routing" },
+          options?: { tab?: "overview" | "routing" | "healthEvents" },
         ) => {
           setSelectedInvocation(null);
           setSelectedConversation(null);
@@ -2242,7 +2281,7 @@ function DrawerPreviewStory({
         onOpenUpstreamAccount={(
           accountId: number,
           accountLabel: string,
-          options?: { tab?: "overview" | "routing" },
+          options?: { tab?: "overview" | "routing" | "healthEvents" },
         ) => {
           setSelectedInvocation(null);
           setSelectedConversation(null);
@@ -2268,7 +2307,7 @@ function DrawerPreviewStory({
         onOpenUpstreamAccount={(
           accountId: number,
           accountLabel: string,
-          options?: { tab?: "overview" | "routing" },
+          options?: { tab?: "overview" | "routing" | "healthEvents" },
         ) => {
           setSelectedInvocation(null);
           setSelectedConversation(null);
@@ -2898,9 +2937,10 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
     await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
     await expect(canvas.getByText("繁忙")).toBeInTheDocument();
-    await expect(canvas.getByText("主力")).toBeInTheDocument();
+    await expect(canvas.getByText("上游拒绝")).toBeInTheDocument();
+    await expect(canvas.getByText("限流")).toBeInTheDocument();
+    await expect(canvas.getByText("禁新")).toBeInTheDocument();
     await expect(canvas.getByText("禁入")).toBeInTheDocument();
-    await expect(canvas.getByText("禁新对话")).toBeInTheDocument();
     await expect(canvas.getByText("进行中调用")).toBeInTheDocument();
     const recentBreakdown = canvas.getByTestId(
       "dashboard-upstream-account-recent-breakdown",
@@ -2910,19 +2950,23 @@ export const UpstreamAccountTab: Story = {
     await expect(recentBreakdown).toHaveTextContent(/响应中\s*4/);
     await expect(recentBreakdown).toHaveTextContent(/成功\s*6/);
     const phaseSegments = Array.from(
-      recentBreakdown.querySelectorAll('[data-testid="invocation-phase-segment"]'),
+      recentBreakdown.querySelectorAll(
+        '[data-testid="invocation-phase-segment"]',
+      ),
     );
     expect(phaseSegments).toHaveLength(3);
     for (const phaseSegment of phaseSegments) {
       expect(phaseSegment.getAttribute("data-phase-motion")).toBe("static");
-      const icon = phaseSegment.querySelector('[data-testid="invocation-phase-icon"]');
+      const icon = phaseSegment.querySelector(
+        '[data-testid="invocation-phase-icon"]',
+      );
       expect(icon).toBeInstanceOf(HTMLElement);
       expect(icon?.className).not.toContain("animate-pulse");
       expect(icon?.className).not.toContain("animate-spin");
     }
-    await expect(canvas.getByTestId("dashboard-upstream-account-policy-badges")).toHaveTextContent(
-      "Fast",
-    );
+    await expect(
+      canvas.getByTestId("dashboard-upstream-account-policy-badges"),
+    ).toHaveTextContent("禁出");
     await expect(canvas.getByText("story-account-1")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5-mini")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5")).toBeInTheDocument();
@@ -3025,12 +3069,16 @@ export const UpstreamAccountPhaseBreakdownStatic: Story = {
       "dashboard-upstream-account-recent-breakdown",
     );
     const phaseSegments = Array.from(
-      recentBreakdown.querySelectorAll('[data-testid="invocation-phase-segment"]'),
+      recentBreakdown.querySelectorAll(
+        '[data-testid="invocation-phase-segment"]',
+      ),
     );
     expect(phaseSegments).toHaveLength(3);
     for (const phaseSegment of phaseSegments) {
       expect(phaseSegment.getAttribute("data-phase-motion")).toBe("static");
-      const icon = phaseSegment.querySelector('[data-testid="invocation-phase-icon"]');
+      const icon = phaseSegment.querySelector(
+        '[data-testid="invocation-phase-icon"]',
+      );
       expect(icon).toBeInstanceOf(HTMLElement);
       expect(icon?.className).not.toContain("animate-pulse");
       expect(icon?.className).not.toContain("animate-spin");
@@ -3047,7 +3095,7 @@ export const UpstreamAccountPhaseBreakdownStatic: Story = {
   },
 };
 
-export const UpstreamAccountRoutingBadgesOpenRoutingTab: Story = {
+export const UpstreamAccountHeaderActions: Story = {
   args: UpstreamAccountTab.args,
   render: () => (
     <DrawerPreviewStory
@@ -3071,23 +3119,51 @@ export const UpstreamAccountRoutingBadgesOpenRoutingTab: Story = {
     const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
     await userEvent.click(accountTab);
 
-    const statusBadge = await canvas.findByTestId(
-      "dashboard-upstream-account-status",
+    const attentionBadges = await canvas.findByTestId(
+      "dashboard-upstream-account-attention-badges",
     );
-    await userEvent.click(statusBadge);
+    await userEvent.click(attentionBadges);
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
-      "account:42:routing",
+      "account:42:healthEvents",
     );
     await expect(
       within(document.body).getByTestId("story-account-drawer-tab"),
-    ).toHaveTextContent("Tab routing");
+    ).toHaveTextContent("Tab healthEvents");
 
-    const policyBadge = await canvas.findByTestId(
-      "dashboard-upstream-account-policy-badge",
+    const settingsButton = await canvas.findByTestId(
+      "dashboard-upstream-account-routing-settings",
     );
-    await userEvent.click(policyBadge);
+    await userEvent.click(settingsButton);
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
       "account:42:routing",
+    );
+    await userEvent.click(
+      within(document.body).getByRole("button", {
+        name: "Close account drawer",
+      }),
+    );
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
+      "none",
+    );
+
+    const policyBadges = await canvas.findAllByTestId(
+      "dashboard-upstream-account-policy-badge",
+    );
+    await userEvent.click(policyBadges[0]!);
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
+      "none",
+    );
+    await waitFor(
+      () => {
+        const patchLog = (
+          window as typeof window & {
+            __dashboardStoryPolicyPatchLog?: string[];
+          }
+        ).__dashboardStoryPolicyPatchLog;
+        expect(patchLog?.[0]).toContain('"allowNewConversations":true');
+        expect(patchLog?.[0]).toContain('"priorityTier":"normal"');
+      },
+      { timeout: 1600 },
     );
   },
   parameters: {
@@ -3095,7 +3171,7 @@ export const UpstreamAccountRoutingBadgesOpenRoutingTab: Story = {
     docs: {
       description: {
         story:
-          "Status and routing-policy badges in the upstream-account dashboard card open the shared account drawer directly on the routing tab, while the account name keeps the default overview entry.",
+          "Dashboard upstream-account card header actions: attention badges open health events, the gear opens routing, and quick policy chips save account-level overrides with a debounced PATCH.",
       },
     },
   },

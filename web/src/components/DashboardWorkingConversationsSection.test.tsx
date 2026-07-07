@@ -224,6 +224,14 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         displayName: "Pool Alpha",
         groupName: "Primary",
         planType: "enterprise",
+        enabled: true,
+        displayStatus: "upstream_rejected",
+        enableStatus: "enabled",
+        workStatus: "rate_limited",
+        healthStatus: "upstream_rejected",
+        syncState: "idle",
+        lastError: "upstream rejected",
+        lastActionReasonMessage: "上游拒绝最近一次路由请求",
         requestCount: 8,
         successCount: 6,
         failureCount: 2,
@@ -815,7 +823,9 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(phaseSegments).toHaveLength(3);
     for (const phaseSegment of phaseSegments) {
       expect(phaseSegment.getAttribute("data-phase-motion")).toBe("static");
-      const icon = phaseSegment.querySelector('[data-testid="invocation-phase-icon"]');
+      const icon = phaseSegment.querySelector(
+        '[data-testid="invocation-phase-icon"]',
+      );
       expect(icon).toBeInstanceOf(HTMLElement);
       expect(icon?.className).not.toContain("animate-pulse");
       expect(icon?.className).not.toContain("animate-spin");
@@ -2654,7 +2664,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenInvocation).not.toHaveBeenCalled();
   });
 
-  it("opens the routing tab when clicking an upstream account status badge", async () => {
+  it("opens health events when clicking upstream account attention badges", async () => {
     const onOpenUpstreamAccount = vi.fn();
     const onOpenInvocation = vi.fn();
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
@@ -2677,15 +2687,55 @@ describe("DashboardWorkingConversationsSection", () => {
       upstreamAccountTab.click();
     });
 
-    const statusBadge = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-status"]',
+    const attentionBadges = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-attention-badges"]',
     );
-    if (!(statusBadge instanceof HTMLButtonElement)) {
-      throw new Error("missing upstream account status badge");
+    if (!(attentionBadges instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account attention badges");
     }
 
     act(() => {
-      statusBadge.click();
+      attentionBadges.click();
+    });
+
+    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "Pool Alpha", {
+      tab: "healthEvents",
+    });
+    expect(onOpenInvocation).not.toHaveBeenCalled();
+  });
+
+  it("opens the routing tab from the upstream account settings button", async () => {
+    const onOpenUpstreamAccount = vi.fn();
+    const onOpenInvocation = vi.fn();
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    renderSection(createResponse([]), {
+      onOpenUpstreamAccount,
+      onOpenInvocation,
+    });
+
+    const upstreamAccountTab = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((candidate) =>
+      /上游账号|upstream account/i.test(candidate.textContent ?? ""),
+    );
+    if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      upstreamAccountTab.click();
+    });
+
+    const settingsButton = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-routing-settings"]',
+    );
+    if (!(settingsButton instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account settings button");
+    }
+
+    act(() => {
+      settingsButton.click();
     });
 
     expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "Pool Alpha", {
@@ -2694,44 +2744,135 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenInvocation).not.toHaveBeenCalled();
   });
 
-  it("opens the routing tab when clicking an upstream account policy badge", async () => {
-    const onOpenUpstreamAccount = vi.fn();
-    const onOpenInvocation = vi.fn();
+  it("debounces upstream account quick policy writes as account-level overrides", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: 42,
+            displayName: "Pool Alpha",
+            status: "active",
+            routingRule: {},
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
 
-    renderSection(createResponse([]), {
-      onOpenUpstreamAccount,
-      onOpenInvocation,
-    });
+    try {
+      renderSection(createResponse([]));
 
-    const upstreamAccountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) =>
-      /上游账号|upstream account/i.test(candidate.textContent ?? ""),
-    );
-    if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
-      throw new Error("missing upstream account tab");
+      const upstreamAccountTab = Array.from(
+        host?.querySelectorAll('button[role="tab"]') ?? [],
+      ).find((candidate) =>
+        /上游账号|upstream account/i.test(candidate.textContent ?? ""),
+      );
+      if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
+        throw new Error("missing upstream account tab");
+      }
+
+      act(() => {
+        upstreamAccountTab.click();
+      });
+
+      const policyBadge = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-policy-badge"][data-policy-key="priority-new-conversations"]',
+      );
+      if (!(policyBadge instanceof HTMLButtonElement)) {
+        throw new Error("missing upstream account policy badge");
+      }
+
+      act(() => {
+        policyBadge.click();
+      });
+      await act(async () => {});
+      act(() => {
+        policyBadge.click();
+      });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect(String(init?.body)).toContain('"allowNewConversations":true');
+      expect(String(init?.body)).toContain('"priorityTier":"fallback"');
+    } finally {
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
     }
+  });
 
-    act(() => {
-      upstreamAccountTab.click();
-    });
-
-    const policyBadge = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-policy-badge"]',
+  it("flushes a pending upstream account quick policy write on unmount", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: 42,
+            displayName: "Pool Alpha",
+            status: "active",
+            routingRule: {},
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
     );
-    if (!(policyBadge instanceof HTMLButtonElement)) {
-      throw new Error("missing upstream account policy badge");
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    try {
+      renderSection(createResponse([]));
+
+      const upstreamAccountTab = Array.from(
+        host?.querySelectorAll('button[role="tab"]') ?? [],
+      ).find((candidate) =>
+        /上游账号|upstream account/i.test(candidate.textContent ?? ""),
+      );
+      if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
+        throw new Error("missing upstream account tab");
+      }
+
+      act(() => {
+        upstreamAccountTab.click();
+      });
+
+      const policyBadge = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-policy-badge"][data-policy-key="priority-new-conversations"]',
+      );
+      if (!(policyBadge instanceof HTMLButtonElement)) {
+        throw new Error("missing upstream account policy badge");
+      }
+
+      act(() => {
+        policyBadge.click();
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      act(() => {
+        root?.unmount();
+      });
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect(String(init?.body)).toContain('"routingRule"');
+      expect(String(init?.body)).toContain('"priorityTier":"normal"');
+    } finally {
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
     }
-
-    act(() => {
-      policyBadge.click();
-    });
-
-    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "Pool Alpha", {
-      tab: "routing",
-    });
-    expect(onOpenInvocation).not.toHaveBeenCalled();
   });
 
   it("keeps the concrete upstream account label on assigned-account blocked dashboard cards", () => {
@@ -2997,9 +3138,9 @@ describe("DashboardWorkingConversationsSection", () => {
     const phaseIcons = Array.from(
       card.querySelectorAll('[data-testid="invocation-phase-icon"]'),
     );
-    expect(phaseIcons.some((icon) => icon.className.includes("animate-spin"))).toBe(
-      true,
-    );
+    expect(
+      phaseIcons.some((icon) => icon.className.includes("animate-spin")),
+    ).toBe(true);
 
     const requestMetric = Array.from(card.querySelectorAll("span")).find(
       (node) => node.textContent === "请求",
