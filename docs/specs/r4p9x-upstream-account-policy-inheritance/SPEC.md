@@ -261,6 +261,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - Upstream Accounts grouped roster opening the shared group routing policy dialog with the same flat status-change reason toggle tiles
 - Upstream account detail Routing tab showing page-level status-change reason toggle tiles plus the panel-level account reset action inside the full drawer context
 - Group settings Routing tab showing the embedded routing-policy upstream 429 retry count as the same integrated `0..5` selector used by account detail, with `0` representing no retry, in both desktop and narrow layouts
+- Dashboard upstream-account quick policy chips showing explicit Fast rewrite labels for `force_add` and `keep_original`
 
 PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)
@@ -309,3 +310,9 @@ PR: include
 
 PR: include
 ![Group routing tab upstream 429 retry selector mobile](./assets/group-retry-selector-enabled-mobile.png)
+
+PR: include
+![Fast rewrite quick policy force add chip](./assets/fast-policy-force-fast-chip.png)
+
+PR: include
+![Fast rewrite quick policy leave unchanged chip](./assets/fast-policy-leave-fast-chip.png)

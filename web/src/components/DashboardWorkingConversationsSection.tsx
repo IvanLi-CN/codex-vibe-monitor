@@ -772,9 +772,29 @@ function fastModePolicyLabel(
   locale: "zh" | "en",
 ) {
   if (mode === "fill_missing") return locale === "zh" ? "补Fast" : "+Fast";
-  if (mode === "force_add") return "Fast";
+  if (mode === "force_add") return locale === "zh" ? "强制Fast" : "Force Fast";
   if (mode === "force_remove") return locale === "zh" ? "禁Fast" : "No Fast";
-  return locale === "zh" ? "保持原样" : "Keep original";
+  return locale === "zh" ? "不改Fast" : "Leave Fast";
+}
+
+function fastModePolicyCycleTitle(
+  currentLabel: string,
+  locale: "zh" | "en",
+) {
+  if (locale === "zh") {
+    return `Fast 改写策略：${currentLabel}。点击循环 不改Fast / 补Fast / 强制Fast / 禁Fast`;
+  }
+  return `Fast rewrite policy: ${currentLabel}. Cycle Leave Fast / +Fast / Force Fast / No Fast`;
+}
+
+function fastModePolicyAriaLabel(
+  currentLabel: string,
+  locale: "zh" | "en",
+) {
+  if (locale === "zh") {
+    return `Fast 改写策略：${currentLabel}，点击切换`;
+  }
+  return `Fast rewrite policy: ${currentLabel}, click to cycle`;
 }
 
 function priorityPolicyTone(
@@ -993,6 +1013,7 @@ function AccountQuickPolicyChips({
   onToggleCutOut: () => void;
   onToggleCutIn: () => void;
 }) {
+  const fastModeLabel = fastModePolicyLabel(draft.fastModeRewriteMode, locale);
   const cutOutActive = !draft.allowCutOut;
   const cutInActive = !draft.allowCutIn;
   const priorityTone = priorityPolicyTone(draft);
@@ -1047,14 +1068,8 @@ function AccountQuickPolicyChips({
           chipBase,
           ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[fastModeTone],
         )}
-        title={
-          locale === "zh"
-            ? "点击切换 保持原样 / 补Fast / Fast / 禁Fast"
-            : "Cycle keep original / +Fast / Fast / No Fast"
-        }
-        aria-label={
-          locale === "zh" ? "切换 Fast 模式" : "Cycle Fast mode"
-        }
+        title={fastModePolicyCycleTitle(fastModeLabel, locale)}
+        aria-label={fastModePolicyAriaLabel(fastModeLabel, locale)}
         onClick={(event) => {
           event.stopPropagation();
           onCycleFastMode();
@@ -1063,7 +1078,7 @@ function AccountQuickPolicyChips({
           event.stopPropagation();
         }}
       >
-        {fastModePolicyLabel(draft.fastModeRewriteMode, locale)}
+        {fastModeLabel}
       </button>
       <button
         type="button"
