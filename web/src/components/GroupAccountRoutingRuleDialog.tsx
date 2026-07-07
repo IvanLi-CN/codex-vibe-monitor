@@ -1,14 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppIcon } from "./AppIcon";
 import { Button } from "./ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
 import { Input } from "./ui/input";
 import { SelectField } from "./ui/select-field";
 import { Switch } from "./ui/switch";
 import { Badge } from "./ui/badge";
 import { ConcurrencyLimitSlider } from "./ConcurrencyLimitSlider";
-import { MultiSelectFilterCombobox, type MultiSelectFilterOption } from "./MultiSelectFilterCombobox";
+import {
+  MultiSelectFilterCombobox,
+  type MultiSelectFilterOption,
+} from "./MultiSelectFilterCombobox";
 import { RoutingTimeoutOverridesEditor } from "./RoutingTimeoutOverridesEditor";
+import { StatusChangeToggleButton } from "./StatusChangeToggleButton";
+import { statusChangeReasonIconName } from "./statusChangeReasonIcons";
 import type {
   EffectiveRoutingTimeoutFieldSources,
   GroupAccountRoutingRule,
@@ -18,7 +30,10 @@ import type {
   TagPriorityTier,
   UpdateGroupAccountRoutingRulePayload,
 } from "../lib/api";
-import { apiConcurrencyLimitToSliderValue, sliderConcurrencyLimitToApiValue } from "../lib/concurrencyLimit";
+import {
+  apiConcurrencyLimitToSliderValue,
+  sliderConcurrencyLimitToApiValue,
+} from "../lib/concurrencyLimit";
 import {
   buildRoutingTimeoutOverrideDraft,
   buildRoutingTimeoutOverrideDraftForSource,
@@ -30,6 +45,11 @@ import {
   type RoutingTimeoutOverrideDraft,
   type RoutingTimeoutOverrideEnabledState,
 } from "../lib/poolRoutingTimeouts";
+import {
+  STATUS_CHANGE_REASON_CODES,
+  resolveStatusChangeReasons,
+  type StatusChangeReasonCode,
+} from "../lib/upstreamAccountStatusChangeReasons";
 
 type GroupAccountRoutingRuleDraft = {
   allowNewConversations: boolean;
@@ -44,6 +64,7 @@ type GroupAccountRoutingRuleDraft = {
   availableModels: string[];
   availableModelInput: string;
   availableModelsTouched: boolean;
+  statusChangeReasons: Record<StatusChangeReasonCode, boolean>;
   timeoutOverrides: RoutingTimeoutOverrideDraft;
   timeoutOverrideEnabledFields: RoutingTimeoutOverrideEnabledState;
 };
@@ -63,6 +84,28 @@ function normalizeModelIds(values: string[]) {
     normalized.push(trimmed);
   }
   return normalized;
+}
+
+function buildStatusChangeReasonPayload(
+  statusChangeReasons: Record<StatusChangeReasonCode, boolean>,
+  options?: {
+    changedFieldsOnly?: boolean;
+    baseRule?: GroupAccountRoutingRule | null;
+  },
+): UpdateGroupAccountRoutingRulePayload["statusChangeReasons"] | undefined {
+  if (!options?.changedFieldsOnly) {
+    return { ...statusChangeReasons };
+  }
+  const baseReasons = resolveStatusChangeReasons(
+    options.baseRule?.statusChangeReasons,
+  );
+  const patch: Partial<Record<StatusChangeReasonCode, boolean | null>> = {};
+  for (const reason of STATUS_CHANGE_REASON_CODES) {
+    if (statusChangeReasons[reason] !== baseReasons[reason]) {
+      patch[reason] = statusChangeReasons[reason];
+    }
+  }
+  return Object.keys(patch).length > 0 ? patch : undefined;
 }
 
 function buildDraft(
@@ -103,6 +146,7 @@ function buildDraft(
     availableModels: normalizeModelIds(rule?.availableModels ?? []),
     availableModelInput: "",
     availableModelsTouched: false,
+    statusChangeReasons: resolveStatusChangeReasons(rule?.statusChangeReasons),
     timeoutOverrides,
     timeoutOverrideEnabledFields,
   };
@@ -146,13 +190,18 @@ function buildPayload(
       ? Math.max(1, normalizeRetryCount(draft.upstream429MaxRetries) || 1)
       : 0,
     availableModels: normalizeModelIds(draft.availableModels),
+    statusChangeReasons: buildStatusChangeReasonPayload(
+      draft.statusChangeReasons,
+    ),
     timeouts: parsedTimeouts.patch,
   };
 
   if (options?.changedFieldsOnly && options.baseRule) {
     const base = options.baseRule;
     const changedPayload: UpdateGroupAccountRoutingRulePayload = {};
-    if (draft.allowNewConversations !== !(base.blockNewConversations ?? false)) {
+    if (
+      draft.allowNewConversations !== !(base.blockNewConversations ?? false)
+    ) {
       changedPayload.allowNewConversations = payload.allowNewConversations;
     }
     if (draft.allowCutOut !== (base.allowCutOut ?? true)) {
@@ -164,18 +213,29 @@ function buildPayload(
     if (draft.priorityTier !== (base.priorityTier ?? "normal")) {
       changedPayload.priorityTier = payload.priorityTier;
     }
-    if (draft.fastModeRewriteMode !== (base.fastModeRewriteMode ?? "keep_original")) {
+    if (
+      draft.fastModeRewriteMode !==
+      (base.fastModeRewriteMode ?? "keep_original")
+    ) {
       changedPayload.fastModeRewriteMode = payload.fastModeRewriteMode;
     }
-    if (draft.imageToolRewriteMode !== (base.imageToolRewriteMode ?? "keep_original")) {
+    if (
+      draft.imageToolRewriteMode !==
+      (base.imageToolRewriteMode ?? "keep_original")
+    ) {
       changedPayload.imageToolRewriteMode = payload.imageToolRewriteMode;
     }
-    if (draft.concurrencyLimit !== apiConcurrencyLimitToSliderValue(base.concurrencyLimit ?? 0)) {
+    if (
+      draft.concurrencyLimit !==
+      apiConcurrencyLimitToSliderValue(base.concurrencyLimit ?? 0)
+    ) {
       changedPayload.concurrencyLimit = payload.concurrencyLimit;
     }
     if (
-      draft.upstream429RetryEnabled !== (base.upstream429RetryEnabled ?? false) ||
-      draft.upstream429MaxRetries !== normalizeRetryCount(base.upstream429MaxRetries)
+      draft.upstream429RetryEnabled !==
+        (base.upstream429RetryEnabled ?? false) ||
+      draft.upstream429MaxRetries !==
+        normalizeRetryCount(base.upstream429MaxRetries)
     ) {
       changedPayload.upstream429RetryEnabled = payload.upstream429RetryEnabled;
       changedPayload.upstream429MaxRetries = payload.upstream429MaxRetries;
@@ -185,6 +245,16 @@ function buildPayload(
       JSON.stringify(normalizeModelIds(base.availableModels ?? []))
     ) {
       changedPayload.availableModels = payload.availableModels;
+    }
+    const statusChangeReasonDiff = buildStatusChangeReasonPayload(
+      draft.statusChangeReasons,
+      {
+        changedFieldsOnly: true,
+        baseRule: base,
+      },
+    );
+    if (statusChangeReasonDiff) {
+      changedPayload.statusChangeReasons = statusChangeReasonDiff;
     }
     const baseTimeoutDraft = buildDraft(base, {
       changedFieldsOnly: true,
@@ -232,7 +302,9 @@ interface GroupAccountRoutingRuleDialogProps {
   timeoutFieldSources?: EffectiveRoutingTimeoutFieldSources | null;
   timeoutOverrideSource?: "group" | "account";
   onClose: () => void;
-  onSubmit: (payload: UpdateGroupAccountRoutingRulePayload) => Promise<void> | void;
+  onSubmit: (
+    payload: UpdateGroupAccountRoutingRulePayload,
+  ) => Promise<void> | void;
   labels: {
     allowNewConversations: string;
     newConversationHint?: string;
@@ -274,6 +346,11 @@ interface GroupAccountRoutingRuleDialogProps {
     availableModelsAddCustom: string;
     availableModelsInherited: string;
     availableModelsRemove: string;
+    statusChangeReasonSectionTitle?: string;
+    statusChangeReasonSectionHint?: string;
+    statusChangeReasonLabel?: (reason: StatusChangeReasonCode) => string;
+    statusChangeReasonToggleEnabled?: string;
+    statusChangeReasonToggleDisabled?: string;
     timeoutSectionTitle: string;
     timeoutSectionHint?: string;
     timeoutResponsesFirstByte: string;
@@ -406,19 +483,18 @@ export function GroupAccountRoutingRuleDialog({
     ],
   );
   const disabled = !payload || busy;
-  const availableModelComboboxOptions = useMemo<MultiSelectFilterOption[]>(
-    () => {
-      const values = normalizeModelIds([
-        ...availableModelOptions,
-        ...draft.availableModels,
-      ]);
-      return values.map((value) => ({
-        value,
-        label: labels.availableModelsCustomLabel(value),
-      }));
-    },
-    [availableModelOptions, draft.availableModels, labels],
-  );
+  const availableModelComboboxOptions = useMemo<
+    MultiSelectFilterOption[]
+  >(() => {
+    const values = normalizeModelIds([
+      ...availableModelOptions,
+      ...draft.availableModels,
+    ]);
+    return values.map((value) => ({
+      value,
+      label: labels.availableModelsCustomLabel(value),
+    }));
+  }, [availableModelOptions, draft.availableModels, labels]);
   const trimmedModelInput = draft.availableModelInput.trim();
   const canAddCustomModel =
     trimmedModelInput.length > 0 &&
@@ -571,7 +647,8 @@ export function GroupAccountRoutingRuleDialog({
                     [key]: enabled,
                   },
                   timeoutOverrides:
-                    enabled && (current.timeoutOverrides[key] ?? "").trim() === ""
+                    enabled &&
+                    (current.timeoutOverrides[key] ?? "").trim() === ""
                       ? {
                           ...current.timeoutOverrides,
                           [key]:
@@ -789,6 +866,48 @@ export function GroupAccountRoutingRuleDialog({
             />
           </div>
 
+          <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
+            <div className="space-y-1">
+              <p className="font-medium text-base-content">
+                {labels.statusChangeReasonSectionTitle ??
+                  "Status change trigger reasons"}
+              </p>
+              {labels.statusChangeReasonSectionHint ? (
+                <p className="text-xs leading-5 text-base-content/65">
+                  {labels.statusChangeReasonSectionHint}
+                </p>
+              ) : null}
+            </div>
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:auto-rows-fr lg:grid-cols-4">
+              {STATUS_CHANGE_REASON_CODES.map((reason) => {
+                const reasonLabel =
+                  labels.statusChangeReasonLabel?.(reason) ?? reason;
+                return (
+                  <StatusChangeToggleButton
+                    key={reason}
+                    title={reasonLabel}
+                    iconName={statusChangeReasonIconName(reason)}
+                    pressed={draft.statusChangeReasons[reason]}
+                    disabled={busy}
+                    activeLabel={labels.statusChangeReasonToggleEnabled}
+                    inactiveLabel={labels.statusChangeReasonToggleDisabled}
+                    onPressedChange={(checked) =>
+                      setDraft((current) => ({
+                        ...current,
+                        statusChangeReasons: {
+                          ...current.statusChangeReasons,
+                          [reason]: checked,
+                        },
+                      }))
+                    }
+                    ariaLabel={reasonLabel}
+                    className="min-h-[4rem]"
+                  />
+                );
+              })}
+            </div>
+          </div>
+
           {error ? <p className="text-sm text-error">{error}</p> : null}
           {timeoutValidationError ? (
             <p className="text-sm text-error">{timeoutValidationError}</p>
@@ -798,7 +917,12 @@ export function GroupAccountRoutingRuleDialog({
         </div>
         <div className="shrink-0 border-t border-base-300/80 px-6 py-4">
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={onClose}
+              disabled={busy}
+            >
               {labels.cancel}
             </Button>
             <Button

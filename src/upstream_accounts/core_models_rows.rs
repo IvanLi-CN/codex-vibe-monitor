@@ -72,6 +72,28 @@ pub(crate) struct UpstreamAccountRow {
     #[sqlx(default)]
     policy_available_models_json: Option<String>,
     #[sqlx(default)]
+    policy_status_change_upstream_http_401: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_http_402: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_http_403: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_reauth_required: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_http_429_rate_limit: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_usage_snapshot_exhausted: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_quota_still_exhausted: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_transport_failure: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_server_overloaded: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_http_5xx: Option<i64>,
+    #[sqlx(default)]
     policy_responses_first_byte_timeout_secs: Option<i64>,
     #[sqlx(default)]
     policy_compact_first_byte_timeout_secs: Option<i64>,
@@ -506,6 +528,28 @@ struct UpstreamAccountGroupListRow {
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<String>,
+    #[sqlx(default)]
+    policy_status_change_upstream_http_401: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_http_402: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_http_403: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_reauth_required: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_http_429_rate_limit: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_usage_snapshot_exhausted: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_quota_still_exhausted: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_transport_failure: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_server_overloaded: Option<i64>,
+    #[sqlx(default)]
+    policy_status_change_upstream_http_5xx: Option<i64>,
     #[sqlx(default)]
     policy_responses_first_byte_timeout_secs: Option<i64>,
     #[sqlx(default)]

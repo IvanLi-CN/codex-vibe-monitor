@@ -183,6 +183,12 @@ export default function MaintenanceRecordsPage() {
     const latestTranslated = t(latestKey);
     return latestTranslated === latestKey ? humanizeAction(action) : latestTranslated;
   };
+  const reasonLabel = (reason?: string | null) => {
+    if (!reason) return null;
+    const key = `accountPool.upstreamAccounts.latestAction.reasons.${reason}`;
+    const translated = t(key);
+    return translated === key ? reason : translated;
+  };
   const resultLabel = (result?: string | null) => {
     if (!result) return null;
     const key = `accountPool.upstreamAccounts.maintenanceEvents.results.${result}`;
@@ -237,6 +243,16 @@ export default function MaintenanceRecordsPage() {
     }
     if (event.reasonCode === "sync_error") {
       return t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.syncError");
+    }
+    if (event.action === "status_change_suppressed") {
+      const parts = [
+        reasonLabel(event.reasonCode) ?? event.reasonCode,
+        Number.isFinite(event.httpStatus ?? NaN)
+          ? `HTTP ${event.httpStatus}`
+          : null,
+        event.reasonMessage ?? event.resultDescription,
+      ].filter((value): value is string => Boolean(value));
+      return parts.join(" · ") || t("accountPool.upstreamAccounts.maintenanceEvents.noDescription");
     }
     if (event.httpStatus != null) {
       return t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.httpStatus", {

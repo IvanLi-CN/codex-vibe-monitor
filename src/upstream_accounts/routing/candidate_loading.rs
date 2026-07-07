@@ -464,6 +464,29 @@ async fn prepare_pool_account_with_scopes(
                         let err_text = err.to_string();
                         let now_iso = format_utc_iso(Utc::now());
                         let proxy_snapshot = maintenance_proxy_snapshot_from_error(&err);
+                        if !account_status_change_reason_is_enabled(
+                            &state.pool,
+                            row.id,
+                            UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
+                        )
+                        .await?
+                        {
+                            record_status_change_suppressed_event_with_proxy_snapshot(
+                                &state.pool,
+                                row.id,
+                                UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+                                UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
+                                &err_text,
+                                None,
+                                Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH),
+                                None,
+                                None,
+                                &now_iso,
+                                proxy_snapshot.as_ref(),
+                            )
+                            .await?;
+                            return Ok(None);
+                        }
                         sqlx::query(
                             r#"
                             UPDATE pool_upstream_accounts
@@ -513,6 +536,29 @@ async fn prepare_pool_account_with_scopes(
                         match disposition {
                             UpstreamAccountFailureDisposition::HardUnavailable => {
                                 let now_iso = format_utc_iso(Utc::now());
+                                if !account_status_change_reason_is_enabled(
+                                    &state.pool,
+                                    row.id,
+                                    reason_code,
+                                )
+                                .await?
+                                {
+                                    record_status_change_suppressed_event_with_proxy_snapshot(
+                                        &state.pool,
+                                        row.id,
+                                        UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+                                        reason_code,
+                                        &err_text,
+                                        http_status,
+                                        Some(failure_kind),
+                                        None,
+                                        None,
+                                        &now_iso,
+                                        proxy_snapshot.as_ref(),
+                                    )
+                                    .await?;
+                                    return Ok(None);
+                                }
                                 sqlx::query(
                                     r#"
                                     UPDATE pool_upstream_accounts

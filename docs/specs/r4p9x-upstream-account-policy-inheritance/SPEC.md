@@ -25,6 +25,18 @@ The editable inherited policy covers:
 - concurrency limit
 - upstream 429 retry count (`0..5`)
 - available models
+- status-change trigger reasons for:
+  - `upstream_http_401`
+  - `upstream_http_402`
+  - `upstream_http_403`
+  - `reauth_required`
+  - `upstream_http_429_rate_limit`
+  - `upstream_http_429_quota_exhausted`
+  - `usage_snapshot_exhausted`
+  - `quota_still_exhausted`
+  - `transport_failure`
+  - `upstream_server_overloaded`
+  - `upstream_http_5xx`
 - request-path timeout overrides for:
   - `responsesFirstByteTimeoutSecs`
   - `compactFirstByteTimeoutSecs`
@@ -43,6 +55,7 @@ Root defaults preserve existing behavior:
 - upstream 429 max retries: 0
 - image tool rewrite mode: keep original
 - available models: unrestricted
+- every status-change reason toggle: enabled
 - request-path timeouts continue to use the existing global pool defaults
 
 Accounts also track read-only system signals alongside editable policy:
@@ -59,6 +72,15 @@ Effective account policy is computed in this order:
 2. Apply group policy.
 3. Merge system tag signals.
 4. Apply account policy.
+
+Status-change reason toggles follow the same `group -> system -> account` resolution envelope with one restriction:
+
+1. Start with root defaults where every listed reason is enabled.
+2. Apply group per-reason overrides.
+3. Ignore the system tag layer for this policy family.
+4. Apply account per-reason overrides.
+
+`conversation` overrides do not participate in this policy family.
 
 Request-path timeouts are resolved per field through a separate inheritance chain:
 
@@ -166,6 +188,13 @@ Missing `routingRule` preserves account-level overrides. Inside a present `routi
 - `null`: clear that account override and inherit the upstream effective value
 - value: store that value as the account override
 
+`statusChangeReasons` uses the same nested tri-state semantics per reason key:
+
+- missing object: preserve all stored per-reason overrides
+- missing reason key inside a present object: preserve that stored reason override
+- `null`: clear that reason override and inherit
+- `true|false`: store that reason override
+
 The same tri-state semantics apply to group policy updates for nullable policy fields. Boolean `false` is a stored override value and must not be treated as absent.
 
 Timeout writes use the same preserve / clear / set contract, but per timeout field:
@@ -176,6 +205,10 @@ Timeout writes use the same preserve / clear / set contract, but per timeout fie
 
 UI may render `root` as `global`, but the wire/source token remains `root`.
 
+Legacy `upstream_rejected` remains read-compatible only. Runtime must resolve it through the `upstream_http_402` toggle and must not expose a separate editable reason key.
+
+When a listed reason resolves to `false`, runtime still records invocation and upstream-attempt evidence and must add a neutral account event carrying the original `reasonCode`, `httpStatus`, and message. Suppressed reasons must not mutate account status, cooldown, route-failure bookkeeping, failure counters, or latest-action fields that feed health/work derivation. Sync bookkeeping may still advance the non-health `lastSyncedAt` timestamp so maintenance cadence remains stable.
+
 `GET /api/pool/tags` returns only system tags and reports the directory as non-writable.
 
 Automatic candidate selection and sticky reuse must filter by the final model policy before scoring candidates:
@@ -184,6 +217,16 @@ Automatic candidate selection and sticky reuse must filter by the final model po
 - unconstrained routing first checks exact model ID matches
 - if exact match fails, dated aliases may fall back to the existing base-model alias rule
 - accounts denied for the requested model must be excluded from automatic and sticky migration candidates before retry/failover scoring
+
+## Owner-Facing UI Contract
+
+Status-change trigger reasons use the same flattened reason list on every owner-facing surface.
+
+- reason controls render as pressed/unpressed button-style tiles with icon + name only
+- they do not use slider switches, category headers, or separate batch-toggle rows
+- group policy surfaces keep per-reason editing only
+- the account detail Routing tab exposes one panel-level reset action that clears just the account-layer reason overrides for this policy family
+- per-reason account edits still happen by pressing the individual tiles; reset is the only bulk clear affordance on the account detail surface
 
 Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the generic system deny rule rather than a special-case routing branch.
 
@@ -214,6 +257,9 @@ Visual evidence is captured from stable Storybook scenarios for:
 - group/account routing dialogs showing mixed inherited/global timeout defaults with timeout rows collapsed until the current layer explicitly overrides a field
 - account effective-rule card showing timeout source badges, inherited timeout rows collapsed by default, account-owned timeout rows expanded by default, and single-field clear-to-inherit rollback
 - account detail Routing tab showing account-level forward-proxy bindings, inherited group bindings, and sticky failover semantics without the old "edit account policy" button
+- Groups page opening the shared group routing policy dialog with flat status-change reason toggle tiles
+- Upstream Accounts grouped roster opening the shared group routing policy dialog with the same flat status-change reason toggle tiles
+- Upstream account detail Routing tab showing page-level status-change reason toggle tiles plus the panel-level account reset action inside the full drawer context
 
 PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)
@@ -247,3 +293,12 @@ PR: include
 
 PR: include
 ![Account timeout source badges and overrides](./assets/account-timeout-source-badges-story.png)
+
+PR: include
+![Groups page routing policy dialog status change reasons](./assets/status-change-reasons-page-groups.png)
+
+PR: include
+![Upstream Accounts grouped roster routing policy dialog status change reasons](./assets/status-change-reasons-page-upstream-accounts-grouped.png)
+
+PR: include
+![Upstream account detail routing tab status change reasons](./assets/status-change-reasons-page-upstream-account-detail.png)

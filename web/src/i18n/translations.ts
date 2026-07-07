@@ -88,8 +88,7 @@ const baseTranslations = {
     "accountPool.groups.description":
       "Review every active account group in one place, inspect shared settings, and jump straight back to the roster when needed.",
     "accountPool.groups.namedGroupsCount": "{{count}} named groups",
-    "accountPool.groups.ungroupedAccountsCount":
-      "{{count}} ungrouped accounts",
+    "accountPool.groups.ungroupedAccountsCount": "{{count}} ungrouped accounts",
     "accountPool.groups.retry": "Retry",
     "accountPool.groups.loadingTitle": "Loading group overview",
     "accountPool.groups.loadingDescription":
@@ -381,8 +380,7 @@ const baseTranslations = {
       "OAuth verified {{verifiedEmail}}, but this draft currently uses {{chosenEmail}}. Pick the email you want to keep on the account.",
     "accountPool.upstreamAccounts.oauth.keepVerifiedEmail":
       "Keep verified email",
-    "accountPool.upstreamAccounts.oauth.keepEnteredEmail":
-      "Keep entered email",
+    "accountPool.upstreamAccounts.oauth.keepEnteredEmail": "Keep entered email",
     "accountPool.upstreamAccounts.createPage.title": "Add upstream account",
     "accountPool.upstreamAccounts.createPage.description":
       "Use one dedicated screen to create single OAuth, batch OAuth, or API key accounts without squeezing the roster view.",
@@ -665,8 +663,7 @@ const baseTranslations = {
       "Routing policy",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.hint":
       "Customize priority, FAST mode, block-new-conversations, cut-in/cut-out, concurrency, and upstream 429 retry for this group.",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.edit":
-      "Edit policy",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.edit": "Edit policy",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.title":
       "Group routing policy",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.description":
@@ -685,6 +682,41 @@ const baseTranslations = {
       "Force add",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove":
       "Force remove",
+    "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle":
+      "Status change trigger reasons",
+    "accountPool.upstreamAccounts.statusChangeReasons.sectionHint":
+      "When disabled, this reason still keeps call evidence and a neutral account event, but no longer pushes the account into reauth, rejection, cooldown, or degraded states.",
+    "accountPool.upstreamAccounts.statusChangeReasons.summary":
+      "{{enabled}} / {{total}} enabled",
+    "accountPool.upstreamAccounts.statusChangeReasons.enabledValue":
+      "Triggers status change",
+    "accountPool.upstreamAccounts.statusChangeReasons.disabledValue":
+      "Evidence only",
+    "accountPool.upstreamAccounts.statusChangeReasons.toggleEnabled": "On",
+    "accountPool.upstreamAccounts.statusChangeReasons.toggleDisabled": "Off",
+    "accountPool.upstreamAccounts.statusChangeReasons.resetAction": "Reset",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_401":
+      "401 invalid credentials",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_402":
+      "402 plan or billing rejected",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_403":
+      "403 permission rejected",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.reauth_required":
+      "Reauthentication required",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_429_rate_limit":
+      "429 rate limit",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_429_quota_exhausted":
+      "429 quota exhausted",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.usage_snapshot_exhausted":
+      "Usage snapshot exhausted",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.quota_still_exhausted":
+      "Quota still exhausted",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.transport_failure":
+      "Transport failure",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_server_overloaded":
+      "Upstream overloaded",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_5xx":
+      "Upstream 5xx",
     "accountPool.upstreamAccounts.policyDialog.accountTitle":
       "Account routing policy",
     "accountPool.upstreamAccounts.policyDialog.accountDescription":
@@ -710,8 +742,7 @@ const baseTranslations = {
       "fail",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
       "No 24h data",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartTotal":
-      "total",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartTotal": "total",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartAriaLabel":
       "Last 24h request volume chart",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartInteractionHint":
@@ -840,11 +871,9 @@ const baseTranslations = {
       "New conversations blocked",
     "accountPool.upstreamAccounts.effectiveRule.allowNewConversations":
       "New conversations allowed",
-    "accountPool.upstreamAccounts.effectiveRule.allowCutOut":
-      "Cut out allowed",
+    "accountPool.upstreamAccounts.effectiveRule.allowCutOut": "Cut out allowed",
     "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "Cut out blocked",
-    "accountPool.upstreamAccounts.effectiveRule.allowCutIn":
-      "Cut in allowed",
+    "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "Cut in allowed",
     "accountPool.upstreamAccounts.effectiveRule.denyCutIn": "Cut in blocked",
     "accountPool.upstreamAccounts.effectiveRule.priorityPrimary": "Primary",
     "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "Normal",
@@ -864,11 +893,9 @@ const baseTranslations = {
       "New conversations",
     "accountPool.upstreamAccounts.effectiveRule.fieldNewConversations":
       "New conversations",
-    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut":
-      "Cut out",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut": "Cut out",
     "accountPool.upstreamAccounts.effectiveRule.fieldCutOut": "Cut out",
-    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn":
-      "Cut in",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn": "Cut in",
     "accountPool.upstreamAccounts.effectiveRule.fieldCutIn": "Cut in",
     "accountPool.upstreamAccounts.effectiveRule.fieldPriority": "Priority",
     "accountPool.upstreamAccounts.effectiveRule.fieldFastMode": "FAST mode",
@@ -888,7 +915,8 @@ const baseTranslations = {
       "Inherited / unrestricted",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed":
       "No models allowed",
-    "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "None",
+    "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty":
+      "None",
     "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "Root default",
     "accountPool.upstreamAccounts.effectiveRule.sourceGroup": "Group",
     "accountPool.upstreamAccounts.effectiveRule.sourceTag": "Tag",
@@ -973,7 +1001,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.bulk.delete": "Delete selected",
     "accountPool.upstreamAccounts.bulk.clearSelection": "Clear selection",
     "accountPool.upstreamAccounts.bulk.selectPage": "Select current page",
-    "accountPool.upstreamAccounts.bulk.selectFiltered": "Select filtered accounts",
+    "accountPool.upstreamAccounts.bulk.selectFiltered":
+      "Select filtered accounts",
     "accountPool.upstreamAccounts.bulk.selectRow": "Select {{name}}",
     "accountPool.upstreamAccounts.bulk.apply": "Apply",
     "accountPool.upstreamAccounts.bulk.actionLabel.enable": "Enable",
@@ -1124,10 +1153,8 @@ const baseTranslations = {
     "accountPool.tags.dialog.name": "Tag name",
     "accountPool.tags.dialog.namePlaceholder":
       "For example: vip, night-shift, warm-standby",
-    "accountPool.tags.dialog.blockNewConversations":
-      "Block new conversations",
-    "accountPool.tags.dialog.forbidNewConversation":
-      "Block new conversations",
+    "accountPool.tags.dialog.blockNewConversations": "Block new conversations",
+    "accountPool.tags.dialog.forbidNewConversation": "Block new conversations",
     "accountPool.tags.dialog.allowNewConversations": "New conversations",
     "accountPool.tags.dialog.newConversationHint":
       "Allow new conversations for this routing policy.",
@@ -1135,10 +1162,8 @@ const baseTranslations = {
       "Do not block moving conversations out of this account",
     "accountPool.tags.dialog.allowCutIn":
       "Do not block moving conversations into this account",
-    "accountPool.tags.dialog.forbidCutOut":
-      "Block moving conversations out",
-    "accountPool.tags.dialog.forbidCutIn":
-      "Block moving conversations in",
+    "accountPool.tags.dialog.forbidCutOut": "Block moving conversations out",
+    "accountPool.tags.dialog.forbidCutIn": "Block moving conversations in",
     "accountPool.tags.dialog.priorityTier": "Preferred usage",
     "accountPool.tags.dialog.priorityPrimary": "Primary",
     "accountPool.tags.dialog.priorityNormal": "Normal",
@@ -1156,8 +1181,7 @@ const baseTranslations = {
     "accountPool.tags.dialog.availableModels": "Available models",
     "accountPool.tags.dialog.availableModelsHint":
       "Leave empty to inherit. Automatic and sticky routing only consider matching accounts.",
-    "accountPool.tags.dialog.availableModelsSearchPlaceholder":
-      "Search models",
+    "accountPool.tags.dialog.availableModelsSearchPlaceholder": "Search models",
     "accountPool.tags.dialog.availableModelsEmpty": "No matching models",
     "accountPool.tags.dialog.availableModelsAll": "Inherited / unrestricted",
     "accountPool.tags.dialog.availableModelsCustomLabel": "{{value}}",
@@ -1320,6 +1344,8 @@ const baseTranslations = {
       "Recovery still blocked",
     "accountPool.upstreamAccounts.latestAction.actions.sync_failed":
       "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.actions.status_change_suppressed":
+      "Status change suppressed",
     "accountPool.upstreamAccounts.latestAction.actions.account_updated":
       "Account updated",
     "accountPool.upstreamAccounts.latestAction.sources.call": "Call",
@@ -1341,36 +1367,26 @@ const baseTranslations = {
       "Failed to load maintenance records.",
     "accountPool.upstreamAccounts.maintenanceEvents.resetFilters":
       "Reset filters",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.account":
-      "Account",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.account": "Account",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder":
       "Search account name or ID",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.group":
-      "Group",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.group": "Group",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder":
       "Search group name",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.node":
-      "Node",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.result":
-      "Result",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.node": "Node",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.result": "Result",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.allNodes":
       "All nodes",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.allResults":
       "All results",
     "accountPool.upstreamAccounts.maintenanceEvents.columns.time":
       "Execution time",
-    "accountPool.upstreamAccounts.maintenanceEvents.columns.account":
-      "Account",
-    "accountPool.upstreamAccounts.maintenanceEvents.columns.proxy":
-      "Proxy",
-    "accountPool.upstreamAccounts.maintenanceEvents.columns.action":
-      "Action",
-    "accountPool.upstreamAccounts.maintenanceEvents.columns.result":
-      "Result",
-    "accountPool.upstreamAccounts.maintenanceEvents.results.success":
-      "Success",
-    "accountPool.upstreamAccounts.maintenanceEvents.results.failed":
-      "Failed",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.account": "Account",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.proxy": "Proxy",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.action": "Action",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.result": "Result",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.success": "Success",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.failed": "Failed",
     "accountPool.upstreamAccounts.maintenanceEvents.results.deferred":
       "Deferred",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_deferred":
@@ -1391,6 +1407,8 @@ const baseTranslations = {
       "Route retryable failure",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.route_hard_unavailable":
       "Route unavailable",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.status_change_suppressed":
+      "Status change suppressed",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.account_updated":
       "Account updated",
     "accountPool.upstreamAccounts.maintenanceEvents.unknownAccount":
@@ -1399,8 +1417,7 @@ const baseTranslations = {
       "Unknown group",
     "accountPool.upstreamAccounts.maintenanceEvents.unknownProxy":
       "Unknown proxy",
-    "accountPool.upstreamAccounts.maintenanceEvents.noEgressIp":
-      "Not recorded",
+    "accountPool.upstreamAccounts.maintenanceEvents.noEgressIp": "Not recorded",
     "accountPool.upstreamAccounts.maintenanceEvents.egressIpPending":
       "Refresh pending",
     "accountPool.upstreamAccounts.maintenanceEvents.noDescription":
@@ -1519,45 +1536,64 @@ const baseTranslations = {
     "system.status.sections.archiveLogicalDescription":
       "Use archived body counts and archive footprint to understand what the archive currently represents.",
     "system.status.breakdown.rawPayloadBytes": "Raw payload footprint",
-    "system.status.breakdown.rawPayloadBytesHint": "Unique request + response raw files on disk.",
+    "system.status.breakdown.rawPayloadBytesHint":
+      "Unique request + response raw files on disk.",
     "system.status.breakdown.archiveBytes": "Archive footprint",
-    "system.status.breakdown.archiveBytesHint": "Completed invocation archive files on disk.",
+    "system.status.breakdown.archiveBytesHint":
+      "Completed invocation archive files on disk.",
     "system.status.breakdown.databaseBytes": "Database footprint",
-    "system.status.breakdown.databaseBytesHint": "SQLite database + WAL/SHM files.",
+    "system.status.breakdown.databaseBytesHint":
+      "SQLite database + WAL/SHM files.",
     "system.status.breakdown.otherFilesBytes": "Other runtime footprint",
-    "system.status.breakdown.otherFilesBytesHint": "Remaining runtime-owned files outside DB/raw/archive.",
+    "system.status.breakdown.otherFilesBytesHint":
+      "Remaining runtime-owned files outside DB/raw/archive.",
     "system.status.cards.liveInvocationsCount": "Live invocations",
-    "system.status.cards.liveInvocationsCountHint": "Current `codex_invocations` row count in the live database.",
+    "system.status.cards.liveInvocationsCountHint":
+      "Current `codex_invocations` row count in the live database.",
     "system.status.cards.successCount": "Successful calls",
-    "system.status.cards.successCountHint": "Recorded invocations with status = success.",
+    "system.status.cards.successCountHint":
+      "Recorded invocations with status = success.",
     "system.status.cards.nonSuccessCount": "Non-success calls",
-    "system.status.cards.nonSuccessCountHint": "Recorded invocations with status != success.",
-    "system.status.cards.completedArchiveBatchesCount": "Completed archive batches",
+    "system.status.cards.nonSuccessCountHint":
+      "Recorded invocations with status != success.",
+    "system.status.cards.completedArchiveBatchesCount":
+      "Completed archive batches",
     "system.status.cards.completedArchiveBatchesCountHint":
       "Completed `archive_batches` for `codex_invocations`.",
     "system.status.cards.archivedBodiesCount": "Archived bodies",
-    "system.status.cards.archivedBodiesCountHint": "Rows archived into completed codex invocation batches.",
+    "system.status.cards.archivedBodiesCountHint":
+      "Rows archived into completed codex invocation batches.",
     "system.status.cards.archivedBodiesBytes": "Archived body size",
     "system.status.cards.archivedBodiesBytesHint":
       "Current on-disk archive footprint for completed invocation batches. Included in project disk usage.",
     "system.status.cards.rawBodiesCount": "Raw payloads",
-    "system.status.cards.rawBodiesCountHint": "Unique on-disk request + response raw payload files.",
+    "system.status.cards.rawBodiesCountHint":
+      "Unique on-disk request + response raw payload files.",
     "system.status.cards.rawBodiesBytes": "Raw payload total",
-    "system.status.cards.rawBodiesBytesHint": "De-duplicated on-disk bytes for the request + response raw payload file union.",
+    "system.status.cards.rawBodiesBytesHint":
+      "De-duplicated on-disk bytes for the request + response raw payload file union.",
     "system.status.cards.requestRawBodiesCount": "Request raw payloads",
-    "system.status.cards.requestRawBodiesCountHint": "Unique request-side raw payload files on disk.",
+    "system.status.cards.requestRawBodiesCountHint":
+      "Unique request-side raw payload files on disk.",
     "system.status.cards.requestRawBodiesBytes": "Request-side raw payload",
-    "system.status.cards.requestRawBodiesBytesHint": "Request-side on-disk bytes. This split explains where the union total comes from, but it is not re-deduplicated for addition.",
-    "system.status.cards.requestRawBodiesSplitHint": "Use this side split to understand why request is heavy.",
+    "system.status.cards.requestRawBodiesBytesHint":
+      "Request-side on-disk bytes. This split explains where the union total comes from, but it is not re-deduplicated for addition.",
+    "system.status.cards.requestRawBodiesSplitHint":
+      "Use this side split to understand why request is heavy.",
     "system.status.cards.responseRawBodiesCount": "Response raw payloads",
-    "system.status.cards.responseRawBodiesCountHint": "Unique response-side raw payload files on disk.",
+    "system.status.cards.responseRawBodiesCountHint":
+      "Unique response-side raw payload files on disk.",
     "system.status.cards.responseRawBodiesBytes": "Response-side raw payload",
-    "system.status.cards.responseRawBodiesBytesHint": "Response-side on-disk bytes. This split explains where the union total comes from, but it is not re-deduplicated for addition.",
-    "system.status.cards.responseRawBodiesSplitHint": "Use this side split to understand why response is heavy.",
+    "system.status.cards.responseRawBodiesBytesHint":
+      "Response-side on-disk bytes. This split explains where the union total comes from, but it is not re-deduplicated for addition.",
+    "system.status.cards.responseRawBodiesSplitHint":
+      "Use this side split to understand why response is heavy.",
     "system.status.cards.databaseBytes": "Database size",
-    "system.status.cards.databaseBytesHint": "Current SQLite database file size.",
+    "system.status.cards.databaseBytesHint":
+      "Current SQLite database file size.",
     "system.status.cards.otherFilesBytes": "Other files size",
-    "system.status.cards.otherFilesBytesHint": "Remaining runtime files under the database root excluding DB, raw, and archive directories.",
+    "system.status.cards.otherFilesBytesHint":
+      "Remaining runtime files under the database root excluding DB, raw, and archive directories.",
     "system.tasks.title": "Background tasks",
     "system.tasks.description":
       "Browse recent system-level scheduler, archive, backfill, compression, and forward-proxy refresh runs.",
@@ -1565,13 +1601,15 @@ const baseTranslations = {
     "system.tasks.loadError": "Failed to load task runs: {{error}}",
     "system.tasks.empty": "No task runs matched the current filter.",
     "system.tasks.meta": "{{trigger}} started at {{startedAt}}",
-    "system.tasks.duration": "Duration: {{duration}} · Finished: {{finishedAt}}",
+    "system.tasks.duration":
+      "Duration: {{duration}} · Finished: {{finishedAt}}",
     "system.tasks.filters.taskKindPlaceholder": "Filter by task kind",
     "system.tasks.filters.allStatuses": "All statuses",
     "system.tasks.filters.startedAtFrom": "Started from",
     "system.tasks.filters.startedAtTo": "Started to",
     "system.tasks.filters.count": "{{count}} runs",
-    "system.tasks.pagination.summary": "Page {{page}} of {{pageCount}} · {{total}} runs",
+    "system.tasks.pagination.summary":
+      "Page {{page}} of {{pageCount}} · {{total}} runs",
     "system.tasks.pagination.pageSize": "Page size",
     "system.tasks.pagination.previous": "Previous",
     "system.tasks.pagination.next": "Next",
@@ -1667,10 +1705,12 @@ const baseTranslations = {
     "settings.proxy.websocketEnabled": "Enabled",
     "settings.proxy.websocketDisabled": "Disabled",
     "settings.proxy.websocketEnvLabel": "Global",
-    "settings.proxy.encryptedOwnerRoutingTitle": "Encrypted conversation routing",
+    "settings.proxy.encryptedOwnerRoutingTitle":
+      "Encrypted conversation routing",
     "settings.proxy.encryptedOwnerRoutingHint":
       "Control whether encrypted conversations are pinned to the upstream account that owns their encrypted session state.",
-    "settings.proxy.encryptedOwnerRoutingLabel": "Bind encrypted conversation routes",
+    "settings.proxy.encryptedOwnerRoutingLabel":
+      "Bind encrypted conversation routes",
     "settings.proxy.encryptedOwnerRoutingDescription":
       "When disabled, encrypted content no longer creates or enforces owner route bindings, and route-binding warnings stay hidden.",
     "settings.proxy.bodyLoggingTitle": "Invocation body retention",
@@ -1814,9 +1854,9 @@ const baseTranslations = {
     "settings.forwardProxy.latency.target.oauthUpstream": "OAuth /models",
     "settings.forwardProxy.latency.target.codexResponses": "Codex /responses",
     "settings.forwardProxy.latency.targetOk": "{{target}}: reachable{{detail}}",
-    "settings.forwardProxy.latency.targetFailed": "{{target}}: failed{{detail}}",
-    "settings.forwardProxy.latency.ariaLabel":
-      "Test latency for {{node}}",
+    "settings.forwardProxy.latency.targetFailed":
+      "{{target}}: failed{{detail}}",
+    "settings.forwardProxy.latency.ariaLabel": "Test latency for {{node}}",
     "settings.pricing.title": "Pricing configuration",
     "settings.pricing.description":
       "Edit model pricing used by new request cost estimation. The default catalog now hardcodes GPT-5.5, GPT-5.5 Pro, and GPT-5.4 mini from the official release/pricing pages.",
@@ -1859,8 +1899,10 @@ const baseTranslations = {
     "dashboard.upstreamAccounts.countBadge": "{{count}} active accounts",
     "dashboard.upstreamAccounts.subtitle":
       "Shows upstream accounts with activity in the selected overview range plus a dynamic recent invocation window for each account.",
-    "dashboard.upstreamAccounts.empty": "No active upstream accounts in the selected range.",
-    "dashboard.upstreamAccounts.recentInvocations": "Latest {{count}} invocations",
+    "dashboard.upstreamAccounts.empty":
+      "No active upstream accounts in the selected range.",
+    "dashboard.upstreamAccounts.recentInvocations":
+      "Latest {{count}} invocations",
     "dashboard.upstreamAccounts.channelName": "Channel {{name}}",
     "dashboard.workingConversations.empty":
       "No working conversations match the last 5 minutes or active in-flight window.",
@@ -2098,8 +2140,7 @@ const baseTranslations = {
     "live.conversations.drawer.policy.imageTool": "Image tool",
     "live.conversations.drawer.policy.proxy": "Proxy",
     "live.conversations.drawer.policy.proxyInherited": "Inherited proxy policy",
-    "live.conversations.drawer.policy.proxyAddPlaceholder":
-      "Add a proxy node",
+    "live.conversations.drawer.policy.proxyAddPlaceholder": "Add a proxy node",
     "live.conversations.drawer.policy.proxyRemove": "Remove proxy",
     "live.conversations.drawer.policy.availableModels": "Available models",
     "live.conversations.drawer.policy.availableModelsPlaceholder":
@@ -2107,7 +2148,8 @@ const baseTranslations = {
     "live.conversations.drawer.policy.availableModelsRequired":
       "Available models override cannot be empty.",
     "live.conversations.drawer.policy.editField": "Edit conversation override",
-    "live.conversations.drawer.policy.clearField": "Clear conversation override",
+    "live.conversations.drawer.policy.clearField":
+      "Clear conversation override",
     "live.conversations.drawer.policy.applyField": "Apply override",
     "live.conversations.drawer.policy.rewrite.forceRemove": "Force remove",
     "live.conversations.drawer.policy.rewrite.keepOriginal": "Keep original",
@@ -2599,7 +2641,8 @@ const baseTranslations = {
       "集中管理 Codex 上游账号、持久登录状态，以及归一化后的 5 小时 / 7 天额度快照。",
     "system.eyebrow": "系统",
     "system.title": "系统工作区",
-    "system.description": "把运行状态、后台任务、共享设置与正向代理运维集中到同一个系统工作区里。",
+    "system.description":
+      "把运行状态、后台任务、共享设置与正向代理运维集中到同一个系统工作区里。",
     "system.nav.label": "系统分区",
     "system.nav.status": "状态",
     "system.nav.tasks": "任务",
@@ -2790,7 +2833,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.proxyBindings.addPlaceholder": "选择代理节点",
     "accountPool.upstreamAccounts.proxyBindings.loading": "正在加载代理节点",
     "accountPool.upstreamAccounts.proxyBindings.clear": "继承分组",
-    "accountPool.upstreamAccounts.proxyBindings.dialogTitle": "选择账号代理节点",
+    "accountPool.upstreamAccounts.proxyBindings.dialogTitle":
+      "选择账号代理节点",
     "accountPool.upstreamAccounts.proxyBindings.dialogDescription":
       "为这个账号选择一个或多个显式代理节点。清空选择后会继承分组配置。",
     "accountPool.upstreamAccounts.proxyBindings.dialogAutomatic":
@@ -2876,10 +2920,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.emailChoiceTitle": "选择要保留的邮箱",
     "accountPool.upstreamAccounts.oauth.emailChoiceBody":
       "OAuth 认证得到的可信邮箱是 {{verifiedEmail}}，当前草稿使用的是 {{chosenEmail}}。请选择最终要保留到账号上的邮箱。",
-    "accountPool.upstreamAccounts.oauth.keepVerifiedEmail":
-      "保留可信邮箱",
-    "accountPool.upstreamAccounts.oauth.keepEnteredEmail":
-      "保留手填邮箱",
+    "accountPool.upstreamAccounts.oauth.keepVerifiedEmail": "保留可信邮箱",
+    "accountPool.upstreamAccounts.oauth.keepEnteredEmail": "保留手填邮箱",
     "accountPool.upstreamAccounts.createPage.title": "新增账号",
     "accountPool.upstreamAccounts.createPage.description":
       "把单个 OAuth、批量 OAuth 和 API Key 账号创建拆到独立页面，避免挤占账号列表的浏览空间。",
@@ -2966,8 +3008,7 @@ const baseTranslations = {
       "可粘贴 ChatGPT Web session object、数组或包含 session 的导出 JSON。缺少 refresh token 的导入账号会显示无 RT。",
     "accountPool.upstreamAccounts.importSession.paste.validating":
       "正在本地转换粘贴的 Session…",
-    "accountPool.upstreamAccounts.importSession.paste.action":
-      "转换并加入列表",
+    "accountPool.upstreamAccounts.importSession.paste.action": "转换并加入列表",
     "accountPool.upstreamAccounts.importSession.paste.emptyError":
       "请先粘贴 Web Session JSON。",
     "accountPool.upstreamAccounts.importSession.local.noSession":
@@ -3157,6 +3198,41 @@ const baseTranslations = {
       "强制补充",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove":
       "强制去掉",
+    "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle":
+      "状态变化触发原因",
+    "accountPool.upstreamAccounts.statusChangeReasons.sectionHint":
+      "关闭后，这类原因仍会保留调用证据和一条中性账号事件，但不再把账号推向重新登录、上游拒绝、冷却或降级状态。",
+    "accountPool.upstreamAccounts.statusChangeReasons.summary":
+      "已启用 {{enabled}} / {{total}}",
+    "accountPool.upstreamAccounts.statusChangeReasons.enabledValue":
+      "会触发状态变化",
+    "accountPool.upstreamAccounts.statusChangeReasons.disabledValue":
+      "仅保留证据",
+    "accountPool.upstreamAccounts.statusChangeReasons.toggleEnabled": "开启",
+    "accountPool.upstreamAccounts.statusChangeReasons.toggleDisabled": "关闭",
+    "accountPool.upstreamAccounts.statusChangeReasons.resetAction": "重置",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_401":
+      "401 凭据无效",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_402":
+      "402 套餐或计费拒绝",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_403":
+      "403 权限拒绝",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.reauth_required":
+      "需要重新登录",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_429_rate_limit":
+      "429 限流",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_429_quota_exhausted":
+      "429 额度耗尽",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.usage_snapshot_exhausted":
+      "额度快照已耗尽",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.quota_still_exhausted":
+      "刷新后仍然耗尽",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.transport_failure":
+      "网络或传输失败",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_server_overloaded":
+      "上游暂时过载",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_5xx":
+      "上游 5xx",
     "accountPool.upstreamAccounts.policyDialog.accountTitle": "账号路由策略",
     "accountPool.upstreamAccounts.policyDialog.accountDescription":
       "这些设置属于账号层，会覆盖分组和 Tag 策略。",
@@ -3290,8 +3366,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.records.limitOption": "{{count}} 条记录",
     "accountPool.upstreamAccounts.records.empty":
       "这个上游账号暂时还没有保留的调用记录。",
-    "accountPool.upstreamAccounts.records.loadingMore":
-      "正在加载更多记录...",
+    "accountPool.upstreamAccounts.records.loadingMore": "正在加载更多记录...",
     "accountPool.upstreamAccounts.records.loaded":
       "已加载 {{loaded}} / {{total}} 条保留调用记录",
     "accountPool.upstreamAccounts.records.allLoaded":
@@ -3301,7 +3376,8 @@ const baseTranslations = {
       "这里展示的是当前账号最终参与路由判定的规则，账号级覆盖会最后生效。",
     "accountPool.upstreamAccounts.effectiveRule.noTags":
       "当前没有关联 tag，所以这个账号仍使用号池默认路由行为。",
-    "accountPool.upstreamAccounts.effectiveRule.blockNewConversations": "禁止新对话",
+    "accountPool.upstreamAccounts.effectiveRule.blockNewConversations":
+      "禁止新对话",
     "accountPool.upstreamAccounts.effectiveRule.allowNewConversations":
       "允许新对话",
     "accountPool.upstreamAccounts.effectiveRule.allowCutOut": "允许切出",
@@ -3323,8 +3399,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "规则来源 tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
       "字段来源明细",
-    "accountPool.upstreamAccounts.effectiveRule.fieldBlockNewConversations": "新对话",
-    "accountPool.upstreamAccounts.effectiveRule.fieldNewConversations": "新对话",
+    "accountPool.upstreamAccounts.effectiveRule.fieldBlockNewConversations":
+      "新对话",
+    "accountPool.upstreamAccounts.effectiveRule.fieldNewConversations":
+      "新对话",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut": "切出",
     "accountPool.upstreamAccounts.effectiveRule.fieldCutOut": "切出",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn": "切入",
@@ -3334,7 +3412,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency": "并发限制",
     "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429":
       "上游 429 重试",
-    "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels": "可用模型",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels":
+      "可用模型",
     "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels":
       "系统拒绝模型",
     "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings": "账号代理",
@@ -3358,7 +3437,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.timeoutEditor.inherited": "继承值",
     "accountPool.upstreamAccounts.timeoutEditor.groupOverride": "分组覆盖",
     "accountPool.upstreamAccounts.timeoutEditor.accountOverride": "账号覆盖",
-    "accountPool.upstreamAccounts.timeoutEditor.conversationOverride": "对话覆盖",
+    "accountPool.upstreamAccounts.timeoutEditor.conversationOverride":
+      "对话覆盖",
     "accountPool.upstreamAccounts.detailTitle": "账号详情",
     "accountPool.upstreamAccounts.detailTabs.overview": "概览",
     "accountPool.upstreamAccounts.detailTabs.records": "调用记录",
@@ -3740,6 +3820,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked":
       "恢复仍被阻止",
     "accountPool.upstreamAccounts.latestAction.actions.sync_failed": "同步失败",
+    "accountPool.upstreamAccounts.latestAction.actions.status_change_suppressed":
+      "已抑制状态变更",
     "accountPool.upstreamAccounts.latestAction.actions.account_updated":
       "账号已更新",
     "accountPool.upstreamAccounts.latestAction.sources.call": "调用",
@@ -3758,40 +3840,27 @@ const baseTranslations = {
       "展示最近的账号维护调用、同步与代理探测。",
     "accountPool.upstreamAccounts.maintenanceEvents.loadError":
       "加载维护记录失败。",
-    "accountPool.upstreamAccounts.maintenanceEvents.resetFilters":
-      "重置筛选",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.account":
-      "账号",
+    "accountPool.upstreamAccounts.maintenanceEvents.resetFilters": "重置筛选",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.account": "账号",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder":
       "搜索账号名或 ID",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.group":
-      "分组",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.group": "分组",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder":
       "搜索分组名",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.node":
-      "节点",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.result":
-      "结果",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.node": "节点",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.result": "结果",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.allNodes":
       "全部节点",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.allResults":
       "全部结果",
-    "accountPool.upstreamAccounts.maintenanceEvents.columns.time":
-      "执行时间",
-    "accountPool.upstreamAccounts.maintenanceEvents.columns.account":
-      "账号",
-    "accountPool.upstreamAccounts.maintenanceEvents.columns.proxy":
-      "代理",
-    "accountPool.upstreamAccounts.maintenanceEvents.columns.action":
-      "动作",
-    "accountPool.upstreamAccounts.maintenanceEvents.columns.result":
-      "结果",
-    "accountPool.upstreamAccounts.maintenanceEvents.results.success":
-      "成功",
-    "accountPool.upstreamAccounts.maintenanceEvents.results.failed":
-      "失败",
-    "accountPool.upstreamAccounts.maintenanceEvents.results.deferred":
-      "延期",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.time": "执行时间",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.account": "账号",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.proxy": "代理",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.action": "动作",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.result": "结果",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.success": "成功",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.failed": "失败",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.deferred": "延期",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_deferred":
       "同步延期",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_succeeded":
@@ -3810,16 +3879,14 @@ const baseTranslations = {
       "路由临时失败",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.route_hard_unavailable":
       "路由不可用",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.status_change_suppressed":
+      "已抑制状态变更",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.account_updated":
       "账号已更新",
-    "accountPool.upstreamAccounts.maintenanceEvents.unknownAccount":
-      "未知账号",
-    "accountPool.upstreamAccounts.maintenanceEvents.unknownGroup":
-      "未知分组",
-    "accountPool.upstreamAccounts.maintenanceEvents.unknownProxy":
-      "未知代理",
-    "accountPool.upstreamAccounts.maintenanceEvents.noEgressIp":
-      "未记录",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownAccount": "未知账号",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownGroup": "未知分组",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownProxy": "未知代理",
+    "accountPool.upstreamAccounts.maintenanceEvents.noEgressIp": "未记录",
     "accountPool.upstreamAccounts.maintenanceEvents.egressIpPending":
       "等待刷新",
     "accountPool.upstreamAccounts.maintenanceEvents.noDescription":
@@ -3896,72 +3963,101 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.mother.notifications.cleared":
       "{{previous}} 已不再是 {{group}} 的母号。",
     "settings.title": "设置",
-    "settings.description": "集中配置当前 pool `/v1/models` 覆盖、正向代理路由与成本估算价格目录。",
+    "settings.description":
+      "集中配置当前 pool `/v1/models` 覆盖、正向代理路由与成本估算价格目录。",
     "system.status.title": "系统状态",
-    "system.status.description": "查看由调用记录、归档目录和本地运行文件聚合出的系统级运行指标。",
+    "system.status.description":
+      "查看由调用记录、归档目录和本地运行文件聚合出的系统级运行指标。",
     "system.status.loading": "正在加载系统状态…",
     "system.status.loadError": "加载系统状态失败：{{error}}",
     "system.status.refreshing": "刷新中…",
     "system.status.idle": "每分钟自动刷新一次",
     "system.status.lastRefreshed": "上次刷新：{{at}}",
     "system.status.lastRefreshedEmpty": "等待首次刷新",
-    "system.status.definition": "非成功数按所有 `status != success` 的调用记录统计，包含失败和未完成的终态记录。当前项目磁盘占用按 archive、raw payload、数据库和其他运行文件合并统计。",
-    "system.status.rawPayloadDefinition": "raw payload 总量按 request + response 去重文件并集统计；request / response 体积只用于解释侧向分布，不能直接相加回总量。",
+    "system.status.definition":
+      "非成功数按所有 `status != success` 的调用记录统计，包含失败和未完成的终态记录。当前项目磁盘占用按 archive、raw payload、数据库和其他运行文件合并统计。",
+    "system.status.rawPayloadDefinition":
+      "raw payload 总量按 request + response 去重文件并集统计；request / response 体积只用于解释侧向分布，不能直接相加回总量。",
     "system.status.summary.projectDiskLabel": "当前项目磁盘占用",
-    "system.status.summary.projectDiskHint": "这里只统计当前项目运行存储，不代表 101 整机文件系统总占用。",
-    "system.status.summary.projectDiskFormula": "当前项目磁盘占用 = raw payload 并集总量 + archive + 数据库 + 其他运行文件。",
+    "system.status.summary.projectDiskHint":
+      "这里只统计当前项目运行存储，不代表 101 整机文件系统总占用。",
+    "system.status.summary.projectDiskFormula":
+      "当前项目磁盘占用 = raw payload 并集总量 + archive + 数据库 + 其他运行文件。",
     "system.status.metric.bytesLabel": "体积",
     "system.status.metric.countLabel": "数量",
     "system.status.metric.unionBadge": "并集总量",
     "system.status.metric.splitBadge": "侧向拆分",
     "system.status.sections.diskOverviewTitle": "实际磁盘占用总览",
-    "system.status.sections.diskOverviewDescription": "先确认当前项目实际占了多少磁盘，再快速判断占用主要来自哪一类运行产物。",
+    "system.status.sections.diskOverviewDescription":
+      "先确认当前项目实际占了多少磁盘，再快速判断占用主要来自哪一类运行产物。",
     "system.status.sections.rawPayloadFocusTitle": "raw payload 聚焦",
-    "system.status.sections.rawPayloadFocusDescription": "把 raw payload 总量与 request / response 拆分放在一起，方便直接解释为什么 request 或 response 偏大。",
+    "system.status.sections.rawPayloadFocusDescription":
+      "把 raw payload 总量与 request / response 拆分放在一起，方便直接解释为什么 request 或 response 偏大。",
     "system.status.sections.databaseRecordsTitle": "数据库记录概况",
-    "system.status.sections.databaseRecordsDescription": "用 live invocation 行数和已完成归档批次数解释当前数据库与归档记录的来源。",
+    "system.status.sections.databaseRecordsDescription":
+      "用 live invocation 行数和已完成归档批次数解释当前数据库与归档记录的来源。",
     "system.status.sections.archiveLogicalTitle": "归档与逻辑体量",
-    "system.status.sections.archiveLogicalDescription": "用已归档 body 数量和 archive 当前体积理解归档规模；archive 体积已计入上方项目磁盘总量。",
+    "system.status.sections.archiveLogicalDescription":
+      "用已归档 body 数量和 archive 当前体积理解归档规模；archive 体积已计入上方项目磁盘总量。",
     "system.status.breakdown.rawPayloadBytes": "raw payload 占用",
-    "system.status.breakdown.rawPayloadBytesHint": "去重后的 request + response raw payload 文件磁盘占用。",
+    "system.status.breakdown.rawPayloadBytesHint":
+      "去重后的 request + response raw payload 文件磁盘占用。",
     "system.status.breakdown.archiveBytes": "archive 占用",
-    "system.status.breakdown.archiveBytesHint": "已完成 invocation archive 文件的磁盘占用。",
+    "system.status.breakdown.archiveBytesHint":
+      "已完成 invocation archive 文件的磁盘占用。",
     "system.status.breakdown.databaseBytes": "数据库占用",
-    "system.status.breakdown.databaseBytesHint": "SQLite 主库与 WAL/SHM 文件占用。",
+    "system.status.breakdown.databaseBytesHint":
+      "SQLite 主库与 WAL/SHM 文件占用。",
     "system.status.breakdown.otherFilesBytes": "其他运行文件占用",
-    "system.status.breakdown.otherFilesBytesHint": "除数据库、raw、archive 外的项目运行文件占用。",
+    "system.status.breakdown.otherFilesBytesHint":
+      "除数据库、raw、archive 外的项目运行文件占用。",
     "system.status.cards.liveInvocationsCount": "live invocations",
-    "system.status.cards.liveInvocationsCountHint": "当前 live 数据库中 `codex_invocations` 的总行数。",
+    "system.status.cards.liveInvocationsCountHint":
+      "当前 live 数据库中 `codex_invocations` 的总行数。",
     "system.status.cards.successCount": "调用成功数",
     "system.status.cards.successCountHint": "状态为 success 的调用记录总数。",
     "system.status.cards.nonSuccessCount": "调用非成功数",
-    "system.status.cards.nonSuccessCountHint": "状态不等于 success 的调用记录总数。",
+    "system.status.cards.nonSuccessCountHint":
+      "状态不等于 success 的调用记录总数。",
     "system.status.cards.completedArchiveBatchesCount": "已完成归档批次数",
-    "system.status.cards.completedArchiveBatchesCountHint": "当前 `archive_batches` 中已完成的 `codex_invocations` 归档批次数。",
+    "system.status.cards.completedArchiveBatchesCountHint":
+      "当前 `archive_batches` 中已完成的 `codex_invocations` 归档批次数。",
     "system.status.cards.archivedBodiesCount": "已归档 body 数量",
-    "system.status.cards.archivedBodiesCountHint": "已进入完成归档批次的 codex invocation 行数。",
+    "system.status.cards.archivedBodiesCountHint":
+      "已进入完成归档批次的 codex invocation 行数。",
     "system.status.cards.archivedBodiesBytes": "已归档 body 体积",
-    "system.status.cards.archivedBodiesBytesHint": "当前已完成 invocation archive 的磁盘占用，已计入上方项目磁盘总量。",
+    "system.status.cards.archivedBodiesBytesHint":
+      "当前已完成 invocation archive 的磁盘占用，已计入上方项目磁盘总量。",
     "system.status.cards.rawBodiesCount": "raw payload 数量",
-    "system.status.cards.rawBodiesCountHint": "去重后的 request + response raw payload 文件数。",
+    "system.status.cards.rawBodiesCountHint":
+      "去重后的 request + response raw payload 文件数。",
     "system.status.cards.rawBodiesBytes": "raw payload 总量",
-    "system.status.cards.rawBodiesBytesHint": "request + response raw payload 去重并集后的磁盘实测字节数。",
+    "system.status.cards.rawBodiesBytesHint":
+      "request + response raw payload 去重并集后的磁盘实测字节数。",
     "system.status.cards.requestRawBodiesCount": "request raw payload 数量",
-    "system.status.cards.requestRawBodiesCountHint": "去重后的 request 侧 raw payload 文件数。",
+    "system.status.cards.requestRawBodiesCountHint":
+      "去重后的 request 侧 raw payload 文件数。",
     "system.status.cards.requestRawBodiesBytes": "request 侧 raw payload",
-    "system.status.cards.requestRawBodiesBytesHint": "request 侧 raw payload 的磁盘实测字节数，只用于解释分布，不代表再次去重后的可加总量。",
-    "system.status.cards.requestRawBodiesSplitHint": "用这个侧向拆分判断为什么 request 偏大。",
+    "system.status.cards.requestRawBodiesBytesHint":
+      "request 侧 raw payload 的磁盘实测字节数，只用于解释分布，不代表再次去重后的可加总量。",
+    "system.status.cards.requestRawBodiesSplitHint":
+      "用这个侧向拆分判断为什么 request 偏大。",
     "system.status.cards.responseRawBodiesCount": "response raw payload 数量",
-    "system.status.cards.responseRawBodiesCountHint": "去重后的 response 侧 raw payload 文件数。",
+    "system.status.cards.responseRawBodiesCountHint":
+      "去重后的 response 侧 raw payload 文件数。",
     "system.status.cards.responseRawBodiesBytes": "response 侧 raw payload",
-    "system.status.cards.responseRawBodiesBytesHint": "response 侧 raw payload 的磁盘实测字节数，只用于解释分布，不代表再次去重后的可加总量。",
-    "system.status.cards.responseRawBodiesSplitHint": "用这个侧向拆分判断为什么 response 偏大。",
+    "system.status.cards.responseRawBodiesBytesHint":
+      "response 侧 raw payload 的磁盘实测字节数，只用于解释分布，不代表再次去重后的可加总量。",
+    "system.status.cards.responseRawBodiesSplitHint":
+      "用这个侧向拆分判断为什么 response 偏大。",
     "system.status.cards.databaseBytes": "数据库体积",
     "system.status.cards.databaseBytesHint": "当前 SQLite 数据库文件大小。",
     "system.status.cards.otherFilesBytes": "其他文件体积",
-    "system.status.cards.otherFilesBytesHint": "数据库根目录下除数据库、raw、archive 外的其他运行文件体积。",
+    "system.status.cards.otherFilesBytesHint":
+      "数据库根目录下除数据库、raw、archive 外的其他运行文件体积。",
     "system.tasks.title": "后台任务",
-    "system.tasks.description": "浏览近期系统级 scheduler、归档、回填、压缩和正向代理订阅刷新任务的运行记录。",
+    "system.tasks.description":
+      "浏览近期系统级 scheduler、归档、回填、压缩和正向代理订阅刷新任务的运行记录。",
     "system.tasks.loading": "正在加载任务记录…",
     "system.tasks.loadError": "加载任务记录失败：{{error}}",
     "system.tasks.empty": "当前筛选条件下没有任务记录。",
@@ -3972,14 +4068,17 @@ const baseTranslations = {
     "system.tasks.filters.startedAtFrom": "开始时间（从）",
     "system.tasks.filters.startedAtTo": "开始时间（到）",
     "system.tasks.filters.count": "{{count}} 条记录",
-    "system.tasks.pagination.summary": "第 {{page}} / {{pageCount}} 页 · 共 {{total}} 条记录",
+    "system.tasks.pagination.summary":
+      "第 {{page}} / {{pageCount}} 页 · 共 {{total}} 条记录",
     "system.tasks.pagination.pageSize": "每页",
     "system.tasks.pagination.previous": "上一页",
     "system.tasks.pagination.next": "下一页",
     "system.settings.title": "系统设置",
-    "system.settings.description": "保留原设置页中的模型、价格和外部 API key 配置，保存语义不变。",
+    "system.settings.description":
+      "保留原设置页中的模型、价格和外部 API key 配置，保存语义不变。",
     "system.proxy.title": "代理",
-    "system.proxy.description": "承载原正向代理 URL、订阅、节点健康、测速与刷新能力，保存契约保持不变。",
+    "system.proxy.description":
+      "承载原正向代理 URL、订阅、节点健康、测速与刷新能力，保存契约保持不变。",
     "settings.loading": "正在加载设置…",
     "settings.loadError": "设置请求失败：{{error}}",
     "settings.saving": "保存中…",
@@ -4026,7 +4125,8 @@ const baseTranslations = {
       "确定现在停用 {{name}} 吗？该 secret 会立即被拒绝。",
     "settings.externalApiKeys.disableDialog.confirm": "立即停用",
     "settings.proxy.title": "代理配置",
-    "settings.proxy.description": "配置当前 pool `/v1/models` 路径的覆盖与上游合并行为。",
+    "settings.proxy.description":
+      "配置当前 pool `/v1/models` 路径的覆盖与上游合并行为。",
     "settings.proxy.hijackLabel": "劫持 /v1/models",
     "settings.proxy.hijackHint":
       "开启后由当前代理返回预置模型列表，而不是纯透传上游。",
@@ -4051,25 +4151,32 @@ const baseTranslations = {
     "settings.proxy.upstream429RetriesOnce": "重试 1 次",
     "settings.proxy.upstream429RetriesMany": "重试 {{count}} 次",
     "settings.proxy.websocketRuntimeTitle": "WebSocket 运行期开关",
-    "settings.proxy.websocketRuntimeHint": "这些全局设置会立即保存生效，环境变量只作为首次启动默认值。",
+    "settings.proxy.websocketRuntimeHint":
+      "这些全局设置会立即保存生效，环境变量只作为首次启动默认值。",
     "settings.proxy.websocketDownstreamLabel": "允许下游 WS",
-    "settings.proxy.websocketDownstreamHint": "控制客户端是否可将 `/v1/*` 请求升级为 WebSocket。",
+    "settings.proxy.websocketDownstreamHint":
+      "控制客户端是否可将 `/v1/*` 请求升级为 WebSocket。",
     "settings.proxy.websocketUpstreamLabel": "默认使用上游 WS",
-    "settings.proxy.websocketUpstreamHint": "控制本服务是否为 WS 请求尝试连接上游 ws/wss。",
+    "settings.proxy.websocketUpstreamHint":
+      "控制本服务是否为 WS 请求尝试连接上游 ws/wss。",
     "settings.proxy.websocketEnabled": "已开启",
     "settings.proxy.websocketDisabled": "已关闭",
     "settings.proxy.websocketEnvLabel": "全局设置",
     "settings.proxy.encryptedOwnerRoutingTitle": "加密对话路由",
-    "settings.proxy.encryptedOwnerRoutingHint": "控制加密对话是否绑定到拥有该加密会话状态的上游账号。",
+    "settings.proxy.encryptedOwnerRoutingHint":
+      "控制加密对话是否绑定到拥有该加密会话状态的上游账号。",
     "settings.proxy.encryptedOwnerRoutingLabel": "加密对话路由绑定",
     "settings.proxy.encryptedOwnerRoutingDescription":
       "关闭后，加密内容不会创建或强制 owner 路由绑定，对话绑定风险提示也会静音。",
     "settings.proxy.bodyLoggingTitle": "调用 body 留存",
-    "settings.proxy.bodyLoggingHint": "控制新的代理调用是否继续保留请求或响应 body 内容。",
+    "settings.proxy.bodyLoggingHint":
+      "控制新的代理调用是否继续保留请求或响应 body 内容。",
     "settings.proxy.requestBodyLoggingLabel": "记录请求 body",
-    "settings.proxy.requestBodyLoggingHint": "结构化元数据仍会保留；仅停止新的原始请求 body 留存。",
+    "settings.proxy.requestBodyLoggingHint":
+      "结构化元数据仍会保留；仅停止新的原始请求 body 留存。",
     "settings.proxy.responseBodyLoggingLabel": "记录响应 body",
-    "settings.proxy.responseBodyLoggingHint": "会同时关闭新的完整响应 raw 留存与详情页 inline preview。",
+    "settings.proxy.responseBodyLoggingHint":
+      "会同时关闭新的完整响应 raw 留存与详情页 inline preview。",
     "settings.proxy.bodyLoggingRetentionHint":
       "关闭后只影响新记录；历史已留存的 body 仍按现有 retention 流程自动回收。",
     "settings.forwardProxy.title": "正向代理路由",
@@ -4199,8 +4306,7 @@ const baseTranslations = {
     "settings.forwardProxy.latency.target.codexResponses": "Codex /responses",
     "settings.forwardProxy.latency.targetOk": "{{target}}：可达{{detail}}",
     "settings.forwardProxy.latency.targetFailed": "{{target}}：失败{{detail}}",
-    "settings.forwardProxy.latency.ariaLabel":
-      "测试 {{node}} 的延迟",
+    "settings.forwardProxy.latency.ariaLabel": "测试 {{node}} 的延迟",
     "settings.pricing.title": "价格配置",
     "settings.pricing.description":
       "编辑用于新请求成本估算的模型价格；默认目录已按官方发布稿与 pricing 页面硬编码补齐 GPT-5.5、GPT-5.5 Pro 与 GPT-5.4 mini。",
@@ -4291,10 +4397,8 @@ const baseTranslations = {
       "当前仍处于 running 或 pending 状态的调用数；同一对话下的多个进行中调用会分别计数。",
     "dashboard.today.parallelConversationsDescription":
       "所选窗口最后一分钟切片内统计到的唯一 prompt-cache 对话数量。",
-    "dashboard.today.successDescription":
-      "所选自然日窗口内累计成功的调用数。",
-    "dashboard.today.failuresDescription":
-      "所选自然日窗口内累计失败的调用数。",
+    "dashboard.today.successDescription": "所选自然日窗口内累计成功的调用数。",
+    "dashboard.today.failuresDescription": "所选自然日窗口内累计失败的调用数。",
     "dashboard.today.totalCostDescription":
       "所选自然日窗口内累计的预估消费金额。",
     "dashboard.today.totalTokensDescription":
@@ -4492,8 +4596,7 @@ const baseTranslations = {
       "更改绑定后，后续请求可能因为 invalid_encrypted_content 失败。",
     "live.conversations.drawer.binding.ownerConfirm.cancel": "取消",
     "live.conversations.drawer.binding.ownerConfirm.confirm": "继续更改",
-    "live.conversations.drawer.binding.ownerConfirm.unknownOwner":
-      "未知 owner",
+    "live.conversations.drawer.binding.ownerConfirm.unknownOwner": "未知 owner",
     "live.conversations.activity.title": "对话调用总览",
     "live.conversations.activity.metricRequests": "调用数",
     "live.conversations.activity.metricSuccess": "成功",

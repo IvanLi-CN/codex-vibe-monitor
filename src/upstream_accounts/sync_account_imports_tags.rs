@@ -21,6 +21,17 @@ const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     policy_fast_mode_rewrite_mode, policy_image_tool_rewrite_mode, policy_concurrency_limit,
     policy_upstream_429_retry_enabled, policy_upstream_429_max_retries,
     policy_available_models_json,
+    policy_status_change_upstream_http_401,
+    policy_status_change_upstream_http_402,
+    policy_status_change_upstream_http_403,
+    policy_status_change_reauth_required,
+    policy_status_change_upstream_http_429_rate_limit,
+    policy_status_change_upstream_http_429_quota_exhausted,
+    policy_status_change_usage_snapshot_exhausted,
+    policy_status_change_quota_still_exhausted,
+    policy_status_change_transport_failure,
+    policy_status_change_upstream_server_overloaded,
+    policy_status_change_upstream_http_5xx,
     policy_responses_first_byte_timeout_secs, policy_compact_first_byte_timeout_secs,
     policy_responses_stream_timeout_secs, policy_compact_stream_timeout_secs,
     bound_proxy_keys_json,
@@ -326,6 +337,7 @@ async fn sync_api_key_account(
         return record_account_sync_recovery_blocked(
             pool,
             row.id,
+            &row.status,
             sync_source,
             &row.status,
             UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED,
@@ -355,6 +367,13 @@ async fn sync_oauth_account(
 ) -> Result<()> {
     let sync_source = sync_cause_action_source(cause);
     let now = Utc::now();
+    let deferred_status = if row.status.trim().is_empty()
+        || row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING
+    {
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE
+    } else {
+        row.status.as_str()
+    };
     let crypto_key = state
         .upstream_accounts
         .crypto_key
@@ -386,19 +405,18 @@ async fn sync_oauth_account(
             return Err(err);
         }
         Err(err) => {
-            record_classified_account_sync_failure(&state.pool, row, sync_source, &err.to_string())
-                .await?;
+            record_classified_account_sync_failure(
+                &state.pool,
+                row,
+                deferred_status,
+                sync_source,
+                &err.to_string(),
+            )
+            .await?;
             return Ok(());
         }
     };
     let refresh_scope = usage_scope.clone();
-    let deferred_status = if row.status.trim().is_empty()
-        || row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING
-    {
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE
-    } else {
-        row.status.as_str()
-    };
     set_account_status(&state.pool, row.id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None).await?;
 
     if refresh_due && let Some(refresh_token) = oauth_refresh_token(&credentials) {
@@ -443,6 +461,7 @@ async fn sync_oauth_account(
                 record_account_sync_failure_with_proxy_snapshot(
                     &state.pool,
                     row.id,
+                    deferred_status,
                     sync_source,
                     UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
                     &err.to_string(),
@@ -477,6 +496,7 @@ async fn sync_oauth_account(
                 record_account_sync_failure_with_proxy_snapshot(
                     &state.pool,
                     row.id,
+                    deferred_status,
                     sync_source,
                     next_status,
                     &err.to_string(),
@@ -596,6 +616,7 @@ async fn sync_oauth_account(
                             record_classified_account_sync_failure_with_proxy_snapshot(
                                 &state.pool,
                                 &latest_row,
+                                deferred_status,
                                 sync_source,
                                 &retry_err.to_string(),
                                 proxy_snapshot.as_ref(),
@@ -610,6 +631,7 @@ async fn sync_oauth_account(
                     record_account_sync_failure_with_proxy_snapshot(
                         &state.pool,
                         row.id,
+                        deferred_status,
                         sync_source,
                         UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
                         &refresh_err.to_string(),
@@ -646,6 +668,7 @@ async fn sync_oauth_account(
                     record_classified_account_sync_failure_with_proxy_snapshot(
                         &state.pool,
                         &latest_row,
+                        deferred_status,
                         sync_source,
                         &refresh_err.to_string(),
                         proxy_snapshot.as_ref(),
@@ -660,6 +683,7 @@ async fn sync_oauth_account(
             record_classified_account_sync_failure_with_proxy_snapshot(
                 &state.pool,
                 &latest_row,
+                deferred_status,
                 sync_source,
                 &err.to_string(),
                 proxy_snapshot.as_ref(),
@@ -688,6 +712,7 @@ async fn sync_oauth_account(
         record_account_sync_recovery_blocked(
             &state.pool,
             row.id,
+            deferred_status,
             sync_source,
             UPSTREAM_ACCOUNT_STATUS_ERROR,
             UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
@@ -705,6 +730,7 @@ async fn sync_oauth_account(
         record_account_sync_hard_unavailable(
             &state.pool,
             row.id,
+            deferred_status,
             sync_source,
             UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED,
             "latest usage snapshot already shows an exhausted upstream usage limit window",
@@ -2446,6 +2472,17 @@ async fn load_upstream_account_groups(
             notes.policy_upstream_429_retry_enabled,
             notes.policy_upstream_429_max_retries,
             notes.policy_available_models_json,
+            notes.policy_status_change_upstream_http_401,
+            notes.policy_status_change_upstream_http_402,
+            notes.policy_status_change_upstream_http_403,
+            notes.policy_status_change_reauth_required,
+            notes.policy_status_change_upstream_http_429_rate_limit,
+            notes.policy_status_change_upstream_http_429_quota_exhausted,
+            notes.policy_status_change_usage_snapshot_exhausted,
+            notes.policy_status_change_quota_still_exhausted,
+            notes.policy_status_change_transport_failure,
+            notes.policy_status_change_upstream_server_overloaded,
+            notes.policy_status_change_upstream_http_5xx,
             notes.policy_responses_first_byte_timeout_secs,
             notes.policy_compact_first_byte_timeout_secs,
             notes.policy_responses_stream_timeout_secs,
@@ -2493,6 +2530,17 @@ async fn load_upstream_account_groups(
                     row.policy_upstream_429_retry_enabled,
                     row.policy_upstream_429_max_retries,
                     row.policy_available_models_json.as_deref(),
+                    row.policy_status_change_upstream_http_401,
+                    row.policy_status_change_upstream_http_402,
+                    row.policy_status_change_upstream_http_403,
+                    row.policy_status_change_reauth_required,
+                    row.policy_status_change_upstream_http_429_rate_limit,
+                    row.policy_status_change_upstream_http_429_quota_exhausted,
+                    row.policy_status_change_usage_snapshot_exhausted,
+                    row.policy_status_change_quota_still_exhausted,
+                    row.policy_status_change_transport_failure,
+                    row.policy_status_change_upstream_server_overloaded,
+                    row.policy_status_change_upstream_http_5xx,
                     row.policy_responses_first_byte_timeout_secs,
                     row.policy_compact_first_byte_timeout_secs,
                     row.policy_responses_stream_timeout_secs,
@@ -3524,6 +3572,7 @@ fn group_routing_rule_from_group_metadata(
         upstream_429_max_retries: metadata.upstream_429_max_retries,
         available_models: Vec::new(),
         available_models_defined: false,
+        status_change_reasons: default_status_change_reasons(),
         timeouts: None,
     }
 }
