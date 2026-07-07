@@ -274,6 +274,14 @@
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
+  scenario: `account header without legacy activity status badge`
+  evidence_note: 验证 Dashboard 上游账号卡片标题区只保留异常/注意状态 badge 集合（`上游拒绝 / 限流`）与固定快捷策略 chip；旧的活动状态 badge（`关注 / 繁忙 / 稳定`）不再渲染，避免与账号健康状态入口重复。
+  image:
+  PR: include
+  ![Dashboard 上游账号移除旧活动状态 badge 证据](./assets/dashboard-account-card-no-legacy-status.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
   scenario: `desktop1660`
   evidence_note: 验证 Dashboard 工作区已切换到 `上游账号` tab，桌面宽屏下账号卡按 2 列紧凑放大布局展示账号级 KPI、轻量对话短码 identity chip + 请求 ID 主标识行，以及请求/响应模型不一致时的双模型切换展示。
   image:

@@ -667,13 +667,6 @@ type AccountMetricDetailSection = {
   rows: AccountMetricDetailRow[];
 };
 
-type AccountActivityStatus = {
-  kind: "busy" | "attention" | "steady";
-  badgeVariant: "info" | "warning" | "success";
-  label: string;
-  summary: string;
-};
-
 const ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES: Record<AccountMetricTone, string> =
   {
     neutral: "text-base-content",
@@ -694,80 +687,6 @@ const ACCOUNT_METRIC_DOT_TONE_CLASSNAMES: Record<AccountMetricTone, string> = {
   error: "bg-error/90",
   info: "bg-info/90",
 };
-
-function AccountStatusBadge({
-  label,
-  variant,
-  description,
-  clickable = false,
-  onClick,
-}: {
-  label: string;
-  variant: AccountActivityStatus["badgeVariant"];
-  description?: string;
-  clickable?: boolean;
-  onClick?: () => void;
-}) {
-  const surfaceClassName = {
-    info: "border-[rgba(148,163,184,0.26)] bg-base-100/86",
-    warning: "border-[rgba(148,163,184,0.26)] bg-base-100/86",
-    success: "border-[rgba(148,163,184,0.26)] bg-base-100/86",
-  }[variant];
-  const dotClassName = {
-    info: "bg-info/90",
-    warning: "bg-warning/90",
-    success: "bg-success/90",
-  }[variant];
-
-  if (clickable && onClick) {
-    return (
-      <button
-        type="button"
-        data-testid="dashboard-upstream-account-status"
-        className={cn(
-          "inline-flex min-h-6 cursor-pointer items-center gap-2 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-          surfaceClassName,
-        )}
-        title={description}
-        aria-label={`${label} · 打开账号健康事件`}
-        onClick={(event) => {
-          event.stopPropagation();
-          onClick();
-        }}
-        onKeyDown={(event) => {
-          event.stopPropagation();
-        }}
-      >
-        <span
-          className={cn("h-1.5 w-1.5 rounded-full", dotClassName)}
-          aria-hidden="true"
-        />
-        <span>{label}</span>
-      </button>
-    );
-  }
-
-  const badge = (
-    <Badge
-      variant="secondary"
-      title={description}
-      aria-label={description ? `${label} · ${description}` : label}
-      data-motion-surface
-      className={cn(
-        "min-h-6 gap-2 border px-2.5 py-0.5 text-[11px] font-semibold text-base-content transition-opacity duration-200",
-        surfaceClassName,
-      )}
-    >
-      <span
-        className={cn("h-1.5 w-1.5 rounded-full", dotClassName)}
-        aria-hidden="true"
-      />
-      {label}
-    </Badge>
-  );
-
-  return <div data-testid="dashboard-upstream-account-status">{badge}</div>;
-}
 
 type AccountQuickPolicyDraft = {
   allowNewConversations: boolean;
@@ -1838,59 +1757,6 @@ function AccountRecentInvocationRow({
   );
 }
 
-function resolveAccountActivityStatus({
-  account,
-  locale,
-  localeTag,
-}: {
-  account: UpstreamAccountActivityAccount;
-  locale: "zh" | "en";
-  localeTag: string;
-}): AccountActivityStatus {
-  const inProgress = account.inProgressInvocationCount ?? 0;
-  const retry = account.retryInvocationCount ?? 0;
-  const failure = account.failureCount ?? 0;
-  const nonSuccess = account.nonSuccessCount ?? 0;
-
-  if (inProgress > 0) {
-    return {
-      kind: "busy",
-      badgeVariant: "info",
-      label: locale === "zh" ? "繁忙" : "Busy",
-      summary:
-        retry > 0
-          ? locale === "zh"
-            ? `当前有 ${formatAccountNumberValue(inProgress, localeTag, 0)} 个进行中调用，其中 ${formatAccountNumberValue(retry, localeTag, 0)} 个处于重试。`
-            : `${formatAccountNumberValue(inProgress, localeTag, 0)} in-flight invocations, including ${formatAccountNumberValue(retry, localeTag, 0)} retrying.`
-          : locale === "zh"
-            ? `当前有 ${formatAccountNumberValue(inProgress, localeTag, 0)} 个进行中调用，账号仍在承压。`
-            : `${formatAccountNumberValue(inProgress, localeTag, 0)} in-flight invocations are still loading this account.`,
-    };
-  }
-
-  if (retry > 0 || failure > 0 || nonSuccess > 0) {
-    return {
-      kind: "attention",
-      badgeVariant: "warning",
-      label: locale === "zh" ? "关注" : "Attention",
-      summary:
-        locale === "zh"
-          ? `当前无进行中调用，但范围内有 ${formatAccountNumberValue(failure, localeTag, 0)} 次失败、${formatAccountNumberValue(retry, localeTag, 0)} 次重试。`
-          : `No live invocations right now, but this range still contains ${formatAccountNumberValue(failure, localeTag, 0)} failures and ${formatAccountNumberValue(retry, localeTag, 0)} retries.`,
-    };
-  }
-
-  return {
-    kind: "steady",
-    badgeVariant: "success",
-    label: locale === "zh" ? "稳定" : "Steady",
-    summary:
-      locale === "zh"
-        ? "当前无进行中或重试调用，范围内活动已回到稳定状态。"
-        : "No in-flight or retrying invocations are active in this range.",
-  };
-}
-
 function InvocationMetaLine({
   label,
   value,
@@ -2524,10 +2390,6 @@ function DashboardUpstreamAccountActivityCard({
       ),
     [account.recentInvocations],
   );
-  const accountStatus = useMemo(
-    () => resolveAccountActivityStatus({ account, locale, localeTag }),
-    [account, locale, localeTag],
-  );
   const handleOpenRoutingTab = useCallback(() => {
     if (account.upstreamAccountId == null) return;
     onOpenUpstreamAccount?.(account.upstreamAccountId, account.displayName, {
@@ -3035,7 +2897,6 @@ function DashboardUpstreamAccountActivityCard({
   return (
     <article
       data-testid="dashboard-upstream-account-card"
-      data-account-status={accountStatus.kind}
       className={ACCOUNT_CARD_CLASS_NAME}
     >
       <div
@@ -3067,13 +2928,6 @@ function DashboardUpstreamAccountActivityCard({
             <AccountAttentionBadges
               account={account}
               locale={locale}
-              clickable={account.upstreamAccountId != null}
-              onClick={handleOpenHealthEventsTab}
-            />
-            <AccountStatusBadge
-              label={accountStatus.label}
-              variant={accountStatus.badgeVariant}
-              description={accountStatus.summary}
               clickable={account.upstreamAccountId != null}
               onClick={handleOpenHealthEventsTab}
             />

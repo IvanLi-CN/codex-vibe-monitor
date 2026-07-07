@@ -148,9 +148,37 @@ body {
     box-shadow 220ms ease;
 }
 
+@keyframes invocation-phase-requesting-flight {
+  0%,
+  100% {
+    opacity: 0.78;
+    transform: translate3d(-1px, 1px, 0) scale(0.94);
+  }
+
+  45% {
+    opacity: 1;
+    transform: translate3d(2px, -2px, 0) scale(1.08);
+  }
+
+  70% {
+    opacity: 0.86;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.animate-invocation-phase-requesting {
+  animation: invocation-phase-requesting-flight 1.05s ease-in-out infinite;
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-motion-surface] {
     transition: none;
+  }
+
+  .animate-invocation-phase-requesting {
+    animation: none;
   }
 }
 

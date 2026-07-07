@@ -652,15 +652,15 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(host?.textContent).toContain("最近 4 条调用");
     expect(host?.textContent).not.toContain("账号状态");
     expect(
-      host
-        ?.querySelector('[data-testid="dashboard-upstream-account-card"]')
-        ?.getAttribute("data-account-status"),
-    ).toBe("busy");
+      host?.querySelector('[data-testid="dashboard-upstream-account-status"]'),
+    ).toBeNull();
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-card"]')
         ?.className,
     ).toContain("desktop1660:min-h-[31.5rem]");
-    expect(host?.textContent).toContain("繁忙");
+    expect(host?.textContent).not.toContain("繁忙");
+    expect(host?.textContent).not.toContain("关注");
+    expect(host?.textContent).not.toContain("稳定");
     expect(host?.textContent).not.toContain("渠道 Pool Alpha");
     expect(host?.textContent).not.toContain("Primary");
     expect(host?.textContent).not.toContain("按调用计数，不按对话去重");
@@ -827,6 +827,7 @@ describe("DashboardWorkingConversationsSection", () => {
         '[data-testid="invocation-phase-icon"]',
       );
       expect(icon).toBeInstanceOf(HTMLElement);
+      expect(icon?.className).not.toContain("animate-invocation-phase-requesting");
       expect(icon?.className).not.toContain("animate-pulse");
       expect(icon?.className).not.toContain("animate-spin");
     }
