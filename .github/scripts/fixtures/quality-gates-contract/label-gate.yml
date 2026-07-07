@@ -64,7 +64,6 @@ jobs:
             if [ -n "${changed_quality_gate_paths}" ]; then
               echo "::notice::Same-repository PR changes label-gate contract sources; using current branch sources to validate the updated topology."
               contract_script="$PWD/candidate/.github/scripts/check_quality_gates_contract.py"
-              metadata_script="$PWD/candidate/.github/scripts/metadata_gate.py"
               source_kind="current-branch-quality-gates-change"
             fi
           fi
@@ -86,4 +85,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 "${{ steps.trusted-label-gate.outputs.metadata_script }}" label
+          python3 trusted/.github/scripts/metadata_gate.py label

@@ -662,6 +662,10 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
         'contract_script="$PWD/candidate/.github/scripts/check_quality_gates_contract.py"' in trusted_run,
         "label-gate.yml: current-branch contract script selection drifted",
     )
+    require(
+        'metadata_script="$PWD/candidate/.github/scripts/metadata_gate.py"' not in trusted_run,
+        "label-gate.yml: token-bearing label evaluation must not switch to candidate metadata script",
+    )
 
     contract_step = step_config(job, "Validate trusted label-gate contract", "label-gate.yml.jobs.validate-pr-labels")
     contract_run = str(contract_step.get("run", ""))
@@ -674,7 +678,8 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
     label_env = require_mapping(label_step.get("env"), "label-gate.yml.jobs.validate-pr-labels.steps['Evaluate PR labels'].env")
     require(label_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "label-gate.yml: Evaluate PR labels must pass GITHUB_TOKEN via env")
     label_run = str(label_step.get("run", ""))
-    require('steps.trusted-label-gate.outputs.metadata_script' in label_run, "label-gate.yml: label gate must use resolved metadata script")
+    require("python3 trusted/.github/scripts/metadata_gate.py label" in label_run, "label-gate.yml: label gate must execute trusted metadata script")
+    require("steps.trusted-label-gate.outputs.metadata_script" not in label_run, "label-gate.yml: token-bearing label evaluation must not use candidate-resolved metadata script")
     require(" label" in label_run, "label-gate.yml: label gate command drifted")
     require(
         "--write-intent" not in label_run,
