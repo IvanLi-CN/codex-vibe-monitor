@@ -242,8 +242,9 @@ function buildPayload(
       changedPayload.upstream429MaxRetries = payload.upstream429MaxRetries;
     }
     if (
+      draft.availableModelsTouched ||
       JSON.stringify(payload.availableModels ?? []) !==
-      JSON.stringify(normalizeModelIds(base.availableModels ?? []))
+        JSON.stringify(normalizeModelIds(base.availableModels ?? []))
     ) {
       changedPayload.availableModels = payload.availableModels;
     }

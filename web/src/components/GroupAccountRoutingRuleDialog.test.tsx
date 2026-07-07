@@ -292,6 +292,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
         title="Group policy"
         description="Shared routing policy"
         submitLabel="Apply group policy"
+        changedFieldsOnly
         rule={defaultRule}
         availableModelOptions={["gpt-5.5"]}
         onClose={() => undefined}
