@@ -2813,6 +2813,81 @@ describe("DashboardWorkingConversationsSection", () => {
     }
   });
 
+  it("cycles upstream account Fast mode as an account-level quick policy", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: 42,
+            displayName: "Pool Alpha",
+            status: "active",
+            routingRule: {},
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    try {
+      renderSection(createResponse([]));
+
+      const upstreamAccountTab = Array.from(
+        host?.querySelectorAll('button[role="tab"]') ?? [],
+      ).find((candidate) =>
+        /上游账号|upstream account/i.test(candidate.textContent ?? ""),
+      );
+      if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
+        throw new Error("missing upstream account tab");
+      }
+
+      act(() => {
+        upstreamAccountTab.click();
+      });
+
+      const fastBadge = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-policy-badge"][data-policy-key="fast-mode-rewrite"]',
+      );
+      if (!(fastBadge instanceof HTMLButtonElement)) {
+        throw new Error("missing upstream account Fast policy badge");
+      }
+
+      expect(fastBadge.textContent?.trim()).toBe("Fast");
+
+      act(() => {
+        fastBadge.click();
+      });
+      expect(fastBadge.textContent?.trim()).toBe("禁Fast");
+      expect(fastBadge.disabled).toBe(false);
+
+      act(() => {
+        fastBadge.click();
+      });
+      expect(fastBadge.textContent?.trim()).toBe("保持原样");
+      expect(fastBadge.disabled).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect(String(init?.body)).toContain('"routingRule"');
+      expect(String(init?.body)).toContain(
+        '"fastModeRewriteMode":"keep_original"',
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
   it("flushes a pending upstream account quick policy write on unmount", async () => {
     vi.useFakeTimers();
     const originalFetch = globalThis.fetch;
