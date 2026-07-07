@@ -30,7 +30,10 @@ import type {
   ImportedOauthValidationRow,
   LoginSessionStatusResponse,
 } from "../../lib/api";
-import { UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY } from "../../lib/upstreamAccountGroups";
+import {
+  UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
+  UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY,
+} from "../../lib/upstreamAccountGroups";
 import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
 import {
   convertImportedWebSessionDocumentLocally,
@@ -1042,6 +1045,7 @@ Object.assign(scope, {
   TEST_FORWARD_PROXY_NODES,
   TEST_GROUP_SUMMARIES,
   expectedGroupSelection,
+  UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
   FIXED_NOW_MS,
   render,
   rerender,
@@ -1284,6 +1288,72 @@ describe("imported OAuth local validation", () => {
 });
 
 describe("UpstreamAccountCreatePage group memory", () => {
+  it("uses the last successful API Key group when no draft overrides it", async () => {
+    vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
+      if (key === "codex-vibe-monitor.locale") return "en";
+      if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
+        return JSON.stringify({ groupName: " beta " });
+      }
+      return null;
+    });
+    mockUpstreamAccounts();
+
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=apiKey",
+      state: { __skipDefaultDraft: true },
+    });
+    await flushAsync();
+
+    expect(readHiddenInputValue('[name="apiKeyGroupName"]')).toBe("beta");
+  });
+
+  it("keeps an API Key draft group ahead of the last successful local preference", async () => {
+    vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
+      if (key === "codex-vibe-monitor.locale") return "en";
+      if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
+        return JSON.stringify({ groupName: "beta" });
+      }
+      return null;
+    });
+    mockUpstreamAccounts();
+
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=apiKey",
+      state: {
+        draft: {
+          apiKey: {
+            groupName: "alpha",
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(readHiddenInputValue('[name="apiKeyGroupName"]')).toBe("alpha");
+  });
+
+  it("ignores the last successful API Key group when it is not selectable", async () => {
+    vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
+      if (key === "codex-vibe-monitor.locale") return "en";
+      if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
+        return JSON.stringify({ groupName: "retired" });
+      }
+      return null;
+    });
+    mockUpstreamAccounts();
+
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=apiKey",
+      state: { __skipDefaultDraft: true },
+    });
+    await flushAsync();
+
+    expect(readHiddenInputValue('[name="apiKeyGroupName"]')).toBe("");
+  });
+
   it("uses the latest remembered group for batch OAuth when no draft overrides it", async () => {
     vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
       if (key === "codex-vibe-monitor.locale") return "en";

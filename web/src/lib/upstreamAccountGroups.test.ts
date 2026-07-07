@@ -3,11 +3,32 @@ import {
   buildGroupNameSuggestions,
   buildGroupOptions,
   markUpstreamAccountGroupUsed,
+  readApiKeyLastGroupName,
   readUpstreamAccountGroupUsage,
   resolveMostRecentlyUsedGroupName,
+  UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
   upsertGroupSummary,
+  writeApiKeyLastGroupName,
   writeUpstreamAccountGroupUsage,
 } from './upstreamAccountGroups'
+
+function createMemoryStorage(initial: Record<string, string> = {}): Storage {
+  const values = new Map(Object.entries(initial))
+  return {
+    get length() {
+      return values.size
+    },
+    clear: () => values.clear(),
+    getItem: (key: string) => values.get(key) ?? null,
+    key: (index: number) => Array.from(values.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      values.delete(key)
+    },
+    setItem: (key: string, value: string) => {
+      values.set(key, value)
+    },
+  }
+}
 
 describe('buildGroupNameSuggestions', () => {
   it('includes page draft group names alongside persisted groups and account names', () => {
@@ -72,6 +93,51 @@ describe('local group usage storage', () => {
     try {
       expect(readUpstreamAccountGroupUsage()).toEqual({})
       expect(() => writeUpstreamAccountGroupUsage({ alpha: 10 })).not.toThrow()
+    } finally {
+      if (descriptor) {
+        Object.defineProperty(globalThis, 'window', descriptor)
+      } else {
+        Reflect.deleteProperty(globalThis, 'window')
+      }
+    }
+  })
+})
+
+describe('API Key last group storage', () => {
+  it('stores and reads the normalized last successful API Key group', () => {
+    const storage = createMemoryStorage()
+
+    writeApiKeyLastGroupName(' production ', storage)
+
+    expect(readApiKeyLastGroupName(storage)).toBe('production')
+    expect(storage.getItem(UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY)).toBe(
+      JSON.stringify({ groupName: 'production' }),
+    )
+  })
+
+  it('ignores empty, invalid, and blocked API Key group storage values', () => {
+    const invalidStorage = createMemoryStorage({
+      [UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY]: '{',
+    })
+    expect(readApiKeyLastGroupName(invalidStorage)).toBe('')
+
+    const emptyStorage = createMemoryStorage()
+    writeApiKeyLastGroupName('   ', emptyStorage)
+    expect(emptyStorage.getItem(UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY)).toBeNull()
+
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        get localStorage() {
+          throw new Error('storage blocked')
+        },
+      },
+    })
+
+    try {
+      expect(readApiKeyLastGroupName()).toBe('')
+      expect(() => writeApiKeyLastGroupName('production')).not.toThrow()
     } finally {
       if (descriptor) {
         Object.defineProperty(globalThis, 'window', descriptor)

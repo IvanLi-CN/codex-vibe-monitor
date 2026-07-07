@@ -5,6 +5,7 @@ import {
   UpstreamAccountCreatePage,
   upstreamAccountCreateMetaBase,
 } from './UpstreamAccountCreatePage.story-common'
+import { UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY } from '../lib/upstreamAccountGroups'
 
 const meta = {
   ...upstreamAccountCreateMetaBase,
@@ -38,6 +39,26 @@ export const EmailDerivedName: Story = {
 
 export const Default: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=apiKey" />,
+}
+
+export const RememberedSuccessfulGroup: Story = {
+  render: () => {
+    window.localStorage.setItem(
+      UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
+      JSON.stringify({ groupName: 'production' }),
+    )
+    return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=apiKey" />
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const groupInput = canvasElement.querySelector('input[name="apiKeyGroupName"]')
+    if (!(groupInput instanceof HTMLInputElement)) {
+      throw new Error('missing API Key group hidden input')
+    }
+
+    await expect(groupInput.value).toBe('production')
+    await expect(canvas.getByRole('combobox')).toHaveTextContent(/production/i)
+  },
 }
 
 export const NameConflict: Story = {

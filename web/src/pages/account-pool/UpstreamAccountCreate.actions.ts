@@ -12,6 +12,7 @@ import {
   type BatchOauthRow,
 } from "./UpstreamAccountCreate.shared";
 import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
+import { writeApiKeyLastGroupName } from "../../lib/upstreamAccountGroups";
 
 export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateControllerContext) {
   const {
@@ -1423,6 +1424,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         localLimitUnit: apiKeyLimitUnit.trim() || "requests",
         tagIds: apiKeyTagIds,
       });
+      writeApiKeyLastGroupName(apiKeyGroupProxyState.normalizedGroupName);
       notifyMotherChange(response);
       navigate("/account-pool/upstream-accounts", {
         state: {

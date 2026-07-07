@@ -11,16 +11,22 @@ export type UpstreamAccountGroupUsageMap = Record<string, number>
 export const UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY =
   'codex-vibe-monitor.account-pool.create.group-usage'
 
+export const UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY =
+  'codex-vibe-monitor.account-pool.create.api-key-last-group'
+
 export function normalizeGroupName(value?: string | null): string {
   return value?.trim() ?? ''
+}
+
+function resolveBrowserStorage(storage?: Storage): Storage | undefined {
+  return storage ?? (typeof window === 'undefined' ? undefined : window.localStorage)
 }
 
 export function readUpstreamAccountGroupUsage(
   storage?: Storage,
 ): UpstreamAccountGroupUsageMap {
   try {
-    const resolvedStorage =
-      storage ?? (typeof window === 'undefined' ? undefined : window.localStorage)
+    const resolvedStorage = resolveBrowserStorage(storage)
     if (!resolvedStorage) return {}
     const raw = resolvedStorage.getItem(UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY)
     if (!raw) return {}
@@ -43,10 +49,41 @@ export function writeUpstreamAccountGroupUsage(
   storage?: Storage,
 ) {
   try {
-    const resolvedStorage =
-      storage ?? (typeof window === 'undefined' ? undefined : window.localStorage)
+    const resolvedStorage = resolveBrowserStorage(storage)
     if (!resolvedStorage) return
     resolvedStorage.setItem(UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY, JSON.stringify(usage))
+  } catch {
+    // Ignore storage quota/privacy failures; group memory is only a preference.
+  }
+}
+
+export function readApiKeyLastGroupName(storage?: Storage): string {
+  try {
+    const resolvedStorage = resolveBrowserStorage(storage)
+    if (!resolvedStorage) return ''
+    const raw = resolvedStorage.getItem(UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY)
+    if (!raw) return ''
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return ''
+    return typeof parsed.groupName === 'string' ? normalizeGroupName(parsed.groupName) : ''
+  } catch {
+    return ''
+  }
+}
+
+export function writeApiKeyLastGroupName(
+  groupName?: string | null,
+  storage?: Storage,
+) {
+  const normalized = normalizeGroupName(groupName)
+  if (!normalized) return
+  try {
+    const resolvedStorage = resolveBrowserStorage(storage)
+    if (!resolvedStorage) return
+    resolvedStorage.setItem(
+      UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
+      JSON.stringify({ groupName: normalized }),
+    )
   } catch {
     // Ignore storage quota/privacy failures; group memory is only a preference.
   }
