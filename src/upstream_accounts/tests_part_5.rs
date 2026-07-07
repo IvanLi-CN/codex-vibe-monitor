@@ -396,6 +396,93 @@ async fn resolver_applies_prompt_cache_group_binding_as_hard_constraint() {
 }
 
 #[tokio::test]
+async fn resolver_non_explicit_sticky_escape_cuts_out_after_two_recent_upstream_stream_errors() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let unhealthy_route = "https://non-explicit-escape-unhealthy.example.com/backend-api/codex";
+    let healthy_route = "https://non-explicit-escape-healthy.example.com/backend-api/codex";
+    let unhealthy = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Non Explicit Escape Unhealthy",
+        "sk-non-explicit-escape-unhealthy",
+        Some(test_required_group_name()),
+        Some(unhealthy_route),
+    )
+    .await;
+    let healthy = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Non Explicit Escape Healthy",
+        "sk-non-explicit-escape-healthy",
+        Some(test_required_group_name()),
+        Some(healthy_route),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_allow_cut_out = 0 WHERE id = ?1")
+        .bind(unhealthy)
+        .execute(&state.pool)
+        .await
+        .expect("lock unhealthy sticky source");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, unhealthy, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, healthy, &now_iso, Some(40.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "non-explicit-escaped-key",
+        unhealthy,
+        &now_iso,
+    )
+    .await
+    .expect("seed non-explicit sticky route");
+    seed_account_upstream_stream_error_attempt(
+        &state.pool,
+        "non-explicit-stream-error-1",
+        "non-explicit-old-key-a",
+        test_required_group_name(),
+        unhealthy,
+        unhealthy_route,
+    )
+    .await;
+    seed_account_upstream_stream_error_attempt(
+        &state.pool,
+        "non-explicit-stream-error-2",
+        "non-explicit-old-key-b",
+        test_required_group_name(),
+        unhealthy,
+        unhealthy_route,
+    )
+    .await;
+
+    let sticky_resolution = resolve_pool_account_for_request(
+        &state,
+        Some("non-explicit-escaped-key"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve escaped sticky account");
+    let PoolAccountResolution::Resolved(sticky_account) = sticky_resolution else {
+        panic!("expected non-explicit sticky route to escape to a healthy account");
+    };
+    assert_eq!(sticky_account.account_id, healthy);
+    assert_eq!(
+        sticky_account.routing_source,
+        PoolRoutingSelectionSource::FreshAssignment
+    );
+
+    let fresh_resolution = resolve_pool_account_for_request(
+        &state,
+        Some("non-explicit-fresh-key"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve escaped fresh account");
+    let PoolAccountResolution::Resolved(fresh_account) = fresh_resolution else {
+        panic!("expected new non-explicit sticky target to avoid the unhealthy account");
+    };
+    assert_eq!(fresh_account.account_id, healthy);
+}
+
+#[tokio::test]
 async fn resolver_applies_prompt_cache_account_binding_over_sticky_route() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let sticky = insert_test_pool_api_key_account_with_options(
@@ -434,6 +521,77 @@ async fn resolver_applies_prompt_cache_account_binding_over_sticky_route() {
         panic!("expected account-bound account");
     };
     assert_eq!(account.account_id, bound);
+    assert_eq!(account.routing_source, PoolRoutingSelectionSource::FreshAssignment);
+}
+
+#[tokio::test]
+async fn resolver_prompt_cache_group_binding_reselects_within_group_after_recent_stream_errors() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let bound_group = "prompt-cache-group-escape";
+    let unhealthy_route = "https://group-escape-unhealthy.example.com/backend-api/codex";
+    let healthy_route = "https://group-escape-healthy.example.com/backend-api/codex";
+    let unhealthy = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Group Escape Unhealthy",
+        "sk-prompt-cache-group-escape-unhealthy",
+        Some(bound_group),
+        Some(unhealthy_route),
+    )
+    .await;
+    let healthy = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Group Escape Healthy",
+        "sk-prompt-cache-group-escape-healthy",
+        Some(bound_group),
+        Some(healthy_route),
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, unhealthy, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, healthy, &now_iso, Some(30.0), Some(15.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "prompt-cache-group-escape-key",
+        unhealthy,
+        &now_iso,
+    )
+    .await
+    .expect("seed group-bound sticky route");
+    seed_account_upstream_stream_error_attempt(
+        &state.pool,
+        "group-stream-error-1",
+        "group-old-key-a",
+        bound_group,
+        unhealthy,
+        unhealthy_route,
+    )
+    .await;
+    seed_account_upstream_stream_error_attempt(
+        &state.pool,
+        "group-stream-error-2",
+        "group-old-key-b",
+        bound_group,
+        unhealthy,
+        unhealthy_route,
+    )
+    .await;
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint(
+        &state,
+        Some("prompt-cache-group-escape-key"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::Group(
+            bound_group.to_string(),
+        )),
+    )
+    .await
+    .expect("resolve escaped group-bound account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected group-bound routing to reselect within the same group");
+    };
+    assert_eq!(account.account_id, healthy);
+    assert_eq!(account.group_name.as_deref(), Some(bound_group));
     assert_eq!(account.routing_source, PoolRoutingSelectionSource::FreshAssignment);
 }
 
@@ -496,6 +654,76 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_target_cut_in_pol
         panic!("expected forced account-bound account");
     };
     assert_eq!(account.account_id, bound);
+}
+
+#[tokio::test]
+async fn resolver_explicit_prompt_cache_account_binding_keeps_operator_override_after_recent_stream_errors()
+{
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let bound_group = test_required_group_name();
+    let unhealthy_route = "https://explicit-override-unhealthy.example.com/backend-api/codex";
+    let healthy_route = "https://explicit-override-healthy.example.com/backend-api/codex";
+    let unhealthy = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Explicit Override Unhealthy",
+        "sk-explicit-override-unhealthy",
+        Some(bound_group),
+        Some(unhealthy_route),
+    )
+    .await;
+    let healthy = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Explicit Override Healthy",
+        "sk-explicit-override-healthy",
+        Some(bound_group),
+        Some(healthy_route),
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, unhealthy, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, healthy, &now_iso, Some(30.0), Some(15.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "prompt-cache-explicit-override-key",
+        healthy,
+        &now_iso,
+    )
+    .await
+    .expect("seed explicit binding sticky source");
+    seed_account_upstream_stream_error_attempt(
+        &state.pool,
+        "explicit-stream-error-1",
+        "explicit-old-key-a",
+        bound_group,
+        unhealthy,
+        unhealthy_route,
+    )
+    .await;
+    seed_account_upstream_stream_error_attempt(
+        &state.pool,
+        "explicit-stream-error-2",
+        "explicit-old-key-b",
+        bound_group,
+        unhealthy,
+        unhealthy_route,
+    )
+    .await;
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint(
+        &state,
+        Some("prompt-cache-explicit-override-key"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(
+            unhealthy,
+        )),
+    )
+    .await
+    .expect("resolve explicit operator override");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected explicit account binding to preserve operator override");
+    };
+    assert_eq!(account.account_id, unhealthy);
 }
 
 #[tokio::test]
@@ -1047,6 +1275,66 @@ async fn seed_route_binding_attempt(
     .execute(pool)
     .await
     .expect("seed route binding attempt");
+}
+
+async fn seed_account_upstream_stream_error_attempt(
+    pool: &SqlitePool,
+    invoke_id: &str,
+    sticky_key: &str,
+    group_name: &str,
+    upstream_account_id: i64,
+    upstream_base_url: &str,
+) {
+    let upstream_route_key = canonical_pool_upstream_route_key(
+        &Url::parse(upstream_base_url).expect("valid upstream route"),
+    );
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            sticky_key,
+            group_name_snapshot,
+            proxy_binding_key_snapshot,
+            upstream_account_id,
+            upstream_route_key,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            requester_ip,
+            started_at,
+            finished_at,
+            status,
+            phase,
+            http_status,
+            error_message,
+            failure_kind,
+            created_at
+        )
+        VALUES (
+            ?1, ?2, '/v1/responses', ?3, ?4, ?5, ?6, ?7, ?8,
+            1, 1, 0, '203.0.113.11', ?2, ?2, ?9, ?10, NULL, ?11, ?12, datetime('now')
+        )
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(&now_iso)
+    .bind(INVOCATION_ROUTE_MODE_POOL)
+    .bind(sticky_key)
+    .bind(group_name)
+    .bind(FORWARD_PROXY_DIRECT_KEY)
+    .bind(upstream_account_id)
+    .bind(upstream_route_key)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+    .bind("upstream stream error: synthetic test failure")
+    .bind(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+    .execute(pool)
+    .await
+    .expect("seed upstream stream error attempt");
 }
 
 #[tokio::test]
