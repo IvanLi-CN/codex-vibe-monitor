@@ -1498,6 +1498,22 @@ pub(crate) struct DashboardActivityAccountResponse {
     pub(crate) group_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) plan_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) display_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) enable_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) work_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) health_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) sync_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_action_reason_message: Option<String>,
     pub(crate) request_count: i64,
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,
@@ -1546,6 +1562,16 @@ pub(crate) struct UpstreamAccountActivityAccountResponse {
     pub(crate) group_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) plan_type: Option<String>,
+    pub(crate) enabled: bool,
+    pub(crate) display_status: String,
+    pub(crate) enable_status: String,
+    pub(crate) work_status: String,
+    pub(crate) health_status: String,
+    pub(crate) sync_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_action_reason_message: Option<String>,
     pub(crate) request_count: i64,
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,

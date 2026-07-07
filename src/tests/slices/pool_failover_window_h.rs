@@ -12031,6 +12031,14 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     assert_eq!(account.display_name, "Pool Alpha");
     assert_eq!(account.group_name.as_deref(), Some("Primary"));
     assert_eq!(account.plan_type.as_deref(), Some("enterprise"));
+    assert!(account.enabled);
+    assert_eq!(account.display_status, "active");
+    assert_eq!(account.enable_status, "enabled");
+    assert_eq!(account.work_status, "idle");
+    assert_eq!(account.health_status, "normal");
+    assert_eq!(account.sync_state, "idle");
+    assert_eq!(account.last_error, None);
+    assert_eq!(account.last_action_reason_message, None);
     assert_eq!(account.request_count, 6);
     assert_eq!(account.success_count, 2);
     assert_eq!(account.failure_count, 1);

@@ -21,6 +21,7 @@ import chevronRightIcon from '@iconify-icons/mdi/chevron-right'
 import chevronRightCircleIcon from '@iconify-icons/mdi/chevron-right-circle'
 import chevronUpIcon from '@iconify-icons/mdi/chevron-up'
 import closeIcon from '@iconify-icons/mdi/close'
+import cogOutlineIcon from '@iconify-icons/mdi/cog-outline'
 import contentCopyIcon from '@iconify-icons/mdi/content-copy'
 import contentSaveOutlineIcon from '@iconify-icons/mdi/content-save-outline'
 import contentSavePlusOutlineIcon from '@iconify-icons/mdi/content-save-plus-outline'
@@ -88,6 +89,7 @@ const appIconRegistry = {
   'chevron-right-circle': chevronRightCircleIcon,
   'chevron-up': chevronUpIcon,
   'close': closeIcon,
+  'cog-outline': cogOutlineIcon,
   'content-copy': contentCopyIcon,
   'content-save-outline': contentSaveOutlineIcon,
   'content-save-plus-outline': contentSavePlusOutlineIcon,

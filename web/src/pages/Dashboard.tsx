@@ -60,6 +60,7 @@ export default function DashboardPage() {
     isLoading: dashboardActivityLoading,
     error: dashboardActivityError,
     recentInvocationLimit: upstreamAccountRecentPreviewLimit,
+    reload: reloadDashboardActivity,
   } = useDashboardActivitySnapshot(
     activeRange,
     dashboardActivityEnabled,
@@ -144,6 +145,9 @@ export default function DashboardPage() {
         onUpstreamAccountActivityEnabledChange={
           setIncludeUpstreamAccountActivity
         }
+        onUpstreamAccountPolicyChanged={() => {
+          void reloadDashboardActivity({ silent: true });
+        }}
       />
       <DashboardInvocationDetailDrawer
         open={selectedInvocation != null}

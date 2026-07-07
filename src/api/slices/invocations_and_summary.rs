@@ -3142,9 +3142,21 @@ pub(crate) async fn build_empty_summary_response(
 #[derive(Debug, Clone, FromRow)]
 struct UpstreamAccountActivityMetaRow {
     id: i64,
+    kind: String,
     display_name: Option<String>,
     group_name: Option<String>,
     plan_type: Option<String>,
+    status: String,
+    enabled: i64,
+    last_error: Option<String>,
+    last_error_at: Option<String>,
+    last_route_failure_at: Option<String>,
+    last_route_failure_kind: Option<String>,
+    last_action_reason_code: Option<String>,
+    last_action_reason_message: Option<String>,
+    cooldown_until: Option<String>,
+    temporary_route_failure_streak_started_at: Option<String>,
+    last_selected_at: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -3233,6 +3245,76 @@ fn resolve_upstream_account_activity_display_name(
         return display_name.to_string();
     }
     format!("账号 #{account_id}")
+}
+
+#[derive(Debug, Clone)]
+struct UpstreamAccountActivityStatusFields {
+    enabled: bool,
+    display_status: String,
+    enable_status: String,
+    work_status: String,
+    health_status: String,
+    sync_state: String,
+    last_error: Option<String>,
+    last_action_reason_message: Option<String>,
+}
+
+fn build_upstream_account_activity_status_fields(
+    meta: &UpstreamAccountActivityMetaRow,
+    now: DateTime<Utc>,
+) -> UpstreamAccountActivityStatusFields {
+    let enabled = meta.enabled != 0;
+    let enable_status = crate::upstream_accounts::derive_upstream_account_enable_status(enabled);
+    let health_status = crate::upstream_accounts::derive_upstream_account_health_status(
+        &meta.kind,
+        enabled,
+        &meta.status,
+        meta.last_error.as_deref(),
+        meta.last_error_at.as_deref(),
+        meta.last_route_failure_at.as_deref(),
+        meta.last_route_failure_kind.as_deref(),
+        meta.last_action_reason_code.as_deref(),
+    );
+    let sync_state =
+        crate::upstream_accounts::derive_upstream_account_sync_state(enabled, &meta.status);
+    let work_status = crate::upstream_accounts::derive_upstream_account_work_status(
+        enabled,
+        &meta.status,
+        health_status,
+        sync_state,
+        false,
+        meta.cooldown_until.as_deref(),
+        meta.last_error_at.as_deref(),
+        meta.last_route_failure_at.as_deref(),
+        meta.last_route_failure_kind.as_deref(),
+        meta.last_action_reason_code.as_deref(),
+        meta.temporary_route_failure_streak_started_at.as_deref(),
+        meta.last_selected_at.as_deref(),
+        now,
+    );
+    let display_status = crate::upstream_accounts::classify_upstream_account_display_status(
+        &meta.kind,
+        enabled,
+        &meta.status,
+        meta.last_error.as_deref(),
+        meta.last_error_at.as_deref(),
+        meta.last_route_failure_at.as_deref(),
+        meta.last_route_failure_kind.as_deref(),
+        meta.last_action_reason_code.as_deref(),
+    );
+
+    UpstreamAccountActivityStatusFields {
+        enabled,
+        display_status: display_status.to_string(),
+        enable_status: enable_status.to_string(),
+        work_status: work_status.to_string(),
+        health_status: health_status.to_string(),
+        sync_state: sync_state.to_string(),
+        last_error: normalize_trimmed_optional_string_local(meta.last_error.clone()),
+        last_action_reason_message: normalize_trimmed_optional_string_local(
+            meta.last_action_reason_message.clone(),
+        ),
+    }
 }
 
 fn invocation_upstream_account_id_with_attempt_fallback_sql(invocation_ref: &str) -> String {
@@ -3573,7 +3655,12 @@ async fn query_upstream_account_activity_meta(
         return Ok(HashMap::new());
     }
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id, display_name, group_name, plan_type FROM pool_upstream_accounts WHERE id IN (",
+        "SELECT \
+            id, kind, display_name, group_name, plan_type, status, enabled, \
+            last_error, last_error_at, last_route_failure_at, last_route_failure_kind, \
+            last_action_reason_code, last_action_reason_message, cooldown_until, \
+            temporary_route_failure_streak_started_at, last_selected_at \
+         FROM pool_upstream_accounts WHERE id IN (",
     );
     {
         let mut separated = query.separated(", ");
@@ -4198,6 +4285,8 @@ async fn load_dashboard_activity_snapshot(
         .into_iter()
         .map(|(upstream_account_id, aggregate)| {
             let meta = upstream_account_id.and_then(|id| account_meta.get(&id));
+            let status_fields =
+                meta.map(|row| build_upstream_account_activity_status_fields(row, Utc::now()));
             let (tokens_per_minute, spend_rate) = compute_upstream_account_activity_rates(
                 &aggregate.rate_usage_events,
                 range.start,
@@ -4242,6 +4331,28 @@ async fn load_dashboard_activity_snapshot(
                     meta.and_then(|row| row.plan_type.clone())
                         .or(aggregate.plan_type_hint),
                 ),
+                enabled: status_fields.as_ref().map(|fields| fields.enabled),
+                display_status: status_fields
+                    .as_ref()
+                    .map(|fields| fields.display_status.clone()),
+                enable_status: status_fields
+                    .as_ref()
+                    .map(|fields| fields.enable_status.clone()),
+                work_status: status_fields
+                    .as_ref()
+                    .map(|fields| fields.work_status.clone()),
+                health_status: status_fields
+                    .as_ref()
+                    .map(|fields| fields.health_status.clone()),
+                sync_state: status_fields
+                    .as_ref()
+                    .map(|fields| fields.sync_state.clone()),
+                last_error: status_fields
+                    .as_ref()
+                    .and_then(|fields| fields.last_error.clone()),
+                last_action_reason_message: status_fields
+                    .as_ref()
+                    .and_then(|fields| fields.last_action_reason_message.clone()),
                 request_count: aggregate.request_count,
                 success_count: aggregate.success_count,
                 failure_count: aggregate.failure_count,
@@ -4326,6 +4437,20 @@ fn dashboard_account_to_upstream_account(
         display_name: account.display_name,
         group_name: account.group_name,
         plan_type: account.plan_type,
+        enabled: account.enabled.unwrap_or(true),
+        display_status: account
+            .display_status
+            .unwrap_or_else(|| "active".to_string()),
+        enable_status: account
+            .enable_status
+            .unwrap_or_else(|| "enabled".to_string()),
+        work_status: account.work_status.unwrap_or_else(|| "idle".to_string()),
+        health_status: account
+            .health_status
+            .unwrap_or_else(|| "normal".to_string()),
+        sync_state: account.sync_state.unwrap_or_else(|| "idle".to_string()),
+        last_error: account.last_error,
+        last_action_reason_message: account.last_action_reason_message,
         request_count: account.request_count,
         success_count: account.success_count,
         failure_count: account.failure_count,
