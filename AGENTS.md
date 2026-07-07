@@ -60,6 +60,7 @@ Use non-blocking runtime management for long-lived services, but do not require 
 - PR checks run in `.github/workflows/ci-pr.yml`; old PR runs are preemptible so stale commits do not keep consuming runners.
 - Mainline verification runs in `.github/workflows/ci-main.yml`; each merged commit gets its own non-preemptive `main` run, so newer pushes do not cancel or replace older pending `CI Main` work.
 - Releases run in `.github/workflows/release.yml` after the first successful `CI Main` attempt on `main`, and can be manually backfilled with `workflow_dispatch(commit_sha)` when GitHub concurrency replaces an older pending release run; manual backfill is limited to commits that already passed `CI Main`.
+- Maintainers can also run a controlled manual release override for a specific `main` commit by providing `commit_sha`, exactly one of `version` or `bump`, `channel`, and `reason`. Manual overrides generate a job-local `manual-release-override` snapshot, bypass `type:skip` / `type:docs` only for that dispatch run, and write the override audit fields into the GitHub Release body.
 - Every PR must set exactly **one** release type label and exactly **one** release channel label
   (enforced by `.github/workflows/label-gate.yml`).
 - Release type (`type:*`):

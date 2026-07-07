@@ -636,37 +636,53 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
     candidate_checkout = checkout_step(job, "Checkout candidate pull request", "label-gate.yml.jobs.validate-pr-labels")
     require(candidate_checkout.get("repository") == "${{ github.event.pull_request.head.repo.full_name }}", "label-gate.yml: candidate checkout repository drifted")
     require(candidate_checkout.get("ref") == "${{ github.event.pull_request.head.sha }}", "label-gate.yml: candidate checkout ref drifted")
+    require(candidate_checkout.get("fetch-depth") == 0, "label-gate.yml: candidate checkout must fetch full history for trusted source resolution")
     require(candidate_checkout.get("path") == "candidate", "label-gate.yml: candidate checkout path drifted")
     require(candidate_checkout.get("persist-credentials") is False, "label-gate.yml: candidate checkout must disable persisted credentials")
 
-    contract_step = step_config(job, "Validate trusted label-gate contract", "label-gate.yml.jobs.validate-pr-labels")
-    contract_command = require_command(
-        contract_step,
-        ["python3", "trusted/.github/scripts/check_quality_gates_contract.py"],
-        "label-gate.yml.jobs.validate-pr-labels.steps['Validate trusted label-gate contract']",
-        "label-gate.yml: trusted label gate must invoke the trusted contract checker",
+    trusted_step = step_config(job, "Resolve trusted label-gate sources", "label-gate.yml.jobs.validate-pr-labels")
+    trusted_run = str(trusted_step.get("run", ""))
+    require(
+        'github.event.pull_request.head.repo.full_name' in trusted_run,
+        "label-gate.yml: same-repository quality-gates source detection drifted",
     )
-    contract_options = command_option_map(contract_command[2:], "label-gate.yml: trusted label gate contract step")
-    require(contract_options.get("--repo-root") == "$PWD/candidate", "label-gate.yml: trusted label gate must validate the candidate checkout")
-    require(contract_options.get("--declaration") == "$PWD/candidate/.github/quality-gates.json", "label-gate.yml: trusted label gate declaration drifted")
-    require(contract_options.get("--metadata-script") == "$PWD/trusted/.github/scripts/metadata_gate.py", "label-gate.yml: trusted label gate metadata script drifted")
+    require(
+        "git -C candidate fetch" not in trusted_run,
+        "label-gate.yml: same-repository source detection must not require an extra candidate fetch",
+    )
+    require(
+        'cmp -s "$PWD/trusted/$path" "$PWD/candidate/$path"' in trusted_run,
+        "label-gate.yml: quality-gates change detection drifted",
+    )
+    require(
+        'source_kind="current-branch-quality-gates-change"' in trusted_run,
+        "label-gate.yml: quality-gates change source kind drifted",
+    )
+    require(
+        'contract_script="$PWD/candidate/.github/scripts/check_quality_gates_contract.py"' in trusted_run,
+        "label-gate.yml: current-branch contract script selection drifted",
+    )
+    require(
+        'metadata_script="$PWD/candidate/.github/scripts/metadata_gate.py"' not in trusted_run,
+        "label-gate.yml: token-bearing label evaluation must not switch to candidate metadata script",
+    )
+
+    contract_step = step_config(job, "Validate trusted label-gate contract", "label-gate.yml.jobs.validate-pr-labels")
+    contract_run = str(contract_step.get("run", ""))
+    require('steps.trusted-label-gate.outputs.contract_script' in contract_run, "label-gate.yml: contract check must use resolved trusted source")
+    require("--repo-root \"$PWD/candidate\"" in contract_run, "label-gate.yml: trusted label gate must validate the candidate checkout")
+    require("--declaration \"$PWD/candidate/.github/quality-gates.json\"" in contract_run, "label-gate.yml: trusted label gate declaration drifted")
+    require('steps.trusted-label-gate.outputs.metadata_script' in contract_run, "label-gate.yml: trusted label gate metadata script drifted")
 
     label_step = step_config(job, "Evaluate PR labels", "label-gate.yml.jobs.validate-pr-labels")
     label_env = require_mapping(label_step.get("env"), "label-gate.yml.jobs.validate-pr-labels.steps['Evaluate PR labels'].env")
     require(label_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "label-gate.yml: Evaluate PR labels must pass GITHUB_TOKEN via env")
-    label_command = require_command(
-        label_step,
-        ["python3", "trusted/.github/scripts/metadata_gate.py", "label"],
-        "label-gate.yml.jobs.validate-pr-labels.steps['Evaluate PR labels']",
-        "label-gate.yml: Evaluate PR labels must execute the trusted metadata gate in label mode",
-    )
+    label_run = str(label_step.get("run", ""))
+    require("python3 trusted/.github/scripts/metadata_gate.py label" in label_run, "label-gate.yml: label gate must execute trusted metadata script")
+    require("steps.trusted-label-gate.outputs.metadata_script" not in label_run, "label-gate.yml: token-bearing label evaluation must not use candidate-resolved metadata script")
+    require(" label" in label_run, "label-gate.yml: label gate command drifted")
     require(
-        label_command[:3] == ["python3", "trusted/.github/scripts/metadata_gate.py", "label"],
-        "label-gate.yml: label gate command drifted",
-    )
-    label_options = command_option_map(label_command[3:], "label-gate.yml: label gate command options")
-    require(
-        "--write-intent" not in label_options,
+        "--write-intent" not in label_run,
         "label-gate.yml: Evaluate PR labels must validate labels before any release-intent write step",
     )
 
@@ -737,6 +753,19 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     commit_sha = require_mapping(inputs.get("commit_sha"), "release.yml.on.workflow_dispatch.inputs.commit_sha")
     require(commit_sha.get("required") is True, "release.yml: workflow_dispatch.commit_sha must stay required")
     require(commit_sha.get("type") == "string", "release.yml: workflow_dispatch.commit_sha must stay string")
+    version_input = require_mapping(inputs.get("version"), "release.yml.on.workflow_dispatch.inputs.version")
+    require(version_input.get("required") is False, "release.yml: workflow_dispatch.version must stay optional")
+    require(version_input.get("type") == "string", "release.yml: workflow_dispatch.version must stay string")
+    bump_input = require_mapping(inputs.get("bump"), "release.yml.on.workflow_dispatch.inputs.bump")
+    require(bump_input.get("required") is False, "release.yml: workflow_dispatch.bump must stay optional")
+    require(bump_input.get("type") == "string", "release.yml: workflow_dispatch.bump must stay string")
+    channel_input = require_mapping(inputs.get("channel"), "release.yml.on.workflow_dispatch.inputs.channel")
+    require(channel_input.get("default") == "stable", "release.yml: workflow_dispatch.channel must default stable")
+    require(channel_input.get("type") == "choice", "release.yml: workflow_dispatch.channel must stay choice")
+    require(channel_input.get("options") == ["stable", "rc"], "release.yml: workflow_dispatch.channel options drifted")
+    reason_input = require_mapping(inputs.get("reason"), "release.yml.on.workflow_dispatch.inputs.reason")
+    require(reason_input.get("required") is False, "release.yml: workflow_dispatch.reason must stay optional for internal queue dispatch")
+    require(reason_input.get("type") == "string", "release.yml: workflow_dispatch.reason must stay string")
 
     concurrency = require_mapping(workflow.get("concurrency"), "release.yml.concurrency")
     require(concurrency.get("group") == "release-main", "release.yml.concurrency.group drifted")
@@ -777,6 +806,8 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     )
     outputs = require_mapping(release_meta.get("outputs"), "release.yml.jobs.release-meta.outputs")
     require("target_sha" in outputs, "release.yml.jobs.release-meta.outputs.target_sha must be exported")
+    require("snapshot_source" in outputs, "release.yml.jobs.release-meta.outputs.snapshot_source must be exported")
+    require("manual_reason" in outputs, "release.yml.jobs.release-meta.outputs.manual_reason must be exported")
 
     target_step = step_config(release_meta, "Resolve requested commit", "release.yml.jobs.release-meta")
     target_run = str(target_step.get("run", ""))
@@ -790,8 +821,25 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     backfill_script = str(backfill_step.get("with", {}).get("script", ""))
     require("snapshot-only CI Main failure" in backfill_script, "release.yml.jobs.release-meta: snapshot-only backfill exception drifted")
     require("listJobsForWorkflowRun" in backfill_script, "release.yml.jobs.release-meta: snapshot-only backfill job inspection drifted")
+    override_step = step_config(release_meta, "Generate manual release override snapshot", "release.yml.jobs.release-meta")
+    require(
+        override_step.get("if") == "github.event_name == 'workflow_dispatch' && (inputs.version != '' || inputs.bump != '' || inputs.reason != '')",
+        "release.yml.jobs.release-meta: manual override snapshot gate drifted",
+    )
+    override_env = require_mapping(override_step.get("env"), "release.yml.jobs.release-meta.steps['Generate manual release override snapshot'].env")
+    require(override_env.get("TARGET_SHA") == "${{ steps.requested-target.outputs.target_sha }}", "release.yml.jobs.release-meta: manual override must consume target_sha")
+    require(override_env.get("MANUAL_VERSION") == "${{ inputs.version }}", "release.yml.jobs.release-meta: manual override must consume version input")
+    require(override_env.get("MANUAL_BUMP") == "${{ inputs.bump }}", "release.yml.jobs.release-meta: manual override must consume bump input")
+    require(override_env.get("MANUAL_REASON") == "${{ inputs.reason }}", "release.yml.jobs.release-meta: manual override must consume reason input")
+    override_run = str(override_step.get("run", ""))
+    require("release_snapshot.py manual-override" in override_run, "release.yml.jobs.release-meta: manual override must use release_snapshot.py manual-override")
+    require("--reason" in override_run, "release.yml.jobs.release-meta: manual override must pass audit reason")
+    require("--actor" in override_run, "release.yml.jobs.release-meta: manual override must pass actor")
     ensure_step = step_config(release_meta, "Ensure immutable release snapshot for manual backfill", "release.yml.jobs.release-meta")
-    require(ensure_step.get("if") == "github.event_name == 'workflow_dispatch'", "release.yml.jobs.release-meta: manual snapshot ensure gate drifted")
+    require(
+        ensure_step.get("if") == "github.event_name == 'workflow_dispatch' && inputs.version == '' && inputs.bump == '' && inputs.reason == ''",
+        "release.yml.jobs.release-meta: manual snapshot ensure gate drifted",
+    )
     ensure_env = require_mapping(ensure_step.get("env"), "release.yml.jobs.release-meta.steps['Ensure immutable release snapshot for manual backfill'].env")
     require(ensure_env.get("TARGET_SHA") == "${{ steps.requested-target.outputs.target_sha }}", "release.yml.jobs.release-meta: manual snapshot ensure must consume target_sha")
     require(ensure_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "release.yml.jobs.release-meta: manual snapshot ensure must use GITHUB_TOKEN")
@@ -906,6 +954,14 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     tag_step = step_config(publish, "Create and push git tag", "release.yml.jobs.release-publish")
     tag_run = str(tag_step.get("run", ""))
     require('sha="${TARGET_SHA}"' in tag_run, "release.yml.jobs.release-publish tag step must use target_sha")
+    require("git fetch --tags origin" in tag_run, "release.yml.jobs.release-publish tag step must fetch existing tags")
+    release_step = step_config(publish, "Create GitHub Release", "release.yml.jobs.release-publish")
+    release_env = require_mapping(release_step.get("env"), "release.yml.jobs.release-publish.steps['Create GitHub Release'].env")
+    require(release_env.get("SNAPSHOT_SOURCE") == "${{ needs.release-meta.outputs.snapshot_source }}", "release.yml.jobs.release-publish: release body must consume snapshot_source")
+    require(release_env.get("MANUAL_REASON") == "${{ needs.release-meta.outputs.manual_reason }}", "release.yml.jobs.release-publish: release body must consume manual_reason")
+    release_script = str(release_step.get("with", {}).get("script", ""))
+    require("Manual release override:" in release_script, "release.yml.jobs.release-publish: release body must include manual override audit block")
+    require("manualReason" in release_script, "release.yml.jobs.release-publish: release body must render manual reason")
     comment_step = step_config(publish, "Upsert PR release version comment", "release.yml.jobs.release-publish")
     comment_env = require_mapping(comment_step.get("env"), "release.yml.jobs.release-publish.steps['Upsert PR release version comment'].env")
     require(comment_env.get("RELEASE_PR_NUMBER") == "${{ needs.release-meta.outputs.pr_number }}", "release.yml.jobs.release-publish: PR release comment must consume pr_number")
