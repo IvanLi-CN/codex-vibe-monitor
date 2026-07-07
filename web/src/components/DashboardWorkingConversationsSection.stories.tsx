@@ -282,6 +282,11 @@ function buildRecordFromPreview(
 
 function createUpstreamAccountActivityStoryResponse(
   recentInvocationCount = 4,
+  routingRuleOverrides: Partial<
+    NonNullable<
+      UpstreamAccountActivityResponse["accounts"][number]["effectiveRoutingRule"]
+    >
+  > = {},
 ): UpstreamAccountActivityResponse {
   const promptCacheKeys = [
     "tone-seed-4",
@@ -397,6 +402,7 @@ function createUpstreamAccountActivityStoryResponse(
           concurrencyLimit: 3,
           upstream429RetryEnabled: true,
           upstream429MaxRetries: 2,
+          ...routingRuleOverrides,
           availableModels: [],
           availableModelsDefined: false,
           systemDeniedModels: [],
@@ -519,6 +525,47 @@ function createRequestingOnlyResponse() {
         status: "completed",
         upstreamAccountName: "request-alpha@example.com",
         model: "gpt-5.4-mini",
+      }),
+    ]),
+  ]);
+}
+
+function createPoolRoutingAccountStatesResponse() {
+  return createResponse([
+    createConversation("pck-routing-account-named", [
+      createPreview({
+        id: 41,
+        invokeId: "invoke-routing-account-named",
+        occurredAt: createRelativeStoryIso(-1_600),
+        status: "running",
+        livePhase: "responding",
+        upstreamAccountId: 42,
+        upstreamAccountName: "pool-alpha@example.com",
+        tTotalMs: null,
+      }),
+    ]),
+    createConversation("pck-routing-account-missing", [
+      createPreview({
+        id: 42,
+        invokeId: "invoke-routing-account-missing",
+        occurredAt: createRelativeStoryIso(-3_200),
+        status: "pending",
+        livePhase: "requesting",
+        upstreamAccountId: null,
+        upstreamAccountName: null,
+        tUpstreamTtfbMs: null,
+        tUpstreamStreamMs: null,
+        tTotalMs: null,
+      }),
+    ]),
+    createConversation("pck-routing-account-terminal", [
+      createPreview({
+        id: 43,
+        invokeId: "invoke-routing-account-terminal",
+        occurredAt: createRelativeStoryIso(-8_000),
+        status: "completed",
+        upstreamAccountId: 42,
+        upstreamAccountName: "pool-alpha@example.com",
       }),
     ]),
   ]);
@@ -2532,6 +2579,47 @@ export const RequestingConversation: Story = {
   },
 };
 
+export const PoolRoutingAccountStates: Story = {
+  args: {
+    activeRange: "today",
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => <DrawerPreviewStory response={createPoolRoutingAccountStatesResponse()} />,
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Dashboard working-conversation state gallery for pool routing account attribution: the running concrete upstream account breathes in primary text, the pending no-account slot keeps the neutral pool-routing fallback, and the terminal account stays static.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountButtons = await canvas.findAllByRole("button", {
+      name: "pool-alpha@example.com",
+    });
+    const runningAccount = accountButtons[0]!;
+    await expect(runningAccount.className).toContain(
+      "invocation-account-routing-in-progress",
+    );
+    await expect(canvas.getByText(/号池路由中|pool routing/i)).toBeInTheDocument();
+
+    const terminalAccount = accountButtons[accountButtons.length - 1];
+    await expect(terminalAccount.className).not.toContain(
+      "invocation-account-routing-in-progress",
+    );
+
+    await userEvent.click(runningAccount);
+    await waitFor(() => {
+      expect(document.body.textContent ?? "").toContain(
+        "Mock shared account detail drawer used to verify",
+      );
+    });
+  },
+};
+
 export const FailedStatusIconDedup: Story = {
   args: {
     activeRange: "today",
@@ -2939,6 +3027,9 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
     await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
     await expect(
+      canvas.getByTestId("dashboard-upstream-account-header-row"),
+    ).not.toHaveTextContent("#42");
+    await expect(
       canvasElement.querySelector(
         '[data-testid="dashboard-upstream-account-status"]',
       ),
@@ -2946,6 +3037,7 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("上游拒绝")).toBeInTheDocument();
     await expect(canvas.getByText("限流")).toBeInTheDocument();
     await expect(canvas.getByText("禁新")).toBeInTheDocument();
+    await expect(canvas.getByText("强制Fast")).toBeInTheDocument();
     await expect(canvas.getByText("禁入")).toBeInTheDocument();
     await expect(canvas.getByText("进行中")).toBeInTheDocument();
     const recentBreakdown = canvas.getByTestId(
@@ -3158,7 +3250,11 @@ export const UpstreamAccountHeaderActions: Story = {
       "dashboard-upstream-account-policy-badge",
     );
     await userEvent.click(policyBadges[0]!);
-    await expect(policyBadges[1]!).toHaveTextContent("Fast");
+    await expect(policyBadges[1]!).toHaveTextContent("强制Fast");
+    await expect(policyBadges[1]!).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("Fast 改写策略：强制Fast"),
+    );
     await userEvent.click(policyBadges[1]!);
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
       "none",
@@ -3182,7 +3278,100 @@ export const UpstreamAccountHeaderActions: Story = {
     docs: {
       description: {
         story:
-          "Dashboard upstream-account card header actions: attention badges open health events, the gear opens routing, and quick policy chips including Fast mode save account-level overrides with a debounced PATCH.",
+          "Dashboard upstream-account card header actions: attention badges open health events, the gear opens routing, and quick policy chips including Fast rewrite labels save account-level overrides with a debounced PATCH.",
+      },
+    },
+  },
+};
+
+async function assertQuickPolicyTonePalette(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+  await userEvent.click(accountTab);
+
+  const policyBadges = await canvas.findAllByTestId(
+    "dashboard-upstream-account-policy-badge",
+  );
+  await expect(policyBadges.map((badge) => badge.textContent?.trim())).toEqual(
+    ["兜底", "Fast", "禁出", "禁入"],
+  );
+  await expect(
+    policyBadges.map((badge) => badge.getAttribute("data-policy-tone")),
+  ).toEqual(["success", "primary", "warning", "neutral"]);
+}
+
+export const UpstreamAccountQuickPolicyTonePalette: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation("pck-story-upstream-policy-tones", [
+          createPreview({
+            id: 9871,
+            invokeId: "story-working-policy-tones",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ]),
+      ])}
+      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(4, {
+        blockNewConversations: false,
+        allowCutOut: false,
+        allowCutIn: true,
+        priorityTier: "fallback",
+        fastModeRewriteMode: "force_add",
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) =>
+    assertQuickPolicyTonePalette(canvasElement),
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Dashboard upstream-account quick policy chips shown as a semantic tone palette: fallback uses success, force Fast uses primary, active cut-out block uses warning, and inactive cut-in remains neutral.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountQuickPolicyTonePaletteDark: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation("pck-story-upstream-policy-tones-dark", [
+          createPreview({
+            id: 9872,
+            invokeId: "story-working-policy-tones-dark",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ]),
+      ])}
+      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(4, {
+        blockNewConversations: false,
+        allowCutOut: false,
+        allowCutIn: true,
+        priorityTier: "fallback",
+        fastModeRewriteMode: "force_add",
+      })}
+      theme="vibe-dark"
+    />
+  ),
+  play: async ({ canvasElement }) =>
+    assertQuickPolicyTonePalette(canvasElement),
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Dark theme checkpoint for the dashboard upstream-account quick policy tone palette.",
       },
     },
   },

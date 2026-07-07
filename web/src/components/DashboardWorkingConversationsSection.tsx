@@ -55,6 +55,7 @@ import { Spinner } from "./ui/spinner";
 import { Tooltip } from "./ui/tooltip";
 import {
   FALLBACK_CELL,
+  INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   buildInvocationDetailViewModel,
   renderEndpointSummary,
   renderFastIndicator,
@@ -697,6 +698,8 @@ type AccountQuickPolicyDraft = {
   fastModeRewriteMode: TagFastModeRewriteMode;
 };
 
+type AccountQuickPolicyTone = "neutral" | "success" | "warning" | "primary";
+
 type AccountAttentionBadge = {
   key: string;
   label: string;
@@ -770,10 +773,65 @@ function fastModePolicyLabel(
   locale: "zh" | "en",
 ) {
   if (mode === "fill_missing") return locale === "zh" ? "补Fast" : "+Fast";
-  if (mode === "force_add") return "Fast";
+  if (mode === "force_add") return locale === "zh" ? "强制Fast" : "Force Fast";
   if (mode === "force_remove") return locale === "zh" ? "禁Fast" : "No Fast";
-  return locale === "zh" ? "保持原样" : "Keep original";
+  return locale === "zh" ? "不改Fast" : "Leave Fast";
 }
+
+function fastModePolicyCycleTitle(
+  currentLabel: string,
+  locale: "zh" | "en",
+) {
+  if (locale === "zh") {
+    return `Fast 改写策略：${currentLabel}。点击循环 不改Fast / 补Fast / 强制Fast / 禁Fast`;
+  }
+  return `Fast rewrite policy: ${currentLabel}. Cycle Leave Fast / +Fast / Force Fast / No Fast`;
+}
+
+function fastModePolicyAriaLabel(
+  currentLabel: string,
+  locale: "zh" | "en",
+) {
+  if (locale === "zh") {
+    return `Fast 改写策略：${currentLabel}，点击切换`;
+  }
+  return `Fast rewrite policy: ${currentLabel}, click to cycle`;
+}
+
+function priorityPolicyTone(
+  draft: AccountQuickPolicyDraft,
+): AccountQuickPolicyTone {
+  if (!draft.allowNewConversations) return "warning";
+  if (draft.priorityTier === "primary") return "primary";
+  if (draft.priorityTier === "fallback") return "success";
+  return "neutral";
+}
+
+function fastModePolicyTone(
+  mode: TagFastModeRewriteMode,
+): AccountQuickPolicyTone {
+  if (mode === "force_remove") return "warning";
+  if (mode === "force_add") return "primary";
+  if (mode === "fill_missing") return "success";
+  return "neutral";
+}
+
+function booleanBlockPolicyTone(isBlocked: boolean): AccountQuickPolicyTone {
+  return isBlocked ? "warning" : "neutral";
+}
+
+const ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES: Record<
+  AccountQuickPolicyTone,
+  string
+> = {
+  neutral: "border-base-300/80 bg-base-100/75 text-base-content/60",
+  success:
+    "border-success/40 bg-success/15 text-success shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+  warning:
+    "border-warning/50 bg-warning/15 text-base-content shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+  primary:
+    "border-primary/50 bg-primary/15 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
+};
 
 function normalizeStatusToken(value: string | null | undefined) {
   return value?.trim().toLowerCase().replace(/-/g, "_") ?? "";
@@ -956,17 +1014,15 @@ function AccountQuickPolicyChips({
   onToggleCutOut: () => void;
   onToggleCutIn: () => void;
 }) {
-  const priorityActive =
-    !draft.allowNewConversations || draft.priorityTier !== "normal";
-  const fastModeActive = draft.fastModeRewriteMode !== "keep_original";
+  const fastModeLabel = fastModePolicyLabel(draft.fastModeRewriteMode, locale);
   const cutOutActive = !draft.allowCutOut;
   const cutInActive = !draft.allowCutIn;
+  const priorityTone = priorityPolicyTone(draft);
+  const fastModeTone = fastModePolicyTone(draft.fastModeRewriteMode);
+  const cutOutTone = booleanBlockPolicyTone(cutOutActive);
+  const cutInTone = booleanBlockPolicyTone(cutInActive);
   const chipBase =
     "inline-flex h-6 shrink-0 items-center justify-center rounded-full border px-2.5 text-[11px] font-semibold leading-none transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-55";
-  const activeClassName =
-    "border-warning/55 bg-warning/14 text-base-content shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]";
-  const inactiveClassName =
-    "border-base-300/85 bg-base-100/76 text-base-content/62";
   return (
     <div
       data-testid="dashboard-upstream-account-policy-badges"
@@ -977,10 +1033,11 @@ function AccountQuickPolicyChips({
         type="button"
         data-testid="dashboard-upstream-account-policy-badge"
         data-policy-key="priority-new-conversations"
+        data-policy-tone={priorityTone}
         disabled={disabled}
         className={cn(
           chipBase,
-          priorityActive ? activeClassName : inactiveClassName,
+          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[priorityTone],
         )}
         title={
           locale === "zh"
@@ -1006,19 +1063,14 @@ function AccountQuickPolicyChips({
         type="button"
         data-testid="dashboard-upstream-account-policy-badge"
         data-policy-key="fast-mode-rewrite"
+        data-policy-tone={fastModeTone}
         disabled={disabled}
         className={cn(
           chipBase,
-          fastModeActive ? activeClassName : inactiveClassName,
+          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[fastModeTone],
         )}
-        title={
-          locale === "zh"
-            ? "点击切换 保持原样 / 补Fast / Fast / 禁Fast"
-            : "Cycle keep original / +Fast / Fast / No Fast"
-        }
-        aria-label={
-          locale === "zh" ? "切换 Fast 模式" : "Cycle Fast mode"
-        }
+        title={fastModePolicyCycleTitle(fastModeLabel, locale)}
+        aria-label={fastModePolicyAriaLabel(fastModeLabel, locale)}
         onClick={(event) => {
           event.stopPropagation();
           onCycleFastMode();
@@ -1027,16 +1079,17 @@ function AccountQuickPolicyChips({
           event.stopPropagation();
         }}
       >
-        {fastModePolicyLabel(draft.fastModeRewriteMode, locale)}
+        {fastModeLabel}
       </button>
       <button
         type="button"
         data-testid="dashboard-upstream-account-policy-badge"
         data-policy-key="allow-cut-out"
+        data-policy-tone={cutOutTone}
         disabled={disabled}
         className={cn(
           chipBase,
-          cutOutActive ? activeClassName : inactiveClassName,
+          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[cutOutTone],
         )}
         title={
           locale === "zh"
@@ -1058,10 +1111,11 @@ function AccountQuickPolicyChips({
         type="button"
         data-testid="dashboard-upstream-account-policy-badge"
         data-policy-key="allow-cut-in"
+        data-policy-tone={cutInTone}
         disabled={disabled}
         className={cn(
           chipBase,
-          cutInActive ? activeClassName : inactiveClassName,
+          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[cutInTone],
         )}
         title={
           locale === "zh" ? "点击切换账号级禁入" : "Toggle account-level cut in"
@@ -2193,7 +2247,11 @@ function InvocationSlot({
                   <button
                     type="button"
                     data-testid="dashboard-working-conversation-account-chip"
-                    className="inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[9.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                    className={cn(
+                      "inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[9.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                      viewModel.accountRoutingInProgress &&
+                        INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                    )}
                     onClick={(event) => {
                       event.stopPropagation();
                       onOpenUpstreamAccount?.(
@@ -2217,7 +2275,11 @@ function InvocationSlot({
                 ) : (
                   <span
                     data-testid="dashboard-working-conversation-account-chip"
-                    className="inline-flex min-w-0 max-w-full items-baseline"
+                    className={cn(
+                      "inline-flex min-w-0 max-w-full items-baseline",
+                      viewModel.accountRoutingInProgress &&
+                        INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                    )}
                     title={viewModel.accountLabel}
                   >
                     <span
@@ -3064,11 +3126,6 @@ function DashboardUpstreamAccountActivityCard({
             tone="warning"
             iconName="cash-clock"
           />
-          <div className="shrink-0 font-mono text-xs font-semibold text-base-content/72">
-            {account.upstreamAccountId == null
-              ? "—"
-              : `#${account.upstreamAccountId}`}
-          </div>
           <button
             type="button"
             data-testid="dashboard-upstream-account-routing-settings"

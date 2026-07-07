@@ -61,7 +61,7 @@
 - 账号卡必须保持紧凑信息卡定位；在桌面宽屏下允许按放大卡呈现，但不得因为固定高度或装饰性留白把视觉效果拉成整页面板。
 - 单账号卡标题行必须展示账号名、异常/注意状态 badge 集合、计划/活动状态、固定快捷策略 chip、账号 ID 与路由设置按钮，并把实时主指标 `进行中调用`、`TPM`、`消费速率` 作为文本型行内指标放在同一顶部区域；`进行中调用` 必须来自账号活动接口的 `inProgressInvocationCount`，当值为 `null` 时显示 `—`；标题区还必须用紧凑 chips 拆分展示 `排队中 / 请求中 / 响应中`，数值只取账号活动接口的 `inProgressPhaseCounts`，不得从卡内 `recentInvocations` 推导；不得用卡片型容器展示这些实时指标，且账号卡内不得再渲染 `渠道 xxx / 分组` 或顶部 `调用` 指标。
 - 账号卡标题行的状态 badge 集合只显示异常/注意态，不为正常/空闲状态保留占位；集合至少覆盖 `禁用`、`同步中`、`上游拒绝`、`上游不可达`、`需重登`、`限流`、`降级`、`其它异常` 等状态，点击集合必须打开当前账号详情的 `healthEvents` 标签页。
-- 账号卡标题行的快捷策略 chip 必须固定展示账号级快速操作入口：优先级/新对话合并入口、Fast 模式、`禁出`、`禁入`；优先级/新对话入口按 `普通 → 兜底 → 主力 → 禁新 → 普通` 轮换。前三态写账号级 `allowNewConversations=true` 并设置对应 `priorityTier`，`禁新` 写账号级 `allowNewConversations=false` 且 `priorityTier=normal`；Fast 模式按 `保持原样 → 补Fast → Fast → 禁Fast → 保持原样` 轮换，并写账号级 `fastModeRewriteMode=keep_original|fill_missing|force_add|force_remove`；`禁出 / 禁入` 分别切换账号级 `allowCutOut / allowCutIn`。Dashboard 快捷入口不得清除账号覆盖或恢复继承。
+- 账号卡标题行的快捷策略 chip 必须固定展示账号级快速操作入口：优先级/新对话合并入口、Fast 模式、`禁出`、`禁入`；优先级/新对话入口按 `普通 → 兜底 → 主力 → 禁新 → 普通` 轮换。前三态写账号级 `allowNewConversations=true` 并设置对应 `priorityTier`，`禁新` 写账号级 `allowNewConversations=false` 且 `priorityTier=normal`；Fast 模式按 `不改Fast → 补Fast → 强制Fast → 禁Fast → 不改Fast` 轮换，并写账号级 `fastModeRewriteMode=keep_original|fill_missing|force_add|force_remove`；`禁出 / 禁入` 分别切换账号级 `allowCutOut / allowCutIn`。Dashboard 快捷入口不得清除账号覆盖或恢复继承。
 - Dashboard 快捷策略保存必须使用乐观 UI 与 1 秒 debounce；debounce 窗口内只提交最终值，失败时回滚到最近已提交状态，并在账号卡内暴露可见错误。保存复用 `PATCH /api/pool/upstream-accounts/:id` 的 `routingRule` payload，不新增 mutation endpoint。
 - 账号卡右侧必须提供齿轮 icon button；点击后打开当前账号详情的 `routing` 标签页。
 - 账号活动接口中的 `tokensPerMinute` 与 `spendRate` 必须使用响应窗口末端最近 5 分钟活跃尾段口径：以当前响应 `rangeEnd` 为 anchor，仅看最近 5 分钟，跳过窗口前置空闲分钟，并分别以第一个有 Token / Cost 的分钟作为有效分母起点；`requestCount`、`totalTokens`、`totalCost`、recent 调用与排序继续使用所选 range 的总量口径。
@@ -170,9 +170,9 @@
 - Given 用户上次主动选择了 `上游账号`，When 当前 range 临时切到 `usage` 后再切回 `today / yesterday / 1d / 7d`，Then 工作区应重新恢复到 `上游账号`，而不是把偏好永久改写成 `对话`。
 - Given 从未打开过账号 tab，When 停留在 `对话` tab，Then 前端不会请求账号活动接口。
 - Given 某账号有范围内调用，When 查看账号卡，Then 标题使用 `displayName`，顶部同一行包含异常/注意状态 badge、固定快捷策略 chip、文本型 `TPM`、`消费速率` 实时指标、账号 ID 与齿轮入口，且卡内不再出现 `渠道 xxx / 分组` 行或顶部 `调用` 指标。
-- Given 账号活动接口返回的 `effectiveRoutingRule` 命中快捷策略，When 账号卡渲染，Then 标题区固定显示优先级/新对话入口、Fast 模式、`禁出`、`禁入`，其中优先级/新对话入口至少覆盖 `普通`、`兜底`、`主力`、`禁新` 四态，Fast 模式至少覆盖 `保持原样`、`补Fast`、`Fast`、`禁Fast` 四态，且不显示普通系统 tag 名称。
+- Given 账号活动接口返回的 `effectiveRoutingRule` 命中快捷策略，When 账号卡渲染，Then 标题区固定显示优先级/新对话入口、Fast 模式、`禁出`、`禁入`，其中优先级/新对话入口至少覆盖 `普通`、`兜底`、`主力`、`禁新` 四态，Fast 模式至少覆盖 `不改Fast`、`补Fast`、`强制Fast`、`禁Fast` 四态，且不显示普通系统 tag 名称。
 - Given 用户连续点击优先级/新对话入口，When 状态轮换，Then 顺序必须为 `普通 → 兜底 → 主力 → 禁新 → 普通`，且 1 秒 debounce 内只提交最终账号级 `routingRule`。
-- Given 用户连续点击 Fast 模式入口，When 状态轮换，Then 顺序必须为 `保持原样 → 补Fast → Fast → 禁Fast → 保持原样`，且 1 秒 debounce 内只提交最终账号级 `fastModeRewriteMode`。
+- Given 用户连续点击 Fast 模式入口，When 状态轮换，Then 顺序必须为 `不改Fast → 补Fast → 强制Fast → 禁Fast → 不改Fast`，且 1 秒 debounce 内只提交最终账号级 `fastModeRewriteMode`。
 - Given 用户点击 `禁出 / 禁入`，When 状态切换，Then UI 立即乐观更新，并在 1 秒后保存账号级 `allowCutOut / allowCutIn` 覆盖；失败时回滚并显示卡内错误。
 - Given 账号状态为异常/注意态，When 账号卡渲染，Then 状态 badge 集合只显示异常/注意态；点击该集合打开账号详情 `healthEvents` 标签页。
 - Given 用户点击账号卡齿轮按钮，When 打开账号详情，Then 必须进入 `routing` 标签页。
@@ -268,7 +268,7 @@
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
   scenario: `fast mode quick policy chip`
-  evidence_note: 验证 Dashboard 上游账号卡片标题区固定快捷策略 chip 已包含 Fast 模式入口；当前账号显示 `Fast` 态，策略 chip 与异常/注意状态 badge、计划 badge、右侧 `进行中调用 / TPM / 消费速率 / #ID / 齿轮` 保持同一行内扫描节奏。
+  evidence_note: 验证 Dashboard 上游账号卡片标题区固定快捷策略 chip 已包含 Fast 模式入口；当前账号显示 `强制Fast` 态，策略 chip 与异常/注意状态 badge、计划 badge、右侧 `进行中调用 / TPM / 消费速率 / 齿轮` 保持同一行内扫描节奏，且不再渲染本地账号编号。
   image:
   PR: include
   ![Dashboard 上游账号 Fast 快捷策略 chip 证据](./assets/dashboard-upstream-account-fast-policy-chip.png)
@@ -280,6 +280,22 @@
   image:
   PR: include
   ![Dashboard 上游账号快捷策略与状态入口证据](./assets/dashboard-upstream-account-quick-policy-status.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-quick-policy-tone-palette`
+  scenario: `quick policy semantic tones light`
+  evidence_note: 验证 Dashboard 上游账号快捷策略 chip 在浅色主题下按语义配色：`兜底` 为 success、`强制Fast` 为 primary、激活 `禁出` 为 warning、未激活 `禁入` 为 neutral。
+  image:
+  PR: include
+  ![Dashboard 上游账号快捷策略语义色浅色证据](./assets/dashboard-upstream-account-policy-tones-light.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-quick-policy-tone-palette-dark`
+  scenario: `quick policy semantic tones dark`
+  evidence_note: 验证 Dashboard 上游账号快捷策略 chip 在深色主题下保持同一语义配色与可读性：success / primary / warning / neutral 四个色槽同屏可见。
+  image:
+  PR: include
+  ![Dashboard 上游账号快捷策略语义色深色证据](./assets/dashboard-upstream-account-policy-tones-dark.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`

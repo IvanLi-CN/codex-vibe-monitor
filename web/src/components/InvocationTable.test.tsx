@@ -22,6 +22,7 @@ import {
   formatProxyWeightDelta,
   formatServiceTier,
   getFastIndicatorState,
+  isInvocationPoolAccountRoutingInProgress,
   isPriorityServiceTier,
   resolveInvocationModelDisplay,
   resolveInvocationEndpointDisplay,
@@ -285,6 +286,68 @@ describe("formatProxyWeightDelta", () => {
       direction: "missing",
       value: "—",
     });
+  });
+});
+
+describe("pool account routing display", () => {
+  function buildDetailViewForAccount(record: ApiInvocation) {
+    return buildInvocationDetailViewModel({
+      record,
+      normalizedStatus: (record.status ?? "unknown").toLowerCase(),
+      t: (key) => key,
+      locale: "zh",
+      localeTag: "zh-CN",
+      nowMs: Date.parse("2026-03-07T03:14:00Z"),
+      numberFormatter: new Intl.NumberFormat("zh-CN"),
+      currencyFormatter: new Intl.NumberFormat("zh-CN", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 4,
+        maximumFractionDigits: 4,
+      }),
+      renderAccountValue: (accountLabel) => <span>{accountLabel}</span>,
+    });
+  }
+
+  it("marks only running assigned pool accounts as routing in progress", () => {
+    const runningAssigned = createInvocationRecord(0);
+    runningAssigned.routeMode = "pool";
+    runningAssigned.status = "running";
+    runningAssigned.upstreamAccountId = 42;
+    runningAssigned.upstreamAccountName = "Pool Alpha";
+
+    const pendingUnassigned = createInvocationRecord(1);
+    pendingUnassigned.routeMode = "pool";
+    pendingUnassigned.status = "pending";
+    pendingUnassigned.upstreamAccountId = null;
+    pendingUnassigned.upstreamAccountName = undefined;
+
+    const terminalAssigned = createInvocationRecord(2);
+    terminalAssigned.routeMode = "pool";
+    terminalAssigned.status = "success";
+    terminalAssigned.upstreamAccountId = 42;
+    terminalAssigned.upstreamAccountName = "Pool Alpha";
+
+    expect(buildDetailViewForAccount(runningAssigned)).toMatchObject({
+      accountLabel: "Pool Alpha",
+      accountRoutingInProgress: true,
+    });
+    expect(buildDetailViewForAccount(pendingUnassigned)).toMatchObject({
+      accountLabel: "table.account.poolRoutingPending",
+      accountRoutingInProgress: false,
+    });
+    expect(buildDetailViewForAccount(terminalAssigned)).toMatchObject({
+      accountLabel: "Pool Alpha",
+      accountRoutingInProgress: false,
+    });
+    expect(
+      isInvocationPoolAccountRoutingInProgress(
+        "pool",
+        "running",
+        null,
+        42,
+      ),
+    ).toBe(true);
   });
 });
 
@@ -858,6 +921,7 @@ describe("InvocationTable", () => {
     expect(html).toContain("账号 #19");
     expect(html).toContain("号池账号未知");
     expect(html).toContain("反向代理");
+    expect(html).toContain("invocation-account-routing-in-progress");
   });
 
   it("uses the resolved display status when deciding whether a pool label is still pending", () => {

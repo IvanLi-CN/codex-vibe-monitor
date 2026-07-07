@@ -26,6 +26,7 @@ import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
 import { AppIcon } from "./AppIcon";
 import {
   FALLBACK_CELL,
+  INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   InvocationExpandedDetails,
   buildInvocationDetailViewModel,
   renderEndpointSummary,
@@ -35,6 +36,7 @@ import {
 import { Alert } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Spinner } from "./ui/spinner";
+import { cn } from "../lib/utils";
 
 interface DashboardInvocationDetailDrawerProps {
   open: boolean;
@@ -486,7 +488,11 @@ export function DashboardInvocationDetailDrawer({
                   detailView.accountLabel,
                   detailView.accountId,
                   detailView.accountClickable,
-                  "inline-flex max-w-full min-w-0 truncate font-mono text-left text-primary transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                  cn(
+                    "inline-flex max-w-full min-w-0 truncate font-mono text-left transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                    detailView.accountRoutingInProgress &&
+                      INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                  ),
                 )}
               </div>
               <div

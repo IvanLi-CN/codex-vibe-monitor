@@ -156,6 +156,48 @@ const legacyModelOnlyRecords: ApiInvocation[] = [
   },
 ]
 
+const poolRoutingAccountStateRecords: ApiInvocation[] = [
+  {
+    ...records[0],
+    id: 1020,
+    invokeId: 'inv_pool_routing_account_named',
+    occurredAt: '2026-02-25T10:24:00Z',
+    createdAt: '2026-02-25T10:24:00Z',
+    routeMode: 'pool',
+    upstreamAccountId: 21,
+    upstreamAccountName: 'Codex Team Alpha',
+    status: 'running',
+    totalTokens: 0,
+    cost: undefined,
+    tTotalMs: null,
+  },
+  {
+    ...records[0],
+    id: 1021,
+    invokeId: 'inv_pool_routing_account_missing',
+    occurredAt: '2026-02-25T10:23:00Z',
+    createdAt: '2026-02-25T10:23:00Z',
+    routeMode: 'pool',
+    upstreamAccountId: undefined,
+    upstreamAccountName: undefined,
+    status: 'pending',
+    totalTokens: 0,
+    cost: undefined,
+    tTotalMs: null,
+  },
+  {
+    ...records[2],
+    id: 1022,
+    invokeId: 'inv_pool_routing_account_terminal',
+    occurredAt: '2026-02-25T10:22:00Z',
+    createdAt: '2026-02-25T10:22:00Z',
+    routeMode: 'pool',
+    upstreamAccountId: 22,
+    upstreamAccountName: 'Codex Team Beta',
+    status: 'success',
+  },
+]
+
 const missingWindowDrawerRecords: ApiInvocation[] = [
   {
     id: 1023,
@@ -1623,6 +1665,30 @@ export const LegacyModelOnly: Story = {
           'Legacy fallback state: rows with only the historical `model` field keep that value as the response-model display, while request model remains unavailable in the expanded detail view.',
       },
     },
+  },
+}
+
+export const PoolRoutingAccountStates: Story = {
+  args: {
+    records: poolRoutingAccountStateRecords,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Compares pool routing account attribution while a request is still running, the no-account fallback, and the terminal account state. Only the running concrete account should use the breathing primary text treatment.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const runningAccount = await canvas.findByRole('button', { name: 'Codex Team Alpha' })
+    await expect(runningAccount.className).toContain('invocation-account-routing-in-progress')
+    await expect(canvas.getByText(/号池路由中|pool routing/i)).toBeInTheDocument()
+    const terminalAccount = await canvas.findByRole('button', { name: 'Codex Team Beta' })
+    await expect(terminalAccount.className).not.toContain('invocation-account-routing-in-progress')
   },
 }
 

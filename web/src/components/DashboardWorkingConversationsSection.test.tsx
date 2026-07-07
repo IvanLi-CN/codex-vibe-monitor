@@ -681,6 +681,11 @@ describe("DashboardWorkingConversationsSection", () => {
         '[data-testid="dashboard-upstream-account-header-row"]',
       ),
     ).not.toBeNull();
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-upstream-account-header-row"]',
+      )?.textContent,
+    ).not.toContain("#42");
     const firstRecentRow = host?.querySelector(
       '[data-testid="dashboard-upstream-account-recent-row"]',
     );
@@ -2789,13 +2794,21 @@ describe("DashboardWorkingConversationsSection", () => {
         throw new Error("missing upstream account policy badge");
       }
 
+      expect(policyBadge.textContent?.trim()).toBe("禁新");
+      expect(policyBadge.dataset.policyTone).toBe("warning");
+
       act(() => {
         policyBadge.click();
       });
       await act(async () => {});
+      expect(policyBadge.textContent?.trim()).toBe("普通");
+      expect(policyBadge.dataset.policyTone).toBe("neutral");
+
       act(() => {
         policyBadge.click();
       });
+      expect(policyBadge.textContent?.trim()).toBe("兜底");
+      expect(policyBadge.dataset.policyTone).toBe("success");
 
       expect(fetchMock).not.toHaveBeenCalled();
 
@@ -2857,18 +2870,28 @@ describe("DashboardWorkingConversationsSection", () => {
         throw new Error("missing upstream account Fast policy badge");
       }
 
-      expect(fastBadge.textContent?.trim()).toBe("Fast");
+      expect(fastBadge.textContent?.trim()).toBe("强制Fast");
+      expect(fastBadge.dataset.policyTone).toBe("primary");
+      expect(fastBadge.getAttribute("title")).toContain("Fast 改写策略");
+      expect(fastBadge.getAttribute("aria-label")).toContain(
+        "Fast 改写策略：强制Fast",
+      );
 
       act(() => {
         fastBadge.click();
       });
       expect(fastBadge.textContent?.trim()).toBe("禁Fast");
+      expect(fastBadge.dataset.policyTone).toBe("warning");
       expect(fastBadge.disabled).toBe(false);
 
       act(() => {
         fastBadge.click();
       });
-      expect(fastBadge.textContent?.trim()).toBe("保持原样");
+      expect(fastBadge.textContent?.trim()).toBe("不改Fast");
+      expect(fastBadge.dataset.policyTone).toBe("neutral");
+      expect(fastBadge.getAttribute("aria-label")).toContain(
+        "Fast 改写策略：不改Fast",
+      );
       expect(fastBadge.disabled).toBe(false);
       expect(fetchMock).not.toHaveBeenCalled();
 
@@ -2987,7 +3010,36 @@ describe("DashboardWorkingConversationsSection", () => {
       '[title="sticky-account-52@example.com"]',
     );
     expect(accountLabel).not.toBeNull();
+    expect(accountLabel?.className).not.toContain(
+      "invocation-account-routing-in-progress",
+    );
     expect(host?.textContent ?? "").not.toContain("未分配上游账号");
+  });
+
+  it("marks the concrete upstream account as routing in progress on running dashboard cards", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-routing-account", [
+          createPreview({
+            id: 81,
+            invokeId: "invoke-routing-account",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+            upstreamAccountId: 52,
+            upstreamAccountName: "sticky-account-52@example.com",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountLabel = host?.querySelector(
+      '[title="sticky-account-52@example.com"]',
+    );
+    expect(accountLabel).not.toBeNull();
+    expect(accountLabel?.className).toContain(
+      "invocation-account-routing-in-progress",
+    );
+    expect(host?.textContent ?? "").not.toContain("号池路由中");
   });
 
   it("uses the unassigned-account fallback only for true no-account dashboard cards", () => {
