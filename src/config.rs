@@ -294,8 +294,6 @@ struct AppConfig {
     openai_proxy_websocket_enabled: bool,
     openai_proxy_upstream_websocket_default_enabled: bool,
     openai_proxy_encrypted_session_owner_routing_enabled: bool,
-    proxy_request_concurrency_limit: usize,
-    proxy_request_concurrency_wait_timeout: Duration,
     proxy_enforce_stream_include_usage: bool,
     proxy_usage_backfill_on_startup: bool,
     proxy_raw_max_bytes: Option<usize>,
@@ -445,67 +443,6 @@ impl AppConfig {
             ENV_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
             DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
         )?;
-        let proxy_request_concurrency_limit =
-            match env::var(ENV_PROXY_REQUEST_CONCURRENCY_LIMIT) {
-                Ok(value) => {
-                    match value.parse::<usize>() {
-                        Ok(parsed) if parsed > 0 => warn!(
-                            configured_limit = parsed,
-                            "{ENV_PROXY_REQUEST_CONCURRENCY_LIMIT} is deprecated and ignored for /v1/* admission"
-                        ),
-                        Ok(_) => warn!(
-                            configured_value = %value,
-                            "{ENV_PROXY_REQUEST_CONCURRENCY_LIMIT} is deprecated and ignored for /v1/* admission; invalid value ignored"
-                        ),
-                        Err(err) => warn!(
-                            configured_value = %value,
-                            parse_error = %err,
-                            "{ENV_PROXY_REQUEST_CONCURRENCY_LIMIT} is deprecated and ignored for /v1/* admission; invalid value ignored"
-                        ),
-                    }
-                    DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT
-                }
-                Err(env::VarError::NotPresent) => DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT,
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        "{ENV_PROXY_REQUEST_CONCURRENCY_LIMIT} is deprecated and ignored for /v1/* admission; unreadable value ignored"
-                    );
-                    DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT
-                }
-            };
-        let proxy_request_concurrency_wait_timeout = match env::var(
-            ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,
-        ) {
-            Ok(value) => {
-                match value.parse::<u64>() {
-                    Ok(parsed) if parsed > 0 => warn!(
-                        configured_wait_timeout_ms = parsed,
-                        "{ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS} is deprecated and ignored for /v1/* admission"
-                    ),
-                    Ok(_) => warn!(
-                        configured_value = %value,
-                        "{ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS} is deprecated and ignored for /v1/* admission; invalid value ignored"
-                    ),
-                    Err(err) => warn!(
-                        configured_value = %value,
-                        parse_error = %err,
-                        "{ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS} is deprecated and ignored for /v1/* admission; invalid value ignored"
-                    ),
-                }
-                Duration::from_millis(DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS)
-            }
-            Err(env::VarError::NotPresent) => {
-                Duration::from_millis(DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS)
-            }
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    "{ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS} is deprecated and ignored for /v1/* admission; unreadable value ignored"
-                );
-                Duration::from_millis(DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS)
-            }
-        };
         let proxy_enforce_stream_include_usage = parse_bool_env_var(
             "PROXY_ENFORCE_STREAM_INCLUDE_USAGE",
             DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
@@ -800,8 +737,6 @@ impl AppConfig {
             openai_proxy_websocket_enabled,
             openai_proxy_upstream_websocket_default_enabled,
             openai_proxy_encrypted_session_owner_routing_enabled,
-            proxy_request_concurrency_limit,
-            proxy_request_concurrency_wait_timeout,
             proxy_enforce_stream_include_usage,
             proxy_usage_backfill_on_startup,
             proxy_raw_max_bytes,

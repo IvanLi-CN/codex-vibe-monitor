@@ -49,8 +49,8 @@
 - 大 body sticky 探测只允许读取固定前缀窗口；超过窗口仍未识别时，直接回落到“无 body sticky 优化”的 replay 路径。
 - summary/quota follow-up 必须具备 burst coalesce，避免每条新记录都立即跑完整汇总。
 - `proxy capture follow-up` 必须先看 `receiver_count()`，无 SSE 订阅者且非 shutdown flush 时直接跳过，不消耗 follow-up seq，也不触发 summary/quota 查询或 rollup refresh。
-- `PROXY_REQUEST_CONCURRENCY_LIMIT` / `PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS` 只能作为弃用兼容项继续被读取与告警，不得再影响 `/v1/*` 准入。
-- `PROXY_REQUEST_CONCURRENCY_*` 不得再参与 raw writer sizing、部署卡 owner-facing 并发控制语义或新请求失败分类；历史 `proxy_concurrency_limit` failure kind 仅可用于旧记录统计兼容。
+- `PROXY_REQUEST_CONCURRENCY_LIMIT` / `PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS` 配置面必须从 active code 移除，不再读取、告警或影响 `/v1/*` 准入。
+- `PROXY_REQUEST_CONCURRENCY_*` 不得再参与 raw writer sizing、部署卡 owner-facing 并发控制语义、配置展示或新请求失败分类；历史 `proxy_concurrency_limit` failure kind 仅可用于旧记录统计兼容。
 - 对 tracked `/v1/*` POST，请求分配 `invokeId + occurredAt` 后必须立即进入 runtime store 的 `running` 可见态；该可见性不得等待 body read、route context、账号选择、upstream attempt 或 SQLite record enqueue。
 - 号池路由只能把近期 `transport_failure` 且 failure kind 属于 `upstream_handshake_timeout`、`failed_contact_upstream` 或 `upstream_stream_error` 的 `upstream_route_key + proxy_binding_key_snapshot` 组合纳入短期降权；同组合后续成功应清除该短期惩罚，认证、配额、402 等账号级硬失败不得混入组合降权。
 - capture 入口不得为了提速跳过完整 raw、usage、failure、prompt-cache/encrypted owner 与 body rewrite 语义。可证明安全前，capture 请求必须先使用 replay snapshot 控制面读取：小体积保留内存，大体积落 file-backed replay；日志必须给出 `body_read_done`、`body_size_bucket`、`request_body_snapshot_kind` 与 `live_first_reason`，说明为何未启用 live-first。
@@ -73,8 +73,8 @@
 - summary/quota follow-up 在 burst 写入时能够合并，不再对每条记录立即触发一次完整汇总。
 - 无 SSE 订阅者时，`persist_and_broadcast_proxy_capture` 与 `broadcast_recovered_proxy_invocations` 不会再启动 follow-up worker，也不会触发后台 hourly rollup refresh。
 - active subscriber 场景仍保持 `records -> summary/quota` 近实时广播；shutdown tail flush 语义不回退。
-- 即使线上环境仍设置 `PROXY_REQUEST_CONCURRENCY_LIMIT` / `PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS`，它们也只会产生日志告警，不会改变 `/v1/*` 准入行为。
-- raw writer 并发上限使用独立默认值/配置，不得从 deprecated `PROXY_REQUEST_CONCURRENCY_*` 推导。
+- active code 不再读取 `PROXY_REQUEST_CONCURRENCY_LIMIT` / `PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS`；即使进程环境仍设置这些变量，也不得改变 `/v1/*` 准入行为或产生专门的兼容告警。
+- raw writer 并发上限使用独立默认值/配置，不得从已移除的 `PROXY_REQUEST_CONCURRENCY_*` 配置面推导。
 - started/admitted/running-shell 观测应能证明本地 admission reject 为 0，且 `max_proxy_in_flight_observed` 可以超过旧配置值。
 - Given 某 `upstream_route_key + proxy_binding_key_snapshot` 近期发生超时/传输失败，When 号池还有其它可路由组合，Then 路由排序优先尝试其它组合；若只有该组合可用，仍允许回退使用而不是直接报无账号。
 
