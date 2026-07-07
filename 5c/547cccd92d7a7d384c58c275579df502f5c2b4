@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.17.2",
+  "base_stable_version": "2.17.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-07T07:54:51Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.17.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "3e5b570e4a6e8e970659ee103dc3e4d5ea531445",
+  "pr_number": 559,
+  "pr_title": "fix(routing): escape sticky upstream stream failures",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.17.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.17.2",
+  "target_sha": "5c547cccd92d7a7d384c58c275579df502f5c2b4",
+  "type_label": "type:patch"
+}
