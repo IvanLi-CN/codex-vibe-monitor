@@ -385,6 +385,22 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         assert manual_idempotent_version_snapshot["release_tag"] == "v0.1.1"
         assert manual_idempotent_version_snapshot["manual_version"] == "0.1.1"
 
+        manual_bump_same_target_snapshot = module.build_manual_override_snapshot(
+            target_sha=sha1,
+            repository="IvanLi-CN/codex-vibe-monitor",
+            notes_ref=module.DEFAULT_NOTES_REF,
+            registry="ghcr.io",
+            version="",
+            bump="patch",
+            channel="stable",
+            reason="Publish a new patch from the latest stable tag on this commit",
+            actor="release-maintainer",
+            triggered_at="2026-07-07T00:00:00Z",
+        )
+        assert manual_bump_same_target_snapshot["base_stable_version"] == "0.1.1"
+        assert manual_bump_same_target_snapshot["next_stable_version"] == "0.1.2"
+        assert manual_bump_same_target_snapshot["release_tag"] == "v0.1.2"
+
         manual_bump_snapshot = module.build_manual_override_snapshot(
             target_sha=sha2,
             repository="IvanLi-CN/codex-vibe-monitor",

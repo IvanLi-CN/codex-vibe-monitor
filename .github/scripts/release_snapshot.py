@@ -761,15 +761,12 @@ def build_manual_override_snapshot(
         release_bump = "manual"
         manual_version = next_stable.render()
     else:
-        if latest_stable_record is not None and latest_stable_record[2] == target_sha:
-            next_stable = latest_stable_record[0]
-        else:
-            base = latest_stable or cargo_base_version(target_sha)
-            next_stable = base.bump(manual_bump)
-            if latest_stable is not None and next_stable <= latest_stable:
-                raise SnapshotError(
-                    f"Manual release override bump {manual_bump} produced {next_stable.render()}, not greater than latest stable tag {latest_stable.render()}"
-                )
+        base = latest_stable or cargo_base_version(target_sha)
+        next_stable = base.bump(manual_bump)
+        if latest_stable is not None and next_stable <= latest_stable:
+            raise SnapshotError(
+                f"Manual release override bump {manual_bump} produced {next_stable.render()}, not greater than latest stable tag {latest_stable.render()}"
+            )
         release_bump = manual_bump
 
     effective = next_stable.render()
