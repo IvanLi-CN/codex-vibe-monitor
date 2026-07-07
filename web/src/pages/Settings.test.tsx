@@ -14,7 +14,7 @@ vi.mock('../hooks/useSettings', () => ({
   useSettings: hookMocks.useSettings,
 }))
 
-vi.mock('../components/ExternalApiKeysSettingsCard', () => ({
+vi.mock('../features/settings/ExternalApiKeysSettingsCard', () => ({
   ExternalApiKeysSettingsCard: () => <section data-testid="external-api-keys-settings-card" />,
 }))
 

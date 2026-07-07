@@ -4,7 +4,7 @@
 
 ### App shell 与导航
 
-- 站点骨架由 `AppLayout` 代表，参考 `web/src/components/AppLayout.stories.tsx`。
+- 站点骨架由 `AppLayout` 代表，参考 `web/src/features/app-shell/AppLayout.stories.tsx`。
 - 顶部导航和分段控件使用统一的 active/inactive 语言：圆角胶囊、轻边框、选中态背景抬升、文字权重提升；当前共享真相源是 `web/src/components/ui/segmented-control.tsx`。
 - 路由导航虽然视觉上属于 segmented control family，但必须保留导航语义；`AppLayout` 通过共享 helper 驱动 `NavLink`，不把导航伪装成 tablist。
 - 页面内容默认放在带 breathing room 的容器中，避免贴边或全宽压迫布局。
@@ -17,7 +17,7 @@
 
 ### 列表 / 表格 / 详情展开
 
-- 数据密集列表同时兼顾桌面表格与移动端卡片/堆叠布局，代表参考是 `web/src/components/InvocationTable.stories.tsx`、`web/src/components/InvocationRecordsTable.stories.tsx`、`web/src/components/UpstreamAccountsPage.stories.tsx`。
+- 数据密集列表同时兼顾桌面表格与移动端卡片/堆叠布局，代表参考是 `web/src/features/invocations/InvocationTable.stories.tsx`、`web/src/features/records/InvocationRecordsTable.stories.tsx`、`web/src/features/account-pool/UpstreamAccountsPage.list.stories.tsx`。
 - 详情信息优先以内联展开、抽屉或卡片二级区块呈现，不鼓励跳转到无上下文的新页面。
 - 长文本、代理名、endpoint、token key 等字段默认允许截断，但必须保留可在详情区或 tooltip 中复核的路径。
 

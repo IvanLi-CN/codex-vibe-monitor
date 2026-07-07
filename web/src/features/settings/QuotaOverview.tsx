@@ -1,0 +1,192 @@
+import { useEffect, useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
+import type { QuotaSnapshot } from '../../lib/api'
+import { AnimatedDigits } from '../shared/AnimatedDigits'
+import { useTranslation } from '../../i18n'
+import { Alert } from '../../components/ui/alert'
+import { Badge } from '../../components/ui/badge'
+import { Spinner } from '../../components/ui/spinner'
+
+type RadialProgressStyle = CSSProperties & {
+  '--value': number
+  '--size': string
+  '--thickness': string
+}
+
+interface QuotaOverviewProps {
+  snapshot: QuotaSnapshot | null
+  isLoading: boolean
+  error?: string | null
+}
+
+function formatCurrency(value?: number) {
+  if (value === undefined || Number.isNaN(value)) return '—'
+  return `$${value.toFixed(2)}`
+}
+
+function formatDate(value?: string) {
+  if (!value) return '—'
+  const parsed = new Date(value)
+  if (!Number.isNaN(parsed.getTime())) {
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}:${pad(parsed.getSeconds())}`
+  }
+  const match = value.match(/^([0-9]{4}-[0-9]{2}-[0-9]{2})[ T]([0-9]{2}:[0-9]{2}:[0-9]{2})/)
+  if (match) {
+    return `${match[1]} ${match[2]}`
+  }
+  return value.replace('T', ' ').replace(/\..*/, '').replace(/Z|[+-][0-9]{2}:[0-9]{2}$/g, '')
+}
+
+function calcUsagePercent(limit?: number, used?: number) {
+  if (!limit || limit === 0 || used === undefined) return 0
+  return Math.min(100, Math.max(0, (used / limit) * 100))
+}
+
+export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps) {
+  const { t } = useTranslation()
+
+  if (error) {
+    return <Alert variant="error">{error}</Alert>
+  }
+
+  const amountLimit = snapshot?.amountLimit ?? snapshot?.usedAmount ?? 0
+  const usedAmount = snapshot?.usedAmount ?? 0
+  const remainingAmount = snapshot?.remainingAmount ?? amountLimit - usedAmount
+  const usagePercent = calcUsagePercent(amountLimit, usedAmount)
+
+  const radialProgressStyle: RadialProgressStyle = {
+    '--value': usagePercent,
+    // Smaller size per feedback
+    '--size': '5.4rem',
+    '--thickness': '0.45rem',
+  }
+
+  return (
+    <div className="surface-panel h-full">
+      <div className="surface-panel-body gap-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="section-heading">
+            <h2 className="section-title">{t('quota.title')}</h2>
+            <p className="section-description flex items-center gap-2">
+              <span>{t('quota.subscription', { name: snapshot?.subTypeName ?? '—' })}</span>
+              <CountdownUntil expireISO={snapshot?.expireTime} />
+            </p>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="text-sm text-base-content/60">
+              <Badge variant="success" className="px-2 py-[0.18rem] text-[11px]" hidden={!snapshot?.isActive}>
+                {t('quota.status.active')}
+              </Badge>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-3 grid-cols-2 items-stretch">
+          <OverviewTile label={t('quota.labels.usageRate')} compact padClass="px-4 py-2" overlayLabel>
+            {/* Center the radial progress; minimize vertical gap to ~py-2 via tile padding */}
+            <div className="flex items-center justify-center h-full">
+              <div className="progress-ring text-primary" style={radialProgressStyle}>
+                {isLoading ? '…' : <AnimatedDigits value={`${Math.round(usagePercent)}%`} />}
+              </div>
+            </div>
+          </OverviewTile>
+          <OverviewTile label={t('quota.labels.used')} loading={isLoading}>
+            {isLoading ? '…' : <AnimatedDigits value={formatCurrency(usedAmount)} />}
+          </OverviewTile>
+          <OverviewTile label={t('quota.labels.remaining')} loading={isLoading}>
+            {isLoading ? '…' : <AnimatedDigits value={formatCurrency(remainingAmount)} />}
+          </OverviewTile>
+          <OverviewTile
+            label={t('quota.labels.nextReset')}
+            value={formatDate(snapshot?.periodResetTime)}
+            loading={isLoading}
+            compact
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface OverviewTileProps {
+  label: string
+  value?: string
+  caption?: string
+  loading?: boolean
+  compact?: boolean
+  children?: React.ReactNode
+  padClass?: string
+  overlayLabel?: boolean
+}
+
+function OverviewTile({ label, value, caption, loading, compact, children, padClass, overlayLabel }: OverviewTileProps) {
+  const valueClass = compact
+    ? 'text-xl font-semibold whitespace-nowrap overflow-hidden text-ellipsis'
+    : 'text-2xl font-semibold whitespace-nowrap overflow-hidden text-ellipsis'
+  return (
+    <div className={`rounded-xl border border-base-300/75 bg-base-200/60 ${overlayLabel ? 'relative' : ''} ${padClass ?? 'p-4'}`}>
+      {overlayLabel ? (
+        <div className="absolute top-2 left-2 text-sm text-base-content/60">{label}</div>
+      ) : (
+        <div className="text-sm text-base-content/60">{label}</div>
+      )}
+      <div className={valueClass}>{loading ? <Spinner size="md" /> : (children ?? value)}</div>
+      {caption ? <div className="text-xs text-base-content/50">{caption}</div> : null}
+    </div>
+  )
+}
+
+function CountdownUntil({ expireISO }: { expireISO?: string }) {
+  const { t } = useTranslation()
+  const [showAbsolute, setShowAbsolute] = useState(false)
+  const [now, setNow] = useState(() => new Date())
+
+  useEffect(() => {
+    const tick = () => setNow(new Date())
+    const id = setInterval(tick, 30_000)
+    return () => clearInterval(id)
+  }, [])
+
+  const expire = useMemo(() => (expireISO ? new Date(expireISO) : null), [expireISO])
+  const remaining = useMemo(() => (expire ? expire.getTime() - now.getTime() : NaN), [expire, now])
+
+  const isExpired = Number.isFinite(remaining) && remaining <= 0
+  const minutes = Number.isFinite(remaining) ? Math.ceil(remaining / 60_000) : NaN
+  const hours = Number.isFinite(remaining) ? Math.ceil(remaining / 3_600_000) : NaN
+  const days = Number.isFinite(remaining) ? Math.ceil(remaining / 86_400_000) : NaN
+
+  let display = '—'
+  let tone = 'text-base-content/60'
+  if (expire) {
+    if (isExpired) {
+      display = t('quota.status.expired.badge')
+      tone = 'text-error'
+    } else if (Number.isFinite(days) && (days as number) >= 2) {
+      display = t('quota.status.expireInDays', { count: days as number })
+    } else if (Number.isFinite(hours) && (minutes as number) >= 100) {
+      display = t('quota.status.expireInHours', { count: hours as number })
+      tone = 'text-warning'
+    } else if (Number.isFinite(minutes)) {
+      const mins = Math.max(1, minutes as number)
+      display = t('quota.status.expireInMinutes', { count: mins })
+      tone = 'text-warning'
+    }
+  }
+
+  const absolute = expire
+    ? t('quota.status.expireAt', { time: formatDate(expireISO!) })
+    : t('quota.status.expireUnknown')
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 cursor-pointer select-none ${tone}`}
+      title={absolute}
+      onMouseEnter={() => setShowAbsolute(true)}
+      onMouseLeave={() => setShowAbsolute(false)}
+      onClick={() => setShowAbsolute((v) => !v)}
+    >
+      {showAbsolute ? absolute : display}
+    </span>
+  )
+}

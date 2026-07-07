@@ -43,7 +43,7 @@
 - `src/main.rs` 代理采集增强、`/api/invocations` 列表字段扩展。
 - `src/main.rs` 启动阶段全量回填历史 proxy 记录中的 `payload.promptCacheKey`。
 - `web/src/lib/api.ts` 类型对齐后端返回。
-- `web/src/components/InvocationTable.tsx` 新增 cache/latency 列与通用详情展开区。
+- `web/src/features/invocations/InvocationTable.tsx` 新增 cache/latency 列与通用详情展开区。
 - `web/src/i18n/translations.ts` 新增中英文文案键。
 - `proxy_model_settings` 单例新增 request/response body logging 持久化字段与 settings 页面双开关 UI。
 - request raw / response raw / response preview 按设置开关 fail-soft 退化，详情页与历史回填接受“新记录没有 raw body”为正常状态。

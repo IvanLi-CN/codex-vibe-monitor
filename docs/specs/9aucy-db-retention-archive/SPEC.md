@@ -127,4 +127,4 @@
 - `README.md`
 - `docs/deployment.md`
 - `web/src/lib/api.ts`
-- `web/src/components/InvocationTable.tsx`
+- `web/src/features/invocations/InvocationTable.tsx`

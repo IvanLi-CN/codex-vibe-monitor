@@ -1,11 +1,11 @@
-import { AppIcon } from "../../components/AppIcon";
+import { AppIcon } from "../../features/shared/AppIcon";
 import { Link } from "react-router-dom";
 import { Button } from "../../components/ui/button";
 import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import { FormFieldFeedback } from "../../components/ui/form-field-feedback";
 import { Input } from "../../components/ui/input";
-import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
-import { MotherAccountToggle } from "../../components/MotherAccountToggle";
+import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
+import { MotherAccountToggle } from "../../features/account-pool/MotherAccountToggle";
 import { resolveDisplayNameAfterEmailChange } from "./UpstreamAccountCreate.shared";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 

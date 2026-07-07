@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { AppIcon } from "../../components/AppIcon";
+import { AppIcon } from "../../features/shared/AppIcon";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
@@ -35,17 +35,17 @@ import {
   SegmentedControlItem,
 } from "../../components/ui/segmented-control";
 import { Spinner } from "../../components/ui/spinner";
-import { AccountTagFilterCombobox } from "../../components/AccountTagFilterCombobox";
-import { MultiSelectFilterCombobox } from "../../components/MultiSelectFilterCombobox";
-import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
+import { AccountTagFilterCombobox } from "../../features/account-pool/AccountTagFilterCombobox";
+import { MultiSelectFilterCombobox } from "../../features/account-pool/MultiSelectFilterCombobox";
+import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
 import {
   UpstreamAccountsGroupedRoster,
   type UpstreamAccountsGroupedRosterGroup,
-} from "../../components/UpstreamAccountsGroupedRoster";
+} from "../../features/account-pool/UpstreamAccountsGroupedRoster";
 import {
   UpstreamAccountsTable,
   type UpstreamAccountsTableLabels,
-} from "../../components/UpstreamAccountsTable";
+} from "../../features/account-pool/UpstreamAccountsTable";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";

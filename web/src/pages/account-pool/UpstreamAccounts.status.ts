@@ -1,4 +1,4 @@
-import type { AppIconName } from "../../components/AppIcon";
+import type { AppIconName } from "../../features/shared/AppIcon";
 import type {
   CompactSupportState,
   UpstreamAccountSummary,

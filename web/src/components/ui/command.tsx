@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { AppIcon } from '../AppIcon'
+import { AppIcon } from '../../features/shared/AppIcon'
 import { Command as CommandPrimitive } from 'cmdk'
 import { cn } from '../../lib/utils'
 

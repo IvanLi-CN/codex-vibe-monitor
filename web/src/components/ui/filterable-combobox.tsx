@@ -1,4 +1,4 @@
-import { AppIcon } from '../AppIcon'
+import { AppIcon } from '../../features/shared/AppIcon'
 import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { resolveTextInputAutocompleteProps, type TextInputAutocompleteOffProps } from '../../lib/form-autocomplete'
 import { cn } from '../../lib/utils'

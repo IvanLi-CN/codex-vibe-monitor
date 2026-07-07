@@ -1,4 +1,4 @@
-import { AppIcon } from '../AppIcon'
+import { AppIcon } from '../../features/shared/AppIcon'
 import * as PopoverPrimitive from '@radix-ui/react-popover'
 import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import {

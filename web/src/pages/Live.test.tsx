@@ -34,15 +34,15 @@ vi.mock("../hooks/useStats", () => ({
   useSummary: hookMocks.useSummary,
 }));
 
-vi.mock("../components/StatsCards", () => ({
+vi.mock("../features/stats/StatsCards", () => ({
   StatsCards: () => <div data-testid="stats-cards" />,
 }));
 
-vi.mock("../components/ForwardProxyLiveTable", () => ({
+vi.mock("../features/forward-proxy/ForwardProxyLiveTable", () => ({
   ForwardProxyLiveTable: () => <div data-testid="forward-proxy-live-table" />,
 }));
 
-vi.mock("../components/PromptCacheConversationTable", () => ({
+vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
   PromptCacheConversationTable: (props: {
     stats: {
       conversations?: Array<{ promptCacheKey: string }>;
@@ -74,11 +74,11 @@ vi.mock("../components/PromptCacheConversationTable", () => ({
   },
 }));
 
-vi.mock("../components/InvocationChart", () => ({
+vi.mock("../features/invocations/InvocationChart", () => ({
   InvocationChart: () => <div data-testid="invocation-chart" />,
 }));
 
-vi.mock("../components/InvocationTable", () => ({
+vi.mock("../features/invocations/InvocationTable", () => ({
   InvocationTable: () => <div data-testid="invocation-table" />,
 }));
 

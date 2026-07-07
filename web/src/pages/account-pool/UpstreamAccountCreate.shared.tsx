@@ -3,7 +3,7 @@ import {
   useEffect,
   useState,
 } from "react";
-import { AppIcon } from "../../components/AppIcon";
+import { AppIcon } from "../../features/shared/AppIcon";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -25,7 +25,7 @@ import { Spinner } from "../../components/ui/spinner";
 import {
   IMPORT_VALIDATION_PAGE_SIZE,
   type ImportedOauthValidationDialogState,
-} from "../../components/ImportedOauthValidationDialog";
+} from "../../features/account-pool/ImportedOauthValidationDialog";
 import type {
   ImportOauthCredentialFilePayload,
   ImportedOauthValidationRow,

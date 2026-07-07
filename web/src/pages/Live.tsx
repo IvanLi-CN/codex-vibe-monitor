@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { ForwardProxyLiveTable } from "../components/ForwardProxyLiveTable";
-import { AppIcon } from "../components/AppIcon";
-import { InvocationChart } from "../components/InvocationChart";
-import { InvocationTable } from "../components/InvocationTable";
-import { PromptCacheConversationTable } from "../components/PromptCacheConversationTable";
-import { StatsCards } from "../components/StatsCards";
+import { ForwardProxyLiveTable } from "../features/forward-proxy/ForwardProxyLiveTable";
+import { AppIcon } from "../features/shared/AppIcon";
+import { InvocationChart } from "../features/invocations/InvocationChart";
+import { InvocationTable } from "../features/invocations/InvocationTable";
+import { PromptCacheConversationTable } from "../features/prompt-cache/PromptCacheConversationTable";
+import { StatsCards } from "../features/stats/StatsCards";
 import { Button } from "../components/ui/button";
 import { useForwardProxyLiveStats } from "../hooks/useForwardProxyLiveStats";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";

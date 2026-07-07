@@ -15,7 +15,7 @@ import type {
   ImportedOauthValidationSnapshotEventPayload,
 } from "../../lib/api";
 import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
-import type { ImportedOauthValidationDialogState } from "../../components/ImportedOauthValidationDialog";
+import type { ImportedOauthValidationDialogState } from "../../features/account-pool/ImportedOauthValidationDialog";
 type ImportOauthAccountResult = {
   sourceId: string;
   status: string;

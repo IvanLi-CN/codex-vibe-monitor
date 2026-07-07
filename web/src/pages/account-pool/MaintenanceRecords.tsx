@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
-import { AppIcon } from "../../components/AppIcon";
-import { ListBodyState } from "../../components/ListBodyState";
+import { AppIcon } from "../../features/shared/AppIcon";
+import { ListBodyState } from "../../features/shared/ListBodyState";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";

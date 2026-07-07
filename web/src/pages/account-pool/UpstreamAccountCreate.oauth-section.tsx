@@ -1,4 +1,4 @@
-import { AppIcon } from "../../components/AppIcon";
+import { AppIcon } from "../../features/shared/AppIcon";
 import { Link } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
@@ -12,9 +12,9 @@ import {
 } from "../../components/ui/popover";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
-import { OauthMailboxChip } from "../../components/account-pool/OauthMailboxChip";
-import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
-import { MotherAccountToggle } from "../../components/MotherAccountToggle";
+import { OauthMailboxChip } from "../../features/account-pool/OauthMailboxChip";
+import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
+import { MotherAccountToggle } from "../../features/account-pool/MotherAccountToggle";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import {
   DuplicateWarningPopover,

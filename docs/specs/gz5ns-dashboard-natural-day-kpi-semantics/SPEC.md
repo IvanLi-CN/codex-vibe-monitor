@@ -28,10 +28,10 @@
 
 ### In scope
 
-- `web/src/components/TodayStatsOverview.tsx`：卡片结构、secondary/meta 排布与新 helper 接入。
-- `web/src/components/DashboardActivityOverview.tsx`：today/yesterday 两条自然日路径接入增强后的 summary 字段，并保持账号级 `upstreamAccountId` 复用。
-- `web/src/components/DashboardTodayActivityChart.tsx` 与 `web/src/components/dashboardTodayActivityChartData.ts`：自然日金额累计图改为 `Success + Non-success` 堆叠面积，并保持 Dashboard / 账号详情共用同一图表语义。
-- `web/src/components/dashboardKpiComparisons.ts` 与相关 helper：补齐成功同进度比值和每对话 / 失败 / 重试 / 进行中等待等前端派生。
+- `web/src/features/dashboard/TodayStatsOverview.tsx`：卡片结构、secondary/meta 排布与新 helper 接入。
+- `web/src/features/dashboard/DashboardActivityOverview.tsx`：today/yesterday 两条自然日路径接入增强后的 summary 字段，并保持账号级 `upstreamAccountId` 复用。
+- `web/src/features/dashboard/DashboardTodayActivityChart.tsx` 与 `web/src/features/dashboard/dashboardTodayActivityChartData.ts`：自然日金额累计图改为 `Success + Non-success` 堆叠面积，并保持 Dashboard / 账号详情共用同一图表语义。
+- `web/src/features/dashboard/dashboardKpiComparisons.ts` 与相关 helper：补齐成功同进度比值和每对话 / 失败 / 重试 / 进行中等待等前端派生。
 - `src/api/slices/invocations_and_summary.rs`、`src/api/slices/settings_models_and_cache.rs`、`src/api/slices/prompt_cache_and_timeseries/timeseries.rs`、`web/src/lib/api/core-foundation.ts`：扩展 `StatsResponse`、natural-day timeseries 与 summary/SSE 负载。
 - 与 summary augmentation 直接相关的后端测试、前端测试和 Storybook 场景。
 
@@ -151,7 +151,7 @@
 
 ### UI / Storybook (if applicable)
 
-- Stories to add/update: `web/src/components/TodayStatsOverview.stories.tsx`、`web/src/components/DashboardActivityOverview.stories.tsx`、`web/src/components/DashboardTodayActivityChart.stories.tsx`。
+- Stories to add/update: `web/src/features/dashboard/TodayStatsOverview.stories.tsx`、`web/src/features/dashboard/DashboardActivityOverview.stories.tsx`、`web/src/features/dashboard/DashboardTodayActivityChart.stories.tsx`。
 - Docs pages / state galleries to add/update: `TodayStatsOverview` state gallery / autodocs。
 - `play` / interaction coverage to add/update: natural-day populated / account-scoped populated / zero-in-progress。
 - Visual regression baseline changes (if any): 以本 spec 的 `## Visual Evidence` 为准。

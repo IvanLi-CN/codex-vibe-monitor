@@ -53,13 +53,13 @@
 - `cargo test resolver_prompt_cache_group_binding_reselects_within_group_after_recent_stream_errors -- --nocapture`
 - `cargo test resolver_explicit_prompt_cache_account_binding_keeps_operator_override_after_recent_stream_errors -- --nocapture`
 - `cargo test prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots -- --nocapture`
-- `cd web && bunx vitest run src/lib/api.test.ts src/components/PromptCacheConversationTable.test.tsx`
+- `cd web && bunx vitest run src/lib/api.test.ts src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
 - `cd web && bun run test -- --run PromptCacheConversationTable.test.tsx api.test.ts`
 - `cd web && npm test -- --run PromptCacheConversationTable.test.tsx`
 - `cd web && bun run build`
 - `cd web && npm run build`
 - `cd web && bun run test-storybook -- --run PromptCacheConversationTable.stories.tsx DashboardWorkingConversationsSection.stories.tsx`
-- `cd web && bunx vitest run src/components/InvocationTable.test.tsx src/components/PromptCacheConversationTable.test.tsx`
+- `cd web && bunx vitest run src/features/invocations/InvocationTable.test.tsx src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
 - Storybook `LargeHistoryVirtualizedDrawer` browser evidence: 15,000 total retained records, 50 initial drawer records, 100 after one scroll-triggered page, 28 mounted table rows, first page still visible at the nested table offset, account-binding combobox opened in about 169 ms.
 - Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows binding controls plus the timeout subpanel, with mixed `conversation/account/root` source badges, collapsed inherited rows, expanded conversation-owned timeout rows, and editable timeout-only persistence when `bindingKind='none'`.
 - Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows the “对话详情” title, conversation-level policy override rows with source badges, binding controls, and the timeout subpanel in the Settings tab.

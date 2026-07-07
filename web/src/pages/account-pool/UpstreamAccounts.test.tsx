@@ -130,7 +130,7 @@ vi.mock("../../lib/sse", () => ({
   },
 }));
 
-vi.mock("../../components/DashboardActivityOverview", () => ({
+vi.mock("../../features/dashboard/DashboardActivityOverview", () => ({
   DashboardActivityOverview: ({
     testId,
     upstreamAccountId,

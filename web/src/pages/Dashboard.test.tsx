@@ -39,7 +39,7 @@ vi.mock("../hooks/useParallelWorkStats", () => ({
   useParallelWorkStats: hookMocks.useParallelWorkStats,
 }));
 
-vi.mock("../components/TodayStatsOverview", () => ({
+vi.mock("../features/dashboard/TodayStatsOverview", () => ({
   TodayStatsOverview: ({
     showSurface,
     showHeader,
@@ -55,13 +55,13 @@ vi.mock("../components/TodayStatsOverview", () => ({
   ),
 }));
 
-vi.mock("../components/DashboardTodayActivityChart", () => ({
+vi.mock("../features/dashboard/DashboardTodayActivityChart", () => ({
   DashboardTodayActivityChart: ({ metric }: { metric?: string }) => (
     <div data-testid="dashboard-today-activity-chart-mock">{`metric:${metric ?? "unset"}`}</div>
   ),
 }));
 
-vi.mock("../components/UsageCalendar", () => ({
+vi.mock("../features/dashboard/UsageCalendar", () => ({
   UsageCalendar: ({
     metric,
     showSurface,
@@ -79,7 +79,7 @@ vi.mock("../components/UsageCalendar", () => ({
   ),
 }));
 
-vi.mock("../components/StatsCards", () => ({
+vi.mock("../features/stats/StatsCards", () => ({
   StatsCards: ({
     stats,
     loading,
@@ -99,7 +99,7 @@ vi.mock("../components/StatsCards", () => ({
   ),
 }));
 
-vi.mock("../components/Last24hTenMinuteHeatmap", () => ({
+vi.mock("../features/dashboard/Last24hTenMinuteHeatmap", () => ({
   Last24hTenMinuteHeatmap: ({
     metric,
     showHeader,
@@ -113,7 +113,7 @@ vi.mock("../components/Last24hTenMinuteHeatmap", () => ({
   ),
 }));
 
-vi.mock("../components/WeeklyHourlyHeatmap", () => ({
+vi.mock("../features/dashboard/WeeklyHourlyHeatmap", () => ({
   WeeklyHourlyHeatmap: ({
     metric,
     showHeader,
@@ -129,7 +129,7 @@ vi.mock("../components/WeeklyHourlyHeatmap", () => ({
   ),
 }));
 
-vi.mock("../components/DashboardWorkingConversationsSection", () => ({
+vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
   DashboardWorkingConversationsSection: ({
     cards,
     setRefreshTargetCount,
@@ -223,7 +223,7 @@ vi.mock("../components/DashboardWorkingConversationsSection", () => ({
   ),
 }));
 
-vi.mock("../components/PromptCacheConversationTable", () => ({
+vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
   PromptCacheConversationHistoryDrawer: ({
     open,
     conversationKey,
@@ -269,7 +269,7 @@ vi.mock("../components/PromptCacheConversationTable", () => ({
     ) : null,
 }));
 
-vi.mock("../components/DashboardInvocationDetailDrawer", () => ({
+vi.mock("../features/dashboard/DashboardInvocationDetailDrawer", () => ({
   DashboardInvocationDetailDrawer: ({
     open,
     selection,

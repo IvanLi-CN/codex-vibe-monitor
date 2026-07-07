@@ -32,8 +32,8 @@
 ### In scope
 
 - `web/src/pages/Dashboard.tsx`：把 `DashboardActivityOverview` 的 range 状态提升为 Dashboard 共享状态，并接线到工作区 section。
-- `web/src/components/DashboardActivityOverview.tsx`：支持 controlled range 输入，同时保留既有持久化 key 与独立复用能力。
-- `web/src/components/DashboardWorkingConversationsSection.tsx` 及新增账号视图组件：右上 tabs、badge、usage disabled 回退、账号卡布局与最近 4 条调用记录。
+- `web/src/features/dashboard/DashboardActivityOverview.tsx`：支持 controlled range 输入，同时保留既有持久化 key 与独立复用能力。
+- `web/src/features/dashboard/DashboardWorkingConversationsSection.tsx` 及新增账号视图组件：右上 tabs、badge、usage disabled 回退、账号卡布局与最近 4 条调用记录。
 - `web/src/hooks/useDashboardUpstreamAccountActivity.ts` 与 API 层：账号 tab 懒加载、范围跟随、激活态刷新预算。
 - `src/api/slices/invocations_and_summary.rs`、`src/api/slices/settings_models_and_cache.rs`、`src/maintenance/hourly_rollups.rs`：新增 `GET /api/stats/upstream-account-activity`，并修正 summary in-progress 语义。
 - `src/api/slices/invocations_and_summary.rs`、`src/api/slices/settings_models_and_cache.rs`、`src/maintenance/hourly_rollups.rs`：新增 `GET /api/stats/dashboard-activity`，返回同一次取数的 summary-only 或 summary + accounts 活动快照。

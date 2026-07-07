@@ -15,13 +15,13 @@
 
 ### 推荐作为真相源的 stories
 
-- Shell / Layout：`web/src/components/AppLayout.stories.tsx`
+- Shell / Layout：`web/src/features/app-shell/AppLayout.stories.tsx`
 - Segmented control family：`web/src/components/ui/segmented-control.stories.tsx`
-- Settings：`web/src/components/SettingsPage.stories.tsx`
-- Records：`web/src/components/RecordsPage.stories.tsx`
-- Invocation list：`web/src/components/InvocationTable.stories.tsx`
-- Dashboard KPI：`web/src/components/TodayStatsOverview.stories.tsx`
-- Tags / account-pool 页面：`web/src/components/TagsPage.stories.tsx`
+- Settings：`web/src/features/settings/SettingsPage.stories.tsx`
+- Records：`web/src/features/records/RecordsPage.stories.tsx`
+- Invocation list：`web/src/features/invocations/InvocationTable.stories.tsx`
+- Dashboard KPI：`web/src/features/dashboard/TodayStatsOverview.stories.tsx`
+- Account pool 页面：`web/src/features/account-pool/UpstreamAccountsPage.list.stories.tsx`、`web/src/features/account-pool/GroupsPage.stories.tsx`
 - 基础输入组件：`web/src/components/ui/select-field.stories.tsx`、`web/src/components/ui/filterable-combobox.stories.tsx`、`web/src/components/ui/form-field-feedback.stories.tsx`、`web/src/components/ui/info-tooltip.stories.tsx`
 - 基础导航/切换组件：`web/src/components/ui/segmented-control.stories.tsx`
 

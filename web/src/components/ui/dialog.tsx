@@ -1,6 +1,6 @@
 import * as React from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
-import { AppIcon } from '../AppIcon'
+import { AppIcon } from '../../features/shared/AppIcon'
 import { cn } from '../../lib/utils'
 import {
   useOverlayHostElement,
