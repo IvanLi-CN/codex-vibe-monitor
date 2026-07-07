@@ -773,6 +773,8 @@ pub(crate) async fn query_prompt_cache_conversation_lifecycle_aggregates(
         selected_keys,
         rollup_live_cursor,
         snapshot_filter,
+        // Snapshot rollup rows are already reduced by exact rows at or before the
+        // snapshot boundary, so the exact tail must scan the full snapshot range.
         if snapshot_filter.is_some() {
             None
         } else {
