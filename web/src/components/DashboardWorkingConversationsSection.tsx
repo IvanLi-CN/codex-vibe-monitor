@@ -2511,6 +2511,10 @@ function DashboardUpstreamAccountActivityCard({
   const pendingDraftRef = useRef<AccountQuickPolicyDraft | null>(null);
   const lastCommittedPolicyRef =
     useRef<AccountQuickPolicyDraft>(serverPolicyDraft);
+  const mountedRef = useRef(true);
+  const flushPolicySaveRef = useRef<
+    ((updateUi?: boolean) => Promise<void>) | null
+  >(null);
   const saveSeqRef = useRef(0);
   const recentInvocations = useMemo(
     () =>
@@ -2542,45 +2546,59 @@ function DashboardUpstreamAccountActivityCard({
       setPolicyDraft(serverPolicyDraft);
     }
   }, [isSavingPolicy, serverPolicyDraft]);
+  const flushPolicySave = useCallback(
+    async (updateUi = true) => {
+      const accountId = account.upstreamAccountId;
+      const patch = pendingPatchRef.current;
+      const nextDraft = pendingDraftRef.current;
+      pendingPatchRef.current = null;
+      pendingDraftRef.current = null;
+      debounceTimerRef.current = null;
+      if (accountId == null || !patch || !nextDraft) return;
+      const seq = saveSeqRef.current + 1;
+      saveSeqRef.current = seq;
+      const rollbackDraft = lastCommittedPolicyRef.current;
+      if (updateUi && mountedRef.current) {
+        setIsSavingPolicy(true);
+      }
+      try {
+        await updateUpstreamAccount(accountId, { routingRule: patch });
+        if (saveSeqRef.current !== seq) return;
+        lastCommittedPolicyRef.current = nextDraft;
+        if (updateUi && mountedRef.current) {
+          setPolicySaveError(null);
+        }
+        emitUpstreamAccountsChanged();
+        if (mountedRef.current) {
+          onPolicyChanged?.();
+        }
+      } catch (err) {
+        if (saveSeqRef.current !== seq) return;
+        if (updateUi && mountedRef.current && !pendingPatchRef.current) {
+          setPolicyDraft(rollbackDraft);
+        }
+        if (updateUi && mountedRef.current) {
+          setPolicySaveError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (updateUi && mountedRef.current && saveSeqRef.current === seq) {
+          setIsSavingPolicy(false);
+        }
+      }
+    },
+    [account.upstreamAccountId, onPolicyChanged],
+  );
+  flushPolicySaveRef.current = flushPolicySave;
   useEffect(
     () => () => {
+      mountedRef.current = false;
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
+        void flushPolicySaveRef.current?.(false);
       }
     },
     [],
   );
-  const flushPolicySave = useCallback(async () => {
-    const accountId = account.upstreamAccountId;
-    const patch = pendingPatchRef.current;
-    const nextDraft = pendingDraftRef.current;
-    pendingPatchRef.current = null;
-    pendingDraftRef.current = null;
-    debounceTimerRef.current = null;
-    if (accountId == null || !patch || !nextDraft) return;
-    const seq = saveSeqRef.current + 1;
-    saveSeqRef.current = seq;
-    const rollbackDraft = lastCommittedPolicyRef.current;
-    setIsSavingPolicy(true);
-    try {
-      await updateUpstreamAccount(accountId, { routingRule: patch });
-      if (saveSeqRef.current !== seq) return;
-      lastCommittedPolicyRef.current = nextDraft;
-      setPolicySaveError(null);
-      emitUpstreamAccountsChanged();
-      onPolicyChanged?.();
-    } catch (err) {
-      if (saveSeqRef.current !== seq) return;
-      if (!pendingPatchRef.current) {
-        setPolicyDraft(rollbackDraft);
-      }
-      setPolicySaveError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (saveSeqRef.current === seq) {
-        setIsSavingPolicy(false);
-      }
-    }
-  }, [account.upstreamAccountId, onPolicyChanged]);
   const schedulePolicySave = useCallback(
     (
       nextDraft: AccountQuickPolicyDraft,

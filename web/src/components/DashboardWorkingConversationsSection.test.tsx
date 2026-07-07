@@ -2812,6 +2812,69 @@ describe("DashboardWorkingConversationsSection", () => {
     }
   });
 
+  it("flushes a pending upstream account quick policy write on unmount", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: 42,
+            displayName: "Pool Alpha",
+            status: "active",
+            routingRule: {},
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    try {
+      renderSection(createResponse([]));
+
+      const upstreamAccountTab = Array.from(
+        host?.querySelectorAll('button[role="tab"]') ?? [],
+      ).find((candidate) =>
+        /上游账号|upstream account/i.test(candidate.textContent ?? ""),
+      );
+      if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
+        throw new Error("missing upstream account tab");
+      }
+
+      act(() => {
+        upstreamAccountTab.click();
+      });
+
+      const policyBadge = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-policy-badge"][data-policy-key="priority-new-conversations"]',
+      );
+      if (!(policyBadge instanceof HTMLButtonElement)) {
+        throw new Error("missing upstream account policy badge");
+      }
+
+      act(() => {
+        policyBadge.click();
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      act(() => {
+        root?.unmount();
+      });
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect(String(init?.body)).toContain('"routingRule"');
+      expect(String(init?.body)).toContain('"priorityTier":"normal"');
+    } finally {
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the concrete upstream account label on assigned-account blocked dashboard cards", () => {
     renderSection(
       createResponse([
