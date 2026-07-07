@@ -681,6 +681,11 @@ describe("DashboardWorkingConversationsSection", () => {
         '[data-testid="dashboard-upstream-account-header-row"]',
       ),
     ).not.toBeNull();
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-upstream-account-header-row"]',
+      )?.textContent,
+    ).not.toContain("#42");
     const firstRecentRow = host?.querySelector(
       '[data-testid="dashboard-upstream-account-recent-row"]',
     );
