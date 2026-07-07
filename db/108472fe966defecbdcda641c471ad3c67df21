@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.19.0",
+  "base_stable_version": "2.18.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-07T11:32:38Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.19.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1d24af0aa3cc16a384c7574ca8044b7771d858a4",
+  "pr_number": 561,
+  "pr_title": "feat(web): add tabbed group routing settings",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.19.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.19.0",
+  "target_sha": "db108472fe966defecbdcda641c471ad3c67df21",
+  "type_label": "type:minor"
+}
