@@ -51,6 +51,8 @@ function buildRealisticPoint(index: number, intensity = 1) {
           : 0;
   const inFlightCount =
     totalCount > failureCount && index > 690 && index % 7 === 0 ? 1 : 0;
+  const queuedInFlightCount = inFlightCount > 0 && index % 14 === 0 ? 1 : 0;
+  const runningInFlightCount = Math.max(0, inFlightCount - queuedInFlightCount);
   const successCount = Math.max(totalCount - failureCount - inFlightCount, 0);
   const completedCount = successCount + failureCount;
   const avgTokens =
@@ -71,6 +73,11 @@ function buildRealisticPoint(index: number, intensity = 1) {
     successCount,
     failureCount,
     inFlightCount,
+    inFlightPhaseCounts: {
+      queued: queuedInFlightCount,
+      requesting: runningInFlightCount,
+      responding: 0,
+    },
     totalTokens,
     totalCost: Number((totalTokens * 0.000018).toFixed(4)),
     nonSuccessCost: Number((failureCount * avgTokens * 0.000018).toFixed(4)),
@@ -166,6 +173,8 @@ const mixedOutcomeMinuteAlignmentResponse: TimeseriesResponse = {
     const successCount = isAlignmentMinute ? (isFocusMinute ? 7 : 3) : 0;
     const failureCount = isAlignmentMinute ? (isFocusMinute ? 4 : 2) : 0;
     const inFlightCount = isFocusMinute ? 2 : 0;
+    const queuedInFlightCount = isFocusMinute ? 1 : 0;
+    const runningInFlightCount = Math.max(0, inFlightCount - queuedInFlightCount);
     const completedCount = successCount + failureCount;
 
     return {
@@ -175,6 +184,11 @@ const mixedOutcomeMinuteAlignmentResponse: TimeseriesResponse = {
       successCount,
       failureCount,
       inFlightCount,
+      inFlightPhaseCounts: {
+        queued: queuedInFlightCount,
+        requesting: runningInFlightCount,
+        responding: 0,
+      },
       totalTokens: completedCount * 920,
       totalCost: Number((completedCount * 0.0166).toFixed(4)),
       nonSuccessCost: Number((failureCount * 0.0166).toFixed(4)),

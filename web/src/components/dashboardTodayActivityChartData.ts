@@ -15,9 +15,13 @@ export interface DashboardTodayMinuteDatum {
   successCount: number;
   failureCount: number;
   inFlightCount: number;
+  queuedInFlightCount: number;
+  runningInFlightCount: number;
   failureCountNegative: number;
   chartSuccessCount: number | null;
   chartInFlightCount: number | null;
+  chartQueuedInFlightCount: number | null;
+  chartRunningInFlightCount: number | null;
   chartFailureCountNegative: number | null;
   totalCount: number;
   totalCost: number;
@@ -80,6 +84,8 @@ export function buildTodayMinuteChartData(
       successCount: number;
       failureCount: number;
       inFlightCount: number;
+      queuedInFlightCount: number;
+      runningInFlightCount: number;
       totalCount: number;
       totalCost: number;
       nonSuccessCost: number;
@@ -98,6 +104,8 @@ export function buildTodayMinuteChartData(
       successCount: 0,
       failureCount: 0,
       inFlightCount: 0,
+      queuedInFlightCount: 0,
+      runningInFlightCount: 0,
       totalCount: 0,
       totalCost: 0,
       nonSuccessCost: 0,
@@ -107,13 +115,28 @@ export function buildTodayMinuteChartData(
     };
     current.successCount += point.successCount ?? 0;
     current.failureCount += point.failureCount ?? 0;
-    current.inFlightCount += Math.max(point.inFlightCount ?? 0, 0);
+    const pointInFlightCount = Math.max(point.inFlightCount ?? 0, 0);
+    const phaseCounts = point.inFlightPhaseCounts ?? null;
+    const queuedInFlightCount = Math.max(phaseCounts?.queued ?? 0, 0);
+    const explicitRunningInFlightCount =
+      Math.max(phaseCounts?.requesting ?? 0, 0) +
+      Math.max(phaseCounts?.responding ?? 0, 0);
+    const phaseTotal = queuedInFlightCount + explicitRunningInFlightCount;
+    const runningInFlightCount =
+      phaseTotal > 0 || pointInFlightCount <= 0
+        ? explicitRunningInFlightCount
+        : pointInFlightCount;
+    current.queuedInFlightCount += queuedInFlightCount;
+    current.runningInFlightCount += runningInFlightCount;
+    current.inFlightCount += Math.max(
+      pointInFlightCount,
+      queuedInFlightCount + runningInFlightCount,
+    );
     current.totalCount += point.totalCount ?? 0;
     current.totalCost += point.totalCost ?? 0;
     current.nonSuccessCost += point.nonSuccessCost ?? 0;
     current.totalTokens += point.totalTokens ?? 0;
     const firstResponseByteTotalAvgMs = point.firstResponseByteTotalAvgMs ?? null;
-    const pointInFlightCount = Math.max(point.inFlightCount ?? 0, 0);
     const pointCallCount = Math.max(
       point.totalCount ?? 0,
       (point.successCount ?? 0) + (point.failureCount ?? 0) + pointInFlightCount,
@@ -147,6 +170,16 @@ export function buildTodayMinuteChartData(
     const successCount = point?.successCount ?? 0;
     const failureCount = point?.failureCount ?? 0;
     const inFlightCount = Math.max(point?.inFlightCount ?? 0, 0);
+    const queuedInFlightCount = Math.max(point?.queuedInFlightCount ?? 0, 0);
+    const runningInFlightCount =
+      point == null
+        ? 0
+        : Math.max(
+            point.runningInFlightCount,
+            inFlightCount > 0 && queuedInFlightCount + point.runningInFlightCount <= 0
+              ? inFlightCount
+              : 0,
+          );
     const totalCount = Math.max(
       point?.totalCount ?? successCount + failureCount + inFlightCount,
       successCount + failureCount + inFlightCount,
@@ -179,9 +212,13 @@ export function buildTodayMinuteChartData(
       successCount,
       failureCount,
       inFlightCount,
+      queuedInFlightCount,
+      runningInFlightCount,
       failureCountNegative: failureCount > 0 ? -failureCount : 0,
       chartSuccessCount: isFuture ? null : successCount,
       chartInFlightCount: isFuture ? null : inFlightCount,
+      chartQueuedInFlightCount: isFuture ? null : queuedInFlightCount,
+      chartRunningInFlightCount: isFuture ? null : runningInFlightCount,
       chartFailureCountNegative: isFuture
         ? null
         : failureCount > 0

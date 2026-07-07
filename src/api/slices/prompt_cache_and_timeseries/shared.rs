@@ -304,6 +304,11 @@ where
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(
             " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \
+            ",
+        )
+        .push(invocation_live_phase_sql("codex_invocations"))
+        .push(
+            " AS live_phase, \
             t_total_ms, t_req_read_ms, t_req_parse_ms, \
             t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, \
             t_resp_parse_ms, t_persist_ms \

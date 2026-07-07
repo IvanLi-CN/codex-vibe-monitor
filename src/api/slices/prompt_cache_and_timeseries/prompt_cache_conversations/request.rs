@@ -286,16 +286,20 @@ pub(crate) fn build_prompt_cache_conversation_cursor(
     row: &PromptCacheConversationAggregateRow,
     snapshot_boundary_row_id_ceiling: Option<i64>,
 ) -> String {
+    let cursor_created_at = row
+        .cursor_created_at
+        .as_deref()
+        .unwrap_or(row.created_at.as_str());
     let sort_anchor_at = row.sort_anchor_at.as_deref().unwrap_or_else(|| {
         resolve_working_conversation_sort_anchor(
             row.last_terminal_at.as_deref(),
             row.last_in_flight_at.as_deref(),
-            row.created_at.as_str(),
+            cursor_created_at,
         )
     });
     encode_prompt_cache_conversation_cursor(
         sort_anchor_at,
-        &row.created_at,
+        cursor_created_at,
         &row.prompt_cache_key,
         snapshot_boundary_row_id_ceiling,
     )

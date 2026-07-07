@@ -71,6 +71,8 @@
 - Dashboard working conversations:
   - SSE `records` 对已加载会话的本地可见 patch 必须 1 秒合批提交，避免逐条记录触发卡片重排。
   - 新会话、排序锚点变化或 head 需要重算时，HTTP head/snapshot reconcile 必须节流到不超过每 5 秒一次。
+  - 当前卡片列表只使用“最近 5 分钟终态会话 + 任意尚未 terminal/tombstone 的 `running/pending` 会话”决定展示集合。
+  - 卡片内 `requestCount`、`totalTokens`、`totalCost`、`createdAt` 与 `lastActivityAt` 使用该 `promptCacheKey` 在 snapshot 边界内的完整生命周期聚合；activity window 只决定是否入选列表，不裁剪卡片自身 totals。
 - Proxy runtime snapshots:
   - 对 tracked proxy capture endpoints，服务在请求 admit 并分配 `invokeId + occurredAt` 后，必须立即把最小 `running` shell record 写入进程内 runtime store 并广播 SSE；该可见性不得等待 request body 读完、body parse、账号路由或上游 attempt start。
   - admit-time shell record 可以只包含已知字段，例如 endpoint、requester IP、header sticky/prompt-cache key 与 `status=running`；后续 body-parsed / attempt-start / response-ready snapshot 必须用同一 `invokeId + occurredAt` 覆盖补全，不得制造重复行。
@@ -95,10 +97,15 @@
 
 ## 接口契约（Interfaces & Contracts）
 
-- HTTP API: 无变更。
+- HTTP API: 兼容扩展。
 - SSE schema: 保持现有 `records` / `summary` / `quota` / `version` 结构；`summary` 可扩展轻量 KPI 字段，但不得改写既有 totals 含义。
 - `/api/stats/parallel-work`: response body schema 不变；成功响应应带 `ETag`，匹配 `If-None-Match` 时可返回 `304` 且不带 body。
-- Dashboard 顶部 Today KPI 中的“进行中对话”必须以严格未终态 `running/pending` 的唯一 `promptCacheKey` 数量为真相源，不得复用 `/api/stats/parallel-work` 当前窗口最后一个 bucket 的 `parallelCount`。
+- Dashboard 顶部 Today KPI 中的当前活跃调用必须以后端 `inProgressPhaseCounts` 为真相源：
+  - “进行中”=`requesting + responding`
+  - “排队中”=`queued`
+  - 旧 `inProgressConversationCount` / `inFlightCount` 字段保留为兼容合计字段。
+- Timeseries `TimeseriesPoint` 兼容新增 `inFlightPhaseCounts: { queued, requesting, responding }`；`inFlightCount` 继续等于 queued/requesting/responding 的合计或旧聚合合计。
+- Dashboard Today 图表把 in-flight 调用按 `running=requesting+responding` 与 `queued` 拆成两组正向堆叠 bar；缺少 phase 明细的旧 bucket 可回退到 `inFlightCount`。
 - Stats 页 `parallel-work` 继续表示 bucket 内发生过请求的 distinct `promptCacheKey` 数量，不承担严格瞬时进行中对话语义。
 - Dashboard 总览卡片若保留次级展示数据，允许继续复用 `parallel-work` 的 bucket 趋势统计作为参考项，但这些次级项不得反向决定主值，也不得改变 `/api/stats/parallel-work` 的既有接口语义。
 
@@ -113,6 +120,9 @@
 - Given Dashboard 收到 `today` 的 SSE `summary`，When payload 匹配当前窗口，Then KPI 数字不等待 HTTP reconcile 即可提交。
 - Given Dashboard 高频收到 `records`，When 需要更新 calendar-window summary、顶部 today 图表或 working conversation head，Then 对应 HTTP / chart commit 不超过每 5 秒一次。
 - Given working conversations 高频收到同一秒内多条 `records`，When 这些 records 命中已加载会话，Then 本地可见 patch 合并为 1 秒批次提交。
+- Given 一个 `pending` 或 `running` 调用 started 超过 5 分钟，When 查询 Dashboard 当前 summary、account activity 或 working conversations，Then 该调用仍计入 active phase counts 并出现在当前卡片列表。
+- Given working conversation 历史跨 hourly rollup、exact DB 与 runtime overlay，When 查询当前卡片，Then 卡片 totals 使用该 prompt-cache key 的完整生命周期聚合，不随 5 分钟筛选窗口缩水。
+- Given timeseries bucket 内含 queued/requesting/responding，When 返回 `TimeseriesPoint`，Then `inFlightPhaseCounts` 明细正确且 `inFlightCount` 保持兼容合计。
 - Given parallel-work payload 未变化，When 客户端带上前次 `ETag` 请求 `/api/stats/parallel-work`，Then 服务端可返回 `304`，客户端复用既有数据且不改变 JSON shape。
 
 ### Performance & Reliability

@@ -2947,7 +2947,7 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("限流")).toBeInTheDocument();
     await expect(canvas.getByText("禁新")).toBeInTheDocument();
     await expect(canvas.getByText("禁入")).toBeInTheDocument();
-    await expect(canvas.getByText("进行中调用")).toBeInTheDocument();
+    await expect(canvas.getByText("进行中")).toBeInTheDocument();
     const recentBreakdown = canvas.getByTestId(
       "dashboard-upstream-account-recent-breakdown",
     );

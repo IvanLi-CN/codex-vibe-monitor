@@ -99,6 +99,9 @@ pub(crate) async fn fetch_timeseries(
             entry.success_count += 1;
         } else if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
             entry.in_flight_count += 1;
+            entry
+                .in_flight_phase_counts
+                .increment_phase_name(record.live_phase.as_deref());
         } else if prompt_shared::invocation_status_counts_toward_terminal_totals(record.status.as_deref())
             && classification.failure_class != FailureClass::None
         {
@@ -531,6 +534,9 @@ fn add_exact_record_to_timeseries_aggregate(
         entry.success_count += 1;
     } else if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
         entry.in_flight_count += 1;
+        entry
+            .in_flight_phase_counts
+            .increment_phase_name(record.live_phase.as_deref());
     } else if prompt_shared::invocation_status_counts_toward_terminal_totals(record.status.as_deref())
         && classification.failure_class != FailureClass::None
     {
@@ -575,6 +581,9 @@ fn subtract_stale_in_flight_record_from_timeseries_aggregate(
     }
     entry.total_count = entry.total_count.saturating_sub(1);
     entry.in_flight_count = entry.in_flight_count.saturating_sub(1);
+    entry
+        .in_flight_phase_counts
+        .decrement_phase_name(record.live_phase.as_deref());
     entry.total_tokens = entry
         .total_tokens
         .saturating_sub(record.total_tokens.unwrap_or_default());
@@ -672,6 +681,13 @@ fn overlay_runtime_timeseries_in_flight(
         let entry = aggregates.entry(bucket_epoch).or_default();
         entry.total_count += 1;
         entry.in_flight_count += 1;
+        let runtime_phase = record
+            .live_phase
+            .as_deref()
+            .or_else(|| runtime_invocation_live_phase(&record));
+        entry
+            .in_flight_phase_counts
+            .increment_phase_name(runtime_phase);
         entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
         entry.record_first_response_byte_total_sample(
             record.t_req_read_ms,
@@ -746,6 +762,7 @@ fn timeseries_point_from_aggregate(
         success_count: agg.success_count,
         failure_count: agg.failure_count,
         in_flight_count: agg.in_flight_count,
+        in_flight_phase_counts: agg.in_flight_phase_counts,
         total_tokens: agg.total_tokens,
         cache_input_tokens: agg.cache_input_tokens,
         total_cost: agg.total_cost,
@@ -1249,6 +1266,9 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 entry.success_count += 1;
             } else if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
                 entry.in_flight_count += 1;
+                entry
+                    .in_flight_phase_counts
+                    .increment_phase_name(record.live_phase.as_deref());
             } else if prompt_shared::invocation_status_counts_toward_terminal_totals(record.status.as_deref())
                 && classification.failure_class != FailureClass::None
             {
@@ -1408,6 +1428,33 @@ mod tests {
 
         assert_eq!(point.total_latency_sample_count, 2);
         assert_eq!(point.avg_total_ms, Some(900.0));
+    }
+
+    #[test]
+    fn timeseries_point_exports_in_flight_phase_counts_and_compat_total() {
+        let mut aggregate = BucketAggregate::default();
+        aggregate.total_count = 5;
+        aggregate.success_count = 1;
+        aggregate.failure_count = 1;
+        aggregate.in_flight_count = 3;
+        aggregate.in_flight_phase_counts.queued = 1;
+        aggregate.in_flight_phase_counts.requesting = 1;
+        aggregate.in_flight_phase_counts.responding = 1;
+
+        let point = timeseries_point_from_aggregate(
+            Utc.timestamp_opt(1_775_608_200, 0)
+                .single()
+                .expect("valid start timestamp"),
+            Utc.timestamp_opt(1_775_608_260, 0)
+                .single()
+                .expect("valid end timestamp"),
+            &aggregate,
+        );
+
+        assert_eq!(point.in_flight_count, 3);
+        assert_eq!(point.in_flight_phase_counts.queued, 1);
+        assert_eq!(point.in_flight_phase_counts.requesting, 1);
+        assert_eq!(point.in_flight_phase_counts.responding, 1);
     }
 
     #[test]

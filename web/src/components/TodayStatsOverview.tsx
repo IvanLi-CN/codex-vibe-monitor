@@ -75,6 +75,7 @@ interface MetricTileMetaItem {
   valueSpec: AdaptiveDisplayValueSpec
   toneClass?: string
   valueTestId?: string
+  iconName?: AppIconName
 }
 
 interface MetricTileProps {
@@ -94,7 +95,9 @@ interface MetricTileProps {
   labelTestId?: string
   iconName?: AppIconName
   topRightItem?: MetricTileMetaItem | null
+  mainAsideItem?: MetricTileMetaItem | null
   secondaryItems?: MetricTileSecondaryItem[]
+  className?: string
 }
 
 function MetricTile({
@@ -114,7 +117,9 @@ function MetricTile({
   labelTestId,
   iconName,
   topRightItem,
+  mainAsideItem,
   secondaryItems = [],
+  className,
 }: MetricTileProps) {
   const handleLabelKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
     if (event.key !== 'Enter' && event.key !== ' ') return
@@ -159,6 +164,7 @@ function MetricTile({
   const stackedMetaItems = stackMeta
     ? [
         ...(topRightItem ? [topRightItem] : []),
+        ...(mainAsideItem ? [mainAsideItem] : []),
         ...secondaryItems,
       ]
     : []
@@ -174,13 +180,42 @@ function MetricTile({
       <AppIcon name={iconName} className={cn(iconName === 'send' && '-rotate-45')} />
     </span>
   ) : null
+  const inlineMainAsideItem = !stackMeta && mainAsideItem ? (
+    <div
+      className={cn(
+        'shrink-0 self-center text-right',
+        mainAsideItem.label
+          ? 'text-[11px] leading-4'
+          : 'flex min-w-0 max-w-[7.5rem] items-center justify-end gap-2.5 overflow-hidden text-[2.1rem] font-semibold leading-tight lg:text-[2rem]',
+        mainAsideItem.toneClass,
+      )}
+    >
+      {mainAsideItem.label ? (
+        <span className="block whitespace-nowrap text-info">{mainAsideItem.label}</span>
+      ) : null}
+      {!mainAsideItem.label && mainAsideItem.iconName ? (
+        <span
+          aria-hidden
+          data-testid={mainAsideItem.valueTestId ? `${mainAsideItem.valueTestId}-icon` : undefined}
+          className="flex h-[1.65rem] w-[1.65rem] shrink-0 items-center justify-center text-[1.55rem] leading-none"
+        >
+          <AppIcon name={mainAsideItem.iconName} />
+        </span>
+      ) : null}
+      <AdaptiveDisplayValue
+        spec={mainAsideItem.valueSpec}
+        data-testid={mainAsideItem.valueTestId}
+        className={cn(mainAsideItem.label ? 'block font-semibold text-base-content/82' : 'min-w-0 flex-1')}
+      />
+    </div>
+  ) : null
 
   return (
     <div
       ref={tileRef}
       data-testid="today-stats-metric-tile"
       data-stack-meta={stackMeta ? 'true' : 'false'}
-      className="min-w-0 rounded-xl border border-base-300/75 bg-base-200/60 px-4 py-4"
+      className={cn('min-w-0 rounded-xl border border-base-300/75 bg-base-200/60 px-4 py-4', className)}
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
         <Tooltip
@@ -238,6 +273,7 @@ function MetricTile({
             data-testid={valueTestId}
             className={cn('min-w-0 flex-1', subdued && 'text-base-content/55')}
           />
+          {inlineMainAsideItem}
         </div>
       ) : displayText != null ? (
         <div
@@ -251,6 +287,7 @@ function MetricTile({
           <span data-testid={valueTestId} className="min-w-0 flex-1 overflow-hidden text-ellipsis">
             {displayText}
           </span>
+          {inlineMainAsideItem}
         </div>
       ) : (
         <div
@@ -268,6 +305,7 @@ function MetricTile({
             className="min-w-0 flex-1"
             data-testid={valueTestId}
           />
+          {inlineMainAsideItem}
         </div>
       )}
       {stackedMetaItems.length > 0 ? (
@@ -523,7 +561,24 @@ export function TodayStatsOverview({
       allowParallelFallback: dayKind !== 'yesterday',
     },
   )
-  const parallelDelta = percentDelta(parallelSnapshot.currentCount, parallelSnapshot.yesterdayAverage)
+  const phaseCounts = stats?.inProgressPhaseCounts ?? null
+  const phaseTotal =
+    Math.max(phaseCounts?.queued ?? 0, 0) +
+    Math.max(phaseCounts?.requesting ?? 0, 0) +
+    Math.max(phaseCounts?.responding ?? 0, 0)
+  const activeInvocationCount =
+    stats?.inProgressConversationCount ?? parallelSnapshot.currentCount
+  const queuedInvocationCount = phaseTotal > 0
+    ? Math.max(phaseCounts?.queued ?? 0, 0)
+    : 0
+  const runningInvocationCount = phaseTotal > 0
+    ? Math.max(phaseCounts?.requesting ?? 0, 0) + Math.max(phaseCounts?.responding ?? 0, 0)
+    : activeInvocationCount
+  const showLivePhaseSplit = showInProgressConversations && isToday
+  const displayedParallelCurrentCount = showLivePhaseSplit
+    ? runningInvocationCount
+    : parallelSnapshot.currentCount
+  const parallelDelta = percentDelta(displayedParallelCurrentCount, parallelSnapshot.yesterdayAverage)
   const parallelLabel = isToday
     ? t('dashboard.today.inProgressConversations')
     : t('dashboard.today.parallelConversations')
@@ -572,7 +627,9 @@ export function TodayStatsOverview({
           data-testid="today-stats-metrics-grid"
           className={cn(
             'grid grid-cols-1 gap-3 sm:grid-cols-2',
-            showInProgressConversations ? 'lg:grid-cols-4 xl:grid-cols-7' : 'lg:grid-cols-3 xl:grid-cols-6',
+            showLivePhaseSplit
+              ? 'lg:grid-cols-4 xl:grid-cols-7'
+              : showInProgressConversations ? 'lg:grid-cols-4 xl:grid-cols-7' : 'lg:grid-cols-3 xl:grid-cols-6',
           )}
         >
           <MetricTile
@@ -641,7 +698,54 @@ export function TodayStatsOverview({
               },
             ]}
           />
-          {showInProgressConversations ? (
+          {showLivePhaseSplit ? (
+            <MetricTile
+              label={parallelLabel}
+              description={parallelDescription}
+              value={runningInvocationCount ?? 0}
+              localeTag={localeTag}
+              loading={loading}
+              kind="integer"
+              toneClass="text-info"
+              iconName="send"
+              valueTestId="today-stats-value-in-progress-conversations"
+              displayText={
+                runningInvocationCount == null
+                  ? RATE_UNAVAILABLE_PLACEHOLDER
+                  : undefined
+              }
+              subdued={runningInvocationCount == null}
+              topRightItem={{
+                label: comparisonLabel,
+                valueSpec: buildPercentValueSpec(parallelDelta, localeTag, { signDisplay: 'exceptZero' }),
+                toneClass: comparisonTone(parallelDelta),
+                valueTestId: 'today-stats-secondary-in-progress-delta',
+              }}
+              mainAsideItem={{
+                label: '',
+                valueSpec: buildNumberValueSpec(queuedInvocationCount, localeTag, 0),
+                toneClass: 'text-warning',
+                valueTestId: 'today-stats-value-queued-invocations',
+                iconName: 'timer-refresh-outline',
+              }}
+              secondaryItems={[
+                {
+                  label: t('dashboard.today.secondary.dayAverage'),
+                  valueSpec: buildNumberValueSpec(parallelSnapshot.dayAverage, localeTag, 2),
+                  valueTestId: 'today-stats-secondary-in-progress-day-average',
+                },
+                {
+                  label: t('dashboard.today.secondary.retry'),
+                  valueSpec: buildNumberValueSpec(
+                    inProgressRetryCount,
+                    localeTag,
+                    0,
+                  ),
+                  valueTestId: 'today-stats-secondary-in-progress-retry',
+                },
+              ]}
+            />
+          ) : showInProgressConversations ? (
             <MetricTile
               label={parallelLabel}
               description={parallelDescription}

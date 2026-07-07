@@ -272,6 +272,8 @@ interface ChartTooltipContentProps {
     axisText: string;
     success: string;
     failure: string;
+    queued: string;
+    running: string;
     accent: string;
     spend: string;
     firstByte: string;
@@ -393,6 +395,8 @@ function DashboardTodayActivityChartImpl({
       successFill: withOpacity(status.success, 0.24),
       failure: status.failure,
       failureFill: withOpacity(status.failure, 0.24),
+      queued: themeMode === "dark" ? "#fbbf24" : "#d97706",
+      running: accent,
       accent,
       accentFill: withOpacity(accent, 0.22),
       spend,
@@ -454,7 +458,8 @@ function DashboardTodayActivityChartImpl({
     () => ({
       success: t("stats.cards.success"),
       failures: t("stats.cards.failures"),
-      inFlight: t("chart.inFlight"),
+      queued: t("chart.queued"),
+      running: t("chart.running"),
       total: t("chart.totalCount"),
       firstByteTotal: t("chart.firstResponseByteTotal"),
     }),
@@ -806,13 +811,22 @@ function DashboardTodayActivityChartImpl({
             color: chartColors.failure,
           },
           {
-            label: countSeriesNames.inFlight,
+            label: countSeriesNames.running,
             value: formatCountValue(
-              point.inFlightCount,
+              point.runningInFlightCount,
               countUnit,
               numberFormatter,
             ),
-            color: chartColors.accent,
+            color: chartColors.running,
+          },
+          {
+            label: countSeriesNames.queued,
+            value: formatCountValue(
+              point.queuedInFlightCount,
+              countUnit,
+              numberFormatter,
+            ),
+            color: chartColors.queued,
           },
           {
             label: countSeriesNames.firstByteTotal,
@@ -999,10 +1013,20 @@ function DashboardTodayActivityChartImpl({
               />
               <Bar
                 yAxisId="count"
-                dataKey="chartInFlightCount"
-                name={countSeriesNames.inFlight}
+                dataKey="chartRunningInFlightCount"
+                name={countSeriesNames.running}
                 stackId="positive"
-                fill={chartColors.accent}
+                fill={chartColors.running}
+                barSize={countBarSize}
+                radius={[0, 0, 0, 0]}
+                isAnimationActive={animate}
+              />
+              <Bar
+                yAxisId="count"
+                dataKey="chartQueuedInFlightCount"
+                name={countSeriesNames.queued}
+                stackId="positive"
+                fill={chartColors.queued}
                 barSize={countBarSize}
                 radius={[3, 3, 0, 0]}
                 isAnimationActive={animate}

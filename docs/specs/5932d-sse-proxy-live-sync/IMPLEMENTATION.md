@@ -16,6 +16,9 @@
 - Terminal record follow-up no longer forces an immediate SQLite batch flush barrier. With active subscribers, the terminal overlay is broadcast first and summary/quota follow-up is deferred briefly without blocking business response or forcing write-controller lock acquisition.
 - If a request future drops after the admit-time runtime row but before any terminal invocation exists, the drop guard terminalizes the same runtime-store key with an interrupted overlay and broadcasts `records`; it must not silently remove the row because clients preserve transient `id=0` in-flight records across HTTP reconcile.
 - Runtime overlay is intentionally unbounded by activity windows for `running/pending` rows. Current summary in-progress counts, account-activity in-flight cards, and working-conversation current cards all include memory rows regardless of start time; only terminal/historical DB rows remain constrained by the selected window.
+- Dashboard active invocation truth is phase-based. Summary/account activity/timeseries/working conversations use `queued`, `requesting`, and `responding` counts from the runtime overlay plus DB live fallback; UI derives “进行中” from `requesting + responding` and “排队中” from `queued`.
+- Prompt-cache working conversation selection still uses the 5-minute terminal working set plus all live `running/pending` keys, but selected card totals are refilled from full prompt-cache lifecycle aggregates across hourly rollups, exact DB rows, and runtime overlay. Paginated snapshot reads apply the snapshot boundary to lifecycle totals so post-snapshot rows do not leak into card metrics.
+- Timeseries points now expose `inFlightPhaseCounts` alongside the existing `inFlightCount` compatibility total. Dashboard Today renders running and queued in-flight calls as separate positive stacked bars while old rollup buckets without phase detail can fall back to `inFlightCount`.
 - Pool account `last_selected_at` selection touches now use an in-process routing fairness anchor plus a coalesced batch write. Candidate sorting overlays the runtime timestamp on top of persisted account rows, while status/cooldown/failure writes remain synchronous because they affect routing correctness.
 
 ## Migrated Implementation Notes
@@ -49,6 +52,7 @@
 - [x] M10: Runtime running snapshot 收口为纯内存实时态 + SSE/HTTP overlay；后续 running refresh 不再常规写主表，shutdown 不强制 flush P2 running snapshot。
 - [x] M11: Terminal invocation 记录从代理业务关键路径移入 SQLite write controller；业务响应不等待记录落库，running snapshot 完全退出 DB/batch 路径，terminal 产生的派生写延后到后续 P2 flush。
 - [x] M12: Proxy capture 请求 admit 后立即创建最小内存 running shell record；body parse / attempt start / response-ready 只覆盖补全同一 runtime key。
+- [x] M13: Dashboard 活跃调用统一为 invocation phase counts；working conversation 卡片 totals 改为完整生命周期聚合，Today KPI 与图表拆分“进行中 / 排队中”。
 
 ## 2026-06-21 Follow-up
 
@@ -73,3 +77,6 @@
 - `cargo test resolver_ -- --nocapture`
 - `cargo test pool_upstream_request_attempt -- --test-threads=1`
 - `cargo test proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure -- --nocapture`
+- `cargo test prompt_cache_conversations_activity_minutes`
+- `cargo test timeseries_point_exports_in_flight_phase_counts_and_compat_total`
+- `cd web && bun run test -- TodayStatsOverview DashboardTodayActivityChart`

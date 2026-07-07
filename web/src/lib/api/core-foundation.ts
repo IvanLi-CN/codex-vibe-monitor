@@ -702,6 +702,7 @@ export interface TimeseriesPoint {
   successCount: number;
   failureCount: number;
   inFlightCount?: number;
+  inFlightPhaseCounts?: InvocationPhaseCounts | null;
   totalTokens: number;
   cacheInputTokens?: number;
   totalCost: number;
@@ -1527,6 +1528,9 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
   const successCount = normalizeFiniteNumber(payload.successCount) ?? 0;
   const failureCount = normalizeFiniteNumber(payload.failureCount) ?? 0;
   const inFlightCount = normalizeFiniteNumber(payload.inFlightCount) ?? 0;
+  const inFlightPhaseCounts = normalizeInvocationPhaseCounts(
+    payload.inFlightPhaseCounts,
+  );
   const hasCalls =
     Math.max(totalCount, successCount + failureCount + Math.max(inFlightCount, 0)) >
     0;
@@ -1537,6 +1541,7 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
     successCount,
     failureCount,
     inFlightCount,
+    inFlightPhaseCounts,
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     cacheInputTokens: normalizeFiniteNumber(payload.cacheInputTokens) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
@@ -2815,6 +2820,9 @@ function normalizeStatsResponse(raw: unknown): StatsResponse {
       payload.inProgressRetryConversationCount,
     ),
     inProgressAvgWaitMs: normalizeFiniteNumber(payload.inProgressAvgWaitMs),
+    inProgressPhaseCounts: normalizeInvocationPhaseCounts(
+      payload.inProgressPhaseCounts,
+    ),
     nonSuccessCost: normalizeFiniteNumber(payload.nonSuccessCost),
     nonSuccessTokens: normalizeFiniteNumber(payload.nonSuccessTokens),
     maintenance: payload.maintenance as StatsMaintenanceResponse | undefined,
