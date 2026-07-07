@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.19.2",
+  "base_stable_version": "2.19.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-07T16:39:07Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.19.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "05933ed2d25c0054c095c7a43e5eb4e33c27dc42",
+  "pr_number": 565,
+  "pr_title": "fix(web): clarify Fast rewrite policy chips",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.19.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.19.2",
+  "target_sha": "3a5b4ba6a7b3b8276bef5252c2a362ca59a0d028",
+  "type_label": "type:patch"
+}
