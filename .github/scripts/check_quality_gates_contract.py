@@ -949,6 +949,7 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     tag_step = step_config(publish, "Create and push git tag", "release.yml.jobs.release-publish")
     tag_run = str(tag_step.get("run", ""))
     require('sha="${TARGET_SHA}"' in tag_run, "release.yml.jobs.release-publish tag step must use target_sha")
+    require("git fetch --tags origin" in tag_run, "release.yml.jobs.release-publish tag step must fetch existing tags")
     release_step = step_config(publish, "Create GitHub Release", "release.yml.jobs.release-publish")
     release_env = require_mapping(release_step.get("env"), "release.yml.jobs.release-publish.steps['Create GitHub Release'].env")
     require(release_env.get("SNAPSHOT_SOURCE") == "${{ needs.release-meta.outputs.snapshot_source }}", "release.yml.jobs.release-publish: release body must consume snapshot_source")
