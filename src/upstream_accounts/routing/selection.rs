@@ -725,6 +725,21 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
         }
         _ => None,
     };
+    let non_explicit_sticky_escape_enabled = !matches!(
+        binding_constraint,
+        Some(PromptCacheConversationBindingConstraint::UpstreamAccount(_))
+    );
+    let sticky_source_transport_decode_escape = if non_explicit_sticky_escape_enabled {
+        if let Some(account_id) = sticky_source_id {
+            load_transport_decode_sticky_escape_account_ids(&state.pool, &[account_id])
+                .await?
+                .contains(&account_id)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     let bypass_requested_model_filter = binding_constraint.is_some();
     let conversation_available_models_override =
         conversation_override.is_some_and(|policy| policy.available_models.is_some());
@@ -767,6 +782,7 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
                         .is_some_and(|route_key| route_key == required)
                 });
             if binding_constraint.is_none()
+                && !sticky_source_transport_decode_escape
                 && sticky_cut_out_blocked_by_policy
             {
                 sticky_source_cut_out_guard_applies = true;
@@ -792,6 +808,8 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
                 } else if is_pool_account_routing_candidate(&row) {
                     saw_non_routing_candidate = true;
                 }
+            } else if sticky_source_transport_decode_escape {
+                saw_degraded_candidate = true;
             } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
                     if sticky_source_rule.as_ref().is_none_or(|rule| {
                         (bypass_requested_model_filter
@@ -987,6 +1005,18 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
     }
 
     let mut candidates = load_account_routing_candidates(&state.pool, &tried).await?;
+    let sticky_escape_account_ids = if non_explicit_sticky_escape_enabled {
+        load_transport_decode_sticky_escape_account_ids(
+            &state.pool,
+            &candidates
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>(),
+        )
+        .await?
+    } else {
+        HashSet::new()
+    };
     for candidate in &mut candidates {
         candidate.in_flight_reservations = pool_routing_reservation_count(state, candidate.id);
         if forced_binding_account_id == Some(candidate.id) && sticky_source_id == Some(candidate.id)
@@ -1038,6 +1068,10 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
             } else {
                 saw_non_routing_candidate = true;
             }
+            continue;
+        }
+        if sticky_escape_account_ids.contains(&candidate.id) {
+            saw_degraded_candidate = true;
             continue;
         }
         if candidate_route_is_excluded_by_route_key {
