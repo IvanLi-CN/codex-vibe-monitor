@@ -95,6 +95,22 @@ function resolveStatusMeta(status?: string | null): StatusMeta {
   return { variant: "secondary", label: raw };
 }
 
+function statusTextClassName(variant: StatusMeta["variant"]) {
+  switch (variant) {
+    case "success":
+      return "text-success";
+    case "warning":
+      return "text-warning";
+    case "error":
+      return "text-error";
+    case "default":
+      return "text-info";
+    case "secondary":
+    default:
+      return "text-base-content/70";
+  }
+}
+
 interface InvocationRowViewModel {
   record: ApiInvocation;
   rowKey: string;
@@ -958,10 +974,20 @@ export function InvocationTable({
                               motion="dynamic"
                               className="justify-center text-[11px] font-semibold"
                             />
-                          ) : null}
+                          ) : (
+                            <span
+                              className={cn(
+                                "block max-w-full truncate whitespace-nowrap text-center text-[11px] font-semibold leading-none",
+                                statusTextClassName(row.meta.variant),
+                              )}
+                              data-testid="invocation-proxy-badge"
+                              title={row.statusLabel}
+                            >
+                              {row.statusLabel}
+                            </span>
+                          )}
                           <div
                             className="mx-auto flex w-fit max-w-full items-center justify-center overflow-hidden text-center text-[11px] font-semibold leading-none text-base-content"
-                            data-testid="invocation-proxy-badge"
                           >
                             <span
                               className="inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap leading-none"
@@ -976,7 +1002,6 @@ export function InvocationTable({
                                   : undefined,
                               )}
                             </span>
-                            <span className="sr-only">{row.statusLabel}</span>
                           </div>
                           <span
                             className="block w-full truncate whitespace-nowrap text-center text-[11px] text-base-content/70"
