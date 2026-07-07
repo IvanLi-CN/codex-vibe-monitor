@@ -497,48 +497,77 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     expect(bodyText()).not.toContain("别组遗留节点");
   });
 
-  it("disables retry count selection when upstream 429 retry is off", () => {
+  it("renders upstream 429 retry as a single 0..5 selector where 0 means off", () => {
+    const onUpstream429RetryEnabledChange = vi.fn();
+    const onUpstream429MaxRetriesChange = vi.fn();
     renderDialog({
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
+      onUpstream429RetryEnabledChange,
+      onUpstream429MaxRetriesChange,
     });
     clickTab(/routing settings/i);
 
-    const retryToggle = document.querySelector(
-      '[role="switch"][aria-label="Retry the same account after upstream 429"]',
-    ) as HTMLElement | null;
-    expect(retryToggle).not.toBeNull();
-    expect(retryToggle?.getAttribute("aria-checked")).toBe("false");
-
-    const retryCount = document.querySelector(
-      '[role="combobox"][aria-label="Retry count"]',
-    ) as HTMLElement | null;
-    expect(retryCount).not.toBeNull();
     expect(
-      retryCount?.getAttribute("aria-disabled") === "true" ||
-        retryCount?.hasAttribute("data-disabled") === true ||
-        retryCount?.hasAttribute("disabled") === true,
-    ).toBe(true);
+      document.querySelector(
+        '[role="switch"][aria-label="Retry the same account after upstream 429"]',
+      ),
+    ).toBeNull();
+    expect(
+      document.querySelector('[role="combobox"][aria-label="Retry count"]'),
+    ).toBeNull();
+
+    const retryGroup = document.querySelector(
+      '[role="radiogroup"][aria-label="Upstream 429 retry"]',
+    ) as HTMLElement | null;
+    expect(retryGroup).not.toBeNull();
+    const retryOptions = Array.from(
+      retryGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+    );
+    expect(retryOptions.map((option) => option.textContent)).toEqual([
+      "0",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+    ]);
+    expect(retryOptions[0]?.getAttribute("aria-checked")).toBe("true");
+
+    act(() => {
+      retryOptions[2]?.click();
+    });
+
+    expect(onUpstream429RetryEnabledChange).toHaveBeenCalledWith(true);
+    expect(onUpstream429MaxRetriesChange).toHaveBeenCalledWith(2);
   });
 
-  it("keeps retry count selection enabled when upstream 429 retry is on", () => {
+  it("selects 0 and emits no-retry payload when clearing upstream 429 retry", () => {
+    const onUpstream429RetryEnabledChange = vi.fn();
+    const onUpstream429MaxRetriesChange = vi.fn();
     renderDialog({
       upstream429RetryEnabled: true,
       upstream429MaxRetries: 3,
+      onUpstream429RetryEnabledChange,
+      onUpstream429MaxRetriesChange,
     });
     clickTab(/routing settings/i);
 
-    const retryToggle = document.querySelector(
-      '[role="switch"][aria-label="Retry the same account after upstream 429"]',
+    const retryGroup = document.querySelector(
+      '[role="radiogroup"][aria-label="Upstream 429 retry"]',
     ) as HTMLElement | null;
-    expect(retryToggle?.getAttribute("aria-checked")).toBe("true");
+    expect(retryGroup).not.toBeNull();
+    const retryOptions = Array.from(
+      retryGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+    );
+    expect(retryOptions[3]?.getAttribute("aria-checked")).toBe("true");
 
-    const retryCount = document.querySelector(
-      '[role="combobox"][aria-label="Retry count"]',
-    ) as HTMLElement | null;
-    expect(retryCount).not.toBeNull();
-    expect(retryCount?.getAttribute("aria-disabled")).not.toBe("true");
-    expect(bodyText()).toContain("3 retries");
+    act(() => {
+      retryOptions[0]?.click();
+    });
+
+    expect(onUpstream429RetryEnabledChange).toHaveBeenCalledWith(false);
+    expect(onUpstream429MaxRetriesChange).toHaveBeenCalledWith(0);
   });
 
   it("renders the single-account rotation switch and preserves its checked state", () => {

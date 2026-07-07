@@ -140,7 +140,7 @@ function DialogHarness({
             statusChangeReasonToggleDisabled: "Off",
             upstream429Retry: "Upstream 429 retry",
             upstream429RetryHint:
-              "Retry the same upstream account before cooldown and failover.",
+              "Choose 0 to disable retries before cooldown and failover.",
             upstream429RetryToggle: "Retry after upstream 429",
             upstream429RetryCount: "Retry count",
             upstream429RetryCountOnce: "1 retry",

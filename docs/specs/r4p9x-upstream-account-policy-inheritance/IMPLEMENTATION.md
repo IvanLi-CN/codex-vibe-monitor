@@ -48,6 +48,7 @@ The account detail Routing tab exposes final effective rules as field-level inli
 - timeout editors are shared across group/account surfaces and now use the same summary-row + source-badge + field-local expand interaction model as the effective routing rule card
 - the group settings dialog is split into `Group info`, `Routing settings`, and `Proxy nodes` tabs so group metadata, routing policy, and proxy-node binding are edited in separate panels under one save action
 - the group `Routing settings` tab embeds the shared routing-rule editor directly; changes remain draft-local across tab switches and are submitted through the same group settings save payload
+- group-level upstream 429 retry controls use the same single `0..5` inline selector as account detail routing controls; choosing `0` submits disabled retry semantics
 - status-change reason toggles render as flat icon-and-label button tiles on both the group dialog and the account effective-rule card
 - the group dialog no longer shows category headers or batch toggle rows for this policy family
 - the account effective-rule card keeps the resolved badge summary and reason tiles, and adds one panel-level reset action that clears only account-layer reason overrides for this family

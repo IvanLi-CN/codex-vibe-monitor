@@ -18,6 +18,7 @@ import {
   MultiSelectFilterCombobox,
   type MultiSelectFilterOption,
 } from "./MultiSelectFilterCombobox";
+import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
 import { RoutingTimeoutOverridesEditor } from "./RoutingTimeoutOverridesEditor";
 import { StatusChangeToggleButton } from "./StatusChangeToggleButton";
 import { statusChangeReasonIconName } from "./statusChangeReasonIcons";
@@ -822,7 +823,7 @@ export function GroupAccountRoutingRuleEditor({
           </div>
 
           <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
-            <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
               <div className="space-y-1">
                 <p className="font-medium text-base-content">
                   {labels.upstream429Retry}
@@ -831,40 +832,32 @@ export function GroupAccountRoutingRuleEditor({
                   {labels.upstream429RetryHint}
                 </p>
               </div>
-              <Switch
-                checked={draft.upstream429RetryEnabled}
-                onCheckedChange={(checked) =>
+            </div>
+            <div className="mt-4">
+              <PolicyInlineOptionGroup<number>
+                ariaLabel={labels.upstream429Retry}
+                value={
+                  draft.upstream429RetryEnabled
+                    ? Math.max(
+                        1,
+                        normalizeRetryCount(draft.upstream429MaxRetries) || 1,
+                      )
+                    : 0
+                }
+                disabled={busy}
+                options={[0, 1, 2, 3, 4, 5].map((value) => ({
+                  value,
+                  label: String(value),
+                }))}
+                onChange={(value) =>
                   setDraft((current) => ({
                     ...current,
-                    upstream429RetryEnabled: checked,
-                    upstream429MaxRetries: checked
-                      ? Math.max(1, current.upstream429MaxRetries || 1)
-                      : 0,
+                    upstream429RetryEnabled: value > 0,
+                    upstream429MaxRetries: normalizeRetryCount(value),
                   }))
                 }
-                aria-label={labels.upstream429RetryToggle}
               />
             </div>
-            <SelectField
-              className="mt-4"
-              label={labels.upstream429RetryCount}
-              name="groupUpstream429MaxRetries"
-              value={String(Math.max(1, draft.upstream429MaxRetries || 1))}
-              disabled={busy || !draft.upstream429RetryEnabled}
-              options={[1, 2, 3, 4, 5].map((value) => ({
-                value: String(value),
-                label:
-                  value === 1
-                    ? labels.upstream429RetryCountOnce
-                    : labels.upstream429RetryCountMany(value),
-              }))}
-              onValueChange={(value) =>
-                setDraft((current) => ({
-                  ...current,
-                  upstream429MaxRetries: normalizeRetryCount(Number(value)),
-                }))
-              }
-            />
           </div>
 
           <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">

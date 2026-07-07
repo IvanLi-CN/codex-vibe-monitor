@@ -9,13 +9,13 @@ import { Button } from "./ui/button";
 import {
   ForwardProxyBindingSelector,
 } from "./ForwardProxyBindingSelector";
+import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
 import {
   canonicalizeForwardProxyBindingKeys,
   hasSelectableForwardProxyBindingSelection,
   normalizeForwardProxyBindingKeys,
   resolveForwardProxyBindingOptions,
 } from "./forwardProxyBindingSelectorUtils";
-import { SelectField } from "./ui/select-field";
 import {
   SegmentedControl,
   SegmentedControlItem,
@@ -194,7 +194,6 @@ export function UpstreamAccountGroupNoteDialog({
   upstream429RetryHint,
   upstream429RetryToggleLabel,
   upstream429RetryCountLabel,
-  upstream429RetryCountOptions,
   routingPolicyLabel,
   routingPolicyHint,
   routingPolicyEditLabel,
@@ -225,35 +224,22 @@ export function UpstreamAccountGroupNoteDialog({
   const normalizedUpstream429MaxRetries = normalizeUpstream429MaxRetries(
     upstream429MaxRetries,
   );
-  const retryCountOptions = useMemo(() => {
-    const fallback = [1, 2, 3, 4, 5].map((value) => ({
-      value,
-      label: value === 1 ? "1 retry" : `${value} retries`,
-    }));
-    if (
-      !Array.isArray(upstream429RetryCountOptions) ||
-      upstream429RetryCountOptions.length === 0
-    ) {
-      return fallback;
-    }
-    const options = upstream429RetryCountOptions
-      .map((option) => ({
-        value: normalizeUpstream429MaxRetries(option.value),
-        label: option.label,
-      }))
-      .filter((option) => option.value > 0 && option.label.trim().length > 0);
-    return options.length > 0 ? options : fallback;
-  }, [upstream429RetryCountOptions]);
-  const selectedRetryCount = useMemo(() => {
-    if (
-      retryCountOptions.some(
-        (option) => option.value === normalizedUpstream429MaxRetries,
-      )
-    ) {
-      return normalizedUpstream429MaxRetries;
-    }
-    return retryCountOptions[0]?.value ?? 1;
-  }, [normalizedUpstream429MaxRetries, retryCountOptions]);
+  const selectedRetryCount = normalizedUpstream429RetryEnabled
+    ? Math.max(1, normalizedUpstream429MaxRetries || 1)
+    : 0;
+  const retryCountOptions = useMemo(
+    () =>
+      [0, 1, 2, 3, 4, 5].map((value) => ({
+        value,
+        label: String(value),
+      })),
+    [],
+  );
+  const handleUpstream429RetryCountChange = (value: number) => {
+    const normalizedValue = normalizeUpstream429MaxRetries(value);
+    onUpstream429RetryEnabledChange?.(normalizedValue > 0);
+    onUpstream429MaxRetriesChange?.(normalizedValue);
+  };
   const canonicalBoundProxyKeys = useMemo(
     () =>
       canonicalizeForwardProxyBindingKeys(
@@ -535,43 +521,21 @@ export function UpstreamAccountGroupNoteDialog({
                   </p>
                 </div>
 
-                <div className="flex items-center justify-between gap-3 rounded-xl border border-base-300/80 bg-base-100/75 px-3 py-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-base-content">
-                      {upstream429RetryToggleLabel ??
-                        "Retry the same account after upstream 429"}
-                    </p>
-                  </div>
-                  <Switch
-                    checked={normalizedUpstream429RetryEnabled}
-                    onCheckedChange={(checked) =>
-                      onUpstream429RetryEnabledChange?.(checked)
-                    }
-                    disabled={busy || !onUpstream429RetryEnabledChange}
-                    aria-label={
-                      upstream429RetryToggleLabel ??
-                      "Retry the same account after upstream 429"
-                    }
-                  />
-                </div>
-
-                <SelectField
-                  label={upstream429RetryCountLabel ?? "Retry count"}
-                  value={String(selectedRetryCount)}
+                <PolicyInlineOptionGroup<number>
+                  ariaLabel={
+                    upstream429RetryLabel ??
+                    upstream429RetryToggleLabel ??
+                    upstream429RetryCountLabel ??
+                    "Upstream 429 retry"
+                  }
+                  value={selectedRetryCount}
                   disabled={
                     busy ||
-                    !normalizedUpstream429RetryEnabled ||
-                    !onUpstream429MaxRetriesChange
+                    (!onUpstream429RetryEnabledChange &&
+                      !onUpstream429MaxRetriesChange)
                   }
-                  options={retryCountOptions.map((option) => ({
-                    value: String(option.value),
-                    label: option.label,
-                  }))}
-                  onValueChange={(value) =>
-                    onUpstream429MaxRetriesChange?.(
-                      normalizeUpstream429MaxRetries(Number(value)),
-                    )
-                  }
+                  options={retryCountOptions}
+                  onChange={handleUpstream429RetryCountChange}
                 />
               </section>
             ) : null}

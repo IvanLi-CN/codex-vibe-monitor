@@ -417,6 +417,65 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
     )
   })
 
+  it('saves 0 upstream 429 retries as disabled in the group settings payload', async () => {
+    const saveGroupSettings = vi.fn().mockResolvedValue(undefined)
+
+    function Harness() {
+      const { openEditor, dialog } = useUpstreamAccountGroupSettingsDialog({
+        writesEnabled: true,
+        resolveGroupState: (groupName) => ({
+          ...createGroupState(groupName),
+          upstream429RetryEnabled: true,
+          upstream429MaxRetries: 3,
+        }),
+        saveGroupSettings,
+      })
+
+      return (
+        <>
+          <button type="button" onClick={() => openEditor('prod')}>
+            Open group settings
+          </button>
+          {dialog}
+        </>
+      )
+    }
+
+    render(<Harness />)
+    pressButton(openButtonByLabel('Open group settings'))
+    await flushAsync()
+
+    const groupDialog = findGroupSettingsDialog()
+    expect(groupDialog).toBeTruthy()
+    clickTab(/routing settings|路由设置/i, groupDialog!)
+    await flushAsync()
+
+    const retryGroup = groupDialog?.querySelector(
+      '[role="tabpanel"]:not([hidden]) [role="radiogroup"][aria-label="Upstream 429 retry"], [role="tabpanel"]:not([hidden]) [role="radiogroup"][aria-label="上游 429 重试"]',
+    ) as HTMLElement | null
+    expect(retryGroup).toBeTruthy()
+    const zeroRetry = Array.from(
+      retryGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+    ).find((button) => button.textContent?.trim() === '0')
+    expect(zeroRetry).toBeTruthy()
+    pressButton(zeroRetry!)
+    await flushAsync()
+
+    const saveGroup = findButtonByPattern(/save changes|保存修改/i, groupDialog!)
+    expect(saveGroup).toBeTruthy()
+    pressButton(saveGroup!)
+    await flushAsync()
+
+    expect(saveGroupSettings).toHaveBeenCalledWith(
+      'prod',
+      expect.objectContaining({
+        upstream429RetryEnabled: false,
+        upstream429MaxRetries: 0,
+      }),
+      { existing: true },
+    )
+  })
+
   it('blocks the unified save while inline routing policy payload is invalid', async () => {
     const saveGroupSettings = vi.fn().mockResolvedValue(undefined)
 

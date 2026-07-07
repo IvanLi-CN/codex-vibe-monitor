@@ -271,7 +271,7 @@ function DialogHarness({
     unlimited: "Unlimited",
     upstream429Retry: "Policy upstream 429 retry",
     upstream429RetryHint:
-      "This policy-level retry override is stored inside the routing rule.",
+      "Choose 0 to disable retries. Positive values are stored inside the routing rule.",
     upstream429RetryToggle: "Retry after upstream 429 in policy",
     upstream429RetryCount: "Policy retry count",
     upstream429RetryCountOnce: "1 retry",
@@ -383,7 +383,7 @@ function DialogHarness({
           singleAccountRotationHint="Successful conversations stay on the same account. After upstream 429 retry is exhausted, only that conversation moves to the next reset-time candidate."
           singleAccountRotationToggleLabel="Keep conversations on one account until final 429"
           upstream429RetryLabel="Upstream 429 retry"
-          upstream429RetryHint="When enabled, this group keeps the same account and retries after upstream 429 with a random 1-10 second delay."
+          upstream429RetryHint="Choose 0 to disable retries. Positive values keep the same account after upstream 429 with a random 1-10 second delay."
           upstream429RetryToggleLabel="Retry the same account after upstream 429"
           upstream429RetryCountLabel="Retry count"
           upstream429RetryCountOptions={[
@@ -504,12 +504,12 @@ export const Upstream429RetryEnabled: Story = {
     const canvas = within(canvasElement);
     await openStoryTab(/routing settings/i);
     await expect(canvas.getByText(/Upstream 429 retry/i)).toBeInTheDocument();
+    const retryGroup = canvas.getByRole("radiogroup", {
+      name: /Upstream 429 retry/i,
+    });
     await expect(
-      canvas.getByRole("switch", {
-        name: /Retry the same account after upstream 429/i,
-      }),
+      within(retryGroup).getByRole("radio", { name: "3" }),
     ).toHaveAttribute("aria-checked", "true");
-    await expect(canvas.getByText(/3 retries/i)).toBeInTheDocument();
   },
 };
 
@@ -575,14 +575,12 @@ export const Upstream429RetryDisabled: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await openStoryTab(/routing settings/i);
+    const retryGroup = canvas.getByRole("radiogroup", {
+      name: /Upstream 429 retry/i,
+    });
     await expect(
-      canvas.getByRole("switch", {
-        name: /Retry the same account after upstream 429/i,
-      }),
-    ).toHaveAttribute("aria-checked", "false");
-    await expect(
-      canvas.getByRole("combobox", { name: /Retry count/i }),
-    ).toHaveAttribute("data-disabled");
+      within(retryGroup).getByRole("radio", { name: "0" }),
+    ).toHaveAttribute("aria-checked", "true");
   },
 };
 
