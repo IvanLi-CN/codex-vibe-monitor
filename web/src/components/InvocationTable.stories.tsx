@@ -627,7 +627,6 @@ const accountDetails = new Map<number, UpstreamAccountDetail>([
       duplicateInfo: null,
       tags: [],
       effectiveRoutingRule: {
-        blockNewConversations: false,
         allowCutOut: true,
         allowCutIn: true,
         sourceTagIds: [],
@@ -679,7 +678,6 @@ const accountDetails = new Map<number, UpstreamAccountDetail>([
       duplicateInfo: null,
       tags: [],
       effectiveRoutingRule: {
-        blockNewConversations: false,
         allowCutOut: true,
         allowCutIn: true,
         sourceTagIds: [],
@@ -735,7 +733,6 @@ const accountDetails = new Map<number, UpstreamAccountDetail>([
       duplicateInfo: null,
       tags: [],
       effectiveRoutingRule: {
-        blockNewConversations: false,
         allowCutOut: true,
         allowCutIn: true,
         sourceTagIds: [],
@@ -824,7 +821,6 @@ const accountDetails = new Map<number, UpstreamAccountDetail>([
       duplicateInfo: null,
       tags: [],
       effectiveRoutingRule: {
-        blockNewConversations: false,
         allowCutOut: true,
         allowCutIn: true,
         sourceTagIds: [],
@@ -874,7 +870,6 @@ const accountDetails = new Map<number, UpstreamAccountDetail>([
       duplicateInfo: null,
       tags: [],
       effectiveRoutingRule: {
-        blockNewConversations: false,
         allowCutOut: true,
         allowCutIn: true,
         sourceTagIds: [],

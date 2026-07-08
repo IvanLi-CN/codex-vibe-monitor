@@ -47,8 +47,6 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             local_primary_limit REAL,
             local_secondary_limit REAL,
             local_limit_unit TEXT,
-            policy_block_new_conversations INTEGER,
-            policy_allow_new_conversations INTEGER,
             policy_allow_cut_out INTEGER,
             policy_allow_cut_in INTEGER,
             policy_priority_tier TEXT,
@@ -135,20 +133,6 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "bound_proxy_keys_json")
         .await
         .context("failed to ensure pool_upstream_accounts.bound_proxy_keys_json")?;
-    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_block_new_conversations")
-        .await
-        .context("failed to ensure pool_upstream_accounts.policy_block_new_conversations")?;
-    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_allow_new_conversations")
-        .await
-        .context("failed to ensure pool_upstream_accounts.policy_allow_new_conversations")?;
-    backfill_allow_new_conversations_policy(
-        pool,
-        "pool_upstream_accounts",
-        "policy_block_new_conversations",
-        "policy_allow_new_conversations",
-    )
-    .await
-    .context("failed to backfill pool_upstream_accounts.policy_allow_new_conversations")?;
     ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_allow_cut_out")
         .await
         .context("failed to ensure pool_upstream_accounts.policy_allow_cut_out")?;
@@ -158,6 +142,15 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "policy_priority_tier")
         .await
         .context("failed to ensure pool_upstream_accounts.policy_priority_tier")?;
+    migrate_legacy_no_new_policy(
+        pool,
+        "pool_upstream_accounts",
+        "policy_priority_tier",
+        "policy_block_new_conversations",
+        "policy_allow_new_conversations",
+    )
+    .await
+    .context("failed to migrate pool_upstream_accounts legacy new-conversation policy")?;
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "policy_fast_mode_rewrite_mode")
         .await
         .context("failed to ensure pool_upstream_accounts.policy_fast_mode_rewrite_mode")?;
@@ -733,7 +726,6 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         CREATE TABLE IF NOT EXISTS pool_tags (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
-            block_new_conversations INTEGER NOT NULL DEFAULT 0,
             allow_cut_out INTEGER NOT NULL DEFAULT 1,
             allow_cut_in INTEGER NOT NULL DEFAULT 1,
             priority_tier TEXT NOT NULL DEFAULT 'normal',
@@ -750,9 +742,6 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_tags table existence")?;
-    ensure_integer_column_with_default(pool, "pool_tags", "block_new_conversations", "0")
-        .await
-        .context("failed to ensure pool_tags.block_new_conversations")?;
     ensure_text_column_with_default(pool, "pool_tags", "priority_tier", "'normal'")
         .await
         .context("failed to ensure pool_tags.priority_tier")?;
@@ -881,8 +870,6 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             upstream_429_retry_enabled INTEGER NOT NULL DEFAULT 0,
             upstream_429_max_retries INTEGER NOT NULL DEFAULT 0,
             concurrency_limit INTEGER NOT NULL DEFAULT 0,
-            policy_block_new_conversations INTEGER,
-            policy_allow_new_conversations INTEGER,
             policy_allow_cut_out INTEGER,
             policy_allow_cut_in INTEGER,
             policy_priority_tier TEXT,
@@ -983,8 +970,6 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .await
     .context("failed to ensure pool_upstream_account_group_notes.concurrency_limit")?;
     for column in [
-        "policy_block_new_conversations",
-        "policy_allow_new_conversations",
         "policy_allow_cut_out",
         "policy_allow_cut_in",
         "policy_concurrency_limit",
@@ -995,14 +980,6 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             .await
             .with_context(|| format!("failed to ensure pool_upstream_account_group_notes.{column}"))?;
     }
-    backfill_allow_new_conversations_policy(
-        pool,
-        "pool_upstream_account_group_notes",
-        "policy_block_new_conversations",
-        "policy_allow_new_conversations",
-    )
-    .await
-    .context("failed to backfill pool_upstream_account_group_notes.policy_allow_new_conversations")?;
     ensure_nullable_text_column(
         pool,
         "pool_upstream_account_group_notes",
@@ -1010,6 +987,15 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_account_group_notes.policy_priority_tier")?;
+    migrate_legacy_no_new_policy(
+        pool,
+        "pool_upstream_account_group_notes",
+        "policy_priority_tier",
+        "policy_block_new_conversations",
+        "policy_allow_new_conversations",
+    )
+    .await
+    .context("failed to migrate pool_upstream_account_group_notes legacy new-conversation policy")?;
     ensure_nullable_text_column(
         pool,
         "pool_upstream_account_group_notes",
@@ -1327,25 +1313,43 @@ async fn ensure_nullable_integer_column(
     Ok(())
 }
 
-async fn backfill_allow_new_conversations_policy(
+async fn migrate_legacy_no_new_policy(
     pool: &Pool<Sqlite>,
     table_name: &str,
-    legacy_column_name: &str,
-    column_name: &str,
+    priority_column_name: &str,
+    legacy_block_column_name: &str,
+    legacy_allow_column_name: &str,
 ) -> Result<()> {
-    let statement = format!(
-        r#"
-        UPDATE {table_name}
-        SET {column_name} = CASE
-            WHEN {legacy_column_name} = 0 THEN 1
-            WHEN {legacy_column_name} = 1 THEN 0
-            ELSE NULL
-        END
-        WHERE {column_name} IS NULL
-          AND {legacy_column_name} IS NOT NULL
-        "#
-    );
-    sqlx::query(&statement).execute(pool).await?;
+    let pragma = format!("PRAGMA table_info('{table_name}')");
+    let columns = sqlx::query(&pragma)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+
+    if columns.contains(legacy_allow_column_name) {
+        let statement = format!(
+            r#"
+            UPDATE {table_name}
+            SET {priority_column_name} = 'no_new'
+            WHERE {legacy_allow_column_name} = 0
+            "#
+        );
+        sqlx::query(&statement).execute(pool).await?;
+    }
+
+    if columns.contains(legacy_block_column_name) {
+        let statement = format!(
+            r#"
+            UPDATE {table_name}
+            SET {priority_column_name} = 'no_new'
+            WHERE {legacy_block_column_name} = 1
+            "#
+        );
+        sqlx::query(&statement).execute(pool).await?;
+    }
+
     Ok(())
 }
 

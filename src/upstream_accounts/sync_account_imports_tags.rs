@@ -15,8 +15,6 @@ const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     compact_support_status, compact_support_observed_at,
     compact_support_reason, image_tool_capability, local_primary_limit, local_secondary_limit,
     local_limit_unit,
-    policy_block_new_conversations,
-    policy_allow_new_conversations,
     policy_allow_cut_out, policy_allow_cut_in, policy_priority_tier,
     policy_fast_mode_rewrite_mode, policy_image_tool_rewrite_mode, policy_concurrency_limit,
     policy_upstream_429_retry_enabled, policy_upstream_429_max_retries,
@@ -75,12 +73,12 @@ async fn ensure_protected_system_tag(pool: &Pool<Sqlite>, name: &str, system_key
     sqlx::query(
         r#"
         INSERT OR IGNORE INTO pool_tags (
-            name, system_key, protected, block_new_conversations,
+            name, system_key, protected,
             allow_cut_out, allow_cut_in, priority_tier, fast_mode_rewrite_mode, concurrency_limit,
             upstream_429_retry_enabled, upstream_429_max_retries,
             created_at, updated_at
         )
-        VALUES (?1, ?2, 1, 0, 1, 1, 'normal', 'keep_original', 0, 0, 0, ?3, ?3)
+        VALUES (?1, ?2, 1, 1, 1, 'normal', 'keep_original', 0, 0, 0, ?3, ?3)
         "#,
     )
     .bind(name)
@@ -2034,7 +2032,6 @@ async fn load_account_tag_map(
             tag.name,
             tag.system_key,
             tag.protected,
-            tag.block_new_conversations,
             tag.allow_cut_out,
             tag.allow_cut_in,
             tag.priority_tier,
@@ -2079,7 +2076,6 @@ async fn load_tags_by_ids(pool: &Pool<Sqlite>, tag_ids: &[i64]) -> Result<Vec<Ta
             name,
             system_key,
             protected,
-            block_new_conversations,
             allow_cut_out,
             allow_cut_in,
             priority_tier,
@@ -2112,7 +2108,6 @@ async fn load_tag_row(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagRow>
             name,
             system_key,
             protected,
-            block_new_conversations,
             allow_cut_out,
             allow_cut_in,
             priority_tier,
@@ -2137,7 +2132,6 @@ async fn load_tag_detail(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagD
         &ListTagsQuery {
             search: None,
             has_accounts: None,
-            block_new_conversations: None,
             allow_cut_in: None,
             allow_cut_out: None,
         },
@@ -2160,7 +2154,6 @@ async fn load_tag_summaries(
             tag.name,
             tag.system_key,
             tag.protected,
-            tag.block_new_conversations,
             tag.allow_cut_out,
             tag.allow_cut_in,
             tag.priority_tier,
@@ -2187,11 +2180,6 @@ async fn load_tag_summaries(
             .push(" AND tag.name LIKE ")
             .push_bind(format!("%{search}%"));
     }
-    if let Some(block_new_conversations) = params.block_new_conversations {
-        query
-            .push(" AND tag.block_new_conversations = ")
-            .push_bind(if block_new_conversations { 1 } else { 0 });
-    }
     if let Some(allow_cut_in) = params.allow_cut_in {
         query
             .push(" AND tag.allow_cut_in = ")
@@ -2203,7 +2191,7 @@ async fn load_tag_summaries(
             .push_bind(if allow_cut_out { 1 } else { 0 });
     }
     query.push(
-        " GROUP BY tag.id, tag.name, tag.system_key, tag.protected, tag.block_new_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.priority_tier, tag.fast_mode_rewrite_mode, tag.concurrency_limit, tag.upstream_429_retry_enabled, tag.upstream_429_max_retries, tag.available_models_json, tag.updated_at",
+        " GROUP BY tag.id, tag.name, tag.system_key, tag.protected, tag.allow_cut_out, tag.allow_cut_in, tag.priority_tier, tag.fast_mode_rewrite_mode, tag.concurrency_limit, tag.upstream_429_retry_enabled, tag.upstream_429_max_retries, tag.available_models_json, tag.updated_at",
     );
     if let Some(has_accounts) = params.has_accounts {
         query.push(if has_accounts {
@@ -2228,15 +2216,14 @@ async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> R
     let inserted_id = sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO pool_tags (
-            name, block_new_conversations, allow_cut_out, allow_cut_in,
-            priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
-            upstream_429_max_retries, available_models_json, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+            name, allow_cut_out, allow_cut_in, priority_tier, fast_mode_rewrite_mode,
+            concurrency_limit, upstream_429_retry_enabled, upstream_429_max_retries,
+            available_models_json, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
         RETURNING id
         "#,
     )
     .bind(name)
-    .bind(if rule.block_new_conversations { 1 } else { 0 })
     .bind(if rule.allow_cut_out { 1 } else { 0 })
     .bind(if rule.allow_cut_in { 1 } else { 0 })
     .bind(rule.priority_tier.as_str())
@@ -2268,22 +2255,20 @@ async fn persist_tag_update(
         r#"
         UPDATE pool_tags
         SET name = ?2,
-            block_new_conversations = ?3,
-            allow_cut_out = ?4,
-            allow_cut_in = ?5,
-            priority_tier = ?6,
-            fast_mode_rewrite_mode = ?7,
-            concurrency_limit = ?8,
-            upstream_429_retry_enabled = ?9,
-            upstream_429_max_retries = ?10,
-            available_models_json = ?11,
-            updated_at = ?12
+            allow_cut_out = ?3,
+            allow_cut_in = ?4,
+            priority_tier = ?5,
+            fast_mode_rewrite_mode = ?6,
+            concurrency_limit = ?7,
+            upstream_429_retry_enabled = ?8,
+            upstream_429_max_retries = ?9,
+            available_models_json = ?10,
+            updated_at = ?11
         WHERE id = ?1
         "#,
     )
     .bind(tag_id)
     .bind(name)
-    .bind(if rule.block_new_conversations { 1 } else { 0 })
     .bind(if rule.allow_cut_out { 1 } else { 0 })
     .bind(if rule.allow_cut_in { 1 } else { 0 })
     .bind(rule.priority_tier.as_str())
@@ -2461,8 +2446,6 @@ async fn load_upstream_account_groups(
             notes.upstream_429_retry_enabled,
             notes.upstream_429_max_retries,
             notes.concurrency_limit,
-            notes.policy_block_new_conversations,
-            notes.policy_allow_new_conversations,
             notes.policy_allow_cut_out,
             notes.policy_allow_cut_in,
             notes.policy_priority_tier,
@@ -2519,8 +2502,6 @@ async fn load_upstream_account_groups(
                     row.concurrency_limit.unwrap_or_default(),
                     upstream_429_retry_enabled,
                     upstream_429_max_retries,
-                    row.policy_block_new_conversations,
-                    row.policy_allow_new_conversations,
                     row.policy_allow_cut_out,
                     row.policy_allow_cut_in,
                     row.policy_priority_tier.as_deref(),
@@ -3561,7 +3542,6 @@ fn group_routing_rule_from_group_metadata(
     metadata: &UpstreamAccountGroupMetadata,
 ) -> GroupAccountRoutingRule {
     GroupAccountRoutingRule {
-        block_new_conversations: false,
         allow_cut_out: true,
         allow_cut_in: true,
         priority_tier: TagPriorityTier::Normal,

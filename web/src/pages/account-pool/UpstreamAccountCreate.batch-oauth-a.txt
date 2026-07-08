@@ -173,13 +173,11 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
               id: Number(tagId),
               name: `tag-${tagId}`,
               routingRule: {
-                blockNewConversations: false,
                 allowCutOut: true,
                 allowCutIn: true,
               },
             })),
             effectiveRoutingRule: {
-              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               sourceTagIds: [],
@@ -314,7 +312,6 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
           note: null,
           tags: [],
           effectiveRoutingRule: {
-            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
@@ -433,7 +430,6 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
           note: "Seed note",
           tags: [],
           effectiveRoutingRule: {
-            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
@@ -516,7 +512,6 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
             note: "Seed note",
             tags: [],
             effectiveRoutingRule: {
-              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               sourceTagIds: [],
@@ -618,7 +613,6 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
             note: current.note,
             tags: [],
             effectiveRoutingRule: {
-              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               sourceTagIds: [],
@@ -741,13 +735,11 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
               id: Number(tagId),
               name: tagId === 2 ? "burst-safe" : `tag-${tagId}`,
               routingRule: {
-                blockNewConversations: false,
                 allowCutOut: true,
                 allowCutIn: true,
               },
             })),
             effectiveRoutingRule: {
-              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               sourceTagIds: [],
@@ -773,14 +765,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
               id: 2,
               name: "burst-safe",
               routingRule: {
-                blockNewConversations: false,
                 allowCutOut: true,
                 allowCutIn: true,
               },
             },
           ],
           effectiveRoutingRule: {
-            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
@@ -849,7 +839,6 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
           note: "Seed note",
           tags: [],
           effectiveRoutingRule: {
-            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
@@ -871,7 +860,6 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
           enabled: true,
           tags: [],
           effectiveRoutingRule: {
-            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
@@ -931,14 +919,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
                 id: Number(tagId),
                 name: tagId === 1 ? "vip" : `tag-${tagId}`,
                 routingRule: {
-                  blockNewConversations: false,
                   allowCutOut: true,
                   allowCutIn: true,
                 },
               }))
             : [],
           effectiveRoutingRule: {
-            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
@@ -990,14 +976,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
                 id: Number(tagId),
                 name: tagId === 1 ? "vip" : `tag-${tagId}`,
                 routingRule: {
-                  blockNewConversations: false,
                   allowCutOut: true,
                   allowCutIn: true,
                 },
               }))
             : [],
           effectiveRoutingRule: {
-            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
@@ -1022,14 +1006,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
               id: 2,
               name: "burst-safe",
               routingRule: {
-                blockNewConversations: false,
                 allowCutOut: true,
                 allowCutIn: true,
               },
             },
           ],
           effectiveRoutingRule: {
-            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
@@ -1080,14 +1062,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
                 id: Number(tagId),
                 name: tagId === 1 ? "vip" : `tag-${tagId}`,
                 routingRule: {
-                  blockNewConversations: false,
                   allowCutOut: true,
                   allowCutIn: true,
                 },
               }))
             : [],
           effectiveRoutingRule: {
-            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],

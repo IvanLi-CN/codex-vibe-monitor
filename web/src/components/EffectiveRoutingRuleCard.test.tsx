@@ -45,8 +45,6 @@ const labels = {
   description:
     "Merged routing constraints applied to the selected upstream account. Use account overrides when needed.",
   noTags: "No tags linked",
-  blockNewConversations: "New conversations blocked",
-  allowNewConversations: "New conversations allowed",
   allowCutOut: "Cut-out allowed",
   denyCutOut: "Cut-out blocked",
   allowCutIn: "Cut-in allowed",
@@ -55,6 +53,7 @@ const labels = {
   priorityPrimary: "Primary",
   priorityNormal: "Normal",
   priorityFallback: "Fallback only",
+  priorityNoNew: "No new",
   fastModeKeepOriginal: "Keep original",
   fastModeFillMissing: "Fill when missing",
   fastModeForceAdd: "Force add",
@@ -70,7 +69,6 @@ const labels = {
   concurrencyLimit: (count: number) => `Concurrency ${count}`,
   concurrencyUnlimited: "Concurrency unlimited",
   sourceBreakdownTitle: "Field source breakdown",
-  fieldBlockNewConversations: "New conversations",
   fieldAllowCutOut: "Cut out",
   fieldAllowCutIn: "Cut in",
   fieldPriority: "Priority",
@@ -113,7 +111,6 @@ const labels = {
   overrideEdit: "Edit account override",
   overrideClear: "Clear account override",
   overrideSaving: "Saving account override...",
-  newConversationLabel: "New conversations",
   cutOutLabel: "Cut out",
   cutInLabel: "Cut in",
   upstream429RetryCountValue: (count: number) => String(count),
@@ -128,7 +125,6 @@ function buildRule(
   overrides: Partial<EffectiveRoutingRule> = {},
 ): EffectiveRoutingRule {
   return {
-    blockNewConversations: false,
     allowCutOut: true,
     allowCutIn: true,
     priorityTier: "normal",
@@ -145,7 +141,6 @@ function buildRule(
     sourceTagIds: [],
     sourceTagNames: [],
     fieldSources: {
-      blockNewConversations: "root",
       allowCutOut: "root",
       allowCutIn: "root",
       priorityTier: "root",
@@ -177,7 +172,6 @@ describe("EffectiveRoutingRuleCard", () => {
           sourceTagIds: [1, 2],
           sourceTagNames: ["allow-gpt-4o", "allow-o3"],
           fieldSources: {
-            blockNewConversations: "root",
             allowCutOut: "root",
             allowCutIn: "root",
             priorityTier: "tag",
@@ -218,14 +212,12 @@ describe("EffectiveRoutingRuleCard", () => {
     render(
       <EffectiveRoutingRuleCard
         rule={buildRule({
-          blockNewConversations: true,
           allowCutOut: false,
           allowCutIn: false,
-          priorityTier: "fallback",
+          priorityTier: "no_new",
           fastModeRewriteMode: "force_add",
           fieldSources: {
             ...buildRule().fieldSources,
-            blockNewConversations: "group",
             allowCutOut: "tag",
             allowCutIn: "account",
             priorityTier: "tag",
@@ -239,10 +231,10 @@ describe("EffectiveRoutingRuleCard", () => {
     const blockedValues = Array.from(
       document.querySelectorAll('[class*="bg-warning"]'),
     ).map((node) => node.textContent);
-    expect(blockedValues).toContain("New conversations blocked");
+    expect(blockedValues).toContain("No new");
     expect(blockedValues).toContain("Cut-out blocked");
     expect(blockedValues).toContain("Cut-in blocked");
-    expect(blockedValues).toContain("Fallback only");
+    expect(blockedValues).toContain("No new");
 
     const forceAddBadge = Array.from(
       document.querySelectorAll('[class*="bg-primary"]'),
@@ -254,7 +246,7 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(document.body.textContent?.match(/Cut-in blocked/g)).toHaveLength(1);
   });
 
-  it("expands an inherited boolean override and saves the positive switch as the backend inverse", () => {
+  it("expands the priority override and saves the no-new tier directly", () => {
     const onChange = vi.fn();
     render(
       <EffectiveRoutingRuleCard
@@ -265,7 +257,7 @@ describe("EffectiveRoutingRuleCard", () => {
     );
 
     const editButton = document.querySelector<HTMLButtonElement>(
-      'button[aria-label="Edit account override: New conversations"]',
+      'button[aria-label="Edit account override: Priority"]',
     );
     expect(editButton).not.toBeNull();
 
@@ -276,20 +268,17 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(document.body.textContent).not.toContain(
       "Default value starts from the inherited value.",
     );
-    expect(document.body.textContent).toContain(
-      "New conversationsNew conversations allowedRoot defaultNew conversations",
-    );
-    const switchButton = document.querySelector<HTMLButtonElement>(
-      'button[role="switch"][aria-label="New conversations"]',
-    );
-    expect(switchButton).not.toBeNull();
+    const noNewButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => button.textContent?.trim() === "No new");
+    expect(noNewButton).not.toBeNull();
 
     act(() => {
-      switchButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      noNewButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(onChange).toHaveBeenCalledWith("allowNewConversations", {
-      allowNewConversations: false,
+    expect(onChange).toHaveBeenCalledWith("priorityTier", {
+      priorityTier: "no_new",
     });
   });
 

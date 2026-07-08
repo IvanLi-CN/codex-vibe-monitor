@@ -393,10 +393,9 @@ function createUpstreamAccountActivityStoryResponse(
         },
         retryInvocationCount: 1,
         effectiveRoutingRule: {
-          blockNewConversations: true,
           allowCutOut: true,
           allowCutIn: false,
-          priorityTier: "primary",
+          priorityTier: "no_new",
           fastModeRewriteMode: "force_add",
           imageToolRewriteMode: "keep_original",
           concurrencyLimit: 3,
@@ -409,7 +408,6 @@ function createUpstreamAccountActivityStoryResponse(
           sourceTagIds: [],
           sourceTagNames: [],
           fieldSources: {
-            blockNewConversations: "account",
             allowCutOut: "root",
             allowCutIn: "account",
             priorityTier: "group",
@@ -3269,7 +3267,6 @@ export const UpstreamAccountHeaderActions: Story = {
             __dashboardStoryPolicyPatchLog?: string[];
           }
         ).__dashboardStoryPolicyPatchLog;
-        expect(patchLog?.[0]).toContain('"allowNewConversations":true');
         expect(patchLog?.[0]).toContain('"priorityTier":"normal"');
         expect(patchLog?.[0]).toContain('"fastModeRewriteMode":"force_remove"');
       },
@@ -3320,7 +3317,6 @@ export const UpstreamAccountQuickPolicyTonePalette: Story = {
         ]),
       ])}
       upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(4, {
-        blockNewConversations: false,
         allowCutOut: false,
         allowCutIn: true,
         priorityTier: "fallback",
@@ -3358,7 +3354,6 @@ export const UpstreamAccountQuickPolicyTonePaletteDark: Story = {
         ]),
       ])}
       upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(4, {
-        blockNewConversations: false,
         allowCutOut: false,
         allowCutIn: true,
         priorityTier: "fallback",

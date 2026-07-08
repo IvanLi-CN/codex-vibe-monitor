@@ -256,7 +256,6 @@
 
     fn test_tag_routing_rule() -> TagRoutingRule {
         TagRoutingRule {
-            block_new_conversations: false,
             allow_cut_out: true,
             allow_cut_in: true,
             priority_tier: TagPriorityTier::Normal,
@@ -282,7 +281,6 @@
 
     fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
         EffectiveRoutingRule {
-            block_new_conversations: false,
             allow_cut_out: true,
             allow_cut_in: true,
             priority_tier: TagPriorityTier::Normal,
@@ -301,7 +299,6 @@
             source_tag_ids: vec![],
             source_tag_names: vec![],
             field_sources: EffectiveRoutingRuleFieldSources {
-                block_new_conversations: "root".to_string(),
                 allow_cut_out: "root".to_string(),
                 allow_cut_in: "root".to_string(),
                 priority_tier: "root".to_string(),
@@ -490,16 +487,15 @@
         let inserted_id = sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO pool_tags (
-                name, system_key, protected, block_new_conversations, allow_cut_out, allow_cut_in,
-                priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
+                name, system_key, protected, allow_cut_out, allow_cut_in, priority_tier,
+                fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
                 upstream_429_max_retries, available_models_json, created_at, updated_at
-            ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+            ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
             RETURNING id
             "#,
         )
         .bind(name)
         .bind(format!("test:{name}"))
-        .bind(if rule.block_new_conversations { 1 } else { 0 })
         .bind(if rule.allow_cut_out { 1 } else { 0 })
         .bind(if rule.allow_cut_in { 1 } else { 0 })
         .bind(rule.priority_tier.as_str())
@@ -529,15 +525,14 @@
         sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO pool_tags (
-                name, block_new_conversations, allow_cut_out, allow_cut_in,
-                priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
-                upstream_429_max_retries, available_models_json, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+                name, allow_cut_out, allow_cut_in, priority_tier, fast_mode_rewrite_mode,
+                concurrency_limit, upstream_429_retry_enabled, upstream_429_max_retries,
+                available_models_json, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
             RETURNING id
             "#,
         )
         .bind(name)
-        .bind(if rule.block_new_conversations { 1 } else { 0 })
         .bind(if rule.allow_cut_out { 1 } else { 0 })
         .bind(if rule.allow_cut_in { 1 } else { 0 })
         .bind(rule.priority_tier.as_str())
@@ -2287,7 +2282,7 @@
     }
 
     #[tokio::test]
-    async fn ensure_upstream_accounts_schema_backfills_allow_new_conversations_policy_columns() {
+    async fn ensure_upstream_accounts_schema_migrates_legacy_block_policy_to_no_new_priority() {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("connect sqlite");
@@ -2358,9 +2353,9 @@
             .await
             .expect("upgrade legacy policy columns");
 
-        let account_values = sqlx::query_as::<_, (String, Option<i64>)>(
+        let account_values = sqlx::query_as::<_, (String, Option<String>)>(
             r#"
-            SELECT display_name, policy_allow_new_conversations
+            SELECT display_name, policy_priority_tier
             FROM pool_upstream_accounts
             ORDER BY display_name
             "#,
@@ -2371,15 +2366,15 @@
         assert_eq!(
             account_values,
             vec![
-                ("legacy-allow".to_string(), Some(1)),
-                ("legacy-block".to_string(), Some(0)),
+                ("legacy-allow".to_string(), None),
+                ("legacy-block".to_string(), Some("no_new".to_string())),
                 ("legacy-inherit".to_string(), None),
             ]
         );
 
-        let group_values = sqlx::query_as::<_, (String, Option<i64>)>(
+        let group_values = sqlx::query_as::<_, (String, Option<String>)>(
             r#"
-            SELECT group_name, policy_allow_new_conversations
+            SELECT group_name, policy_priority_tier
             FROM pool_upstream_account_group_notes
             ORDER BY group_name
             "#,
@@ -2390,8 +2385,8 @@
         assert_eq!(
             group_values,
             vec![
-                ("legacy-allow-group".to_string(), Some(1)),
-                ("legacy-block-group".to_string(), Some(0)),
+                ("legacy-allow-group".to_string(), None),
+                ("legacy-block-group".to_string(), Some("no_new".to_string())),
                 ("legacy-inherit-group".to_string(), None),
             ]
         );
@@ -3554,7 +3549,7 @@
             normalize_tag_priority_tier(Some("unexpected")),
             Err((
                 StatusCode::BAD_REQUEST,
-                "priorityTier must be one of: primary, normal, fallback".to_string(),
+                "priorityTier must be one of: primary, normal, fallback, no_new".to_string(),
             ))
         );
     }
@@ -4051,10 +4046,10 @@
             INSERT INTO pool_upstream_account_group_notes (
                 group_name,
                 note,
-                policy_block_new_conversations,
+                policy_priority_tier,
                 created_at,
                 updated_at
-            ) VALUES ('blocked-group', '', 1, '2026-03-15T00:00:00Z', '2026-03-15T00:00:00Z')
+            ) VALUES ('blocked-group', '', 'no_new', '2026-03-15T00:00:00Z', '2026-03-15T00:00:00Z')
             "#,
         )
         .execute(&pool)
@@ -4065,7 +4060,7 @@
             r#"
             UPDATE pool_upstream_accounts
             SET group_name = 'blocked-group',
-                policy_block_new_conversations = 0
+                policy_priority_tier = 'normal'
             WHERE id = ?1
             "#,
         )
@@ -4073,9 +4068,7 @@
         .execute(&pool)
         .await
         .expect("save account routing policy");
-        let mut tag_rule = test_tag_routing_rule();
-        tag_rule.block_new_conversations = false;
-        let tag = insert_tag(&pool, "block-tag", &tag_rule)
+        let tag = insert_tag(&pool, "block-tag", &test_tag_routing_rule())
             .await
             .expect("insert block tag");
         sync_account_tag_links(&pool, account_id, &[tag.summary.id])
@@ -4086,8 +4079,8 @@
             .await
             .expect("load effective routing rule");
 
-        assert!(!rule.block_new_conversations);
-        assert_eq!(rule.field_sources.block_new_conversations, "account");
+        assert_eq!(rule.priority_tier, TagPriorityTier::Normal);
+        assert_eq!(rule.field_sources.priority_tier, "account");
     }
 
     #[tokio::test]
@@ -4212,8 +4205,6 @@
                     local_limit_unit: None,
                     tag_ids: None,
                     routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                        allow_new_conversations: OptionalField::Missing,
-                        block_new_conversations: OptionalField::Missing,
                         allow_cut_out: OptionalField::Missing,
                         allow_cut_in: OptionalField::Null,
                         priority_tier: OptionalField::Missing,
@@ -4288,8 +4279,6 @@
                     local_limit_unit: None,
                     tag_ids: None,
                     routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                        allow_new_conversations: OptionalField::Missing,
-                        block_new_conversations: OptionalField::Missing,
                         allow_cut_out: OptionalField::Missing,
                         allow_cut_in: OptionalField::Missing,
                         priority_tier: OptionalField::Missing,
@@ -4403,11 +4392,9 @@
                     local_limit_unit: None,
                     tag_ids: None,
                     routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                        allow_new_conversations: OptionalField::Value(false),
-                        block_new_conversations: OptionalField::Missing,
                         allow_cut_out: OptionalField::Missing,
                         allow_cut_in: OptionalField::Missing,
-                        priority_tier: OptionalField::Missing,
+                        priority_tier: OptionalField::Value("no_new".to_string()),
                         fast_mode_rewrite_mode: OptionalField::Missing,
                         image_tool_rewrite_mode: OptionalField::Missing,
                         concurrency_limit: OptionalField::Missing,
@@ -4422,32 +4409,31 @@
             .await
             .expect("save positive new conversation policy");
 
-        let stored = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
-            "SELECT policy_allow_new_conversations, policy_block_new_conversations FROM pool_upstream_accounts WHERE id = ?1",
+        let stored = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT policy_priority_tier FROM pool_upstream_accounts WHERE id = ?1",
         )
         .bind(account_id)
         .fetch_one(&state.pool)
         .await
         .expect("load stored policy");
-        assert_eq!(stored, (Some(0), Some(1)));
+        assert_eq!(stored, Some("no_new".to_string()));
 
         let rule = load_effective_routing_rule_for_account(&state.pool, account_id)
             .await
             .expect("load effective routing rule");
-        assert!(rule.block_new_conversations);
-        assert_eq!(rule.field_sources.block_new_conversations, "account");
+        assert_eq!(rule.priority_tier, TagPriorityTier::NoNew);
+        assert_eq!(rule.field_sources.priority_tier, "account");
     }
 
     #[tokio::test]
-    async fn update_upstream_account_preserves_legacy_block_column_when_new_conversations_omitted()
+    async fn update_upstream_account_preserves_priority_tier_when_omitted()
     {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = insert_api_key_account(&state.pool, "Preserve Legacy Block").await;
         sqlx::query(
             r#"
             UPDATE pool_upstream_accounts
-            SET policy_allow_new_conversations = 1,
-                policy_block_new_conversations = 0
+            SET policy_priority_tier = 'no_new'
             WHERE id = ?1
             "#,
         )
@@ -4482,8 +4468,6 @@
                     local_limit_unit: None,
                     tag_ids: None,
                     routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                        allow_new_conversations: OptionalField::Missing,
-                        block_new_conversations: OptionalField::Missing,
                         allow_cut_out: OptionalField::Value(false),
                         allow_cut_in: OptionalField::Missing,
                         priority_tier: OptionalField::Missing,
@@ -4501,18 +4485,18 @@
             .await
             .expect("save unrelated account policy field");
 
-        let stored = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>)>(
-            "SELECT policy_allow_new_conversations, policy_block_new_conversations, policy_allow_cut_out FROM pool_upstream_accounts WHERE id = ?1",
+        let stored = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+            "SELECT policy_priority_tier, policy_allow_cut_out FROM pool_upstream_accounts WHERE id = ?1",
         )
         .bind(account_id)
         .fetch_one(&state.pool)
         .await
         .expect("load stored policy");
-        assert_eq!(stored, (Some(1), Some(0), Some(0)));
+        assert_eq!(stored, (Some("no_new".to_string()), Some(0)));
     }
 
     #[tokio::test]
-    async fn update_upstream_account_accepts_legacy_block_new_conversations_write() {
+    async fn update_upstream_account_accepts_no_new_priority_write() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = insert_api_key_account(&state.pool, "Legacy Block Write").await;
 
@@ -4542,11 +4526,9 @@
                     local_limit_unit: None,
                     tag_ids: None,
                     routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                        allow_new_conversations: OptionalField::Missing,
-                        block_new_conversations: OptionalField::Value(true),
                         allow_cut_out: OptionalField::Missing,
                         allow_cut_in: OptionalField::Missing,
-                        priority_tier: OptionalField::Missing,
+                        priority_tier: OptionalField::Value("no_new".to_string()),
                         fast_mode_rewrite_mode: OptionalField::Missing,
                         image_tool_rewrite_mode: OptionalField::Missing,
                         concurrency_limit: OptionalField::Missing,
@@ -4561,32 +4543,31 @@
             .await
             .expect("save legacy block new conversations policy");
 
-        let stored = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
-            "SELECT policy_allow_new_conversations, policy_block_new_conversations FROM pool_upstream_accounts WHERE id = ?1",
+        let stored = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT policy_priority_tier FROM pool_upstream_accounts WHERE id = ?1",
         )
         .bind(account_id)
         .fetch_one(&state.pool)
         .await
         .expect("load stored policy");
-        assert_eq!(stored, (Some(0), Some(1)));
+        assert_eq!(stored, Some("no_new".to_string()));
 
         let rule = load_effective_routing_rule_for_account(&state.pool, account_id)
             .await
             .expect("load effective routing rule");
-        assert!(rule.block_new_conversations);
-        assert_eq!(rule.field_sources.block_new_conversations, "account");
+        assert_eq!(rule.priority_tier, TagPriorityTier::NoNew);
+        assert_eq!(rule.field_sources.priority_tier, "account");
     }
 
     #[tokio::test]
-    async fn update_upstream_account_does_not_backfill_positive_column_on_legacy_only_missing()
+    async fn update_upstream_account_does_not_change_priority_tier_when_omitted()
     {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = insert_api_key_account(&state.pool, "Legacy Only Missing").await;
         sqlx::query(
             r#"
             UPDATE pool_upstream_accounts
-            SET policy_allow_new_conversations = NULL,
-                policy_block_new_conversations = 1
+            SET policy_priority_tier = 'no_new'
             WHERE id = ?1
             "#,
         )
@@ -4621,8 +4602,6 @@
                     local_limit_unit: None,
                     tag_ids: None,
                     routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                        allow_new_conversations: OptionalField::Missing,
-                        block_new_conversations: OptionalField::Missing,
                         allow_cut_out: OptionalField::Value(false),
                         allow_cut_in: OptionalField::Missing,
                         priority_tier: OptionalField::Missing,
@@ -4640,14 +4619,14 @@
             .await
             .expect("save unrelated account policy field");
 
-        let stored = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>)>(
-            "SELECT policy_allow_new_conversations, policy_block_new_conversations, policy_allow_cut_out FROM pool_upstream_accounts WHERE id = ?1",
+        let stored = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+            "SELECT policy_priority_tier, policy_allow_cut_out FROM pool_upstream_accounts WHERE id = ?1",
         )
         .bind(account_id)
         .fetch_one(&state.pool)
         .await
         .expect("load stored policy");
-        assert_eq!(stored, (None, Some(1), Some(0)));
+        assert_eq!(stored, (Some("no_new".to_string()), Some(0)));
     }
 
     #[tokio::test]
@@ -4681,8 +4660,6 @@
                     local_limit_unit: None,
                     tag_ids: None,
                     routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                        allow_new_conversations: OptionalField::Missing,
-                        block_new_conversations: OptionalField::Missing,
                         allow_cut_out: OptionalField::Missing,
                         allow_cut_in: OptionalField::Missing,
                         priority_tier: OptionalField::Missing,
@@ -4739,8 +4716,6 @@
                     local_limit_unit: None,
                     tag_ids: None,
                     routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                        allow_new_conversations: OptionalField::Missing,
-                        block_new_conversations: OptionalField::Missing,
                         allow_cut_out: OptionalField::Missing,
                         allow_cut_in: OptionalField::Missing,
                         priority_tier: OptionalField::Value("normal".to_string()),
@@ -4978,7 +4953,6 @@
             Query(ListTagsQuery {
                 search: None,
                 has_accounts: None,
-                block_new_conversations: None,
                 allow_cut_in: None,
                 allow_cut_out: None,
             }),

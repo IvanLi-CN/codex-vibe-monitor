@@ -11836,9 +11836,8 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
-        SET policy_block_new_conversations = 1,
-            policy_allow_cut_in = 0,
-            policy_priority_tier = 'primary',
+        SET policy_allow_cut_in = 0,
+            policy_priority_tier = 'no_new',
             policy_fast_mode_rewrite_mode = 'force_add',
             policy_concurrency_limit = 3,
             policy_upstream_429_retry_enabled = 1,
@@ -12066,15 +12065,12 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     assert_eq!(account.retry_invocation_count, Some(1));
     let effective_routing_rule =
         serde_json::to_value(&account.effective_routing_rule).expect("serialize routing rule");
-    assert_eq!(
-        effective_routing_rule["blockNewConversations"],
-        serde_json::Value::Bool(true)
-    );
+    assert!(effective_routing_rule.get("blockNewConversations").is_none());
     assert_eq!(
         effective_routing_rule["allowCutIn"],
         serde_json::Value::Bool(false)
     );
-    assert_eq!(effective_routing_rule["priorityTier"], "primary");
+    assert_eq!(effective_routing_rule["priorityTier"], "no_new");
     assert_eq!(effective_routing_rule["fastModeRewriteMode"], "force_add");
     assert_eq!(effective_routing_rule["concurrencyLimit"], 3);
     assert_eq!(

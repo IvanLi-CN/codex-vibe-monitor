@@ -93,7 +93,6 @@ function outerVirtualizerMetrics() {
 }
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
-  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   sourceTagIds: [],
@@ -401,10 +400,9 @@ describe('UpstreamAccountsGroupedRoster', () => {
         ],
         {
           routingRule: {
-            blockNewConversations: true,
+            priorityTier: "no_new",
             allowCutOut: false,
             allowCutIn: true,
-            priorityTier: 'fallback',
             fastModeRewriteMode: 'force_add',
             concurrencyLimit: 4,
             upstream429RetryEnabled: true,
@@ -414,9 +412,8 @@ describe('UpstreamAccountsGroupedRoster', () => {
       ),
     ])
 
-    expect(host?.textContent).toContain('Fallback')
-    expect(host?.textContent).toContain('Fast')
     expect(host?.textContent).toContain('No new')
+    expect(host?.textContent).toContain('Fast')
     expect(host?.textContent).toContain('No out')
     expect(host?.textContent).toContain('No in')
     expect(host?.textContent).toContain('Conc 4')

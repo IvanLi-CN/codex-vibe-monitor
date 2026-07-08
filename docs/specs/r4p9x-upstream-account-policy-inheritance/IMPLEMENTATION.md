@@ -38,8 +38,8 @@ The account detail Routing tab exposes final effective rules as field-level inli
 - each editable effective-rule row has an icon-only account override control
 - activating a row expands a field-local editor; clearing an active account override sends `null` and collapses the row
 - existing account-level overrides render expanded by default when the account detail Routing tab opens
-- boolean fields use positive operator-facing labels: `new conversations`, `cut-out`, and `cut-in`
-- `new conversations` writes the positive `allowNewConversations` API payload and persists in `policy_allow_new_conversations`
+- `priorityTier` owns the four owner-facing usage states: `primary`, `normal`, `fallback`, and `no_new`
+- `no_new` is edited as the fourth priority option and no separate new-conversation row or payload field remains
 - discrete policy fields use inline radio groups with an animated selected-state indicator and reduced-motion fallback
 - `upstream 429 retry` is rendered as a single `0..5` inline count selector; `0` maps to disabled without a separate toggle control
 - concurrency stays embedded in the expanded row; available models render as a tag-selector style control instead of repeated add buttons
@@ -70,7 +70,13 @@ Account and group routing policy writes distinguish missing, `null`, and value f
 - `null` clears the stored override
 - value writes the override, including boolean `false`
 
-Effective routing resolution applies group policy, read-only system signals, then account policy. Account-level `new conversations`, `cut-out`, and `cut-in` values replace inherited values directly; they no longer use a most-conservative merge at the account layer.
+Effective routing resolution applies group policy, read-only system signals, then account policy. Account-level `priorityTier`, `cut-out`, and `cut-in` values replace inherited values directly; they no longer use a most-conservative merge at the account layer.
+
+Startup schema maintenance migrates legacy forbid-new rows into priority.
+
+- group/account rows with `policy_allow_new_conversations=0` or `policy_block_new_conversations=1` write `policy_priority_tier='no_new'`
+- old forbid-new plus `primary` or `fallback` loses the old lane and becomes only `no_new`
+- runtime and API code stop selecting, serializing, or accepting `allowNewConversations` / `blockNewConversations`
 
 Effective routing now also exports:
 
@@ -116,6 +122,7 @@ Validation covers:
   - detail edit view keeps system tags read-only
   - roster filtering still works against system tags
   - inline account override rows show inherited, account override, expanded editor, saving/error, and empty-model override states
+  - effective routing rule card renders priority as a four-state row including `no_new`, with no separate new-conversation row
   - existing account overrides auto-expand on load, available models use the tag-selector control, and upstream 429 retry uses the `0..5` count selector without a separate switch
 - timeout source badges and clear-to-inherit controls work across group, account, and conversation layers without involving tags
 - timeout rows stay collapsed when the current layer does not override them; current-layer timeout overrides expand by default and can be cleared one field at a time without affecting untouched fields

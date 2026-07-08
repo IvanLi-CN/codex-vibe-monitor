@@ -49,11 +49,6 @@ pub(crate) struct UpstreamAccountRow {
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
-    #[sqlx(default)]
-    policy_block_new_conversations: Option<i64>,
-    #[sqlx(default)]
-    policy_allow_new_conversations: Option<i64>,
-    #[sqlx(default)]
     policy_allow_cut_out: Option<i64>,
     #[sqlx(default)]
     policy_allow_cut_in: Option<i64>,
@@ -442,7 +437,6 @@ struct TagRow {
     system_key: Option<String>,
     #[sqlx(default)]
     protected: i64,
-    block_new_conversations: i64,
     allow_cut_out: i64,
     allow_cut_in: i64,
     priority_tier: String,
@@ -465,7 +459,6 @@ struct AccountTagRow {
     system_key: Option<String>,
     #[sqlx(default)]
     protected: i64,
-    block_new_conversations: i64,
     allow_cut_out: i64,
     allow_cut_in: i64,
     priority_tier: String,
@@ -487,7 +480,6 @@ struct TagListRow {
     system_key: Option<String>,
     #[sqlx(default)]
     protected: i64,
-    block_new_conversations: i64,
     allow_cut_out: i64,
     allow_cut_in: i64,
     priority_tier: String,
@@ -515,9 +507,6 @@ struct UpstreamAccountGroupListRow {
     upstream_429_retry_enabled: Option<i64>,
     upstream_429_max_retries: Option<i64>,
     concurrency_limit: Option<i64>,
-    policy_block_new_conversations: Option<i64>,
-    #[sqlx(default)]
-    policy_allow_new_conversations: Option<i64>,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<String>,

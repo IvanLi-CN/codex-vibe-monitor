@@ -232,7 +232,6 @@ function createSummary(
     enabled: true,
     tags: [],
     effectiveRoutingRule: {
-      blockNewConversations: false,
       allowCutOut: false,
       allowCutIn: false,
       sourceTagIds: [],
@@ -1072,7 +1071,6 @@ describe("useUpstreamAccounts", () => {
     apiMocks.updateUpstreamAccountGroup.mockResolvedValueOnce(
       createGroupSummary("prod", {
         routingRule: {
-          blockNewConversations: false,
           allowCutOut: false,
           allowCutIn: false,
           priorityTier: "fallback",

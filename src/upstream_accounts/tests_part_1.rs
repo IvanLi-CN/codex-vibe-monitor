@@ -93,7 +93,6 @@
             duplicate_info: None,
             tags: vec![],
             effective_routing_rule: EffectiveRoutingRule {
-                block_new_conversations: false,
                 allow_cut_out: true,
                 allow_cut_in: true,
                 priority_tier: TagPriorityTier::Normal,
@@ -112,7 +111,6 @@
                 source_tag_ids: vec![],
                 source_tag_names: vec![],
                 field_sources: EffectiveRoutingRuleFieldSources {
-                    block_new_conversations: "root".to_string(),
                     allow_cut_out: "root".to_string(),
                     allow_cut_in: "root".to_string(),
                     priority_tier: "root".to_string(),
@@ -2445,8 +2443,6 @@
                 upstream_429_max_retries: None,
                 concurrency_limit: None,
                 routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                    allow_new_conversations: OptionalField::Missing,
-                        block_new_conversations: OptionalField::Missing,
                     allow_cut_out: OptionalField::Missing,
                     allow_cut_in: OptionalField::Missing,
                     priority_tier: OptionalField::Value("urgent".to_string()),
@@ -2467,7 +2463,7 @@
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         assert_eq!(
             err.1,
-            "priorityTier must be one of: primary, normal, fallback"
+            "priorityTier must be one of: primary, normal, fallback, no_new"
         );
     }
 
@@ -2518,8 +2514,6 @@
                 upstream_429_max_retries: None,
                 concurrency_limit: None,
                 routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                    allow_new_conversations: OptionalField::Missing,
-                        block_new_conversations: OptionalField::Missing,
                     allow_cut_out: OptionalField::Missing,
                     allow_cut_in: OptionalField::Missing,
                     priority_tier: OptionalField::Missing,
@@ -2596,8 +2590,6 @@
                 upstream_429_max_retries: None,
                 concurrency_limit: None,
                 routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                    allow_new_conversations: OptionalField::Missing,
-                        block_new_conversations: OptionalField::Missing,
                     allow_cut_out: OptionalField::Missing,
                     allow_cut_in: OptionalField::Missing,
                     priority_tier: OptionalField::Value("primary".to_string()),
@@ -3166,8 +3158,6 @@
                 local_primary_limit: None,
                 local_secondary_limit: None,
                 local_limit_unit: None,
-                policy_block_new_conversations: None,
-                policy_allow_new_conversations: None,
                 policy_allow_cut_out: None,
                 policy_allow_cut_in: None,
                 policy_priority_tier: None,

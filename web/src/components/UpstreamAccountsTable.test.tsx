@@ -15,7 +15,6 @@ import {
 } from './UpstreamAccountsTable'
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
-  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   sourceTagIds: [],
@@ -340,10 +339,9 @@ describe('UpstreamAccountsTable', () => {
         tags: [],
         effectiveRoutingRule: {
           ...defaultEffectiveRoutingRule,
-          blockNewConversations: true,
+          priorityTier: "no_new",
           allowCutOut: false,
           allowCutIn: false,
-          priorityTier: 'primary',
           fastModeRewriteMode: 'force_add',
           concurrencyLimit: 2,
           upstream429RetryEnabled: true,
@@ -352,9 +350,8 @@ describe('UpstreamAccountsTable', () => {
       },
     ])
 
-    expect(html).toContain('Primary')
-    expect(html).toContain('Fast')
     expect(html).toContain('No new')
+    expect(html).toContain('Fast')
     expect(html).toContain('No out')
     expect(html).toContain('No in')
     expect(html).toContain('Conc 2')

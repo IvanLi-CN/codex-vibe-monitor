@@ -19,7 +19,6 @@ The editable inherited policy covers:
 - priority tier
 - FAST mode rewrite mode
 - image tool rewrite mode
-- new conversations
 - cut-out
 - cut-in
 - concurrency limit
@@ -43,11 +42,12 @@ The editable inherited policy covers:
   - `responsesStreamTimeoutSecs`
   - `compactStreamTimeoutSecs`
 
+`priorityTier` is the owner-facing usage lane and accepts exactly `primary | normal | fallback | no_new`. `no_new` means the account does not admit fresh automatic assignments; it is carried by the priority field rather than a separate new-conversation policy field.
+
 Root defaults preserve existing behavior:
 
 - priority tier: normal
 - FAST mode rewrite mode: keep original
-- new conversations: allowed
 - cut-out: allowed
 - cut-in: allowed
 - concurrency limit: unlimited
@@ -149,9 +149,9 @@ The only supported exception is an explicit Prompt Cache conversation binding wr
 
 HTTP 4xx responses are not route-health successes for sticky routing. They remain recorded as failed invocations and upstream attempts with the real account, status, and error details, but they must not update `pool_sticky_routes`.
 
-`new conversations` is stored as positive nullable policy in `policy_allow_new_conversations`. An enabled switch means new conversations are allowed and stores `true`; a disabled switch means new conversations are forbidden and stores `false`. Legacy `policy_block_new_conversations` and `blockNewConversations` API response fields are compatibility surfaces only; new writes use `allowNewConversations`.
+Fresh automatic assignment treats `priorityTier=no_new` as the only owner-facing forbid-new state. `no_new` accounts are excluded from fresh candidate admission and sorted after `fallback`; existing sticky reuse, explicit bindings, cut-out, and cut-in behavior keep their existing boundaries. Legacy database rows with `policy_allow_new_conversations=0` or `policy_block_new_conversations=1` are migrated to `policy_priority_tier='no_new'` during startup maintenance and are no longer exposed as API or UI fields.
 
-`new conversations`, `cut-out`, and `cut-in` are direct group/account overrides, not most-conservative merges. A lower editable layer that stores either `true` or `false` replaces the inherited value for that field. System tags may only add read-only deny/signal state; they are not a user-editable escape hatch.
+`priorityTier`, `cut-out`, and `cut-in` are direct group/account overrides, not most-conservative merges. A lower editable layer that stores a value replaces the inherited value for that field. System tags may only add read-only deny/signal state; they are not a user-editable escape hatch.
 
 Legacy rolling guard fields (`guardEnabled`, `lookbackHours`, `maxConversations`, and `guardRules`) are not part of the policy surface. Existing stored rolling guard data is ignored rather than migrated into the hard block.
 
@@ -251,6 +251,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - upstream account detail edit view showing system tags as read-only badges
 - upstream account list filtering by system tags while keeping system badges visible
 - effective routing rule card inherited state, account override state, expanded inline editor state, field-level saving/error state, and explicit empty available-model override
+- effective routing rule card showing `priorityTier` as one four-state row (`primary | normal | fallback | no_new`) with no separate new-conversation row
 - effective routing rule card opening every existing account override panel by default
 - effective routing rule card rendering available-model overrides as a tag selector
 - effective routing rule card rendering upstream 429 retry as a `0..5` inline count selector without a separate toggle

@@ -66,7 +66,7 @@ export interface UpstreamAccountDuplicateInfo {
   reasons: Array<"sharedChatgptAccountId" | "sharedChatgptUserId" | string>;
 }
 
-export type TagPriorityTier = "primary" | "normal" | "fallback";
+export type TagPriorityTier = "primary" | "normal" | "fallback" | "no_new";
 export type TagFastModeRewriteMode =
   | "force_remove"
   | "keep_original"
@@ -81,7 +81,6 @@ export type ImageToolCapability = "supported" | "unsupported" | "unknown";
 export type ImageIntent = "yes" | "direct_image" | "no" | "unknown";
 
 export interface TagRoutingRule {
-  blockNewConversations: boolean;
   allowCutOut: boolean;
   allowCutIn: boolean;
   priorityTier?: TagPriorityTier;
@@ -153,7 +152,6 @@ export interface GroupAccountRoutingRule extends TagRoutingRule {
 }
 
 export interface EffectiveRoutingRuleFieldSources {
-  blockNewConversations: EffectiveRoutingRuleSource;
   allowCutOut: EffectiveRoutingRuleSource;
   allowCutIn: EffectiveRoutingRuleSource;
   priorityTier: EffectiveRoutingRuleSource;
@@ -805,7 +803,6 @@ export type UpdateTagPayload = Partial<CreateTagPayload>;
 export interface FetchTagsQuery {
   search?: string;
   hasAccounts?: boolean;
-  blockNewConversations?: boolean;
   allowCutIn?: boolean;
   allowCutOut?: boolean;
 }
@@ -824,9 +821,6 @@ export interface UpdateUpstreamAccountGroupPayload {
 export type NullableRoutingRuleValue<T> = T | null;
 
 export interface UpdateGroupAccountRoutingRulePayload {
-  allowNewConversations?: NullableRoutingRuleValue<boolean>;
-  /** @deprecated use allowNewConversations for new writes */
-  blockNewConversations?: NullableRoutingRuleValue<boolean>;
   allowCutOut?: NullableRoutingRuleValue<boolean>;
   allowCutIn?: NullableRoutingRuleValue<boolean>;
   priorityTier?: NullableRoutingRuleValue<TagPriorityTier>;
@@ -935,11 +929,12 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
     payload.upstream429MaxRetries,
   );
   return {
-    blockNewConversations: payload.blockNewConversations === true,
     allowCutOut: payload.allowCutOut !== false,
     allowCutIn: payload.allowCutIn !== false,
     priorityTier:
-      payload.priorityTier === "primary" || payload.priorityTier === "fallback"
+      payload.priorityTier === "primary" ||
+      payload.priorityTier === "fallback" ||
+      payload.priorityTier === "no_new"
         ? payload.priorityTier
         : "normal",
     fastModeRewriteMode:
@@ -1129,7 +1124,6 @@ export function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRul
     sourceTagNames,
     timeouts: normalizePoolRoutingTimeoutSettings(payload.timeouts),
     fieldSources: {
-      blockNewConversations: normalizeSource(rawSources.blockNewConversations),
       allowCutOut: normalizeSource(rawSources.allowCutOut),
       allowCutIn: normalizeSource(rawSources.allowCutIn),
       priorityTier: normalizeSource(rawSources.priorityTier),
@@ -2252,8 +2246,6 @@ export async function fetchTags(
   if (query?.search) search.set("search", query.search);
   if (query?.hasAccounts != null)
     search.set("hasAccounts", String(query.hasAccounts));
-  if (query?.blockNewConversations != null)
-    search.set("blockNewConversations", String(query.blockNewConversations));
   if (query?.allowCutIn != null)
     search.set("allowCutIn", String(query.allowCutIn));
   if (query?.allowCutOut != null)

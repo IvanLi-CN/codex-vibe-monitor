@@ -14,7 +14,6 @@ fn intersect_available_models(
 fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingRule {
     let mut source_tag_ids = Vec::with_capacity(tags.len());
     let mut source_tag_names = Vec::with_capacity(tags.len());
-    let mut block_new_conversations = false;
     let mut allow_cut_out = true;
     let mut allow_cut_in = true;
     let mut priority_tier = if tags.is_empty() {
@@ -37,7 +36,6 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
     for tag in tags {
         source_tag_ids.push(tag.id);
         source_tag_names.push(tag.name.clone());
-        block_new_conversations |= tag.routing_rule.block_new_conversations;
         allow_cut_out &= tag.routing_rule.allow_cut_out;
         allow_cut_in &= tag.routing_rule.allow_cut_in;
         priority_tier = priority_tier.min(tag.routing_rule.priority_tier);
@@ -87,7 +85,6 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
     }
     .to_string();
     EffectiveRoutingRule {
-        block_new_conversations,
         allow_cut_out,
         allow_cut_in,
         priority_tier,
@@ -107,7 +104,6 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         source_tag_ids,
         source_tag_names,
         field_sources: EffectiveRoutingRuleFieldSources {
-            block_new_conversations: field_source.clone(),
             allow_cut_out: field_source.clone(),
             allow_cut_in: field_source.clone(),
             priority_tier: field_source.clone(),
@@ -135,8 +131,6 @@ pub(crate) fn default_effective_routing_rule() -> EffectiveRoutingRule {
 #[derive(Debug, Clone, FromRow)]
 struct RoutingPolicyOverrideRow {
     id: i64,
-    policy_block_new_conversations: Option<i64>,
-    policy_allow_new_conversations: Option<i64>,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<String>,
@@ -169,8 +163,6 @@ struct GroupRoutingPolicyOverrideRow {
     concurrency_limit: i64,
     upstream_429_retry_enabled: i64,
     upstream_429_max_retries: i64,
-    policy_block_new_conversations: Option<i64>,
-    policy_allow_new_conversations: Option<i64>,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<String>,
@@ -265,7 +257,6 @@ pub(crate) fn apply_root_routing_timeout_defaults(
 fn apply_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     source: &str,
-    allow_new_conversations: Option<i64>,
     allow_cut_out: Option<i64>,
     allow_cut_in: Option<i64>,
     priority_tier: Option<&str>,
@@ -276,10 +267,6 @@ fn apply_routing_policy_override(
     upstream_429_max_retries: Option<i64>,
     available_models_json: Option<&str>,
 ) {
-    if let Some(allow_new_conversations) = allow_new_conversations {
-        rule.field_sources.block_new_conversations = source.to_string();
-        rule.block_new_conversations = allow_new_conversations == 0;
-    }
     if let Some(allow_cut_out) = allow_cut_out {
         rule.field_sources.allow_cut_out = source.to_string();
         rule.allow_cut_out = allow_cut_out != 0;
@@ -348,8 +335,6 @@ async fn load_group_routing_policy_override_map(
             concurrency_limit,
             upstream_429_retry_enabled,
             upstream_429_max_retries,
-            policy_block_new_conversations,
-            policy_allow_new_conversations,
             policy_allow_cut_out,
             policy_allow_cut_in,
             policy_priority_tier,
@@ -406,8 +391,6 @@ async fn load_account_routing_policy_override_map(
         r#"
         SELECT
             id,
-            policy_block_new_conversations,
-            policy_allow_new_conversations,
             policy_allow_cut_out,
             policy_allow_cut_in,
             policy_priority_tier,
@@ -457,10 +440,6 @@ fn apply_group_routing_policy_override(
     apply_routing_policy_override(
         rule,
         "group",
-        row.policy_allow_new_conversations.or_else(|| {
-            row.policy_block_new_conversations
-                .map(|block_new_conversations| if block_new_conversations == 0 { 1 } else { 0 })
-        }),
         row.policy_allow_cut_out,
         row.policy_allow_cut_in,
         row.policy_priority_tier.as_deref(),
@@ -564,8 +543,6 @@ fn apply_group_routing_policy_override(
 }
 
 fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &EffectiveRoutingRule) {
-    let inherited_block_new_conversations = rule.block_new_conversations;
-    let inherited_block_source = rule.field_sources.block_new_conversations.clone();
     let inherited_image_tool_rewrite_mode = rule.image_tool_rewrite_mode;
     let inherited_image_tool_rewrite_mode_source =
         rule.field_sources.image_tool_rewrite_mode.clone();
@@ -577,7 +554,6 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
         rule.status_change_reason_field_sources.clone();
     let inherited_timeouts = rule.timeouts.clone();
     let inherited_timeout_field_sources = rule.timeout_field_sources.clone();
-    rule.block_new_conversations |= tag_rule.block_new_conversations;
     rule.allow_cut_out = tag_rule.allow_cut_out;
     rule.allow_cut_in = tag_rule.allow_cut_in;
     rule.priority_tier = tag_rule.priority_tier;
@@ -606,9 +582,6 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     rule.timeout_field_sources = tag_rule.timeout_field_sources.clone();
     rule.image_tool_rewrite_mode = inherited_image_tool_rewrite_mode;
     rule.field_sources.image_tool_rewrite_mode = inherited_image_tool_rewrite_mode_source;
-    if inherited_block_new_conversations {
-        rule.field_sources.block_new_conversations = inherited_block_source;
-    }
     if tag_rule.field_sources.available_models != "tag" {
         rule.available_models = inherited_available_models;
         rule.available_models_defined = inherited_available_models_defined;
@@ -649,10 +622,6 @@ fn apply_account_routing_policy_override(
     apply_routing_policy_override(
         rule,
         "account",
-        row.policy_allow_new_conversations.or_else(|| {
-            row.policy_block_new_conversations
-                .map(|block_new_conversations| if block_new_conversations == 0 { 1 } else { 0 })
-        }),
         row.policy_allow_cut_out,
         row.policy_allow_cut_in,
         row.policy_priority_tier.as_deref(),

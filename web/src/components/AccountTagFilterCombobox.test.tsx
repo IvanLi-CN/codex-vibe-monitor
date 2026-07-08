@@ -80,7 +80,6 @@ const tags: TagSummary[] = [
     id: 1,
     name: 'vip',
     routingRule: {
-      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
     },
@@ -92,7 +91,6 @@ const tags: TagSummary[] = [
     id: 2,
     name: 'burst-safe',
     routingRule: {
-      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
     },
@@ -104,7 +102,6 @@ const tags: TagSummary[] = [
     id: 3,
     name: 'prod-apac',
     routingRule: {
-      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
     },
@@ -116,7 +113,6 @@ const tags: TagSummary[] = [
     id: 4,
     name: 'sticky-pool',
     routingRule: {
-      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
     },

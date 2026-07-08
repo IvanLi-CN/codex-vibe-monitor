@@ -871,10 +871,6 @@ const baseTranslations = {
       "This is the final policy currently used by routing, with account-level overrides applied last.",
     "accountPool.upstreamAccounts.effectiveRule.noTags":
       "No tag is attached, so the account keeps the default pool routing behavior.",
-    "accountPool.upstreamAccounts.effectiveRule.blockNewConversations":
-      "New conversations blocked",
-    "accountPool.upstreamAccounts.effectiveRule.allowNewConversations":
-      "New conversations allowed",
     "accountPool.upstreamAccounts.effectiveRule.allowCutOut": "Cut out allowed",
     "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "Cut out blocked",
     "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "Cut in allowed",
@@ -883,6 +879,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "Normal",
     "accountPool.upstreamAccounts.effectiveRule.priorityFallback":
       "Fallback only",
+    "accountPool.upstreamAccounts.effectiveRule.priorityNoNew": "No new",
     "accountPool.upstreamAccounts.effectiveRule.fastModeKeepOriginal":
       "Keep original",
     "accountPool.upstreamAccounts.effectiveRule.fastModeFillMissing":
@@ -893,10 +890,6 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "Rule source tags",
     "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
       "Field source breakdown",
-    "accountPool.upstreamAccounts.effectiveRule.fieldBlockNewConversations":
-      "New conversations",
-    "accountPool.upstreamAccounts.effectiveRule.fieldNewConversations":
-      "New conversations",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut": "Cut out",
     "accountPool.upstreamAccounts.effectiveRule.fieldCutOut": "Cut out",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn": "Cut in",
@@ -1111,14 +1104,11 @@ const baseTranslations = {
     "accountPool.tags.filters.search": "Search",
     "accountPool.tags.filters.searchPlaceholder": "Search tags by name",
     "accountPool.tags.filters.hasAccounts": "Account links",
-    "accountPool.tags.filters.blockNewConversations": "Block new conversations",
     "accountPool.tags.filters.cutOutBlocked": "Cut-out",
     "accountPool.tags.filters.cutInBlocked": "Cut-in",
     "accountPool.tags.filters.option.all": "All",
     "accountPool.tags.filters.option.linked": "Linked only",
     "accountPool.tags.filters.option.unlinked": "Unlinked only",
-    "accountPool.tags.filters.option.blockNewConversationsOn": "Blocked",
-    "accountPool.tags.filters.option.blockNewConversationsOff": "Not blocked",
     "accountPool.tags.filters.option.allowed": "Not blocked",
     "accountPool.tags.filters.option.blocked": "Blocked",
     "accountPool.tags.table.name": "Tag",
@@ -1126,7 +1116,6 @@ const baseTranslations = {
     "accountPool.tags.table.accounts": "Accounts",
     "accountPool.tags.table.groups": "Groups",
     "accountPool.tags.table.updatedAt": "Updated",
-    "accountPool.tags.rule.blockNewConversations": "Block new conversations",
     "accountPool.tags.rule.cutOutOn": "Cut-out not blocked",
     "accountPool.tags.rule.cutOutOff": "Cut-out blocked",
     "accountPool.tags.rule.cutInOn": "Cut-in not blocked",
@@ -1134,6 +1123,7 @@ const baseTranslations = {
     "accountPool.tags.rule.priorityPrimary": "Primary",
     "accountPool.tags.rule.priorityNormal": "Normal",
     "accountPool.tags.rule.priorityFallback": "Fallback only",
+    "accountPool.tags.rule.priorityNoNew": "No new",
     "accountPool.tags.rule.fastModeKeepOriginal": "Keep original",
     "accountPool.tags.rule.fastModeFillMissing": "Fill when missing",
     "accountPool.tags.rule.fastModeForceAdd": "Force add",
@@ -1157,11 +1147,6 @@ const baseTranslations = {
     "accountPool.tags.dialog.name": "Tag name",
     "accountPool.tags.dialog.namePlaceholder":
       "For example: vip, night-shift, warm-standby",
-    "accountPool.tags.dialog.blockNewConversations": "Block new conversations",
-    "accountPool.tags.dialog.forbidNewConversation": "Block new conversations",
-    "accountPool.tags.dialog.allowNewConversations": "New conversations",
-    "accountPool.tags.dialog.newConversationHint":
-      "Allow new conversations for this routing policy.",
     "accountPool.tags.dialog.allowCutOut":
       "Do not block moving conversations out of this account",
     "accountPool.tags.dialog.allowCutIn":
@@ -1172,6 +1157,7 @@ const baseTranslations = {
     "accountPool.tags.dialog.priorityPrimary": "Primary",
     "accountPool.tags.dialog.priorityNormal": "Normal",
     "accountPool.tags.dialog.priorityFallback": "Fallback only",
+    "accountPool.tags.dialog.priorityNoNew": "No new",
     "accountPool.tags.dialog.fastModeRewriteMode": "Fast mode",
     "accountPool.tags.dialog.fastModeKeepOriginal": "Keep original",
     "accountPool.tags.dialog.fastModeFillMissing": "Fill when missing",
@@ -3390,10 +3376,6 @@ const baseTranslations = {
       "这里展示的是当前账号最终参与路由判定的规则，账号级覆盖会最后生效。",
     "accountPool.upstreamAccounts.effectiveRule.noTags":
       "当前没有关联 tag，所以这个账号仍使用号池默认路由行为。",
-    "accountPool.upstreamAccounts.effectiveRule.blockNewConversations":
-      "禁止新对话",
-    "accountPool.upstreamAccounts.effectiveRule.allowNewConversations":
-      "允许新对话",
     "accountPool.upstreamAccounts.effectiveRule.allowCutOut": "允许切出",
     "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "禁止切出",
     "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "允许切入",
@@ -3401,6 +3383,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.priorityPrimary": "主力",
     "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "正常",
     "accountPool.upstreamAccounts.effectiveRule.priorityFallback": "兜底",
+    "accountPool.upstreamAccounts.effectiveRule.priorityNoNew": "禁新",
     "accountPool.upstreamAccounts.effectiveRule.fastModeKeepOriginal":
       "保持原样",
     "accountPool.upstreamAccounts.effectiveRule.fastModeFillMissing":
@@ -3413,10 +3396,6 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "规则来源 tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
       "字段来源明细",
-    "accountPool.upstreamAccounts.effectiveRule.fieldBlockNewConversations":
-      "新对话",
-    "accountPool.upstreamAccounts.effectiveRule.fieldNewConversations":
-      "新对话",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut": "切出",
     "accountPool.upstreamAccounts.effectiveRule.fieldCutOut": "切出",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn": "切入",
@@ -3611,14 +3590,11 @@ const baseTranslations = {
     "accountPool.tags.filters.search": "搜索",
     "accountPool.tags.filters.searchPlaceholder": "按 tag 名称搜索",
     "accountPool.tags.filters.hasAccounts": "账号关联",
-    "accountPool.tags.filters.blockNewConversations": "禁止新对话",
     "accountPool.tags.filters.cutOutBlocked": "切出能力",
     "accountPool.tags.filters.cutInBlocked": "切入能力",
     "accountPool.tags.filters.option.all": "全部",
     "accountPool.tags.filters.option.linked": "仅已关联",
     "accountPool.tags.filters.option.unlinked": "仅未关联",
-    "accountPool.tags.filters.option.blockNewConversationsOn": "仅禁止",
-    "accountPool.tags.filters.option.blockNewConversationsOff": "仅未禁止",
     "accountPool.tags.filters.option.allowed": "仅未禁止",
     "accountPool.tags.filters.option.blocked": "仅禁止",
     "accountPool.tags.table.name": "Tag",
@@ -3626,7 +3602,6 @@ const baseTranslations = {
     "accountPool.tags.table.accounts": "账号数",
     "accountPool.tags.table.groups": "分组数",
     "accountPool.tags.table.updatedAt": "更新时间",
-    "accountPool.tags.rule.blockNewConversations": "禁止新对话",
     "accountPool.tags.rule.cutOutOn": "未禁止切出",
     "accountPool.tags.rule.cutOutOff": "禁止切出",
     "accountPool.tags.rule.cutInOn": "未禁止切入",
@@ -3634,6 +3609,7 @@ const baseTranslations = {
     "accountPool.tags.rule.priorityPrimary": "主力",
     "accountPool.tags.rule.priorityNormal": "正常",
     "accountPool.tags.rule.priorityFallback": "兜底",
+    "accountPool.tags.rule.priorityNoNew": "禁新",
     "accountPool.tags.rule.fastModeKeepOriginal": "保持原样",
     "accountPool.tags.rule.fastModeFillMissing": "缺少时补充",
     "accountPool.tags.rule.fastModeForceAdd": "强制补充",
@@ -3657,11 +3633,6 @@ const baseTranslations = {
     "accountPool.tags.dialog.name": "Tag 名称",
     "accountPool.tags.dialog.namePlaceholder":
       "例如：vip、night-shift、warm-standby",
-    "accountPool.tags.dialog.blockNewConversations": "禁止新对话",
-    "accountPool.tags.dialog.forbidNewConversation": "禁止新对话",
-    "accountPool.tags.dialog.allowNewConversations": "新对话",
-    "accountPool.tags.dialog.newConversationHint":
-      "开启表示允许新对话，关闭表示禁止新对话。",
     "accountPool.tags.dialog.allowCutOut": "未禁止把对话切出到其他账号",
     "accountPool.tags.dialog.allowCutIn": "未禁止把对话切入到当前账号",
     "accountPool.tags.dialog.forbidCutOut": "禁止切出",
@@ -3670,6 +3641,7 @@ const baseTranslations = {
     "accountPool.tags.dialog.priorityPrimary": "主力",
     "accountPool.tags.dialog.priorityNormal": "正常",
     "accountPool.tags.dialog.priorityFallback": "兜底",
+    "accountPool.tags.dialog.priorityNoNew": "禁新",
     "accountPool.tags.dialog.fastModeRewriteMode": "Fast 模式",
     "accountPool.tags.dialog.fastModeKeepOriginal": "保持原样",
     "accountPool.tags.dialog.fastModeFillMissing": "缺少时补充",
