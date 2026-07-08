@@ -327,7 +327,6 @@ type RecentSaveResponseGuard = {
 };
 
 type InlinePolicyField =
-  | "allowNewConversations"
   | "allowCutOut"
   | "allowCutIn"
   | "priorityTier"
@@ -3630,12 +3629,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                       noTags: t(
                         "accountPool.upstreamAccounts.effectiveRule.noTags",
                       ),
-                      blockNewConversations: t(
-                        "accountPool.upstreamAccounts.effectiveRule.blockNewConversations",
-                      ),
-                      allowNewConversations: t(
-                        "accountPool.upstreamAccounts.effectiveRule.allowNewConversations",
-                      ),
                       allowCutOut: t(
                         "accountPool.upstreamAccounts.effectiveRule.allowCutOut",
                       ),
@@ -3654,14 +3647,14 @@ function SharedUpstreamAccountDetailDrawerInner({
                       sourceBreakdownTitle: t(
                         "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle",
                       ),
-                      fieldBlockNewConversations: t(
-                        "accountPool.upstreamAccounts.effectiveRule.fieldBlockNewConversations",
-                      ),
                       fieldAllowCutOut: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut",
                       ),
                       fieldAllowCutIn: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn",
+                      ),
+                      priorityNoNew: t(
+                        "accountPool.tags.dialog.priorityNoNew",
                       ),
                       fieldPriority: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldPriority",
@@ -3760,9 +3753,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                       ),
                       inheritValue: t(
                         "accountPool.upstreamAccounts.effectiveRule.inheritValue",
-                      ),
-                      newConversationLabel: t(
-                        "accountPool.upstreamAccounts.effectiveRule.fieldNewConversations",
                       ),
                       cutOutLabel: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldCutOut",

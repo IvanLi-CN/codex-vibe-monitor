@@ -24,7 +24,7 @@
 - 2026-06-30：修正上游账号 recent 行短 ID 的热区语义，明确 identity chip 独立打开对话详情，而整行其它区域继续保留调用详情入口，避免 operator 点短 ID 时误落到 invocation drawer。
 - 2026-06-30：补充冻结工作区 tabs 的浏览器侧记忆语义：只持久化用户主动选择的偏好视图；`usage` 下的 `对话` 回退仅为临时降级，不得覆盖上次选择的 `上游账号`，以保证重新进入 Dashboard 或切回支持 range 时能自动恢复。
 - 2026-07-03：上游账号四组周期统计从逐段 tooltip 收口为整张统计卡 tooltip；常驻态继续保持紧凑裸数值，完整字段名和值进入结构化浮层，避免小色点分解段产生嵌套触发区域。
-- 2026-07-02：账号活动接口补出账号当前 `effectiveRoutingRule`，并将账号卡标题区空位用于只读关键策略徽章；该区域只展示 `主力 / 兜底 / 禁新对话 / 禁出 / 禁入 / Fast / 并发 / 重试` 等策略信号，不展示普通系统 tag 名称。
+- 2026-07-02：账号活动接口补出账号当前 `effectiveRoutingRule`，并将账号卡标题区空位用于只读关键策略徽章；该区域只展示 `主力 / 兜底 / 禁新 / 禁出 / 禁入 / Fast / 并发 / 重试` 等策略信号，不展示普通系统 tag 名称。
 - 2026-07-04：成本周期统计中的“失败成本比率”锁定为失败成本占总成本的比例，即 `failureCost / totalCost`；请求失败率继续只属于请求数组，避免失败成本为 0 时成本卡仍显示非零失败成本比率。
 - 2026-07-05：账号卡标题区的文本型实时指标修正为 `进行中调用`，口径固定为账号活动接口的 `inProgressInvocationCount`；撤回 Dashboard 账号活动接口中误加的 `activeConversationCount` 依赖，避免把 sticky route 活跃对话数误当作当前调用压力。
 - 2026-07-05：运行态调用从笼统 `进行中` 拆成 `排队中 / 请求中 / 响应中`，并要求账号卡所有运行态统计只读后端账号级 live `inProgressPhaseCounts`；recent 列表是展示窗口，不再承担统计事实源职责。
@@ -33,6 +33,7 @@
 - 2026-07-07：Dashboard 上游账号卡快捷操作面补齐 Fast 模式四档切换，沿用账号池已有 `fastModeRewriteMode` 语义并显示为 `不改Fast / 补Fast / 强制Fast / 禁Fast`；该入口继续只写账号级覆盖，避免在 Dashboard 快速操作区引入继承恢复决策。
 - 2026-07-07：Dashboard 上游账号快捷策略 chip 的颜色改为按策略意图映射，而不是按“是否激活”统一高亮：`普通 / 不改Fast` 为 neutral，`兜底 / 补Fast` 为 success，`主力 / 强制Fast` 为 primary，`禁新 / 禁Fast / 激活禁出 / 激活禁入` 为 warning。
 - 2026-07-08：Dashboard 上游账号卡标题区移除本地 `#<upstreamAccountId>` 编号，只保留齿轮作为账号路由入口；账号名和异常/策略/实时指标已经足够承载当前扫描任务，内部主键不再作为常驻视觉元素。
+- 2026-07-08：Dashboard 上游账号优先级快捷入口收敛为纯 `priorityTier` 四态轮换；`禁新` 直接写 `priorityTier=no_new`，不再写独立新对话允许/禁止字段。
 
 ## Key Reasons / Replacements
 

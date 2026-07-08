@@ -66,7 +66,6 @@ import { cn } from "../lib/utils";
 type StatusChangeEditablePolicyField = StatusChangeReasonFieldKey;
 
 type EditablePolicyField =
-  | "allowNewConversations"
   | "allowCutOut"
   | "allowCutIn"
   | "priorityTier"
@@ -88,7 +87,6 @@ type FieldSourceMap = NonNullable<EffectiveRoutingRule["fieldSources"]>;
 const editableFieldSourceKeys: Array<
   [EditablePolicyField, keyof FieldSourceMap]
 > = [
-  ["allowNewConversations", "blockNewConversations"],
   ["allowCutOut", "allowCutOut"],
   ["allowCutIn", "allowCutIn"],
   ["priorityTier", "priorityTier"],
@@ -144,8 +142,6 @@ interface EffectiveRoutingRuleCardProps {
     title: string;
     description: string;
     noTags: string;
-    blockNewConversations: string;
-    allowNewConversations: string;
     allowCutOut: string;
     denyCutOut: string;
     allowCutIn: string;
@@ -154,6 +150,7 @@ interface EffectiveRoutingRuleCardProps {
     priorityPrimary: string;
     priorityNormal: string;
     priorityFallback: string;
+    priorityNoNew?: string;
     fastModeKeepOriginal: string;
     fastModeFillMissing: string;
     fastModeForceAdd: string;
@@ -171,7 +168,6 @@ interface EffectiveRoutingRuleCardProps {
     concurrencyLimit?: (count: number) => string;
     concurrencyUnlimited?: string;
     sourceBreakdownTitle?: string;
-    fieldBlockNewConversations?: string;
     fieldAllowCutOut?: string;
     fieldAllowCutIn?: string;
     fieldPriority?: string;
@@ -224,7 +220,6 @@ interface EffectiveRoutingRuleCardProps {
 }
 
 const defaultFieldSources: FieldSourceMap = {
-  blockNewConversations: "root",
   allowCutOut: "root",
   allowCutIn: "root",
   priorityTier: "root",
@@ -239,7 +234,6 @@ const defaultFieldSources: FieldSourceMap = {
 function defaultRule(rule?: EffectiveRoutingRule | null): EffectiveRoutingRule {
   return (
     rule ?? {
-      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
       priorityTier: "normal",
@@ -320,9 +314,6 @@ function valueVariant(
   if (field && statusChangeReasonFromFieldKey(field)) {
     return value === statusChangeDisabledValue(labels) ? "success" : "warning";
   }
-  if (field === "allowNewConversations") {
-    return value === labels.blockNewConversations ? "warning" : "success";
-  }
   if (field === "allowCutOut") {
     return value === labels.denyCutOut ? "warning" : "success";
   }
@@ -330,6 +321,7 @@ function valueVariant(
     return value === labels.denyCutIn ? "warning" : "success";
   }
   if (field === "priorityTier") {
+    if (value === (labels.priorityNoNew ?? "No new")) return "warning";
     if (value === labels.priorityPrimary) return "default";
     if (value === labels.priorityFallback) return "warning";
     return "info";
@@ -799,26 +791,25 @@ export function EffectiveRoutingRuleCard({
 
   const fieldRows = [
     {
-      field: "allowNewConversations" as const,
-      label:
-        labels.newConversationLabel ??
-        labels.fieldBlockNewConversations ??
-        "New conversations",
-      value: resolvedRule.blockNewConversations
-        ? labels.blockNewConversations
-        : labels.allowNewConversations,
-      source: fieldSources.blockNewConversations,
-      clearPayload: { allowNewConversations: null },
+      field: "priorityTier" as const,
+      label: labels.fieldPriority ?? "Priority",
+      value: priorityTierBadgeLabel(resolvedRule.priorityTier, labels),
+      source: fieldSources.priorityTier,
+      clearPayload: { priorityTier: null },
       editor: (
-        <Switch
-          checked={!resolvedRule.blockNewConversations}
-          disabled={isBusy("allowNewConversations")}
-          onCheckedChange={(checked) =>
-            changeField("allowNewConversations", {
-              allowNewConversations: checked,
-            })
+        <PolicyInlineOptionGroup<TagPriorityTier>
+          ariaLabel={labels.fieldPriority ?? "Priority"}
+          value={resolvedRule.priorityTier ?? "normal"}
+          disabled={isBusy("priorityTier")}
+          options={[
+            { value: "primary", label: labels.priorityPrimary },
+            { value: "normal", label: labels.priorityNormal },
+            { value: "fallback", label: labels.priorityFallback },
+            { value: "no_new", label: labels.priorityNoNew ?? "No new" },
+          ]}
+          onChange={(value) =>
+            changeField("priorityTier", { priorityTier: value })
           }
-          aria-label={labels.newConversationLabel ?? "New conversations"}
         />
       ),
     },
@@ -853,28 +844,6 @@ export function EffectiveRoutingRuleCard({
             changeField("allowCutIn", { allowCutIn: checked })
           }
           aria-label={labels.cutInLabel ?? "Cut in"}
-        />
-      ),
-    },
-    {
-      field: "priorityTier" as const,
-      label: labels.fieldPriority ?? "Priority",
-      value: priorityTierBadgeLabel(resolvedRule.priorityTier, labels),
-      source: fieldSources.priorityTier,
-      clearPayload: { priorityTier: null },
-      editor: (
-        <PolicyInlineOptionGroup<TagPriorityTier>
-          ariaLabel={labels.fieldPriority ?? "Priority"}
-          value={resolvedRule.priorityTier ?? "normal"}
-          disabled={isBusy("priorityTier")}
-          options={[
-            { value: "primary", label: labels.priorityPrimary },
-            { value: "normal", label: labels.priorityNormal },
-            { value: "fallback", label: labels.priorityFallback },
-          ]}
-          onChange={(value) =>
-            changeField("priorityTier", { priorityTier: value })
-          }
         />
       ),
     },
@@ -1531,8 +1500,6 @@ function fieldToSource(
     return reasonSources[reason];
   }
   switch (field) {
-    case "allowNewConversations":
-      return sources.blockNewConversations;
     case "allowCutOut":
       return sources.allowCutOut;
     case "allowCutIn":

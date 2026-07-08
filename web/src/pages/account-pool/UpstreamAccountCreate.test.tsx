@@ -694,7 +694,6 @@ function mockUpstreamAccounts(
     id: tagId,
     name,
     routingRule: {
-      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
     },
@@ -715,7 +714,6 @@ function mockUpstreamAccounts(
     note: null,
     tags: [],
     effectiveRoutingRule: {
-      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
       sourceTagIds: [],

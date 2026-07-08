@@ -78,8 +78,6 @@ function render(ui: React.ReactNode) {
 }
 
 const labels = {
-  allowNewConversations: "New conversations",
-  newConversationHint: "Allow new conversations on this group",
   allowCutOut: "Cut out is not blocked",
   allowCutIn: "Cut in is not blocked",
   forbidCutOut: "Block cut out",
@@ -88,6 +86,7 @@ const labels = {
   priorityPrimary: "Primary",
   priorityNormal: "Normal",
   priorityFallback: "Fallback only",
+  priorityNoNew: "No new",
   fastModeRewriteMode: "Fast mode",
   fastModeKeepOriginal: "Keep original",
   fastModeFillMissing: "Fill when missing",
@@ -146,7 +145,6 @@ const labels = {
 };
 
 const defaultRule: GroupAccountRoutingRule = {
-  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   priorityTier: "normal",
@@ -363,14 +361,14 @@ describe("GroupAccountRoutingRuleDialog", () => {
       />,
     );
 
-    const newConversationsSwitch = Array.from(
+    const cutOutSwitch = Array.from(
       document.querySelectorAll('button[role="switch"]'),
     ).find((button) =>
-      button.closest("div")?.textContent?.includes("New conversations"),
+      button.closest("div")?.textContent?.includes("Block cut out"),
     );
-    expect(newConversationsSwitch).toBeInstanceOf(HTMLButtonElement);
+    expect(cutOutSwitch).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      newConversationsSwitch!.dispatchEvent(
+      cutOutSwitch!.dispatchEvent(
         new MouseEvent("click", { bubbles: true }),
       );
     });
@@ -385,7 +383,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
 
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowNewConversations: false,
+        allowCutOut: false,
         availableModels: [],
       }),
     );

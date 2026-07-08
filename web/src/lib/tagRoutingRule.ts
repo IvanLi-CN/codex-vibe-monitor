@@ -15,6 +15,7 @@ type PriorityTierLabels = {
   priorityPrimary: string;
   priorityNormal: string;
   priorityFallback: string;
+  priorityNoNew?: string;
 };
 
 type FastModeRewriteLabels = {
@@ -28,6 +29,7 @@ export function priorityTierBadgeVariant(
   priorityTier?: TagPriorityTier,
 ): RoutingRuleBadgeVariant {
   if (priorityTier === "primary") return "default";
+  if (priorityTier === "no_new") return "warning";
   if (priorityTier === "fallback") return "warning";
   return "secondary";
 }
@@ -37,6 +39,7 @@ export function priorityTierBadgeLabel(
   labels: PriorityTierLabels,
 ): string {
   if (priorityTier === "primary") return labels.priorityPrimary;
+  if (priorityTier === "no_new") return labels.priorityNoNew ?? "No new";
   if (priorityTier === "fallback") return labels.priorityFallback;
   return labels.priorityNormal;
 }
@@ -120,8 +123,7 @@ export function resolveActiveRoutingPolicyBadges(
       variant: "warning",
     });
   }
-
-  if (rule.blockNewConversations) {
+  if (rule.priorityTier === "no_new") {
     badges.push({
       key: "forbid-new",
       label: labels.policyForbidNewConversation ?? "禁新",

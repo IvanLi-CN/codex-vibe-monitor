@@ -1793,34 +1793,32 @@ pub(crate) async fn update_upstream_account_inner(
             local_secondary_limit = ?11,
             local_limit_unit = ?12,
             upstream_base_url = ?13,
-            policy_block_new_conversations = ?14,
-            policy_allow_new_conversations = ?15,
-            policy_allow_cut_out = ?16,
-            policy_allow_cut_in = ?17,
-            policy_priority_tier = ?18,
-            policy_fast_mode_rewrite_mode = ?19,
-            policy_image_tool_rewrite_mode = ?20,
-            policy_concurrency_limit = ?21,
-            policy_upstream_429_retry_enabled = ?22,
-            policy_upstream_429_max_retries = ?23,
-            policy_available_models_json = ?24,
-            policy_status_change_upstream_http_401 = ?25,
-            policy_status_change_upstream_http_402 = ?26,
-            policy_status_change_upstream_http_403 = ?27,
-            policy_status_change_reauth_required = ?28,
-            policy_status_change_upstream_http_429_rate_limit = ?29,
-            policy_status_change_upstream_http_429_quota_exhausted = ?30,
-            policy_status_change_usage_snapshot_exhausted = ?31,
-            policy_status_change_quota_still_exhausted = ?32,
-            policy_status_change_transport_failure = ?33,
-            policy_status_change_upstream_server_overloaded = ?34,
-            policy_status_change_upstream_http_5xx = ?35,
-            policy_responses_first_byte_timeout_secs = ?36,
-            policy_compact_first_byte_timeout_secs = ?37,
-            policy_responses_stream_timeout_secs = ?38,
-            policy_compact_stream_timeout_secs = ?39,
-            bound_proxy_keys_json = ?40,
-            updated_at = ?41
+            policy_allow_cut_out = ?14,
+            policy_allow_cut_in = ?15,
+            policy_priority_tier = ?16,
+            policy_fast_mode_rewrite_mode = ?17,
+            policy_image_tool_rewrite_mode = ?18,
+            policy_concurrency_limit = ?19,
+            policy_upstream_429_retry_enabled = ?20,
+            policy_upstream_429_max_retries = ?21,
+            policy_available_models_json = ?22,
+            policy_status_change_upstream_http_401 = ?23,
+            policy_status_change_upstream_http_402 = ?24,
+            policy_status_change_upstream_http_403 = ?25,
+            policy_status_change_reauth_required = ?26,
+            policy_status_change_upstream_http_429_rate_limit = ?27,
+            policy_status_change_upstream_http_429_quota_exhausted = ?28,
+            policy_status_change_usage_snapshot_exhausted = ?29,
+            policy_status_change_quota_still_exhausted = ?30,
+            policy_status_change_transport_failure = ?31,
+            policy_status_change_upstream_server_overloaded = ?32,
+            policy_status_change_upstream_http_5xx = ?33,
+            policy_responses_first_byte_timeout_secs = ?34,
+            policy_compact_first_byte_timeout_secs = ?35,
+            policy_responses_stream_timeout_secs = ?36,
+            policy_compact_stream_timeout_secs = ?37,
+            bound_proxy_keys_json = ?38,
+            updated_at = ?39
         WHERE id = ?1
         "#,
     )
@@ -1837,36 +1835,6 @@ pub(crate) async fn update_upstream_account_inner(
     .bind(row.local_secondary_limit)
     .bind(&row.local_limit_unit)
     .bind(&row.upstream_base_url)
-    .bind(match payload.routing_rule.as_ref() {
-        Some(rule) => match rule.allow_new_conversations {
-            OptionalField::Missing => match rule.block_new_conversations {
-                OptionalField::Missing => row.policy_block_new_conversations.or_else(|| {
-                    row.policy_allow_new_conversations
-                        .map(
-                            |allow_new_conversations| {
-                                if allow_new_conversations == 0 { 1 } else { 0 }
-                            },
-                        )
-                }),
-                OptionalField::Null => None,
-                OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
-            },
-            OptionalField::Null => None,
-            OptionalField::Value(value) => Some(if value { 0_i64 } else { 1_i64 }),
-        },
-        None => row.policy_block_new_conversations.or_else(|| {
-            row.policy_allow_new_conversations
-                .map(|allow_new_conversations| if allow_new_conversations == 0 { 1 } else { 0 })
-        }),
-    })
-    .bind(match payload.routing_rule.as_ref() {
-        Some(rule) => match rule.allow_new_conversations_field() {
-            OptionalField::Missing => row.policy_allow_new_conversations,
-            OptionalField::Null => None,
-            OptionalField::Value(value) => Some(if value { 1_i64 } else { 0_i64 }),
-        },
-        None => row.policy_allow_new_conversations,
-    })
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => match rule.allow_cut_out {
             OptionalField::Missing => row.policy_allow_cut_out,

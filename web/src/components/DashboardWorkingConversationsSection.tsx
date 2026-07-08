@@ -691,7 +691,6 @@ const ACCOUNT_METRIC_DOT_TONE_CLASSNAMES: Record<AccountMetricTone, string> = {
 };
 
 type AccountQuickPolicyDraft = {
-  allowNewConversations: boolean;
   priorityTier: TagPriorityTier;
   allowCutOut: boolean;
   allowCutIn: boolean;
@@ -711,14 +710,12 @@ function accountPolicyDraftFromRule(
   account: UpstreamAccountActivityAccount,
 ): AccountQuickPolicyDraft {
   const rule = account.effectiveRoutingRule ?? {
-    blockNewConversations: false,
     allowCutOut: true,
     allowCutIn: true,
     priorityTier: "normal" as TagPriorityTier,
     fastModeRewriteMode: "keep_original" as TagFastModeRewriteMode,
   };
   return {
-    allowNewConversations: rule.blockNewConversations !== true,
     priorityTier: rule.priorityTier ?? "normal",
     allowCutOut: rule.allowCutOut !== false,
     allowCutIn: rule.allowCutIn !== false,
@@ -729,16 +726,16 @@ function accountPolicyDraftFromRule(
 function cycleAccountPriorityPolicy(
   draft: AccountQuickPolicyDraft,
 ): AccountQuickPolicyDraft {
-  if (!draft.allowNewConversations) {
-    return { ...draft, allowNewConversations: true, priorityTier: "normal" };
-  }
   if (draft.priorityTier === "normal") {
-    return { ...draft, allowNewConversations: true, priorityTier: "fallback" };
+    return { ...draft, priorityTier: "fallback" };
   }
   if (draft.priorityTier === "fallback") {
-    return { ...draft, allowNewConversations: true, priorityTier: "primary" };
+    return { ...draft, priorityTier: "primary" };
   }
-  return { ...draft, allowNewConversations: false, priorityTier: "normal" };
+  if (draft.priorityTier === "primary") {
+    return { ...draft, priorityTier: "no_new" };
+  }
+  return { ...draft, priorityTier: "normal" };
 }
 
 function cycleAccountFastModePolicy(
@@ -760,7 +757,7 @@ function priorityPolicyLabel(
   draft: AccountQuickPolicyDraft,
   locale: "zh" | "en",
 ) {
-  if (!draft.allowNewConversations) return locale === "zh" ? "禁新" : "No new";
+  if (draft.priorityTier === "no_new") return locale === "zh" ? "禁新" : "No new";
   if (draft.priorityTier === "primary")
     return locale === "zh" ? "主力" : "Primary";
   if (draft.priorityTier === "fallback")
@@ -801,7 +798,7 @@ function fastModePolicyAriaLabel(
 function priorityPolicyTone(
   draft: AccountQuickPolicyDraft,
 ): AccountQuickPolicyTone {
-  if (!draft.allowNewConversations) return "warning";
+  if (draft.priorityTier === "no_new") return "warning";
   if (draft.priorityTier === "primary") return "primary";
   if (draft.priorityTier === "fallback") return "success";
   return "neutral";
@@ -1046,8 +1043,8 @@ function AccountQuickPolicyChips({
         }
         aria-label={
           locale === "zh"
-            ? "切换新对话与优先级"
-            : "Cycle new conversation priority"
+            ? "切换账号优先级"
+            : "Cycle account priority"
         }
         onClick={(event) => {
           event.stopPropagation();
@@ -2607,7 +2604,6 @@ function DashboardUpstreamAccountActivityCard({
   const handleCyclePriorityPolicy = useCallback(() => {
     const nextDraft = cycleAccountPriorityPolicy(policyDraft);
     schedulePolicySave(nextDraft, {
-      allowNewConversations: nextDraft.allowNewConversations,
       priorityTier: nextDraft.priorityTier,
     });
   }, [policyDraft, schedulePolicySave]);

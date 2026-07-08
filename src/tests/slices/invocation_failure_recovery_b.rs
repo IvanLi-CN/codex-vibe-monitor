@@ -483,9 +483,9 @@ async fn pool_route_returns_ungrouped_error_for_sticky_account_when_cut_out_is_f
     let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, block_new_conversations,
+            name,
             allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, 0, 0, 1, ?2, ?2)
+        ) VALUES (?1, 0, 1, ?2, ?2)
         RETURNING id
         "#,
     )
@@ -1509,10 +1509,10 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
     let force_remove_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, system_key, protected, block_new_conversations, allow_cut_out, allow_cut_in,
+            name, system_key, protected, allow_cut_out, allow_cut_in,
             priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
             upstream_429_max_retries, available_models_json, created_at, updated_at
-        ) VALUES (?1, ?2, 1, 0, 1, 1, 'primary', 'force_remove', 0, 0, 0, '[]', ?3, ?3)
+        ) VALUES (?1, ?2, 1, 1, 1, 'primary', 'force_remove', 0, 0, 0, '[]', ?3, ?3)
         RETURNING id
         "#,
     )
@@ -1530,10 +1530,10 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
     let fill_missing_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, system_key, protected, block_new_conversations, allow_cut_out, allow_cut_in,
+            name, system_key, protected, allow_cut_out, allow_cut_in,
             priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
             upstream_429_max_retries, available_models_json, created_at, updated_at
-        ) VALUES (?1, ?2, 1, 0, 1, 1, 'normal', 'fill_missing', 0, 0, 0, '[]', ?3, ?3)
+        ) VALUES (?1, ?2, 1, 1, 1, 'normal', 'fill_missing', 0, 0, 0, '[]', ?3, ?3)
         RETURNING id
         "#,
     )

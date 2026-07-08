@@ -1372,7 +1372,6 @@ fn normalize_bulk_upstream_account_action(value: &str) -> Result<String, (Status
 }
 
 fn normalize_tag_rule(
-    block_new_conversations: bool,
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: Option<&str>,
@@ -1393,7 +1392,6 @@ fn normalize_tag_rule(
             .unwrap_or_default(),
     );
     Ok(TagRoutingRule {
-        block_new_conversations,
         allow_cut_out,
         allow_cut_in,
         priority_tier,
@@ -1406,7 +1404,6 @@ fn normalize_tag_rule(
 }
 
 fn normalize_group_account_routing_rule(
-    block_new_conversations: bool,
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: Option<&str>,
@@ -1430,7 +1427,6 @@ fn normalize_group_account_routing_rule(
             .unwrap_or_default(),
     );
     Ok(GroupAccountRoutingRule {
-        block_new_conversations,
         allow_cut_out,
         allow_cut_in,
         priority_tier,
@@ -1478,15 +1474,17 @@ fn normalize_tag_priority_tier(
         "fallback" => Ok(TagPriorityTier::Fallback),
         "normal" => Ok(TagPriorityTier::Normal),
         "primary" => Ok(TagPriorityTier::Primary),
+        "no_new" => Ok(TagPriorityTier::NoNew),
         _ => Err((
             StatusCode::BAD_REQUEST,
-            "priorityTier must be one of: primary, normal, fallback".to_string(),
+            "priorityTier must be one of: primary, normal, fallback, no_new".to_string(),
         )),
     }
 }
 
 fn decode_tag_priority_tier(value: &str) -> TagPriorityTier {
     match value.trim() {
+        "no_new" => TagPriorityTier::NoNew,
         "fallback" => TagPriorityTier::Fallback,
         "primary" => TagPriorityTier::Primary,
         _ => TagPriorityTier::Normal,
@@ -1600,7 +1598,6 @@ fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
         id: row.tag_id,
         name: row.name.clone(),
         routing_rule: TagRoutingRule {
-            block_new_conversations: row.block_new_conversations != 0,
             allow_cut_out: row.allow_cut_out != 0,
             allow_cut_in: row.allow_cut_in != 0,
             priority_tier: decode_tag_priority_tier(&row.priority_tier),
@@ -1625,7 +1622,6 @@ fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
         id: row.id,
         name: row.name.clone(),
         routing_rule: TagRoutingRule {
-            block_new_conversations: row.block_new_conversations != 0,
             allow_cut_out: row.allow_cut_out != 0,
             allow_cut_in: row.allow_cut_in != 0,
             priority_tier: decode_tag_priority_tier(&row.priority_tier),
@@ -1719,8 +1715,6 @@ fn group_routing_rule_from_columns(
     legacy_concurrency_limit: i64,
     legacy_upstream_429_retry_enabled: bool,
     legacy_upstream_429_max_retries: u8,
-    policy_block_new_conversations: Option<i64>,
-    policy_allow_new_conversations: Option<i64>,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<&str>,
@@ -1746,16 +1740,10 @@ fn group_routing_rule_from_columns(
     policy_responses_stream_timeout_secs: Option<i64>,
     policy_compact_stream_timeout_secs: Option<i64>,
 ) -> GroupAccountRoutingRule {
-    let allow_new_conversations = policy_allow_new_conversations.or_else(|| {
-        policy_block_new_conversations
-            .map(|block_new_conversations| if block_new_conversations == 0 { 1 } else { 0 })
-    });
-    let block_new_conversations = allow_new_conversations.is_some_and(|value| value == 0);
     let upstream_429_retry_enabled = policy_upstream_429_retry_enabled
         .map(|value| value != 0)
         .unwrap_or(legacy_upstream_429_retry_enabled);
     GroupAccountRoutingRule {
-        block_new_conversations,
         allow_cut_out: policy_allow_cut_out.map(|value| value != 0).unwrap_or(true),
         allow_cut_in: policy_allow_cut_in.map(|value| value != 0).unwrap_or(true),
         priority_tier: decode_tag_priority_tier(policy_priority_tier.unwrap_or("normal")),
@@ -1806,8 +1794,6 @@ async fn load_group_routing_rule(
         concurrency_limit: Option<i64>,
         upstream_429_retry_enabled: Option<i64>,
         upstream_429_max_retries: Option<i64>,
-        policy_block_new_conversations: Option<i64>,
-        policy_allow_new_conversations: Option<i64>,
         policy_allow_cut_out: Option<i64>,
         policy_allow_cut_in: Option<i64>,
         policy_priority_tier: Option<String>,
@@ -1842,8 +1828,6 @@ async fn load_group_routing_rule(
             concurrency_limit,
             upstream_429_retry_enabled,
             upstream_429_max_retries,
-            policy_block_new_conversations,
-            policy_allow_new_conversations,
             policy_allow_cut_out,
             policy_allow_cut_in,
             policy_priority_tier,
@@ -1906,8 +1890,6 @@ async fn load_group_routing_rule(
             None,
             None,
             None,
-            None,
-            None,
         ));
     };
     let upstream_429_retry_enabled =
@@ -1920,8 +1902,6 @@ async fn load_group_routing_rule(
         row.concurrency_limit.unwrap_or_default(),
         upstream_429_retry_enabled,
         upstream_429_max_retries,
-        row.policy_block_new_conversations,
-        row.policy_allow_new_conversations,
         row.policy_allow_cut_out,
         row.policy_allow_cut_in,
         row.policy_priority_tier.as_deref(),

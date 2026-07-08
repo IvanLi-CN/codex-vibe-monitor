@@ -459,7 +459,6 @@ pub(crate) async fn create_tag(
     state.upstream_accounts.require_crypto_key()?;
     let name = normalize_tag_name(&payload.name)?;
     let rule = normalize_tag_rule(
-        payload.block_new_conversations,
         payload.allow_cut_out,
         payload.allow_cut_in,
         payload.priority_tier.as_deref(),
@@ -514,9 +513,6 @@ pub(crate) async fn update_tag(
         None => existing.name.clone(),
     };
     let rule = normalize_tag_rule(
-        payload
-            .block_new_conversations
-            .unwrap_or(existing.block_new_conversations != 0),
         payload.allow_cut_out.unwrap_or(existing.allow_cut_out != 0),
         payload.allow_cut_in.unwrap_or(existing.allow_cut_in != 0),
         payload
@@ -772,43 +768,37 @@ pub(crate) async fn update_upstream_account_group(
         sqlx::query(
             r#"
             UPDATE pool_upstream_account_group_notes
-            SET policy_block_new_conversations = CASE WHEN ?2 != 0 THEN policy_block_new_conversations ELSE ?3 END,
-                policy_allow_new_conversations = CASE WHEN ?4 != 0 THEN policy_allow_new_conversations ELSE ?5 END,
-                policy_allow_cut_out = CASE WHEN ?6 != 0 THEN policy_allow_cut_out ELSE ?7 END,
-                policy_allow_cut_in = CASE WHEN ?8 != 0 THEN policy_allow_cut_in ELSE ?9 END,
-                policy_priority_tier = CASE WHEN ?10 != 0 THEN policy_priority_tier ELSE ?11 END,
-                policy_fast_mode_rewrite_mode = CASE WHEN ?12 != 0 THEN policy_fast_mode_rewrite_mode ELSE ?13 END,
-                policy_image_tool_rewrite_mode = CASE WHEN ?14 != 0 THEN policy_image_tool_rewrite_mode ELSE ?15 END,
-                policy_concurrency_limit = CASE WHEN ?16 != 0 THEN policy_concurrency_limit ELSE ?17 END,
-                policy_upstream_429_retry_enabled = CASE WHEN ?18 != 0 THEN policy_upstream_429_retry_enabled ELSE ?19 END,
-                policy_upstream_429_max_retries = CASE WHEN ?20 != 0 THEN policy_upstream_429_max_retries ELSE ?21 END,
+            SET policy_allow_cut_out = CASE WHEN ?2 != 0 THEN policy_allow_cut_out ELSE ?3 END,
+                policy_allow_cut_in = CASE WHEN ?4 != 0 THEN policy_allow_cut_in ELSE ?5 END,
+                policy_priority_tier = CASE WHEN ?6 != 0 THEN policy_priority_tier ELSE ?7 END,
+                policy_fast_mode_rewrite_mode = CASE WHEN ?8 != 0 THEN policy_fast_mode_rewrite_mode ELSE ?9 END,
+                policy_image_tool_rewrite_mode = CASE WHEN ?10 != 0 THEN policy_image_tool_rewrite_mode ELSE ?11 END,
+                policy_concurrency_limit = CASE WHEN ?12 != 0 THEN policy_concurrency_limit ELSE ?13 END,
+                policy_upstream_429_retry_enabled = CASE WHEN ?14 != 0 THEN policy_upstream_429_retry_enabled ELSE ?15 END,
+                policy_upstream_429_max_retries = CASE WHEN ?16 != 0 THEN policy_upstream_429_max_retries ELSE ?17 END,
                 policy_available_models_json = CASE
-                    WHEN ?22 != 0 THEN policy_available_models_json
-                    ELSE ?23
+                    WHEN ?18 != 0 THEN policy_available_models_json
+                    ELSE ?19
                 END,
-                policy_status_change_upstream_http_401 = CASE WHEN ?24 != 0 THEN policy_status_change_upstream_http_401 ELSE ?25 END,
-                policy_status_change_upstream_http_402 = CASE WHEN ?26 != 0 THEN policy_status_change_upstream_http_402 ELSE ?27 END,
-                policy_status_change_upstream_http_403 = CASE WHEN ?28 != 0 THEN policy_status_change_upstream_http_403 ELSE ?29 END,
-                policy_status_change_reauth_required = CASE WHEN ?30 != 0 THEN policy_status_change_reauth_required ELSE ?31 END,
-                policy_status_change_upstream_http_429_rate_limit = CASE WHEN ?32 != 0 THEN policy_status_change_upstream_http_429_rate_limit ELSE ?33 END,
-                policy_status_change_upstream_http_429_quota_exhausted = CASE WHEN ?34 != 0 THEN policy_status_change_upstream_http_429_quota_exhausted ELSE ?35 END,
-                policy_status_change_usage_snapshot_exhausted = CASE WHEN ?36 != 0 THEN policy_status_change_usage_snapshot_exhausted ELSE ?37 END,
-                policy_status_change_quota_still_exhausted = CASE WHEN ?38 != 0 THEN policy_status_change_quota_still_exhausted ELSE ?39 END,
-                policy_status_change_transport_failure = CASE WHEN ?40 != 0 THEN policy_status_change_transport_failure ELSE ?41 END,
-                policy_status_change_upstream_server_overloaded = CASE WHEN ?42 != 0 THEN policy_status_change_upstream_server_overloaded ELSE ?43 END,
-                policy_status_change_upstream_http_5xx = CASE WHEN ?44 != 0 THEN policy_status_change_upstream_http_5xx ELSE ?45 END,
-                policy_responses_first_byte_timeout_secs = CASE WHEN ?46 != 0 THEN policy_responses_first_byte_timeout_secs ELSE ?47 END,
-                policy_compact_first_byte_timeout_secs = CASE WHEN ?48 != 0 THEN policy_compact_first_byte_timeout_secs ELSE ?49 END,
-                policy_responses_stream_timeout_secs = CASE WHEN ?50 != 0 THEN policy_responses_stream_timeout_secs ELSE ?51 END,
-                policy_compact_stream_timeout_secs = CASE WHEN ?52 != 0 THEN policy_compact_stream_timeout_secs ELSE ?53 END
+                policy_status_change_upstream_http_401 = CASE WHEN ?20 != 0 THEN policy_status_change_upstream_http_401 ELSE ?21 END,
+                policy_status_change_upstream_http_402 = CASE WHEN ?22 != 0 THEN policy_status_change_upstream_http_402 ELSE ?23 END,
+                policy_status_change_upstream_http_403 = CASE WHEN ?24 != 0 THEN policy_status_change_upstream_http_403 ELSE ?25 END,
+                policy_status_change_reauth_required = CASE WHEN ?26 != 0 THEN policy_status_change_reauth_required ELSE ?27 END,
+                policy_status_change_upstream_http_429_rate_limit = CASE WHEN ?28 != 0 THEN policy_status_change_upstream_http_429_rate_limit ELSE ?29 END,
+                policy_status_change_upstream_http_429_quota_exhausted = CASE WHEN ?30 != 0 THEN policy_status_change_upstream_http_429_quota_exhausted ELSE ?31 END,
+                policy_status_change_usage_snapshot_exhausted = CASE WHEN ?32 != 0 THEN policy_status_change_usage_snapshot_exhausted ELSE ?33 END,
+                policy_status_change_quota_still_exhausted = CASE WHEN ?34 != 0 THEN policy_status_change_quota_still_exhausted ELSE ?35 END,
+                policy_status_change_transport_failure = CASE WHEN ?36 != 0 THEN policy_status_change_transport_failure ELSE ?37 END,
+                policy_status_change_upstream_server_overloaded = CASE WHEN ?38 != 0 THEN policy_status_change_upstream_server_overloaded ELSE ?39 END,
+                policy_status_change_upstream_http_5xx = CASE WHEN ?40 != 0 THEN policy_status_change_upstream_http_5xx ELSE ?41 END,
+                policy_responses_first_byte_timeout_secs = CASE WHEN ?42 != 0 THEN policy_responses_first_byte_timeout_secs ELSE ?43 END,
+                policy_compact_first_byte_timeout_secs = CASE WHEN ?44 != 0 THEN policy_compact_first_byte_timeout_secs ELSE ?45 END,
+                policy_responses_stream_timeout_secs = CASE WHEN ?46 != 0 THEN policy_responses_stream_timeout_secs ELSE ?47 END,
+                policy_compact_stream_timeout_secs = CASE WHEN ?48 != 0 THEN policy_compact_stream_timeout_secs ELSE ?49 END
             WHERE group_name = ?1
             "#,
         )
         .bind(&group_name)
-        .bind(if matches!(routing_rule.allow_new_conversations_field(), OptionalField::Missing) { 1_i64 } else { 0_i64 })
-        .bind(optional_inverted_bool_to_i64(&routing_rule.allow_new_conversations_field()))
-        .bind(if matches!(routing_rule.allow_new_conversations_field(), OptionalField::Missing) { 1_i64 } else { 0_i64 })
-        .bind(optional_bool_to_i64(&routing_rule.allow_new_conversations_field()))
         .bind(if matches!(routing_rule.allow_cut_out, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(optional_bool_to_i64(&routing_rule.allow_cut_out))
         .bind(if matches!(routing_rule.allow_cut_in, OptionalField::Missing) { 1_i64 } else { 0_i64 })

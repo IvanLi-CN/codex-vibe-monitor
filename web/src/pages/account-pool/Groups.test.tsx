@@ -33,7 +33,6 @@ vi.mock("../../hooks/useForwardProxyBindingNodes", () => ({
 }));
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
-  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   sourceTagIds: [],

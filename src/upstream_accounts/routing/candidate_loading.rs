@@ -209,7 +209,7 @@ pub(crate) async fn account_accepts_sticky_assignment(
 ) -> Result<bool> {
     let is_transfer = source_account_id.is_some_and(|source_id| source_id != account_id);
     let is_new_assignment = source_account_id.is_none();
-    if is_new_assignment && rule.block_new_conversations {
+    if is_new_assignment && rule.priority_tier == TagPriorityTier::NoNew {
         return Ok(false);
     }
     let Some(_) = sticky_key else {

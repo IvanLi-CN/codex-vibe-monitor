@@ -55,7 +55,6 @@ export type StoryStore = {
 }
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
-  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   availableModels: [],
@@ -63,7 +62,6 @@ const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   sourceTagIds: [],
   sourceTagNames: [],
   fieldSources: {
-    blockNewConversations: 'root',
     allowCutOut: 'root',
     allowCutIn: 'root',
     priorityTier: 'root',
@@ -292,7 +290,6 @@ export const defaultRoutingTimeouts: PoolRoutingTimeoutSettings = {
 }
 
 const detailRichRoutingRule: EffectiveRoutingRule = {
-  blockNewConversations: true,
   allowCutOut: false,
   allowCutIn: false,
   availableModels: ['gpt-5.5', 'gpt-5.4-mini'],
@@ -307,13 +304,12 @@ const detailRichRoutingRule: EffectiveRoutingRule = {
   },
   sourceTagIds: [1, 4, 20],
   sourceTagNames: ['vip', 'sticky-pool', 'priority-route'],
-  priorityTier: 'fallback',
+  priorityTier: 'no_new',
   fastModeRewriteMode: 'force_add',
   concurrencyLimit: 3,
   upstream429RetryEnabled: true,
   upstream429MaxRetries: 3,
   fieldSources: {
-    blockNewConversations: 'group',
     allowCutOut: 'tag',
     allowCutIn: 'account',
     priorityTier: 'tag',
@@ -793,7 +789,6 @@ function buildOperationalRosterAccounts(replicaCount = 1) {
               sourceTagIds: [5, 6],
               sourceTagNames: ['analytics', 'reporting'],
               fieldSources: {
-                blockNewConversations: 'group',
                 allowCutOut: 'tag',
                 allowCutIn: 'account',
                 priorityTier: 'tag',

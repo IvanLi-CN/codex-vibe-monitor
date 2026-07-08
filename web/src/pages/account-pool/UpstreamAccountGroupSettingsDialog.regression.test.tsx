@@ -170,7 +170,6 @@ function createGroupState(groupName: string) {
     upstream429MaxRetries: 0,
     concurrencyLimit: 0,
     routingRule: {
-      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
       priorityTier: 'normal',
@@ -272,28 +271,27 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
     expect(readValue('detail-group')).toBe('')
   })
 
-  it('maps positive new-conversation patches into the stored rule draft', () => {
+  it('maps no-new priority patches into the stored rule draft', () => {
     expect(
       mergeRoutingRulePatch(createGroupState('prod').routingRule, {
-        allowNewConversations: false,
-      }).blockNewConversations,
-    ).toBe(true)
+        priorityTier: 'no_new',
+      }).priorityTier,
+    ).toBe('no_new')
   })
 
   it('preserves unrelated group routing fields when applying a partial patch', () => {
     const base = {
       ...createGroupState('prod').routingRule,
-      blockNewConversations: true,
       allowCutOut: false,
       allowCutIn: false,
-      priorityTier: 'primary' as const,
+      priorityTier: 'no_new' as const,
       fastModeRewriteMode: 'force_add' as const,
       availableModels: ['gpt-5.5'],
     }
 
-    expect(mergeRoutingRulePatch(base, { allowNewConversations: true })).toEqual({
+    expect(mergeRoutingRulePatch(base, { priorityTier: 'normal' })).toEqual({
       ...base,
-      blockNewConversations: false,
+      priorityTier: 'normal',
     })
   })
 
