@@ -355,6 +355,8 @@ describe("DashboardTodayActivityChart", () => {
       failureCountNegative: -1,
       chartSuccessCount: 2,
       chartInFlightCount: 0,
+      chartQueuedInFlightCount: 0,
+      chartRunningInFlightCount: 0,
       chartFailureCountNegative: -1,
       totalCount: 3,
       successCost: 0.3,
@@ -381,6 +383,8 @@ describe("DashboardTodayActivityChart", () => {
       cumulativeTokens: 120,
       chartSuccessCount: 0,
       chartInFlightCount: 0,
+      chartQueuedInFlightCount: 0,
+      chartRunningInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 0.5,
       chartCumulativeSuccessCost: 0.3,
@@ -400,6 +404,8 @@ describe("DashboardTodayActivityChart", () => {
       cumulativeTokens: 320,
       chartSuccessCount: 4,
       chartInFlightCount: 0,
+      chartQueuedInFlightCount: 0,
+      chartRunningInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 1.25,
       chartCumulativeSuccessCost: 1.05,
@@ -419,6 +425,8 @@ describe("DashboardTodayActivityChart", () => {
       cumulativeTokens: 320,
       chartSuccessCount: 0,
       chartInFlightCount: 0,
+      chartQueuedInFlightCount: 0,
+      chartRunningInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 1.25,
       chartCumulativeSuccessCost: 1.05,
@@ -429,6 +437,8 @@ describe("DashboardTodayActivityChart", () => {
       label: "23:59",
       chartSuccessCount: null,
       chartInFlightCount: null,
+      chartQueuedInFlightCount: null,
+      chartRunningInFlightCount: null,
       chartFailureCountNegative: null,
       cumulativeCost: null,
       cumulativeSuccessCost: null,
@@ -631,6 +641,52 @@ describe("DashboardTodayActivityChart", () => {
       inFlightCount: 1,
       chartSuccessCount: 1,
       chartInFlightCount: 1,
+      chartQueuedInFlightCount: 0,
+      chartRunningInFlightCount: 1,
+      chartFailureCountNegative: -1,
+    });
+  });
+
+  it("splits in-flight phase counts into queued and running chart bars", () => {
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: "2026-04-08 00:00:00",
+        rangeEnd: "2026-04-08 00:01:10",
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: "2026-04-08 00:01:00",
+            bucketEnd: "2026-04-08 00:01:59",
+            totalCount: 5,
+            successCount: 1,
+            failureCount: 1,
+            inFlightCount: 3,
+            inFlightPhaseCounts: {
+              queued: 1,
+              requesting: 1,
+              responding: 1,
+            },
+            totalTokens: 90,
+            totalCost: 0.2,
+          },
+        ],
+      },
+      {
+        now: new Date(2026, 3, 8, 0, 1, 10),
+        localeTag: "en-US",
+      },
+    );
+
+    expect(data[1]).toMatchObject({
+      totalCount: 5,
+      successCount: 1,
+      failureCount: 1,
+      inFlightCount: 3,
+      queuedInFlightCount: 1,
+      runningInFlightCount: 2,
+      chartSuccessCount: 1,
+      chartQueuedInFlightCount: 1,
+      chartRunningInFlightCount: 2,
       chartFailureCountNegative: -1,
     });
   });
@@ -810,7 +866,8 @@ describe("DashboardTodayActivityChart", () => {
       />,
     );
 
-    expect(html).toContain("chart.inFlight");
+    expect(html).toContain("chart.running");
+    expect(html).toContain("chart.queued");
     expect(html).toContain("1 unit.calls");
     expect(html).not.toContain("5 unit.calls");
   });
@@ -843,7 +900,8 @@ describe("DashboardTodayActivityChart", () => {
     );
 
     expect(html).toContain("0 unit.calls");
-    expect(html).toContain("chart.inFlight");
+    expect(html).toContain("chart.running");
+    expect(html).toContain("chart.queued");
     expect(html).toContain("chart.firstResponseByteTotal");
     expect(html).not.toContain("450 ms");
   });
@@ -907,7 +965,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-data-length=""');
   });
 
-  it("renders count mode with success, in-flight, and failure bars sharing one stack", () => {
+  it("renders count mode with success, running, queued, and failure bars sharing one stack", () => {
     const html = renderToStaticMarkup(
       <DashboardTodayActivityChart
         response={response}
@@ -925,7 +983,8 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-data-length="1440"');
     expect(html).not.toContain('data-testid="area-chart"');
     expect(html).toContain('data-data-key="chartSuccessCount"');
-    expect(html).toContain('data-data-key="chartInFlightCount"');
+    expect(html).toContain('data-data-key="chartRunningInFlightCount"');
+    expect(html).toContain('data-data-key="chartQueuedInFlightCount"');
     expect(html).toContain('data-data-key="chartFailureCountNegative"');
     expect(html).toContain('data-bar-size="1"');
     expect(html).toContain('data-stack-id="positive"');
@@ -933,7 +992,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain(
       'data-stack-id="positive" data-data-key="chartFailureCountNegative" data-bar-size="1" data-radius="" data-has-shape="true"',
     );
-    expect(html.match(/data-stack-id="positive"/g)).toHaveLength(3);
+    expect(html.match(/data-stack-id="positive"/g)).toHaveLength(4);
     expect(html.match(/data-has-shape="true"/g)).toHaveLength(1);
   });
 
@@ -1200,7 +1259,7 @@ describe("DashboardTodayActivityChart", () => {
     await flushAnimationFrame();
 
     const bars = host?.querySelectorAll('[data-testid="bar-series"]');
-    expect(bars?.length).toBe(3);
+    expect(bars?.length).toBe(4);
     expect(Number(bars?.[0]?.getAttribute("data-bar-size"))).toBeGreaterThan(1);
   });
 

@@ -4910,6 +4910,8 @@ pub(crate) struct InvocationAggregateRecord {
     pub(crate) failure_kind: Option<String>,
     pub(crate) failure_class: Option<String>,
     pub(crate) is_actionable: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) live_phase: Option<String>,
     pub(crate) t_total_ms: Option<f64>,
     pub(crate) t_req_read_ms: Option<f64>,
     pub(crate) t_req_parse_ms: Option<f64>,

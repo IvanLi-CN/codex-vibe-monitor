@@ -329,6 +329,7 @@ pub(crate) struct TimeseriesPoint {
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,
     pub(crate) in_flight_count: i64,
+    pub(crate) in_flight_phase_counts: InvocationPhaseCountsResponse,
     pub(crate) total_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
@@ -1173,6 +1174,8 @@ pub(crate) struct PromptCacheConversationAggregateRow {
     pub(crate) total_cost: f64,
     pub(crate) created_at: String,
     pub(crate) last_activity_at: String,
+    #[sqlx(default)]
+    pub(crate) cursor_created_at: Option<String>,
     #[sqlx(default)]
     pub(crate) sort_anchor_at: Option<String>,
     #[sqlx(default)]

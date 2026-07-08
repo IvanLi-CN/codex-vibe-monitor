@@ -15,6 +15,11 @@ const sampleStats: StatsResponse = {
   inProgressConversationCount: 11,
   inProgressRetryConversationCount: 4,
   inProgressAvgWaitMs: 1850,
+  inProgressPhaseCounts: {
+    queued: 3,
+    requesting: 5,
+    responding: 3,
+  },
   nonSuccessCost: 0.83,
   nonSuccessTokens: 12640,
 }
@@ -35,6 +40,11 @@ const comparisonStats: StatsResponse = {
   inProgressConversationCount: 7,
   inProgressRetryConversationCount: 2,
   inProgressAvgWaitMs: 1320,
+  inProgressPhaseCounts: {
+    queued: 2,
+    requesting: 3,
+    responding: 2,
+  },
   nonSuccessCost: 0.96,
   nonSuccessTokens: 14020,
 }
@@ -48,6 +58,11 @@ const previous7dStats: StatsResponse = {
   inProgressConversationCount: 5,
   inProgressRetryConversationCount: 1,
   inProgressAvgWaitMs: 1100,
+  inProgressPhaseCounts: {
+    queued: 1,
+    requesting: 2,
+    responding: 2,
+  },
   nonSuccessCost: 5.6,
   nonSuccessTokens: 88310,
 }
@@ -234,9 +249,9 @@ export const DesktopSingleRow: Story = {
     const tiles = canvas.getAllByTestId('today-stats-metric-tile')
     await expect(tiles).toHaveLength(7)
     const labels = tiles.map((tile) => tile.textContent ?? '')
-    expect(labels[2]).toMatch(/in-progress invocations|进行中调用/i)
-    expect(labels[3]).toMatch(/success|成功/i)
-    expect(labels[4]).toMatch(/time to first byte|首字用时/i)
+    expect(labels[2]).toMatch(/in progress|进行中/i)
+    expect(labels[3]).toMatch(/time to first byte|首字用时/i)
+    expect(labels[4]).toMatch(/success|成功/i)
   },
 }
 
@@ -285,7 +300,8 @@ export const ScopedAccountEmbedded: Story = {
     await expect(grid).toHaveClass(/lg:grid-cols-4/)
     await expect(grid).toHaveClass(/xl:grid-cols-7/)
     await expect(tiles).toHaveLength(7)
-    await expect(canvas.getByText(/in-progress invocations|进行中调用/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/in progress|进行中/i)).toBeInTheDocument()
+    await expect(canvas.getByTestId('today-stats-value-queued-invocations')).toBeInTheDocument()
     await expect(canvas.getByTestId('today-stats-secondary-in-progress-delta')).toHaveTextContent('+37.5%')
     await expect(canvas.getByTestId('today-stats-secondary-in-progress-day-average')).toHaveTextContent('9')
     await expect(canvas.getByTestId('today-stats-secondary-in-progress-retry')).toBeVisible()

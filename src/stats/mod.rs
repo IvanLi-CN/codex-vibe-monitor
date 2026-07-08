@@ -269,6 +269,7 @@ pub(crate) struct BucketAggregate {
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,
     pub(crate) in_flight_count: i64,
+    pub(crate) in_flight_phase_counts: InvocationPhaseCountsResponse,
     pub(crate) total_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,

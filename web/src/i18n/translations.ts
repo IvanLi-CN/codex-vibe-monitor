@@ -1946,7 +1946,8 @@ const baseTranslations = {
     "dashboard.today.spendRate": "Spend rate",
     "dashboard.today.responseTime": "Response time",
     "dashboard.today.firstResponseTime": "Time to first byte",
-    "dashboard.today.inProgressConversations": "In-progress invocations",
+    "dashboard.today.inProgressConversations": "In progress",
+    "dashboard.today.queuedInvocations": "Queued",
     "dashboard.today.parallelConversations": "Parallel conversations",
     "dashboard.today.todayCost": "Today cost",
     "dashboard.today.yesterdayCost": "Yesterday cost",
@@ -1959,7 +1960,9 @@ const baseTranslations = {
     "dashboard.today.responseTimeDescription":
       "Average first-response-byte total from the active tail inside the latest 5-minute window.",
     "dashboard.today.inProgressConversationsDescription":
-      "Current number of running or pending invocations. Multiple in-flight invocations from one conversation are counted separately.",
+      "Current requesting or responding invocations. Multiple in-flight invocations from one conversation are counted separately.",
+    "dashboard.today.queuedInvocationsDescription":
+      "Current queued invocations that have not started requesting upstream yet.",
     "dashboard.today.parallelConversationsDescription":
       "Distinct prompt-cache conversations counted in the latest minute bucket of the selected window.",
     "dashboard.today.successDescription":
@@ -1978,6 +1981,7 @@ const baseTranslations = {
     "dashboard.today.secondary.cacheHitRate": "Cache hit",
     "dashboard.today.secondary.perConversation": "Per conversation",
     "dashboard.today.secondary.retry": "Retry",
+    "dashboard.today.secondary.activeTotal": "Active total",
     "dashboard.today.secondary.inProgress": "In progress",
     "dashboard.today.secondary.p95": "P95",
     "dashboard.today.secondary.failed": "Failed",
@@ -2572,6 +2576,8 @@ const baseTranslations = {
     "chart.nonSuccess": "Non-success",
     "chart.totalCount": "Calls",
     "chart.inFlight": "In flight",
+    "chart.queued": "Queued",
+    "chart.running": "Running",
     "chart.trend": "Trend",
     "chart.tokensPerMinute": "TPM",
     "chart.spendRate": "Spend rate",
@@ -4389,7 +4395,8 @@ const baseTranslations = {
     "dashboard.today.spendRate": "消费速率",
     "dashboard.today.responseTime": "响应时间",
     "dashboard.today.firstResponseTime": "首字用时",
-    "dashboard.today.inProgressConversations": "进行中调用",
+    "dashboard.today.inProgressConversations": "进行中",
+    "dashboard.today.queuedInvocations": "排队中",
     "dashboard.today.parallelConversations": "并行对话",
     "dashboard.today.todayCost": "今日成本",
     "dashboard.today.yesterdayCost": "昨日成本",
@@ -4402,7 +4409,9 @@ const baseTranslations = {
     "dashboard.today.responseTimeDescription":
       "首字总耗时均值，按最近 5 分钟窗口内的活跃尾段计算；无完整样本时显示为空。",
     "dashboard.today.inProgressConversationsDescription":
-      "当前仍处于 running 或 pending 状态的调用数；同一对话下的多个进行中调用会分别计数。",
+      "当前处于请求中或响应中的调用数；同一对话下的多个进行中调用会分别计数。",
+    "dashboard.today.queuedInvocationsDescription":
+      "当前尚未开始请求上游的排队中调用数。",
     "dashboard.today.parallelConversationsDescription":
       "所选窗口最后一分钟切片内统计到的唯一 prompt-cache 对话数量。",
     "dashboard.today.successDescription": "所选自然日窗口内累计成功的调用数。",
@@ -4419,6 +4428,7 @@ const baseTranslations = {
     "dashboard.today.secondary.cacheHitRate": "缓存命中",
     "dashboard.today.secondary.perConversation": "每对话",
     "dashboard.today.secondary.retry": "重试",
+    "dashboard.today.secondary.activeTotal": "活跃合计",
     "dashboard.today.secondary.inProgress": "进行中",
     "dashboard.today.secondary.p95": "P95",
     "dashboard.today.secondary.failed": "失败",
@@ -4995,6 +5005,8 @@ const baseTranslations = {
     "chart.nonSuccess": "非成功",
     "chart.totalCount": "次数",
     "chart.inFlight": "进行中",
+    "chart.queued": "排队中",
+    "chart.running": "进行中",
     "chart.trend": "趋势",
     "chart.tokensPerMinute": "TPM",
     "chart.spendRate": "消费速率",

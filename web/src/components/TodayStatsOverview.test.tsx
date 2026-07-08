@@ -18,7 +18,8 @@ vi.mock('../i18n', () => ({
         'dashboard.today.responseTime': 'Response time',
         'dashboard.today.firstResponseTime': 'Time to first byte',
         'dashboard.today.responseTimeDescription': 'Response time uses the latest 5-minute active tail.',
-        'dashboard.today.inProgressConversations': 'In-progress invocations',
+        'dashboard.today.inProgressConversations': 'In progress',
+        'dashboard.today.queuedInvocations': 'Queued',
         'dashboard.today.parallelConversations': 'Parallel conversations',
         'dashboard.today.todayCost': 'Today cost',
         'dashboard.today.yesterdayCost': 'Yesterday cost',
@@ -27,6 +28,7 @@ vi.mock('../i18n', () => ({
         'dashboard.today.tokensPerMinuteDescription': 'TPM uses the active tail inside the latest 5-minute window.',
         'dashboard.today.spendRateDescription': 'Spend rate uses the active tail inside the latest 5-minute window.',
         'dashboard.today.inProgressConversationsDescription': 'Current running or pending invocations, counted per invocation.',
+        'dashboard.today.queuedInvocationsDescription': 'Queued invocations not yet requesting upstream.',
         'dashboard.today.parallelConversationsDescription': 'Distinct prompt-cache conversations counted in the latest minute bucket.',
         'dashboard.today.successDescription': 'Successful calls in the selected day.',
         'dashboard.today.failuresDescription': 'Failed calls in the selected day.',
@@ -211,7 +213,7 @@ function render(ui: React.ReactNode) {
 }
 
 describe('TodayStatsOverview', () => {
-  it('uses a seven-tile desktop grid with parallel conversations before success', () => {
+  it('keeps the original in-progress tile and adds the queued value before success', () => {
     render(
       <TodayStatsOverview
         stats={{
@@ -242,17 +244,18 @@ describe('TodayStatsOverview', () => {
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(7)
     const tileLabels = Array.from(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]') ?? [])
       .map((tile) => tile.textContent ?? '')
-    expect(tileLabels[2]).toContain('In-progress invocations')
+    expect(tileLabels[2]).toContain('In progress')
     expect(tileLabels[3]).toContain('Time to first byte')
     expect(tileLabels[4]).toContain('Success')
     expect(host?.textContent).toContain('Today summary')
     expect(host?.textContent).toContain('TPM')
     expect(host?.textContent).toContain('Spend rate')
     expect(host?.textContent).toContain('Time to first byte')
-    expect(host?.textContent).toContain('In-progress invocations')
+    expect(host?.textContent).toContain('In progress')
     expect(host?.textContent).toContain('Today cost')
     expect(host?.textContent).toContain('Today Token')
     expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('11')
+    expect(host?.querySelector('[data-testid="today-stats-value-queued-invocations"]')?.textContent).toContain('0')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('2')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('+175%')
   })
@@ -287,7 +290,7 @@ describe('TodayStatsOverview', () => {
     expect(grid?.className).toContain('xl:grid-cols-6')
     expect(grid?.className).not.toContain('xl:grid-cols-7')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6)
-    expect(host?.textContent).not.toContain('In-progress invocations')
+    expect(host?.textContent).not.toContain('In progress')
     expect(host?.textContent).toContain('Time to first byte')
     expect(host?.textContent).toContain('Today cost')
     expect(host?.textContent).toContain('Today Token')
@@ -323,6 +326,7 @@ describe('TodayStatsOverview', () => {
     expect(grid?.className).toContain('xl:grid-cols-7')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(7)
     expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('11')
+    expect(host?.querySelector('[data-testid="today-stats-value-queued-invocations"]')?.textContent).toContain('0')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('—')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('—')
   })
@@ -354,7 +358,7 @@ describe('TodayStatsOverview', () => {
     )
 
     expect(host?.textContent).toContain('Parallel conversations')
-    expect(host?.textContent).not.toContain('In-progress invocations')
+    expect(host?.textContent).not.toContain('In progress')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-retry"]')?.textContent).toContain('—')
     expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('—')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('2')
@@ -419,6 +423,42 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).not.toContain('Today summary')
     expect(host?.textContent).not.toContain('Accumulated in natural day')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(7)
+  })
+
+  it('adds the queued phase value to the original in-progress tile', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 42,
+          successCount: 40,
+          failureCount: 2,
+          totalCost: 1.48,
+          totalTokens: 9000,
+          inProgressConversationCount: 13,
+          inProgressRetryConversationCount: 5,
+          inProgressPhaseCounts: {
+            queued: 5,
+            requesting: 6,
+            responding: 2,
+          },
+        }}
+        rate={{
+          tokensPerMinute: 1000.6,
+          spendRate: 0.104,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        parallelWorkStats={buildParallelWorkStats([1, 3], 2, 4)}
+        comparisonParallelWorkStats={buildParallelWorkStats([4], 4, 4)}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('8')
+    expect(host?.querySelector('[data-testid="today-stats-value-queued-invocations"]')?.textContent).toContain('5')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('+100%')
   })
 
   it('renders partial loading only for rate tiles while summary metrics stay visible', () => {

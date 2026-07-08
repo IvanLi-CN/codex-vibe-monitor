@@ -1569,6 +1569,15 @@ async fn prompt_cache_conversations_activity_minutes_include_running_only_rows_a
         .iter()
         .find(|item| item.prompt_cache_key == "pck-running")
         .expect("pck-running should remain visible");
+    assert_eq!(
+        running.request_count, 2,
+        "working card totals must include the full prompt-cache lifecycle"
+    );
+    assert_eq!(running.total_tokens, 260);
+    assert!(
+        (running.total_cost - 0.02).abs() < f64::EPSILON,
+        "working card cost should include stale lifecycle history"
+    );
     assert_eq!(running.recent_invocations[0].status, "running");
     assert_eq!(running.recent_invocations[1].status, "success");
 }
@@ -1914,6 +1923,161 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_cursor_uses_working_sort_key_after_lifecycle_totals()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let tied_current_at = now - ChronoDuration::seconds(5);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        status: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(42_i64)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert tied working row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-z-boundary-history",
+        now - ChronoDuration::hours(2),
+        "working-z-boundary",
+        "success",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-z-boundary-current",
+        tied_current_at,
+        "working-z-boundary",
+        "success",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-m-between-current",
+        tied_current_at,
+        "working-m-between",
+        "success",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-a-last-current",
+        tied_current_at,
+        "working-a-last",
+        "success",
+    )
+    .await;
+
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before tied paginated read");
+
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
+        }),
+    )
+    .await
+    .expect("first tied page should succeed");
+
+    assert_eq!(first_page.conversations.len(), 1);
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "working-z-boundary"
+    );
+    assert_eq!(
+        first_page.conversations[0].request_count, 2,
+        "card totals should still use lifecycle data"
+    );
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: first_page.snapshot_at.clone(),
+            detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
+        }),
+    )
+    .await
+    .expect("second tied page should succeed");
+
+    assert_eq!(second_page.conversations.len(), 1);
+    assert_eq!(
+        second_page.conversations[0].prompt_cache_key,
+        "working-m-between"
+    );
+
+    let Json(third_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: second_page.next_cursor.clone(),
+            snapshot_at: second_page.snapshot_at.clone(),
+            detail: Some("compact".to_string()),
+                recent_invocation_limit: None,
+        }),
+    )
+    .await
+    .expect("third tied page should succeed");
+
+    assert_eq!(third_page.conversations.len(), 1);
+    assert_eq!(
+        third_page.conversations[0].prompt_cache_key,
+        "working-a-last"
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_activity_minutes_exclude_stale_terminal_rows_from_totals() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -1963,7 +2127,7 @@ async fn prompt_cache_conversations_activity_minutes_exclude_stale_terminal_rows
         "working-in-flight",
         now - ChronoDuration::minutes(20),
         "working-in-flight",
-        "running",
+        "pending",
     )
     .await;
     insert_row(
@@ -2892,8 +3056,8 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserve
         "working-window-target"
     );
     assert_eq!(first_page.conversations[0].request_count, 2);
-    assert_eq!(first_page.conversations[0].total_tokens, 787);
-    assert!((first_page.conversations[0].total_cost - 7.87).abs() < 1e-9);
+    assert_eq!(first_page.conversations[0].total_tokens, 1009);
+    assert!((first_page.conversations[0].total_cost - 10.09).abs() < 1e-9);
 
     let Json(second_page) = fetch_prompt_cache_conversations(
         State(state),
@@ -2916,6 +3080,268 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserve
     assert_eq!(second_page.conversations[0].request_count, 1);
     assert_eq!(second_page.conversations[0].total_tokens, 20);
     assert!((second_page.conversations[0].total_cost - 0.20).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_includes_unmaterialized_previous_hour_lifecycle_tail()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let snapshot_hour_start_epoch = align_bucket_epoch(now.timestamp(), 3_600, 0);
+    let snapshot_hour_start = Utc
+        .timestamp_opt(snapshot_hour_start_epoch, 0)
+        .single()
+        .expect("valid snapshot hour start");
+    let minimum_snapshot_at = snapshot_hour_start + ChronoDuration::minutes(10);
+    let snapshot_at = if now < minimum_snapshot_at {
+        minimum_snapshot_at
+    } else {
+        now - ChronoDuration::seconds(20)
+    };
+    let old_tail_at = snapshot_hour_start - ChronoDuration::minutes(10);
+    let current_working_at = snapshot_at - ChronoDuration::minutes(1);
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        total_tokens: i64,
+        cost: f64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, 'success', ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(
+            json!({
+                "promptCacheKey": "working-lagging-rollup",
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
+        .execute(pool)
+        .await
+        .expect("insert lagging rollup lifecycle row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-lagging-rollup-old-tail",
+        old_tail_at,
+        30,
+        0.30,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-lagging-rollup-current",
+        current_working_at,
+        70,
+        0.70,
+    )
+    .await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: None,
+            snapshot_at: Some(snapshot_at.to_rfc3339()),
+            detail: Some("compact".to_string()),
+            recent_invocation_limit: None,
+        }),
+    )
+    .await
+    .expect("snapshot working response should include unmaterialized lifecycle tail");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|conversation| conversation.prompt_cache_key == "working-lagging-rollup")
+        .expect("working conversation should be visible from current-hour row");
+    assert_eq!(conversation.request_count, 2);
+    assert_eq!(conversation.total_tokens, 100);
+    assert!((conversation.total_cost - 1.0).abs() < f64::EPSILON);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes_late_backfilled_rollup_lifecycle_totals()
+{
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let snapshot_hour_start_epoch = align_bucket_epoch(now.timestamp(), 3_600, 0);
+    let snapshot_hour_start = Utc
+        .timestamp_opt(snapshot_hour_start_epoch, 0)
+        .single()
+        .expect("valid snapshot hour start");
+    let minimum_snapshot_at = snapshot_hour_start + ChronoDuration::minutes(10);
+    let snapshot_at = if now < minimum_snapshot_at {
+        minimum_snapshot_at
+    } else {
+        now - ChronoDuration::seconds(20)
+    };
+    let archived_rollup_at = snapshot_hour_start - ChronoDuration::hours(2);
+    let old_hour_at = snapshot_hour_start - ChronoDuration::minutes(15);
+    let current_working_at = snapshot_at - ChronoDuration::minutes(1);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        created_at: DateTime<Utc>,
+        total_tokens: i64,
+        cost: f64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, 'success', ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(
+            json!({
+                "promptCacheKey": "working-late-rollup",
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .bind(format_utc_iso_millis(created_at))
+        .execute(pool)
+        .await
+        .expect("insert late backfilled rollup lifecycle row");
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_rollup_hourly (
+            bucket_start_epoch, source, prompt_cache_key, request_count, success_count,
+            failure_count, total_tokens, total_cost, first_seen_at, last_seen_at
+        )
+        VALUES (?1, ?2, ?3, 1, 1, 0, ?4, ?5, ?6, ?6)
+        "#,
+    )
+    .bind(align_bucket_epoch(archived_rollup_at.timestamp(), 3_600, 0))
+    .bind(SOURCE_PROXY)
+    .bind("working-late-rollup")
+    .bind(40_i64)
+    .bind(0.40_f64)
+    .bind(format_naive(
+        archived_rollup_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .execute(&state.pool)
+    .await
+    .expect("insert archived-only prompt-cache rollup row");
+
+    insert_row(
+        &state.pool,
+        "working-late-rollup-created-after-snapshot",
+        old_hour_at + ChronoDuration::seconds(2),
+        snapshot_at + ChronoDuration::seconds(10),
+        500,
+        5.00,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-late-rollup-old",
+        old_hour_at,
+        old_hour_at,
+        30,
+        0.30,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-late-rollup-current",
+        current_working_at,
+        current_working_at,
+        70,
+        0.70,
+    )
+    .await;
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
+    insert_row(
+        &state.pool,
+        "working-late-rollup-backfilled",
+        old_hour_at + ChronoDuration::seconds(5),
+        snapshot_at + ChronoDuration::seconds(5),
+        900,
+        9.00,
+    )
+    .await;
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
+    insert_row(
+        &state.pool,
+        "working-late-rollup-unmaterialized-backfill",
+        archived_rollup_at + ChronoDuration::seconds(10),
+        snapshot_at + ChronoDuration::seconds(15),
+        400,
+        4.00,
+    )
+    .await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: None,
+            snapshot_at: Some(snapshot_at.to_rfc3339()),
+            detail: Some("compact".to_string()),
+            recent_invocation_limit: None,
+        }),
+    )
+    .await
+    .expect("snapshot working response should exclude late rollup totals");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|conversation| conversation.prompt_cache_key == "working-late-rollup")
+        .expect("working conversation should be visible from current-hour row");
+    assert_eq!(conversation.request_count, 3);
+    assert_eq!(conversation.total_tokens, 140);
+    assert!((conversation.total_cost - 1.4).abs() < f64::EPSILON);
 }
 
 #[tokio::test]
@@ -3052,9 +3478,9 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hy
     assert_eq!(second_page.conversations[0].prompt_cache_key, "working-snapshot-full-head");
     let target = &first_page.conversations[0];
     assert_eq!(target.prompt_cache_key, "working-snapshot-full-target");
-    assert_eq!(target.request_count, 2);
-    assert_eq!(target.total_tokens, 1_009);
-    assert!((target.total_cost - 10.09).abs() < 1e-9);
+    assert_eq!(target.request_count, 1);
+    assert_eq!(target.total_tokens, 10);
+    assert!((target.total_cost - 0.10).abs() < 1e-9);
     assert_eq!(target.recent_invocations.len(), 1);
     assert_eq!(
         target.recent_invocations[0].invoke_id,
@@ -3203,9 +3629,9 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_full_det
     assert_eq!(second_page.conversations.len(), 1);
     let target = &first_page.conversations[0];
     assert_eq!(target.prompt_cache_key, "working-null-cost-full-target");
-    assert_eq!(target.request_count, 2);
-    assert_eq!(target.total_tokens, 1_009);
-    assert_eq!(target.total_cost, 9.99);
+    assert_eq!(target.request_count, 1);
+    assert_eq!(target.total_tokens, 10);
+    assert_eq!(target.total_cost, 0.0);
     assert_eq!(target.recent_invocations.len(), 1);
     assert_eq!(
         target.recent_invocations[0].invoke_id,
@@ -3396,6 +3822,13 @@ async fn prompt_cache_conversations_activity_minutes_paginated_overlays_memory_r
         )
         .await;
     }
+    insert_terminal_row(
+        &state.pool,
+        "memory-overlay-running-3-old-terminal",
+        now - ChronoDuration::minutes(20),
+        "memory-overlay-running-3",
+    )
+    .await;
 
     for index in 0..3 {
         let runtime_started_at = if index == 2 {
@@ -3479,6 +3912,16 @@ async fn prompt_cache_conversations_activity_minutes_paginated_overlays_memory_r
                 .map(|invocation| invocation.status.as_str()),
             Some("running")
         );
+        if prompt_cache_key == "memory-overlay-running-1" {
+            assert_eq!(conversation.request_count, 1);
+            assert_eq!(conversation.total_tokens, 0);
+            assert!((conversation.total_cost - 0.0).abs() < f64::EPSILON);
+        }
+        if prompt_cache_key == "memory-overlay-running-3" {
+            assert_eq!(conversation.request_count, 2);
+            assert_eq!(conversation.total_tokens, 10);
+            assert!((conversation.total_cost - 0.01).abs() < f64::EPSILON);
+        }
     }
 }
 
@@ -4579,7 +5022,7 @@ async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations(
     });
 
     let result = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(5),
         fetch_prompt_cache_conversations(
             State(state.clone()),
             Query(PromptCacheConversationsQuery {

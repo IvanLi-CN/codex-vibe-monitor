@@ -1367,8 +1367,8 @@ export const UnifiedActivitySnapshot: Story = {
     const accountHeaders = canvas.getAllByTestId('dashboard-upstream-account-header-row')
     await expect(accountHeaders[0]).toHaveTextContent('dzw')
     await expect(accountHeaders[1]).toHaveTextContent('CIII')
-    await expect(accountHeaders[0]?.querySelector('[aria-label="进行中调用 8"]')).not.toBeNull()
-    await expect(accountHeaders[1]?.querySelector('[aria-label="进行中调用 3"]')).not.toBeNull()
+    await expect(accountHeaders[0]?.querySelector('[aria-label="进行中 8"]')).not.toBeNull()
+    await expect(accountHeaders[1]?.querySelector('[aria-label="进行中 3"]')).not.toBeNull()
     await expect(accountHeaders[0]?.querySelector('[aria-label="TPM 610"]')).not.toBeNull()
     await expect(accountHeaders[1]?.querySelector('[aria-label="TPM 490"]')).not.toBeNull()
   },

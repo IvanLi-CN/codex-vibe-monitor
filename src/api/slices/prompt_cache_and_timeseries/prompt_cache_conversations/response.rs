@@ -80,6 +80,7 @@ fn runtime_prompt_cache_aggregate_from_record(
         total_cost: record.cost.unwrap_or_default(),
         created_at: occurred_at.clone(),
         last_activity_at: occurred_at.clone(),
+        cursor_created_at: Some(occurred_at.clone()),
         sort_anchor_at: Some(prompt_cache_runtime_record_sort_anchor(record)),
         last_terminal_at: (!is_in_flight).then(|| occurred_at.clone()),
         last_in_flight_at: is_in_flight.then_some(occurred_at),
@@ -170,13 +171,77 @@ fn merge_runtime_prompt_cache_aggregates(
     rows
 }
 
+async fn apply_prompt_cache_lifecycle_aggregate_totals(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    aggregates: &mut [PromptCacheConversationAggregateRow],
+    runtime_overlay_records: &[ApiInvocation],
+    snapshot_filter: Option<&PromptCacheConversationSnapshotFilter>,
+    snapshot_hour_start_epoch: Option<i64>,
+    snapshot_hour_start_bound: Option<&str>,
+) -> Result<()> {
+    let selected_keys = aggregates
+        .iter()
+        .map(|row| row.prompt_cache_key.clone())
+        .collect::<Vec<_>>();
+    let lifecycle_aggregates = query_prompt_cache_conversation_lifecycle_aggregates(
+        pool,
+        source_scope,
+        &selected_keys,
+        snapshot_filter,
+        snapshot_hour_start_epoch,
+        snapshot_hour_start_bound,
+    )
+    .await?;
+    let selected_key_set = selected_keys.into_iter().collect::<HashSet<_>>();
+    let mut runtime_aggregates_by_key = HashMap::new();
+    for record in runtime_overlay_records {
+        let Some(runtime) = runtime_prompt_cache_aggregate_from_record(record) else {
+            continue;
+        };
+        if !selected_key_set.contains(&runtime.prompt_cache_key) {
+            continue;
+        }
+        match runtime_aggregates_by_key.entry(runtime.prompt_cache_key.clone()) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                merge_runtime_prompt_cache_aggregate(entry.get_mut(), runtime);
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(runtime);
+            }
+        }
+    }
+    for aggregate in aggregates {
+        let mut applied_lifecycle = false;
+        if let Some(lifecycle) = lifecycle_aggregates.get(&aggregate.prompt_cache_key) {
+            aggregate.request_count = lifecycle.request_count;
+            aggregate.total_tokens = lifecycle.total_tokens;
+            aggregate.total_cost = lifecycle.total_cost;
+            aggregate.created_at = lifecycle.created_at.clone();
+            aggregate.last_activity_at = lifecycle.last_activity_at.clone();
+            applied_lifecycle = true;
+        }
+        if applied_lifecycle
+            && let Some(runtime) = runtime_aggregates_by_key.remove(&aggregate.prompt_cache_key)
+        {
+            merge_runtime_prompt_cache_aggregate(aggregate, runtime);
+        }
+    }
+    Ok(())
+}
+
 fn sort_prompt_cache_working_aggregates(rows: &mut [PromptCacheConversationAggregateRow]) {
     rows.sort_by(|left, right| {
         let left_sort = left.sort_anchor_at.as_deref().unwrap_or(&left.last_activity_at);
         let right_sort = right.sort_anchor_at.as_deref().unwrap_or(&right.last_activity_at);
+        let left_cursor_created = left.cursor_created_at.as_deref().unwrap_or(&left.created_at);
+        let right_cursor_created = right
+            .cursor_created_at
+            .as_deref()
+            .unwrap_or(&right.created_at);
         right_sort
             .cmp(left_sort)
-            .then_with(|| right.created_at.cmp(&left.created_at))
+            .then_with(|| right_cursor_created.cmp(left_cursor_created))
             .then_with(|| right.prompt_cache_key.cmp(&left.prompt_cache_key))
     });
 }
@@ -257,6 +322,16 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
         cursor.as_ref(),
         db_page_limit,
     );
+    apply_prompt_cache_lifecycle_aggregate_totals(
+        &state.pool,
+        source_scope,
+        &mut aggregates,
+        &runtime_overlay_records,
+        Some(&snapshot_filter),
+        Some(snapshot_hour_start_epoch),
+        Some(&snapshot_hour_start_bound),
+    )
+    .await?;
     let has_more = aggregates.len() as i64 > page_size;
     if has_more {
         aggregates.truncate(page_size as usize);
@@ -408,12 +483,22 @@ async fn build_prompt_cache_conversations_response_with_recent_limit(
                 display_limit,
             )
             .await?;
-            let aggregates = merge_runtime_prompt_cache_aggregates(
+            let mut aggregates = merge_runtime_prompt_cache_aggregates(
                 aggregates,
                 &runtime_overlay_records,
                 None,
                 display_limit,
             );
+            apply_prompt_cache_lifecycle_aggregate_totals(
+                &state.pool,
+                source_scope,
+                &mut aggregates,
+                &runtime_overlay_records,
+                None,
+                None,
+                None,
+            )
+            .await?;
             let matched_count = query_working_prompt_cache_conversation_count(
                 &state.pool,
                 &range_start_bound,

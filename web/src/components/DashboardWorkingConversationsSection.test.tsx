@@ -737,7 +737,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(headerPlanBadge?.textContent).toBe("Ent");
     expect(
-      accountHeader?.querySelector('[aria-label="进行中调用 3"]'),
+      accountHeader?.querySelector('[aria-label="进行中 3"]'),
     ).not.toBeNull();
     expect(
       accountHeader?.querySelector('[aria-label="TPM 640"]'),
@@ -882,7 +882,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     const accountHeaderText = accountHeader?.textContent;
     expect(
-      accountHeader?.querySelector('[aria-label="进行中调用 —"]'),
+      accountHeader?.querySelector('[aria-label="进行中 —"]'),
     ).not.toBeNull();
     expect(accountHeaderText).toContain("—");
     expect(accountHeaderText).not.toContain("并行对话");

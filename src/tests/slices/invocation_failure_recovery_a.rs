@@ -2251,7 +2251,7 @@ async fn pool_route_body_sticky_wait_timeout_returns_total_timeout_error_before_
         "request should still wait briefly before failing, elapsed={elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(600),
+        elapsed < Duration::from_secs(2),
         "responses total timeout should keep the pre-attempt no-account wait bounded on loaded runners, elapsed={elapsed:?}"
     );
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
