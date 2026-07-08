@@ -74,7 +74,7 @@
 - `cargo test pool_upstream_request_attempt -- --test-threads=1`
 - `cargo check`
 - `cd web && bun x vitest run --project=unit src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/lib/api.test.ts`
-- `cd web && bun x vitest run --project=unit src/lib/api.test.ts src/components/ListBodyState.test.tsx src/components/InvocationTable.test.tsx src/components/InvocationRecordsTable.test.tsx src/components/UpstreamAccountsTable.test.tsx src/components/UpstreamAccountsGroupedRoster.test.tsx src/pages/account-pool/Groups.test.tsx src/pages/system/SystemTasksPage.test.tsx src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`
+- `cd web && bun x vitest run --project=unit src/lib/api.test.ts src/features/shared/ListBodyState.test.tsx src/features/invocations/InvocationTable.test.tsx src/features/records/InvocationRecordsTable.test.tsx src/features/account-pool/UpstreamAccountsTable.test.tsx src/features/account-pool/UpstreamAccountsGroupedRoster.test.tsx src/pages/account-pool/Groups.test.tsx src/pages/system/SystemTasksPage.test.tsx src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`
 - `cd web && bun run test-storybook`
 - `cd web && bun run build-storybook`
 

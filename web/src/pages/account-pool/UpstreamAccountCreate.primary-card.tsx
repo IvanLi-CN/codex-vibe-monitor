@@ -1,4 +1,4 @@
-import { AppIcon } from "../../components/AppIcon";
+import { AppIcon } from "../../features/shared/AppIcon";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -8,7 +8,7 @@ import {
   CardTitle,
 } from "../../components/ui/card";
 import { Tooltip } from "../../components/ui/tooltip";
-import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
+import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 import { UpstreamAccountCreateApiKeySection } from "./UpstreamAccountCreate.api-key-section";
 import { UpstreamAccountCreateBatchOauthSection } from "./UpstreamAccountCreate.batch-oauth-section";

@@ -8,8 +8,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { AppIcon } from "../../components/AppIcon";
-import { AccountDetailDrawerShell } from "../../components/AccountDetailDrawerShell";
+import { AppIcon } from "../../features/shared/AppIcon";
+import { AccountDetailDrawerShell } from "../../features/account-pool/AccountDetailDrawerShell";
 import { useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
@@ -47,17 +47,17 @@ import {
 import {
   MotherAccountBadge,
   MotherAccountToggle,
-} from "../../components/MotherAccountToggle";
+} from "../../features/account-pool/MotherAccountToggle";
 import { Spinner } from "../../components/ui/spinner";
 import { Switch } from "../../components/ui/switch";
-import { EffectiveRoutingRuleCard } from "../../components/EffectiveRoutingRuleCard";
-import { ForwardProxyBindingSelector } from "../../components/ForwardProxyBindingSelector";
-import { InvocationTable } from "../../components/InvocationTable";
-import { DashboardActivityOverview } from "../../components/DashboardActivityOverview";
-import { ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX } from "../../components/dashboardActivityRange";
-import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
-import { UpstreamAccountUsageCard } from "../../components/UpstreamAccountUsageCard";
-import { StickyKeyConversationTable } from "../../components/StickyKeyConversationTable";
+import { EffectiveRoutingRuleCard } from "../../features/account-pool/EffectiveRoutingRuleCard";
+import { ForwardProxyBindingSelector } from "../../features/forward-proxy/ForwardProxyBindingSelector";
+import { InvocationTable } from "../../features/invocations/InvocationTable";
+import { DashboardActivityOverview } from "../../features/dashboard/DashboardActivityOverview";
+import { ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX } from "../../features/dashboard/dashboardActivityRange";
+import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
+import { UpstreamAccountUsageCard } from "../../features/account-pool/UpstreamAccountUsageCard";
+import { StickyKeyConversationTable } from "../../features/prompt-cache/StickyKeyConversationTable";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useInvocationRecordsRealtime } from "../../hooks/useInvocationRecordsRealtime";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";

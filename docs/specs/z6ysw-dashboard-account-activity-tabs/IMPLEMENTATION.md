@@ -62,14 +62,14 @@
 - `src/api/slices/settings_models_and_cache.rs`
 - `src/maintenance/hourly_rollups.rs`
 - `web/src/pages/Dashboard.tsx`
-- `web/src/components/DashboardActivityOverview.tsx`
-- `web/src/components/DashboardWorkingConversationsSection.tsx`
+- `web/src/features/dashboard/DashboardActivityOverview.tsx`
+- `web/src/features/dashboard/DashboardWorkingConversationsSection.tsx`
 - `web/src/components/InvocationErrorSummary.tsx`
-- `web/src/components/DashboardWorkingConversationsSection.stories.tsx`
-- `web/src/components/DashboardWorkingConversationsSection.test.tsx`
+- `web/src/features/dashboard/DashboardWorkingConversationsSection.stories.tsx`
+- `web/src/features/dashboard/DashboardWorkingConversationsSection.test.tsx`
 - `web/src/hooks/useDashboardUpstreamAccountActivity.ts`
 - `web/src/lib/api/core-foundation.ts`
-- `web/src/components/DashboardPage.stories.tsx`
+- `web/src/features/dashboard/DashboardPage.stories.tsx`
 
 ## References
 

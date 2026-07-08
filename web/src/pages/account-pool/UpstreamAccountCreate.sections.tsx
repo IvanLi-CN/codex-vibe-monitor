@@ -1,4 +1,4 @@
-import { AppIcon } from "../../components/AppIcon";
+import { AppIcon } from "../../features/shared/AppIcon";
 import { Link } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";

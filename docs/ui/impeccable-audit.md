@@ -30,7 +30,7 @@
 
 ### [P1] Token drift across charts and surfaces
 
-- **Location:** `web/src/lib/chartTheme.ts`, `web/src/components/ParallelWorkStatsSection.tsx`, `web/src/components/DashboardTodayActivityChart.tsx`, `web/src/components/SuccessFailureChart.tsx`
+- **Location:** `web/src/lib/chartTheme.ts`, `web/src/features/stats/ParallelWorkStatsSection.tsx`, `web/src/features/dashboard/DashboardTodayActivityChart.tsx`, `web/src/features/stats/SuccessFailureChart.tsx`
 - **Category:** Theming
 - **Impact:** 图表和局部组件绕开 OKLCH 语义 token 使用 hex/RGBA，light/dark 主题一致性、对比校验和未来换肤成本都会上升。
 - **WCAG/Standard:** WCAG 1.4.3 Contrast, 需要逐色验证。
@@ -39,7 +39,7 @@
 
 ### [P1] Glass and blur are over-applied
 
-- **Location:** `web/src/index.css`, `web/src/components/AppLayout.tsx`, `web/src/components/ui/floating-surface.ts`, account-pool overlays
+- **Location:** `web/src/index.css`, `web/src/features/app-shell/AppLayout.tsx`, `web/src/components/ui/floating-surface.ts`, account-pool overlays
 - **Category:** Performance / Anti-Pattern
 - **Impact:** 半透明、blur、orb、radial gradient 和强 shadow 叠加后会增加绘制成本，也让产品层级显得装饰化。密集表格和长期驻留监控场景更需要低噪声。
 - **WCAG/Standard:** WCAG 1.4.11 Non-text Contrast, 需要验证边框与 surface 分离度。
@@ -66,7 +66,7 @@
 
 ### [P2] Mobile density relies on horizontal scroll
 
-- **Location:** `web/src/components/InvocationTable.tsx`, `web/src/pages/Settings.tsx`, `web/src/pages/account-pool/Tags.tsx`, `web/src/components/WeeklyHourlyHeatmap.tsx`, `web/src/components/Last24hTenMinuteHeatmap.tsx`
+- **Location:** `web/src/features/invocations/InvocationTable.tsx`, `web/src/pages/Settings.tsx`, `web/src/features/dashboard/WeeklyHourlyHeatmap.tsx`, `web/src/features/dashboard/Last24hTenMinuteHeatmap.tsx`
 - **Category:** Responsive Design
 - **Impact:** 横向滚动对表格和热力图有时合理，但目前多个核心配置和分析页面都依赖固定 `min-w` 或 desktop table structure，小屏排障效率会下降。
 - **WCAG/Standard:** WCAG 1.4.10 Reflow, 需要逐页面验证。

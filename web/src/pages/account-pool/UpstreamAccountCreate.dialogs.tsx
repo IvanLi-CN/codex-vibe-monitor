@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { ImportedOauthValidationDialog } from "../../components/ImportedOauthValidationDialog";
-import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccountGroupNoteDialog";
+import { ImportedOauthValidationDialog } from "../../features/account-pool/ImportedOauthValidationDialog";
+import { UpstreamAccountGroupNoteDialog } from "../../features/account-pool/UpstreamAccountGroupNoteDialog";
 import { DuplicateAccountDetailDialog } from "./UpstreamAccountCreate.shared";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh";

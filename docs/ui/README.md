@@ -18,7 +18,8 @@
 - Storybook 运行约束：`web/.storybook/preview.ts`
 - public docs 文档壳：`docs-site/docs/`
 - 基础组件实现：`web/src/components/ui/`
-- 页面级参考：`web/src/components/AppLayout.stories.tsx`、`web/src/components/SettingsPage.stories.tsx`、`web/src/components/RecordsPage.stories.tsx`、`web/src/components/InvocationTable.stories.tsx`、`web/src/components/TodayStatsOverview.stories.tsx`
+- 领域组件实现：`web/src/features/`
+- 页面级参考：`web/src/features/app-shell/AppLayout.stories.tsx`、`web/src/features/settings/SettingsPage.stories.tsx`、`web/src/features/records/RecordsPage.stories.tsx`、`web/src/features/invocations/InvocationTable.stories.tsx`、`web/src/features/dashboard/TodayStatsOverview.stories.tsx`
 - 历史功能 spec：`docs/specs/jpg66-settings-shadcn-refresh/SPEC.md`、`docs/specs/6whgx-records-stable-snapshot-analytics/SPEC.md`、`docs/specs/g4ek6-account-pool-upstream-accounts/SPEC.md`
 
 当文档和实现不一致时，先以实现与对应 story 为准，再回写本目录与相关 spec；不要让 `docs/ui/` 先于真实实现漂移。
@@ -27,6 +28,7 @@
 
 - 新增基础样式 token、组件状态或通用布局模式时，必须先判断应该补到哪一份文档，而不是只写在单个 feature spec 里。
 - 新增可复用组件时，优先补充对应 Storybook story，再在 `components.md` 或 `patterns.md` 里补使用约束。
+- 新增页面级或领域级组件时，优先放入 `web/src/features/<domain>/`；`web/src/components/` 仅保留 `ui/` 基础组件层，避免业务组件回流到根目录。
 - 若 public docs 中的 Storybook 入口口径发生变化，需同步更新 `docs-site/docs/storybook.mdx`。
 - 新增图表或新指标颜色时，先复用 `data-viz.md` 既有语义；只有现有语义不足以表达时，才扩展 token 与规范。
 - 新增页面若形成新的通用交互模式，必须把通用规则抽到 `patterns.md`，避免规范继续散落在页面实现里。

@@ -1,12 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { AppIcon } from "../../components/AppIcon";
+import { AppIcon } from "../../features/shared/AppIcon";
 import { Link } from "react-router-dom";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Spinner } from "../../components/ui/spinner";
 import { Alert } from "../../components/ui/alert";
-import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
+import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 
 export function UpstreamAccountCreateImportSection() {

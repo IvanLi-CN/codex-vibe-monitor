@@ -4,6 +4,7 @@
 
 - Canonical spec: `docs/specs/quhzx-ui-guidelines-system/SPEC.md`
 - Implementation summary: 已完成（5/5）
+- Frontend source organization: 页面级与领域级 React 组件、stories、fixtures 和 model helpers 归入 `web/src/features/<domain>/` 或 `web/src/storybook/`；`web/src/components/` 仅保留 `ui/` 基础组件层。
 
 ## Migrated Implementation Notes
 
@@ -29,6 +30,7 @@
 - `docs/ui/patterns.md`
 - `docs/ui/data-viz.md`
 - `docs/ui/storybook.md`
+- `docs/ui/impeccable-audit.md`
 - `docs/specs/README.md`
 - `docs/specs/quhzx-ui-guidelines-system/SPEC.md`
 - `README.md`

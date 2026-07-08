@@ -33,23 +33,23 @@ vi.mock('../hooks/useParallelWorkStats', () => ({
   useParallelWorkStats: hookMocks.useParallelWorkStats,
 }))
 
-vi.mock('../components/StatsCards', () => ({
+vi.mock('../features/stats/StatsCards', () => ({
   StatsCards: () => <div data-testid="stats-cards" />,
 }))
 
-vi.mock('../components/TimeseriesChart', () => ({
+vi.mock('../features/stats/TimeseriesChart', () => ({
   TimeseriesChart: () => <div data-testid="timeseries-chart" />,
 }))
 
-vi.mock('../components/SuccessFailureChart', () => ({
+vi.mock('../features/stats/SuccessFailureChart', () => ({
   SuccessFailureChart: () => <div data-testid="success-failure-chart" />,
 }))
 
-vi.mock('../components/ErrorReasonPieChart', () => ({
+vi.mock('../features/stats/ErrorReasonPieChart', () => ({
   ErrorReasonPieChart: () => <div data-testid="error-reason-pie-chart" />,
 }))
 
-vi.mock('../components/ParallelWorkStatsSection', () => ({
+vi.mock('../features/stats/ParallelWorkStatsSection', () => ({
   ParallelWorkStatsSection: () => <div data-testid="parallel-work-section" />,
 }))
 

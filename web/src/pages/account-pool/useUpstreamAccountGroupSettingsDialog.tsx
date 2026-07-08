@@ -21,8 +21,8 @@ import { normalizeGroupName } from "../../lib/upstreamAccountGroups";
 import { useTranslation } from "../../i18n";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
-import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccountGroupNoteDialog";
-import { GroupAccountRoutingRuleEditor } from "../../components/GroupAccountRoutingRuleDialog";
+import { UpstreamAccountGroupNoteDialog } from "../../features/account-pool/UpstreamAccountGroupNoteDialog";
+import { GroupAccountRoutingRuleEditor } from "../../features/account-pool/GroupAccountRoutingRuleDialog";
 import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh";
 
 type GroupSettingsEditorState = {

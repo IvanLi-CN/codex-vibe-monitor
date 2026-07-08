@@ -36,7 +36,7 @@
 ## Related Changes
 
 - Backend: `src/forward_proxy/`, `src/maintenance/hourly_rollups.rs`
-- Frontend: `web/src/pages/Settings.tsx`, `web/src/lib/api/`, `web/src/components/SettingsPage.stories.tsx`
+- Frontend: `web/src/pages/Settings.tsx`, `web/src/lib/api/`, `web/src/features/settings/SettingsPage.stories.tsx`
 - Visual evidence: `./assets/settings-forward-proxy-latency-refresh.png`
 
 ## References

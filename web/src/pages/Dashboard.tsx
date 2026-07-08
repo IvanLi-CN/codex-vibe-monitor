@@ -1,15 +1,15 @@
 import { useEffect, useLayoutEffect, useState } from "react";
-import { DashboardActivityOverview } from "../components/DashboardActivityOverview";
-import { DashboardInvocationDetailDrawer } from "../components/DashboardInvocationDetailDrawer";
+import { DashboardActivityOverview } from "../features/dashboard/DashboardActivityOverview";
+import { DashboardInvocationDetailDrawer } from "../features/dashboard/DashboardInvocationDetailDrawer";
 import {
   DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
   persistDashboardActivityRange,
   readPersistedDashboardActivityRange,
   type DashboardActivityRangeKey,
-} from "../components/dashboardActivityRange";
-import { DashboardPerformanceDiagnostics } from "../components/DashboardPerformanceDiagnostics";
-import { DashboardWorkingConversationsSection } from "../components/DashboardWorkingConversationsSection";
-import { PromptCacheConversationHistoryDrawer } from "../components/PromptCacheConversationTable";
+} from "../features/dashboard/dashboardActivityRange";
+import { DashboardPerformanceDiagnostics } from "../features/dashboard/DashboardPerformanceDiagnostics";
+import { DashboardWorkingConversationsSection } from "../features/dashboard/DashboardWorkingConversationsSection";
+import { PromptCacheConversationHistoryDrawer } from "../features/prompt-cache/PromptCacheConversationTable";
 import { useDashboardWorkingConversations } from "../hooks/useDashboardWorkingConversations";
 import { useDashboardActivitySnapshot } from "../hooks/useDashboardUpstreamAccountActivity";
 import { resetDashboardPerformanceDiagnostics } from "../lib/dashboardPerformanceDiagnostics";
@@ -20,7 +20,7 @@ import {
 import type {
   DashboardOpenUpstreamAccountOptions,
   DashboardWorkingConversationSelection,
-} from "../components/DashboardWorkingConversationsSection";
+} from "../features/dashboard/DashboardWorkingConversationsSection";
 import { useTranslation } from "../i18n";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";

@@ -67,6 +67,22 @@
 - Given 阅读 `data-viz.md`，When 查找图表与数字展示规则，Then 能明确 count/cost/token 的颜色语义与热力图梯度来源。
 - Given 执行文档校验，When 运行 `bunx dprint check` 与 `cd web && bun run build-storybook`，Then 命令通过。
 
+## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: `Pages/DashboardPage / Full Page Desktop` (`pages-dashboardpage--full-page-desktop`)
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  state: full-page desktop dashboard
+  evidence_note: verifies the moved page-level Storybook surface still renders from `web/src/features/*` after the frontend structure migration and rebase sync.
+  image:
+  PR: include
+  ![Dashboard page Storybook evidence](./assets/frontend-feature-structure-dashboard.png)
+
 ## 方案概述（Approach, high-level）
 
 - 从现有 CSS、theme context、chart token、Storybook preview 与关键 stories 提取稳定事实。

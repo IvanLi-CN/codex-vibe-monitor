@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { AppIcon } from '../AppIcon'
+import { AppIcon } from '../../features/shared/AppIcon'
 import { Button } from './button'
 import type { MotherSwitchSnapshot } from '../../lib/upstreamMother'
 import { useTranslation } from '../../i18n'

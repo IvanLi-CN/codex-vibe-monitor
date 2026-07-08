@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { RecordsNewDataButton } from "../components/RecordsNewDataButton";
+import { RecordsNewDataButton } from "../features/records/RecordsNewDataButton";
 import { Button } from "../components/ui/button";
 import { FilterableCombobox } from "../components/ui/filterable-combobox";
 import {
@@ -7,8 +7,8 @@ import {
   SegmentedControlItem,
 } from "../components/ui/segmented-control";
 import { SelectField } from "../components/ui/select-field";
-import { InvocationRecordsSummaryCards } from "../components/InvocationRecordsSummaryCards";
-import { InvocationRecordsTable } from "../components/InvocationRecordsTable";
+import { InvocationRecordsSummaryCards } from "../features/records/InvocationRecordsSummaryCards";
+import { InvocationRecordsTable } from "../features/records/InvocationRecordsTable";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useInvocationRecords } from "../hooks/useInvocationRecords";
 import { useTranslation } from "../i18n";

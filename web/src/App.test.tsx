@@ -5,7 +5,7 @@ import { MemoryRouter, Outlet, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
-vi.mock('./components/AppLayout', () => ({
+vi.mock('./features/app-shell/AppLayout', () => ({
   AppLayout: () => <Outlet />,
 }))
 

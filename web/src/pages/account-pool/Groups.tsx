@@ -1,11 +1,11 @@
 import { useCallback, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { AppIcon } from "../../components/AppIcon";
-import { ListBodyState } from "../../components/ListBodyState";
+import { AppIcon } from "../../features/shared/AppIcon";
+import { ListBodyState } from "../../features/shared/ListBodyState";
 import {
   AccountPoolGroupSummary,
   type AccountPoolGroupSummaryLabels,
-} from "../../components/AccountPoolGroupSummary";
+} from "../../features/account-pool/AccountPoolGroupSummary";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
