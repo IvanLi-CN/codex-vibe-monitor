@@ -3589,8 +3589,11 @@ export const ErrorSummaryTooltips: Story = {
 
     await userEvent.hover(slotErrorTrigger);
     await waitFor(() => {
-      const tooltip = document.body.querySelector('[role="tooltip"]');
+      const tooltip = Array.from(document.body.querySelectorAll("[data-side]")).find(
+        (node) => node.textContent?.includes(LONG_ERROR_SUMMARY),
+      );
       expect(tooltip?.textContent).toContain(LONG_ERROR_SUMMARY);
+      expect(tooltip?.getAttribute("data-side")).toBe("bottom");
     });
     await userEvent.unhover(slotErrorTrigger);
 
@@ -3611,8 +3614,11 @@ export const ErrorSummaryTooltips: Story = {
 
     await userEvent.hover(recentErrorTrigger);
     await waitFor(() => {
-      const tooltip = document.body.querySelector('[role="tooltip"]');
+      const tooltip = Array.from(document.body.querySelectorAll("[data-side]")).find(
+        (node) => node.textContent?.includes(LONG_ERROR_SUMMARY),
+      );
       expect(tooltip?.textContent).toContain(LONG_ERROR_SUMMARY);
+      expect(tooltip?.getAttribute("data-side")).toBe("bottom");
     });
   },
   parameters: {
@@ -3620,7 +3626,7 @@ export const ErrorSummaryTooltips: Story = {
     docs: {
       description: {
         story:
-          "Long failed invocation summaries stay single-line and truncated inside both the current slot and upstream-account recent rows, while hover opens the shared tooltip with the full upstream error payload.",
+          "Long failed invocation summaries stay single-line and truncated inside both the current slot and upstream-account recent rows, while hover opens the shared tooltip below the trigger with the full upstream error payload.",
       },
     },
   },

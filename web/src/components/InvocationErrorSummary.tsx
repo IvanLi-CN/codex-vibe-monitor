@@ -12,7 +12,7 @@ export function InvocationErrorSummary({
   message,
   className,
   textClassName,
-  tooltipSide = "top",
+  tooltipSide = "bottom",
 }: InvocationErrorSummaryProps) {
   const normalizedMessage = message.trim();
   if (!normalizedMessage) return null;
