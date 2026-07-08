@@ -77,6 +77,7 @@
 - recent bridge 作为 recent 区标题行右侧统计例外，必须显示完整状态文字；运行态必须拆成 `排队中 / 请求中 / 响应中`，数值来自账号级 `inProgressPhaseCounts`，终态继续使用账号级 `successCount / failureCount / nonSuccessCount`，并与左侧“最近 4 条调用”标题保持同一垂直对齐节奏。
 - 单账号卡下半部分必须展示当前范围内最近 4 条调用记录，复用现有紧凑调用行语言，而不是再做卡中卡；4 条记录必须在卡内完整可见，不得依赖展开、滚动或裁切。
 - 账号卡内每条 recent 调用记录的信息密度不得低于 Dashboard 对话卡片中的调用记录：至少需要覆盖状态、模型、endpoint、Token 用量摘要，以及 `RQ / UP / ED / TT` 时序摘要。
+- Dashboard 工作区 `对话` tab 的 recent/current 调用错误摘要，以及 `上游账号` tab recent 行错误摘要，必须统一保持单行省略；摘要文本本身就是 tooltip trigger，hover / focus / long-press 时使用 UI 库 tooltip 在 trigger 下方优先展示完整错误，除非浮层系统因视口避让自动翻转；不得依赖浏览器原生 `title` 作为最终交互。
 - 账号卡 recent 调用记录的主标识行必须改为“对话短 ID + 分隔符/图标 + 请求 ID”；其中对话短 ID 固定基于真实 `promptCacheKey` 走既有 working-conversation 哈希与格式化规则，展示值去掉 `WC-` 前缀；请求 ID 显示完整 `invokeId` 并允许单行截断。
 - recent 行里的对话短 ID 必须渲染为轻量 identity chip，而不是独立彩色圆点；chip 以短码文本为主识别，颜色只作辅助 cue，不得与运行状态徽标争夺语义。
 - 上游账号 recent 行中的 identity chip 必须作为独立“对话详情”入口；点击或在 chip 上按 `Enter / Space` 时，打开对应 `promptCacheKey` 的对话详情抽屉，不得退化成调用详情。
@@ -129,6 +130,7 @@
 - 当用户停留在账号 tab，随后把范围切到 `usage`，UI 必须立即切回 `对话`，且不触发账号活动请求。
 - 当某账号范围内只有失败 / 中断调用时，请求分解、Token 分解与最近 4 条记录仍需稳定显示，不得因为缺少 success 样本而隐藏整卡。
 - 当 `cacheHitRate`、`firstByteAvgMs` 或 live augmentation 值缺失时，对应字段显示 `—`，但账号卡其余部分继续渲染。
+- 当错误摘要很长或包含上游 JSON 载荷时，Dashboard 对话卡片与账号 recent 行都不得被错误文案横向撑宽；inline 摘要继续单行省略，完整文本只通过共享 tooltip 披露。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -232,6 +234,22 @@
 - `cd web && bun run build-storybook`
 
 ## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--error-summary-tooltips`
+  scenario: `conversation card error summary tooltip`
+  evidence_note: 验证 Dashboard `对话` tab 当前调用错误摘要保持单行省略，不撑宽卡片；hover 摘要文本时共享 UI tooltip 优先在触发文本下方展开完整上游错误，不再依赖原生 `title`。
+  image:
+  PR: include
+  ![Dashboard 对话卡片错误摘要 tooltip 证据](./assets/dashboard-working-conversation-error-tooltip.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--error-summary-tooltips`
+  scenario: `upstream account recent error summary tooltip`
+  evidence_note: 验证 Dashboard `上游账号` tab recent 行错误摘要同样保持单行省略，不撑宽 row；hover 摘要文本时通过同一共享 UI tooltip 在下方优先展示完整错误，实现与对话卡片一致的错误披露语义。
+  image:
+  PR: include
+  ![Dashboard 上游账号 recent 错误摘要 tooltip 证据](./assets/dashboard-upstream-account-error-tooltip.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--running-only-conversation`

@@ -34,6 +34,7 @@
 - 2026-07-07：Dashboard 上游账号快捷策略 chip 的颜色改为按策略意图映射，而不是按“是否激活”统一高亮：`普通 / 不改Fast` 为 neutral，`兜底 / 补Fast` 为 success，`主力 / 强制Fast` 为 primary，`禁新 / 禁Fast / 激活禁出 / 激活禁入` 为 warning。
 - 2026-07-08：Dashboard 上游账号卡标题区移除本地 `#<upstreamAccountId>` 编号，只保留齿轮作为账号路由入口；账号名和异常/策略/实时指标已经足够承载当前扫描任务，内部主键不再作为常驻视觉元素。
 - 2026-07-08：Dashboard 上游账号优先级快捷入口收敛为纯 `priorityTier` 四态轮换；`禁新` 直接写 `priorityTier=no_new`，不再写独立新对话允许/禁止字段。
+- 2026-07-08：Dashboard 工作区对话卡片与上游账号 recent 行的长错误摘要统一冻结为“单行省略 + 共享 tooltip 完整披露”；错误文案不得再撑宽卡片或 row，且交互不再依赖浏览器原生 `title`。
 
 ## Key Reasons / Replacements
 
