@@ -2206,9 +2206,9 @@ async fn resolve_pool_account_for_request_falls_back_after_soft_bucket_candidate
     let disallow_cut_in_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, block_new_conversations,
+            name,
             allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, 0, 1, 0, ?2, ?2)
+        ) VALUES (?1, 1, 0, ?2, ?2)
         RETURNING id
         "#,
     )
@@ -2286,9 +2286,9 @@ async fn resolve_pool_account_for_request_blocks_timeout_failover_past_cut_out_r
     let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, block_new_conversations,
+            name,
             allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, 0, 0, 1, ?2, ?2)
+        ) VALUES (?1, 0, 1, ?2, ?2)
         RETURNING id
         "#,
     )
@@ -2378,9 +2378,9 @@ async fn resolve_pool_account_for_request_blocks_timeout_failover_past_cut_out_r
     let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, block_new_conversations,
+            name,
             allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, 0, 0, 1, ?2, ?2)
+        ) VALUES (?1, 0, 1, ?2, ?2)
         RETURNING id
         "#,
     )

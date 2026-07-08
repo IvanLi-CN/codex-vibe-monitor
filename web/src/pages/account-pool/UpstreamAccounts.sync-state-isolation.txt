@@ -3,7 +3,6 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
     const selectAccount = vi.fn();
     const effectiveRoutingRule = {
-      blockNewConversations: false,
                   allowCutOut: false,
       allowCutIn: false,
       sourceTagIds: [],
@@ -96,7 +95,6 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     const syncDeferred = deferred<void>();
     const runSync = vi.fn(() => syncDeferred.promise);
     const effectiveRoutingRule = {
-      blockNewConversations: false,
                   allowCutOut: false,
       allowCutIn: false,
       sourceTagIds: [],
@@ -317,7 +315,6 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
     const refresh = vi.fn();
     const effectiveRoutingRule = {
-      blockNewConversations: false,
                   allowCutOut: false,
       allowCutIn: false,
       sourceTagIds: [],
@@ -404,7 +401,6 @@ describe("UpstreamAccountsPage sync state isolation", () => {
   it("preserves the original account sync spinner after another account starts syncing", async () => {
     const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
     const effectiveRoutingRule = {
-      blockNewConversations: false,
                   allowCutOut: false,
       allowCutIn: false,
       sourceTagIds: [],
@@ -508,7 +504,6 @@ describe("UpstreamAccountsPage sync state isolation", () => {
   it("locks the whole account while one action is still pending", async () => {
     const saveAccount = vi.fn().mockImplementation(() => new Promise(() => {}));
     const effectiveRoutingRule = {
-      blockNewConversations: false,
                   allowCutOut: false,
       allowCutIn: false,
       sourceTagIds: [],
@@ -580,7 +575,6 @@ describe("UpstreamAccountsPage sync state isolation", () => {
       accountId === 5 ? syncAlpha.promise : Promise.resolve(),
     );
     const effectiveRoutingRule = {
-      blockNewConversations: false,
                   allowCutOut: false,
       allowCutIn: false,
       sourceTagIds: [],
@@ -672,7 +666,6 @@ describe("UpstreamAccountsPage sync state isolation", () => {
       accountId === 5 ? syncAlpha.promise : Promise.resolve(),
     );
     const effectiveRoutingRule = {
-      blockNewConversations: false,
                   allowCutOut: false,
       allowCutIn: false,
       sourceTagIds: [],
@@ -772,7 +765,6 @@ describe("UpstreamAccountsPage sync state isolation", () => {
 
   it("does not render stale detail content when the selected summary changed", async () => {
     const effectiveRoutingRule = {
-      blockNewConversations: false,
                   allowCutOut: false,
       allowCutIn: false,
       sourceTagIds: [],

@@ -1193,8 +1193,6 @@ async fn save_group_metadata_record_conn(
             upstream_429_retry_enabled = excluded.upstream_429_retry_enabled,
             upstream_429_max_retries = excluded.upstream_429_max_retries,
             concurrency_limit = excluded.concurrency_limit,
-            policy_block_new_conversations = pool_upstream_account_group_notes.policy_block_new_conversations,
-            policy_allow_new_conversations = pool_upstream_account_group_notes.policy_allow_new_conversations,
             policy_allow_cut_out = pool_upstream_account_group_notes.policy_allow_cut_out,
             policy_allow_cut_in = pool_upstream_account_group_notes.policy_allow_cut_in,
             policy_priority_tier = pool_upstream_account_group_notes.policy_priority_tier,

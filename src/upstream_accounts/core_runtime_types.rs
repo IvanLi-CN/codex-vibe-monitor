@@ -1000,6 +1000,7 @@ pub(crate) enum DuplicateReason {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TagPriorityTier {
+    NoNew,
     Fallback,
     Normal,
     Primary,
@@ -1014,6 +1015,7 @@ impl Default for TagPriorityTier {
 impl TagPriorityTier {
     fn as_str(self) -> &'static str {
         match self {
+            Self::NoNew => "no_new",
             Self::Fallback => "fallback",
             Self::Normal => "normal",
             Self::Primary => "primary",
@@ -1025,6 +1027,7 @@ impl TagPriorityTier {
             Self::Primary => 0,
             Self::Normal => 1,
             Self::Fallback => 2,
+            Self::NoNew => 3,
         }
     }
 }
@@ -1224,7 +1227,6 @@ pub(crate) fn default_status_change_reason_field_sources(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EffectiveRoutingRuleFieldSources {
-    block_new_conversations: String,
     allow_cut_out: String,
     allow_cut_in: String,
     priority_tier: String,
@@ -1261,7 +1263,6 @@ pub(crate) struct RoutingTimeoutSettings {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EffectiveRoutingRule {
-    block_new_conversations: bool,
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: TagPriorityTier,
@@ -1342,7 +1343,6 @@ impl ConversationRoutingOverride {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TagRoutingRule {
-    block_new_conversations: bool,
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: TagPriorityTier,
@@ -1357,7 +1357,6 @@ pub(crate) struct TagRoutingRule {
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GroupAccountRoutingRule {
-    block_new_conversations: bool,
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: TagPriorityTier,
@@ -2467,7 +2466,6 @@ pub(crate) struct ExternalUpstreamAccountReloginRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateTagRequest {
     name: String,
-    block_new_conversations: bool,
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: Option<String>,
@@ -2483,7 +2481,6 @@ pub(crate) struct CreateTagRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateTagRequest {
     name: Option<String>,
-    block_new_conversations: Option<bool>,
     allow_cut_out: Option<bool>,
     allow_cut_in: Option<bool>,
     priority_tier: Option<String>,
@@ -2498,10 +2495,6 @@ pub(crate) struct UpdateTagRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
-    #[serde(default, deserialize_with = "deserialize_optional_field")]
-    allow_new_conversations: OptionalField<bool>,
-    #[serde(default, deserialize_with = "deserialize_optional_field")]
-    block_new_conversations: OptionalField<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     allow_cut_out: OptionalField<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
@@ -2527,18 +2520,6 @@ pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
 }
 
 impl UpdateGroupAccountRoutingRuleRequest {
-    fn allow_new_conversations_field(&self) -> OptionalField<bool> {
-        match &self.allow_new_conversations {
-            OptionalField::Missing => match &self.block_new_conversations {
-                OptionalField::Missing => OptionalField::Missing,
-                OptionalField::Null => OptionalField::Null,
-                OptionalField::Value(value) => OptionalField::Value(!*value),
-            },
-            OptionalField::Null => OptionalField::Null,
-            OptionalField::Value(value) => OptionalField::Value(*value),
-        }
-    }
-
     fn priority_tier_value(&self) -> Option<&str> {
         match &self.priority_tier {
             OptionalField::Value(value) => Some(value.as_str()),
@@ -2572,13 +2553,6 @@ impl UpdateGroupAccountRoutingRuleRequest {
 fn optional_bool_to_i64(value: &OptionalField<bool>) -> Option<i64> {
     match value {
         OptionalField::Value(value) => Some(if *value { 1_i64 } else { 0_i64 }),
-        OptionalField::Missing | OptionalField::Null => None,
-    }
-}
-
-fn optional_inverted_bool_to_i64(value: &OptionalField<bool>) -> Option<i64> {
-    match value {
-        OptionalField::Value(value) => Some(if *value { 0_i64 } else { 1_i64 }),
         OptionalField::Missing | OptionalField::Null => None,
     }
 }
@@ -2628,7 +2602,6 @@ impl UpdateStatusChangeReasonSettingsRequest {
 pub(crate) struct ListTagsQuery {
     search: Option<String>,
     has_accounts: Option<bool>,
-    block_new_conversations: Option<bool>,
     allow_cut_in: Option<bool>,
     allow_cut_out: Option<bool>,
 }

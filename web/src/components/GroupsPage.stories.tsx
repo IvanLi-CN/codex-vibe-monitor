@@ -17,7 +17,6 @@ import GroupsPage from "../pages/account-pool/Groups";
 type StoryScenario = "default" | "ungrouped-only" | "empty";
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
-  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   sourceTagIds: [],
@@ -77,10 +76,9 @@ function buildScenarioPayload(
       upstream429RetryEnabled: true,
       upstream429MaxRetries: 2,
       routingRule: {
-        blockNewConversations: true,
         allowCutOut: false,
         allowCutIn: true,
-        priorityTier: "primary",
+        priorityTier: "no_new",
         fastModeRewriteMode: "force_add",
         concurrencyLimit: 6,
         upstream429RetryEnabled: true,

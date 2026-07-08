@@ -844,7 +844,6 @@ function pressButton(button: HTMLButtonElement) {
 }
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
-  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   sourceTagIds: [],

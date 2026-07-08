@@ -62,7 +62,6 @@ export type UpstreamAccountGroupSettingsSnapshot = {
 };
 
 const defaultRoutingRule: GroupAccountRoutingRule = {
-  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   priorityTier: "normal",
@@ -105,12 +104,6 @@ export function mergeRoutingRulePatch(
   }
   return {
     ...base,
-    ...(patch.allowNewConversations == null
-      ? {}
-      : { blockNewConversations: !patch.allowNewConversations }),
-    ...(patch.blockNewConversations == null
-      ? {}
-      : { blockNewConversations: patch.blockNewConversations }),
     ...(patch.allowCutOut == null ? {} : { allowCutOut: patch.allowCutOut }),
     ...(patch.allowCutIn == null ? {} : { allowCutIn: patch.allowCutIn }),
     ...(patch.priorityTier == null ? {} : { priorityTier: patch.priorityTier }),
@@ -375,12 +368,6 @@ export function useUpstreamAccountGroupSettingsDialog(
   const dialog = useMemo(
     () => {
       const routingPolicyLabels = {
-        allowNewConversations: t(
-          "accountPool.tags.dialog.allowNewConversations",
-        ),
-        newConversationHint: t(
-          "accountPool.tags.dialog.newConversationHint",
-        ),
         allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
         allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
         forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
@@ -389,6 +376,7 @@ export function useUpstreamAccountGroupSettingsDialog(
         priorityPrimary: t("accountPool.tags.dialog.priorityPrimary"),
         priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
         priorityFallback: t("accountPool.tags.dialog.priorityFallback"),
+        priorityNoNew: t("accountPool.tags.dialog.priorityNoNew"),
         fastModeRewriteMode: t("accountPool.tags.dialog.fastModeRewriteMode"),
         fastModeKeepOriginal: t("accountPool.tags.dialog.fastModeKeepOriginal"),
         fastModeFillMissing: t("accountPool.tags.dialog.fastModeFillMissing"),

@@ -53,7 +53,6 @@ import {
 } from "../lib/upstreamAccountStatusChangeReasons";
 
 type GroupAccountRoutingRuleDraft = {
-  allowNewConversations: boolean;
   allowCutOut: boolean;
   allowCutIn: boolean;
   priorityTier: TagPriorityTier;
@@ -135,7 +134,6 @@ function buildDraft(
       )
     : buildRoutingTimeoutOverrideEnabledState(timeoutOverrides);
   return {
-    allowNewConversations: !(rule?.blockNewConversations ?? false),
     allowCutOut: rule?.allowCutOut ?? true,
     allowCutIn: rule?.allowCutIn ?? true,
     priorityTier: rule?.priorityTier ?? "normal",
@@ -179,7 +177,6 @@ function buildPayload(
     return null;
   }
   const payload: UpdateGroupAccountRoutingRulePayload = {
-    allowNewConversations: draft.allowNewConversations,
     allowCutOut: draft.allowCutOut,
     allowCutIn: draft.allowCutIn,
     priorityTier: draft.priorityTier,
@@ -200,11 +197,6 @@ function buildPayload(
   if (options?.changedFieldsOnly && options.baseRule) {
     const base = options.baseRule;
     const changedPayload: UpdateGroupAccountRoutingRulePayload = {};
-    if (
-      draft.allowNewConversations !== !(base.blockNewConversations ?? false)
-    ) {
-      changedPayload.allowNewConversations = payload.allowNewConversations;
-    }
     if (draft.allowCutOut !== (base.allowCutOut ?? true)) {
       changedPayload.allowCutOut = payload.allowCutOut;
     }
@@ -292,8 +284,6 @@ function buildPayload(
 }
 
 export interface GroupAccountRoutingRuleLabels {
-    allowNewConversations: string;
-    newConversationHint?: string;
     allowCutOut: string;
     allowCutIn: string;
     forbidCutOut?: string;
@@ -302,6 +292,7 @@ export interface GroupAccountRoutingRuleLabels {
     priorityPrimary: string;
     priorityNormal: string;
     priorityFallback: string;
+    priorityNoNew?: string;
     fastModeRewriteMode: string;
     fastModeKeepOriginal: string;
     fastModeFillMissing: string;
@@ -539,6 +530,7 @@ export function GroupAccountRoutingRuleEditor({
               { value: "primary", label: labels.priorityPrimary },
               { value: "normal", label: labels.priorityNormal },
               { value: "fallback", label: labels.priorityFallback },
+              { value: "no_new", label: labels.priorityNoNew ?? "No new" },
             ]}
             onValueChange={(value) =>
               setDraft((current) => ({
@@ -664,30 +656,6 @@ export function GroupAccountRoutingRuleEditor({
               }
             />
           ) : null}
-
-          <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="font-medium text-base-content">
-                  {labels.allowNewConversations}
-                </p>
-                {labels.newConversationHint ? (
-                  <p className="text-xs leading-5 text-base-content/65">
-                    {labels.newConversationHint}
-                  </p>
-                ) : null}
-              </div>
-              <Switch
-                checked={draft.allowNewConversations}
-                onCheckedChange={(checked) =>
-                  setDraft((current) => ({
-                    ...current,
-                    allowNewConversations: checked,
-                  }))
-                }
-              />
-            </div>
-          </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">

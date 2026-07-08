@@ -252,10 +252,9 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         inProgressPhaseCounts: { queued: 1, requesting: 1, responding: 1 },
         retryInvocationCount: 1,
         effectiveRoutingRule: {
-          blockNewConversations: true,
           allowCutOut: true,
           allowCutIn: false,
-          priorityTier: "primary",
+          priorityTier: "no_new",
           fastModeRewriteMode: "force_add",
           imageToolRewriteMode: "keep_original",
           concurrencyLimit: 3,
@@ -267,7 +266,6 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
           sourceTagIds: [],
           sourceTagNames: [],
           fieldSources: {
-            blockNewConversations: "account",
             allowCutOut: "root",
             allowCutIn: "account",
             priorityTier: "group",
@@ -2818,7 +2816,6 @@ describe("DashboardWorkingConversationsSection", () => {
 
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
       const [, init] = fetchMock.mock.calls[0]!;
-      expect(String(init?.body)).toContain('"allowNewConversations":true');
       expect(String(init?.body)).toContain('"priorityTier":"fallback"');
     } finally {
       globalThis.fetch = originalFetch;

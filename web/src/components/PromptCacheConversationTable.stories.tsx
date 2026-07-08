@@ -204,7 +204,6 @@ function buildAccountDetail(
     duplicateInfo: null,
     tags: [],
     effectiveRoutingRule: {
-      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
       sourceTagIds: [],

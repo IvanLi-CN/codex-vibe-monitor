@@ -276,9 +276,8 @@ describe("fetchUpstreamAccountActivity", () => {
                 inProgressInvocationCount: 2,
                 retryInvocationCount: 0,
                 effectiveRoutingRule: {
-                  blockNewConversations: true,
+                  priorityTier: "no_new",
                   allowCutIn: false,
-                  priorityTier: "primary",
                   fastModeRewriteMode: "force_add",
                   concurrencyLimit: 3,
                   upstream429RetryEnabled: true,
@@ -302,9 +301,8 @@ describe("fetchUpstreamAccountActivity", () => {
     expect(response.accounts[0]?.firstResponseByteTotalAvgMs).toBe(2867.540251);
     expect(response.accounts[0]?.avgTotalMs).toBe(30581.6567545);
     expect(response.accounts[0]?.effectiveRoutingRule).toMatchObject({
-      blockNewConversations: true,
+      priorityTier: "no_new",
       allowCutIn: false,
-      priorityTier: "primary",
       fastModeRewriteMode: "force_add",
       concurrencyLimit: 3,
       upstream429RetryEnabled: true,
@@ -1919,7 +1917,6 @@ describe("account pool frontend API helpers", () => {
                     id: 31,
                     name: "priority-route",
                     routingRule: {
-                      blockNewConversations: false,
                       allowCutOut: true,
                       allowCutIn: true,
                       priorityTier: "primary",
@@ -1930,7 +1927,6 @@ describe("account pool frontend API helpers", () => {
                   },
                 ],
                 effectiveRoutingRule: {
-                  blockNewConversations: false,
                   allowCutOut: true,
                   allowCutIn: true,
                   priorityTier: "fallback",
@@ -1982,7 +1978,6 @@ describe("account pool frontend API helpers", () => {
                 id: 41,
                 name: "legacy-tag",
                 routingRule: {
-                  blockNewConversations: false,
                   allowCutOut: true,
                   allowCutIn: true,
                   priorityTier: "normal",
@@ -1990,7 +1985,6 @@ describe("account pool frontend API helpers", () => {
               },
             ],
             effectiveRoutingRule: {
-              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               priorityTier: "normal",

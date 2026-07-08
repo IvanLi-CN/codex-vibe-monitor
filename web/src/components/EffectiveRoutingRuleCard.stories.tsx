@@ -15,8 +15,6 @@ const labels = {
   description:
     "Merged routing constraints applied to the selected upstream account. Use account overrides when needed.",
   noTags: "No tags linked",
-  blockNewConversations: "New conversations blocked",
-  allowNewConversations: "New conversations allowed",
   allowCutOut: "Cut-out allowed",
   denyCutOut: "Cut-out blocked",
   allowCutIn: "Cut-in allowed",
@@ -25,6 +23,7 @@ const labels = {
   priorityPrimary: "Primary",
   priorityNormal: "Normal",
   priorityFallback: "Fallback only",
+  priorityNoNew: "No new",
   fastModeKeepOriginal: "Keep original",
   fastModeFillMissing: "Fill when missing",
   fastModeForceAdd: "Force add",
@@ -40,7 +39,6 @@ const labels = {
   concurrencyLimit: (count: number) => `Concurrency ${count}`,
   concurrencyUnlimited: "Concurrency unlimited",
   sourceBreakdownTitle: "Field source breakdown",
-  fieldBlockNewConversations: "New conversations",
   fieldAllowCutOut: "Cut out",
   fieldAllowCutIn: "Cut in",
   fieldPriority: "Priority",
@@ -85,7 +83,6 @@ const labels = {
   statusChangeReasonResetAction: "Reset",
   overrideSaving: "Saving account override...",
   inheritValue: "Default value starts from the inherited value.",
-  newConversationLabel: "New conversations",
   cutOutLabel: "Cut out",
   cutInLabel: "Cut in",
   upstream429RetryCountValue: (count: number) => String(count),
@@ -97,7 +94,6 @@ const labels = {
 };
 
 const relaxedRule: EffectiveRoutingRule = {
-  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   priorityTier: "normal",
@@ -113,7 +109,6 @@ const relaxedRule: EffectiveRoutingRule = {
   sourceTagIds: [],
   sourceTagNames: [],
   fieldSources: {
-    blockNewConversations: "root",
     allowCutOut: "root",
     allowCutIn: "root",
     priorityTier: "root",
@@ -139,10 +134,9 @@ const relaxedRule: EffectiveRoutingRule = {
 };
 
 const strictRule: EffectiveRoutingRule = {
-  blockNewConversations: true,
   allowCutOut: false,
   allowCutIn: false,
-  priorityTier: "fallback",
+  priorityTier: "no_new",
   fastModeRewriteMode: "force_remove",
   imageToolRewriteMode: "force_add",
   concurrencyLimit: 2,
@@ -163,10 +157,9 @@ const strictRule: EffectiveRoutingRule = {
   sourceTagIds: [1, 2],
   sourceTagNames: ["vip-routing", "handoff-blocked"],
   fieldSources: {
-    blockNewConversations: "group",
     allowCutOut: "tag",
     allowCutIn: "account",
-    priorityTier: "tag",
+    priorityTier: "account",
     fastModeRewriteMode: "account",
     imageToolRewriteMode: "tag",
     concurrencyLimit: "tag",
@@ -189,7 +182,6 @@ const strictRule: EffectiveRoutingRule = {
 };
 
 const strictFieldSources = {
-  blockNewConversations: "group",
   allowCutOut: "tag",
   allowCutIn: "account",
   priorityTier: "tag",
@@ -224,8 +216,6 @@ const multipleAccountOverridesRule: EffectiveRoutingRule = {
   upstream429RetryEnabled: true,
   upstream429MaxRetries: 5,
   fieldSources: {
-    blockNewConversations:
-      strictRule.fieldSources?.blockNewConversations ?? "root",
     allowCutOut: "account",
     allowCutIn: "account",
     priorityTier: "account",
@@ -294,9 +284,9 @@ export const StrictMergedRule: Story = {
       canvasElement.querySelectorAll('[class*="bg-warning"]'),
     ).map((node) => node.textContent);
 
-    expect(warningValues).toContain("New conversations blocked");
+    expect(warningValues).toContain("No new");
     expect(warningValues).toContain("Cut-out blocked");
-    expect(warningValues).toContain("Fallback only");
+    expect(warningValues).not.toContain("New conversations blocked");
     expect(
       (canvasElement.textContent ?? "").match(/Cut-out blocked/g),
     ).toHaveLength(1);
@@ -348,7 +338,6 @@ function applyPatchToRule(
   patch: UpdateGroupAccountRoutingRulePayload,
 ): EffectiveRoutingRule {
   const fieldSources: StoryFieldSources = {
-    blockNewConversations: rule.fieldSources?.blockNewConversations ?? "root",
     allowCutOut: rule.fieldSources?.allowCutOut ?? "root",
     allowCutIn: rule.fieldSources?.allowCutIn ?? "root",
     priorityTier: rule.fieldSources?.priorityTier ?? "root",
@@ -376,15 +365,6 @@ function applyPatchToRule(
   const nextSources = fieldSources;
   const sourceFor = (value: unknown): "root" | "account" =>
     value === null ? "root" : "account";
-  if ("allowNewConversations" in patch || "blockNewConversations" in patch) {
-    const value =
-      patch.allowNewConversations ??
-      (typeof patch.blockNewConversations === "boolean"
-        ? !patch.blockNewConversations
-        : patch.blockNewConversations);
-    if (typeof value === "boolean") next.blockNewConversations = !value;
-    nextSources.blockNewConversations = sourceFor(value);
-  }
   if ("allowCutOut" in patch) {
     if (typeof patch.allowCutOut === "boolean")
       next.allowCutOut = patch.allowCutOut;
@@ -640,8 +620,6 @@ export const EditableDenyAllModels: Story = {
         ...strictRule,
         availableModels: [],
         fieldSources: {
-          blockNewConversations:
-            strictRule.fieldSources?.blockNewConversations ?? "root",
           allowCutOut: strictRule.fieldSources?.allowCutOut ?? "root",
           allowCutIn: strictRule.fieldSources?.allowCutIn ?? "root",
           priorityTier: strictRule.fieldSources?.priorityTier ?? "root",

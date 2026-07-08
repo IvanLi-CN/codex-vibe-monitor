@@ -184,10 +184,9 @@ function buildDashboardActivityResponse({
       inProgressInvocationCount: 8,
       retryInvocationCount: 1,
       effectiveRoutingRule: {
-        blockNewConversations: true,
         allowCutOut: false,
         allowCutIn: false,
-        priorityTier: 'primary',
+        priorityTier: 'no_new',
         fastModeRewriteMode: 'force_add',
         concurrencyLimit: 3,
         upstream429RetryEnabled: true,
@@ -222,7 +221,6 @@ function buildDashboardActivityResponse({
       inProgressInvocationCount: 3,
       retryInvocationCount: 0,
       effectiveRoutingRule: {
-        blockNewConversations: false,
         allowCutOut: true,
         allowCutIn: true,
         priorityTier: 'fallback',

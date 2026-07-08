@@ -242,8 +242,6 @@ function DialogHarness({
     initialUpstream429MaxRetries,
   );
   const routingPolicyLabels: GroupAccountRoutingRuleLabels = {
-    allowNewConversations: "New conversations",
-    newConversationHint: "Allow new conversations on this group",
     allowCutOut: "Cut out is not blocked",
     allowCutIn: "Cut in is not blocked",
     forbidCutOut: "Block cut out",
@@ -252,6 +250,7 @@ function DialogHarness({
     priorityPrimary: "Primary",
     priorityNormal: "Normal",
     priorityFallback: "Fallback only",
+    priorityNoNew: "No new",
     fastModeRewriteMode: "Fast mode",
     fastModeKeepOriginal: "Keep original",
     fastModeFillMissing: "Fill when missing",
@@ -401,7 +400,6 @@ function DialogHarness({
                 open
                 changedFieldsOnly
                 rule={{
-                  blockNewConversations: false,
                   allowCutOut: true,
                   allowCutIn: true,
                   priorityTier: "normal",
