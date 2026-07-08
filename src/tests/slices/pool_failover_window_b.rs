@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_sending() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
@@ -1329,7 +1332,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
 
 #[tokio::test]
 async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_returns_owner_unavailable()
-{
+ {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -1433,7 +1436,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
 
 #[tokio::test]
 async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_newer_than_owner_still_returns_owner_unavailable()
-{
+ {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -1874,13 +1877,10 @@ async fn encrypted_owner_routing_disabled_ignores_existing_owner_guard() {
         .await
         .expect("persist encrypted owner");
 
-    let (constraint, owner_auto_guard_active) = load_via_pool_effective_routing_constraint(
-        state.as_ref(),
-        Some(prompt_cache_key),
-        true,
-    )
-    .await
-    .expect("resolve prompt-cache routing with owner routing disabled");
+    let (constraint, owner_auto_guard_active) =
+        load_via_pool_effective_routing_constraint(state.as_ref(), Some(prompt_cache_key), true)
+            .await
+            .expect("resolve prompt-cache routing with owner routing disabled");
 
     assert!(constraint.is_none());
     assert!(!owner_auto_guard_active);
@@ -2122,11 +2122,9 @@ async fn websocket_payload_only_prompt_cache_key_routes_first_upgrade_to_owner_a
             .expect("websocket proxy server should run");
     });
 
-    let request = format!(
-        "ws://{proxy_addr}/v1/responses?model=gpt-5-realtime"
-    )
-    .into_client_request()
-    .expect("websocket client request");
+    let request = format!("ws://{proxy_addr}/v1/responses?model=gpt-5-realtime")
+        .into_client_request()
+        .expect("websocket client request");
     let mut request = request;
     request.headers_mut().insert(
         http_header::AUTHORIZATION,
@@ -2370,7 +2368,16 @@ async fn websocket_response_first_frame_rejection_records_attempt_failure() {
     };
     assert!(frame.reason.contains("response.create"));
 
-    let attempt_row = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
+    let attempt_row = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        ),
+    >(
         r#"
         SELECT status, failure_kind, error_message, downstream_http_status, upstream_account_id
         FROM pool_upstream_request_attempts
@@ -2611,7 +2618,8 @@ async fn websocket_downstream_disconnect_drains_terminal_usage() {
         .into_response()
     }
 
-    let upstream_app = Router::new().route("/v1/responses", get(websocket_delayed_terminal_upstream));
+    let upstream_app =
+        Router::new().route("/v1/responses", get(websocket_delayed_terminal_upstream));
     let upstream_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind websocket upstream");
@@ -2750,7 +2758,8 @@ async fn websocket_upstream_close_before_terminal_sends_retryable_close() {
         .into_response()
     }
 
-    let upstream_app = Router::new().route("/v1/responses", get(websocket_preterminal_close_upstream));
+    let upstream_app =
+        Router::new().route("/v1/responses", get(websocket_preterminal_close_upstream));
     let upstream_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind websocket upstream");
@@ -3033,9 +3042,14 @@ async fn websocket_handshake_failure_retries_next_candidate_with_retained_first_
     )
     .await;
     let now_iso = format_utc_iso(Utc::now());
-    upsert_sticky_route(&state.pool, "sticky-websocket-failover", failing_account_id, &now_iso)
-        .await
-        .expect("seed sticky route toward failing account");
+    upsert_sticky_route(
+        &state.pool,
+        "sticky-websocket-failover",
+        failing_account_id,
+        &now_iso,
+    )
+    .await
+    .expect("seed sticky route toward failing account");
 
     let proxy_app = Router::new()
         .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
@@ -4541,7 +4555,58 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
 
 #[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_after_body() {
-    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let attempts = Arc::new(StdMutex::new(HashMap::<String, usize>::new()));
+    let request_started = Arc::new(tokio::sync::Notify::new());
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let release_rx = Arc::new(StdMutex::new(Some(release_rx)));
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let attempts = attempts.clone();
+            let request_started = request_started.clone();
+            let release_rx = release_rx.clone();
+            move |headers: HeaderMap| {
+                let attempts = attempts.clone();
+                let request_started = request_started.clone();
+                let release_rx = release_rx.clone();
+                async move {
+                    let authorization = headers
+                        .get(http_header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    {
+                        let mut attempt_counts = attempts.lock().expect("lock attempts");
+                        *attempt_counts.entry(authorization.clone()).or_insert(0) += 1;
+                    }
+                    request_started.notify_one();
+                    let release_rx = release_rx
+                        .lock()
+                        .expect("lock release receiver")
+                        .take()
+                        .expect("single release receiver");
+                    let _ = release_rx.await;
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "authorization": authorization,
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind delayed sticky upstream");
+    let addr = listener.local_addr().expect("delayed sticky upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("delayed sticky upstream should run");
+    });
+    let upstream_base = format!("http://{addr}");
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
         Duration::from_millis(220),
@@ -4569,44 +4634,48 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
         let _ = tx.send(Ok(Bytes::from_static(b"\"messages\":[]}"))).await;
     });
 
-    let pool = state.pool.clone();
-    let primary_block_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        set_test_account_status(&pool, primary_id, "needs_reauth").await;
-    });
-
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
         .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6342,
-        &"/v1/chat/completions".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                HeaderName::from_static("x-sticky-key"),
-                HeaderValue::from_static("header-stale-sticky"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("via-pool request should succeed");
-
-    primary_block_task
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1_via_pool(
+            request_state,
+            6342,
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-sticky-key"),
+                    HeaderValue::from_static("header-stale-sticky"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
         .await
-        .expect("primary block task should join");
+    });
+
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    request_started.notified().await;
+    set_test_account_status(&state.pool, primary_id, "needs_reauth").await;
+    release_tx
+        .send(())
+        .expect("release delayed sticky upstream response");
+
+    let response = request_task
+        .await
+        .expect("via-pool request task should join")
+        .expect("via-pool request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX)
@@ -4614,7 +4683,6 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-primary");
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
@@ -5004,7 +5072,10 @@ async fn proxy_openai_v1_header_sticky_rechecks_image_intent_before_reusing_head
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
 
     let attempts = attempts.lock().expect("lock attempts");
-    assert_eq!(attempts.get("Bearer upstream-sticky-text-only").copied(), None);
+    assert_eq!(
+        attempts.get("Bearer upstream-sticky-text-only").copied(),
+        None
+    );
     assert_eq!(
         attempts.get("Bearer upstream-image-fallback").copied(),
         Some(1)
@@ -5133,7 +5204,10 @@ async fn proxy_openai_v1_responses_force_add_failure_learns_image_unsupported() 
             .into_response()
     }
 
-    let app = Router::new().route("/v1/responses", post(|body| image_unsupported_upstream(body)));
+    let app = Router::new().route(
+        "/v1/responses",
+        post(|body| image_unsupported_upstream(body)),
+    );
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind image unsupported upstream");
@@ -5212,8 +5286,8 @@ async fn proxy_openai_v1_responses_live_first_waits_for_image_intent_before_filt
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_responses_compact_live_first_waits_for_image_intent_before_filtered_resolution(
-) {
+async fn proxy_openai_v1_responses_compact_live_first_waits_for_image_intent_before_filtered_resolution()
+ {
     assert_live_first_waits_for_image_intent_before_filtered_resolution(
         "/v1/responses/compact",
         6342,
@@ -5222,8 +5296,8 @@ async fn proxy_openai_v1_responses_compact_live_first_waits_for_image_intent_bef
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_responses_pool_runtime_and_terminal_records_persist_remote_v2_compaction_request_kind(
-) {
+async fn proxy_openai_v1_responses_pool_runtime_and_terminal_records_persist_remote_v2_compaction_request_kind()
+ {
     let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -5283,8 +5357,7 @@ async fn proxy_openai_v1_responses_pool_runtime_and_terminal_records_persist_rem
             BroadcastPayload::Records { records } => {
                 if let Some(record) = records.into_iter().find(|record| {
                     record.endpoint.as_deref() == Some("/v1/responses")
-                        && record.compaction_request_kind.as_deref()
-                            == Some("remote_v2")
+                        && record.compaction_request_kind.as_deref() == Some("remote_v2")
                         && record.status.as_deref() == Some("running")
                 }) {
                     break record;
@@ -5325,8 +5398,8 @@ async fn proxy_openai_v1_responses_pool_runtime_and_terminal_records_persist_rem
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_responses_pool_remote_v2_request_kind_survives_disabled_request_body_logging(
-) {
+async fn proxy_openai_v1_responses_pool_remote_v2_request_kind_survives_disabled_request_body_logging()
+ {
     let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),

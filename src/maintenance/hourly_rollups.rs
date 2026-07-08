@@ -1,4 +1,6 @@
-async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()> {
+use super::*;
+
+pub(crate) async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()> {
     loop {
         let updated = replay_live_invocation_hourly_rollups(pool).await?;
         if updated == 0 {
@@ -14,7 +16,7 @@ async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()>
     Ok(())
 }
 
-async fn mark_materialized_upstream_account_archive_replayed_tx(
+pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
     tx: &mut SqliteConnection,
     file_path: &str,
 ) -> Result<()> {
@@ -34,7 +36,7 @@ async fn mark_materialized_upstream_account_archive_replayed_tx(
     Ok(())
 }
 
-async fn load_materialized_invocation_archives_missing_upstream_account_markers_tx(
+pub(crate) async fn load_materialized_invocation_archives_missing_upstream_account_markers_tx(
     tx: &mut SqliteConnection,
 ) -> Result<Vec<String>> {
     sqlx::query_scalar(
@@ -79,7 +81,7 @@ async fn load_materialized_invocation_archives_missing_upstream_account_markers_
     .map_err(Into::into)
 }
 
-async fn repair_materialized_upstream_account_archive_markers(
+pub(crate) async fn repair_materialized_upstream_account_archive_markers(
     pool: &Pool<Sqlite>,
 ) -> Result<usize> {
     let mut tx = pool.begin().await?;
@@ -93,30 +95,30 @@ async fn repair_materialized_upstream_account_archive_markers(
     Ok(file_paths.len())
 }
 
-const HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE: i64 = BACKFILL_BATCH_SIZE;
+pub(crate) const HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE: i64 = BACKFILL_BATCH_SIZE;
 #[cfg(test)]
-const HISTORICAL_ROLLUP_ARCHIVE_INFLATE_BUFFER_BYTES: usize = 64 * 1024;
+pub(crate) const HISTORICAL_ROLLUP_ARCHIVE_INFLATE_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HistoricalRollupArchiveReplayOutcome {
+pub(crate) enum HistoricalRollupArchiveReplayOutcome {
     Completed,
     HitBudget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct HistoricalRollupArchiveReplayResult {
+pub(crate) struct HistoricalRollupArchiveReplayResult {
     outcome: HistoricalRollupArchiveReplayOutcome,
     cursor_id: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct HistoricalRollupArchiveReplaySummary {
-    scanned_batches: u64,
-    skipped_batches: u64,
-    remaining_skip_batches: usize,
-    budget_consumed_batches: u64,
-    blocked_batches: u64,
-    materialized_batches: u64,
+pub(crate) struct HistoricalRollupArchiveReplaySummary {
+    pub(crate) scanned_batches: u64,
+    pub(crate) skipped_batches: u64,
+    pub(crate) remaining_skip_batches: usize,
+    pub(crate) budget_consumed_batches: u64,
+    pub(crate) blocked_batches: u64,
+    pub(crate) materialized_batches: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -138,19 +140,19 @@ pub(crate) struct PoolUpstreamNodeHealthHourlyArchiveBackfillSummary {
 }
 
 #[derive(Debug, FromRow)]
-struct HistoricalRollupArchiveCoverageBoundsRow {
+pub(crate) struct HistoricalRollupArchiveCoverageBoundsRow {
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
 }
 
-fn historical_rollup_elapsed_budget_reached(
+pub(crate) fn historical_rollup_elapsed_budget_reached(
     started_at: Instant,
     max_elapsed: Option<Duration>,
 ) -> bool {
     max_elapsed.is_some_and(|limit| started_at.elapsed() >= limit)
 }
 
-fn historical_rollup_materialization_budget_reached(
+pub(crate) fn historical_rollup_materialization_budget_reached(
     started_at: Instant,
     replayed: u64,
     max_archive_batches: Option<u64>,
@@ -161,7 +163,7 @@ fn historical_rollup_materialization_budget_reached(
 }
 
 #[cfg(test)]
-fn inflate_gzip_sqlite_file_with_budget(
+pub(crate) fn inflate_gzip_sqlite_file_with_budget(
     source: &Path,
     destination: &Path,
     started_at: Instant,
@@ -203,7 +205,7 @@ fn inflate_gzip_sqlite_file_with_budget(
     Ok(true)
 }
 
-async fn open_historical_rollup_archive_pool(
+pub(crate) async fn open_historical_rollup_archive_pool(
     archive_path: &Path,
     temp_path: &Path,
 ) -> Result<Pool<Sqlite>> {
@@ -240,14 +242,14 @@ async fn open_historical_rollup_archive_pool(
     }
 }
 
-fn pool_upstream_node_health_archive_temp_path(archive_path: &Path) -> PathBuf {
+pub(crate) fn pool_upstream_node_health_archive_temp_path(archive_path: &Path) -> PathBuf {
     PathBuf::from(format!(
         "{}.pool-upstream-node-health.sqlite",
         archive_path.display()
     ))
 }
 
-fn historical_rollup_archive_source_signature(path: &Path) -> Result<String> {
+pub(crate) fn historical_rollup_archive_source_signature(path: &Path) -> Result<String> {
     let metadata = fs::metadata(path)
         .with_context(|| format!("failed to inspect archive batch {}", path.display()))?;
     let modified_ns = metadata
@@ -259,14 +261,17 @@ fn historical_rollup_archive_source_signature(path: &Path) -> Result<String> {
     Ok(format!("{}:{modified_ns}", metadata.len()))
 }
 
-fn load_historical_rollup_temp_source_signature(temp_path: &Path) -> Option<String> {
+pub(crate) fn load_historical_rollup_temp_source_signature(temp_path: &Path) -> Option<String> {
     fs::read_to_string(temp_sqlite_source_meta_path(temp_path))
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }
 
-fn persist_historical_rollup_temp_source_signature(temp_path: &Path, signature: &str) -> Result<()> {
+pub(crate) fn persist_historical_rollup_temp_source_signature(
+    temp_path: &Path,
+    signature: &str,
+) -> Result<()> {
     fs::write(temp_sqlite_source_meta_path(temp_path), signature).with_context(|| {
         format!(
             "failed to persist archive temp source signature for {}",
@@ -317,7 +322,8 @@ pub(crate) async fn load_pending_pool_upstream_node_health_archive_files(
         query.push(")\n          )");
     }
     query.push("\nORDER BY month_key ASC, created_at ASC, id ASC");
-    query.build_query_as::<ArchiveBatchFileRow>()
+    query
+        .build_query_as::<ArchiveBatchFileRow>()
         .fetch_all(pool)
         .await
         .context("failed to list pending pool upstream node health archive batches")
@@ -326,9 +332,11 @@ pub(crate) async fn load_pending_pool_upstream_node_health_archive_files(
 pub(crate) async fn pending_pool_upstream_node_health_archive_batches(
     pool: &Pool<Sqlite>,
 ) -> Result<u64> {
-    Ok(load_pending_pool_upstream_node_health_archive_files(pool, None, None)
-        .await?
-        .len() as u64)
+    Ok(
+        load_pending_pool_upstream_node_health_archive_files(pool, None, None)
+            .await?
+            .len() as u64,
+    )
 }
 
 pub(crate) async fn load_pending_pool_upstream_node_health_hourly_archive_files(
@@ -358,7 +366,8 @@ pub(crate) async fn load_pending_pool_upstream_node_health_hourly_archive_files(
         ORDER BY month_key ASC, created_at ASC, id ASC
         "#,
     );
-    query.build_query_as::<ArchiveBatchFileRow>()
+    query
+        .build_query_as::<ArchiveBatchFileRow>()
         .fetch_all(pool)
         .await
         .context("failed to list pending pool upstream node health hourly archive batches")
@@ -367,12 +376,14 @@ pub(crate) async fn load_pending_pool_upstream_node_health_hourly_archive_files(
 pub(crate) async fn pending_pool_upstream_node_health_hourly_archive_batches(
     pool: &Pool<Sqlite>,
 ) -> Result<u64> {
-    Ok(load_pending_pool_upstream_node_health_hourly_archive_files(pool)
-        .await?
-        .len() as u64)
+    Ok(
+        load_pending_pool_upstream_node_health_hourly_archive_files(pool)
+            .await?
+            .len() as u64,
+    )
 }
 
-fn legacy_compatible_archive_select_expr(
+pub(crate) fn legacy_compatible_archive_select_expr(
     archive_columns: &HashSet<String>,
     column_name: &str,
 ) -> String {
@@ -383,7 +394,9 @@ fn legacy_compatible_archive_select_expr(
     }
 }
 
-fn build_invocation_archive_rows_chunk_query(archive_columns: &HashSet<String>) -> String {
+pub(crate) fn build_invocation_archive_rows_chunk_query(
+    archive_columns: &HashSet<String>,
+) -> String {
     let input_tokens = legacy_compatible_archive_select_expr(archive_columns, "input_tokens");
     let output_tokens = legacy_compatible_archive_select_expr(archive_columns, "output_tokens");
     let cache_input_tokens =
@@ -422,16 +435,16 @@ fn build_invocation_archive_rows_chunk_query(archive_columns: &HashSet<String>) 
     )
 }
 
-async fn load_invocation_archive_rows_chunk(
+pub(crate) async fn load_invocation_archive_rows_chunk(
     archive_pool: &Pool<Sqlite>,
     query_sql: &str,
     start_after_id: i64,
 ) -> Result<(Vec<InvocationHourlySourceRecord>, bool)> {
     let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(query_sql)
-    .bind(start_after_id)
-    .bind(HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE + 1)
-    .fetch_all(archive_pool)
-    .await?;
+        .bind(start_after_id)
+        .bind(HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE + 1)
+        .fetch_all(archive_pool)
+        .await?;
     let has_more = rows.len() > HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE as usize;
     if has_more {
         rows.truncate(HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE as usize);
@@ -439,7 +452,7 @@ async fn load_invocation_archive_rows_chunk(
     Ok((rows, has_more))
 }
 
-async fn load_forward_proxy_archive_rows_chunk(
+pub(crate) async fn load_forward_proxy_archive_rows_chunk(
     archive_pool: &Pool<Sqlite>,
     start_after_id: i64,
 ) -> Result<(Vec<ForwardProxyAttemptHourlySourceRecord>, bool)> {
@@ -468,23 +481,25 @@ async fn load_forward_proxy_archive_rows_chunk(
     Ok((rows, has_more))
 }
 
-async fn load_archive_coverage_bounds(
+pub(crate) async fn load_archive_coverage_bounds(
     archive_pool: &Pool<Sqlite>,
     table_name: &str,
 ) -> Result<HistoricalRollupArchiveCoverageBoundsRow> {
-    Ok(sqlx::query_as::<_, HistoricalRollupArchiveCoverageBoundsRow>(&format!(
-        r#"
+    Ok(
+        sqlx::query_as::<_, HistoricalRollupArchiveCoverageBoundsRow>(&format!(
+            r#"
         SELECT
             MIN(occurred_at) AS coverage_start_at,
             MAX(occurred_at) AS coverage_end_at
         FROM {table_name}
         "#
-    ))
-    .fetch_one(archive_pool)
-    .await?)
+        ))
+        .fetch_one(archive_pool)
+        .await?,
+    )
 }
 
-async fn invocation_archive_has_pruned_success_details_in_db(
+pub(crate) async fn invocation_archive_has_pruned_success_details_in_db(
     archive_pool: &Pool<Sqlite>,
 ) -> Result<bool> {
     let success_like_sql = invocation_status_is_success_like_sql("status", "error_message");
@@ -507,7 +522,7 @@ async fn invocation_archive_has_pruned_success_details_in_db(
     Ok(exists != 0)
 }
 
-async fn replay_invocation_archive_rows_into_hourly_rollups_tx_with_budget(
+pub(crate) async fn replay_invocation_archive_rows_into_hourly_rollups_tx_with_budget(
     tx: &mut SqliteConnection,
     archive_pool: &Pool<Sqlite>,
     initial_cursor_id: i64,
@@ -558,7 +573,7 @@ async fn replay_invocation_archive_rows_into_hourly_rollups_tx_with_budget(
     }
 }
 
-async fn replay_forward_proxy_archive_rows_into_hourly_rollups_tx_with_budget(
+pub(crate) async fn replay_forward_proxy_archive_rows_into_hourly_rollups_tx_with_budget(
     tx: &mut SqliteConnection,
     archive_pool: &Pool<Sqlite>,
     initial_cursor_id: i64,
@@ -574,7 +589,8 @@ async fn replay_forward_proxy_archive_rows_into_hourly_rollups_tx_with_budget(
             });
         }
 
-        let (rows, has_more) = load_forward_proxy_archive_rows_chunk(archive_pool, start_after_id).await?;
+        let (rows, has_more) =
+            load_forward_proxy_archive_rows_chunk(archive_pool, start_after_id).await?;
         if rows.is_empty() {
             return Ok(HistoricalRollupArchiveReplayResult {
                 outcome: HistoricalRollupArchiveReplayOutcome::Completed,
@@ -605,7 +621,7 @@ async fn replay_forward_proxy_archive_rows_into_hourly_rollups_tx_with_budget(
     }
 }
 
-async fn replay_pool_upstream_node_health_archive_rows_tx_with_budget(
+pub(crate) async fn replay_pool_upstream_node_health_archive_rows_tx_with_budget(
     tx: &mut SqliteConnection,
     archive_pool: &Pool<Sqlite>,
     archive_file_path: &str,
@@ -667,7 +683,7 @@ async fn replay_pool_upstream_node_health_archive_rows_tx_with_budget(
     }
 }
 
-async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
+pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
     tx: &mut SqliteConnection,
     started_at: Instant,
     max_archive_batches: Option<u64>,
@@ -730,17 +746,16 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
                 pending_targets.push(target);
             }
         }
-        if pending_targets.as_slice() == [
-            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
-            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
-            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
-        ] || pending_targets.as_slice() == [HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE]
+        if pending_targets.as_slice()
+            == [
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
+            ]
+            || pending_targets.as_slice() == [HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE]
         {
-            mark_materialized_upstream_account_archive_replayed_tx(
-                tx,
-                &archive_file.file_path,
-            )
-            .await?;
+            mark_materialized_upstream_account_archive_replayed_tx(tx, &archive_file.file_path)
+                .await?;
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx,
                 HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -907,20 +922,14 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
     Ok(summary)
 }
 
-async fn replay_invocation_archives_into_hourly_rollups_tx(
+pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx(
     tx: &mut SqliteConnection,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    replay_invocation_archives_into_hourly_rollups_tx_with_limits(
-        tx,
-        Instant::now(),
-        None,
-        None,
-        0,
-    )
-    .await
+    replay_invocation_archives_into_hourly_rollups_tx_with_limits(tx, Instant::now(), None, None, 0)
+        .await
 }
 
-async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
+pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
     tx: &mut SqliteConnection,
     started_at: Instant,
     max_archive_batches: Option<u64>,
@@ -1006,7 +1015,8 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
         let archive_pool = open_historical_rollup_archive_pool(&archive_path, &temp_path).await?;
 
         if archive_file.coverage_start_at.is_none() || archive_file.coverage_end_at.is_none() {
-            let bounds = load_archive_coverage_bounds(&archive_pool, "forward_proxy_attempts").await?;
+            let bounds =
+                load_archive_coverage_bounds(&archive_pool, "forward_proxy_attempts").await?;
             update_archive_batch_coverage_bounds_tx(
                 tx,
                 archive_file.id,
@@ -1067,7 +1077,7 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
     Ok(summary)
 }
 
-async fn backfill_pool_upstream_node_health_archives_for_files(
+pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
     pool: &Pool<Sqlite>,
     archive_files: Vec<ArchiveBatchFileRow>,
     max_archive_batches: Option<u64>,
@@ -1201,7 +1211,8 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives(
     max_archive_batches: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<PoolUpstreamNodeHealthArchiveBackfillSummary> {
-    let archive_files = load_pending_pool_upstream_node_health_archive_files(pool, None, None).await?;
+    let archive_files =
+        load_pending_pool_upstream_node_health_archive_files(pool, None, None).await?;
     backfill_pool_upstream_node_health_archives_for_files(
         pool,
         archive_files,
@@ -1211,7 +1222,7 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives(
     .await
 }
 
-async fn backfill_pool_upstream_node_health_hourly_archives_for_files(
+pub(crate) async fn backfill_pool_upstream_node_health_hourly_archives_for_files(
     pool: &Pool<Sqlite>,
     archive_files: Vec<ArchiveBatchFileRow>,
     max_archive_batches: Option<u64>,
@@ -1254,12 +1265,13 @@ async fn backfill_pool_upstream_node_health_hourly_archives_for_files(
             continue;
         }
 
-        let materialized_rows = refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
-            tx.as_mut(),
-            archive_file.id,
-            &archive_file.file_path,
-        )
-        .await?;
+        let materialized_rows =
+            refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
+                tx.as_mut(),
+                archive_file.id,
+                &archive_file.file_path,
+            )
+            .await?;
         mark_hourly_rollup_archive_replayed_tx(
             tx.as_mut(),
             POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
@@ -1272,7 +1284,8 @@ async fn backfill_pool_upstream_node_health_hourly_archives_for_files(
         summary.materialized_rows += materialized_rows;
     }
 
-    summary.pending_batches = pending_pool_upstream_node_health_hourly_archive_batches(pool).await?;
+    summary.pending_batches =
+        pending_pool_upstream_node_health_hourly_archive_batches(pool).await?;
     Ok(summary)
 }
 
@@ -1314,7 +1327,10 @@ mod hourly_rollup_budget_tests {
 
     #[test]
     fn historical_rollup_elapsed_budget_reached_respects_unbounded_mode() {
-        assert!(!historical_rollup_elapsed_budget_reached(Instant::now(), None));
+        assert!(!historical_rollup_elapsed_budget_reached(
+            Instant::now(),
+            None
+        ));
     }
 
     #[test]
@@ -1345,7 +1361,10 @@ mod hourly_rollup_budget_tests {
         let written = fs::metadata(&destination_path)
             .expect("inflated temp file should exist")
             .len() as usize;
-        assert!(written > 0, "budgeted inflate should still write at least one chunk");
+        assert!(
+            written > 0,
+            "budgeted inflate should still write at least one chunk"
+        );
         assert!(
             written < payload.len(),
             "expired elapsed budget should stop before the whole sqlite copy completes"
@@ -1355,7 +1374,7 @@ mod hourly_rollup_budget_tests {
     }
 }
 
-async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
+pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
     tx: &mut SqliteConnection,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
     replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
@@ -1368,7 +1387,7 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
     .await
 }
 
-async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {
     sync_hourly_rollups_from_live_tables(pool).await?;
     repair_materialized_upstream_account_archive_markers(pool).await?;
     let account_stats_hourly_count: i64 =
@@ -1386,13 +1405,13 @@ async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-async fn refresh_hourly_rollups_for_read_surfaces(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn refresh_hourly_rollups_for_read_surfaces(pool: &Pool<Sqlite>) -> Result<()> {
     sync_hourly_rollups_from_live_tables(pool).await?;
     ensure_invocation_summary_rollups_ready_best_effort(pool).await?;
     Ok(())
 }
 
-async fn ensure_hourly_rollups_caught_up(state: &AppState) -> Result<()> {
+pub(crate) async fn ensure_hourly_rollups_caught_up(state: &AppState) -> Result<()> {
     let _guard = state.hourly_rollup_sync_lock.lock().await;
     sync_hourly_rollups_from_live_tables(&state.pool).await
 }
@@ -1426,7 +1445,7 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
     }
 }
 
-async fn delete_rows_by_ids(
+pub(crate) async fn delete_rows_by_ids(
     tx: &mut sqlx::SqliteConnection,
     table: &str,
     ids: &[i64],
@@ -1446,7 +1465,7 @@ async fn delete_rows_by_ids(
     Ok(())
 }
 
-async fn sweep_orphan_proxy_raw_files(
+pub(crate) async fn sweep_orphan_proxy_raw_files(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     raw_path_fallback_root: Option<&Path>,
@@ -1526,7 +1545,7 @@ async fn sweep_orphan_proxy_raw_files(
 mod hourly_rollup_archive_support;
 pub(crate) use hourly_rollup_archive_support::*;
 
-async fn schedule_poll(
+pub(crate) async fn schedule_poll(
     state: Arc<AppState>,
     cancel: &CancellationToken,
 ) -> Result<Option<JoinHandle<()>>> {
@@ -1550,7 +1569,10 @@ async fn schedule_poll(
         &state.pool,
         SystemTaskKind::SchedulerPoll,
         "interval",
-        Some(summarize_scheduler_poll_outcome(state.as_ref(), force_new_connection)),
+        Some(summarize_scheduler_poll_outcome(
+            state.as_ref(),
+            force_new_connection,
+        )),
     )
     .await
     .ok();
@@ -1660,13 +1682,13 @@ async fn schedule_poll(
     Ok(Some(handle))
 }
 
-fn build_health_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+pub(crate) fn build_health_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/health", get(health_check))
         .route("/api/version", get(get_versions))
 }
 
-fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+pub(crate) fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/api/settings", get(get_settings))
         .route(
@@ -1685,10 +1707,7 @@ fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>>
             "/api/settings/proxy-models",
             any(removed_proxy_model_settings_endpoint),
         )
-        .route(
-            "/api/settings/proxy",
-            put(put_proxy_settings),
-        )
+        .route("/api/settings/proxy", put(put_proxy_settings))
         .route(
             "/api/settings/forward-proxy",
             put(put_forward_proxy_settings),
@@ -1712,7 +1731,7 @@ fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>>
         .route("/api/settings/pricing", put(put_pricing_settings))
 }
 
-fn build_invocation_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+pub(crate) fn build_invocation_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/api/invocations", get(list_invocations))
         .route(
@@ -1738,7 +1757,7 @@ fn build_invocation_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState
         )
 }
 
-fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
@@ -1759,7 +1778,10 @@ fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
             get(fetch_forward_proxy_timeseries),
         )
         .route("/api/stats/timeseries", get(fetch_timeseries))
-        .route("/api/stats/parallel-work", get(fetch_parallel_work_stats_cached))
+        .route(
+            "/api/stats/parallel-work",
+            get(fetch_parallel_work_stats_cached),
+        )
         .route("/api/stats/perf", get(fetch_perf_stats))
         .route("/api/stats/errors", get(fetch_error_distribution))
         .route("/api/stats/failures/summary", get(fetch_failure_summary))
@@ -1770,18 +1792,19 @@ fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         )
         .route(
             "/api/stats/prompt-cache-conversation-bindings/*encodedPromptCacheKey",
-            get(get_prompt_cache_conversation_binding).patch(patch_prompt_cache_conversation_binding),
+            get(get_prompt_cache_conversation_binding)
+                .patch(patch_prompt_cache_conversation_binding),
         )
         .route("/api/quota/latest", get(latest_quota_snapshot))
 }
 
-fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/api/system/status", get(fetch_system_status))
         .route("/api/system/tasks", get(list_system_task_runs))
 }
 
-fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route(
             "/api/pool/routing-settings",
@@ -1899,11 +1922,11 @@ fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         )
 }
 
-fn build_event_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+pub(crate) fn build_event_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router.route("/events", get(sse_stream))
 }
 
-fn build_external_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+pub(crate) fn build_external_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route(
             "/api/external/v1/upstream-accounts/oauth/:sourceAccountId",
@@ -1916,23 +1939,23 @@ fn build_external_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>>
         )
 }
 
-fn build_proxy_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+pub(crate) fn build_proxy_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router.route("/v1/*path", any(proxy_openai_v1_with_connect_info))
 }
 
 pub(crate) fn build_app_router(state: Arc<AppState>) -> Router {
     build_proxy_routes(build_event_routes(build_external_routes(
-        build_pool_routes(build_system_routes(build_stats_routes(build_invocation_routes(
-            build_settings_routes(build_health_routes(Router::new())),
-        )))),
+        build_pool_routes(build_system_routes(build_stats_routes(
+            build_invocation_routes(build_settings_routes(build_health_routes(Router::new()))),
+        ))),
     )))
     .with_state(state)
 }
 
-const SOCIAL_PREVIEW_RELATIVE_ATTR: &str = "content=\"/social-preview.png\"";
-const SOCIAL_PREVIEW_PATH: &str = "/social-preview.png";
+pub(crate) const SOCIAL_PREVIEW_RELATIVE_ATTR: &str = "content=\"/social-preview.png\"";
+pub(crate) const SOCIAL_PREVIEW_PATH: &str = "/social-preview.png";
 
-fn inject_absolute_social_preview_urls(
+pub(crate) fn inject_absolute_social_preview_urls(
     index_html: String,
     headers: &HeaderMap,
     configured_public_origin: Option<&str>,
@@ -1944,7 +1967,10 @@ fn inject_absolute_social_preview_urls(
     index_html.replace(SOCIAL_PREVIEW_RELATIVE_ATTR, &absolute_attr)
 }
 
-async fn render_spa_index_response(state: Arc<AppState>, headers: &HeaderMap) -> Response {
+pub(crate) async fn render_spa_index_response(
+    state: Arc<AppState>,
+    headers: &HeaderMap,
+) -> Response {
     let Some(static_dir) = state.config.static_dir.as_ref() else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -1965,7 +1991,9 @@ async fn render_spa_index_response(state: Arc<AppState>, headers: &HeaderMap) ->
     .into_response()
 }
 
-async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHandle<()>)> {
+pub(crate) async fn spawn_http_server(
+    state: Arc<AppState>,
+) -> Result<(SocketAddr, JoinHandle<()>)> {
     let cors_layer = build_cors_layer(&state.config);
     let mut router = build_app_router(state.clone())
         .layer(TraceLayer::new_for_http())
@@ -2013,11 +2041,9 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
 
     let shutdown = state.shutdown.clone();
     let handle = tokio::spawn(async move {
-        if let Err(err) = serve_router_with_graceful_shutdown(
-            listener,
-            router,
-            async move { shutdown.cancelled().await },
-        )
+        if let Err(err) = serve_router_with_graceful_shutdown(listener, router, async move {
+            shutdown.cancelled().await
+        })
         .await
         {
             error!(?err, "http server exited with error");
@@ -2035,7 +2061,10 @@ mod social_preview_tests {
     #[test]
     fn inject_absolute_social_preview_urls_rewrites_both_meta_tags() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::HOST, HeaderValue::from_static("monitor.example.com"));
+        headers.insert(
+            header::HOST,
+            HeaderValue::from_static("monitor.example.com"),
+        );
         headers.insert(
             header::HeaderName::from_static("x-forwarded-proto"),
             HeaderValue::from_static("https"),
@@ -2048,11 +2077,11 @@ mod social_preview_tests {
 
         let rewritten = inject_absolute_social_preview_urls(html, &headers, None);
 
-        assert!(rewritten.contains(
-            r#"content="https://monitor.example.com/social-preview.png""#
-        ));
+        assert!(rewritten.contains(r#"content="https://monitor.example.com/social-preview.png""#));
         assert_eq!(
-            rewritten.matches("https://monitor.example.com/social-preview.png").count(),
+            rewritten
+                .matches("https://monitor.example.com/social-preview.png")
+                .count(),
             2
         );
     }
@@ -2071,16 +2100,17 @@ mod social_preview_tests {
         "#
         .to_string();
 
-        let rewritten =
-            inject_absolute_social_preview_urls(html, &headers, Some("https://preview.example.com"));
+        let rewritten = inject_absolute_social_preview_urls(
+            html,
+            &headers,
+            Some("https://preview.example.com"),
+        );
 
-        assert!(rewritten.contains(
-            r#"content="https://preview.example.com/social-preview.png""#
-        ));
+        assert!(rewritten.contains(r#"content="https://preview.example.com/social-preview.png""#));
     }
 }
 
-fn spawn_shutdown_signal_listener(cancel: CancellationToken) -> JoinHandle<()> {
+pub(crate) fn spawn_shutdown_signal_listener(cancel: CancellationToken) -> JoinHandle<()> {
     tokio::spawn(async move {
         shutdown_listener().await;
         cancel.cancel();
@@ -2088,7 +2118,7 @@ fn spawn_shutdown_signal_listener(cancel: CancellationToken) -> JoinHandle<()> {
     })
 }
 
-async fn shutdown_listener() {
+pub(crate) async fn shutdown_listener() {
     // Wait for Ctrl+C or SIGTERM (unix)
     #[cfg(unix)]
     {
@@ -2106,25 +2136,25 @@ async fn shutdown_listener() {
     }
 }
 
-struct PublishResult {
-    summaries: Vec<SummaryPublish>,
-    quota_snapshot: Option<QuotaSnapshotResponse>,
-    collected_broadcast_state: bool,
+pub(crate) struct PublishResult {
+    pub(crate) summaries: Vec<SummaryPublish>,
+    pub(crate) quota_snapshot: Option<QuotaSnapshotResponse>,
+    pub(crate) collected_broadcast_state: bool,
 }
 
-struct SummaryPublish {
-    window: String,
-    summary: StatsResponse,
+pub(crate) struct SummaryPublish {
+    pub(crate) window: String,
+    pub(crate) summary: StatsResponse,
 }
 
-fn should_collect_late_broadcast_state(
+pub(crate) fn should_collect_late_broadcast_state(
     receiver_count: usize,
     collected_broadcast_state: bool,
 ) -> bool {
     receiver_count > 0 && !collected_broadcast_state
 }
 
-async fn collect_broadcast_state_snapshots(
+pub(crate) async fn collect_broadcast_state_snapshots(
     pool: &Pool<Sqlite>,
     relay: Option<&CrsStatsConfig>,
     invocation_max_days: u64,
@@ -2135,7 +2165,7 @@ async fn collect_broadcast_state_snapshots(
     ))
 }
 
-async fn fetch_and_store(
+pub(crate) async fn fetch_and_store(
     state: &AppState,
     force_new_connection: bool,
     collect_broadcast_state: bool,
@@ -2178,12 +2208,12 @@ async fn fetch_and_store(
     })
 }
 
-struct SummaryBroadcastSpec {
+pub(crate) struct SummaryBroadcastSpec {
     window: &'static str,
     duration: Option<ChronoDuration>,
 }
 
-fn summary_broadcast_specs() -> Vec<SummaryBroadcastSpec> {
+pub(crate) fn summary_broadcast_specs() -> Vec<SummaryBroadcastSpec> {
     vec![
         SummaryBroadcastSpec {
             window: "all",
@@ -2208,7 +2238,7 @@ fn summary_broadcast_specs() -> Vec<SummaryBroadcastSpec> {
     ]
 }
 
-async fn collect_summary_snapshots(
+pub(crate) async fn collect_summary_snapshots(
     pool: &Pool<Sqlite>,
     relay: Option<&CrsStatsConfig>,
     invocation_max_days: u64,
@@ -2285,7 +2315,10 @@ async fn collect_summary_snapshots(
     Ok(summaries)
 }
 
-async fn should_poll_crs_stats(pool: &Pool<Sqlite>, relay: &CrsStatsConfig) -> Result<bool> {
+pub(crate) async fn should_poll_crs_stats(
+    pool: &Pool<Sqlite>,
+    relay: &CrsStatsConfig,
+) -> Result<bool> {
     let last_epoch = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT captured_at_epoch
@@ -2307,7 +2340,10 @@ async fn should_poll_crs_stats(pool: &Pool<Sqlite>, relay: &CrsStatsConfig) -> R
     })
 }
 
-async fn fetch_crs_stats(client: &Client, relay: &CrsStatsConfig) -> Result<CrsStatsResponse> {
+pub(crate) async fn fetch_crs_stats(
+    client: &Client,
+    relay: &CrsStatsConfig,
+) -> Result<CrsStatsResponse> {
     let url = relay
         .base_url
         .join("apiStats/api/user-model-stats")
@@ -2338,7 +2374,7 @@ async fn fetch_crs_stats(client: &Client, relay: &CrsStatsConfig) -> Result<CrsS
     Ok(payload)
 }
 
-fn aggregate_crs_totals(models: &[CrsModelStats]) -> CrsTotals {
+pub(crate) fn aggregate_crs_totals(models: &[CrsModelStats]) -> CrsTotals {
     let mut totals = CrsTotals::default();
     for model in models {
         totals.total_count += model.requests;
@@ -2357,13 +2393,13 @@ fn aggregate_crs_totals(models: &[CrsModelStats]) -> CrsTotals {
 }
 
 #[derive(Debug, FromRow)]
-struct CrsMaxRow {
+pub(crate) struct CrsMaxRow {
     max_requests: Option<i64>,
     max_all_tokens: Option<i64>,
     max_cost_total: Option<f64>,
 }
 
-fn compute_crs_delta(
+pub(crate) fn compute_crs_delta(
     stats_date: &str,
     now_utc: DateTime<Utc>,
     totals: CrsTotals,
@@ -2419,7 +2455,7 @@ fn compute_crs_delta(
     }
 }
 
-async fn persist_crs_stats(
+pub(crate) async fn persist_crs_stats(
     pool: &Pool<Sqlite>,
     relay: &CrsStatsConfig,
     payload: CrsStatsResponse,
@@ -2600,7 +2636,7 @@ async fn persist_crs_stats(
     Ok(if has_delta { Some(delta) } else { None })
 }
 
-fn codex_invocations_create_sql(table_name: &str) -> String {
+pub(crate) fn codex_invocations_create_sql(table_name: &str) -> String {
     format!(
         r#"
         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -2653,7 +2689,7 @@ fn codex_invocations_create_sql(table_name: &str) -> String {
     )
 }
 
-async fn load_sqlite_table_columns(
+pub(crate) async fn load_sqlite_table_columns(
     pool: &Pool<Sqlite>,
     table_name: &str,
 ) -> Result<HashSet<String>> {
@@ -2668,7 +2704,7 @@ async fn load_sqlite_table_columns(
     Ok(columns)
 }
 
-async fn load_sqlite_table_columns_from_connection(
+pub(crate) async fn load_sqlite_table_columns_from_connection(
     conn: &mut SqliteConnection,
     schema_name: Option<&str>,
     table_name: &str,
@@ -2687,7 +2723,7 @@ async fn load_sqlite_table_columns_from_connection(
     Ok(columns)
 }
 
-async fn ensure_pool_upstream_request_attempts_archive_schema(
+pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema(
     conn: &mut SqliteConnection,
 ) -> Result<()> {
     let archive_columns = load_sqlite_table_columns_from_connection(
@@ -2723,7 +2759,7 @@ async fn ensure_pool_upstream_request_attempts_archive_schema(
     Ok(())
 }
 
-async fn ensure_pool_upstream_request_attempts_archive_schema_in_place(
+pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_place(
     conn: &mut SqliteConnection,
 ) -> Result<()> {
     let archive_columns =
@@ -2755,7 +2791,9 @@ async fn ensure_pool_upstream_request_attempts_archive_schema_in_place(
     Ok(())
 }
 
-async fn ensure_codex_invocations_archive_schema(conn: &mut SqliteConnection) -> Result<()> {
+pub(crate) async fn ensure_codex_invocations_archive_schema(
+    conn: &mut SqliteConnection,
+) -> Result<()> {
     let archive_columns =
         load_sqlite_table_columns_from_connection(conn, Some("archive_db"), "codex_invocations")
             .await?;
@@ -2805,7 +2843,7 @@ async fn ensure_codex_invocations_archive_schema(conn: &mut SqliteConnection) ->
     Ok(())
 }
 
-async fn migrate_codex_invocations_drop_raw_expires_at(
+pub(crate) async fn migrate_codex_invocations_drop_raw_expires_at(
     pool: &Pool<Sqlite>,
     existing: &HashSet<String>,
 ) -> Result<()> {

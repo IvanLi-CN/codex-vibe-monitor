@@ -1,4 +1,7 @@
 use super::*;
+use anyhow::{anyhow, bail};
+use sqlx::FromRow;
+use tracing::warn;
 
 #[path = "hourly_rollup_support.rs"]
 mod archive_hourly_rollup_support;
@@ -282,13 +285,13 @@ pub(crate) async fn replace_pool_upstream_node_health_hourly_archive_rows_tx(
     archive_file_path: &str,
     rows: &[PoolUpstreamNodeHealthHourlyArchiveRollupRow],
 ) -> Result<()> {
-    delete_pool_upstream_node_health_hourly_archive_rows_for_batch_tx(tx, archive_batch_id)
-        .await?;
+    delete_pool_upstream_node_health_hourly_archive_rows_for_batch_tx(tx, archive_batch_id).await?;
     if rows.is_empty() {
         return Ok(());
     }
 
-    let archive_identity = pool_upstream_node_health_archive_identity_for_batch_id(archive_batch_id);
+    let archive_identity =
+        pool_upstream_node_health_archive_identity_for_batch_id(archive_batch_id);
 
     for chunk in rows.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
         let mut query = QueryBuilder::<Sqlite>::new(
@@ -318,7 +321,7 @@ pub(crate) async fn replace_pool_upstream_node_health_hourly_archive_rows_tx(
     Ok(())
 }
 
-async fn load_archive_table_columns(
+pub(crate) async fn load_archive_table_columns(
     pool: &Pool<Sqlite>,
     table_name: &str,
 ) -> Result<HashSet<String>> {
@@ -333,7 +336,7 @@ async fn load_archive_table_columns(
     Ok(columns)
 }
 
-fn legacy_compatible_archive_select_expr(
+pub(crate) fn legacy_compatible_archive_select_expr(
     archive_columns: &HashSet<String>,
     column_name: &str,
 ) -> String {
@@ -344,7 +347,9 @@ fn legacy_compatible_archive_select_expr(
     }
 }
 
-fn build_legacy_compatible_invocation_archive_query(archive_columns: &HashSet<String>) -> String {
+pub(crate) fn build_legacy_compatible_invocation_archive_query(
+    archive_columns: &HashSet<String>,
+) -> String {
     let input_tokens = legacy_compatible_archive_select_expr(archive_columns, "input_tokens");
     let output_tokens = legacy_compatible_archive_select_expr(archive_columns, "output_tokens");
     let cache_input_tokens =
@@ -1386,7 +1391,9 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             first_response_byte_total_histogram: String,
         }
 
-        for ((bucket_start_epoch, source, upstream_account_id), delta) in upstream_account_stats_hourly {
+        for ((bucket_start_epoch, source, upstream_account_id), delta) in
+            upstream_account_stats_hourly
+        {
             let current_histograms = sqlx::query_as::<_, AccountStatsHistogramRow>(
                 r#"
                 SELECT
@@ -1507,7 +1514,9 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             first_response_byte_total_histogram: String,
         }
 
-        for ((bucket_start_epoch, source, upstream_account_id), delta) in upstream_account_stats_minute {
+        for ((bucket_start_epoch, source, upstream_account_id), delta) in
+            upstream_account_stats_minute
+        {
             let current_histograms = sqlx::query_as::<_, AccountMinuteStatsHistogramRow>(
                 r#"
                 SELECT
@@ -1981,7 +1990,9 @@ pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -
     Ok(rows.len() as u64)
 }
 
-pub(crate) async fn replay_live_invocation_hourly_rollups_tx(tx: &mut SqliteConnection) -> Result<u64> {
+pub(crate) async fn replay_live_invocation_hourly_rollups_tx(
+    tx: &mut SqliteConnection,
+) -> Result<u64> {
     let cursor_id =
         load_hourly_rollup_live_progress_tx(tx, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
     let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
@@ -2030,7 +2041,9 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(tx: &mut SqliteConn
     Ok(rows.len() as u64)
 }
 
-pub(crate) async fn replay_live_forward_proxy_attempt_hourly_rollups(pool: &Pool<Sqlite>) -> Result<u64> {
+pub(crate) async fn replay_live_forward_proxy_attempt_hourly_rollups(
+    pool: &Pool<Sqlite>,
+) -> Result<u64> {
     let cursor_id =
         load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS)
             .await?;
@@ -2104,7 +2117,9 @@ pub(crate) async fn replay_live_forward_proxy_attempt_hourly_rollups_tx(
     Ok(rows.len() as u64)
 }
 
-pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<Sqlite>) -> Result<usize> {
+pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
+    pool: &Pool<Sqlite>,
+) -> Result<usize> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
         SELECT id, file_path, coverage_start_at, coverage_end_at
@@ -2146,15 +2161,16 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<S
             .connect(&sqlite_url_for_path(&temp_path))
             .await
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
-        let archive_columns = load_archive_table_columns(&archive_pool, "codex_invocations").await?;
+        let archive_columns =
+            load_archive_table_columns(&archive_pool, "codex_invocations").await?;
         let archive_query_sql = build_legacy_compatible_invocation_archive_query(&archive_columns);
         let mut archive_cursor_id = 0_i64;
         loop {
             let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&archive_query_sql)
-            .bind(archive_cursor_id)
-            .bind(BACKFILL_BATCH_SIZE)
-            .fetch_all(&archive_pool)
-            .await?;
+                .bind(archive_cursor_id)
+                .bind(BACKFILL_BATCH_SIZE)
+                .fetch_all(&archive_pool)
+                .await?;
             if rows.is_empty() {
                 break;
             }
@@ -2343,7 +2359,8 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
             .connect(&sqlite_url_for_path(&temp_path))
             .await
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
-        let archive_columns = load_archive_table_columns(&archive_pool, "codex_invocations").await?;
+        let archive_columns =
+            load_archive_table_columns(&archive_pool, "codex_invocations").await?;
         let archive_query_sql = build_legacy_compatible_invocation_archive_query(&archive_columns);
         let mut archive_cursor_id = 0_i64;
         loop {
@@ -2441,11 +2458,13 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
     }
     tx.commit().await?;
 
-    let hourly_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_hourly")
-        .fetch_one(pool)
-        .await?;
-    let minute_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_minute")
-        .fetch_one(pool)
-        .await?;
+    let hourly_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_hourly")
+            .fetch_one(pool)
+            .await?;
+    let minute_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_minute")
+            .fetch_one(pool)
+            .await?;
     Ok((hourly_count.max(0) as usize, minute_count.max(0) as usize))
 }

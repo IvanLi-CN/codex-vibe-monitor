@@ -1,3 +1,5 @@
+use super::*;
+
 pub(crate) fn upstream_account_name_from_payload(payload: Option<&str>) -> Option<String> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
@@ -32,7 +34,7 @@ pub(crate) fn sticky_key_from_payload(payload: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn payload_text(payload: Option<&str>, key: &str) -> Option<String> {
+pub(crate) fn payload_text(payload: Option<&str>, key: &str) -> Option<String> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
     value
@@ -43,13 +45,13 @@ fn payload_text(payload: Option<&str>, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn payload_i64(payload: Option<&str>, key: &str) -> Option<i64> {
+pub(crate) fn payload_i64(payload: Option<&str>, key: &str) -> Option<i64> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
     value.get(key).and_then(Value::as_i64)
 }
 
-fn payload_f64(payload: Option<&str>, key: &str) -> Option<f64> {
+pub(crate) fn payload_f64(payload: Option<&str>, key: &str) -> Option<f64> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
     value.get(key).and_then(Value::as_f64)
@@ -319,10 +321,8 @@ pub(crate) async fn update_pool_upstream_request_attempt_phase(
     pending: &PendingPoolAttemptRecord,
     phase: &str,
 ) -> Result<bool> {
-    update_pool_upstream_request_attempt_progress(
-        pool, pending, phase, None, None, None, None,
-    )
-    .await
+    update_pool_upstream_request_attempt_progress(pool, pending, phase, None, None, None, None)
+        .await
 }
 
 pub(crate) async fn update_pool_upstream_request_attempt_progress(
@@ -435,8 +435,9 @@ pub(crate) fn enqueue_pool_upstream_request_attempt_progress(
     let Some(attempt_id) = pending.attempt_id else {
         return false;
     };
-    state.sqlite_batch_writer.enqueue(SqliteBatchWrite::AttemptProgress(
-        BatchedAttemptProgress {
+    state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
             attempt_id,
             pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
             phase: phase.to_string(),
@@ -444,13 +445,14 @@ pub(crate) fn enqueue_pool_upstream_request_attempt_progress(
             first_byte_latency_ms,
             compact_support_status: compact_support_status.map(ToOwned::to_owned),
             compact_support_reason: compact_support_reason.map(ToOwned::to_owned),
-        },
-    ))
+        }))
 }
 
 pub(crate) enum PoolAttemptRecoveryScope<'a> {
     AllPending,
-    SpecificEarlyPhase { attempt_id: i64 },
+    SpecificEarlyPhase {
+        attempt_id: i64,
+    },
     StaleEarlyPhase {
         responses_started_before: &'a str,
         compact_started_before: &'a str,
@@ -463,7 +465,8 @@ pub(crate) async fn recover_pool_upstream_request_attempts_with_scope(
     scope: PoolAttemptRecoveryScope<'_>,
 ) -> Result<Vec<RecoveredPoolAttemptRow>> {
     let mut tx = pool.begin().await?;
-    let recovered = recover_pool_upstream_request_attempts_with_scope_tx(tx.as_mut(), scope).await?;
+    let recovered =
+        recover_pool_upstream_request_attempts_with_scope_tx(tx.as_mut(), scope).await?;
     tx.commit().await?;
     Ok(recovered)
 }
@@ -742,11 +745,16 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates(
     Ok(recovered)
 }
 
-pub(crate) async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) -> Result<u64> {
+pub(crate) async fn recover_orphaned_pool_upstream_request_attempts(
+    pool: &Pool<Sqlite>,
+) -> Result<u64> {
     Ok(
-        recover_pool_upstream_request_attempts_with_scope(pool, PoolAttemptRecoveryScope::AllPending)
-            .await?
-            .len() as u64,
+        recover_pool_upstream_request_attempts_with_scope(
+            pool,
+            PoolAttemptRecoveryScope::AllPending,
+        )
+        .await?
+        .len() as u64,
     )
 }
 
@@ -956,9 +964,12 @@ pub(crate) async fn broadcast_recovered_proxy_invocations(
 
     let summary_invoke_id = records[0].invoke_id.clone();
     if state.broadcaster.receiver_count() > 0 {
-        state.broadcaster.send(BroadcastPayload::Records { records }).map_err(
-            |err| anyhow!("failed to broadcast recovered proxy invocation records: {err}"),
-        )?;
+        state
+            .broadcaster
+            .send(BroadcastPayload::Records { records })
+            .map_err(|err| {
+                anyhow!("failed to broadcast recovered proxy invocation records: {err}")
+            })?;
     }
     schedule_proxy_capture_follow_up_worker(state, &summary_invoke_id).await?;
 
@@ -974,9 +985,7 @@ pub(crate) fn pool_routing_reservation_key_for_invoke_id(invoke_id: &str) -> Opt
 }
 
 pub(crate) fn pool_route_orphan_recovery_failure_message(recovery_trigger: &str) -> String {
-    format!(
-        "pool request was interrupted before completion and recovered via {recovery_trigger}"
-    )
+    format!("pool request was interrupted before completion and recovered via {recovery_trigger}")
 }
 
 pub(crate) async fn clean_up_pool_route_after_orphan_recovery(
@@ -1018,7 +1027,7 @@ pub(crate) async fn clean_up_pool_route_after_orphan_recovery(
     }
 }
 
-async fn should_record_route_failure_after_attempt_recovery(
+pub(crate) async fn should_record_route_failure_after_attempt_recovery(
     state: &AppState,
     invoke_id: &str,
     occurred_at: &str,
@@ -1099,8 +1108,8 @@ pub(crate) async fn clean_up_recovered_pool_routes(
         .map(|row| (row.invoke_id.as_str(), row.occurred_at.as_str()))
         .collect::<BTreeSet<_>>();
     for row in recovered_attempts {
-        let recovered_invocation = recovered_invocation_keys
-            .contains(&(row.invoke_id.as_str(), row.occurred_at.as_str()));
+        let recovered_invocation =
+            recovered_invocation_keys.contains(&(row.invoke_id.as_str(), row.occurred_at.as_str()));
         let record_route_failure = should_record_route_failure_after_attempt_recovery(
             state,
             &row.invoke_id,
@@ -1160,18 +1169,17 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
         None => Vec::new(),
     };
 
-    let recovered_invocations = if pending_attempt_record.attempt_id.is_none()
-        || !recovered_attempts.is_empty()
-    {
-        let selector = InvocationRecoverySelector::from(&pending_attempt_record);
-        recover_proxy_invocations_with_scope_tx(
-            tx.as_mut(),
-            ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
-        )
-        .await?
-    } else {
-        Vec::new()
-    };
+    let recovered_invocations =
+        if pending_attempt_record.attempt_id.is_none() || !recovered_attempts.is_empty() {
+            let selector = InvocationRecoverySelector::from(&pending_attempt_record);
+            recover_proxy_invocations_with_scope_tx(
+                tx.as_mut(),
+                ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
     tx.commit().await?;
 
     let should_clean_up_route = pending_attempt_record.attempt_id.is_none()
@@ -1220,7 +1228,9 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
     }
 
     if !recovered_attempts.is_empty()
-        && let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, &pending_attempt_record.invoke_id).await
+        && let Err(err) =
+            broadcast_pool_upstream_attempts_snapshot(state, &pending_attempt_record.invoke_id)
+                .await
     {
         warn!(
             invoke_id = %pending_attempt_record.invoke_id,
@@ -1280,12 +1290,8 @@ pub(crate) async fn recover_guard_dropped_pool_terminal_invocation_orphan(
     state: &AppState,
     selector: InvocationRecoverySelector,
 ) -> Result<()> {
-    recover_guard_dropped_pool_invocation_orphan(
-        state,
-        selector,
-        "terminal_invocation_drop_guard",
-    )
-    .await
+    recover_guard_dropped_pool_invocation_orphan(state, selector, "terminal_invocation_drop_guard")
+        .await
 }
 
 pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
@@ -1671,7 +1677,10 @@ pub(crate) fn prompt_cache_upstream_account_rollup_key(
     }
 }
 
-pub(crate) async fn load_hourly_rollup_live_progress(pool: &Pool<Sqlite>, dataset: &str) -> Result<i64> {
+pub(crate) async fn load_hourly_rollup_live_progress(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+) -> Result<i64> {
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
     )
@@ -1817,72 +1826,72 @@ pub(crate) fn oauth_account_id_shape_for_account(
 }
 
 pub(crate) struct ProxyPayloadSummary<'a> {
-    target: ProxyCaptureTarget,
-    status: StatusCode,
-    is_stream: bool,
-    request_contains_encrypted_content: bool,
-    response_contains_encrypted_content: bool,
-    compaction_request_kind: Option<CompactionKind>,
-    compaction_response_kind: Option<CompactionKind>,
-    image_intent: Option<&'a str>,
-    request_model: Option<&'a str>,
-    requested_service_tier: Option<&'a str>,
-    billing_service_tier: Option<&'a str>,
-    reasoning_effort: Option<&'a str>,
-    response_model: Option<&'a str>,
-    usage_missing_reason: Option<&'a str>,
-    request_parse_error: Option<&'a str>,
-    failure_kind: Option<&'a str>,
-    requester_ip: Option<&'a str>,
-    request_user_agent: Option<&'a str>,
-    request_x_forwarded_for: Option<&'a str>,
-    request_forwarded: Option<&'a str>,
-    request_x_real_ip: Option<&'a str>,
-    upstream_scope: &'a str,
-    route_mode: &'a str,
-    sticky_key: Option<&'a str>,
-    prompt_cache_key: Option<&'a str>,
-    prompt_cache_key_attribution_source: Option<&'a str>,
-    client_fingerprint: Option<&'a str>,
-    client_header_fingerprints: Option<&'a BTreeMap<String, String>>,
-    upstream_account_id: Option<i64>,
-    upstream_account_name: Option<&'a str>,
-    upstream_account_kind: Option<&'a str>,
-    upstream_base_url_host: Option<&'a str>,
-    oauth_account_header_attached: Option<bool>,
-    oauth_account_id_shape: Option<&'a str>,
-    oauth_forwarded_header_count: Option<usize>,
-    oauth_forwarded_header_names: Option<&'a [String]>,
-    oauth_fingerprint_version: Option<&'a str>,
-    oauth_forwarded_header_fingerprints: Option<&'a BTreeMap<String, String>>,
-    oauth_prompt_cache_header_forwarded: Option<bool>,
-    oauth_request_body_prefix_fingerprint: Option<&'a str>,
-    oauth_request_body_prefix_bytes: Option<usize>,
-    oauth_request_body_snapshot_kind: Option<&'a str>,
-    oauth_responses_body_mode: Option<&'a str>,
-    oauth_responses_rewrite: Option<&'a oauth_bridge::OauthResponsesRewriteSummary>,
-    service_tier: Option<&'a str>,
-    stream_terminal_event: Option<&'a str>,
-    upstream_error_code: Option<&'a str>,
-    upstream_error_message: Option<&'a str>,
-    downstream_status_code: Option<StatusCode>,
-    downstream_error_message: Option<&'a str>,
-    upstream_request_id: Option<&'a str>,
-    response_content_encoding: Option<&'a str>,
-    stream_failure_origin: Option<&'a str>,
-    upstream_read_error_kind: Option<&'a str>,
-    content_encoding_chain: Option<&'a str>,
-    forwarded_chunk_count: Option<usize>,
-    forwarded_bytes: Option<usize>,
-    usage_observed: Option<bool>,
-    downstream_close_phase: Option<&'a str>,
-    downstream_write_error_kind: Option<&'a str>,
-    last_upstream_chunk_gap_ms: Option<u64>,
-    proxy_display_name: Option<&'a str>,
-    proxy_weight_delta: Option<f64>,
-    pool_attempt_count: Option<usize>,
-    pool_distinct_account_count: Option<usize>,
-    pool_attempt_terminal_reason: Option<&'a str>,
+    pub(crate) target: ProxyCaptureTarget,
+    pub(crate) status: StatusCode,
+    pub(crate) is_stream: bool,
+    pub(crate) request_contains_encrypted_content: bool,
+    pub(crate) response_contains_encrypted_content: bool,
+    pub(crate) compaction_request_kind: Option<CompactionKind>,
+    pub(crate) compaction_response_kind: Option<CompactionKind>,
+    pub(crate) image_intent: Option<&'a str>,
+    pub(crate) request_model: Option<&'a str>,
+    pub(crate) requested_service_tier: Option<&'a str>,
+    pub(crate) billing_service_tier: Option<&'a str>,
+    pub(crate) reasoning_effort: Option<&'a str>,
+    pub(crate) response_model: Option<&'a str>,
+    pub(crate) usage_missing_reason: Option<&'a str>,
+    pub(crate) request_parse_error: Option<&'a str>,
+    pub(crate) failure_kind: Option<&'a str>,
+    pub(crate) requester_ip: Option<&'a str>,
+    pub(crate) request_user_agent: Option<&'a str>,
+    pub(crate) request_x_forwarded_for: Option<&'a str>,
+    pub(crate) request_forwarded: Option<&'a str>,
+    pub(crate) request_x_real_ip: Option<&'a str>,
+    pub(crate) upstream_scope: &'a str,
+    pub(crate) route_mode: &'a str,
+    pub(crate) sticky_key: Option<&'a str>,
+    pub(crate) prompt_cache_key: Option<&'a str>,
+    pub(crate) prompt_cache_key_attribution_source: Option<&'a str>,
+    pub(crate) client_fingerprint: Option<&'a str>,
+    pub(crate) client_header_fingerprints: Option<&'a BTreeMap<String, String>>,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<&'a str>,
+    pub(crate) upstream_account_kind: Option<&'a str>,
+    pub(crate) upstream_base_url_host: Option<&'a str>,
+    pub(crate) oauth_account_header_attached: Option<bool>,
+    pub(crate) oauth_account_id_shape: Option<&'a str>,
+    pub(crate) oauth_forwarded_header_count: Option<usize>,
+    pub(crate) oauth_forwarded_header_names: Option<&'a [String]>,
+    pub(crate) oauth_fingerprint_version: Option<&'a str>,
+    pub(crate) oauth_forwarded_header_fingerprints: Option<&'a BTreeMap<String, String>>,
+    pub(crate) oauth_prompt_cache_header_forwarded: Option<bool>,
+    pub(crate) oauth_request_body_prefix_fingerprint: Option<&'a str>,
+    pub(crate) oauth_request_body_prefix_bytes: Option<usize>,
+    pub(crate) oauth_request_body_snapshot_kind: Option<&'a str>,
+    pub(crate) oauth_responses_body_mode: Option<&'a str>,
+    pub(crate) oauth_responses_rewrite: Option<&'a oauth_bridge::OauthResponsesRewriteSummary>,
+    pub(crate) service_tier: Option<&'a str>,
+    pub(crate) stream_terminal_event: Option<&'a str>,
+    pub(crate) upstream_error_code: Option<&'a str>,
+    pub(crate) upstream_error_message: Option<&'a str>,
+    pub(crate) downstream_status_code: Option<StatusCode>,
+    pub(crate) downstream_error_message: Option<&'a str>,
+    pub(crate) upstream_request_id: Option<&'a str>,
+    pub(crate) response_content_encoding: Option<&'a str>,
+    pub(crate) stream_failure_origin: Option<&'a str>,
+    pub(crate) upstream_read_error_kind: Option<&'a str>,
+    pub(crate) content_encoding_chain: Option<&'a str>,
+    pub(crate) forwarded_chunk_count: Option<usize>,
+    pub(crate) forwarded_bytes: Option<usize>,
+    pub(crate) usage_observed: Option<bool>,
+    pub(crate) downstream_close_phase: Option<&'a str>,
+    pub(crate) downstream_write_error_kind: Option<&'a str>,
+    pub(crate) last_upstream_chunk_gap_ms: Option<u64>,
+    pub(crate) proxy_display_name: Option<&'a str>,
+    pub(crate) proxy_weight_delta: Option<f64>,
+    pub(crate) pool_attempt_count: Option<usize>,
+    pub(crate) pool_distinct_account_count: Option<usize>,
+    pub(crate) pool_attempt_terminal_reason: Option<&'a str>,
 }
 
 pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
@@ -2083,7 +2092,7 @@ pub(crate) async fn load_persisted_invocation_identity_tx(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn update_existing_proxy_invocation_record_tx(
+pub(crate) async fn update_existing_proxy_invocation_record_tx(
     tx: &mut SqliteConnection,
     id: i64,
     record: &ProxyCaptureRecord,
@@ -2170,7 +2179,13 @@ async fn update_existing_proxy_invocation_record_tx(
     .bind(raw_response)
     .bind(record.req_raw.path.as_deref())
     .bind(raw_payload_meta_codec(&record.req_raw))
-    .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
+    .bind(
+        record
+            .req_raw
+            .path
+            .as_ref()
+            .map(|_| record.req_raw.size_bytes),
+    )
     .bind(record.req_raw.truncated as i64)
     .bind(record.req_raw.truncated_reason.as_deref())
     .bind(resp_raw.path.as_deref())
@@ -2221,7 +2236,10 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         live_phase: None,
         error_message: record.error_message.clone(),
         downstream_status_code: payload_i64(payload, "downstreamStatusCode"),
-        failure_kind: failure.failure_kind.clone().or_else(|| record.failure_kind.clone()),
+        failure_kind: failure
+            .failure_kind
+            .clone()
+            .or_else(|| record.failure_kind.clone()),
         stream_terminal_event: payload_text(payload, "streamTerminalEvent"),
         upstream_error_code: payload_text(payload, "upstreamErrorCode"),
         upstream_error_message: payload_text(payload, "upstreamErrorMessage"),
@@ -2251,11 +2269,19 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         cost_estimated: Some(record.cost_estimated as i64),
         price_version: record.price_version.clone(),
         request_raw_path: record.req_raw.path.clone(),
-        request_raw_size: record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes),
+        request_raw_size: record
+            .req_raw
+            .path
+            .as_ref()
+            .map(|_| record.req_raw.size_bytes),
         request_raw_truncated: Some(record.req_raw.truncated as i64),
         request_raw_truncated_reason: record.req_raw.truncated_reason.clone(),
         response_raw_path: record.resp_raw.path.clone(),
-        response_raw_size: record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes),
+        response_raw_size: record
+            .resp_raw
+            .path
+            .as_ref()
+            .map(|_| record.resp_raw.size_bytes),
         response_raw_truncated: Some(record.resp_raw.truncated as i64),
         response_raw_truncated_reason: record.resp_raw.truncated_reason.clone(),
         detail_level: DETAIL_LEVEL_FULL.to_string(),
@@ -2541,7 +2567,9 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
     record.is_actionable = Some(true);
     record.pool_attempt_terminal_reason = Some(PROXY_FAILURE_INVOCATION_INTERRUPTED.to_string());
 
-    let remove_outcome = state.proxy_runtime_invocations.upsert_terminal(record.clone());
+    let remove_outcome = state
+        .proxy_runtime_invocations
+        .upsert_terminal(record.clone());
     debug!(
         invoke_id,
         occurred_at,
@@ -2608,7 +2636,9 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
     record.is_actionable = Some(true);
     record.pool_attempt_terminal_reason = Some(failure_kind.to_string());
 
-    let remove_outcome = state.proxy_runtime_invocations.upsert_terminal(record.clone());
+    let remove_outcome = state
+        .proxy_runtime_invocations
+        .upsert_terminal(record.clone());
     debug!(
         invoke_id,
         occurred_at,
@@ -2658,15 +2688,16 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
         );
         return Ok(());
     }
-    let terminal_enqueued = state
-        .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::TerminalInvocation(
-            BatchedTerminalInvocationWrite {
-                record,
-                capture_started: None,
-                raw_capture: false,
-            },
-        ));
+    let terminal_enqueued =
+        state
+            .sqlite_batch_writer
+            .enqueue(SqliteBatchWrite::TerminalInvocation(
+                BatchedTerminalInvocationWrite {
+                    record,
+                    capture_started: None,
+                    raw_capture: false,
+                },
+            ));
     if !terminal_enqueued {
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations
@@ -2756,12 +2787,9 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
     let created_at = format_utc_iso_millis(Utc::now());
     let mut core_write_path = "insert_missing";
     let mut tx = pool.begin().await?;
-    let existing_identity = load_persisted_invocation_identity_tx(
-        tx.as_mut(),
-        &record.invoke_id,
-        &record.occurred_at,
-    )
-    .await?;
+    let existing_identity =
+        load_persisted_invocation_identity_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
+            .await?;
     if let Some(existing) = existing_identity.as_ref()
         && !persisted_invocation_allows_proxy_record_update(
             existing.status.as_deref(),
@@ -2934,13 +2962,12 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
         }
     }
 
-    let persisted_identity = load_persisted_invocation_identity_tx(
-        tx.as_mut(),
-        &record.invoke_id,
-        &record.occurred_at,
-    )
-    .await?
-    .ok_or_else(|| anyhow!("persisted proxy runtime invocation row disappeared after upsert"))?;
+    let persisted_identity =
+        load_persisted_invocation_identity_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
+            .await?
+            .ok_or_else(|| {
+                anyhow!("persisted proxy runtime invocation row disappeared after upsert")
+            })?;
     if write_derived_inline {
         upsert_invocation_hourly_rollups_tx(
             tx.as_mut(),
@@ -2986,8 +3013,9 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
         .await?;
     }
 
-    let persisted = load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
-        .await?;
+    let persisted =
+        load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
+            .await?;
     tx.commit().await?;
 
     let core_write_elapsed_ms = core_write_started.elapsed().as_millis() as u64;
@@ -3222,7 +3250,7 @@ impl RawResponsePreviewBuffer {
         &self.bytes
     }
 
-    fn into_preview(self) -> String {
+    pub(crate) fn into_preview(self) -> String {
         build_raw_response_preview(&self.bytes)
     }
 }
@@ -3329,7 +3357,12 @@ pub(crate) fn spawn_raw_payload_file_write(
     }))
 }
 
-fn raw_payload_path_for_kind(raw_dir: &Path, invoke_id: &str, kind: &str, gzip: bool) -> PathBuf {
+pub(crate) fn raw_payload_path_for_kind(
+    raw_dir: &Path,
+    invoke_id: &str,
+    kind: &str,
+    gzip: bool,
+) -> PathBuf {
     let filename = if gzip {
         format!("{invoke_id}-{kind}.bin.gz")
     } else {
@@ -3338,11 +3371,11 @@ fn raw_payload_path_for_kind(raw_dir: &Path, invoke_id: &str, kind: &str, gzip: 
     raw_dir.join(filename)
 }
 
-fn raw_payload_path_is_gzip(path: Option<&str>) -> bool {
+pub(crate) fn raw_payload_path_is_gzip(path: Option<&str>) -> bool {
     path.is_some_and(|value| value.ends_with(".gz"))
 }
 
-fn raw_payload_meta_codec(meta: &RawPayloadMeta) -> &'static str {
+pub(crate) fn raw_payload_meta_codec(meta: &RawPayloadMeta) -> &'static str {
     if raw_payload_path_is_gzip(meta.path.as_deref()) {
         RAW_CODEC_GZIP
     } else {
@@ -3350,17 +3383,17 @@ fn raw_payload_meta_codec(meta: &RawPayloadMeta) -> &'static str {
     }
 }
 
-fn compress_raw_payload_bytes_to_gzip(bytes: &[u8]) -> io::Result<Vec<u8>> {
+pub(crate) fn compress_raw_payload_bytes_to_gzip(bytes: &[u8]) -> io::Result<Vec<u8>> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(bytes)?;
     encoder.finish()
 }
 
-fn raw_payload_gzip_path(path: &Path) -> PathBuf {
+pub(crate) fn raw_payload_gzip_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.gz", path.display()))
 }
 
-enum StreamingRawPayloadWriterState {
+pub(crate) enum StreamingRawPayloadWriterState {
     Buffer(Vec<u8>),
     Plain {
         path: PathBuf,
@@ -3381,7 +3414,7 @@ impl StreamingRawPayloadWriterState {
     }
 }
 
-fn prepare_streaming_raw_parent(path: &Path) -> io::Result<&Path> {
+pub(crate) fn prepare_streaming_raw_parent(path: &Path) -> io::Result<&Path> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -3392,12 +3425,12 @@ fn prepare_streaming_raw_parent(path: &Path) -> io::Result<&Path> {
     Ok(parent)
 }
 
-fn create_plain_streaming_raw_file(path: &Path) -> io::Result<fs::File> {
+pub(crate) fn create_plain_streaming_raw_file(path: &Path) -> io::Result<fs::File> {
     prepare_streaming_raw_parent(path)?;
     fs::File::create(path)
 }
 
-fn create_gzip_streaming_raw_encoder(
+pub(crate) fn create_gzip_streaming_raw_encoder(
     path: &Path,
 ) -> io::Result<GzEncoder<io::BufWriter<fs::File>>> {
     prepare_streaming_raw_parent(path)?;
@@ -3408,7 +3441,7 @@ fn create_gzip_streaming_raw_encoder(
     ))
 }
 
-async fn run_blocking_raw_writer_io<T, F>(op: F) -> io::Result<T>
+pub(crate) async fn run_blocking_raw_writer_io<T, F>(op: F) -> io::Result<T>
 where
     T: Send + 'static,
     F: FnOnce() -> io::Result<T> + Send + 'static,
@@ -3467,13 +3500,9 @@ impl AsyncStreamingRawPayloadWriter {
         let (meta_tx, meta_rx) = oneshot::channel();
         tokio::spawn(async move {
             let _permit = permit;
-            let meta = write_streaming_raw_payload_to_file(
-                path,
-                max_bytes,
-                immediate_gzip_bytes,
-                &mut rx,
-            )
-            .await;
+            let meta =
+                write_streaming_raw_payload_to_file(path, max_bytes, immediate_gzip_bytes, &mut rx)
+                    .await;
             let _ = meta_tx.send(meta);
         });
 
@@ -3582,8 +3611,10 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
             continue;
         }
 
-        let current_writer =
-            std::mem::replace(&mut writer, StreamingRawPayloadWriterState::Buffer(Vec::new()));
+        let current_writer = std::mem::replace(
+            &mut writer,
+            StreamingRawPayloadWriterState::Buffer(Vec::new()),
+        );
         let mut failed_path: Option<PathBuf> = None;
         let result = match current_writer {
             StreamingRawPayloadWriterState::Buffer(mut buffer) => {

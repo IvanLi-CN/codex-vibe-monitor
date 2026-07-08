@@ -1,11 +1,11 @@
-use crate::*;
+use super::*;
 
-const STATS_SUCCESS_LIKE_SQL: &str = "(LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') OR (LOWER(TRIM(COALESCE(status, ''))) = 'http_200' AND TRIM(COALESCE(error_message, '')) = ''))";
-const STATS_TERMINAL_STATUS_SQL: &str =
+pub(crate) const STATS_SUCCESS_LIKE_SQL: &str = "(LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') OR (LOWER(TRIM(COALESCE(status, ''))) = 'http_200' AND TRIM(COALESCE(error_message, '')) = ''))";
+pub(crate) const STATS_TERMINAL_STATUS_SQL: &str =
     "(LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending'))";
 pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET: &str =
     "codex_invocations_summary_rollup_v2_live_cursor";
-const MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX: &str =
+pub(crate) const MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX: &str =
     "completed invocation archive is missing during summary rollup repair";
 
 #[derive(Debug)]
@@ -31,7 +31,7 @@ pub(crate) fn stats_success_failure_select_sql() -> String {
     )
 }
 
-fn is_missing_invocation_summary_archive_error(err: &anyhow::Error) -> bool {
+pub(crate) fn is_missing_invocation_summary_archive_error(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
             .to_string()
@@ -39,7 +39,7 @@ fn is_missing_invocation_summary_archive_error(err: &anyhow::Error) -> bool {
     })
 }
 
-fn is_unreadable_invocation_summary_archive_error(err: &anyhow::Error) -> bool {
+pub(crate) fn is_unreadable_invocation_summary_archive_error(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         let message = cause.to_string();
         message.contains("failed to decompress archive batch ")
@@ -179,7 +179,7 @@ pub(crate) fn add_approx_histogram_sample(counts: &mut ApproxHistogramCounts, va
     }
 }
 
-fn subtract_approx_histogram_sample(counts: &mut ApproxHistogramCounts, value_ms: f64) {
+pub(crate) fn subtract_approx_histogram_sample(counts: &mut ApproxHistogramCounts, value_ms: f64) {
     if !value_ms.is_finite() || value_ms < 0.0 {
         return;
     }
@@ -958,7 +958,7 @@ pub(crate) async fn query_upstream_account_stats_row(
 }
 
 #[derive(Debug, FromRow)]
-struct ArchiveBatchPathRow {
+pub(crate) struct ArchiveBatchPathRow {
     file_path: String,
     month_key: Option<String>,
     coverage_start_at: Option<String>,
@@ -981,7 +981,7 @@ pub(crate) struct ArchivedInvocationFailureRow {
 }
 
 #[derive(Debug, Default)]
-struct ClearedSummaryRollupBuckets {
+pub(crate) struct ClearedSummaryRollupBuckets {
     overall: HashSet<(i64, String)>,
     failures: HashSet<(i64, String)>,
 }
@@ -1007,14 +1007,15 @@ impl ClearedSummaryRollupBuckets {
     }
 }
 
-const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET: &str = "codex_invocations_summary_rollup_v2";
-const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE: i64 = 1;
-const INVOCATION_SUMMARY_ROLLUP_TARGETS: [&str; 2] = [
+pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET: &str =
+    "codex_invocations_summary_rollup_v2";
+pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE: i64 = 1;
+pub(crate) const INVOCATION_SUMMARY_ROLLUP_TARGETS: [&str; 2] = [
     HOURLY_ROLLUP_TARGET_INVOCATIONS,
     HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
 ];
 
-async fn load_invocation_hourly_source_rows_after_id(
+pub(crate) async fn load_invocation_hourly_source_rows_after_id(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     start_after_id: i64,
     source_scope: InvocationSourceScope,
@@ -1062,7 +1063,7 @@ async fn load_invocation_hourly_source_rows_after_id(
         .map_err(Into::into)
 }
 
-async fn load_live_invocation_ids_after_id(
+pub(crate) async fn load_live_invocation_ids_after_id(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     source_scope: InvocationSourceScope,
     start_after_id: i64,
@@ -1091,7 +1092,7 @@ async fn load_live_invocation_ids_after_id(
         .collect())
 }
 
-async fn load_completed_invocation_archive_paths(
+pub(crate) async fn load_completed_invocation_archive_paths(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
 ) -> Result<Vec<ArchiveBatchPathRow>> {
     sqlx::query_as::<_, ArchiveBatchPathRow>(
@@ -1116,7 +1117,7 @@ async fn load_completed_invocation_archive_paths(
     .map_err(Into::into)
 }
 
-async fn load_invocation_archives_missing_rollup_target(
+pub(crate) async fn load_invocation_archives_missing_rollup_target(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     target: &str,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
@@ -1187,7 +1188,7 @@ async fn load_invocation_archives_missing_rollup_target(
         .map_err(Into::into)
 }
 
-fn account_archive_target_treats_materialized_batch_as_replayed(target: &str) -> bool {
+pub(crate) fn account_archive_target_treats_materialized_batch_as_replayed(target: &str) -> bool {
     matches!(
         target,
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE
@@ -1196,7 +1197,7 @@ fn account_archive_target_treats_materialized_batch_as_replayed(target: &str) ->
     )
 }
 
-async fn load_completed_invocation_archive_paths_in_range(
+pub(crate) async fn load_completed_invocation_archive_paths_in_range(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Vec<ArchiveBatchPathRow>> {
@@ -1270,7 +1271,7 @@ pub(crate) async fn load_completed_invocation_archives_in_range(
     )
 }
 
-async fn load_invocation_archives_missing_effective_rollup_target(
+pub(crate) async fn load_invocation_archives_missing_effective_rollup_target(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     target: &str,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
@@ -1286,7 +1287,7 @@ async fn load_invocation_archives_missing_effective_rollup_target(
         .collect())
 }
 
-async fn load_invocation_archives_missing_summary_rollup_markers(
+pub(crate) async fn load_invocation_archives_missing_summary_rollup_markers(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
 ) -> Result<Vec<ArchiveBatchPathRow>> {
     sqlx::query_as::<_, ArchiveBatchPathRow>(
@@ -1347,7 +1348,7 @@ async fn load_invocation_archives_missing_summary_rollup_markers(
     .map_err(Into::into)
 }
 
-async fn open_invocation_archive_batch_pool(
+pub(crate) async fn open_invocation_archive_batch_pool(
     archive_row: &ArchiveBatchPathRow,
     read_surface: &'static str,
 ) -> Result<Option<(Pool<Sqlite>, TempSqliteCleanup)>> {
@@ -1412,7 +1413,7 @@ async fn open_invocation_archive_batch_pool(
     Ok(Some((archive_pool, temp_cleanup)))
 }
 
-async fn query_upstream_account_invocation_preview_rows_from_executor<'e, E>(
+pub(crate) async fn query_upstream_account_invocation_preview_rows_from_executor<'e, E>(
     executor: E,
     range: ExactUtcRange,
     source_scope: InvocationSourceScope,
@@ -1534,20 +1535,20 @@ pub(crate) async fn query_completed_invocation_archive_preview_rows(
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct MaterializedBucketRow {
+pub(crate) struct MaterializedBucketRow {
     bucket_start_epoch: i64,
     source: String,
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct ReplayedInvocationArchiveRow {
+pub(crate) struct ReplayedInvocationArchiveRow {
     file_path: String,
     month_key: String,
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
 }
 
-async fn load_materialized_rollup_bucket_sources(
+pub(crate) async fn load_materialized_rollup_bucket_sources(
     pool: &Pool<Sqlite>,
     target: &str,
     bucket_sources: &HashSet<(i64, String)>,
@@ -1589,7 +1590,7 @@ async fn load_materialized_rollup_bucket_sources(
         .collect())
 }
 
-fn shanghai_month_keys_for_bucket_starts(
+pub(crate) fn shanghai_month_keys_for_bucket_starts(
     bucket_start_epochs: impl IntoIterator<Item = i64>,
 ) -> HashSet<String> {
     bucket_start_epochs
@@ -1602,13 +1603,13 @@ fn shanghai_month_keys_for_bucket_starts(
         .collect()
 }
 
-fn shanghai_month_key_for_bucket_start(bucket_start_epoch: i64) -> Option<String> {
+pub(crate) fn shanghai_month_key_for_bucket_start(bucket_start_epoch: i64) -> Option<String> {
     Utc.timestamp_opt(bucket_start_epoch, 0)
         .single()
         .map(|dt| dt.with_timezone(&Shanghai).format("%Y-%m").to_string())
 }
 
-fn shanghai_month_bucket_start_epochs(month_key: &str) -> Result<HashSet<i64>> {
+pub(crate) fn shanghai_month_bucket_start_epochs(month_key: &str) -> Result<HashSet<i64>> {
     let month_start = NaiveDate::parse_from_str(&format!("{month_key}-01"), "%Y-%m-%d")
         .with_context(|| format!("invalid archive month key: {month_key}"))?;
     let next_month_start = if month_start.month() == 12 {
@@ -1645,7 +1646,7 @@ fn shanghai_month_bucket_start_epochs(month_key: &str) -> Result<HashSet<i64>> {
     Ok(bucket_start_epochs)
 }
 
-fn archive_bucket_start_epochs_from_bounds(
+pub(crate) fn archive_bucket_start_epochs_from_bounds(
     month_key: Option<&str>,
     coverage_start_at: Option<&str>,
     coverage_end_at: Option<&str>,
@@ -1672,7 +1673,9 @@ fn archive_bucket_start_epochs_from_bounds(
         .map(|maybe_buckets| maybe_buckets.unwrap_or_default())
 }
 
-fn archive_bucket_start_epochs_for_row(archive_row: &ArchiveBatchPathRow) -> Result<HashSet<i64>> {
+pub(crate) fn archive_bucket_start_epochs_for_row(
+    archive_row: &ArchiveBatchPathRow,
+) -> Result<HashSet<i64>> {
     archive_bucket_start_epochs_from_bounds(
         archive_row.month_key.as_deref(),
         archive_row.coverage_start_at.as_deref(),
@@ -1680,7 +1683,7 @@ fn archive_bucket_start_epochs_for_row(archive_row: &ArchiveBatchPathRow) -> Res
     )
 }
 
-fn replayed_archive_bucket_start_epochs(
+pub(crate) fn replayed_archive_bucket_start_epochs(
     archive_row: &ReplayedInvocationArchiveRow,
 ) -> Result<HashSet<i64>> {
     archive_bucket_start_epochs_from_bounds(
@@ -1690,7 +1693,7 @@ fn replayed_archive_bucket_start_epochs(
     )
 }
 
-async fn load_replayed_invocation_archives_for_month_keys(
+pub(crate) async fn load_replayed_invocation_archives_for_month_keys(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     target: &str,
     month_keys: &HashSet<String>,
@@ -1744,7 +1747,7 @@ async fn load_replayed_invocation_archives_for_month_keys(
         .map_err(Into::into)
 }
 
-fn materialized_archive_path_row(
+pub(crate) fn materialized_archive_path_row(
     file_path: String,
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
@@ -1761,27 +1764,27 @@ fn materialized_archive_path_row(
 }
 
 #[derive(Debug, Default)]
-struct PendingInvocationArchiveOverallState {
+pub(crate) struct PendingInvocationArchiveOverallState {
     unmaterialized: BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
     materialized: BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
     unreadable_materialized_bucket_start_epochs: HashSet<i64>,
 }
 
 #[derive(Debug, Default)]
-struct PendingProxyPerfArchiveState {
+pub(crate) struct PendingProxyPerfArchiveState {
     unmaterialized: BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
     materialized: BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
     unreadable_materialized_bucket_start_epochs: HashSet<i64>,
 }
 
 #[derive(Debug, Default)]
-struct PendingInvocationArchiveFailureState {
+pub(crate) struct PendingInvocationArchiveFailureState {
     unmaterialized_rows: Vec<ArchivedInvocationFailureRow>,
     materialized_row_counts: HashMap<(i64, String, String, i64, String), usize>,
     unreadable_materialized_bucket_start_epochs: HashSet<i64>,
 }
 
-fn merge_invocation_hourly_rollup_delta(
+pub(crate) fn merge_invocation_hourly_rollup_delta(
     target: &mut InvocationHourlyRollupDelta,
     delta: &InvocationHourlyRollupDelta,
 ) -> Result<()> {
@@ -1821,7 +1824,7 @@ fn merge_invocation_hourly_rollup_delta(
     Ok(())
 }
 
-fn merge_invocation_hourly_rollup_delta_map(
+pub(crate) fn merge_invocation_hourly_rollup_delta_map(
     target: &mut BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
     source: &BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
 ) -> Result<()> {
@@ -1838,7 +1841,7 @@ fn merge_invocation_hourly_rollup_delta_map(
     Ok(())
 }
 
-fn merge_proxy_perf_stage_hourly_delta(
+pub(crate) fn merge_proxy_perf_stage_hourly_delta(
     target: &mut ProxyPerfStageHourlyDelta,
     delta: &ProxyPerfStageHourlyDelta,
 ) -> Result<()> {
@@ -1853,7 +1856,7 @@ fn merge_proxy_perf_stage_hourly_delta(
     Ok(())
 }
 
-fn merge_proxy_perf_stage_hourly_delta_map(
+pub(crate) fn merge_proxy_perf_stage_hourly_delta_map(
     target: &mut BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
     source: &BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
 ) -> Result<()> {
@@ -1869,7 +1872,7 @@ fn merge_proxy_perf_stage_hourly_delta_map(
     Ok(())
 }
 
-fn accumulate_failure_rollup_row_counts(
+pub(crate) fn accumulate_failure_rollup_row_counts(
     counts: &mut HashMap<(i64, String, String, i64, String), usize>,
     rows: impl IntoIterator<Item = ArchivedInvocationFailureRow>,
 ) -> Result<()> {
@@ -1882,7 +1885,7 @@ fn accumulate_failure_rollup_row_counts(
     Ok(())
 }
 
-async fn load_materialized_invocation_archive_hourly_rollup_deltas_for_bucket_sources(
+pub(crate) async fn load_materialized_invocation_archive_hourly_rollup_deltas_for_bucket_sources(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
@@ -1958,7 +1961,7 @@ async fn load_materialized_invocation_archive_hourly_rollup_deltas_for_bucket_so
     Ok((materialized, unreadable_bucket_start_epochs))
 }
 
-fn subtract_approx_histogram_counts(
+pub(crate) fn subtract_approx_histogram_counts(
     archive_histogram: &[i64],
     materialized_histogram: &[i64],
 ) -> ApproxHistogramCounts {
@@ -1972,15 +1975,15 @@ fn subtract_approx_histogram_counts(
     delta
 }
 
-fn subtract_nonnegative_i64(archive_value: i64, materialized_value: i64) -> i64 {
+pub(crate) fn subtract_nonnegative_i64(archive_value: i64, materialized_value: i64) -> i64 {
     archive_value.saturating_sub(materialized_value).max(0)
 }
 
-fn subtract_nonnegative_f64(archive_value: f64, materialized_value: f64) -> f64 {
+pub(crate) fn subtract_nonnegative_f64(archive_value: f64, materialized_value: f64) -> f64 {
     (archive_value - materialized_value).max(0.0)
 }
 
-async fn load_materialized_invocation_rollup_record(
+pub(crate) async fn load_materialized_invocation_rollup_record(
     pool: &Pool<Sqlite>,
     bucket_start_epoch: i64,
     source: &str,
@@ -2050,7 +2053,7 @@ async fn load_materialized_invocation_rollup_record(
         .map_err(Into::into)
 }
 
-fn build_invocation_hourly_rollup_delta_record(
+pub(crate) fn build_invocation_hourly_rollup_delta_record(
     bucket_start_epoch: i64,
     archive_delta: &InvocationHourlyRollupDelta,
     materialized_row: Option<&InvocationHourlyRollupRecord>,
@@ -2183,7 +2186,7 @@ fn build_invocation_hourly_rollup_delta_record(
     }))
 }
 
-fn build_materialized_pending_invocation_rollup_overlap_record(
+pub(crate) fn build_materialized_pending_invocation_rollup_overlap_record(
     bucket_start_epoch: i64,
     materialized_row: Option<&InvocationHourlyRollupRecord>,
     completed_archive_delta: Option<&InvocationHourlyRollupDelta>,
@@ -2401,7 +2404,7 @@ pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas
     Ok(delta_rows)
 }
 
-async fn load_pending_invocation_archive_hourly_rollup_deltas(
+pub(crate) async fn load_pending_invocation_archive_hourly_rollup_deltas(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
@@ -2467,7 +2470,7 @@ async fn load_pending_invocation_archive_hourly_rollup_deltas(
     Ok(pending_state)
 }
 
-fn invocation_hourly_source_record_matches_range(
+pub(crate) fn invocation_hourly_source_record_matches_range(
     row: &InvocationHourlySourceRecord,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> bool {
@@ -2480,7 +2483,7 @@ fn invocation_hourly_source_record_matches_range(
     occurred_at_utc >= start && occurred_at_utc < end
 }
 
-fn archived_failure_rollup_key(
+pub(crate) fn archived_failure_rollup_key(
     row: &ArchivedInvocationFailureRow,
 ) -> Result<Option<(i64, String, String, i64, String)>> {
     let classification = resolve_failure_classification(
@@ -2502,7 +2505,7 @@ fn archived_failure_rollup_key(
     )))
 }
 
-async fn load_missing_failure_rollup_row_counts_for_rows(
+pub(crate) async fn load_missing_failure_rollup_row_counts_for_rows(
     pool: &Pool<Sqlite>,
     rows: &[ArchivedInvocationFailureRow],
     materialized_bucket_sources: &HashSet<(i64, String)>,
@@ -2577,7 +2580,7 @@ async fn load_missing_failure_rollup_row_counts_for_rows(
     Ok(missing_counts)
 }
 
-fn add_invocation_hourly_source_record_to_proxy_perf_rollups(
+pub(crate) fn add_invocation_hourly_source_record_to_proxy_perf_rollups(
     perf: &mut BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
     row: &InvocationHourlySourceRecord,
 ) -> Result<()> {
@@ -2600,7 +2603,7 @@ fn add_invocation_hourly_source_record_to_proxy_perf_rollups(
     Ok(())
 }
 
-async fn load_materialized_proxy_perf_rollups_for_range(
+pub(crate) async fn load_materialized_proxy_perf_rollups_for_range(
     pool: &Pool<Sqlite>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -2614,7 +2617,7 @@ async fn load_materialized_proxy_perf_rollups_for_range(
     )
 }
 
-fn build_proxy_perf_stage_rollup_delta(
+pub(crate) fn build_proxy_perf_stage_rollup_delta(
     archive_delta: &ProxyPerfStageHourlyDelta,
     materialized_row: Option<&ProxyPerfStageHourlyRollupRecord>,
 ) -> Result<Option<ProxyPerfStageHourlyDelta>> {
@@ -2646,7 +2649,7 @@ fn build_proxy_perf_stage_rollup_delta(
     }))
 }
 
-fn build_materialized_pending_proxy_perf_overlap(
+pub(crate) fn build_materialized_pending_proxy_perf_overlap(
     materialized_row: Option<&ProxyPerfStageHourlyRollupRecord>,
     completed_archive_delta: Option<&ProxyPerfStageHourlyDelta>,
 ) -> Option<ProxyPerfStageHourlyRollupRecord> {
@@ -2684,7 +2687,7 @@ fn build_materialized_pending_proxy_perf_overlap(
     })
 }
 
-async fn load_proxy_perf_stage_rollups_by_materialization_state(
+pub(crate) async fn load_proxy_perf_stage_rollups_by_materialization_state(
     pool: &Pool<Sqlite>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -2748,7 +2751,7 @@ async fn load_proxy_perf_stage_rollups_by_materialization_state(
     Ok(pending_state)
 }
 
-async fn load_materialized_proxy_perf_stage_rollups_for_buckets(
+pub(crate) async fn load_materialized_proxy_perf_stage_rollups_for_buckets(
     pool: &Pool<Sqlite>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -2946,7 +2949,7 @@ pub(crate) async fn query_unmaterialized_invocation_archive_totals(
     Ok(totals)
 }
 
-fn invocation_row_counts_toward_non_success_usage(
+pub(crate) fn invocation_row_counts_toward_non_success_usage(
     status: Option<&str>,
     error_message: Option<&str>,
     failure_kind: Option<&str>,
@@ -3107,7 +3110,7 @@ pub(crate) async fn query_completed_invocation_archive_non_success_usage(
     Ok((total_cost, total_tokens))
 }
 
-fn add_account_invocation_row_to_stats_delta(
+pub(crate) fn add_account_invocation_row_to_stats_delta(
     entry: &mut UpstreamAccountStatsDelta,
     row: &InvocationHourlySourceRecord,
 ) {
@@ -3366,7 +3369,7 @@ pub(crate) async fn query_completed_upstream_account_archive_non_success_usage(
     Ok((total_cost, total_tokens))
 }
 
-async fn load_failure_rows_from_archive_pool(
+pub(crate) async fn load_failure_rows_from_archive_pool(
     archive_pool: &Pool<Sqlite>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -3513,7 +3516,7 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
         .collect())
 }
 
-async fn load_materialized_failure_rollup_row_counts_for_keys(
+pub(crate) async fn load_materialized_failure_rollup_row_counts_for_keys(
     pool: &Pool<Sqlite>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -3570,7 +3573,7 @@ async fn load_materialized_failure_rollup_row_counts_for_keys(
     Ok((counts, unreadable_bucket_start_epochs))
 }
 
-async fn rebuild_invocation_summary_rollups_from_archive_batch(
+pub(crate) async fn rebuild_invocation_summary_rollups_from_archive_batch(
     tx: &mut SqliteConnection,
     archive_row: &ArchiveBatchPathRow,
     source_scope: InvocationSourceScope,
@@ -3657,13 +3660,13 @@ async fn rebuild_invocation_summary_rollups_from_archive_batch(
     Ok(())
 }
 
-fn summary_rollup_bucket_start_epoch(occurred_at: &str) -> Result<i64> {
+pub(crate) fn summary_rollup_bucket_start_epoch(occurred_at: &str) -> Result<i64> {
     let occurred_at_utc = parse_to_utc_datetime(occurred_at)
         .ok_or_else(|| anyhow!("failed to parse invocation occurred_at: {occurred_at}"))?;
     Ok(align_bucket_epoch(occurred_at_utc.timestamp(), 3600, 0))
 }
 
-async fn delete_invocation_summary_rollup_bucket_tx(
+pub(crate) async fn delete_invocation_summary_rollup_bucket_tx(
     tx: &mut SqliteConnection,
     bucket_start_epoch: i64,
     source: &str,
@@ -3690,7 +3693,7 @@ async fn delete_invocation_summary_rollup_bucket_tx(
     Ok(())
 }
 
-async fn load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
+pub(crate) async fn load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
     tx: &mut SqliteConnection,
     cleared_rollup_buckets: &HashSet<(i64, String)>,
     source_scope: InvocationSourceScope,
@@ -3776,7 +3779,7 @@ async fn load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
         .collect())
 }
 
-async fn rebuild_invocation_summary_rollups_from_live_rows(
+pub(crate) async fn rebuild_invocation_summary_rollups_from_live_rows(
     tx: &mut SqliteConnection,
     source_scope: InvocationSourceScope,
     seen_ids: &mut HashSet<i64>,
@@ -3805,7 +3808,7 @@ async fn rebuild_invocation_summary_rollups_from_live_rows(
     Ok(cursor_id)
 }
 
-async fn mark_materialized_invocation_summary_archive_replayed_tx(
+pub(crate) async fn mark_materialized_invocation_summary_archive_replayed_tx(
     tx: &mut SqliteConnection,
     archive_row: &ArchiveBatchPathRow,
 ) -> Result<()> {
@@ -3821,7 +3824,7 @@ async fn mark_materialized_invocation_summary_archive_replayed_tx(
     Ok(())
 }
 
-async fn hourly_rollup_progress_exists(
+pub(crate) async fn hourly_rollup_progress_exists(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     dataset: &str,
 ) -> Result<bool> {
@@ -3834,7 +3837,7 @@ async fn hourly_rollup_progress_exists(
     .is_some())
 }
 
-async fn invocation_summary_repair_live_cursor_state(
+pub(crate) async fn invocation_summary_repair_live_cursor_state(
     pool: &Pool<Sqlite>,
 ) -> Result<(bool, bool, i64, i64)> {
     let repair_marker_done =
@@ -3865,7 +3868,7 @@ async fn invocation_summary_repair_live_cursor_state(
     ))
 }
 
-async fn invocation_summary_repair_live_cursor_state_tx(
+pub(crate) async fn invocation_summary_repair_live_cursor_state_tx(
     tx: &mut SqliteConnection,
 ) -> Result<(bool, bool, i64, i64)> {
     let repair_marker_done =
@@ -3896,7 +3899,7 @@ async fn invocation_summary_repair_live_cursor_state_tx(
     ))
 }
 
-async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
     let (repair_marker_done, repair_live_cursor_exists, shared_live_cursor, repair_live_cursor) =
         invocation_summary_repair_live_cursor_state(pool).await?;
     if repair_marker_done && repair_live_cursor_exists && repair_live_cursor >= shared_live_cursor {
@@ -4004,7 +4007,9 @@ async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-async fn backfill_missing_invocation_summary_archive_rollups(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
     let archive_rows = load_invocation_archives_missing_summary_rollup_markers(pool).await?;
     if archive_rows.is_empty() {
         return Ok(());
@@ -4132,12 +4137,12 @@ pub(crate) async fn ensure_invocation_summary_rollups_ready_best_effort(
     }
 }
 
-struct AllTimeRollupTotals {
+pub(crate) struct AllTimeRollupTotals {
     totals: StatsTotals,
     live_tail_ids: HashSet<i64>,
 }
 
-async fn query_invocation_all_time_rollup_totals(
+pub(crate) async fn query_invocation_all_time_rollup_totals(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
 ) -> Result<AllTimeRollupTotals> {
@@ -4325,7 +4330,7 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
         .map_err(Into::into)
 }
 
-async fn sqlite_table_has_column(
+pub(crate) async fn sqlite_table_has_column(
     pool: &Pool<Sqlite>,
     table_name: &str,
     column_name: &str,

@@ -1,19 +1,21 @@
-fn default_forward_proxy_subscription_interval_secs() -> u64 {
+use super::*;
+
+pub(crate) fn default_forward_proxy_subscription_interval_secs() -> u64 {
     DEFAULT_FORWARD_PROXY_SUBSCRIPTION_INTERVAL_SECS
 }
 
-fn default_forward_proxy_insert_direct_compat() -> bool {
+pub(crate) fn default_forward_proxy_insert_direct_compat() -> bool {
     true
 }
 
-fn decode_string_vec_json(raw: Option<&str>) -> Vec<String> {
+pub(crate) fn decode_string_vec_json(raw: Option<&str>) -> Vec<String> {
     match raw {
         Some(serialized) => serde_json::from_str::<Vec<String>>(serialized).unwrap_or_default(),
         None => Vec::new(),
     }
 }
 
-fn normalize_subscription_entries(raw_entries: Vec<String>) -> Vec<String> {
+pub(crate) fn normalize_subscription_entries(raw_entries: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut normalized = Vec::new();
     for entry in raw_entries {
@@ -33,7 +35,7 @@ fn normalize_subscription_entries(raw_entries: Vec<String>) -> Vec<String> {
     normalized
 }
 
-fn normalize_proxy_url_entries(raw_entries: Vec<String>) -> Vec<String> {
+pub(crate) fn normalize_proxy_url_entries(raw_entries: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut normalized = Vec::new();
     for entry in raw_entries {
@@ -48,7 +50,7 @@ fn normalize_proxy_url_entries(raw_entries: Vec<String>) -> Vec<String> {
     normalized
 }
 
-fn split_proxy_entry_tokens(raw: &str) -> Vec<&str> {
+pub(crate) fn split_proxy_entry_tokens(raw: &str) -> Vec<&str> {
     raw.split(['\n', ',', ';'])
         .map(str::trim)
         .filter(|token| !token.is_empty() && !token.starts_with('#'))
@@ -56,15 +58,15 @@ fn split_proxy_entry_tokens(raw: &str) -> Vec<&str> {
 }
 
 #[cfg(test)]
-fn normalize_single_proxy_url(raw: &str) -> Option<String> {
+pub(crate) fn normalize_single_proxy_url(raw: &str) -> Option<String> {
     parse_forward_proxy_entry(raw).map(|entry| entry.normalized)
 }
 
-fn normalize_single_proxy_key(raw: &str) -> Option<String> {
+pub(crate) fn normalize_single_proxy_key(raw: &str) -> Option<String> {
     parse_forward_proxy_entry(raw).map(|entry| entry.stable_key)
 }
 
-fn stable_forward_proxy_binding_key(identity: &str) -> String {
+pub(crate) fn stable_forward_proxy_binding_key(identity: &str) -> String {
     let digest = Sha256::digest(identity.as_bytes());
     let mut stable = String::from("fpb_");
     for byte in digest.iter().take(16) {
@@ -73,19 +75,19 @@ fn stable_forward_proxy_binding_key(identity: &str) -> String {
     stable
 }
 
-fn is_stable_forward_proxy_key(raw: &str) -> bool {
+pub(crate) fn is_stable_forward_proxy_key(raw: &str) -> bool {
     raw.strip_prefix("fpn_").is_some_and(|suffix| {
         suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
     })
 }
 
-fn is_stable_forward_proxy_binding_key(raw: &str) -> bool {
+pub(crate) fn is_stable_forward_proxy_binding_key(raw: &str) -> bool {
     raw.strip_prefix("fpb_").is_some_and(|suffix| {
         suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
     })
 }
 
-fn normalize_bound_proxy_key(raw: &str) -> Option<String> {
+pub(crate) fn normalize_bound_proxy_key(raw: &str) -> Option<String> {
     let normalized = raw.trim();
     if normalized.is_empty() {
         return None;
@@ -218,7 +220,10 @@ pub(crate) fn forward_proxy_storage_aliases(raw: &str) -> Option<(String, Vec<St
     Some((canonical, aliases))
 }
 
-fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<ForwardProxyEndpoint> {
+pub(crate) fn normalize_proxy_endpoints_from_urls(
+    urls: &[String],
+    source: &str,
+) -> Vec<ForwardProxyEndpoint> {
     let mut seen = HashSet::new();
     let mut endpoints = Vec::new();
     for raw in urls {
@@ -241,14 +246,14 @@ fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<For
 }
 
 #[derive(Debug, Clone)]
-struct ParsedForwardProxyEntry {
-    normalized: String,
-    stable_key: String,
-    display_name: String,
-    protocol: ForwardProxyProtocol,
-    host: String,
-    port: u16,
-    endpoint_url: Option<Url>,
+pub(crate) struct ParsedForwardProxyEntry {
+    pub(crate) normalized: String,
+    pub(crate) stable_key: String,
+    pub(crate) display_name: String,
+    pub(crate) protocol: ForwardProxyProtocol,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) endpoint_url: Option<Url>,
 }
 
 #[derive(Debug, Clone)]
@@ -258,7 +263,7 @@ pub(crate) struct ForwardProxyBindingParts {
     pub(crate) host_port: String,
 }
 
-fn parse_forward_proxy_entry(raw: &str) -> Option<ParsedForwardProxyEntry> {
+pub(crate) fn parse_forward_proxy_entry(raw: &str) -> Option<ParsedForwardProxyEntry> {
     let candidate = raw.trim();
     if candidate.is_empty() {
         return None;
@@ -280,7 +285,7 @@ fn parse_forward_proxy_entry(raw: &str) -> Option<ParsedForwardProxyEntry> {
     }
 }
 
-fn parse_native_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
+pub(crate) fn parse_native_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
     let parsed = Url::parse(candidate).ok()?;
     let raw_scheme = parsed.scheme();
     let (protocol, normalized_scheme) = match raw_scheme {
@@ -326,7 +331,7 @@ fn parse_native_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry
     })
 }
 
-fn parse_vmess_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
+pub(crate) fn parse_vmess_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
     let normalized = normalize_share_link_scheme(candidate, "vmess")?;
     let parsed = parse_vmess_share_link(&normalized).ok()?;
     Some(ParsedForwardProxyEntry {
@@ -340,7 +345,7 @@ fn parse_vmess_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry>
     })
 }
 
-fn parse_vless_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
+pub(crate) fn parse_vless_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
     let normalized = normalize_share_link_scheme(candidate, "vless")?;
     let parsed = Url::parse(&normalized).ok()?;
     let host = parsed.host_str()?;
@@ -358,7 +363,7 @@ fn parse_vless_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry>
     })
 }
 
-fn parse_trojan_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
+pub(crate) fn parse_trojan_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
     let normalized = normalize_share_link_scheme(candidate, "trojan")?;
     let parsed = Url::parse(&normalized).ok()?;
     let host = parsed.host_str()?;
@@ -376,7 +381,7 @@ fn parse_trojan_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry
     })
 }
 
-fn parse_shadowsocks_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
+pub(crate) fn parse_shadowsocks_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
     let normalized = normalize_share_link_scheme(candidate, "ss")?;
     let parsed = parse_shadowsocks_share_link(&normalized).ok()?;
     Some(ParsedForwardProxyEntry {
@@ -393,7 +398,7 @@ fn parse_shadowsocks_forward_proxy(candidate: &str) -> Option<ParsedForwardProxy
     })
 }
 
-fn canonical_host_port_string(host: &str, port: u16) -> String {
+pub(crate) fn canonical_host_port_string(host: &str, port: u16) -> String {
     let normalized_host = host.trim().to_ascii_lowercase();
     if normalized_host.contains(':') {
         format!("[{normalized_host}]:{port}")
@@ -439,7 +444,7 @@ pub(crate) fn forward_proxy_binding_key_candidates(
     ]
 }
 
-fn proxy_display_name_from_url(url: &Url) -> Option<String> {
+pub(crate) fn proxy_display_name_from_url(url: &Url) -> Option<String> {
     if let Some(fragment) = url.fragment()
         && !fragment.trim().is_empty()
     {
@@ -450,7 +455,7 @@ fn proxy_display_name_from_url(url: &Url) -> Option<String> {
     Some(format!("{host}:{port}"))
 }
 
-fn normalize_share_link_scheme(candidate: &str, scheme: &str) -> Option<String> {
+pub(crate) fn normalize_share_link_scheme(candidate: &str, scheme: &str) -> Option<String> {
     let (_, remainder) = candidate.split_once("://")?;
     let normalized = format!("{scheme}://{}", remainder.trim());
     if normalized.len() <= scheme.len() + 3 {
@@ -459,7 +464,7 @@ fn normalize_share_link_scheme(candidate: &str, scheme: &str) -> Option<String> 
     Some(normalized)
 }
 
-fn stable_forward_proxy_key(identity: &str) -> String {
+pub(crate) fn stable_forward_proxy_key(identity: &str) -> String {
     let digest = Sha256::digest(identity.as_bytes());
     let mut stable = String::from("fpn_");
     for byte in digest.iter().take(16) {
@@ -468,7 +473,7 @@ fn stable_forward_proxy_key(identity: &str) -> String {
     stable
 }
 
-fn push_canonical_host_port(identity: &mut String, host: &str, port: u16) {
+pub(crate) fn push_canonical_host_port(identity: &mut String, host: &str, port: u16) {
     if host.contains(':') {
         identity.push('[');
         identity.push_str(host);
@@ -480,21 +485,24 @@ fn push_canonical_host_port(identity: &mut String, host: &str, port: u16) {
     identity.push_str(&port.to_string());
 }
 
-fn normalized_query_value(query: &HashMap<String, String>, keys: &[&str]) -> Option<String> {
+pub(crate) fn normalized_query_value(
+    query: &HashMap<String, String>,
+    keys: &[&str],
+) -> Option<String> {
     keys.iter()
         .find_map(|key| query.get(*key))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }
 
-fn normalized_query_ascii_lowercase(
+pub(crate) fn normalized_query_ascii_lowercase(
     query: &HashMap<String, String>,
     keys: &[&str],
 ) -> Option<String> {
     normalized_query_value(query, keys).map(|value| value.to_ascii_lowercase())
 }
 
-fn sorted_query_pairs(url: &Url) -> Vec<(String, String)> {
+pub(crate) fn sorted_query_pairs(url: &Url) -> Vec<(String, String)> {
     let mut query_pairs = url
         .query_pairs()
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
@@ -503,7 +511,7 @@ fn sorted_query_pairs(url: &Url) -> Vec<(String, String)> {
     query_pairs
 }
 
-fn canonical_query_string(query_pairs: Vec<(String, String)>) -> String {
+pub(crate) fn canonical_query_string(query_pairs: Vec<(String, String)>) -> String {
     query_pairs
         .into_iter()
         .map(|(key, value)| format!("{key}={value}"))
@@ -512,13 +520,13 @@ fn canonical_query_string(query_pairs: Vec<(String, String)>) -> String {
 }
 
 #[derive(Clone, Copy)]
-struct LegacyDefaultQueryParamSpec {
-    keys: &'static [&'static str],
-    explicit_keys: &'static [&'static str],
-    default_value: Option<&'static str>,
+pub(crate) struct LegacyDefaultQueryParamSpec {
+    pub(crate) keys: &'static [&'static str],
+    pub(crate) explicit_keys: &'static [&'static str],
+    pub(crate) default_value: Option<&'static str>,
 }
 
-fn build_legacy_query_param_variant_choices(
+pub(crate) fn build_legacy_query_param_variant_choices(
     matching_pairs: &[(String, String)],
     spec: &LegacyDefaultQueryParamSpec,
 ) -> Option<Vec<Vec<(String, String)>>> {
@@ -558,7 +566,7 @@ fn build_legacy_query_param_variant_choices(
     Some(choices)
 }
 
-fn legacy_share_link_identity_variants(
+pub(crate) fn legacy_share_link_identity_variants(
     url: &Url,
     default_specs: &[LegacyDefaultQueryParamSpec],
 ) -> Vec<String> {
@@ -616,7 +624,7 @@ fn legacy_share_link_identity_variants(
         .collect()
 }
 
-fn canonical_stream_query_pairs(
+pub(crate) fn canonical_stream_query_pairs(
     url: &Url,
     default_security: Option<&str>,
     consumed_keys: &mut HashSet<&'static str>,
@@ -748,7 +756,7 @@ fn canonical_stream_query_pairs(
     query_pairs
 }
 
-fn canonical_stream_identity_from_url(
+pub(crate) fn canonical_stream_identity_from_url(
     url: &Url,
     default_security: Option<&str>,
     consumed_keys: &mut HashSet<&'static str>,
@@ -760,7 +768,7 @@ fn canonical_stream_identity_from_url(
     ))
 }
 
-fn canonical_vless_share_link_identity(url: &Url) -> String {
+pub(crate) fn canonical_vless_share_link_identity(url: &Url) -> String {
     let user_id = percent_decode_once_lossy(url.username());
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     let port = url.port_or_known_default().unwrap_or_default();
@@ -790,7 +798,7 @@ fn canonical_vless_share_link_identity(url: &Url) -> String {
     identity
 }
 
-fn canonical_trojan_share_link_identity(url: &Url) -> String {
+pub(crate) fn canonical_trojan_share_link_identity(url: &Url) -> String {
     let password = percent_decode_once_lossy(url.username());
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     let port = url.port_or_known_default().unwrap_or_default();
@@ -808,11 +816,14 @@ fn canonical_trojan_share_link_identity(url: &Url) -> String {
     identity
 }
 
-fn canonical_share_link_identity(url: &Url) -> String {
+pub(crate) fn canonical_share_link_identity(url: &Url) -> String {
     share_link_identity_with_query_pairs(url, sorted_query_pairs(url))
 }
 
-fn share_link_identity_with_query_pairs(url: &Url, query_pairs: Vec<(String, String)>) -> String {
+pub(crate) fn share_link_identity_with_query_pairs(
+    url: &Url,
+    query_pairs: Vec<(String, String)>,
+) -> String {
     let scheme = url.scheme().to_ascii_lowercase();
     let username = percent_decode_once_lossy(url.username());
     let password = url.password().map(percent_decode_once_lossy);
@@ -849,7 +860,7 @@ fn share_link_identity_with_query_pairs(url: &Url, query_pairs: Vec<(String, Str
     identity
 }
 
-fn decode_base64_any(raw: &str) -> Option<Vec<u8>> {
+pub(crate) fn decode_base64_any(raw: &str) -> Option<Vec<u8>> {
     let compact = raw
         .chars()
         .filter(|ch| !ch.is_ascii_whitespace())
@@ -870,30 +881,30 @@ fn decode_base64_any(raw: &str) -> Option<Vec<u8>> {
     None
 }
 
-fn decode_base64_string(raw: &str) -> Option<String> {
+pub(crate) fn decode_base64_string(raw: &str) -> Option<String> {
     decode_base64_any(raw).and_then(|bytes| String::from_utf8(bytes).ok())
 }
 
 #[derive(Debug, Clone)]
-struct VmessShareLink {
-    address: String,
-    port: u16,
-    id: String,
-    alter_id: u32,
-    security: String,
-    network: String,
-    host: Option<String>,
-    path: Option<String>,
-    tls_mode: Option<String>,
-    sni: Option<String>,
-    alpn: Option<Vec<String>>,
-    fingerprint: Option<String>,
-    header_type: Option<String>,
-    service_name: Option<String>,
-    authority: Option<String>,
-    mode: Option<String>,
-    seed: Option<String>,
-    display_name: String,
+pub(crate) struct VmessShareLink {
+    pub(crate) address: String,
+    pub(crate) port: u16,
+    pub(crate) id: String,
+    pub(crate) alter_id: u32,
+    pub(crate) security: String,
+    pub(crate) network: String,
+    pub(crate) host: Option<String>,
+    pub(crate) path: Option<String>,
+    pub(crate) tls_mode: Option<String>,
+    pub(crate) sni: Option<String>,
+    pub(crate) alpn: Option<Vec<String>>,
+    pub(crate) fingerprint: Option<String>,
+    pub(crate) header_type: Option<String>,
+    pub(crate) service_name: Option<String>,
+    pub(crate) authority: Option<String>,
+    pub(crate) mode: Option<String>,
+    pub(crate) seed: Option<String>,
+    pub(crate) display_name: String,
 }
 
 impl VmessShareLink {
@@ -947,7 +958,7 @@ impl VmessShareLink {
     }
 }
 
-fn parse_vmess_share_link(raw: &str) -> Result<VmessShareLink> {
+pub(crate) fn parse_vmess_share_link(raw: &str) -> Result<VmessShareLink> {
     let payload = raw
         .strip_prefix("vmess://")
         .ok_or_else(|| anyhow!("invalid vmess share link"))?;
@@ -1082,7 +1093,7 @@ fn parse_vmess_share_link(raw: &str) -> Result<VmessShareLink> {
     })
 }
 
-fn parse_u32_value(value: Option<&Value>) -> Option<u32> {
+pub(crate) fn parse_u32_value(value: Option<&Value>) -> Option<u32> {
     match value {
         Some(Value::Number(num)) => num.as_u64().and_then(|v| u32::try_from(v).ok()),
         Some(Value::String(raw)) => raw.trim().parse::<u32>().ok(),
@@ -1090,7 +1101,7 @@ fn parse_u32_value(value: Option<&Value>) -> Option<u32> {
     }
 }
 
-fn parse_port_value(value: Option<&Value>) -> Option<u16> {
+pub(crate) fn parse_port_value(value: Option<&Value>) -> Option<u16> {
     match value {
         Some(Value::Number(num)) => num.as_u64().and_then(|v| u16::try_from(v).ok()),
         Some(Value::String(raw)) => raw.trim().parse::<u16>().ok(),
@@ -1099,12 +1110,12 @@ fn parse_port_value(value: Option<&Value>) -> Option<u16> {
 }
 
 #[derive(Debug, Clone)]
-struct ShadowsocksShareLink {
-    method: String,
-    password: String,
-    host: String,
-    port: u16,
-    display_name: String,
+pub(crate) struct ShadowsocksShareLink {
+    pub(crate) method: String,
+    pub(crate) password: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) display_name: String,
 }
 
 impl ShadowsocksShareLink {
@@ -1119,7 +1130,7 @@ impl ShadowsocksShareLink {
     }
 }
 
-fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShareLink> {
+pub(crate) fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShareLink> {
     let normalized = raw
         .strip_prefix("ss://")
         .ok_or_else(|| anyhow!("invalid shadowsocks share link"))?;
@@ -1206,7 +1217,7 @@ fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShareLink> {
     })
 }
 
-fn split_once_first(raw: &str, delimiter: char) -> (&str, Option<&str>) {
+pub(crate) fn split_once_first(raw: &str, delimiter: char) -> (&str, Option<&str>) {
     if let Some((lhs, rhs)) = raw.split_once(delimiter) {
         (lhs, Some(rhs))
     } else {
@@ -1214,7 +1225,7 @@ fn split_once_first(raw: &str, delimiter: char) -> (&str, Option<&str>) {
     }
 }
 
-fn parse_alpn_csv(raw: &str) -> Vec<String> {
+pub(crate) fn parse_alpn_csv(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1222,7 +1233,7 @@ fn parse_alpn_csv(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn deterministic_unit_f64(seed: u64) -> f64 {
+pub(crate) fn deterministic_unit_f64(seed: u64) -> f64 {
     let mut value = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
     value ^= value >> 33;
     value = value.wrapping_mul(0xff51afd7ed558ccd);

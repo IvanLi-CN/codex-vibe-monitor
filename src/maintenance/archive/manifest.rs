@@ -1,4 +1,7 @@
 use super::*;
+use anyhow::{anyhow, bail};
+use sqlx::FromRow;
+use tracing::warn;
 
 pub(crate) async fn refresh_archive_upstream_activity_manifest(
     pool: &Pool<Sqlite>,
@@ -358,7 +361,9 @@ pub(crate) async fn mark_archive_backfill_completed_for_accounts_tx(
     Ok(())
 }
 
-pub(crate) async fn count_upstream_accounts_missing_last_activity(pool: &Pool<Sqlite>) -> Result<u64> {
+pub(crate) async fn count_upstream_accounts_missing_last_activity(
+    pool: &Pool<Sqlite>,
+) -> Result<u64> {
     Ok(sqlx::query_scalar::<_, i64>(
         r#"
             SELECT COUNT(*)
@@ -372,7 +377,9 @@ pub(crate) async fn count_upstream_accounts_missing_last_activity(pool: &Pool<Sq
     .max(0) as u64)
 }
 
-pub(crate) async fn count_upstream_accounts_missing_live_last_activity(pool: &Pool<Sqlite>) -> Result<u64> {
+pub(crate) async fn count_upstream_accounts_missing_live_last_activity(
+    pool: &Pool<Sqlite>,
+) -> Result<u64> {
     Ok(sqlx::query_scalar::<_, i64>(
         r#"
             SELECT COUNT(*)

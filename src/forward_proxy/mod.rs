@@ -1,8 +1,12 @@
-// Thin forward-proxy entry for reviewability; behavior is preserved via include! slices.
+use super::*;
 
-// DB storage and hourly aggregation queries.
-include!("slices/storage_and_hourly_stats.rs");
-// Settings/update/validation handlers and runtime sync helpers.
-include!("slices/settings_validation_and_runtime_sync.rs");
-// ForwardProxy manager core, xray wiring, response shapes, and in-module tests.
-include!("slices/manager_xray_types_and_tests.rs");
+#[path = "slices/manager_xray_types_and_tests.rs"]
+mod manager_xray_types_and_tests;
+#[path = "slices/settings_validation_and_runtime_sync.rs"]
+mod settings_validation_and_runtime_sync;
+#[path = "slices/storage_and_hourly_stats.rs"]
+mod storage_and_hourly_stats;
+
+pub(crate) use manager_xray_types_and_tests::*;
+pub(crate) use settings_validation_and_runtime_sync::*;
+pub(crate) use storage_and_hourly_stats::*;

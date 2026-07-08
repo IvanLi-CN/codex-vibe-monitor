@@ -1,4 +1,11 @@
 use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
 
 pub(crate) struct PromptCacheConversationHydrationSnapshot<'a> {
     pub(crate) snapshot_upper_bound: &'a str,
@@ -95,10 +102,8 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         .map(|row| row.prompt_cache_key.clone())
         .collect::<Vec<_>>();
     let recent_invocation_limit = match detail_level {
-        PromptCacheConversationDetailLevel::Full => {
-            recent_invocation_limit
-                .unwrap_or(PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT as i64)
-        }
+        PromptCacheConversationDetailLevel::Full => recent_invocation_limit
+            .unwrap_or(PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT as i64),
         PromptCacheConversationDetailLevel::Compact => recent_invocation_limit.unwrap_or(2),
     };
 
@@ -383,7 +388,11 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
     if elapsed_ms >= 250 {
         tracing::warn!(
             endpoint = "/api/prompt-cache/conversations",
-            window = if snapshot.is_some() { "snapshot" } else { "live" },
+            window = if snapshot.is_some() {
+                "snapshot"
+            } else {
+                "live"
+            },
             ?source_scope,
             selected_key_count = selected_keys.len() as i64,
             row_count = conversations.len() as i64,
@@ -394,7 +403,11 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
     } else {
         tracing::debug!(
             endpoint = "/api/prompt-cache/conversations",
-            window = if snapshot.is_some() { "snapshot" } else { "live" },
+            window = if snapshot.is_some() {
+                "snapshot"
+            } else {
+                "live"
+            },
             ?source_scope,
             selected_key_count = selected_keys.len() as i64,
             row_count = conversations.len() as i64,
@@ -407,18 +420,26 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
     Ok(conversations)
 }
 
-fn overlay_runtime_prompt_cache_invocation_previews(
-    grouped_recent_invocations: &mut HashMap<String, Vec<PromptCacheConversationInvocationPreviewResponse>>,
+pub(crate) fn overlay_runtime_prompt_cache_invocation_previews(
+    grouped_recent_invocations: &mut HashMap<
+        String,
+        Vec<PromptCacheConversationInvocationPreviewResponse>,
+    >,
     runtime_overlay_records: &[ApiInvocation],
     selected_keys: &[String],
     recent_invocation_limit: i64,
 ) {
-    if runtime_overlay_records.is_empty() || selected_keys.is_empty() || recent_invocation_limit <= 0 {
+    if runtime_overlay_records.is_empty()
+        || selected_keys.is_empty()
+        || recent_invocation_limit <= 0
+    {
         return;
     }
     let selected_keys = selected_keys.iter().collect::<HashSet<_>>();
     for record in runtime_overlay_records {
-        let Some(prompt_cache_key) = normalize_trimmed_optional_string(record.prompt_cache_key.clone()) else {
+        let Some(prompt_cache_key) =
+            normalize_trimmed_optional_string(record.prompt_cache_key.clone())
+        else {
             continue;
         };
         if !selected_keys.contains(&prompt_cache_key) {
@@ -449,7 +470,7 @@ fn overlay_runtime_prompt_cache_invocation_previews(
     }
 }
 
-fn prompt_cache_invocation_preview_from_runtime_record(
+pub(crate) fn prompt_cache_invocation_preview_from_runtime_record(
     record: &ApiInvocation,
     prompt_cache_key: String,
 ) -> PromptCacheConversationInvocationPreviewResponse {
@@ -475,7 +496,9 @@ fn prompt_cache_invocation_preview_from_runtime_record(
         cost: record.cost,
         proxy_display_name: normalize_trimmed_optional_string(record.proxy_display_name.clone()),
         upstream_account_id: record.upstream_account_id,
-        upstream_account_name: normalize_trimmed_optional_string(record.upstream_account_name.clone()),
+        upstream_account_name: normalize_trimmed_optional_string(
+            record.upstream_account_name.clone(),
+        ),
         upstream_account_plan_type: None,
         endpoint: normalize_trimmed_optional_string(record.endpoint.clone()),
         compaction_request_kind: normalize_trimmed_optional_string(
@@ -520,7 +543,7 @@ fn prompt_cache_invocation_preview_from_runtime_record(
     }
 }
 
-fn resolve_prompt_cache_conversation_chart_range_start(
+pub(crate) fn resolve_prompt_cache_conversation_chart_range_start(
     range_end: DateTime<Utc>,
     earliest_created_at: Option<&str>,
 ) -> String {
@@ -535,7 +558,7 @@ fn resolve_prompt_cache_conversation_chart_range_start(
     format_utc_iso(chart_start)
 }
 
-fn normalize_trimmed_optional_string(raw: Option<String>) -> Option<String> {
+pub(crate) fn normalize_trimmed_optional_string(raw: Option<String>) -> Option<String> {
     raw.and_then(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -566,7 +589,9 @@ pub(crate) fn prompt_cache_invocation_preview_from_row(
         proxy_display_name: normalize_trimmed_optional_string(row.proxy_display_name),
         upstream_account_id: row.upstream_account_id,
         upstream_account_name: normalize_trimmed_optional_string(row.upstream_account_name),
-        upstream_account_plan_type: normalize_trimmed_optional_string(row.upstream_account_plan_type),
+        upstream_account_plan_type: normalize_trimmed_optional_string(
+            row.upstream_account_plan_type,
+        ),
         endpoint: normalize_trimmed_optional_string(row.endpoint),
         compaction_request_kind: normalize_trimmed_optional_string(row.compaction_request_kind),
         compaction_response_kind: normalize_trimmed_optional_string(row.compaction_response_kind),
@@ -582,9 +607,7 @@ pub(crate) fn prompt_cache_invocation_preview_from_row(
         downstream_error_message: normalize_trimmed_optional_string(row.downstream_error_message),
         failure_kind: normalize_trimmed_optional_string(row.failure_kind),
         is_actionable: row.is_actionable.map(|value| value != 0),
-        response_content_encoding: normalize_trimmed_optional_string(
-            row.response_content_encoding,
-        ),
+        response_content_encoding: normalize_trimmed_optional_string(row.response_content_encoding),
         transport: normalize_trimmed_optional_string(row.transport),
         requested_service_tier: normalize_trimmed_optional_string(row.requested_service_tier),
         service_tier: normalize_trimmed_optional_string(row.service_tier),
@@ -620,7 +643,9 @@ pub(crate) fn upstream_account_invocation_preview_from_row(
         proxy_display_name: normalize_trimmed_optional_string(row.proxy_display_name),
         upstream_account_id: row.upstream_account_id,
         upstream_account_name: normalize_trimmed_optional_string(row.upstream_account_name),
-        upstream_account_plan_type: normalize_trimmed_optional_string(row.upstream_account_plan_type),
+        upstream_account_plan_type: normalize_trimmed_optional_string(
+            row.upstream_account_plan_type,
+        ),
         endpoint: normalize_trimmed_optional_string(row.endpoint),
         compaction_request_kind: normalize_trimmed_optional_string(row.compaction_request_kind),
         compaction_response_kind: normalize_trimmed_optional_string(row.compaction_response_kind),
@@ -636,9 +661,7 @@ pub(crate) fn upstream_account_invocation_preview_from_row(
         downstream_error_message: normalize_trimmed_optional_string(row.downstream_error_message),
         failure_kind: normalize_trimmed_optional_string(row.failure_kind),
         is_actionable: row.is_actionable.map(|value| value != 0),
-        response_content_encoding: normalize_trimmed_optional_string(
-            row.response_content_encoding,
-        ),
+        response_content_encoding: normalize_trimmed_optional_string(row.response_content_encoding),
         transport: normalize_trimmed_optional_string(row.transport),
         requested_service_tier: normalize_trimmed_optional_string(row.requested_service_tier),
         service_tier: normalize_trimmed_optional_string(row.service_tier),
@@ -654,7 +677,7 @@ pub(crate) fn upstream_account_invocation_preview_from_row(
     }
 }
 
-fn resolve_prompt_cache_upstream_account_label(
+pub(crate) fn resolve_prompt_cache_upstream_account_label(
     upstream_account_name: Option<&str>,
     upstream_account_id: Option<i64>,
 ) -> String {
@@ -670,7 +693,7 @@ fn resolve_prompt_cache_upstream_account_label(
     "—".to_string()
 }
 
-fn resolve_prompt_cache_upstream_account_group_key(
+pub(crate) fn resolve_prompt_cache_upstream_account_group_key(
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<&str>,
 ) -> String {

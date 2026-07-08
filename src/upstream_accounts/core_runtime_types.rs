@@ -1,3 +1,5 @@
+use super::*;
+
 use crate::oauth_bridge::oauth_codex_upstream_base_url;
 use aes_gcm::{
     Aes256Gcm,
@@ -34,7 +36,8 @@ pub(crate) const ENV_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS: &str =
     "UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS";
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL: &str =
     "UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL";
-pub(crate) const ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY: &str = "UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY";
+pub(crate) const ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY: &str =
+    "UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY";
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN: &str =
     "UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN";
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN: &str =
@@ -56,126 +59,133 @@ pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS: u64 = 15 * 60
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS: u64 = 30;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_SECONDARY_SYNC_INTERVAL_SECS: u64 = 30 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_PRIORITY_AVAILABLE_ACCOUNT_CAP: usize = 100;
-const DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM: usize = 4;
-const DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS: u64 = 60 * 60;
-const DEFAULT_MANUAL_OAUTH_CALLBACK_PORT: u16 = 1455;
-const MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS: u64 = 60;
-const UPSTREAM_ACCOUNT_MAINTENANCE_TICK_SECS: u64 = 60;
-const UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS: i64 = 6 * 60 * 60;
-const OAUTH_MAILBOX_SOURCE_GENERATED: &str = "generated";
-const OAUTH_MAILBOX_SOURCE_ATTACHED: &str = "attached";
+pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM: usize = 4;
+pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS: u64 = 60 * 60;
+pub(crate) const DEFAULT_MANUAL_OAUTH_CALLBACK_PORT: u16 = 1455;
+pub(crate) const MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS: u64 = 60;
+pub(crate) const UPSTREAM_ACCOUNT_MAINTENANCE_TICK_SECS: u64 = 60;
+pub(crate) const UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS: i64 = 6 * 60 * 60;
+pub(crate) const OAUTH_MAILBOX_SOURCE_GENERATED: &str = "generated";
+pub(crate) const OAUTH_MAILBOX_SOURCE_ATTACHED: &str = "attached";
 
-const UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX: &str = "oauth_codex";
-const UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX: &str = "api_key_codex";
-const UPSTREAM_ACCOUNT_PROVIDER_CODEX: &str = "codex";
+pub(crate) const UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX: &str = "oauth_codex";
+pub(crate) const UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX: &str = "api_key_codex";
+pub(crate) const UPSTREAM_ACCOUNT_PROVIDER_CODEX: &str = "codex";
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME: &str = "未分组";
-const UPSTREAM_ACCOUNT_STATUS_ACTIVE: &str = "active";
-const UPSTREAM_ACCOUNT_STATUS_SYNCING: &str = "syncing";
-const UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH: &str = "needs_reauth";
-const UPSTREAM_ACCOUNT_STATUS_ERROR: &str = "error";
-const UPSTREAM_ACCOUNT_STATUS_DISABLED: &str = "disabled";
-const UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED: &str = "enabled";
-const UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED: &str = "disabled";
-const UPSTREAM_ACCOUNT_WORK_STATUS_WORKING: &str = "working";
-const UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED: &str = "degraded";
-const UPSTREAM_ACCOUNT_WORK_STATUS_IDLE: &str = "idle";
-const UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED: &str = "rate_limited";
-const UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE: &str = "unavailable";
-const UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL: &str = "normal";
-const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE: &str = "upstream_unavailable";
-const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED: &str = "upstream_rejected";
-const UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER: &str = "error_other";
-const UPSTREAM_ACCOUNT_SYNC_STATE_IDLE: &str = "idle";
-const UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING: &str = "syncing";
-const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovered";
-const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
-const UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE: &str = "route_retryable_failure";
-const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
-const UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED: &str = "status_change_suppressed";
-const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
-const UPSTREAM_ACCOUNT_ACTION_SYNC_DEFERRED: &str = "sync_deferred";
-const UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE: &str = "sync_hard_unavailable";
-const UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED: &str = "sync_recovery_blocked";
-const UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED: &str = "sync_failed";
-const UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED: &str = "account_updated";
-const UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL: &str = "call";
-const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL: &str = "sync_manual";
-const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE: &str = "sync_maintenance";
-const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_POST_CREATE: &str = "sync_post_create";
-const UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT: &str = "oauth_import";
-const UPSTREAM_ACCOUNT_ACTION_SOURCE_ACCOUNT_UPDATE: &str = "account_update";
-const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK: &str = "sync_ok";
-const UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED: &str = "account_updated";
-const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR: &str = "sync_error";
-const UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED: &str = "egress_throttled";
-const UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED: &str = "usage_snapshot_exhausted";
-const UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED: &str = "quota_still_exhausted";
-const UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED: &str =
+pub(crate) const UPSTREAM_ACCOUNT_STATUS_ACTIVE: &str = "active";
+pub(crate) const UPSTREAM_ACCOUNT_STATUS_SYNCING: &str = "syncing";
+pub(crate) const UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH: &str = "needs_reauth";
+pub(crate) const UPSTREAM_ACCOUNT_STATUS_ERROR: &str = "error";
+pub(crate) const UPSTREAM_ACCOUNT_STATUS_DISABLED: &str = "disabled";
+pub(crate) const UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED: &str = "enabled";
+pub(crate) const UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED: &str = "disabled";
+pub(crate) const UPSTREAM_ACCOUNT_WORK_STATUS_WORKING: &str = "working";
+pub(crate) const UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED: &str = "degraded";
+pub(crate) const UPSTREAM_ACCOUNT_WORK_STATUS_IDLE: &str = "idle";
+pub(crate) const UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED: &str = "rate_limited";
+pub(crate) const UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE: &str = "unavailable";
+pub(crate) const UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL: &str = "normal";
+pub(crate) const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE: &str =
+    "upstream_unavailable";
+pub(crate) const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED: &str = "upstream_rejected";
+pub(crate) const UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER: &str = "error_other";
+pub(crate) const UPSTREAM_ACCOUNT_SYNC_STATE_IDLE: &str = "idle";
+pub(crate) const UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING: &str = "syncing";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovered";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE: &str = "route_retryable_failure";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED: &str =
+    "status_change_suppressed";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SYNC_DEFERRED: &str = "sync_deferred";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE: &str = "sync_hard_unavailable";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED: &str = "sync_recovery_blocked";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED: &str = "sync_failed";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED: &str = "account_updated";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL: &str = "call";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL: &str = "sync_manual";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE: &str = "sync_maintenance";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_POST_CREATE: &str = "sync_post_create";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT: &str = "oauth_import";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_SOURCE_ACCOUNT_UPDATE: &str = "account_update";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK: &str = "sync_ok";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED: &str = "account_updated";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR: &str = "sync_error";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED: &str = "egress_throttled";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED: &str =
+    "usage_snapshot_exhausted";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED: &str =
+    "quota_still_exhausted";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED: &str =
     "recovery_unconfirmed_manual_required";
-const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401: &str = "upstream_http_401";
-const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402: &str = "upstream_http_402";
-const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403: &str = "upstream_http_403";
-const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT: &str =
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401: &str = "upstream_http_401";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402: &str = "upstream_http_402";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403: &str = "upstream_http_403";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT: &str =
     "upstream_http_429_rate_limit";
-const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED: &str =
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED: &str =
     "upstream_http_429_quota_exhausted";
-const UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE: &str = "transport_failure";
-const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED: &str =
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE: &str = "transport_failure";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED: &str =
     "upstream_server_overloaded";
-const UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED: &str = "reauth_required";
-const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
-const LEGACY_UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_REJECTED: &str = "upstream_rejected";
-const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED: &str =
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED: &str = "reauth_required";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
+pub(crate) const LEGACY_UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_REJECTED: &str =
+    "upstream_rejected";
+pub(crate) const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED: &str =
     "group_node_shunt_unassigned";
-const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED_MESSAGE: &str =
+pub(crate) const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED_MESSAGE: &str =
     "分组节点分流策略控制，未排节点";
-const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_ASSIGNED: &str = "assigned";
-const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_PENDING: &str = "pending";
-const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_UNCONFIGURED: &str = "unconfigured";
-const BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE: &str = "enable";
-const BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE: &str = "disable";
-const BULK_UPSTREAM_ACCOUNT_ACTION_DELETE: &str = "delete";
-const BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP: &str = "set_group";
-const BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS: &str = "add_tags";
-const BULK_UPSTREAM_ACCOUNT_ACTION_REMOVE_TAGS: &str = "remove_tags";
-const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_PENDING: &str = "pending";
-const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SUCCEEDED: &str = "succeeded";
-const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_FAILED: &str = "failed";
-const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SKIPPED: &str = "skipped";
-const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING: &str = "running";
-const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED: &str = "completed";
-const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED: &str = "failed";
-const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED: &str = "cancelled";
-const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
-const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
-const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
-const LOGIN_SESSION_STATUS_EXPIRED: &str = "expired";
-const LOGIN_SESSION_STATUS_NEEDS_IDENTITY_CONFIRMATION: &str = "needs_identity_confirmation";
-const LOGIN_SESSION_BASE_UPDATED_AT_HEADER: &str = "x-codex-login-session-base-updated-at";
-const IMPORT_VALIDATION_STATUS_OK: &str = "ok";
-const IMPORT_VALIDATION_STATUS_OK_EXHAUSTED: &str = "ok_exhausted";
-const IMPORT_VALIDATION_STATUS_INVALID: &str = "invalid";
-const IMPORT_VALIDATION_STATUS_ERROR: &str = "error";
-const IMPORT_VALIDATION_STATUS_DUPLICATE_IN_INPUT: &str = "duplicate_in_input";
-const IMPORT_RESULT_STATUS_CREATED: &str = "created";
-const IMPORT_RESULT_STATUS_UPDATED_EXISTING: &str = "updated_existing";
-const IMPORT_RESULT_STATUS_FAILED: &str = "failed";
-const DEFAULT_OAUTH_SCOPE: &str = "openid profile email offline_access";
-const DEFAULT_OAUTH_AUDIENCE: &str = "https://api.openai.com/v1";
-const DEFAULT_OAUTH_PROMPT: &str = "login";
-const OAUTH_ORIGINATOR: &str = "Codex Desktop";
-const DEFAULT_USAGE_LIMIT_ID: &str = "codex";
-const DEFAULT_API_KEY_LIMIT_UNIT: &str = "requests";
-const POOL_SETTINGS_SINGLETON_ID: i64 = 1;
-const DEFAULT_STICKY_KEY_LIMIT: i64 = 50;
-const STICKY_KEY_ACTIVITY_MODE_LIMIT: i64 = 50;
-const DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE: usize = 20;
-const UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS: [usize; 3] = [20, 50, 100];
-const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 5;
-const POOL_ROUTE_TEMPORARY_FAILURE_STREAK_THRESHOLD: i64 = 5;
-const POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS: i64 = 30;
-const POOL_ROUTE_TEMPORARY_FAILURE_COOLDOWN_MAX_SECS: i64 = 60;
-const STATUS_CHANGE_REASON_CODES: [&str; 11] = [
+pub(crate) const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_ASSIGNED: &str = "assigned";
+pub(crate) const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_PENDING: &str = "pending";
+pub(crate) const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_UNCONFIGURED: &str = "unconfigured";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE: &str = "enable";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE: &str = "disable";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_ACTION_DELETE: &str = "delete";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP: &str = "set_group";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS: &str = "add_tags";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_ACTION_REMOVE_TAGS: &str = "remove_tags";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_PENDING: &str = "pending";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SUCCEEDED: &str = "succeeded";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_FAILED: &str = "failed";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SKIPPED: &str = "skipped";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING: &str = "running";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED: &str = "completed";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED: &str = "failed";
+pub(crate) const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED: &str = "cancelled";
+pub(crate) const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
+pub(crate) const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
+pub(crate) const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
+pub(crate) const LOGIN_SESSION_STATUS_EXPIRED: &str = "expired";
+pub(crate) const LOGIN_SESSION_STATUS_NEEDS_IDENTITY_CONFIRMATION: &str =
+    "needs_identity_confirmation";
+pub(crate) const LOGIN_SESSION_BASE_UPDATED_AT_HEADER: &str =
+    "x-codex-login-session-base-updated-at";
+pub(crate) const IMPORT_VALIDATION_STATUS_OK: &str = "ok";
+pub(crate) const IMPORT_VALIDATION_STATUS_OK_EXHAUSTED: &str = "ok_exhausted";
+pub(crate) const IMPORT_VALIDATION_STATUS_INVALID: &str = "invalid";
+pub(crate) const IMPORT_VALIDATION_STATUS_ERROR: &str = "error";
+pub(crate) const IMPORT_VALIDATION_STATUS_DUPLICATE_IN_INPUT: &str = "duplicate_in_input";
+pub(crate) const IMPORT_RESULT_STATUS_CREATED: &str = "created";
+pub(crate) const IMPORT_RESULT_STATUS_UPDATED_EXISTING: &str = "updated_existing";
+pub(crate) const IMPORT_RESULT_STATUS_FAILED: &str = "failed";
+pub(crate) const DEFAULT_OAUTH_SCOPE: &str = "openid profile email offline_access";
+pub(crate) const DEFAULT_OAUTH_AUDIENCE: &str = "https://api.openai.com/v1";
+pub(crate) const DEFAULT_OAUTH_PROMPT: &str = "login";
+pub(crate) const OAUTH_ORIGINATOR: &str = "Codex Desktop";
+pub(crate) const DEFAULT_USAGE_LIMIT_ID: &str = "codex";
+pub(crate) const DEFAULT_API_KEY_LIMIT_UNIT: &str = "requests";
+pub(crate) const POOL_SETTINGS_SINGLETON_ID: i64 = 1;
+pub(crate) const DEFAULT_STICKY_KEY_LIMIT: i64 = 50;
+pub(crate) const STICKY_KEY_ACTIVITY_MODE_LIMIT: i64 = 50;
+pub(crate) const DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE: usize = 20;
+pub(crate) const UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS: [usize; 3] = [20, 50, 100];
+pub(crate) const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 5;
+pub(crate) const POOL_ROUTE_TEMPORARY_FAILURE_STREAK_THRESHOLD: i64 = 5;
+pub(crate) const POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS: i64 = 30;
+pub(crate) const POOL_ROUTE_TEMPORARY_FAILURE_COOLDOWN_MAX_SECS: i64 = 60;
+pub(crate) const STATUS_CHANGE_REASON_CODES: [&str; 11] = [
     UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401,
     UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402,
     UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403,
@@ -191,21 +201,21 @@ const STATUS_CHANGE_REASON_CODES: [&str; 11] = [
 pub(crate) const COMPACT_SUPPORT_STATUS_UNKNOWN: &str = "unknown";
 pub(crate) const COMPACT_SUPPORT_STATUS_SUPPORTED: &str = "supported";
 pub(crate) const COMPACT_SUPPORT_STATUS_UNSUPPORTED: &str = "unsupported";
-const USAGE_PATH_STYLE_CHATGPT: &str = "/wham/usage";
-const USAGE_PATH_STYLE_CODEX_API: &str = "/api/codex/usage";
-const UPSTREAM_USAGE_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
+pub(crate) const USAGE_PATH_STYLE_CHATGPT: &str = "/wham/usage";
+pub(crate) const USAGE_PATH_STYLE_CODEX_API: &str = "/api/codex/usage";
+pub(crate) const UPSTREAM_USAGE_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 
 #[derive(Debug)]
 pub(crate) struct UpstreamAccountsRuntime {
     pub(crate) crypto_key: Option<[u8; 32]>,
-    account_ops: AccountOpCoordinator,
-    validation_jobs: Arc<Mutex<HashMap<String, Arc<ImportedOauthValidationJob>>>>,
-    bulk_sync_jobs: Arc<Mutex<HashMap<String, Arc<BulkUpstreamAccountSyncJob>>>>,
-    bulk_sync_creation: Arc<Mutex<()>>,
+    pub(crate) account_ops: AccountOpCoordinator,
+    pub(crate) validation_jobs: Arc<Mutex<HashMap<String, Arc<ImportedOauthValidationJob>>>>,
+    pub(crate) bulk_sync_jobs: Arc<Mutex<HashMap<String, Arc<BulkUpstreamAccountSyncJob>>>>,
+    pub(crate) bulk_sync_creation: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AccountCommand {
+pub(crate) enum AccountCommand {
     UpdateAccount,
     ExternalOauthUpsert,
     DeleteAccount,
@@ -218,34 +228,34 @@ enum AccountCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SyncCause {
+pub(crate) enum SyncCause {
     Manual,
     Maintenance,
     PostCreate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SyncSuccessRouteState {
+pub(crate) enum SyncSuccessRouteState {
     PreserveFailureState,
     ClearFailureState,
 }
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MaintenanceDispatchOutcome {
+pub(crate) enum MaintenanceDispatchOutcome {
     Executed,
     Skipped,
     Deduped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MaintenanceQueueOutcome {
+pub(crate) enum MaintenanceQueueOutcome {
     Queued,
     Deduped,
 }
 
-struct MaintenancePendingGuard {
-    flag: Arc<AtomicBool>,
+pub(crate) struct MaintenancePendingGuard {
+    pub(crate) flag: Arc<AtomicBool>,
 }
 
 impl MaintenancePendingGuard {
@@ -261,9 +271,9 @@ impl Drop for MaintenancePendingGuard {
 }
 
 #[derive(Clone)]
-struct AccountActorHandle {
-    serial: Arc<tokio::sync::Mutex<()>>,
-    maintenance_pending: Arc<AtomicBool>,
+pub(crate) struct AccountActorHandle {
+    pub(crate) serial: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) maintenance_pending: Arc<AtomicBool>,
 }
 
 impl fmt::Debug for AccountActorHandle {
@@ -279,10 +289,10 @@ impl fmt::Debug for AccountActorHandle {
 }
 
 #[derive(Clone)]
-struct AccountOpCoordinator {
-    actors: Arc<std::sync::Mutex<HashMap<i64, AccountActorHandle>>>,
-    maintenance_slots: Arc<tokio::sync::Semaphore>,
-    maintenance_handles: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
+pub(crate) struct AccountOpCoordinator {
+    pub(crate) actors: Arc<std::sync::Mutex<HashMap<i64, AccountActorHandle>>>,
+    pub(crate) maintenance_slots: Arc<tokio::sync::Semaphore>,
+    pub(crate) maintenance_handles: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Default for AccountOpCoordinator {
@@ -317,13 +327,13 @@ impl fmt::Debug for AccountOpCoordinator {
 }
 
 #[derive(Debug)]
-enum AccountCommandDispatchError<E> {
+pub(crate) enum AccountCommandDispatchError<E> {
     Command(E),
     ActorUnavailable(AccountCommand),
 }
 
 #[derive(Debug)]
-enum AccountSubmitOutcome<T> {
+pub(crate) enum AccountSubmitOutcome<T> {
     Completed(T),
     Deduped,
 }
@@ -392,27 +402,46 @@ impl UpstreamAccountsRuntime {
         }
     }
 
-    async fn insert_validation_job(&self, job_id: String, job: Arc<ImportedOauthValidationJob>) {
+    pub(crate) async fn insert_validation_job(
+        &self,
+        job_id: String,
+        job: Arc<ImportedOauthValidationJob>,
+    ) {
         self.validation_jobs.lock().await.insert(job_id, job);
     }
 
-    async fn get_validation_job(&self, job_id: &str) -> Option<Arc<ImportedOauthValidationJob>> {
+    pub(crate) async fn get_validation_job(
+        &self,
+        job_id: &str,
+    ) -> Option<Arc<ImportedOauthValidationJob>> {
         self.validation_jobs.lock().await.get(job_id).cloned()
     }
 
-    async fn remove_validation_job(&self, job_id: &str) -> Option<Arc<ImportedOauthValidationJob>> {
+    pub(crate) async fn remove_validation_job(
+        &self,
+        job_id: &str,
+    ) -> Option<Arc<ImportedOauthValidationJob>> {
         self.validation_jobs.lock().await.remove(job_id)
     }
 
-    async fn insert_bulk_sync_job(&self, job_id: String, job: Arc<BulkUpstreamAccountSyncJob>) {
+    pub(crate) async fn insert_bulk_sync_job(
+        &self,
+        job_id: String,
+        job: Arc<BulkUpstreamAccountSyncJob>,
+    ) {
         self.bulk_sync_jobs.lock().await.insert(job_id, job);
     }
 
-    async fn get_bulk_sync_job(&self, job_id: &str) -> Option<Arc<BulkUpstreamAccountSyncJob>> {
+    pub(crate) async fn get_bulk_sync_job(
+        &self,
+        job_id: &str,
+    ) -> Option<Arc<BulkUpstreamAccountSyncJob>> {
         self.bulk_sync_jobs.lock().await.get(job_id).cloned()
     }
 
-    async fn get_running_bulk_sync_job(&self) -> Option<(String, Arc<BulkUpstreamAccountSyncJob>)> {
+    pub(crate) async fn get_running_bulk_sync_job(
+        &self,
+    ) -> Option<(String, Arc<BulkUpstreamAccountSyncJob>)> {
         let jobs = self.bulk_sync_jobs.lock().await;
         for (job_id, job) in jobs.iter() {
             if job.terminal_event.lock().await.is_none() {
@@ -422,7 +451,10 @@ impl UpstreamAccountsRuntime {
         None
     }
 
-    async fn remove_bulk_sync_job(&self, job_id: &str) -> Option<Arc<BulkUpstreamAccountSyncJob>> {
+    pub(crate) async fn remove_bulk_sync_job(
+        &self,
+        job_id: &str,
+    ) -> Option<Arc<BulkUpstreamAccountSyncJob>> {
         self.bulk_sync_jobs.lock().await.remove(job_id)
     }
 
@@ -485,7 +517,7 @@ impl AccountOpCoordinator {
     }
 
     #[cfg(test)]
-    fn actor_count(&self) -> usize {
+    pub(crate) fn actor_count(&self) -> usize {
         self.actors
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -546,7 +578,7 @@ impl AccountOpCoordinator {
         }
     }
 
-    async fn submit_command<R, E, F, Fut>(
+    pub(crate) async fn submit_command<R, E, F, Fut>(
         &self,
         state: Arc<AppState>,
         account_id: i64,
@@ -570,7 +602,7 @@ impl AccountOpCoordinator {
             .map(AccountSubmitOutcome::Completed)
     }
 
-    async fn run_update_account(
+    pub(crate) async fn run_update_account(
         &self,
         state: Arc<AppState>,
         id: i64,
@@ -590,7 +622,7 @@ impl AccountOpCoordinator {
         .expect_completed(AccountCommand::UpdateAccount)
     }
 
-    async fn run_external_oauth_upsert(
+    pub(crate) async fn run_external_oauth_upsert(
         &self,
         state: Arc<AppState>,
         id: i64,
@@ -619,7 +651,7 @@ impl AccountOpCoordinator {
         .expect_completed(AccountCommand::ExternalOauthUpsert)
     }
 
-    async fn run_delete_account(
+    pub(crate) async fn run_delete_account(
         &self,
         state: Arc<AppState>,
         id: i64,
@@ -636,7 +668,7 @@ impl AccountOpCoordinator {
         .expect_completed(AccountCommand::DeleteAccount)
     }
 
-    async fn run_manual_sync(
+    pub(crate) async fn run_manual_sync(
         &self,
         state: Arc<AppState>,
         id: i64,
@@ -661,7 +693,7 @@ impl AccountOpCoordinator {
         })
     }
 
-    async fn run_post_create_sync(
+    pub(crate) async fn run_post_create_sync(
         &self,
         state: Arc<AppState>,
         id: i64,
@@ -689,7 +721,7 @@ impl AccountOpCoordinator {
     }
 
     #[cfg(test)]
-    async fn run_maintenance_sync(
+    pub(crate) async fn run_maintenance_sync(
         &self,
         state: Arc<AppState>,
         id: i64,
@@ -713,7 +745,7 @@ impl AccountOpCoordinator {
         }
     }
 
-    async fn run_persist_oauth_callback(
+    pub(crate) async fn run_persist_oauth_callback(
         &self,
         state: Arc<AppState>,
         id: i64,
@@ -733,7 +765,7 @@ impl AccountOpCoordinator {
         .expect_completed(AccountCommand::PersistOauthCallback)
     }
 
-    async fn run_persist_imported_oauth(
+    pub(crate) async fn run_persist_imported_oauth(
         &self,
         state: Arc<AppState>,
         id: i64,
@@ -753,7 +785,7 @@ impl AccountOpCoordinator {
         .expect_completed(AccountCommand::PersistImportedOauth)
     }
 
-    async fn run_confirm_oauth_identity_overwrite(
+    pub(crate) async fn run_confirm_oauth_identity_overwrite(
         &self,
         state: Arc<AppState>,
         login_id: String,
@@ -777,7 +809,7 @@ impl AccountOpCoordinator {
         .expect_completed(AccountCommand::ConfirmOauthIdentityOverwrite)
     }
 
-    fn dispatch_maintenance_sync(
+    pub(crate) fn dispatch_maintenance_sync(
         &self,
         state: Arc<AppState>,
         plan: MaintenanceDispatchPlan,
@@ -851,7 +883,7 @@ impl<T> AccountSubmitOutcome<T> {
     }
 }
 
-fn describe_panic_payload(payload: &Box<dyn Any + Send>) -> String {
+pub(crate) fn describe_panic_payload(payload: &Box<dyn Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&'static str>() {
         (*message).to_string()
     } else if let Some(message) = payload.downcast_ref::<String>() {
@@ -861,7 +893,7 @@ fn describe_panic_payload(payload: &Box<dyn Any + Send>) -> String {
     }
 }
 
-fn map_account_dispatch_http(
+pub(crate) fn map_account_dispatch_http(
     err: AccountCommandDispatchError<(StatusCode, String)>,
 ) -> (StatusCode, String) {
     match err {
@@ -873,7 +905,9 @@ fn map_account_dispatch_http(
     }
 }
 
-fn map_account_dispatch_anyhow(err: AccountCommandDispatchError<anyhow::Error>) -> anyhow::Error {
+pub(crate) fn map_account_dispatch_anyhow(
+    err: AccountCommandDispatchError<anyhow::Error>,
+) -> anyhow::Error {
     match err {
         AccountCommandDispatchError::Command(err) => err,
         AccountCommandDispatchError::ActorUnavailable(command) => anyhow!(
@@ -886,35 +920,35 @@ fn map_account_dispatch_anyhow(err: AccountCommandDispatchError<anyhow::Error>) 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountListMetrics {
-    total: usize,
-    oauth: usize,
-    api_key: usize,
-    attention: usize,
+    pub(crate) total: usize,
+    pub(crate) oauth: usize,
+    pub(crate) api_key: usize,
+    pub(crate) attention: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountListResponse {
-    writes_enabled: bool,
-    items: Vec<UpstreamAccountSummary>,
-    total: usize,
-    page: usize,
-    page_size: usize,
-    metrics: UpstreamAccountListMetrics,
-    groups: Vec<UpstreamAccountGroupSummary>,
+    pub(crate) writes_enabled: bool,
+    pub(crate) items: Vec<UpstreamAccountSummary>,
+    pub(crate) total: usize,
+    pub(crate) page: usize,
+    pub(crate) page_size: usize,
+    pub(crate) metrics: UpstreamAccountListMetrics,
+    pub(crate) groups: Vec<UpstreamAccountGroupSummary>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    forward_proxy_nodes: Vec<ForwardProxyBindingNodeResponse>,
-    has_ungrouped_accounts: bool,
-    routing: PoolRoutingSettingsResponse,
+    pub(crate) forward_proxy_nodes: Vec<ForwardProxyBindingNodeResponse>,
+    pub(crate) has_ungrouped_accounts: bool,
+    pub(crate) routing: PoolRoutingSettingsResponse,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountActionEventListResponse {
-    items: Vec<UpstreamAccountActionEvent>,
-    total: usize,
-    page: usize,
-    page_size: usize,
+    pub(crate) items: Vec<UpstreamAccountActionEvent>,
+    pub(crate) total: usize,
+    pub(crate) page: usize,
+    pub(crate) page_size: usize,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -927,15 +961,15 @@ pub(crate) struct UpstreamAccountWindowUsageRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountWindowUsageItem {
-    account_id: i64,
-    primary_actual_usage: Option<RateWindowActualUsage>,
-    secondary_actual_usage: Option<RateWindowActualUsage>,
+    pub(crate) account_id: i64,
+    pub(crate) primary_actual_usage: Option<RateWindowActualUsage>,
+    pub(crate) secondary_actual_usage: Option<RateWindowActualUsage>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountWindowUsageResponse {
-    items: Vec<UpstreamAccountWindowUsageItem>,
+    pub(crate) items: Vec<UpstreamAccountWindowUsageItem>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -982,12 +1016,12 @@ pub(crate) struct ListUpstreamAccountsQuery {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ListUpstreamAccountsBaseQuery {
-    group_search: Option<String>,
-    group_ungrouped: Option<bool>,
-    status: Option<String>,
-    page: Option<usize>,
-    page_size: Option<usize>,
+pub(crate) struct ListUpstreamAccountsBaseQuery {
+    pub(crate) group_search: Option<String>,
+    pub(crate) group_ungrouped: Option<bool>,
+    pub(crate) status: Option<String>,
+    pub(crate) page: Option<usize>,
+    pub(crate) page_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -1013,7 +1047,7 @@ impl Default for TagPriorityTier {
 }
 
 impl TagPriorityTier {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::NoNew => "no_new",
             Self::Fallback => "fallback",
@@ -1022,7 +1056,7 @@ impl TagPriorityTier {
         }
     }
 
-    fn routing_rank(self) -> u8 {
+    pub(crate) fn routing_rank(self) -> u8 {
         match self {
             Self::Primary => 0,
             Self::Normal => 1,
@@ -1052,7 +1086,7 @@ impl TagFastModeRewriteMode {
         }
     }
 
-    fn merge_rank(self) -> u8 {
+    pub(crate) fn merge_rank(self) -> u8 {
         match self {
             Self::ForceRemove => 0,
             Self::ForceAdd => 1,
@@ -1151,18 +1185,18 @@ impl ImageIntent {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DuplicateInfo {
-    peer_account_ids: Vec<i64>,
-    reasons: Vec<DuplicateReason>,
+    pub(crate) peer_account_ids: Vec<i64>,
+    pub(crate) reasons: Vec<DuplicateReason>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountTagSummary {
-    id: i64,
-    name: String,
-    routing_rule: TagRoutingRule,
-    system_key: Option<String>,
-    protected: bool,
+    pub(crate) id: i64,
+    pub(crate) name: String,
+    pub(crate) routing_rule: TagRoutingRule,
+    pub(crate) system_key: Option<String>,
+    pub(crate) protected: bool,
 }
 
 pub(crate) type StatusChangeReasonSettings = BTreeMap<String, bool>;
@@ -1227,15 +1261,15 @@ pub(crate) fn default_status_change_reason_field_sources(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EffectiveRoutingRuleFieldSources {
-    allow_cut_out: String,
-    allow_cut_in: String,
-    priority_tier: String,
-    fast_mode_rewrite_mode: String,
-    image_tool_rewrite_mode: String,
-    concurrency_limit: String,
-    upstream_429_retry: String,
-    available_models: String,
-    system_denied_models: String,
+    pub(crate) allow_cut_out: String,
+    pub(crate) allow_cut_in: String,
+    pub(crate) priority_tier: String,
+    pub(crate) fast_mode_rewrite_mode: String,
+    pub(crate) image_tool_rewrite_mode: String,
+    pub(crate) concurrency_limit: String,
+    pub(crate) upstream_429_retry: String,
+    pub(crate) available_models: String,
+    pub(crate) system_denied_models: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1263,25 +1297,25 @@ pub(crate) struct RoutingTimeoutSettings {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EffectiveRoutingRule {
-    allow_cut_out: bool,
-    allow_cut_in: bool,
-    priority_tier: TagPriorityTier,
+    pub(crate) allow_cut_out: bool,
+    pub(crate) allow_cut_in: bool,
+    pub(crate) priority_tier: TagPriorityTier,
     pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
     pub(crate) image_tool_rewrite_mode: ImageToolRewriteMode,
-    concurrency_limit: i64,
-    upstream_429_retry_enabled: bool,
-    upstream_429_max_retries: u8,
-    available_models: Vec<String>,
+    pub(crate) concurrency_limit: i64,
+    pub(crate) upstream_429_retry_enabled: bool,
+    pub(crate) upstream_429_max_retries: u8,
+    pub(crate) available_models: Vec<String>,
     #[serde(skip)]
     pub(crate) available_models_defined: bool,
-    status_change_reasons: StatusChangeReasonSettings,
-    status_change_reason_field_sources: StatusChangeReasonFieldSources,
-    system_denied_models: Vec<String>,
-    source_tag_ids: Vec<i64>,
-    source_tag_names: Vec<String>,
-    field_sources: EffectiveRoutingRuleFieldSources,
-    timeouts: RoutingTimeoutSettings,
-    timeout_field_sources: RoutingTimeoutFieldSources,
+    pub(crate) status_change_reasons: StatusChangeReasonSettings,
+    pub(crate) status_change_reason_field_sources: StatusChangeReasonFieldSources,
+    pub(crate) system_denied_models: Vec<String>,
+    pub(crate) source_tag_ids: Vec<i64>,
+    pub(crate) source_tag_names: Vec<String>,
+    pub(crate) field_sources: EffectiveRoutingRuleFieldSources,
+    pub(crate) timeouts: RoutingTimeoutSettings,
+    pub(crate) timeout_field_sources: RoutingTimeoutFieldSources,
 }
 
 impl EffectiveRoutingRule {
@@ -1343,107 +1377,107 @@ impl ConversationRoutingOverride {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TagRoutingRule {
-    allow_cut_out: bool,
-    allow_cut_in: bool,
-    priority_tier: TagPriorityTier,
-    fast_mode_rewrite_mode: TagFastModeRewriteMode,
-    concurrency_limit: i64,
-    upstream_429_retry_enabled: bool,
-    upstream_429_max_retries: u8,
+    pub(crate) allow_cut_out: bool,
+    pub(crate) allow_cut_in: bool,
+    pub(crate) priority_tier: TagPriorityTier,
+    pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
+    pub(crate) concurrency_limit: i64,
+    pub(crate) upstream_429_retry_enabled: bool,
+    pub(crate) upstream_429_max_retries: u8,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    available_models: Vec<String>,
+    pub(crate) available_models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GroupAccountRoutingRule {
-    allow_cut_out: bool,
-    allow_cut_in: bool,
-    priority_tier: TagPriorityTier,
-    fast_mode_rewrite_mode: TagFastModeRewriteMode,
-    image_tool_rewrite_mode: ImageToolRewriteMode,
-    concurrency_limit: i64,
-    upstream_429_retry_enabled: bool,
-    upstream_429_max_retries: u8,
+    pub(crate) allow_cut_out: bool,
+    pub(crate) allow_cut_in: bool,
+    pub(crate) priority_tier: TagPriorityTier,
+    pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
+    pub(crate) image_tool_rewrite_mode: ImageToolRewriteMode,
+    pub(crate) concurrency_limit: i64,
+    pub(crate) upstream_429_retry_enabled: bool,
+    pub(crate) upstream_429_max_retries: u8,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    available_models: Vec<String>,
-    available_models_defined: bool,
-    status_change_reasons: StatusChangeReasonSettings,
+    pub(crate) available_models: Vec<String>,
+    pub(crate) available_models_defined: bool,
+    pub(crate) status_change_reasons: StatusChangeReasonSettings,
     #[serde(skip_serializing_if = "Option::is_none")]
-    timeouts: Option<RoutingTimeoutSettings>,
+    pub(crate) timeouts: Option<RoutingTimeoutSettings>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TagSummary {
-    id: i64,
-    name: String,
-    routing_rule: TagRoutingRule,
-    account_count: i64,
-    group_count: i64,
-    updated_at: String,
-    system_key: Option<String>,
-    protected: bool,
+    pub(crate) id: i64,
+    pub(crate) name: String,
+    pub(crate) routing_rule: TagRoutingRule,
+    pub(crate) account_count: i64,
+    pub(crate) group_count: i64,
+    pub(crate) updated_at: String,
+    pub(crate) system_key: Option<String>,
+    pub(crate) protected: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TagDetail {
     #[serde(flatten)]
-    summary: TagSummary,
+    pub(crate) summary: TagSummary,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TagListResponse {
-    writes_enabled: bool,
-    items: Vec<TagSummary>,
+    pub(crate) writes_enabled: bool,
+    pub(crate) items: Vec<TagSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountGroupSummary {
-    group_name: String,
-    account_count: i64,
-    note: Option<String>,
-    bound_proxy_keys: Vec<String>,
-    node_shunt_enabled: bool,
-    single_account_rotation_enabled: bool,
-    upstream_429_retry_enabled: bool,
-    upstream_429_max_retries: u8,
-    concurrency_limit: i64,
-    routing_rule: GroupAccountRoutingRule,
-    effective_timeouts: RoutingTimeoutSettings,
-    timeout_field_sources: RoutingTimeoutFieldSources,
+    pub(crate) group_name: String,
+    pub(crate) account_count: i64,
+    pub(crate) note: Option<String>,
+    pub(crate) bound_proxy_keys: Vec<String>,
+    pub(crate) node_shunt_enabled: bool,
+    pub(crate) single_account_rotation_enabled: bool,
+    pub(crate) upstream_429_retry_enabled: bool,
+    pub(crate) upstream_429_max_retries: u8,
+    pub(crate) concurrency_limit: i64,
+    pub(crate) routing_rule: GroupAccountRoutingRule,
+    pub(crate) effective_timeouts: RoutingTimeoutSettings,
+    pub(crate) timeout_field_sources: RoutingTimeoutFieldSources,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UpstreamAccountGroupMetadata {
-    note: Option<String>,
-    bound_proxy_keys: Vec<String>,
-    node_shunt_enabled: bool,
-    single_account_rotation_enabled: bool,
-    upstream_429_retry_enabled: bool,
-    upstream_429_max_retries: u8,
-    concurrency_limit: i64,
+    pub(crate) note: Option<String>,
+    pub(crate) bound_proxy_keys: Vec<String>,
+    pub(crate) node_shunt_enabled: bool,
+    pub(crate) single_account_rotation_enabled: bool,
+    pub(crate) upstream_429_retry_enabled: bool,
+    pub(crate) upstream_429_max_retries: u8,
+    pub(crate) concurrency_limit: i64,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RequestedGroupMetadataChanges {
-    note: Option<String>,
-    note_was_requested: bool,
-    bound_proxy_keys: Vec<String>,
-    bound_proxy_keys_was_requested: bool,
-    concurrency_limit: i64,
-    concurrency_limit_was_requested: bool,
-    node_shunt_enabled: bool,
-    node_shunt_enabled_was_requested: bool,
-    single_account_rotation_enabled: bool,
-    single_account_rotation_enabled_was_requested: bool,
+    pub(crate) note: Option<String>,
+    pub(crate) note_was_requested: bool,
+    pub(crate) bound_proxy_keys: Vec<String>,
+    pub(crate) bound_proxy_keys_was_requested: bool,
+    pub(crate) concurrency_limit: i64,
+    pub(crate) concurrency_limit_was_requested: bool,
+    pub(crate) node_shunt_enabled: bool,
+    pub(crate) node_shunt_enabled_was_requested: bool,
+    pub(crate) single_account_rotation_enabled: bool,
+    pub(crate) single_account_rotation_enabled_was_requested: bool,
 }
 
 impl RequestedGroupMetadataChanges {
-    fn was_requested(&self) -> bool {
+    pub(crate) fn was_requested(&self) -> bool {
         self.note_was_requested
             || self.bound_proxy_keys_was_requested
             || self.concurrency_limit_was_requested
@@ -1462,99 +1496,99 @@ pub(crate) struct ResolvedRequiredGroupProxyBinding {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountSummary {
-    id: i64,
-    kind: String,
-    provider: String,
-    display_name: String,
-    group_name: Option<String>,
-    is_mother: bool,
-    status: String,
-    display_status: String,
-    enabled: bool,
-    work_status: String,
-    enable_status: String,
-    health_status: String,
-    sync_state: String,
-    email: Option<String>,
-    chatgpt_account_id: Option<String>,
-    plan_type: Option<String>,
-    masked_api_key: Option<String>,
-    has_refresh_token: bool,
-    last_synced_at: Option<String>,
-    last_successful_sync_at: Option<String>,
-    last_activity_at: Option<String>,
-    active_conversation_count: i64,
-    last_error: Option<String>,
-    last_error_at: Option<String>,
-    last_action: Option<String>,
-    last_action_source: Option<String>,
-    last_action_reason_code: Option<String>,
-    last_action_reason_message: Option<String>,
-    last_action_http_status: Option<u16>,
-    last_action_invoke_id: Option<String>,
-    last_action_at: Option<String>,
-    cooldown_until: Option<String>,
-    bound_proxy_keys: Vec<String>,
-    current_forward_proxy_key: Option<String>,
-    current_forward_proxy_display_name: Option<String>,
-    current_forward_proxy_state: String,
-    routing_block_reason_code: Option<String>,
-    routing_block_reason_message: Option<String>,
-    token_expires_at: Option<String>,
-    primary_window: Option<RateWindowSnapshot>,
-    secondary_window: Option<RateWindowSnapshot>,
-    credits: Option<CreditsSnapshot>,
-    local_limits: Option<LocalLimitSnapshot>,
-    compact_support: CompactSupportState,
-    duplicate_info: Option<DuplicateInfo>,
-    tags: Vec<AccountTagSummary>,
-    effective_routing_rule: EffectiveRoutingRule,
-    image_tool_capability: ImageToolCapability,
+    pub(crate) id: i64,
+    pub(crate) kind: String,
+    pub(crate) provider: String,
+    pub(crate) display_name: String,
+    pub(crate) group_name: Option<String>,
+    pub(crate) is_mother: bool,
+    pub(crate) status: String,
+    pub(crate) display_status: String,
+    pub(crate) enabled: bool,
+    pub(crate) work_status: String,
+    pub(crate) enable_status: String,
+    pub(crate) health_status: String,
+    pub(crate) sync_state: String,
+    pub(crate) email: Option<String>,
+    pub(crate) chatgpt_account_id: Option<String>,
+    pub(crate) plan_type: Option<String>,
+    pub(crate) masked_api_key: Option<String>,
+    pub(crate) has_refresh_token: bool,
+    pub(crate) last_synced_at: Option<String>,
+    pub(crate) last_successful_sync_at: Option<String>,
+    pub(crate) last_activity_at: Option<String>,
+    pub(crate) active_conversation_count: i64,
+    pub(crate) last_error: Option<String>,
+    pub(crate) last_error_at: Option<String>,
+    pub(crate) last_action: Option<String>,
+    pub(crate) last_action_source: Option<String>,
+    pub(crate) last_action_reason_code: Option<String>,
+    pub(crate) last_action_reason_message: Option<String>,
+    pub(crate) last_action_http_status: Option<u16>,
+    pub(crate) last_action_invoke_id: Option<String>,
+    pub(crate) last_action_at: Option<String>,
+    pub(crate) cooldown_until: Option<String>,
+    pub(crate) bound_proxy_keys: Vec<String>,
+    pub(crate) current_forward_proxy_key: Option<String>,
+    pub(crate) current_forward_proxy_display_name: Option<String>,
+    pub(crate) current_forward_proxy_state: String,
+    pub(crate) routing_block_reason_code: Option<String>,
+    pub(crate) routing_block_reason_message: Option<String>,
+    pub(crate) token_expires_at: Option<String>,
+    pub(crate) primary_window: Option<RateWindowSnapshot>,
+    pub(crate) secondary_window: Option<RateWindowSnapshot>,
+    pub(crate) credits: Option<CreditsSnapshot>,
+    pub(crate) local_limits: Option<LocalLimitSnapshot>,
+    pub(crate) compact_support: CompactSupportState,
+    pub(crate) duplicate_info: Option<DuplicateInfo>,
+    pub(crate) tags: Vec<AccountTagSummary>,
+    pub(crate) effective_routing_rule: EffectiveRoutingRule,
+    pub(crate) image_tool_capability: ImageToolCapability,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountDetail {
     #[serde(flatten)]
-    summary: UpstreamAccountSummary,
-    note: Option<String>,
-    upstream_base_url: Option<String>,
-    chatgpt_user_id: Option<String>,
-    verified_email: Option<String>,
-    last_refreshed_at: Option<String>,
-    history: Vec<UpstreamAccountHistoryPoint>,
-    recent_actions: Vec<UpstreamAccountActionEvent>,
+    pub(crate) summary: UpstreamAccountSummary,
+    pub(crate) note: Option<String>,
+    pub(crate) upstream_base_url: Option<String>,
+    pub(crate) chatgpt_user_id: Option<String>,
+    pub(crate) verified_email: Option<String>,
+    pub(crate) last_refreshed_at: Option<String>,
+    pub(crate) history: Vec<UpstreamAccountHistoryPoint>,
+    pub(crate) recent_actions: Vec<UpstreamAccountActionEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountActionEvent {
-    id: i64,
-    occurred_at: String,
-    action: String,
-    source: String,
-    account_display_name: Option<String>,
-    account_group_name: Option<String>,
-    forward_proxy_key: Option<String>,
-    forward_proxy_display_name: Option<String>,
-    forward_proxy_egress_ip: Option<String>,
-    result: Option<String>,
-    result_description: Option<String>,
-    reason_code: Option<String>,
-    reason_message: Option<String>,
-    http_status: Option<u16>,
-    failure_kind: Option<String>,
-    invoke_id: Option<String>,
-    sticky_key: Option<String>,
-    created_at: String,
+    pub(crate) id: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) action: String,
+    pub(crate) source: String,
+    pub(crate) account_display_name: Option<String>,
+    pub(crate) account_group_name: Option<String>,
+    pub(crate) forward_proxy_key: Option<String>,
+    pub(crate) forward_proxy_display_name: Option<String>,
+    pub(crate) forward_proxy_egress_ip: Option<String>,
+    pub(crate) result: Option<String>,
+    pub(crate) result_description: Option<String>,
+    pub(crate) reason_code: Option<String>,
+    pub(crate) reason_message: Option<String>,
+    pub(crate) http_status: Option<u16>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) invoke_id: Option<String>,
+    pub(crate) sticky_key: Option<String>,
+    pub(crate) created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompactSupportState {
-    status: String,
-    observed_at: Option<String>,
-    reason: Option<String>,
+    pub(crate) status: String,
+    pub(crate) observed_at: Option<String>,
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1654,8 +1688,10 @@ pub(crate) struct UpdateRoutingTimeoutSettingsRequest {
 
 impl UpdateRoutingTimeoutSettingsRequest {
     pub(crate) fn is_empty(&self) -> bool {
-        matches!(self.responses_first_byte_timeout_secs, OptionalField::Missing)
-            && matches!(self.compact_first_byte_timeout_secs, OptionalField::Missing)
+        matches!(
+            self.responses_first_byte_timeout_secs,
+            OptionalField::Missing
+        ) && matches!(self.compact_first_byte_timeout_secs, OptionalField::Missing)
             && matches!(self.responses_stream_timeout_secs, OptionalField::Missing)
             && matches!(self.compact_stream_timeout_secs, OptionalField::Missing)
     }
@@ -1689,13 +1725,13 @@ pub(crate) struct UpdatePoolRoutingTimeoutSettingsRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountStickyKeysResponse {
-    range_start: String,
-    range_end: String,
-    selection_mode: AccountStickyKeySelectionMode,
-    selected_limit: Option<i64>,
-    selected_activity_hours: Option<i64>,
-    implicit_filter: AccountStickyKeyImplicitFilter,
-    conversations: Vec<AccountStickyKeyConversation>,
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) selection_mode: AccountStickyKeySelectionMode,
+    pub(crate) selected_limit: Option<i64>,
+    pub(crate) selected_activity_hours: Option<i64>,
+    pub(crate) implicit_filter: AccountStickyKeyImplicitFilter,
+    pub(crate) conversations: Vec<AccountStickyKeyConversation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1712,42 +1748,42 @@ pub(crate) enum AccountStickyKeySelection {
 }
 
 impl AccountStickyKeySelection {
-    fn selection_mode(self) -> AccountStickyKeySelectionMode {
+    pub(crate) fn selection_mode(self) -> AccountStickyKeySelectionMode {
         match self {
             Self::Count(_) => AccountStickyKeySelectionMode::Count,
             Self::ActivityWindow(_) => AccountStickyKeySelectionMode::ActivityWindow,
         }
     }
 
-    fn selected_limit(self) -> Option<i64> {
+    pub(crate) fn selected_limit(self) -> Option<i64> {
         match self {
             Self::Count(limit) => Some(limit),
             Self::ActivityWindow(_) => None,
         }
     }
 
-    fn selected_activity_hours(self) -> Option<i64> {
+    pub(crate) fn selected_activity_hours(self) -> Option<i64> {
         match self {
             Self::Count(_) => None,
             Self::ActivityWindow(hours) => Some(hours),
         }
     }
 
-    fn activity_window_hours(self) -> i64 {
+    pub(crate) fn activity_window_hours(self) -> i64 {
         match self {
             Self::Count(_) => 24,
             Self::ActivityWindow(hours) => hours,
         }
     }
 
-    fn display_limit(self) -> i64 {
+    pub(crate) fn display_limit(self) -> i64 {
         match self {
             Self::Count(limit) => limit,
             Self::ActivityWindow(_) => STICKY_KEY_ACTIVITY_MODE_LIMIT,
         }
     }
 
-    fn implicit_filter(
+    pub(crate) fn implicit_filter(
         self,
         filtered_counts: AccountStickyKeyFilteredCounts,
     ) -> AccountStickyKeyImplicitFilter {
@@ -1771,16 +1807,16 @@ impl AccountStickyKeySelection {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct AccountStickyKeyFilteredCounts {
-    inactive_count: i64,
-    capped_count: i64,
+pub(crate) struct AccountStickyKeyFilteredCounts {
+    pub(crate) inactive_count: i64,
+    pub(crate) capped_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountStickyKeyImplicitFilter {
-    kind: Option<AccountStickyKeyImplicitFilterKind>,
-    filtered_count: i64,
+    pub(crate) kind: Option<AccountStickyKeyImplicitFilterKind>,
+    pub(crate) filtered_count: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1793,385 +1829,386 @@ pub(crate) enum AccountStickyKeyImplicitFilterKind {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountStickyKeyConversation {
-    sticky_key: String,
-    request_count: i64,
-    total_tokens: i64,
-    total_cost: f64,
+    pub(crate) sticky_key: String,
+    pub(crate) request_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
-    created_at: String,
+    pub(crate) created_at: String,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
-    last_activity_at: String,
-    recent_invocations: Vec<crate::api::PromptCacheConversationInvocationPreviewResponse>,
-    last24h_requests: Vec<AccountStickyKeyRequestPoint>,
+    pub(crate) last_activity_at: String,
+    pub(crate) recent_invocations:
+        Vec<crate::api::PromptCacheConversationInvocationPreviewResponse>,
+    pub(crate) last24h_requests: Vec<AccountStickyKeyRequestPoint>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountStickyKeyRequestPoint {
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
-    occurred_at: String,
-    status: String,
-    is_success: bool,
-    request_tokens: i64,
-    cumulative_tokens: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) status: String,
+    pub(crate) is_success: bool,
+    pub(crate) request_tokens: i64,
+    pub(crate) cumulative_tokens: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountHistoryPoint {
-    captured_at: String,
-    primary_used_percent: Option<f64>,
-    secondary_used_percent: Option<f64>,
-    credits_balance: Option<String>,
+    pub(crate) captured_at: String,
+    pub(crate) primary_used_percent: Option<f64>,
+    pub(crate) secondary_used_percent: Option<f64>,
+    pub(crate) credits_balance: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RateWindowSnapshot {
-    used_percent: f64,
-    used_text: String,
-    limit_text: String,
-    resets_at: Option<String>,
-    window_duration_mins: i64,
-    actual_usage: Option<RateWindowActualUsage>,
+    pub(crate) used_percent: f64,
+    pub(crate) used_text: String,
+    pub(crate) limit_text: String,
+    pub(crate) resets_at: Option<String>,
+    pub(crate) window_duration_mins: i64,
+    pub(crate) actual_usage: Option<RateWindowActualUsage>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RateWindowActualUsage {
-    request_count: i64,
-    total_tokens: i64,
-    total_cost: f64,
-    input_tokens: i64,
-    output_tokens: i64,
-    cache_input_tokens: i64,
+    pub(crate) request_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreditsSnapshot {
-    has_credits: bool,
-    unlimited: bool,
-    balance: Option<String>,
+    pub(crate) has_credits: bool,
+    pub(crate) unlimited: bool,
+    pub(crate) balance: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LocalLimitSnapshot {
-    primary_limit: Option<f64>,
-    secondary_limit: Option<f64>,
-    limit_unit: String,
+    pub(crate) primary_limit: Option<f64>,
+    pub(crate) secondary_limit: Option<f64>,
+    pub(crate) limit_unit: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LoginSessionStatusResponse {
-    login_id: String,
-    status: String,
-    auth_url: Option<String>,
-    redirect_uri: Option<String>,
-    expires_at: String,
-    updated_at: String,
-    account_id: Option<i64>,
-    email: Option<String>,
-    error: Option<String>,
+    pub(crate) login_id: String,
+    pub(crate) status: String,
+    pub(crate) auth_url: Option<String>,
+    pub(crate) redirect_uri: Option<String>,
+    pub(crate) expires_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) account_id: Option<i64>,
+    pub(crate) email: Option<String>,
+    pub(crate) error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    sync_applied: Option<bool>,
+    pub(crate) sync_applied: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    identity_confirmation: Option<OauthIdentityConfirmationResponse>,
+    pub(crate) identity_confirmation: Option<OauthIdentityConfirmationResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OauthIdentityConfirmationResponse {
-    current: OauthIdentitySummaryResponse,
-    incoming: OauthIdentitySummaryResponse,
+    pub(crate) current: OauthIdentitySummaryResponse,
+    pub(crate) incoming: OauthIdentitySummaryResponse,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OauthIdentitySummaryResponse {
-    account_id: Option<i64>,
-    display_name: Option<String>,
-    email: Option<String>,
-    verified_email: Option<String>,
-    chatgpt_account_id: Option<String>,
-    chatgpt_user_id: Option<String>,
-    plan_type: Option<String>,
+    pub(crate) account_id: Option<i64>,
+    pub(crate) display_name: Option<String>,
+    pub(crate) email: Option<String>,
+    pub(crate) verified_email: Option<String>,
+    pub(crate) chatgpt_account_id: Option<String>,
+    pub(crate) chatgpt_user_id: Option<String>,
+    pub(crate) plan_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OauthMailboxSessionResponse {
-    email_address: String,
-    supported: bool,
+    pub(crate) email_address: String,
+    pub(crate) supported: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    session_id: Option<String>,
+    pub(crate) session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    expires_at: Option<String>,
+    pub(crate) expires_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    source: Option<String>,
+    pub(crate) source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OauthMailboxCodeSummary {
-    value: String,
-    source: String,
-    updated_at: String,
+    pub(crate) value: String,
+    pub(crate) source: String,
+    pub(crate) updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OauthInviteSummary {
-    subject: String,
-    copy_value: String,
-    copy_label: String,
-    updated_at: String,
+    pub(crate) subject: String,
+    pub(crate) copy_value: String,
+    pub(crate) copy_label: String,
+    pub(crate) updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OauthMailboxStatus {
-    session_id: String,
-    email_address: String,
-    expires_at: String,
-    latest_code: Option<OauthMailboxCodeSummary>,
-    invite: Option<OauthInviteSummary>,
-    invited: bool,
-    error: Option<String>,
+    pub(crate) session_id: String,
+    pub(crate) email_address: String,
+    pub(crate) expires_at: String,
+    pub(crate) latest_code: Option<OauthMailboxCodeSummary>,
+    pub(crate) invite: Option<OauthInviteSummary>,
+    pub(crate) invited: bool,
+    pub(crate) error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OauthMailboxStatusBatchResponse {
-    items: Vec<OauthMailboxStatus>,
+    pub(crate) items: Vec<OauthMailboxStatus>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateOauthLoginSessionRequest {
-    display_name: Option<String>,
-    email: Option<String>,
-    group_name: Option<String>,
+    pub(crate) display_name: Option<String>,
+    pub(crate) email: Option<String>,
+    pub(crate) group_name: Option<String>,
     #[serde(default)]
-    group_bound_proxy_keys: Option<Vec<String>>,
+    pub(crate) group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
-    group_node_shunt_enabled: Option<bool>,
+    pub(crate) group_node_shunt_enabled: Option<bool>,
     #[serde(default)]
-    group_single_account_rotation_enabled: Option<bool>,
-    note: Option<String>,
-    group_note: Option<String>,
-    concurrency_limit: Option<i64>,
-    account_id: Option<i64>,
+    pub(crate) group_single_account_rotation_enabled: Option<bool>,
+    pub(crate) note: Option<String>,
+    pub(crate) group_note: Option<String>,
+    pub(crate) concurrency_limit: Option<i64>,
+    pub(crate) account_id: Option<i64>,
     #[serde(default)]
-    tag_ids: Vec<i64>,
-    is_mother: Option<bool>,
-    mailbox_session_id: Option<String>,
+    pub(crate) tag_ids: Vec<i64>,
+    pub(crate) is_mother: Option<bool>,
+    pub(crate) mailbox_session_id: Option<String>,
     #[serde(alias = "generatedMailboxAddress")]
-    mailbox_address: Option<String>,
+    pub(crate) mailbox_address: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompleteOauthLoginSessionRequest {
-    callback_url: String,
-    mailbox_session_id: Option<String>,
+    pub(crate) callback_url: String,
+    pub(crate) mailbox_session_id: Option<String>,
     #[serde(alias = "generatedMailboxAddress")]
-    mailbox_address: Option<String>,
+    pub(crate) mailbox_address: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateOauthLoginSessionRequest {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    display_name: OptionalField<String>,
+    pub(crate) display_name: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    email: OptionalField<String>,
+    pub(crate) email: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    group_name: OptionalField<String>,
+    pub(crate) group_name: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    group_bound_proxy_keys: OptionalField<Vec<String>>,
+    pub(crate) group_bound_proxy_keys: OptionalField<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    group_node_shunt_enabled: OptionalField<bool>,
+    pub(crate) group_node_shunt_enabled: OptionalField<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    group_single_account_rotation_enabled: OptionalField<bool>,
+    pub(crate) group_single_account_rotation_enabled: OptionalField<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    note: OptionalField<String>,
+    pub(crate) note: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    group_note: OptionalField<String>,
+    pub(crate) group_note: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    concurrency_limit: OptionalField<i64>,
+    pub(crate) concurrency_limit: OptionalField<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    tag_ids: OptionalField<Vec<i64>>,
+    pub(crate) tag_ids: OptionalField<Vec<i64>>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    is_mother: OptionalField<bool>,
+    pub(crate) is_mother: OptionalField<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    mailbox_session_id: OptionalField<String>,
+    pub(crate) mailbox_session_id: OptionalField<String>,
     #[serde(
         default,
         alias = "generatedMailboxAddress",
         deserialize_with = "deserialize_optional_field"
     )]
-    mailbox_address: OptionalField<String>,
+    pub(crate) mailbox_address: OptionalField<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateOauthMailboxSessionRequest {
-    email_address: Option<String>,
+    pub(crate) email_address: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OauthMailboxStatusRequest {
     #[serde(default)]
-    session_ids: Vec<String>,
+    pub(crate) session_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateApiKeyAccountRequest {
-    display_name: String,
-    email: Option<String>,
-    group_name: Option<String>,
+    pub(crate) display_name: String,
+    pub(crate) email: Option<String>,
+    pub(crate) group_name: Option<String>,
     #[serde(default)]
-    group_bound_proxy_keys: Option<Vec<String>>,
+    pub(crate) group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
-    group_node_shunt_enabled: Option<bool>,
+    pub(crate) group_node_shunt_enabled: Option<bool>,
     #[serde(default)]
-    group_single_account_rotation_enabled: Option<bool>,
-    note: Option<String>,
-    group_note: Option<String>,
-    concurrency_limit: Option<i64>,
-    upstream_base_url: Option<String>,
-    api_key: String,
-    is_mother: Option<bool>,
-    local_primary_limit: Option<f64>,
-    local_secondary_limit: Option<f64>,
-    local_limit_unit: Option<String>,
+    pub(crate) group_single_account_rotation_enabled: Option<bool>,
+    pub(crate) note: Option<String>,
+    pub(crate) group_note: Option<String>,
+    pub(crate) concurrency_limit: Option<i64>,
+    pub(crate) upstream_base_url: Option<String>,
+    pub(crate) api_key: String,
+    pub(crate) is_mother: Option<bool>,
+    pub(crate) local_primary_limit: Option<f64>,
+    pub(crate) local_secondary_limit: Option<f64>,
+    pub(crate) local_limit_unit: Option<String>,
     #[serde(default)]
-    tag_ids: Vec<i64>,
+    pub(crate) tag_ids: Vec<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportOauthCredentialFileRequest {
-    source_id: String,
-    file_name: String,
-    content: String,
+    pub(crate) source_id: String,
+    pub(crate) file_name: String,
+    pub(crate) content: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ValidateImportedOauthAccountsRequest {
-    group_name: Option<String>,
+    pub(crate) group_name: Option<String>,
     #[serde(default)]
-    group_bound_proxy_keys: Option<Vec<String>>,
+    pub(crate) group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
-    group_node_shunt_enabled: Option<bool>,
+    pub(crate) group_node_shunt_enabled: Option<bool>,
     #[serde(default)]
-    group_single_account_rotation_enabled: Option<bool>,
+    pub(crate) group_single_account_rotation_enabled: Option<bool>,
     #[serde(default)]
-    items: Vec<ImportOauthCredentialFileRequest>,
+    pub(crate) items: Vec<ImportOauthCredentialFileRequest>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportValidatedOauthAccountsRequest {
     #[serde(default)]
-    items: Vec<ImportOauthCredentialFileRequest>,
+    pub(crate) items: Vec<ImportOauthCredentialFileRequest>,
     #[serde(default)]
-    selected_source_ids: Vec<String>,
+    pub(crate) selected_source_ids: Vec<String>,
     #[serde(default)]
-    validation_job_id: Option<String>,
-    group_name: Option<String>,
+    pub(crate) validation_job_id: Option<String>,
+    pub(crate) group_name: Option<String>,
     #[serde(default)]
-    group_bound_proxy_keys: Option<Vec<String>>,
+    pub(crate) group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
-    group_node_shunt_enabled: Option<bool>,
+    pub(crate) group_node_shunt_enabled: Option<bool>,
     #[serde(default)]
-    group_single_account_rotation_enabled: Option<bool>,
-    group_note: Option<String>,
-    concurrency_limit: Option<i64>,
+    pub(crate) group_single_account_rotation_enabled: Option<bool>,
+    pub(crate) group_note: Option<String>,
+    pub(crate) concurrency_limit: Option<i64>,
     #[serde(default)]
-    tag_ids: Vec<i64>,
+    pub(crate) tag_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportedOauthMatchSummary {
-    account_id: i64,
-    display_name: String,
-    group_name: Option<String>,
-    status: String,
+    pub(crate) account_id: i64,
+    pub(crate) display_name: String,
+    pub(crate) group_name: Option<String>,
+    pub(crate) status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportedOauthValidationRow {
-    source_id: String,
-    file_name: String,
-    email: Option<String>,
-    chatgpt_account_id: Option<String>,
-    display_name: Option<String>,
-    token_expires_at: Option<String>,
-    matched_account: Option<ImportedOauthMatchSummary>,
-    status: String,
-    detail: Option<String>,
-    attempts: i64,
+    pub(crate) source_id: String,
+    pub(crate) file_name: String,
+    pub(crate) email: Option<String>,
+    pub(crate) chatgpt_account_id: Option<String>,
+    pub(crate) display_name: Option<String>,
+    pub(crate) token_expires_at: Option<String>,
+    pub(crate) matched_account: Option<ImportedOauthMatchSummary>,
+    pub(crate) status: String,
+    pub(crate) detail: Option<String>,
+    pub(crate) attempts: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportedOauthValidationResponse {
-    input_files: usize,
-    unique_in_input: usize,
-    duplicate_in_input: usize,
-    rows: Vec<ImportedOauthValidationRow>,
+    pub(crate) input_files: usize,
+    pub(crate) unique_in_input: usize,
+    pub(crate) duplicate_in_input: usize,
+    pub(crate) rows: Vec<ImportedOauthValidationRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportedOauthValidationCounts {
-    pending: usize,
-    duplicate_in_input: usize,
-    ok: usize,
-    ok_exhausted: usize,
-    invalid: usize,
-    error: usize,
-    checked: usize,
+    pub(crate) pending: usize,
+    pub(crate) duplicate_in_input: usize,
+    pub(crate) ok: usize,
+    pub(crate) ok_exhausted: usize,
+    pub(crate) invalid: usize,
+    pub(crate) error: usize,
+    pub(crate) checked: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportedOauthValidationJobResponse {
-    job_id: String,
-    snapshot: ImportedOauthValidationResponse,
+    pub(crate) job_id: String,
+    pub(crate) snapshot: ImportedOauthValidationResponse,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportedOauthValidationSnapshotEvent {
-    snapshot: ImportedOauthValidationResponse,
-    counts: ImportedOauthValidationCounts,
+    pub(crate) snapshot: ImportedOauthValidationResponse,
+    pub(crate) counts: ImportedOauthValidationCounts,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportedOauthValidationRowEvent {
-    row: ImportedOauthValidationRow,
-    counts: ImportedOauthValidationCounts,
+    pub(crate) row: ImportedOauthValidationRow,
+    pub(crate) counts: ImportedOauthValidationCounts,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportedOauthValidationFailedEvent {
-    snapshot: ImportedOauthValidationResponse,
-    counts: ImportedOauthValidationCounts,
-    error: String,
+    pub(crate) snapshot: ImportedOauthValidationResponse,
+    pub(crate) counts: ImportedOauthValidationCounts,
+    pub(crate) error: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2182,7 +2219,7 @@ pub(crate) enum ImportedOauthValidationTerminalEvent {
 }
 
 #[derive(Debug, Clone)]
-enum ImportedOauthValidationJobEvent {
+pub(crate) enum ImportedOauthValidationJobEvent {
     Row(ImportedOauthValidationRowEvent),
     Completed(ImportedOauthValidationSnapshotEvent),
     Failed(ImportedOauthValidationFailedEvent),
@@ -2191,18 +2228,18 @@ enum ImportedOauthValidationJobEvent {
 
 #[derive(Debug)]
 pub(crate) struct ImportedOauthValidationJob {
-    target_group_name: String,
-    target_bound_proxy_keys: Vec<String>,
-    target_node_shunt_enabled: bool,
-    snapshot: Mutex<ImportedOauthValidationResponse>,
-    validated_imports: Mutex<HashMap<String, ImportedOauthValidatedImportData>>,
-    broadcaster: broadcast::Sender<ImportedOauthValidationJobEvent>,
-    cancel: CancellationToken,
-    terminal_event: Mutex<Option<ImportedOauthValidationTerminalEvent>>,
+    pub(crate) target_group_name: String,
+    pub(crate) target_bound_proxy_keys: Vec<String>,
+    pub(crate) target_node_shunt_enabled: bool,
+    pub(crate) snapshot: Mutex<ImportedOauthValidationResponse>,
+    pub(crate) validated_imports: Mutex<HashMap<String, ImportedOauthValidatedImportData>>,
+    pub(crate) broadcaster: broadcast::Sender<ImportedOauthValidationJobEvent>,
+    pub(crate) cancel: CancellationToken,
+    pub(crate) terminal_event: Mutex<Option<ImportedOauthValidationTerminalEvent>>,
 }
 
 impl ImportedOauthValidationJob {
-    fn new(
+    pub(crate) fn new(
         snapshot: ImportedOauthValidationResponse,
         binding: &ResolvedRequiredGroupProxyBinding,
     ) -> Self {
@@ -2223,94 +2260,94 @@ impl ImportedOauthValidationJob {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BulkUpstreamAccountActionRequest {
-    account_ids: Vec<i64>,
-    action: String,
-    group_name: Option<String>,
+    pub(crate) account_ids: Vec<i64>,
+    pub(crate) action: String,
+    pub(crate) group_name: Option<String>,
     #[serde(default)]
-    tag_ids: Vec<i64>,
+    pub(crate) tag_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BulkUpstreamAccountActionResponse {
-    action: String,
-    requested_count: usize,
-    completed_count: usize,
-    succeeded_count: usize,
-    failed_count: usize,
-    results: Vec<BulkUpstreamAccountActionResult>,
+    pub(crate) action: String,
+    pub(crate) requested_count: usize,
+    pub(crate) completed_count: usize,
+    pub(crate) succeeded_count: usize,
+    pub(crate) failed_count: usize,
+    pub(crate) results: Vec<BulkUpstreamAccountActionResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BulkUpstreamAccountActionResult {
-    account_id: i64,
-    display_name: Option<String>,
-    status: String,
-    detail: Option<String>,
+    pub(crate) account_id: i64,
+    pub(crate) display_name: Option<String>,
+    pub(crate) status: String,
+    pub(crate) detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BulkUpstreamAccountSyncJobRequest {
-    account_ids: Vec<i64>,
+    pub(crate) account_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BulkUpstreamAccountSyncCounts {
-    total: usize,
-    completed: usize,
-    succeeded: usize,
-    failed: usize,
-    skipped: usize,
+    pub(crate) total: usize,
+    pub(crate) completed: usize,
+    pub(crate) succeeded: usize,
+    pub(crate) failed: usize,
+    pub(crate) skipped: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BulkUpstreamAccountSyncRow {
-    account_id: i64,
-    display_name: String,
-    status: String,
-    detail: Option<String>,
+    pub(crate) account_id: i64,
+    pub(crate) display_name: String,
+    pub(crate) status: String,
+    pub(crate) detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BulkUpstreamAccountSyncSnapshot {
-    job_id: String,
-    status: String,
-    rows: Vec<BulkUpstreamAccountSyncRow>,
+    pub(crate) job_id: String,
+    pub(crate) status: String,
+    pub(crate) rows: Vec<BulkUpstreamAccountSyncRow>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BulkUpstreamAccountSyncJobResponse {
-    job_id: String,
-    snapshot: BulkUpstreamAccountSyncSnapshot,
-    counts: BulkUpstreamAccountSyncCounts,
+    pub(crate) job_id: String,
+    pub(crate) snapshot: BulkUpstreamAccountSyncSnapshot,
+    pub(crate) counts: BulkUpstreamAccountSyncCounts,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BulkUpstreamAccountSyncRowEvent {
-    row: BulkUpstreamAccountSyncRow,
-    counts: BulkUpstreamAccountSyncCounts,
+    pub(crate) row: BulkUpstreamAccountSyncRow,
+    pub(crate) counts: BulkUpstreamAccountSyncCounts,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BulkUpstreamAccountSyncSnapshotEvent {
-    snapshot: BulkUpstreamAccountSyncSnapshot,
-    counts: BulkUpstreamAccountSyncCounts,
+    pub(crate) snapshot: BulkUpstreamAccountSyncSnapshot,
+    pub(crate) counts: BulkUpstreamAccountSyncCounts,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BulkUpstreamAccountSyncFailedEvent {
-    snapshot: BulkUpstreamAccountSyncSnapshot,
-    counts: BulkUpstreamAccountSyncCounts,
-    error: String,
+    pub(crate) snapshot: BulkUpstreamAccountSyncSnapshot,
+    pub(crate) counts: BulkUpstreamAccountSyncCounts,
+    pub(crate) error: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2321,7 +2358,7 @@ pub(crate) enum BulkUpstreamAccountSyncTerminalEvent {
 }
 
 #[derive(Debug, Clone)]
-enum BulkUpstreamAccountSyncJobEvent {
+pub(crate) enum BulkUpstreamAccountSyncJobEvent {
     Row(BulkUpstreamAccountSyncRowEvent),
     Completed(BulkUpstreamAccountSyncSnapshotEvent),
     Failed(BulkUpstreamAccountSyncFailedEvent),
@@ -2330,14 +2367,14 @@ enum BulkUpstreamAccountSyncJobEvent {
 
 #[derive(Debug)]
 pub(crate) struct BulkUpstreamAccountSyncJob {
-    snapshot: Mutex<BulkUpstreamAccountSyncSnapshot>,
-    broadcaster: broadcast::Sender<BulkUpstreamAccountSyncJobEvent>,
-    cancel: CancellationToken,
-    terminal_event: Mutex<Option<BulkUpstreamAccountSyncTerminalEvent>>,
+    pub(crate) snapshot: Mutex<BulkUpstreamAccountSyncSnapshot>,
+    pub(crate) broadcaster: broadcast::Sender<BulkUpstreamAccountSyncJobEvent>,
+    pub(crate) cancel: CancellationToken,
+    pub(crate) terminal_event: Mutex<Option<BulkUpstreamAccountSyncTerminalEvent>>,
 }
 
 impl BulkUpstreamAccountSyncJob {
-    fn new(snapshot: BulkUpstreamAccountSyncSnapshot) -> Self {
+    pub(crate) fn new(snapshot: BulkUpstreamAccountSyncSnapshot) -> Self {
         let (broadcaster, _rx) = broadcast::channel(256);
         Self {
             snapshot: Mutex::new(snapshot),
@@ -2351,61 +2388,61 @@ impl BulkUpstreamAccountSyncJob {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportedOauthImportResult {
-    source_id: String,
-    file_name: String,
-    email: Option<String>,
-    chatgpt_account_id: Option<String>,
-    account_id: Option<i64>,
-    status: String,
-    detail: Option<String>,
-    matched_account: Option<ImportedOauthMatchSummary>,
+    pub(crate) source_id: String,
+    pub(crate) file_name: String,
+    pub(crate) email: Option<String>,
+    pub(crate) chatgpt_account_id: Option<String>,
+    pub(crate) account_id: Option<i64>,
+    pub(crate) status: String,
+    pub(crate) detail: Option<String>,
+    pub(crate) matched_account: Option<ImportedOauthMatchSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportedOauthImportSummary {
-    input_files: usize,
-    selected_files: usize,
-    created: usize,
-    updated_existing: usize,
-    failed: usize,
+    pub(crate) input_files: usize,
+    pub(crate) selected_files: usize,
+    pub(crate) created: usize,
+    pub(crate) updated_existing: usize,
+    pub(crate) failed: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportedOauthImportResponse {
-    summary: ImportedOauthImportSummary,
-    results: Vec<ImportedOauthImportResult>,
+    pub(crate) summary: ImportedOauthImportSummary,
+    pub(crate) results: Vec<ImportedOauthImportResult>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateUpstreamAccountRequest {
-    display_name: Option<String>,
+    pub(crate) display_name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    email: OptionalField<String>,
-    group_name: Option<String>,
+    pub(crate) email: OptionalField<String>,
+    pub(crate) group_name: Option<String>,
     #[serde(default)]
-    group_bound_proxy_keys: Option<Vec<String>>,
+    pub(crate) group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
-    group_node_shunt_enabled: Option<bool>,
+    pub(crate) group_node_shunt_enabled: Option<bool>,
     #[serde(default)]
-    group_single_account_rotation_enabled: Option<bool>,
-    note: Option<String>,
-    group_note: Option<String>,
-    concurrency_limit: Option<i64>,
+    pub(crate) group_single_account_rotation_enabled: Option<bool>,
+    pub(crate) note: Option<String>,
+    pub(crate) group_note: Option<String>,
+    pub(crate) concurrency_limit: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    upstream_base_url: OptionalField<String>,
+    pub(crate) upstream_base_url: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    bound_proxy_keys: OptionalField<Vec<String>>,
-    enabled: Option<bool>,
-    is_mother: Option<bool>,
-    api_key: Option<String>,
-    local_primary_limit: Option<f64>,
-    local_secondary_limit: Option<f64>,
-    local_limit_unit: Option<String>,
-    tag_ids: Option<Vec<i64>>,
-    routing_rule: Option<UpdateGroupAccountRoutingRuleRequest>,
+    pub(crate) bound_proxy_keys: OptionalField<Vec<String>>,
+    pub(crate) enabled: Option<bool>,
+    pub(crate) is_mother: Option<bool>,
+    pub(crate) api_key: Option<String>,
+    pub(crate) local_primary_limit: Option<f64>,
+    pub(crate) local_secondary_limit: Option<f64>,
+    pub(crate) local_limit_unit: Option<String>,
+    pub(crate) tag_ids: Option<Vec<i64>>,
+    pub(crate) routing_rule: Option<UpdateGroupAccountRoutingRuleRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -2465,83 +2502,86 @@ pub(crate) struct ExternalUpstreamAccountReloginRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateTagRequest {
-    name: String,
-    allow_cut_out: bool,
-    allow_cut_in: bool,
-    priority_tier: Option<String>,
-    fast_mode_rewrite_mode: Option<String>,
-    concurrency_limit: Option<i64>,
-    upstream_429_retry_enabled: Option<bool>,
-    upstream_429_max_retries: Option<u8>,
+    pub(crate) name: String,
+    pub(crate) allow_cut_out: bool,
+    pub(crate) allow_cut_in: bool,
+    pub(crate) priority_tier: Option<String>,
+    pub(crate) fast_mode_rewrite_mode: Option<String>,
+    pub(crate) concurrency_limit: Option<i64>,
+    pub(crate) upstream_429_retry_enabled: Option<bool>,
+    pub(crate) upstream_429_max_retries: Option<u8>,
     #[serde(default)]
-    available_models: Vec<String>,
+    pub(crate) available_models: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateTagRequest {
-    name: Option<String>,
-    allow_cut_out: Option<bool>,
-    allow_cut_in: Option<bool>,
-    priority_tier: Option<String>,
-    fast_mode_rewrite_mode: Option<String>,
-    concurrency_limit: Option<i64>,
-    upstream_429_retry_enabled: Option<bool>,
-    upstream_429_max_retries: Option<u8>,
+    pub(crate) name: Option<String>,
+    pub(crate) allow_cut_out: Option<bool>,
+    pub(crate) allow_cut_in: Option<bool>,
+    pub(crate) priority_tier: Option<String>,
+    pub(crate) fast_mode_rewrite_mode: Option<String>,
+    pub(crate) concurrency_limit: Option<i64>,
+    pub(crate) upstream_429_retry_enabled: Option<bool>,
+    pub(crate) upstream_429_max_retries: Option<u8>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    available_models: OptionalField<Vec<String>>,
+    pub(crate) available_models: OptionalField<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    allow_cut_out: OptionalField<bool>,
+    pub(crate) allow_cut_out: OptionalField<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    allow_cut_in: OptionalField<bool>,
+    pub(crate) allow_cut_in: OptionalField<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    priority_tier: OptionalField<String>,
+    pub(crate) priority_tier: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    fast_mode_rewrite_mode: OptionalField<String>,
+    pub(crate) fast_mode_rewrite_mode: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    image_tool_rewrite_mode: OptionalField<String>,
+    pub(crate) image_tool_rewrite_mode: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    concurrency_limit: OptionalField<i64>,
+    pub(crate) concurrency_limit: OptionalField<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    upstream_429_retry_enabled: OptionalField<bool>,
+    pub(crate) upstream_429_retry_enabled: OptionalField<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    upstream_429_max_retries: OptionalField<u8>,
+    pub(crate) upstream_429_max_retries: OptionalField<u8>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
-    available_models: OptionalField<Vec<String>>,
+    pub(crate) available_models: OptionalField<Vec<String>>,
     #[serde(default)]
-    status_change_reasons: Option<UpdateStatusChangeReasonSettingsRequest>,
+    pub(crate) status_change_reasons: Option<UpdateStatusChangeReasonSettingsRequest>,
     #[serde(default)]
-    timeouts: Option<UpdateRoutingTimeoutSettingsRequest>,
+    pub(crate) timeouts: Option<UpdateRoutingTimeoutSettingsRequest>,
 }
 
 impl UpdateGroupAccountRoutingRuleRequest {
-    fn priority_tier_value(&self) -> Option<&str> {
+    pub(crate) fn priority_tier_value(&self) -> Option<&str> {
         match &self.priority_tier {
             OptionalField::Value(value) => Some(value.as_str()),
             OptionalField::Missing | OptionalField::Null => None,
         }
     }
 
-    fn fast_mode_rewrite_mode_value(&self) -> Option<&str> {
+    pub(crate) fn fast_mode_rewrite_mode_value(&self) -> Option<&str> {
         match &self.fast_mode_rewrite_mode {
             OptionalField::Value(value) => Some(value.as_str()),
             OptionalField::Missing | OptionalField::Null => None,
         }
     }
 
-    fn image_tool_rewrite_mode_value(&self) -> Option<&str> {
+    pub(crate) fn image_tool_rewrite_mode_value(&self) -> Option<&str> {
         match &self.image_tool_rewrite_mode {
             OptionalField::Value(value) => Some(value.as_str()),
             OptionalField::Missing | OptionalField::Null => None,
         }
     }
 
-    fn status_change_reason_field(&self, reason_code: &str) -> Result<OptionalField<bool>> {
+    pub(crate) fn status_change_reason_field(
+        &self,
+        reason_code: &str,
+    ) -> Result<OptionalField<bool>> {
         self.status_change_reasons
             .as_ref()
             .map(|value| value.field(reason_code))
@@ -2550,16 +2590,18 @@ impl UpdateGroupAccountRoutingRuleRequest {
     }
 }
 
-fn optional_bool_to_i64(value: &OptionalField<bool>) -> Option<i64> {
+pub(crate) fn optional_bool_to_i64(value: &OptionalField<bool>) -> Option<i64> {
     match value {
         OptionalField::Value(value) => Some(if *value { 1_i64 } else { 0_i64 }),
         OptionalField::Missing | OptionalField::Null => None,
     }
 }
 
-fn optional_retry_count_to_i64(value: &OptionalField<u8>) -> Option<i64> {
+pub(crate) fn optional_retry_count_to_i64(value: &OptionalField<u8>) -> Option<i64> {
     match value {
-        OptionalField::Value(value) => Some(i64::from(normalize_group_upstream_429_max_retries(*value))),
+        OptionalField::Value(value) => {
+            Some(i64::from(normalize_group_upstream_429_max_retries(*value)))
+        }
         OptionalField::Missing | OptionalField::Null => None,
     }
 }
@@ -2567,7 +2609,7 @@ fn optional_retry_count_to_i64(value: &OptionalField<u8>) -> Option<i64> {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct UpdateStatusChangeReasonSettingsRequest {
-    values: BTreeMap<String, Option<bool>>,
+    pub(crate) values: BTreeMap<String, Option<bool>>,
 }
 
 impl UpdateStatusChangeReasonSettingsRequest {
@@ -2600,10 +2642,10 @@ impl UpdateStatusChangeReasonSettingsRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListTagsQuery {
-    search: Option<String>,
-    has_accounts: Option<bool>,
-    allow_cut_in: Option<bool>,
-    allow_cut_out: Option<bool>,
+    pub(crate) search: Option<String>,
+    pub(crate) has_accounts: Option<bool>,
+    pub(crate) allow_cut_in: Option<bool>,
+    pub(crate) allow_cut_out: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2616,50 +2658,50 @@ pub(crate) struct AccountStickyKeysQuery {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateUpstreamAccountGroupRequest {
-    note: Option<String>,
+    pub(crate) note: Option<String>,
     #[serde(default)]
-    bound_proxy_keys: Option<Vec<String>>,
+    pub(crate) bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
-    node_shunt_enabled: Option<bool>,
+    pub(crate) node_shunt_enabled: Option<bool>,
     #[serde(default)]
-    single_account_rotation_enabled: Option<bool>,
+    pub(crate) single_account_rotation_enabled: Option<bool>,
     #[serde(default)]
-    upstream_429_retry_enabled: Option<bool>,
+    pub(crate) upstream_429_retry_enabled: Option<bool>,
     #[serde(default)]
-    upstream_429_max_retries: Option<u8>,
-    concurrency_limit: Option<i64>,
-    routing_rule: Option<UpdateGroupAccountRoutingRuleRequest>,
+    pub(crate) upstream_429_max_retries: Option<u8>,
+    pub(crate) concurrency_limit: Option<i64>,
+    pub(crate) routing_rule: Option<UpdateGroupAccountRoutingRuleRequest>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct OauthCallbackQuery {
-    code: Option<String>,
-    state: Option<String>,
-    error: Option<String>,
-    error_description: Option<String>,
+    pub(crate) code: Option<String>,
+    pub(crate) state: Option<String>,
+    pub(crate) error: Option<String>,
+    pub(crate) error_description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredApiKeyCredentials {
-    api_key: String,
+pub(crate) struct StoredApiKeyCredentials {
+    pub(crate) api_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredOauthCredentials {
-    access_token: String,
+pub(crate) struct StoredOauthCredentials {
+    pub(crate) access_token: String,
     #[serde(default)]
-    refresh_token: Option<String>,
-    id_token: String,
-    token_type: Option<String>,
+    pub(crate) refresh_token: Option<String>,
+    pub(crate) id_token: String,
+    pub(crate) token_type: Option<String>,
 }
 
-fn normalize_oauth_refresh_token(value: Option<String>) -> Option<String> {
+pub(crate) fn normalize_oauth_refresh_token(value: Option<String>) -> Option<String> {
     normalize_optional_text(value)
 }
 
-fn oauth_refresh_token(credentials: &StoredOauthCredentials) -> Option<&str> {
+pub(crate) fn oauth_refresh_token(credentials: &StoredOauthCredentials) -> Option<&str> {
     credentials
         .refresh_token
         .as_deref()
@@ -2667,11 +2709,11 @@ fn oauth_refresh_token(credentials: &StoredOauthCredentials) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-fn oauth_credentials_have_refresh_token(credentials: &StoredOauthCredentials) -> bool {
+pub(crate) fn oauth_credentials_have_refresh_token(credentials: &StoredOauthCredentials) -> bool {
     oauth_refresh_token(credentials).is_some()
 }
 
-fn apply_oauth_token_response(
+pub(crate) fn apply_oauth_token_response(
     credentials: &mut StoredOauthCredentials,
     response: OAuthTokenResponse,
 ) -> String {
@@ -2688,147 +2730,147 @@ fn apply_oauth_token_response(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-enum StoredCredentials {
+pub(crate) enum StoredCredentials {
     ApiKey(StoredApiKeyCredentials),
     Oauth(StoredOauthCredentials),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct EncryptedCredentialsPayload {
-    v: u8,
-    nonce: String,
-    ciphertext: String,
+pub(crate) struct EncryptedCredentialsPayload {
+    pub(crate) v: u8,
+    pub(crate) nonce: String,
+    pub(crate) ciphertext: String,
 }
 
 #[derive(Debug, Clone)]
-struct NormalizedUsageSnapshot {
-    plan_type: Option<String>,
-    limit_id: String,
-    limit_name: Option<String>,
-    primary: Option<NormalizedUsageWindow>,
-    secondary: Option<NormalizedUsageWindow>,
-    credits: Option<CreditsSnapshot>,
+pub(crate) struct NormalizedUsageSnapshot {
+    pub(crate) plan_type: Option<String>,
+    pub(crate) limit_id: String,
+    pub(crate) limit_name: Option<String>,
+    pub(crate) primary: Option<NormalizedUsageWindow>,
+    pub(crate) secondary: Option<NormalizedUsageWindow>,
+    pub(crate) credits: Option<CreditsSnapshot>,
 }
 
 #[derive(Debug, Clone)]
-struct NormalizedUsageWindow {
-    used_percent: f64,
-    window_duration_mins: i64,
-    resets_at: Option<String>,
+pub(crate) struct NormalizedUsageWindow {
+    pub(crate) used_percent: f64,
+    pub(crate) window_duration_mins: i64,
+    pub(crate) resets_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OAuthTokenResponse {
-    access_token: String,
+pub(crate) struct OAuthTokenResponse {
+    pub(crate) access_token: String,
     #[serde(default)]
-    refresh_token: Option<String>,
+    pub(crate) refresh_token: Option<String>,
     #[serde(default)]
-    id_token: Option<String>,
+    pub(crate) id_token: Option<String>,
     #[serde(default)]
-    token_type: Option<String>,
-    expires_in: i64,
+    pub(crate) token_type: Option<String>,
+    pub(crate) expires_in: i64,
 }
 
 #[derive(Debug, Clone, Default)]
-struct ChatgptJwtClaims {
-    email: Option<String>,
-    chatgpt_plan_type: Option<String>,
-    chatgpt_user_id: Option<String>,
-    chatgpt_account_id: Option<String>,
+pub(crate) struct ChatgptJwtClaims {
+    pub(crate) email: Option<String>,
+    pub(crate) chatgpt_plan_type: Option<String>,
+    pub(crate) chatgpt_user_id: Option<String>,
+    pub(crate) chatgpt_account_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ImportedOauthCredentialsFile {
+pub(crate) struct ImportedOauthCredentialsFile {
     #[serde(rename = "type")]
     #[serde(default)]
-    _source_type: Option<serde_json::Value>,
-    email: String,
-    account_id: String,
+    pub(crate) _source_type: Option<serde_json::Value>,
+    pub(crate) email: String,
+    pub(crate) account_id: String,
     #[serde(default)]
-    expired: Option<String>,
-    access_token: String,
+    pub(crate) expired: Option<String>,
+    pub(crate) access_token: String,
     #[serde(default)]
-    refresh_token: Option<serde_json::Value>,
-    id_token: String,
+    pub(crate) refresh_token: Option<serde_json::Value>,
+    pub(crate) id_token: String,
     #[serde(default)]
     #[serde(rename = "last_refresh")]
-    _last_refresh: Option<serde_json::Value>,
+    pub(crate) _last_refresh: Option<serde_json::Value>,
     #[serde(default)]
-    token_type: Option<serde_json::Value>,
+    pub(crate) token_type: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct NormalizedImportedOauthCredentials {
-    source_id: String,
-    file_name: String,
-    email: String,
-    display_name: String,
-    chatgpt_account_id: String,
-    token_expires_at: String,
-    credentials: StoredOauthCredentials,
-    claims: ChatgptJwtClaims,
+    pub(crate) source_id: String,
+    pub(crate) file_name: String,
+    pub(crate) email: String,
+    pub(crate) display_name: String,
+    pub(crate) chatgpt_account_id: String,
+    pub(crate) token_expires_at: String,
+    pub(crate) credentials: StoredOauthCredentials,
+    pub(crate) claims: ChatgptJwtClaims,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImportedOauthProbeOutcome {
-    token_expires_at: String,
-    credentials: StoredOauthCredentials,
-    claims: ChatgptJwtClaims,
-    usage_snapshot: Option<NormalizedUsageSnapshot>,
-    maintenance_proxy_snapshot: Option<AccountMaintenanceProxySnapshot>,
-    exhausted: bool,
-    usage_snapshot_warning: Option<String>,
+    pub(crate) token_expires_at: String,
+    pub(crate) credentials: StoredOauthCredentials,
+    pub(crate) claims: ChatgptJwtClaims,
+    pub(crate) usage_snapshot: Option<NormalizedUsageSnapshot>,
+    pub(crate) maintenance_proxy_snapshot: Option<AccountMaintenanceProxySnapshot>,
+    pub(crate) exhausted: bool,
+    pub(crate) usage_snapshot_warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImportedOauthValidatedImportData {
-    normalized: NormalizedImportedOauthCredentials,
-    probe: ImportedOauthProbeOutcome,
+    pub(crate) normalized: NormalizedImportedOauthCredentials,
+    pub(crate) probe: ImportedOauthProbeOutcome,
 }
 
 pub(crate) struct PersistOauthCallbackInput {
-    session: OauthLoginSessionRow,
-    display_name: String,
-    chosen_email: Option<String>,
-    verified_email: Option<String>,
-    claims: ChatgptJwtClaims,
-    encrypted_credentials: String,
-    has_refresh_token: bool,
-    token_expires_at: String,
+    pub(crate) session: OauthLoginSessionRow,
+    pub(crate) display_name: String,
+    pub(crate) chosen_email: Option<String>,
+    pub(crate) verified_email: Option<String>,
+    pub(crate) claims: ChatgptJwtClaims,
+    pub(crate) encrypted_credentials: String,
+    pub(crate) has_refresh_token: bool,
+    pub(crate) token_expires_at: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatgptJwtOuterClaims {
+pub(crate) struct ChatgptJwtOuterClaims {
     #[serde(default)]
-    email: Option<String>,
+    pub(crate) email: Option<String>,
     #[serde(rename = "https://api.openai.com/profile", default)]
-    profile: Option<ChatgptJwtProfileClaims>,
+    pub(crate) profile: Option<ChatgptJwtProfileClaims>,
     #[serde(rename = "https://api.openai.com/auth", default)]
-    auth: Option<ChatgptJwtAuthClaims>,
+    pub(crate) auth: Option<ChatgptJwtAuthClaims>,
 }
 
 #[derive(Debug, Deserialize)]
-struct JwtExpiryClaims {
+pub(crate) struct JwtExpiryClaims {
     #[serde(default)]
-    exp: Option<i64>,
+    pub(crate) exp: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatgptJwtProfileClaims {
+pub(crate) struct ChatgptJwtProfileClaims {
     #[serde(default)]
-    email: Option<String>,
+    pub(crate) email: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatgptJwtAuthClaims {
+pub(crate) struct ChatgptJwtAuthClaims {
     #[serde(default)]
-    chatgpt_plan_type: Option<String>,
+    pub(crate) chatgpt_plan_type: Option<String>,
     #[serde(default)]
-    chatgpt_user_id: Option<String>,
+    pub(crate) chatgpt_user_id: Option<String>,
     #[serde(default)]
-    user_id: Option<String>,
+    pub(crate) user_id: Option<String>,
     #[serde(default)]
-    chatgpt_account_id: Option<String>,
+    pub(crate) chatgpt_account_id: Option<String>,
 }
 
 #[cfg(test)]

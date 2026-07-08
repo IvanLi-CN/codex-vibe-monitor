@@ -1,6 +1,13 @@
-use super::*;
 use super::prompt_cache_and_timeseries_shared as prompt_shared;
+use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
 use std::collections::HashMap;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
 
 pub(crate) async fn fetch_timeseries(
     State(state): State<Arc<AppState>>,
@@ -91,7 +98,7 @@ pub(crate) async fn fetch_timeseries(
             record.failure_class.as_deref(),
             record.is_actionable,
         );
-        let is_success_like = prompt_shared::invocation_status_is_success_like(
+        let is_success_like = prompt_shared::prompt_invocation_status_is_success_like(
             record.status.as_deref(),
             record.error_message.as_deref(),
         ) && classification.failure_class == FailureClass::None;
@@ -102,8 +109,9 @@ pub(crate) async fn fetch_timeseries(
             entry
                 .in_flight_phase_counts
                 .increment_phase_name(record.live_phase.as_deref());
-        } else if prompt_shared::invocation_status_counts_toward_terminal_totals(record.status.as_deref())
-            && classification.failure_class != FailureClass::None
+        } else if prompt_shared::prompt_invocation_status_counts_toward_terminal_totals(
+            record.status.as_deref(),
+        ) && classification.failure_class != FailureClass::None
         {
             entry.failure_count += 1;
         }
@@ -218,7 +226,7 @@ pub(crate) async fn fetch_timeseries(
     Ok(Json(response))
 }
 
-async fn fetch_timeseries_for_account(
+pub(crate) async fn fetch_timeseries_for_account(
     state: Arc<AppState>,
     reporting_tz: Tz,
     source_scope: InvocationSourceScope,
@@ -282,8 +290,16 @@ async fn fetch_timeseries_for_account(
             .timestamp_opt(range_end_epoch, 0)
             .single()
             .ok_or_else(|| anyhow!("invalid last full bucket end epoch"))?;
-        push_exact_range(&mut live_exact_ranges, start_dt, end_dt.min(first_full_bucket_start))?;
-        push_exact_range(&mut live_exact_ranges, start_dt.max(last_full_bucket_end), end_dt)?;
+        push_exact_range(
+            &mut live_exact_ranges,
+            start_dt,
+            end_dt.min(first_full_bucket_start),
+        )?;
+        push_exact_range(
+            &mut live_exact_ranges,
+            start_dt.max(last_full_bucket_end),
+            end_dt,
+        )?;
         HourlyRollupExactRangePlan {
             full_hour_range: (range_start_epoch < range_end_epoch)
                 .then_some((range_start_epoch, range_end_epoch)),
@@ -364,20 +380,25 @@ async fn fetch_timeseries_for_account(
         let archived_start = Utc
             .timestamp_opt(range_start_epoch, 0)
             .single()
-            .ok_or_else(|| ApiError::from(anyhow!("invalid account archived timeseries start epoch")))?;
+            .ok_or_else(|| {
+                ApiError::from(anyhow!("invalid account archived timeseries start epoch"))
+            })?;
         let archived_end = Utc
             .timestamp_opt(range_end_epoch, 0)
             .single()
-            .ok_or_else(|| ApiError::from(anyhow!("invalid account archived timeseries end epoch")))?;
-        let archived_rows = crate::stats::query_unmaterialized_upstream_account_archive_hourly_rollup_deltas(
-            &state.pool,
-            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
-            source_scope,
-            Some((archived_start, archived_end)),
-            Some(&archive_overlap_ids),
-            upstream_account_id,
-        )
-        .await?;
+            .ok_or_else(|| {
+                ApiError::from(anyhow!("invalid account archived timeseries end epoch"))
+            })?;
+        let archived_rows =
+            crate::stats::query_unmaterialized_upstream_account_archive_hourly_rollup_deltas(
+                &state.pool,
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+                source_scope,
+                Some((archived_start, archived_end)),
+                Some(&archive_overlap_ids),
+                upstream_account_id,
+            )
+            .await?;
         for row in archived_rows {
             let bucket_epoch =
                 align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
@@ -404,7 +425,8 @@ async fn fetch_timeseries_for_account(
                     )?;
                     merged
                 };
-                entry.first_response_byte_total_sample_count += row.first_response_byte_total_sample_count;
+                entry.first_response_byte_total_sample_count +=
+                    row.first_response_byte_total_sample_count;
                 entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
                 entry.first_response_byte_total_histogram =
                     if entry.first_response_byte_total_histogram.is_empty() {
@@ -445,7 +467,7 @@ async fn fetch_timeseries_for_account(
     )
 }
 
-fn add_rollup_rows_to_timeseries_aggregates(
+pub(crate) fn add_rollup_rows_to_timeseries_aggregates(
     aggregates: &mut BTreeMap<i64, BucketAggregate>,
     rows: Vec<UpstreamAccountStatsRollupRecord>,
     bucket_seconds: i64,
@@ -477,7 +499,8 @@ fn add_rollup_rows_to_timeseries_aggregates(
                 )?;
                 merged
             };
-            entry.first_response_byte_total_sample_count += row.first_response_byte_total_sample_count;
+            entry.first_response_byte_total_sample_count +=
+                row.first_response_byte_total_sample_count;
             entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
             entry.first_response_byte_total_histogram =
                 if entry.first_response_byte_total_histogram.is_empty() {
@@ -495,7 +518,7 @@ fn add_rollup_rows_to_timeseries_aggregates(
     Ok(())
 }
 
-fn add_exact_records_to_timeseries_aggregates(
+pub(crate) fn add_exact_records_to_timeseries_aggregates(
     aggregates: &mut BTreeMap<i64, BucketAggregate>,
     records: Vec<InvocationAggregateRecord>,
     bucket_seconds: i64,
@@ -514,7 +537,7 @@ fn add_exact_records_to_timeseries_aggregates(
     Ok(())
 }
 
-fn add_exact_record_to_timeseries_aggregate(
+pub(crate) fn add_exact_record_to_timeseries_aggregate(
     entry: &mut BucketAggregate,
     record: &InvocationAggregateRecord,
 ) {
@@ -526,7 +549,7 @@ fn add_exact_record_to_timeseries_aggregate(
         record.failure_class.as_deref(),
         record.is_actionable,
     );
-    let is_success_like = prompt_shared::invocation_status_is_success_like(
+    let is_success_like = prompt_shared::prompt_invocation_status_is_success_like(
         record.status.as_deref(),
         record.error_message.as_deref(),
     ) && classification.failure_class == FailureClass::None;
@@ -537,8 +560,9 @@ fn add_exact_record_to_timeseries_aggregate(
         entry
             .in_flight_phase_counts
             .increment_phase_name(record.live_phase.as_deref());
-    } else if prompt_shared::invocation_status_counts_toward_terminal_totals(record.status.as_deref())
-        && classification.failure_class != FailureClass::None
+    } else if prompt_shared::prompt_invocation_status_counts_toward_terminal_totals(
+        record.status.as_deref(),
+    ) && classification.failure_class != FailureClass::None
     {
         entry.failure_count += 1;
     }
@@ -572,7 +596,7 @@ fn add_exact_record_to_timeseries_aggregate(
     }
 }
 
-fn subtract_stale_in_flight_record_from_timeseries_aggregate(
+pub(crate) fn subtract_stale_in_flight_record_from_timeseries_aggregate(
     entry: &mut BucketAggregate,
     record: &InvocationAggregateRecord,
 ) {
@@ -599,7 +623,7 @@ fn subtract_stale_in_flight_record_from_timeseries_aggregate(
     );
 }
 
-fn overlay_runtime_timeseries_in_flight(
+pub(crate) fn overlay_runtime_timeseries_in_flight(
     state: &AppState,
     aggregates: &mut BTreeMap<i64, BucketAggregate>,
     source_scope: InvocationSourceScope,
@@ -712,7 +736,7 @@ fn overlay_runtime_timeseries_in_flight(
     Ok(())
 }
 
-fn subtract_stale_db_runtime_record(
+pub(crate) fn subtract_stale_db_runtime_record(
     aggregates: &mut BTreeMap<i64, BucketAggregate>,
     record: &InvocationAggregateRecord,
     bucket_seconds: i64,
@@ -731,7 +755,7 @@ fn subtract_stale_db_runtime_record(
     Ok(())
 }
 
-fn collect_in_flight_aggregate_records(
+pub(crate) fn collect_in_flight_aggregate_records(
     records: &[InvocationAggregateRecord],
 ) -> HashMap<(String, String), InvocationAggregateRecord> {
     records
@@ -746,7 +770,7 @@ fn collect_in_flight_aggregate_records(
         .collect()
 }
 
-fn timeseries_point_from_aggregate(
+pub(crate) fn timeseries_point_from_aggregate(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     agg: &BucketAggregate,
@@ -794,7 +818,7 @@ fn timeseries_point_from_aggregate(
     }
 }
 
-fn build_timeseries_response(
+pub(crate) fn build_timeseries_response(
     start_dt: DateTime<Utc>,
     end_dt: DateTime<Utc>,
     bucket_seconds: i64,
@@ -840,7 +864,9 @@ pub(crate) async fn fetch_parallel_work_stats(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ParallelWorkStatsQuery>,
 ) -> Result<Json<ParallelWorkStatsResponse>, ApiError> {
-    load_parallel_work_stats_response(&state, params).await.map(Json)
+    load_parallel_work_stats_response(&state, params)
+        .await
+        .map(Json)
 }
 
 pub(crate) async fn fetch_parallel_work_stats_cached(
@@ -864,7 +890,9 @@ pub(crate) async fn fetch_parallel_work_stats_cached(
     };
     let etag_value = HeaderValue::from_str(&etag)
         .map_err(|err| ApiError::from(anyhow!("invalid parallel-work etag: {err}")))?;
-    response.headers_mut().insert(axum::http::header::ETAG, etag_value);
+    response
+        .headers_mut()
+        .insert(axum::http::header::ETAG, etag_value);
     response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         HeaderValue::from_static("no-cache"),
@@ -872,12 +900,12 @@ pub(crate) async fn fetch_parallel_work_stats_cached(
     Ok(response)
 }
 
-fn parallel_work_stats_etag(body: &[u8]) -> String {
+pub(crate) fn parallel_work_stats_etag(body: &[u8]) -> String {
     let digest = Sha256::digest(body);
     format!("\"parallel-work-{digest:x}\"")
 }
 
-fn request_etag_matches(headers: &HeaderMap, etag: &str) -> bool {
+pub(crate) fn request_etag_matches(headers: &HeaderMap, etag: &str) -> bool {
     headers
         .get(axum::http::header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
@@ -889,7 +917,7 @@ fn request_etag_matches(headers: &HeaderMap, etag: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn load_parallel_work_stats_response(
+pub(crate) async fn load_parallel_work_stats_response(
     state: &Arc<AppState>,
     params: ParallelWorkStatsQuery,
 ) -> Result<ParallelWorkStatsResponse, ApiError> {
@@ -911,10 +939,7 @@ async fn load_parallel_work_stats_response(
     )?;
     let bucket_seconds = bucket_selection.bucket_seconds;
     let (reporting_tz, time_zone_fallback) = if bucket_seconds >= 3_600 {
-        resolve_parallel_work_rollup_reporting_tz(
-            requested_reporting_tz,
-            &requested_range_window,
-        )
+        resolve_parallel_work_rollup_reporting_tz(requested_reporting_tz, &requested_range_window)
     } else {
         (requested_reporting_tz, false)
     };
@@ -1044,7 +1069,7 @@ async fn load_parallel_work_stats_response(
     })
 }
 
-async fn query_parallel_work_conversation_spans(
+pub(crate) async fn query_parallel_work_conversation_spans(
     pool: &Pool<Sqlite>,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
@@ -1092,11 +1117,18 @@ async fn query_parallel_work_conversation_spans(
         let Some(last_occurred_at) = parse_to_utc_datetime(&row.last_occurred_at) else {
             continue;
         };
-        let start_epoch =
-            align_reporting_bucket_epoch(first_occurred_at.timestamp(), bucket_seconds, reporting_tz)?;
-        let end_bucket_epoch =
-            align_reporting_bucket_epoch(last_occurred_at.timestamp(), bucket_seconds, reporting_tz)?;
-        let end_epoch = next_reporting_bucket_epoch(end_bucket_epoch, bucket_seconds, reporting_tz)?;
+        let start_epoch = align_reporting_bucket_epoch(
+            first_occurred_at.timestamp(),
+            bucket_seconds,
+            reporting_tz,
+        )?;
+        let end_bucket_epoch = align_reporting_bucket_epoch(
+            last_occurred_at.timestamp(),
+            bucket_seconds,
+            reporting_tz,
+        )?;
+        let end_epoch =
+            next_reporting_bucket_epoch(end_bucket_epoch, bucket_seconds, reporting_tz)?;
         let start = Utc
             .timestamp_opt(start_epoch, 0)
             .single()
@@ -1142,8 +1174,10 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
     }
 
-    let (snapshot_id, hourly_rows, exact_records, archive_overlap_ids) =
-        if range_plan.full_hour_range.is_some() {
+    let (snapshot_id, hourly_rows, exact_records, archive_overlap_ids) = if range_plan
+        .full_hour_range
+        .is_some()
+    {
         let mut tx = state.pool.begin().await?;
         let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
         let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
@@ -1258,7 +1292,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 record.failure_class.as_deref(),
                 record.is_actionable,
             );
-            let is_success_like = prompt_shared::invocation_status_is_success_like(
+            let is_success_like = prompt_shared::prompt_invocation_status_is_success_like(
                 record.status.as_deref(),
                 record.error_message.as_deref(),
             ) && classification.failure_class == FailureClass::None;
@@ -1269,8 +1303,9 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 entry
                     .in_flight_phase_counts
                     .increment_phase_name(record.live_phase.as_deref());
-            } else if prompt_shared::invocation_status_counts_toward_terminal_totals(record.status.as_deref())
-                && classification.failure_class != FailureClass::None
+            } else if prompt_shared::prompt_invocation_status_counts_toward_terminal_totals(
+                record.status.as_deref(),
+            ) && classification.failure_class != FailureClass::None
             {
                 entry.failure_count += 1;
             }
@@ -1381,9 +1416,7 @@ mod tests {
         aggregate.first_byte_ttfb_values.push(750.0);
         aggregate.first_response_byte_total_sample_count = 1;
         aggregate.first_response_byte_total_sum_ms = 18_225.02;
-        aggregate
-            .first_response_byte_total_values
-            .push(18_225.02);
+        aggregate.first_response_byte_total_values.push(18_225.02);
         aggregate.total_latency_sample_count = 1;
         aggregate.total_latency_sum_ms = 24_000.0;
 
@@ -1459,12 +1492,9 @@ mod tests {
 
     #[test]
     fn add_rollup_rows_preserves_total_latency_metrics() {
-        let bucket_epoch = align_reporting_bucket_epoch(
-            1_775_608_200,
-            3_600,
-            chrono_tz::Asia::Shanghai,
-        )
-        .expect("aligned bucket");
+        let bucket_epoch =
+            align_reporting_bucket_epoch(1_775_608_200, 3_600, chrono_tz::Asia::Shanghai)
+                .expect("aligned bucket");
         let mut aggregates = BTreeMap::from([(bucket_epoch, BucketAggregate::default())]);
         add_rollup_rows_to_timeseries_aggregates(
             &mut aggregates,
@@ -1489,7 +1519,8 @@ mod tests {
                 first_response_byte_total_sample_count: 1,
                 first_response_byte_total_sum_ms: 900.0,
                 first_response_byte_total_max_ms: 900.0,
-                first_response_byte_total_histogram: encode_approx_histogram(&[0, 1]).expect("histogram"),
+                first_response_byte_total_histogram: encode_approx_histogram(&[0, 1])
+                    .expect("histogram"),
             }],
             3_600,
             chrono_tz::Asia::Shanghai,

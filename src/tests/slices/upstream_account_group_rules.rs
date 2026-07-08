@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn update_upstream_account_group_disabling_retry_clears_retry_count_and_deletes_empty_row() {
     let state = test_state_with_openai_base(
@@ -235,7 +238,7 @@ fn test_stage_timings() -> StageTimings {
     }
 }
 
-fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCaptureRecord {
+pub(crate) fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCaptureRecord {
     ProxyCaptureRecord {
         invoke_id: invoke_id.to_string(),
         occurred_at: occurred_at.to_string(),
@@ -297,7 +300,7 @@ async fn seed_success_invocation_for_records_page(
 
 #[tokio::test]
 async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overlay_without_sync_db_write()
-{
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -341,9 +344,11 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overla
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, record)
         .await
         .expect("runtime snapshot should store in memory and broadcast");
-    state
-        .proxy_runtime_invocations
-        .backdate_for_test(invoke_id, occurred_at, std::time::Duration::from_secs(2 * 60 * 60));
+    state.proxy_runtime_invocations.backdate_for_test(
+        invoke_id,
+        occurred_at,
+        std::time::Duration::from_secs(2 * 60 * 60),
+    );
 
     let payload = rx
         .recv()
@@ -826,7 +831,10 @@ async fn admitted_proxy_capture_snapshot_is_visible_before_body_parse_and_later_
     };
     assert_eq!(admitted_broadcast.id, 0);
     assert_eq!(admitted_broadcast.status.as_deref(), Some("running"));
-    assert_eq!(admitted_broadcast.endpoint.as_deref(), Some("/v1/responses"));
+    assert_eq!(
+        admitted_broadcast.endpoint.as_deref(),
+        Some("/v1/responses")
+    );
     assert_eq!(
         admitted_broadcast.requester_ip.as_deref(),
         Some("203.0.113.42")
@@ -1407,7 +1415,10 @@ async fn terminal_db_row_wins_over_stale_memory_runtime_overlay() {
     assert_eq!(records_response.total, 1);
     assert_eq!(records_response.records.len(), 1);
     assert!(records_response.records[0].id > 0);
-    assert_eq!(records_response.records[0].status.as_deref(), Some("success"));
+    assert_eq!(
+        records_response.records[0].status.as_deref(),
+        Some("success")
+    );
 
     let Json(summary_response) = fetch_invocation_summary(
         State(state),
@@ -1479,7 +1490,10 @@ async fn queued_terminal_overlay_preserves_total_when_db_running_placeholder_exi
     assert_eq!(records_response.total, 1);
     assert_eq!(records_response.records.len(), 1);
     assert_eq!(records_response.records[0].id, 0);
-    assert_eq!(records_response.records[0].status.as_deref(), Some("success"));
+    assert_eq!(
+        records_response.records[0].status.as_deref(),
+        Some("success")
+    );
 
     let Json(summary_response) = fetch_invocation_summary(
         State(state),
@@ -1500,10 +1514,8 @@ async fn clearing_terminal_tombstone_allows_enqueue_retry_without_running_regres
     let store = ProxyRuntimeInvocationStore::default();
     let invoke_id = "invoke-terminal-retry-after-queue-full";
     let occurred_at = "2026-03-17 18:13:40";
-    let terminal = api_invocation_from_runtime_record(&test_proxy_capture_record(
-        invoke_id,
-        occurred_at,
-    ));
+    let terminal =
+        api_invocation_from_runtime_record(&test_proxy_capture_record(invoke_id, occurred_at));
 
     let first_terminal = store.upsert_terminal(terminal.clone());
     assert!(
@@ -1567,10 +1579,8 @@ async fn route_failure_cleanup_skips_queued_terminal_runtime_overlay() {
     .await;
     let invoke_id = "queued-terminal-route-cleanup";
     let occurred_at = "2026-03-17 18:13:41";
-    let terminal = api_invocation_from_runtime_record(&test_proxy_capture_record(
-        invoke_id,
-        occurred_at,
-    ));
+    let terminal =
+        api_invocation_from_runtime_record(&test_proxy_capture_record(invoke_id, occurred_at));
 
     state.proxy_runtime_invocations.upsert_terminal(terminal);
 
@@ -1651,8 +1661,8 @@ async fn delayed_runtime_snapshot_after_terminal_does_not_reintroduce_running_ov
         .await
         .expect("delayed runtime snapshot should be skipped after terminal persistence");
 
-    let delayed_broadcast = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
-        .await;
+    let delayed_broadcast =
+        tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
     assert!(
         delayed_broadcast.is_err(),
         "stale delayed running snapshot should not be rebroadcast after terminal persistence"
@@ -1919,7 +1929,7 @@ async fn persist_proxy_capture_record_repairs_proxy_interrupted_recovery_row_wit
     assert_eq!(finalized.failure_kind, None);
 }
 
-async fn seed_quota_snapshot(pool: &SqlitePool, captured_at: &str) {
+pub(crate) async fn seed_quota_snapshot(pool: &SqlitePool, captured_at: &str) {
     sqlx::query(
         r#"
         INSERT INTO codex_quota_snapshots (
@@ -1964,7 +1974,7 @@ async fn seed_quota_snapshot(pool: &SqlitePool, captured_at: &str) {
     .expect("seed quota snapshot");
 }
 
-async fn seed_forward_proxy_attempt_at(
+pub(crate) async fn seed_forward_proxy_attempt_at(
     pool: &SqlitePool,
     proxy_key: &str,
     occurred_at: DateTime<Utc>,
@@ -2060,7 +2070,7 @@ pub(crate) async fn seed_pool_upstream_attempt_at(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn seed_forward_proxy_weight_bucket_at(
+pub(crate) async fn seed_forward_proxy_weight_bucket_at(
     pool: &SqlitePool,
     proxy_key: &str,
     bucket_start_epoch: i64,
@@ -2104,7 +2114,7 @@ async fn seed_forward_proxy_weight_bucket_at(
     .expect("seed forward proxy weight bucket");
 }
 
-async fn drain_broadcast_messages(rx: &mut broadcast::Receiver<BroadcastPayload>) {
+pub(crate) async fn drain_broadcast_messages(rx: &mut broadcast::Receiver<BroadcastPayload>) {
     loop {
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
             Ok(Ok(_)) => continue,
@@ -2115,7 +2125,9 @@ async fn drain_broadcast_messages(rx: &mut broadcast::Receiver<BroadcastPayload>
     }
 }
 
-async fn spawn_test_forward_proxy_status(status: StatusCode) -> (String, JoinHandle<()>) {
+pub(crate) async fn spawn_test_forward_proxy_status(
+    status: StatusCode,
+) -> (String, JoinHandle<()>) {
     let app = Router::new().fallback(any(move || async move {
         (
             status,
@@ -2140,7 +2152,7 @@ async fn spawn_test_forward_proxy_status(status: StatusCode) -> (String, JoinHan
     (format!("http://{addr}"), handle)
 }
 
-async fn spawn_test_counting_forward_proxy_status(
+pub(crate) async fn spawn_test_counting_forward_proxy_status(
     status: StatusCode,
     request_count: Arc<AtomicUsize>,
 ) -> (String, JoinHandle<()>) {
@@ -2172,7 +2184,7 @@ async fn spawn_test_counting_forward_proxy_status(
     (format!("http://{addr}"), handle)
 }
 
-async fn spawn_test_blocking_forward_proxy_status(
+pub(crate) async fn spawn_test_blocking_forward_proxy_status(
     status: StatusCode,
     request_started: Arc<Notify>,
     release_request: Arc<Notify>,
@@ -2207,7 +2219,7 @@ async fn spawn_test_blocking_forward_proxy_status(
     (format!("http://{addr}"), handle)
 }
 
-async fn spawn_test_subscription_source(body: String) -> (String, JoinHandle<()>) {
+pub(crate) async fn spawn_test_subscription_source(body: String) -> (String, JoinHandle<()>) {
     let body = Arc::new(body);
     let app = Router::new().route(
         "/subscription",
@@ -2235,7 +2247,7 @@ async fn spawn_test_subscription_source(body: String) -> (String, JoinHandle<()>
     (format!("http://{addr}/subscription"), handle)
 }
 
-async fn count_forward_proxy_probe_attempts(
+pub(crate) async fn count_forward_proxy_probe_attempts(
     pool: &SqlitePool,
     proxy_key: &str,
     success: Option<bool>,
@@ -2258,7 +2270,7 @@ async fn count_forward_proxy_probe_attempts(
         .expect("count forward proxy probe attempts")
 }
 
-async fn wait_for_forward_proxy_probe_attempts(
+pub(crate) async fn wait_for_forward_proxy_probe_attempts(
     pool: &SqlitePool,
     proxy_key: &str,
     expected_min_count: i64,
@@ -2277,14 +2289,14 @@ async fn wait_for_forward_proxy_probe_attempts(
     }
 }
 
-async fn count_request_forward_proxy_attempts(pool: &SqlitePool) -> i64 {
+pub(crate) async fn count_request_forward_proxy_attempts(pool: &SqlitePool) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM forward_proxy_attempts WHERE is_probe = 0")
         .fetch_one(pool)
         .await
         .expect("count request forward proxy attempts")
 }
 
-async fn count_request_forward_proxy_attempts_with_failure_kind(
+pub(crate) async fn count_request_forward_proxy_attempts_with_failure_kind(
     pool: &SqlitePool,
     failure_kind: &str,
 ) -> i64 {
@@ -2297,14 +2309,17 @@ async fn count_request_forward_proxy_attempts_with_failure_kind(
     .expect("count request forward proxy attempts by failure kind")
 }
 
-async fn count_pool_upstream_request_attempts(pool: &SqlitePool) -> i64 {
+pub(crate) async fn count_pool_upstream_request_attempts(pool: &SqlitePool) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_request_attempts")
         .fetch_one(pool)
         .await
         .expect("count pool upstream request attempts")
 }
 
-async fn wait_for_pool_upstream_request_attempts(pool: &SqlitePool, expected_min_count: i64) {
+pub(crate) async fn wait_for_pool_upstream_request_attempts(
+    pool: &SqlitePool,
+    expected_min_count: i64,
+) {
     let started = Instant::now();
     loop {
         let count = count_pool_upstream_request_attempts(pool).await;
@@ -2319,7 +2334,9 @@ async fn wait_for_pool_upstream_request_attempts(pool: &SqlitePool, expected_min
     }
 }
 
-async fn latest_request_forward_proxy_attempt_latency_ms(pool: &SqlitePool) -> Option<f64> {
+pub(crate) async fn latest_request_forward_proxy_attempt_latency_ms(
+    pool: &SqlitePool,
+) -> Option<f64> {
     sqlx::query_scalar::<_, Option<f64>>(
         "SELECT latency_ms FROM forward_proxy_attempts WHERE is_probe = 0 ORDER BY id DESC LIMIT 1",
     )
@@ -2329,7 +2346,7 @@ async fn latest_request_forward_proxy_attempt_latency_ms(pool: &SqlitePool) -> O
     .flatten()
 }
 
-async fn count_codex_invocations(pool: &SqlitePool) -> i64 {
+pub(crate) async fn count_codex_invocations(pool: &SqlitePool) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
         .fetch_one(pool)
         .await
@@ -2349,7 +2366,7 @@ async fn count_in_flight_codex_invocations(pool: &SqlitePool) -> i64 {
     .expect("count in-flight codex invocations")
 }
 
-async fn wait_for_codex_invocations(pool: &SqlitePool, expected_min_count: i64) {
+pub(crate) async fn wait_for_codex_invocations(pool: &SqlitePool, expected_min_count: i64) {
     let started = Instant::now();
     loop {
         let count = count_codex_invocations(pool).await;
@@ -2422,7 +2439,7 @@ async fn retrying_echo_upstream(
         .into_response()
 }
 
-async fn spawn_retrying_echo_upstream(
+pub(crate) async fn spawn_retrying_echo_upstream(
     rate_limit_attempts: usize,
     retry_after: Option<&str>,
 ) -> (
@@ -2512,7 +2529,7 @@ async fn retrying_capture_upstream(
         .into_response()
 }
 
-async fn spawn_retrying_capture_upstream(
+pub(crate) async fn spawn_retrying_capture_upstream(
     rate_limit_attempts: usize,
     retry_after: Option<&str>,
 ) -> (
@@ -2596,7 +2613,7 @@ async fn retrying_models_upstream(State(state): State<Retry429ModelsState>) -> R
         .into_response()
 }
 
-async fn spawn_retrying_models_upstream(
+pub(crate) async fn spawn_retrying_models_upstream(
     rate_limit_attempts: usize,
     retry_after: Option<&str>,
 ) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
@@ -2625,7 +2642,10 @@ async fn spawn_retrying_models_upstream(
     (format!("http://{addr}/"), attempts, handle)
 }
 
-async fn read_forward_proxy_runtime_weight(pool: &SqlitePool, proxy_key: &str) -> Option<f64> {
+pub(crate) async fn read_forward_proxy_runtime_weight(
+    pool: &SqlitePool,
+    proxy_key: &str,
+) -> Option<f64> {
     sqlx::query_scalar::<_, f64>("SELECT weight FROM forward_proxy_runtime WHERE proxy_key = ?1")
         .bind(proxy_key)
         .fetch_optional(pool)
@@ -2901,11 +2921,8 @@ async fn test_upstream_responses_gzip_stream() -> impl IntoResponse {
 }
 
 fn encode_deflate_payload(bytes: &[u8]) -> Vec<u8> {
-    let mut encoder =
-        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder
-        .write_all(bytes)
-        .expect("write deflate payload");
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).expect("write deflate payload");
     encoder.finish().expect("finish deflate payload")
 }
 
@@ -2945,9 +2962,12 @@ fn encoded_stream_fixture_payload() -> String {
 }
 
 async fn test_upstream_responses_truncated_encoded_stream(encoding: &'static str) -> Response {
-    let mut encoded = encode_response_payload(encoded_stream_fixture_payload().as_bytes(), encoding);
+    let mut encoded =
+        encode_response_payload(encoded_stream_fixture_payload().as_bytes(), encoding);
     let split_at = encoded.len().saturating_div(2).clamp(1, encoded.len());
-    let corrupt_index = split_at.saturating_div(2).min(encoded.len().saturating_sub(1));
+    let corrupt_index = split_at
+        .saturating_div(2)
+        .min(encoded.len().saturating_sub(1));
     encoded[corrupt_index] ^= 0x5a;
     let first_chunk = Bytes::copy_from_slice(&encoded[..split_at]);
     let chunks = stream::unfold(0usize, move |state| {
@@ -2980,7 +3000,8 @@ async fn test_upstream_responses_truncated_encoded_stream(encoding: &'static str
 async fn test_upstream_responses_corrupt_encoded_complete_stream(
     encoding: &'static str,
 ) -> Response {
-    let mut encoded = encode_response_payload(encoded_stream_fixture_payload().as_bytes(), encoding);
+    let mut encoded =
+        encode_response_payload(encoded_stream_fixture_payload().as_bytes(), encoding);
     let corrupt_len = encoded.len().saturating_div(2).clamp(1, encoded.len());
     encoded.truncate(corrupt_len);
 
@@ -2992,7 +3013,7 @@ async fn test_upstream_responses_corrupt_encoded_complete_stream(
         .expect("build corrupt encoded stream response")
 }
 
-fn less_compressible_test_string(target_len: usize) -> String {
+pub(crate) fn less_compressible_test_string(target_len: usize) -> String {
     use std::fmt::Write as _;
 
     let mut text = String::with_capacity(target_len);
@@ -3564,7 +3585,7 @@ async fn test_upstream_models(uri: Uri) -> impl IntoResponse {
         .into_response()
 }
 
-async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
+pub(crate) async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
     let app = Router::new()
         .route("/v1/echo", any(test_upstream_echo))
         .route("/v1/stream", any(test_upstream_stream))
@@ -3606,7 +3627,7 @@ async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
     (format!("http://{addr}/"), handle)
 }
 
-async fn spawn_test_upstream_with_prefix(prefix: &str) -> (String, JoinHandle<()>) {
+pub(crate) async fn spawn_test_upstream_with_prefix(prefix: &str) -> (String, JoinHandle<()>) {
     let echo_path = format!("{prefix}/v1/echo");
     let redirect_path = format!("{prefix}/v1/redirect");
     let redirect_location = HeaderValue::from_str(&format!("{prefix}/v1/echo?from=redirect"))
@@ -3821,7 +3842,8 @@ fn chunked_json_response_with_delayed_final_chunk(payload: Value, delay: Duratio
         .into_response()
 }
 
-async fn spawn_capture_target_body_upstream() -> (String, Arc<Mutex<Vec<Value>>>, JoinHandle<()>) {
+pub(crate) async fn spawn_capture_target_body_upstream()
+-> (String, Arc<Mutex<Vec<Value>>>, JoinHandle<()>) {
     let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
     let app = Router::new()
         .route(
@@ -3850,7 +3872,7 @@ async fn spawn_capture_target_body_upstream() -> (String, Arc<Mutex<Vec<Value>>>
     (format!("http://{addr}/"), captured, handle)
 }
 
-fn extract_model_ids(payload: &Value) -> Vec<String> {
+pub(crate) fn extract_model_ids(payload: &Value) -> Vec<String> {
     payload
         .get("data")
         .and_then(|v| v.as_array())

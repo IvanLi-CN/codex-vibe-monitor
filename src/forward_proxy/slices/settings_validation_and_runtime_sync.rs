@@ -1,3 +1,5 @@
+use super::*;
+
 pub(crate) async fn refresh_forward_proxy_subscriptions(
     state: Arc<AppState>,
     force: bool,
@@ -254,7 +256,7 @@ pub(crate) async fn canonicalize_forward_proxy_bound_keys(
     Ok(canonical)
 }
 
-async fn canonicalize_forward_proxy_route_scope(
+pub(crate) async fn canonicalize_forward_proxy_route_scope(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
 ) -> Result<ForwardProxyRouteScope> {
@@ -990,7 +992,7 @@ pub(crate) struct ForwardProxyManager {
     pub(crate) last_subscription_refresh_at: Option<DateTime<Utc>>,
 }
 
-const BOUND_FORWARD_PROXY_SWITCH_FAILURE_THRESHOLD: u32 = 3;
+pub(crate) const BOUND_FORWARD_PROXY_SWITCH_FAILURE_THRESHOLD: u32 = 3;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BoundForwardProxyGroupState {
@@ -1053,10 +1055,7 @@ impl ForwardProxyRouteScope {
         Self::PinnedProxyKey(proxy_key.into())
     }
 
-    pub(crate) fn bound_scope(
-        scope_key: impl Into<String>,
-        bound_proxy_keys: Vec<String>,
-    ) -> Self {
+    pub(crate) fn bound_scope(scope_key: impl Into<String>, bound_proxy_keys: Vec<String>) -> Self {
         let scope_key = scope_key.into().trim().to_string();
         let normalized_bound_proxy_keys = bound_proxy_keys
             .into_iter()
@@ -1408,7 +1407,10 @@ impl ForwardProxyManager {
         self.bound_group_runtime
             .get(scope_key)
             .and_then(|state| state.current_binding_key.as_deref())
-            .and_then(|key| self.resolve_current_bound_proxy_key(key).or_else(|| normalize_bound_proxy_key(key)))
+            .and_then(|key| {
+                self.resolve_current_bound_proxy_key(key)
+                    .or_else(|| normalize_bound_proxy_key(key))
+            })
             .filter(|key| available_keys.contains(key))
     }
 
@@ -1833,8 +1835,8 @@ impl ForwardProxyManager {
         }
 
         if should_switch
-            && let Some(next_binding_key) =
-                self.choose_best_bound_proxy_key(&available_keys, Some(selected_binding_key.as_str()))
+            && let Some(next_binding_key) = self
+                .choose_best_bound_proxy_key(&available_keys, Some(selected_binding_key.as_str()))
         {
             let state = self
                 .bound_group_runtime

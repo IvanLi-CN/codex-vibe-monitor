@@ -1,3 +1,11 @@
+use super::*;
+use aes_gcm::{
+    Aes256Gcm,
+    aead::{Aead, KeyInit},
+};
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use rand::{RngCore, rngs::OsRng};
+
 pub(crate) fn pool_routing_timeouts_from_config(
     config: &AppConfig,
 ) -> PoolRoutingTimeoutSettingsResolved {
@@ -108,7 +116,9 @@ pub(crate) fn normalize_optional_timeout_override_secs(
 }
 
 pub(crate) fn normalize_timeout_override_secs_from_i64(value: Option<i64>) -> Option<u64> {
-    value.and_then(|value| u64::try_from(value).ok()).filter(|value| *value > 0)
+    value
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
 }
 
 pub(crate) fn routing_timeout_settings_from_columns(
@@ -162,7 +172,11 @@ pub(crate) fn resolve_effective_routing_timeout_settings(
     group: Option<&RoutingTimeoutSettings>,
     account: Option<&RoutingTimeoutSettings>,
     conversation: Option<&RoutingTimeoutSettings>,
-) -> (RoutingTimeoutSettings, RoutingTimeoutFieldSources, PoolRoutingTimeoutSettingsResolved) {
+) -> (
+    RoutingTimeoutSettings,
+    RoutingTimeoutFieldSources,
+    PoolRoutingTimeoutSettingsResolved,
+) {
     let mut overrides = RoutingTimeoutSettings::default();
     let mut effective = RoutingTimeoutSettings {
         responses_first_byte_timeout_secs: Some(root.responses_first_byte_timeout.as_secs()),
@@ -357,20 +371,18 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group(
     PoolRoutingTimeoutSettingsResolved,
 )> {
     let root = resolve_pool_routing_timeouts(pool, config).await?;
-    let group_settings = if let Some(group_name) = group_name
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        #[derive(Debug, FromRow)]
-        struct GroupTimeoutRow {
-            policy_responses_first_byte_timeout_secs: Option<i64>,
-            policy_compact_first_byte_timeout_secs: Option<i64>,
-            policy_responses_stream_timeout_secs: Option<i64>,
-            policy_compact_stream_timeout_secs: Option<i64>,
-        }
+    let group_settings =
+        if let Some(group_name) = group_name.map(str::trim).filter(|value| !value.is_empty()) {
+            #[derive(Debug, FromRow)]
+            struct GroupTimeoutRow {
+                policy_responses_first_byte_timeout_secs: Option<i64>,
+                policy_compact_first_byte_timeout_secs: Option<i64>,
+                policy_responses_stream_timeout_secs: Option<i64>,
+                policy_compact_stream_timeout_secs: Option<i64>,
+            }
 
-        sqlx::query_as::<_, GroupTimeoutRow>(
-            r#"
+            sqlx::query_as::<_, GroupTimeoutRow>(
+                r#"
             SELECT
                 policy_responses_first_byte_timeout_secs,
                 policy_compact_first_byte_timeout_secs,
@@ -380,21 +392,21 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group(
             WHERE group_name = ?1
             LIMIT 1
             "#,
-        )
-        .bind(group_name)
-        .fetch_optional(pool)
-        .await?
-        .and_then(|row| {
-            routing_timeout_settings_from_columns(
-                row.policy_responses_first_byte_timeout_secs,
-                row.policy_compact_first_byte_timeout_secs,
-                row.policy_responses_stream_timeout_secs,
-                row.policy_compact_stream_timeout_secs,
             )
-        })
-    } else {
-        None
-    };
+            .bind(group_name)
+            .fetch_optional(pool)
+            .await?
+            .and_then(|row| {
+                routing_timeout_settings_from_columns(
+                    row.policy_responses_first_byte_timeout_secs,
+                    row.policy_compact_first_byte_timeout_secs,
+                    row.policy_responses_stream_timeout_secs,
+                    row.policy_compact_stream_timeout_secs,
+                )
+            })
+        } else {
+            None
+        };
 
     let (effective, sources, resolved) =
         resolve_effective_routing_timeout_settings(root, group_settings.as_ref(), None, None);
@@ -412,20 +424,18 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversat
     PoolRoutingTimeoutSettingsResolved,
 )> {
     let root = resolve_pool_routing_timeouts(pool, config).await?;
-    let group_settings = if let Some(group_name) = group_name
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        #[derive(Debug, FromRow)]
-        struct GroupTimeoutRow {
-            policy_responses_first_byte_timeout_secs: Option<i64>,
-            policy_compact_first_byte_timeout_secs: Option<i64>,
-            policy_responses_stream_timeout_secs: Option<i64>,
-            policy_compact_stream_timeout_secs: Option<i64>,
-        }
+    let group_settings =
+        if let Some(group_name) = group_name.map(str::trim).filter(|value| !value.is_empty()) {
+            #[derive(Debug, FromRow)]
+            struct GroupTimeoutRow {
+                policy_responses_first_byte_timeout_secs: Option<i64>,
+                policy_compact_first_byte_timeout_secs: Option<i64>,
+                policy_responses_stream_timeout_secs: Option<i64>,
+                policy_compact_stream_timeout_secs: Option<i64>,
+            }
 
-        sqlx::query_as::<_, GroupTimeoutRow>(
-            r#"
+            sqlx::query_as::<_, GroupTimeoutRow>(
+                r#"
             SELECT
                 policy_responses_first_byte_timeout_secs,
                 policy_compact_first_byte_timeout_secs,
@@ -435,21 +445,21 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversat
             WHERE group_name = ?1
             LIMIT 1
             "#,
-        )
-        .bind(group_name)
-        .fetch_optional(pool)
-        .await?
-        .and_then(|row| {
-            routing_timeout_settings_from_columns(
-                row.policy_responses_first_byte_timeout_secs,
-                row.policy_compact_first_byte_timeout_secs,
-                row.policy_responses_stream_timeout_secs,
-                row.policy_compact_stream_timeout_secs,
             )
-        })
-    } else {
-        None
-    };
+            .bind(group_name)
+            .fetch_optional(pool)
+            .await?
+            .and_then(|row| {
+                routing_timeout_settings_from_columns(
+                    row.policy_responses_first_byte_timeout_secs,
+                    row.policy_compact_first_byte_timeout_secs,
+                    row.policy_responses_stream_timeout_secs,
+                    row.policy_compact_stream_timeout_secs,
+                )
+            })
+        } else {
+            None
+        };
 
     let conversation_settings = if let Some(prompt_cache_key) = prompt_cache_key
         .map(str::trim)
@@ -499,7 +509,9 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversat
     Ok((effective, sources, resolved))
 }
 
-pub(crate) async fn load_pool_routing_settings(pool: &Pool<Sqlite>) -> Result<PoolRoutingSettingsRow> {
+pub(crate) async fn load_pool_routing_settings(
+    pool: &Pool<Sqlite>,
+) -> Result<PoolRoutingSettingsRow> {
     sqlx::query_as::<_, PoolRoutingSettingsRow>(
         r#"
         SELECT
@@ -907,7 +919,7 @@ pub(crate) enum PoolRoutingCandidateEligibility {
 }
 
 impl PoolRoutingCandidateEligibility {
-    fn rank(self) -> u8 {
+    pub(crate) fn rank(self) -> u8 {
         match self {
             Self::Assignable => 0,
             Self::SoftDegraded => 1,
@@ -923,7 +935,7 @@ pub(crate) enum PoolRoutingCandidateCapacityLane {
 }
 
 impl PoolRoutingCandidateCapacityLane {
-    fn rank(self) -> u8 {
+    pub(crate) fn rank(self) -> u8 {
         match self {
             Self::Primary => 0,
             Self::Overflow => 1,
@@ -940,7 +952,7 @@ pub(crate) enum PoolRoutingCandidateDispatchState {
 }
 
 impl PoolRoutingCandidateDispatchState {
-    fn rank(self) -> u8 {
+    pub(crate) fn rank(self) -> u8 {
         match self {
             Self::ReadyOnOwnedNode => 0,
             Self::ReadyAfterMigration => 1,

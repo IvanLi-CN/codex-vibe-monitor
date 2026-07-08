@@ -1,3 +1,5 @@
+use super::*;
+
 #[cfg(test)]
 pub(crate) async fn backfill_proxy_missing_costs(
     pool: &Pool<Sqlite>,
@@ -58,7 +60,7 @@ pub(crate) async fn backfill_proxy_missing_costs_up_to_id(
 }
 
 #[cfg(test)]
-const TEST_PROXY_COST_BACKFILL_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+pub(crate) const TEST_PROXY_COST_BACKFILL_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 pub(crate) async fn run_cost_backfill_with_retry(
@@ -584,11 +586,11 @@ pub(crate) fn request_declares_remote_v2_compaction(value: &Value) -> bool {
     entry_declares_remote_v2_compaction(context_management)
 }
 
-fn is_openai_image_generation_model(model: &str) -> bool {
+pub(crate) fn is_openai_image_generation_model(model: &str) -> bool {
     model.trim().to_ascii_lowercase().starts_with("gpt-image-")
 }
 
-fn openai_json_tools_contain_image_generation(tools: Option<&Value>) -> bool {
+pub(crate) fn openai_json_tools_contain_image_generation(tools: Option<&Value>) -> bool {
     let Some(Value::Array(items)) = tools else {
         return false;
     };
@@ -599,7 +601,7 @@ fn openai_json_tools_contain_image_generation(tools: Option<&Value>) -> bool {
     })
 }
 
-fn openai_json_tool_choice_selects_image_generation(choice: Option<&Value>) -> bool {
+pub(crate) fn openai_json_tool_choice_selects_image_generation(choice: Option<&Value>) -> bool {
     let Some(choice) = choice else {
         return false;
     };
@@ -843,7 +845,9 @@ pub(crate) fn parse_proxy_response_capture_from_stored_bytes(
     parse_target_response_payload(target, payload_for_parse.as_ref(), is_stream, None)
 }
 
-pub(crate) fn format_upstream_response_failed_message(response_info: &ResponseCaptureInfo) -> String {
+pub(crate) fn format_upstream_response_failed_message(
+    response_info: &ResponseCaptureInfo,
+) -> String {
     let upstream_message = response_info
         .upstream_error_message
         .as_deref()
@@ -940,8 +944,10 @@ pub(crate) fn should_upgrade_to_upstream_response_failed(
         return false;
     }
 
-    invocation_status_is_success_like(row.status.as_deref(), row.error_message.as_deref())
-        || existing_kind.is_none()
+    crate::maintenance::invocation_status_is_success_like(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+    ) || existing_kind.is_none()
         || existing_kind == Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
 }
 
@@ -1287,11 +1293,11 @@ pub(crate) fn next_proxy_request_id() -> u64 {
     NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-const PROXY_INVOKE_ID_LENGTH: usize = 10;
-const PROXY_INVOKE_ID_GENERATION_ATTEMPTS: usize = 5;
-const PROXY_INVOKE_ID_ALPHABET: [char; 31] = [
-    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'U',
-    'V', 'W', 'X', 'Y', 'Z', '2', '3', '4', '5', '6', '7', '8', '9',
+pub(crate) const PROXY_INVOKE_ID_LENGTH: usize = 10;
+pub(crate) const PROXY_INVOKE_ID_GENERATION_ATTEMPTS: usize = 5;
+pub(crate) const PROXY_INVOKE_ID_ALPHABET: [char; 31] = [
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'U', 'V',
+    'W', 'X', 'Y', 'Z', '2', '3', '4', '5', '6', '7', '8', '9',
 ];
 
 pub(crate) fn generate_proxy_invoke_id() -> String {
@@ -1306,7 +1312,7 @@ pub(crate) fn proxy_invoke_id_has_short_format(value: &str) -> bool {
             .all(|ch| PROXY_INVOKE_ID_ALPHABET.contains(&ch))
 }
 
-async fn proxy_invoke_id_exists(pool: &Pool<Sqlite>, invoke_id: &str) -> Result<bool> {
+pub(crate) async fn proxy_invoke_id_exists(pool: &Pool<Sqlite>, invoke_id: &str) -> Result<bool> {
     let exists = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT EXISTS(
@@ -1390,7 +1396,10 @@ impl PoolRoutingReservationSnapshot {
             .collect()
     }
 
-    pub(crate) fn reserved_proxy_keys_for_group(&self, valid_proxy_keys: &[String]) -> HashSet<String> {
+    pub(crate) fn reserved_proxy_keys_for_group(
+        &self,
+        valid_proxy_keys: &[String],
+    ) -> HashSet<String> {
         let valid_proxy_keys = valid_proxy_keys
             .iter()
             .map(String::as_str)
@@ -1447,7 +1456,9 @@ pub(crate) fn pool_routing_reservation_count(state: &AppState, account_id: i64) 
         .count() as i64
 }
 
-pub(crate) fn pool_routing_reservation_snapshot(state: &AppState) -> PoolRoutingReservationSnapshot {
+pub(crate) fn pool_routing_reservation_snapshot(
+    state: &AppState,
+) -> PoolRoutingReservationSnapshot {
     let reservations = state
         .pool_routing_reservations
         .lock()
@@ -1948,7 +1959,7 @@ pub(crate) fn request_public_origin(
     }
 }
 
-fn request_public_scheme(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn request_public_scheme(headers: &HeaderMap) -> Option<String> {
     if let Some(raw) = header_value_as_str(headers, "x-forwarded-proto") {
         let proto = single_forwarded_header_value(raw)?.to_ascii_lowercase();
         return match proto.as_str() {
@@ -2061,8 +2072,8 @@ pub(crate) fn forwarded_or_host_authority(
         && let Some(forwarded_host) = forwarded_header_param(forwarded_raw, "host")
     {
         let authority = Authority::from_str(&forwarded_host).ok()?;
-        let scheme = forwarded_header_param(forwarded_raw, "proto")
-            .map(|value| value.to_ascii_lowercase());
+        let scheme =
+            forwarded_header_param(forwarded_raw, "proto").map(|value| value.to_ascii_lowercase());
         let scheme = scheme.as_deref().unwrap_or(origin_scheme);
         let port = authority
             .port_u16()
@@ -2093,7 +2104,7 @@ pub(crate) fn single_forwarded_header_value(raw: &str) -> Option<&str> {
     Some(first)
 }
 
-fn forwarded_header_param(raw: &str, key: &str) -> Option<String> {
+pub(crate) fn forwarded_header_param(raw: &str, key: &str) -> Option<String> {
     let entry = single_forwarded_header_value(raw)?;
     for segment in entry.split(';') {
         let pair = segment.trim();
@@ -2209,7 +2220,10 @@ mod payload_utils_tests {
     #[test]
     fn request_public_origin_defaults_to_http_for_public_host_without_proxy() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::HOST, HeaderValue::from_static("monitor.example.com"));
+        headers.insert(
+            header::HOST,
+            HeaderValue::from_static("monitor.example.com"),
+        );
 
         assert_eq!(
             request_public_origin(&headers, None).as_deref(),
@@ -2233,17 +2247,21 @@ mod payload_utils_tests {
     }
 }
 
-pub(crate) fn header_value_as_str<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
+pub(crate) fn header_value_as_str<'a>(
+    headers: &'a HeaderMap,
+    name: &'static str,
+) -> Option<&'a str> {
     headers
         .get(HeaderName::from_static(name))
         .and_then(|value| value.to_str().ok())
 }
 
-const PROMPT_CACHE_ATTRIBUTION_TTL: Duration = Duration::from_secs(15 * 60);
-const CLIENT_ATTRIBUTION_FINGERPRINT_VERSION: &str = "v1";
+pub(crate) const PROMPT_CACHE_ATTRIBUTION_TTL: Duration = Duration::from_secs(15 * 60);
+pub(crate) const CLIENT_ATTRIBUTION_FINGERPRINT_VERSION: &str = "v1";
 
-static CLIENT_PROMPT_CACHE_ATTRIBUTION: Lazy<std::sync::Mutex<HashMap<String, ClientPromptCacheAttributionBucket>>> =
-    Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+pub(crate) static CLIENT_PROMPT_CACHE_ATTRIBUTION: Lazy<
+    std::sync::Mutex<HashMap<String, ClientPromptCacheAttributionBucket>>,
+> = Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ClientPromptCacheAttributionContext {
@@ -2260,11 +2278,11 @@ pub(crate) struct ClientPromptCacheAttributionEntry {
 }
 
 #[derive(Debug, Clone, Default)]
-struct ClientPromptCacheAttributionBucket {
+pub(crate) struct ClientPromptCacheAttributionBucket {
     entries: HashMap<String, ClientPromptCacheAttributionEntry>,
 }
 
-fn short_sha256_fingerprint(raw: &str) -> String {
+pub(crate) fn short_sha256_fingerprint(raw: &str) -> String {
     let digest = Sha256::digest(raw.as_bytes());
     digest
         .iter()
@@ -2273,7 +2291,10 @@ fn short_sha256_fingerprint(raw: &str) -> String {
         .collect::<String>()
 }
 
-fn normalized_header_component(headers: &HeaderMap, name: &'static str) -> Option<String> {
+pub(crate) fn normalized_header_component(
+    headers: &HeaderMap,
+    name: &'static str,
+) -> Option<String> {
     header_value_as_str(headers, name)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -2426,7 +2447,7 @@ pub(crate) fn extract_requester_ip(headers: &HeaderMap, peer_ip: Option<IpAddr>)
     peer_ip.map(|ip| ip.to_string())
 }
 
-const REQUEST_CHAIN_METADATA_MAX_BYTES: usize = 512;
+pub(crate) const REQUEST_CHAIN_METADATA_MAX_BYTES: usize = 512;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RequestChainMetadata {
@@ -2436,7 +2457,7 @@ pub(crate) struct RequestChainMetadata {
     pub(crate) x_real_ip: Option<String>,
 }
 
-fn truncate_header_value(raw: &str, max_bytes: usize) -> String {
+pub(crate) fn truncate_header_value(raw: &str, max_bytes: usize) -> String {
     if raw.len() <= max_bytes {
         return raw.to_string();
     }
@@ -2448,7 +2469,10 @@ fn truncate_header_value(raw: &str, max_bytes: usize) -> String {
     raw[..end].to_string()
 }
 
-fn bounded_request_header_value(headers: &HeaderMap, name: &'static str) -> Option<String> {
+pub(crate) fn bounded_request_header_value(
+    headers: &HeaderMap,
+    name: &'static str,
+) -> Option<String> {
     header_value_as_str(headers, name)
         .map(str::trim)
         .filter(|value| !value.is_empty())

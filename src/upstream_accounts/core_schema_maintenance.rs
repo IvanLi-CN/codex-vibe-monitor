@@ -1,3 +1,5 @@
+use super::*;
+
 pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
@@ -151,12 +153,20 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to migrate pool_upstream_accounts legacy new-conversation policy")?;
-    ensure_nullable_text_column(pool, "pool_upstream_accounts", "policy_fast_mode_rewrite_mode")
-        .await
-        .context("failed to ensure pool_upstream_accounts.policy_fast_mode_rewrite_mode")?;
-    ensure_nullable_text_column(pool, "pool_upstream_accounts", "policy_image_tool_rewrite_mode")
-        .await
-        .context("failed to ensure pool_upstream_accounts.policy_image_tool_rewrite_mode")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_fast_mode_rewrite_mode",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.policy_fast_mode_rewrite_mode")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_image_tool_rewrite_mode",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.policy_image_tool_rewrite_mode")?;
     ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_concurrency_limit")
         .await
         .context("failed to ensure pool_upstream_accounts.policy_concurrency_limit")?;
@@ -211,13 +221,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "external_client_id")
         .await
         .context("failed to ensure pool_upstream_accounts.external_client_id")?;
-    ensure_nullable_text_column(
-        pool,
-        "pool_upstream_accounts",
-        "external_source_account_id",
-    )
-    .await
-    .context("failed to ensure pool_upstream_accounts.external_source_account_id")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "external_source_account_id")
+        .await
+        .context("failed to ensure pool_upstream_accounts.external_source_account_id")?;
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "plan_type_observed_at")
         .await
         .context("failed to ensure pool_upstream_accounts.plan_type_observed_at")?;
@@ -516,13 +522,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_account_events", "result")
         .await
         .context("failed to ensure pool_upstream_account_events.result")?;
-    ensure_nullable_text_column(
-        pool,
-        "pool_upstream_account_events",
-        "result_description",
-    )
-    .await
-    .context("failed to ensure pool_upstream_account_events.result_description")?;
+    ensure_nullable_text_column(pool, "pool_upstream_account_events", "result_description")
+        .await
+        .context("failed to ensure pool_upstream_account_events.result_description")?;
 
     sqlx::query(
         r#"
@@ -692,24 +694,36 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_oauth_login_sessions.pending_encrypted_credentials")?;
-    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "pending_token_expires_at")
-        .await
-        .context("failed to ensure pool_oauth_login_sessions.pending_token_expires_at")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_oauth_login_sessions",
+        "pending_token_expires_at",
+    )
+    .await
+    .context("failed to ensure pool_oauth_login_sessions.pending_token_expires_at")?;
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "pending_verified_email")
         .await
         .context("failed to ensure pool_oauth_login_sessions.pending_verified_email")?;
-    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "pending_chatgpt_account_id")
-        .await
-        .context("failed to ensure pool_oauth_login_sessions.pending_chatgpt_account_id")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_oauth_login_sessions",
+        "pending_chatgpt_account_id",
+    )
+    .await
+    .context("failed to ensure pool_oauth_login_sessions.pending_chatgpt_account_id")?;
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "pending_chatgpt_user_id")
         .await
         .context("failed to ensure pool_oauth_login_sessions.pending_chatgpt_user_id")?;
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "pending_plan_type")
         .await
         .context("failed to ensure pool_oauth_login_sessions.pending_plan_type")?;
-    ensure_nullable_integer_column(pool, "pool_oauth_login_sessions", "pending_has_refresh_token")
-        .await
-        .context("failed to ensure pool_oauth_login_sessions.pending_has_refresh_token")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_oauth_login_sessions",
+        "pending_has_refresh_token",
+    )
+    .await
+    .context("failed to ensure pool_oauth_login_sessions.pending_has_refresh_token")?;
 
     sqlx::query(
         r#"
@@ -978,7 +992,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ] {
         ensure_nullable_integer_column(pool, "pool_upstream_account_group_notes", column)
             .await
-            .with_context(|| format!("failed to ensure pool_upstream_account_group_notes.{column}"))?;
+            .with_context(|| {
+                format!("failed to ensure pool_upstream_account_group_notes.{column}")
+            })?;
     }
     ensure_nullable_text_column(
         pool,
@@ -995,7 +1011,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         "policy_allow_new_conversations",
     )
     .await
-    .context("failed to migrate pool_upstream_account_group_notes legacy new-conversation policy")?;
+    .context(
+        "failed to migrate pool_upstream_account_group_notes legacy new-conversation policy",
+    )?;
     ensure_nullable_text_column(
         pool,
         "pool_upstream_account_group_notes",
@@ -1269,7 +1287,7 @@ pub(crate) fn spawn_upstream_account_maintenance(
     })
 }
 
-async fn ensure_nullable_text_column(
+pub(crate) async fn ensure_nullable_text_column(
     pool: &Pool<Sqlite>,
     table_name: &str,
     column_name: &str,
@@ -1291,7 +1309,7 @@ async fn ensure_nullable_text_column(
     Ok(())
 }
 
-async fn ensure_nullable_integer_column(
+pub(crate) async fn ensure_nullable_integer_column(
     pool: &Pool<Sqlite>,
     table_name: &str,
     column_name: &str,
@@ -1313,7 +1331,7 @@ async fn ensure_nullable_integer_column(
     Ok(())
 }
 
-async fn migrate_legacy_no_new_policy(
+pub(crate) async fn migrate_legacy_no_new_policy(
     pool: &Pool<Sqlite>,
     table_name: &str,
     priority_column_name: &str,
@@ -1353,7 +1371,7 @@ async fn migrate_legacy_no_new_policy(
     Ok(())
 }
 
-async fn ensure_text_column_with_default(
+pub(crate) async fn ensure_text_column_with_default(
     pool: &Pool<Sqlite>,
     table_name: &str,
     column_name: &str,
@@ -1376,7 +1394,7 @@ async fn ensure_text_column_with_default(
     Ok(())
 }
 
-async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bool> {
+pub(crate) async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bool> {
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
     )

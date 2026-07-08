@@ -1,13 +1,13 @@
 use super::*;
 
-mod internal {
-    use super::*;
+mod candidate_loading;
+mod failure_recording;
+mod selection;
+mod settings_runtime;
+mod sticky_routes;
 
-    include!("settings_runtime.rs");
-    include!("candidate_loading.rs");
-    include!("selection.rs");
-    include!("failure_recording.rs");
-    include!("sticky_routes.rs");
-}
-
-pub(crate) use internal::*;
+pub(crate) use candidate_loading::*;
+pub(crate) use failure_recording::*;
+pub(crate) use selection::*;
+pub(crate) use settings_runtime::*;
+pub(crate) use sticky_routes::*;

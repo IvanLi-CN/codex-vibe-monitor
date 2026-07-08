@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
     let state = test_state_with_openai_base(
@@ -125,7 +128,7 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
             FORWARD_PROXY_DIRECT_KEY.to_string(),
         ),
         single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+        upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
@@ -1052,18 +1055,17 @@ async fn pool_route_http_4xx_does_not_create_sticky_route() {
             .is_some_and(|message| !message.is_empty()),
         "4xx attempt should preserve error information: {attempt_rows:?}",
     );
-    let account_route_state =
-        sqlx::query_as::<_, (String, Option<String>, Option<String>, i64)>(
-            r#"
+    let account_route_state = sqlx::query_as::<_, (String, Option<String>, Option<String>, i64)>(
+        r#"
             SELECT status, last_route_failure_at, cooldown_until, consecutive_route_failures
             FROM pool_upstream_accounts
             WHERE id = ?1
             "#,
-        )
-        .bind(primary_id)
-        .fetch_one(&state.pool)
-        .await
-        .expect("load account route state after 4xx");
+    )
+    .bind(primary_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load account route state after 4xx");
     assert_eq!(account_route_state.0, "active");
     assert!(account_route_state.1.is_some());
     assert_eq!(account_route_state.3, 1);

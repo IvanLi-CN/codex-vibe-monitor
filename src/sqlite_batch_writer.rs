@@ -17,16 +17,16 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::*;
+use super::*;
 
-const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
-const SQLITE_BATCH_MAX_ROWS: usize = 100;
-const SQLITE_BATCH_MAX_AGE: Duration = Duration::from_secs(5);
-const SQLITE_BATCH_STALE_WARN_AGE: Duration = Duration::from_secs(30);
-const SQLITE_BATCH_CHANNEL_CAPACITY: usize = 10_000;
+pub(crate) const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) const SQLITE_BATCH_MAX_ROWS: usize = 100;
+pub(crate) const SQLITE_BATCH_MAX_AGE: Duration = Duration::from_secs(5);
+pub(crate) const SQLITE_BATCH_STALE_WARN_AGE: Duration = Duration::from_secs(30);
+pub(crate) const SQLITE_BATCH_CHANNEL_CAPACITY: usize = 10_000;
 
 #[derive(Debug, Clone, Copy)]
-enum FlushReason {
+pub(crate) enum FlushReason {
     RowLimit,
     Interval,
     MaxAge,
@@ -112,7 +112,7 @@ pub(crate) enum SqliteBatchWrite {
     SystemTaskFinish(BatchedSystemTaskFinish),
 }
 
-enum SqliteBatchWriterControl {
+pub(crate) enum SqliteBatchWriterControl {
     FlushNow {
         queued_depth_snapshot: usize,
         responder: oneshot::Sender<Result<(), String>>,
@@ -124,7 +124,7 @@ enum SqliteBatchWriterControl {
 }
 
 #[derive(Debug, Default)]
-struct PendingBatch {
+pub(crate) struct PendingBatch {
     terminal_invocations: BTreeMap<String, BatchedTerminalInvocationWrite>,
     attempt_progress: HashMap<i64, BatchedAttemptProgress>,
     invocation_derived: BTreeMap<i64, BatchedInvocationDerivedWrites>,
@@ -253,7 +253,7 @@ impl PendingBatch {
 }
 
 #[derive(Debug)]
-struct RetainedBatch {
+pub(crate) struct RetainedBatch {
     batch: PendingBatch,
     failed: bool,
 }
@@ -536,7 +536,7 @@ impl SqliteBatchWriter {
     }
 }
 
-async fn run_sqlite_batch_writer(
+pub(crate) async fn run_sqlite_batch_writer(
     pool: Pool<Sqlite>,
     mut write_receiver: mpsc::Receiver<SqliteBatchWrite>,
     mut control_receiver: mpsc::Receiver<SqliteBatchWriterControl>,
@@ -712,7 +712,7 @@ async fn run_sqlite_batch_writer(
     }
 }
 
-fn drain_queued_batch_writes(
+pub(crate) fn drain_queued_batch_writes(
     write_receiver: &mut mpsc::Receiver<SqliteBatchWrite>,
     pending: &mut PendingBatch,
     pending_depth: &Arc<AtomicUsize>,
@@ -731,7 +731,7 @@ fn drain_queued_batch_writes(
     }
 }
 
-async fn flush_pending_batch(
+pub(crate) async fn flush_pending_batch(
     pool: &Pool<Sqlite>,
     batch: PendingBatch,
     reason: FlushReason,
@@ -860,7 +860,7 @@ async fn flush_pending_batch(
     }
 }
 
-fn summarize_system_task_batch_scope(batch: &PendingBatch) -> String {
+pub(crate) fn summarize_system_task_batch_scope(batch: &PendingBatch) -> String {
     let mut values = batch
         .system_task_finishes
         .values()
@@ -883,7 +883,7 @@ fn summarize_system_task_batch_scope(batch: &PendingBatch) -> String {
     values.join(",")
 }
 
-async fn flush_pending_batch_inner(
+pub(crate) async fn flush_pending_batch_inner(
     pool: &Pool<Sqlite>,
     batch: &PendingBatch,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
@@ -1106,7 +1106,7 @@ async fn flush_pending_batch_inner(
     Ok(deferred_batch)
 }
 
-async fn replay_live_invocation_hourly_rollups_until_tx(
+pub(crate) async fn replay_live_invocation_hourly_rollups_until_tx(
     tx: &mut SqliteConnection,
     target_invocation_id: i64,
 ) -> Result<u64> {

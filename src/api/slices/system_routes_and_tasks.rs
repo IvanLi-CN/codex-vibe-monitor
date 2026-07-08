@@ -1,3 +1,12 @@
+use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
+
 use std::{
     collections::HashSet,
     fs,
@@ -5,7 +14,7 @@ use std::{
     sync::atomic::Ordering,
 };
 
-const SYSTEM_STATUS_CACHE_TTL_SECS: u64 = 10;
+pub(crate) const SYSTEM_STATUS_CACHE_TTL_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -82,7 +91,7 @@ pub(crate) struct SystemTaskRunHandle {
 }
 
 #[derive(Debug, FromRow)]
-struct SystemTaskRunRow {
+pub(crate) struct SystemTaskRunRow {
     id: i64,
     task_kind: String,
     trigger_kind: String,
@@ -95,20 +104,20 @@ struct SystemTaskRunRow {
 }
 
 #[derive(Debug, Default, FromRow)]
-struct SystemInvocationStatusAggRow {
+pub(crate) struct SystemInvocationStatusAggRow {
     live_invocations_count: Option<i64>,
     success_count: Option<i64>,
     non_success_count: Option<i64>,
 }
 
 #[derive(Debug, Default, FromRow)]
-struct SystemArchiveAggRow {
+pub(crate) struct SystemArchiveAggRow {
     completed_archive_batches_count: Option<i64>,
     archived_count: Option<i64>,
 }
 
 #[derive(Debug, Default, FromRow)]
-struct SystemRawBodyPathRow {
+pub(crate) struct SystemRawBodyPathRow {
     request_raw_path: Option<String>,
     response_raw_path: Option<String>,
 }
@@ -129,7 +138,10 @@ impl From<SystemTaskRunRow> for SystemTaskRunResponse {
     }
 }
 
-fn parse_system_task_run_bound(raw: Option<&str>, field_name: &str) -> Result<Option<String>, ApiError> {
+pub(crate) fn parse_system_task_run_bound(
+    raw: Option<&str>,
+    field_name: &str,
+) -> Result<Option<String>, ApiError> {
     let Some(raw_value) = normalize_query_text(raw) else {
         return Ok(None);
     };
@@ -140,11 +152,11 @@ fn parse_system_task_run_bound(raw: Option<&str>, field_name: &str) -> Result<Op
     Ok(Some(format_utc_iso(parsed)))
 }
 
-fn count_file_size(path: &Path) -> u64 {
+pub(crate) fn count_file_size(path: &Path) -> u64 {
     fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
 }
 
-fn add_existing_raw_payload_bytes(
+pub(crate) fn add_existing_raw_payload_bytes(
     raw_path: &str,
     fallback_root: Option<&Path>,
     seen_paths: &mut HashSet<PathBuf>,
@@ -163,7 +175,7 @@ fn add_existing_raw_payload_bytes(
     metric.bytes = metric.bytes.saturating_add(count_file_size(&candidate));
 }
 
-fn collect_existing_raw_payload_metrics(
+pub(crate) fn collect_existing_raw_payload_metrics(
     rows: &[SystemRawBodyPathRow],
     fallback_root: Option<&Path>,
 ) -> (SystemStatusMetric, SystemStatusMetric, SystemStatusMetric) {
@@ -208,7 +220,7 @@ fn collect_existing_raw_payload_metrics(
     (total, request, response)
 }
 
-fn count_database_bytes(db_path: &Path) -> u64 {
+pub(crate) fn count_database_bytes(db_path: &Path) -> u64 {
     let wal_path = PathBuf::from(format!("{}-wal", db_path.display()));
     let shm_path = PathBuf::from(format!("{}-shm", db_path.display()));
     count_file_size(db_path)
@@ -216,7 +228,7 @@ fn count_database_bytes(db_path: &Path) -> u64 {
         .saturating_add(count_file_size(&shm_path))
 }
 
-fn sum_directory_bytes(root: &Path) -> u64 {
+pub(crate) fn sum_directory_bytes(root: &Path) -> u64 {
     let mut total = 0_u64;
     let mut stack = vec![root.to_path_buf()];
     while let Some(path) = stack.pop() {
@@ -238,7 +250,7 @@ fn sum_directory_bytes(root: &Path) -> u64 {
     total
 }
 
-fn sum_path_bytes(path: &Path) -> u64 {
+pub(crate) fn sum_path_bytes(path: &Path) -> u64 {
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => metadata.len(),
         Ok(metadata) if metadata.is_dir() => sum_directory_bytes(path),
@@ -246,7 +258,11 @@ fn sum_path_bytes(path: &Path) -> u64 {
     }
 }
 
-fn compute_other_files_bytes(config: &AppConfig, archive_dir: &Path, raw_dir: &Path) -> u64 {
+pub(crate) fn compute_other_files_bytes(
+    config: &AppConfig,
+    archive_dir: &Path,
+    raw_dir: &Path,
+) -> u64 {
     let db_path = &config.database_path;
     let db_wal_path = PathBuf::from(format!("{}-wal", db_path.display()));
     let db_shm_path = PathBuf::from(format!("{}-shm", db_path.display()));
@@ -270,7 +286,7 @@ fn compute_other_files_bytes(config: &AppConfig, archive_dir: &Path, raw_dir: &P
         .sum()
 }
 
-async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusResponse> {
+pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusResponse> {
     let invocation_status = sqlx::query_as::<_, SystemInvocationStatusAggRow>(
         r#"
         SELECT
@@ -335,10 +351,7 @@ async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusRes
     let other_files_bytes = compute_other_files_bytes(&state.config, &archive_dir, &raw_dir);
 
     Ok(SystemStatusResponse {
-        live_invocations_count: invocation_status
-            .live_invocations_count
-            .unwrap_or(0)
-            .max(0) as u64,
+        live_invocations_count: invocation_status.live_invocations_count.unwrap_or(0).max(0) as u64,
         success_count: invocation_status.success_count.unwrap_or(0).max(0) as u64,
         non_success_count: invocation_status.non_success_count.unwrap_or(0).max(0) as u64,
         completed_archive_batches_count: archived
@@ -476,16 +489,18 @@ pub(crate) async fn finish_system_task_run_batched(
         .min(i64::MAX as u128) as i64;
     if state
         .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::SystemTaskFinish(BatchedSystemTaskFinish {
-            run_id: handle.id,
-            task_kind: handle.task_kind,
-            trigger_kind: handle.trigger_kind.clone(),
-            status,
-            summary: summary.clone(),
-            detail: detail.clone(),
-            finished_at,
-            duration_ms,
-        }))
+        .enqueue(SqliteBatchWrite::SystemTaskFinish(
+            BatchedSystemTaskFinish {
+                run_id: handle.id,
+                task_kind: handle.task_kind,
+                trigger_kind: handle.trigger_kind.clone(),
+                status,
+                summary: summary.clone(),
+                detail: detail.clone(),
+                finished_at,
+                duration_ms,
+            },
+        ))
     {
         return;
     }

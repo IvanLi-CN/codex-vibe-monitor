@@ -1,14 +1,16 @@
-use anyhow::{Result, anyhow};
+use super::*;
+use anyhow::{Result, anyhow, bail};
+use sqlx::FromRow;
 use std::collections::BTreeMap;
+use tracing::warn;
 
+use crate::maintenance::invocation_status_is_success_like as archive_invocation_status_is_success_like;
 use crate::{
     ApproxHistogramCounts, DETAIL_LEVEL_FULL, FailureClass, InvocationHourlySourceRecord,
     add_approx_histogram_sample, align_bucket_epoch, empty_approx_histogram,
-    invocation_counts_toward_non_success_usage,
-    invocation_status_counts_toward_terminal_totals, invocation_status_is_success_like,
+    invocation_counts_toward_non_success_usage, invocation_status_counts_toward_terminal_totals,
     normalize_non_negative_timing_value, parse_to_utc_datetime, parse_utc_naive,
-    resolve_failure_classification,
-    resolve_first_response_byte_total_ms,
+    resolve_failure_classification, resolve_first_response_byte_total_ms,
 };
 
 #[derive(Debug, Default)]
@@ -197,7 +199,7 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
         );
         let has_terminal_status =
             invocation_status_counts_toward_terminal_totals(row.status.as_deref());
-        let is_success_like = invocation_status_is_success_like(
+        let is_success_like = archive_invocation_status_is_success_like(
             row.status.as_deref(),
             row.error_message.as_deref(),
         ) && classification.failure_class == FailureClass::None;
@@ -268,7 +270,7 @@ pub(crate) fn invocation_archive_has_pruned_success_details(
             row.is_actionable,
         );
         row.detail_level != DETAIL_LEVEL_FULL
-            && invocation_status_is_success_like(
+            && archive_invocation_status_is_success_like(
                 row.status.as_deref(),
                 row.error_message.as_deref(),
             )
@@ -287,8 +289,9 @@ pub(crate) fn accumulate_upstream_account_stats_delta(
         row.failure_class.as_deref(),
         row.is_actionable,
     );
-    let has_terminal_status = invocation_status_counts_toward_terminal_totals(row.status.as_deref());
-    let is_success_like = invocation_status_is_success_like(
+    let has_terminal_status =
+        invocation_status_counts_toward_terminal_totals(row.status.as_deref());
+    let is_success_like = archive_invocation_status_is_success_like(
         row.status.as_deref(),
         row.error_message.as_deref(),
     ) && classification.failure_class == FailureClass::None;

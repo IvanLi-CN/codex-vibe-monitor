@@ -1,26 +1,29 @@
-static ENSURE_SCHEMA_LOCKS: once_cell::sync::Lazy<
+use super::*;
+
+pub(crate) static ENSURE_SCHEMA_LOCKS: once_cell::sync::Lazy<
     std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
 > = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-const INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL: &str =
-    "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
-const INVOCATION_UPSTREAM_ACCOUNT_ID_EXPR_SQL: &str =
-    "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
-const PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS: i64 = 300;
-const SHANGHAI_NOW_SQL: &str = "datetime('now', '+8 hours')";
+pub(crate) const INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_ID_EXPR_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+pub(crate) const PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS: i64 = 300;
+pub(crate) const SHANGHAI_NOW_SQL: &str = "datetime('now', '+8 hours')";
 
-fn ensure_schema_lock_key(pool: &Pool<Sqlite>) -> String {
+pub(crate) fn ensure_schema_lock_key(pool: &Pool<Sqlite>) -> String {
     let connect_options = pool.connect_options();
     let filename = connect_options.get_filename();
 
     if filename == std::path::Path::new(":memory:") {
-        format!("sqlite:memory:{:p}", std::sync::Arc::as_ptr(&connect_options))
+        format!(
+            "sqlite:memory:{:p}",
+            std::sync::Arc::as_ptr(&connect_options)
+        )
     } else {
         format!("sqlite:{}", filename.to_string_lossy())
     }
 }
 
-fn ensure_schema_lock(pool: &Pool<Sqlite>) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn ensure_schema_lock(pool: &Pool<Sqlite>) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     let key = ensure_schema_lock_key(pool);
     let mut registry = ENSURE_SCHEMA_LOCKS
         .lock()
@@ -35,19 +38,19 @@ fn ensure_schema_lock(pool: &Pool<Sqlite>) -> std::sync::Arc<tokio::sync::Mutex<
     lock
 }
 
-fn invocation_in_progress_live_prompt_cache_key_expr(subject: &str) -> String {
+pub(crate) fn invocation_in_progress_live_prompt_cache_key_expr(subject: &str) -> String {
     format!(
         "CASE WHEN json_valid({subject}.payload) THEN TRIM(CAST(json_extract({subject}.payload, '$.promptCacheKey') AS TEXT)) END"
     )
 }
 
-fn invocation_in_progress_live_upstream_account_id_expr(subject: &str) -> String {
+pub(crate) fn invocation_in_progress_live_upstream_account_id_expr(subject: &str) -> String {
     format!(
         "CASE WHEN json_valid({subject}.payload) THEN CAST(json_extract({subject}.payload, '$.upstreamAccountId') AS INTEGER) END"
     )
 }
 
-fn invocation_in_progress_live_refresh_set_clause() -> String {
+pub(crate) fn invocation_in_progress_live_refresh_set_clause() -> String {
     let display_status_sql = crate::api::invocation_display_status_sql();
     format!(
         r#"
@@ -118,7 +121,7 @@ fn invocation_in_progress_live_refresh_set_clause() -> String {
     )
 }
 
-fn invocation_in_progress_live_upsert_sql(subject: &str) -> String {
+pub(crate) fn invocation_in_progress_live_upsert_sql(subject: &str) -> String {
     let display_status_sql = crate::api::invocation_display_status_sql();
     let prompt_cache_key_expr = invocation_in_progress_live_prompt_cache_key_expr(subject);
     let upstream_account_id_expr = invocation_in_progress_live_upstream_account_id_expr(subject);
@@ -168,7 +171,7 @@ fn invocation_in_progress_live_upsert_sql(subject: &str) -> String {
     )
 }
 
-fn invocation_in_progress_live_refresh_sql_for_key(key_expr: &str) -> String {
+pub(crate) fn invocation_in_progress_live_refresh_sql_for_key(key_expr: &str) -> String {
     let refresh_set_clause = invocation_in_progress_live_refresh_set_clause();
     format!(
         r#"
@@ -181,7 +184,7 @@ fn invocation_in_progress_live_refresh_sql_for_key(key_expr: &str) -> String {
     )
 }
 
-async fn rebuild_invocation_in_progress_live_table(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn rebuild_invocation_in_progress_live_table(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("DELETE FROM invocation_in_progress_live")
         .execute(pool)
         .await
@@ -237,7 +240,9 @@ async fn rebuild_invocation_in_progress_live_table(pool: &Pool<Sqlite>) -> Resul
     Ok(())
 }
 
-async fn rebuild_invocation_in_progress_live_triggers(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
     let mut tx = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
@@ -328,7 +333,7 @@ async fn rebuild_invocation_in_progress_live_triggers(pool: &Pool<Sqlite>) -> Re
     Ok(())
 }
 
-fn prompt_cache_working_set_live_refresh_sql_for_key(key_expr: &str) -> String {
+pub(crate) fn prompt_cache_working_set_live_refresh_sql_for_key(key_expr: &str) -> String {
     let display_status_sql = crate::api::invocation_display_status_sql();
     format!(
         r#"
@@ -474,7 +479,7 @@ fn prompt_cache_working_set_live_refresh_sql_for_key(key_expr: &str) -> String {
     )
 }
 
-async fn rebuild_prompt_cache_working_set_live_table(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn rebuild_prompt_cache_working_set_live_table(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("DELETE FROM prompt_cache_working_set_live")
         .execute(pool)
         .await
@@ -580,7 +585,7 @@ async fn rebuild_prompt_cache_working_set_live_table(pool: &Pool<Sqlite>) -> Res
     Ok(())
 }
 
-fn pool_upstream_node_health_hourly_archive_create_sql(table_name: &str) -> String {
+pub(crate) fn pool_upstream_node_health_hourly_archive_create_sql(table_name: &str) -> String {
     format!(
         r#"
         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -598,7 +603,7 @@ fn pool_upstream_node_health_hourly_archive_create_sql(table_name: &str) -> Stri
     )
 }
 
-fn prompt_cache_conversation_bindings_create_sql(table_name: &str) -> String {
+pub(crate) fn prompt_cache_conversation_bindings_create_sql(table_name: &str) -> String {
     format!(
         r#"
         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -630,7 +635,7 @@ fn prompt_cache_conversation_bindings_create_sql(table_name: &str) -> String {
     )
 }
 
-async fn prompt_cache_conversation_bindings_existing_columns(
+pub(crate) async fn prompt_cache_conversation_bindings_existing_columns(
     pool: &Pool<Sqlite>,
 ) -> Result<std::collections::HashSet<String>> {
     let rows = sqlx::query("PRAGMA table_info('prompt_cache_conversation_bindings')")
@@ -643,7 +648,7 @@ async fn prompt_cache_conversation_bindings_existing_columns(
         .collect())
 }
 
-fn prompt_cache_binding_copy_expr(
+pub(crate) fn prompt_cache_binding_copy_expr(
     existing_columns: &std::collections::HashSet<String>,
     column: &str,
 ) -> &'static str {
@@ -661,7 +666,7 @@ fn prompt_cache_binding_copy_expr(
     }
 }
 
-async fn migrate_prompt_cache_conversation_bindings_contract(
+pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
     const TEMP_TABLE: &str = "prompt_cache_conversation_bindings_v2";
@@ -690,10 +695,8 @@ async fn migrate_prompt_cache_conversation_bindings_contract(
         return Ok(());
     }
     let existing_columns = prompt_cache_conversation_bindings_existing_columns(pool).await?;
-    let responses_first_byte_timeout_copy = prompt_cache_binding_copy_expr(
-        &existing_columns,
-        "responses_first_byte_timeout_secs",
-    );
+    let responses_first_byte_timeout_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "responses_first_byte_timeout_secs");
     let compact_first_byte_timeout_copy =
         prompt_cache_binding_copy_expr(&existing_columns, "compact_first_byte_timeout_secs");
     let responses_stream_timeout_copy =
@@ -708,9 +711,7 @@ async fn migrate_prompt_cache_conversation_bindings_contract(
     sqlx::query(&drop_temp_sql)
         .execute(tx.as_mut())
         .await
-        .context(
-            "failed to clear stale prompt_cache_conversation_bindings migration temp table",
-        )?;
+        .context("failed to clear stale prompt_cache_conversation_bindings migration temp table")?;
 
     let create_temp_sql = prompt_cache_conversation_bindings_create_sql(TEMP_TABLE);
     sqlx::query(&create_temp_sql)
@@ -758,15 +759,16 @@ async fn migrate_prompt_cache_conversation_bindings_contract(
         FROM prompt_cache_conversation_bindings
         "#
     );
-    sqlx::query(&copy_sql)
-        .execute(tx.as_mut())
-        .await
-        .context("failed to copy prompt_cache_conversation_bindings rows into migration temp table")?;
+    sqlx::query(&copy_sql).execute(tx.as_mut()).await.context(
+        "failed to copy prompt_cache_conversation_bindings rows into migration temp table",
+    )?;
 
     sqlx::query("DROP TABLE prompt_cache_conversation_bindings")
         .execute(tx.as_mut())
         .await
-        .context("failed to drop legacy prompt_cache_conversation_bindings table during migration")?;
+        .context(
+            "failed to drop legacy prompt_cache_conversation_bindings table during migration",
+        )?;
 
     let rename_sql =
         format!("ALTER TABLE {TEMP_TABLE} RENAME TO prompt_cache_conversation_bindings");
@@ -779,7 +781,7 @@ async fn migrate_prompt_cache_conversation_bindings_contract(
     Ok(())
 }
 
-async fn migrate_pool_upstream_node_health_hourly_archive_identity(
+pub(crate) async fn migrate_pool_upstream_node_health_hourly_archive_identity(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
     const TEMP_TABLE: &str = "pool_upstream_node_health_hourly_archive_v2";
@@ -789,13 +791,17 @@ async fn migrate_pool_upstream_node_health_hourly_archive_identity(
     sqlx::query(&drop_temp_sql)
         .execute(tx.as_mut())
         .await
-        .context("failed to clear stale pool_upstream_node_health_hourly_archive migration temp table")?;
+        .context(
+            "failed to clear stale pool_upstream_node_health_hourly_archive migration temp table",
+        )?;
 
     let create_temp_sql = pool_upstream_node_health_hourly_archive_create_sql(TEMP_TABLE);
     sqlx::query(&create_temp_sql)
         .execute(tx.as_mut())
         .await
-        .context("failed to create pool_upstream_node_health_hourly_archive migration temp table")?;
+        .context(
+            "failed to create pool_upstream_node_health_hourly_archive migration temp table",
+        )?;
 
     let copy_sql = format!(
         r#"
@@ -827,31 +833,36 @@ async fn migrate_pool_upstream_node_health_hourly_archive_identity(
          AND batches.file_path = legacy.archive_file_path
         "#
     );
-    sqlx::query(&copy_sql)
-        .execute(tx.as_mut())
-        .await
-        .context("failed to copy pool_upstream_node_health_hourly_archive rows into migration temp table")?;
+    sqlx::query(&copy_sql).execute(tx.as_mut()).await.context(
+        "failed to copy pool_upstream_node_health_hourly_archive rows into migration temp table",
+    )?;
 
     sqlx::query("DROP TABLE pool_upstream_node_health_hourly_archive")
         .execute(tx.as_mut())
         .await
-        .context("failed to drop legacy pool_upstream_node_health_hourly_archive table during migration")?;
+        .context(
+            "failed to drop legacy pool_upstream_node_health_hourly_archive table during migration",
+        )?;
 
-    let rename_sql = format!("ALTER TABLE {TEMP_TABLE} RENAME TO pool_upstream_node_health_hourly_archive");
+    let rename_sql =
+        format!("ALTER TABLE {TEMP_TABLE} RENAME TO pool_upstream_node_health_hourly_archive");
     sqlx::query(&rename_sql)
         .execute(tx.as_mut())
         .await
-        .context("failed to swap migrated pool_upstream_node_health_hourly_archive table into place")?;
+        .context(
+            "failed to swap migrated pool_upstream_node_health_hourly_archive table into place",
+        )?;
 
     tx.commit().await?;
     Ok(())
 }
 
-async fn backfill_upstream_account_usage_hourly_status_counts(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn backfill_upstream_account_usage_hourly_status_counts(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
     let success_like_sql = invocation_status_is_success_like_sql("status", "error_message");
     let resolved_failure_sql = crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
-    let upstream_account_id_sql =
-        "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+    let upstream_account_id_sql = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
     let bucket_epoch_sql = "((CASE
                 WHEN instr(occurred_at, 'T') > 0
                     THEN CAST(strftime('%s', occurred_at) AS INTEGER)
@@ -992,7 +1003,9 @@ async fn backfill_upstream_account_usage_hourly_status_counts(pool: &Pool<Sqlite
     Ok(())
 }
 
-async fn reopen_upstream_account_stats_rollup_archives(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn reopen_upstream_account_stats_rollup_archives(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
     for target in [
         "upstream_account_stats_hourly",
         "upstream_account_stats_minute",
@@ -1043,7 +1056,7 @@ async fn reopen_upstream_account_stats_rollup_archives(pool: &Pool<Sqlite>) -> R
     Ok(())
 }
 
-async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let schema_lock = ensure_schema_lock(pool);
     let _schema_guard = schema_lock.lock_owned().await;
 
@@ -1535,7 +1548,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(&prompt_cache_insert_trigger_sql)
         .execute(pool)
         .await
-        .context("failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_insert")?;
+        .context(
+            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_insert",
+        )?;
 
     let prompt_cache_update_trigger_sql = format!(
         r#"
@@ -1556,7 +1571,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(&prompt_cache_update_trigger_sql)
         .execute(pool)
         .await
-        .context("failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_update")?;
+        .context(
+            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_update",
+        )?;
 
     let prompt_cache_delete_trigger_sql = format!(
         r#"
@@ -1573,7 +1590,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(&prompt_cache_delete_trigger_sql)
         .execute(pool)
         .await
-        .context("failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_delete")?;
+        .context(
+            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_delete",
+        )?;
 
     rebuild_invocation_in_progress_live_table(pool)
         .await
@@ -2121,12 +2140,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         if !upstream_account_usage_hourly_columns.contains(column) {
             upstream_account_usage_hourly_needs_status_backfill = true;
             let sql = format!("ALTER TABLE upstream_account_usage_hourly ADD COLUMN {column} {ty}");
-            sqlx::query(&sql)
-                .execute(pool)
-                .await
-                .with_context(|| {
-                    format!("failed to add upstream_account_usage_hourly column {column}")
-                })?;
+            sqlx::query(&sql).execute(pool).await.with_context(|| {
+                format!("failed to add upstream_account_usage_hourly column {column}")
+            })?;
         }
     }
 
@@ -2387,9 +2403,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await
-    .context(
-        "failed to ensure index idx_pool_upstream_node_health_archive_occurred_at_binding",
-    )?;
+    .context("failed to ensure index idx_pool_upstream_node_health_archive_occurred_at_binding")?;
 
     sqlx::query(
         r#"
@@ -2401,12 +2415,13 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_pool_upstream_node_health_archive_file")?;
 
-    let hourly_archive_sql =
-        pool_upstream_node_health_hourly_archive_create_sql("pool_upstream_node_health_hourly_archive");
+    let hourly_archive_sql = pool_upstream_node_health_hourly_archive_create_sql(
+        "pool_upstream_node_health_hourly_archive",
+    );
     sqlx::query(&hourly_archive_sql)
-    .execute(pool)
-    .await
-    .context("failed to ensure pool_upstream_node_health_hourly_archive table existence")?;
+        .execute(pool)
+        .await
+        .context("failed to ensure pool_upstream_node_health_hourly_archive table existence")?;
 
     let hourly_archive_columns =
         load_sqlite_table_columns(pool, "pool_upstream_node_health_hourly_archive").await?;
@@ -2515,10 +2530,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let proxy_model_settings_had_owner_routing_column = proxy_model_settings_existing_columns
         .iter()
         .any(|column| column == "encrypted_session_owner_routing_enabled");
-    let proxy_model_settings_had_owner_routing_init_column =
-        proxy_model_settings_existing_columns
-            .iter()
-            .any(|column| column == "encrypted_session_owner_routing_initialized");
+    let proxy_model_settings_had_owner_routing_init_column = proxy_model_settings_existing_columns
+        .iter()
+        .any(|column| column == "encrypted_session_owner_routing_initialized");
     let proxy_model_settings_had_singleton_row = if proxy_model_settings_existing_columns.is_empty()
     {
         false
@@ -3172,9 +3186,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await
-    .context(
-        "failed to ensure index idx_pool_upstream_request_attempts_group_proxy_occurred_at",
-    )?;
+    .context("failed to ensure index idx_pool_upstream_request_attempts_group_proxy_occurred_at")?;
 
     sqlx::query(
         r#"

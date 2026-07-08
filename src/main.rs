@@ -21,6 +21,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+pub(crate) use axum::http::header as http_header;
 use axum::response::sse::{Event, KeepAlive};
 use axum::{
     Router,
@@ -81,13 +82,19 @@ use tungstenite::{
     Message as TungsteniteMessage, client::IntoClientRequest, http::Request as TungsteniteRequest,
 };
 mod api;
+mod app_state;
+mod config;
 mod db_pressure;
 mod external_api;
 mod forward_proxy;
 mod http_stream_tracking;
 mod maintenance;
 mod oauth_bridge;
+mod pricing;
 mod proxy;
+mod runtime;
+mod schema;
+mod share_links;
 mod sqlite_batch_writer;
 mod stats;
 #[cfg(test)]
@@ -95,65 +102,20 @@ mod tests;
 mod upstream_accounts;
 
 use api::*;
+pub(crate) use app_state::*;
+pub(crate) use config::*;
 use external_api::*;
 use forward_proxy::*;
 use http_stream_tracking::*;
+pub(crate) use maintenance::*;
+pub(crate) use pricing::*;
 use proxy::*;
+pub(crate) use runtime::*;
+pub(crate) use schema::*;
+pub(crate) use share_links::*;
 use sqlite_batch_writer::*;
 use stats::*;
 use upstream_accounts::*;
-
-include!("config.rs");
-include!("app_state.rs");
-include!("share_links.rs");
-include!("runtime.rs");
-
-pub(crate) mod config {
-    #[allow(unused_imports)]
-    pub(crate) use crate::{
-        AppConfig, ArchiveBatchLayout, ArchiveFileCodec, ArchiveSegmentGranularity, CliArgs,
-        CliCommand, CrsStatsConfig, ForwardProxyAlgo, MaintenanceCliArgs, MaintenanceCommand,
-        MaintenanceDryRunArgs, RawCompressionCodec, UpstreamAccountsKaisouMailConfig,
-        should_recover_pending_pool_attempts_on_startup,
-    };
-}
-
-pub(crate) mod app_state {
-    #[allow(unused_imports)]
-    pub(crate) use crate::{
-        AppState, HttpClients, ModelPricing, PricingCatalog, PricingEntry, PricingSettingsResponse,
-        PricingSettingsUpdateRequest, ProxyModelSettings, ProxyModelSettingsResponse,
-        ProxyModelSettingsRow, ProxyModelSettingsUpdateRequest, SettingsResponse,
-        decode_enabled_preset_models, decode_proxy_upstream_429_max_retries,
-        default_enabled_preset_models, default_pricing_source_custom,
-        normalize_enabled_preset_models, normalize_pricing_catalog_version,
-        normalize_pricing_source, normalize_proxy_upstream_429_max_retries,
-    };
-}
-
-pub(crate) mod share_links {
-    #[cfg(test)]
-    #[allow(unused_imports)]
-    pub(crate) use crate::normalize_single_proxy_url;
-    #[allow(unused_imports)]
-    pub(crate) use crate::{
-        ForwardProxyBindingParts, ParsedForwardProxyEntry, ShadowsocksShareLink, VmessShareLink,
-        canonical_share_link_identity, canonical_trojan_share_link_identity,
-        canonical_vless_share_link_identity, default_forward_proxy_insert_direct_compat,
-        default_forward_proxy_subscription_interval_secs, deterministic_unit_f64,
-        forward_proxy_binding_key_candidates, forward_proxy_binding_parts_from_raw,
-        forward_proxy_storage_aliases, legacy_bound_proxy_key_aliases, normalize_bound_proxy_key,
-        normalize_proxy_endpoints_from_urls, normalize_proxy_url_entries,
-        normalize_share_link_scheme, normalize_single_proxy_key, normalize_subscription_entries,
-        parse_forward_proxy_entry, parse_shadowsocks_share_link, parse_vmess_share_link,
-        stable_forward_proxy_binding_key, stable_forward_proxy_key,
-    };
-}
-
-pub(crate) mod runtime {
-    #[allow(unused_imports)]
-    pub(crate) use crate::{init_tracing, log_startup_phase, run, run_runtime_until_shutdown};
-}
 #[cfg_attr(not(test), allow(dead_code))]
 const SOURCE_XY: &str = "xy";
 const SOURCE_CRS: &str = "crs";
@@ -538,16 +500,6 @@ const LEGACY_ENV_RENAMES: &[(&str, &str)] = &[
     ),
 ];
 static NEXT_PROXY_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
-
-include!("maintenance/startup_prep.rs");
-include!("maintenance/cli.rs");
-include!("maintenance/startup_backfill.rs");
-include!("maintenance/retention.rs");
-include!("maintenance/archive.rs");
-include!("maintenance/hourly_rollups.rs");
-
-include!("schema.rs");
-include!("pricing.rs");
 
 #[tokio::main]
 async fn main() -> Result<()> {

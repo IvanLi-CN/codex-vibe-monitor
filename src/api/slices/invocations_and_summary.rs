@@ -1,22 +1,28 @@
+use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
+
 use chrono::Offset;
 use chrono::Timelike;
 
-pub(crate) const INVOCATION_PROXY_DISPLAY_SQL: &str =
-    "NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), '')";
+pub(crate) const INVOCATION_PROXY_DISPLAY_SQL: &str = "NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), '')";
 pub(crate) const INVOCATION_ENDPOINT_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.endpoint') AS TEXT) END";
-pub(crate) const INVOCATION_COMPACTION_REQUEST_KIND_SQL: &str =
-    "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.compactionRequestKind') AS TEXT) END";
-pub(crate) const INVOCATION_COMPACTION_RESPONSE_KIND_SQL: &str =
-    "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.compactionResponseKind') AS TEXT) END";
+pub(crate) const INVOCATION_COMPACTION_REQUEST_KIND_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.compactionRequestKind') AS TEXT) END";
+pub(crate) const INVOCATION_COMPACTION_RESPONSE_KIND_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.compactionResponseKind') AS TEXT) END";
 pub(crate) const INVOCATION_IMAGE_INTENT_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.imageIntent') AS TEXT) END";
 pub(crate) const INVOCATION_FAILURE_KIND_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind)";
 pub(crate) const INVOCATION_REQUESTER_IP_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END";
-const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+pub(crate) const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
 pub(crate) const INVOCATION_STICKY_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
-const INVOCATION_UPSTREAM_SCOPE_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamScope') AS TEXT) END, 'external')";
+pub(crate) const INVOCATION_UPSTREAM_SCOPE_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamScope') AS TEXT) END, 'external')";
 pub(crate) const INVOCATION_ROUTE_MODE_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.routeMode') AS TEXT) END";
 pub(crate) const INVOCATION_REQUEST_MODEL_SQL: &str =
@@ -32,23 +38,23 @@ pub(crate) const INVOCATION_DOWNSTREAM_STATUS_CODE_SQL: &str = "CASE WHEN json_v
 pub(crate) const INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END";
 pub(crate) const INVOCATION_TRANSPORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.transport') = 'text' THEN json_extract(payload, '$.transport') END";
 pub(crate) const INVOCATION_BILLING_SERVICE_TIER_SQL: &str = "CASE   WHEN json_valid(payload) AND json_type(payload, '$.billingServiceTier') = 'text'     THEN json_extract(payload, '$.billingServiceTier')   WHEN json_valid(payload) AND json_type(payload, '$.billing_service_tier') = 'text'     THEN json_extract(payload, '$.billing_service_tier') END";
-const INVOCATION_POOL_ATTEMPT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptCount') AS INTEGER) END";
-const INVOCATION_POOL_DISTINCT_ACCOUNT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolDistinctAccountCount') AS INTEGER) END";
-const INVOCATION_POOL_ATTEMPT_TERMINAL_REASON_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptTerminalReason') AS TEXT) END";
-const PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT: usize = 3;
-const PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT: usize = 5;
-const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
-const INVOCATION_RESPONSE_BODY_PREVIEW_CHAR_LIMIT: usize = 2_000;
-const INVOCATION_LIVE_PHASE_QUEUED: &str = "queued";
-const INVOCATION_LIVE_PHASE_REQUESTING: &str = "requesting";
-const INVOCATION_LIVE_PHASE_RESPONDING: &str = "responding";
+pub(crate) const INVOCATION_POOL_ATTEMPT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptCount') AS INTEGER) END";
+pub(crate) const INVOCATION_POOL_DISTINCT_ACCOUNT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolDistinctAccountCount') AS INTEGER) END";
+pub(crate) const INVOCATION_POOL_ATTEMPT_TERMINAL_REASON_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptTerminalReason') AS TEXT) END";
+pub(crate) const PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT: usize = 3;
+pub(crate) const PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT: usize = 5;
+pub(crate) const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
+pub(crate) const INVOCATION_RESPONSE_BODY_PREVIEW_CHAR_LIMIT: usize = 2_000;
+pub(crate) const INVOCATION_LIVE_PHASE_QUEUED: &str = "queued";
+pub(crate) const INVOCATION_LIVE_PHASE_REQUESTING: &str = "requesting";
+pub(crate) const INVOCATION_LIVE_PHASE_RESPONDING: &str = "responding";
 
 // Legacy records can carry `failure_class=none` or NULL while still representing failures.
 // Keep classification consistent with `resolve_failure_classification` without requiring a
 // backfill pass to complete before the summary + filters become accurate.
 pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = "CASE   WHEN LOWER(TRIM(COALESCE(failure_class, ''))) IN ('service_failure', 'client_failure', 'client_abort')     THEN LOWER(TRIM(COALESCE(failure_class, '')))   ELSE     CASE       WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed')         AND LOWER(TRIM(COALESCE(error_message, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' THEN 'none'       WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')         AND LOWER(TRIM(COALESCE(error_message, ''))) = '' THEN 'none'       WHEN LOWER(TRIM(COALESCE(status, ''))) = ''         AND LOWER(TRIM(COALESCE(error_message, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' THEN 'none'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'downstream_closed'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%'         OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) LIKE '%downstream closed while streaming upstream response%'         THEN 'client_abort'       WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_429'         OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'upstream_http_429'         THEN 'service_failure'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('request_body_stream_error_client_closed', 'invalid_api_key', 'api_key_not_found', 'api_key_missing')         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key format is invalid%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%incorrect api key provided%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key not found%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%'         OR (LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' AND LOWER(TRIM(COALESCE(status, ''))) != 'http_429')         OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403')         THEN 'client_failure'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout')         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_read_timeout]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_handshake_timeout]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to contact upstream%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream response stream reported failure%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream stream error%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%request body read timed out%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%'         OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%'         THEN 'service_failure'       WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') THEN 'none'       WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200'         AND LOWER(TRIM(COALESCE(error_message, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' THEN 'none'       ELSE 'service_failure'     END END";
 
-fn latest_pool_attempt_phase_sql(invocation_ref: &str) -> String {
+pub(crate) fn latest_pool_attempt_phase_sql(invocation_ref: &str) -> String {
     format!(
         "(SELECT LOWER(TRIM(COALESCE(attempt.phase, ''))) \
             FROM pool_upstream_request_attempts attempt \
@@ -59,10 +65,11 @@ fn latest_pool_attempt_phase_sql(invocation_ref: &str) -> String {
     )
 }
 
-fn invocation_live_phase_sql(invocation_ref: &str) -> String {
+pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
     let attempt_phase_sql = latest_pool_attempt_phase_sql(invocation_ref);
-    let upstream_account_id_sql =
-        format!("CASE WHEN json_valid({invocation_ref}.payload) THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END");
+    let upstream_account_id_sql = format!(
+        "CASE WHEN json_valid({invocation_ref}.payload) THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END"
+    );
     format!(
         "CASE \
            WHEN LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) NOT IN ('running', 'pending') THEN NULL \
@@ -85,7 +92,7 @@ fn invocation_live_phase_sql(invocation_ref: &str) -> String {
     )
 }
 
-fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str> {
+pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str> {
     fn has_positive_timing(values: &[Option<f64>]) -> bool {
         values
             .iter()
@@ -96,8 +103,7 @@ fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str>
     match normalized_runtime_text(record.status.as_deref()).as_str() {
         "pending" => Some(INVOCATION_LIVE_PHASE_QUEUED),
         "running" => {
-            if has_positive_timing(&[record.t_upstream_ttfb_ms, record.t_upstream_stream_ms])
-            {
+            if has_positive_timing(&[record.t_upstream_ttfb_ms, record.t_upstream_stream_ms]) {
                 Some(INVOCATION_LIVE_PHASE_RESPONDING)
             } else if record.upstream_account_id.is_some()
                 || has_positive_timing(&[
@@ -115,7 +121,7 @@ fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str>
     }
 }
 
-fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
+pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
     let mut query = QueryBuilder::new(
         "SELECT id, invoke_id, occurred_at, source, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name, \
@@ -267,7 +273,7 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum InvocationSortBy {
+pub(crate) enum InvocationSortBy {
     OccurredAt,
     TotalTokens,
     Cost,
@@ -309,7 +315,7 @@ pub(crate) fn invocation_display_status_sql() -> String {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum InvocationSortOrder {
+pub(crate) enum InvocationSortOrder {
     Asc,
     Desc,
 }
@@ -331,35 +337,35 @@ impl InvocationSortOrder {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum SnapshotConstraint {
+pub(crate) enum SnapshotConstraint {
     UpTo(i64),
     After(i64),
 }
 
 #[derive(Debug, Clone, Default)]
-struct InvocationRecordsFilters {
-    occurred_from: Option<String>,
-    occurred_to: Option<String>,
-    status: Option<String>,
-    model: Option<String>,
-    endpoint: Option<String>,
-    request_id: Option<String>,
-    failure_class: Option<String>,
-    failure_kind: Option<String>,
-    prompt_cache_key: Option<String>,
-    sticky_key: Option<String>,
-    upstream_scope: Option<String>,
-    upstream_account_id: Option<i64>,
-    requester_ip: Option<String>,
-    keyword: Option<String>,
-    min_total_tokens: Option<i64>,
-    max_total_tokens: Option<i64>,
-    min_total_ms: Option<f64>,
-    max_total_ms: Option<f64>,
+pub(crate) struct InvocationRecordsFilters {
+    pub(crate) occurred_from: Option<String>,
+    pub(crate) occurred_to: Option<String>,
+    pub(crate) status: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) endpoint: Option<String>,
+    pub(crate) request_id: Option<String>,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) sticky_key: Option<String>,
+    pub(crate) upstream_scope: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) requester_ip: Option<String>,
+    pub(crate) keyword: Option<String>,
+    pub(crate) min_total_tokens: Option<i64>,
+    pub(crate) max_total_tokens: Option<i64>,
+    pub(crate) min_total_ms: Option<f64>,
+    pub(crate) max_total_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
-struct InvocationListRequest {
+pub(crate) struct InvocationListRequest {
     filters: InvocationRecordsFilters,
     page: i64,
     page_size: i64,
@@ -369,7 +375,7 @@ struct InvocationListRequest {
 }
 
 #[derive(Debug, FromRow)]
-struct InvocationSummaryAggRow {
+pub(crate) struct InvocationSummaryAggRow {
     total_count: i64,
     success_count: i64,
     failure_count: i64,
@@ -379,7 +385,7 @@ struct InvocationSummaryAggRow {
 }
 
 #[derive(Debug, FromRow)]
-struct InvocationNetworkAggRow {
+pub(crate) struct InvocationNetworkAggRow {
     avg_ttfb_ms: Option<f64>,
     ttfb_count: i64,
     avg_total_ms: Option<f64>,
@@ -387,7 +393,7 @@ struct InvocationNetworkAggRow {
 }
 
 #[derive(Debug, FromRow)]
-struct InvocationExceptionAggRow {
+pub(crate) struct InvocationExceptionAggRow {
     failure_count: i64,
     service_failure_count: i64,
     client_failure_count: i64,
@@ -499,13 +505,13 @@ pub(crate) struct InvocationResponseBodyResponse {
     pub(crate) unavailable_reason: Option<String>,
 }
 
-fn normalize_query_text(raw: Option<&str>) -> Option<String> {
+pub(crate) fn normalize_query_text(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
 }
 
-fn escape_sql_like(raw: &str) -> String {
+pub(crate) fn escape_sql_like(raw: &str) -> String {
     let mut escaped = String::with_capacity(raw.len());
     for ch in raw.chars() {
         match ch {
@@ -519,7 +525,10 @@ fn escape_sql_like(raw: &str) -> String {
     escaped
 }
 
-fn parse_invocation_bound(raw: Option<&str>, field_name: &str) -> Result<Option<String>, ApiError> {
+pub(crate) fn parse_invocation_bound(
+    raw: Option<&str>,
+    field_name: &str,
+) -> Result<Option<String>, ApiError> {
     let Some(raw_value) = normalize_query_text(raw) else {
         return Ok(None);
     };
@@ -530,7 +539,9 @@ fn parse_invocation_bound(raw: Option<&str>, field_name: &str) -> Result<Option<
     Ok(Some(db_occurred_at_lower_bound(parsed)))
 }
 
-fn build_invocation_filters(params: &ListQuery) -> Result<InvocationRecordsFilters, ApiError> {
+pub(crate) fn build_invocation_filters(
+    params: &ListQuery,
+) -> Result<InvocationRecordsFilters, ApiError> {
     let mut occurred_from = parse_invocation_bound(params.from.as_deref(), "from")?;
     let mut occurred_to = parse_invocation_bound(params.to.as_deref(), "to")?;
 
@@ -594,7 +605,7 @@ fn build_invocation_filters(params: &ListQuery) -> Result<InvocationRecordsFilte
     })
 }
 
-fn build_invocation_list_request(
+pub(crate) fn build_invocation_list_request(
     params: &ListQuery,
     list_limit_max: i64,
 ) -> Result<InvocationListRequest, ApiError> {
@@ -616,14 +627,18 @@ fn build_invocation_list_request(
     })
 }
 
-fn push_exact_text_filter(query: &mut QueryBuilder<Sqlite>, sql_expr: &str, value: &str) {
+pub(crate) fn push_exact_text_filter(
+    query: &mut QueryBuilder<Sqlite>,
+    sql_expr: &str,
+    value: &str,
+) {
     query.push(" AND LOWER(TRIM(COALESCE(");
     query.push(sql_expr);
     query.push(", ''))) = ");
     query.push_bind(value.to_lowercase());
 }
 
-fn push_keyword_filter(query: &mut QueryBuilder<Sqlite>, keyword: &str) {
+pub(crate) fn push_keyword_filter(query: &mut QueryBuilder<Sqlite>, keyword: &str) {
     let like_pattern = format!("%{}%", escape_sql_like(&keyword.to_lowercase()));
     query.push(" AND (");
     query
@@ -665,7 +680,7 @@ fn push_keyword_filter(query: &mut QueryBuilder<Sqlite>, keyword: &str) {
     query.push(")");
 }
 
-fn apply_invocation_records_filters(
+pub(crate) fn apply_invocation_records_filters(
     query: &mut QueryBuilder<Sqlite>,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
@@ -813,7 +828,7 @@ pub(crate) async fn resolve_invocation_snapshot_id(
     Ok(row.snapshot_id.unwrap_or(0))
 }
 
-fn append_invocation_order_clause(
+pub(crate) fn append_invocation_order_clause(
     query: &mut QueryBuilder<Sqlite>,
     sort_by: InvocationSortBy,
     sort_order: InvocationSortOrder,
@@ -844,18 +859,19 @@ fn append_invocation_order_clause(
     }
 }
 
-fn normalized_runtime_text(value: Option<&str>) -> String {
-    value.map(str::trim)
+pub(crate) fn normalized_runtime_text(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or_default()
         .to_lowercase()
 }
 
-fn runtime_text_equals(value: Option<&str>, expected: &str) -> bool {
+pub(crate) fn runtime_text_equals(value: Option<&str>, expected: &str) -> bool {
     normalized_runtime_text(value) == expected.trim().to_lowercase()
 }
 
-fn runtime_keyword_matches(record: &ApiInvocation, keyword: &str) -> bool {
+pub(crate) fn runtime_keyword_matches(record: &ApiInvocation, keyword: &str) -> bool {
     let keyword = keyword.trim().to_lowercase();
     if keyword.is_empty() {
         return true;
@@ -876,14 +892,14 @@ fn runtime_keyword_matches(record: &ApiInvocation, keyword: &str) -> bool {
     .any(|value| value.to_lowercase().contains(&keyword))
 }
 
-fn runtime_sticky_key(record: &ApiInvocation) -> Option<&str> {
+pub(crate) fn runtime_sticky_key(record: &ApiInvocation) -> Option<&str> {
     record
         .sticky_key
         .as_deref()
         .or(record.prompt_cache_key.as_deref())
 }
 
-fn runtime_upstream_scope(record: &ApiInvocation) -> &'static str {
+pub(crate) fn runtime_upstream_scope(record: &ApiInvocation) -> &'static str {
     if runtime_text_equals(record.route_mode.as_deref(), "pool") {
         "internal"
     } else {
@@ -891,18 +907,18 @@ fn runtime_upstream_scope(record: &ApiInvocation) -> &'static str {
     }
 }
 
-fn runtime_record_is_retry(record: &ApiInvocation) -> bool {
+pub(crate) fn runtime_record_is_retry(record: &ApiInvocation) -> bool {
     record.pool_attempt_count.unwrap_or(1) > 1
 }
 
-fn runtime_record_is_in_flight(record: &ApiInvocation) -> bool {
+pub(crate) fn runtime_record_is_in_flight(record: &ApiInvocation) -> bool {
     matches!(
         normalized_runtime_text(record.status.as_deref()).as_str(),
         "running" | "pending"
     )
 }
 
-fn runtime_record_matches_filters(
+pub(crate) fn runtime_record_matches_filters(
     record: &ApiInvocation,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
@@ -1016,7 +1032,7 @@ fn runtime_record_matches_filters(
     true
 }
 
-fn runtime_in_flight_record_matches_filters(
+pub(crate) fn runtime_in_flight_record_matches_filters(
     record: &ApiInvocation,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
@@ -1025,7 +1041,10 @@ fn runtime_in_flight_record_matches_filters(
         && runtime_record_matches_filters(record, filters, source_scope)
 }
 
-fn option_presence_order(left_some: bool, right_some: bool) -> Option<std::cmp::Ordering> {
+pub(crate) fn option_presence_order(
+    left_some: bool,
+    right_some: bool,
+) -> Option<std::cmp::Ordering> {
     match (left_some, right_some) {
         (true, false) => Some(std::cmp::Ordering::Less),
         (false, true) => Some(std::cmp::Ordering::Greater),
@@ -1034,7 +1053,7 @@ fn option_presence_order(left_some: bool, right_some: bool) -> Option<std::cmp::
     }
 }
 
-fn apply_runtime_sort_order(
+pub(crate) fn apply_runtime_sort_order(
     ordering: std::cmp::Ordering,
     sort_order: InvocationSortOrder,
 ) -> std::cmp::Ordering {
@@ -1044,17 +1063,20 @@ fn apply_runtime_sort_order(
     }
 }
 
-fn compare_runtime_option_i64(
+pub(crate) fn compare_runtime_option_i64(
     left: Option<i64>,
     right: Option<i64>,
     sort_order: InvocationSortOrder,
 ) -> std::cmp::Ordering {
     option_presence_order(left.is_some(), right.is_some()).unwrap_or_else(|| {
-        apply_runtime_sort_order(left.unwrap_or_default().cmp(&right.unwrap_or_default()), sort_order)
+        apply_runtime_sort_order(
+            left.unwrap_or_default().cmp(&right.unwrap_or_default()),
+            sort_order,
+        )
     })
 }
 
-fn compare_runtime_option_f64(
+pub(crate) fn compare_runtime_option_f64(
     left: Option<f64>,
     right: Option<f64>,
     sort_order: InvocationSortOrder,
@@ -1069,7 +1091,7 @@ fn compare_runtime_option_f64(
     })
 }
 
-fn compare_runtime_option_str(
+pub(crate) fn compare_runtime_option_str(
     left: Option<&str>,
     right: Option<&str>,
     sort_order: InvocationSortOrder,
@@ -1082,7 +1104,7 @@ fn compare_runtime_option_str(
     })
 }
 
-fn invocation_display_status_value(record: &ApiInvocation) -> Option<&str> {
+pub(crate) fn invocation_display_status_value(record: &ApiInvocation) -> Option<&str> {
     let status = record.status.as_deref().map(str::trim).unwrap_or_default();
     let failure_class = record
         .failure_class
@@ -1103,7 +1125,7 @@ fn invocation_display_status_value(record: &ApiInvocation) -> Option<&str> {
     }
 }
 
-fn compare_runtime_invocation_records(
+pub(crate) fn compare_runtime_invocation_records(
     left: &ApiInvocation,
     right: &ApiInvocation,
     sort_by: InvocationSortBy,
@@ -1139,15 +1161,15 @@ fn compare_runtime_invocation_records(
         .then_with(|| right.id.cmp(&left.id))
 }
 
-fn should_overlay_runtime_records(request: &InvocationListRequest) -> bool {
+pub(crate) fn should_overlay_runtime_records(request: &InvocationListRequest) -> bool {
     request.snapshot_id.is_none()
 }
 
-fn runtime_overlay_snapshot(state: &AppState) -> Vec<ApiInvocation> {
+pub(crate) fn runtime_overlay_snapshot(state: &AppState) -> Vec<ApiInvocation> {
     state.proxy_runtime_invocations.snapshot()
 }
 
-async fn query_current_runtime_db_keys(
+pub(crate) async fn query_current_runtime_db_keys(
     pool: &Pool<Sqlite>,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
@@ -1174,7 +1196,7 @@ async fn query_current_runtime_db_keys(
         .collect())
 }
 
-async fn query_terminal_db_keys_for_runtime_records(
+pub(crate) async fn query_terminal_db_keys_for_runtime_records(
     pool: &Pool<Sqlite>,
     runtime_records: &[ApiInvocation],
     snapshot: Option<SnapshotConstraint>,
@@ -1236,7 +1258,7 @@ async fn query_terminal_db_keys_for_runtime_records(
     Ok(terminal_keys)
 }
 
-fn overlay_runtime_records_for_current_page(
+pub(crate) fn overlay_runtime_records_for_current_page(
     request: &InvocationListRequest,
     source_scope: InvocationSourceScope,
     runtime_records: Vec<ApiInvocation>,
@@ -1252,7 +1274,12 @@ fn overlay_runtime_records_for_current_page(
     }
     let runtime_by_key = runtime_records
         .into_iter()
-        .map(|record| ((record.invoke_id.clone(), record.occurred_at.clone()), record))
+        .map(|record| {
+            (
+                (record.invoke_id.clone(), record.occurred_at.clone()),
+                record,
+            )
+        })
         .collect::<HashMap<_, _>>();
     let mut runtime_overlay_row_count = 0_usize;
     let mut stale_db_runtime_row_count = 0_usize;
@@ -1265,8 +1292,11 @@ fn overlay_runtime_records_for_current_page(
             };
             match normalized_runtime_text(record.status.as_deref()).as_str() {
                 "running" | "pending" => {
-                    if runtime_record_matches_filters(runtime_record, &request.filters, source_scope)
-                    {
+                    if runtime_record_matches_filters(
+                        runtime_record,
+                        &request.filters,
+                        source_scope,
+                    ) {
                         record = runtime_record.clone();
                         runtime_overlay_row_count += 1;
                         Some(record)
@@ -1333,7 +1363,7 @@ fn overlay_runtime_records_for_current_page(
     )
 }
 
-fn runtime_overlay_total_delta(
+pub(crate) fn runtime_overlay_total_delta(
     request: &InvocationListRequest,
     source_scope: InvocationSourceScope,
     runtime_records: &[ApiInvocation],
@@ -1345,7 +1375,12 @@ fn runtime_overlay_total_delta(
     }
     let runtime_by_key = runtime_records
         .iter()
-        .map(|record| ((record.invoke_id.clone(), record.occurred_at.clone()), record))
+        .map(|record| {
+            (
+                (record.invoke_id.clone(), record.occurred_at.clone()),
+                record,
+            )
+        })
         .collect::<HashMap<_, _>>();
     let stale_db_runtime_count = db_runtime_keys
         .iter()
@@ -1376,15 +1411,11 @@ fn runtime_overlay_total_delta(
         }
         delta.add_terminal_record(record);
     }
-    (
-        delta,
-        runtime_new_count,
-        stale_db_runtime_count,
-    )
+    (delta, runtime_new_count, stale_db_runtime_count)
 }
 
 #[derive(Debug, Default)]
-struct RuntimeSummaryOverlayDelta {
+pub(crate) struct RuntimeSummaryOverlayDelta {
     total_count: i64,
     success_count: i64,
     failure_count: i64,
@@ -1423,7 +1454,7 @@ impl RuntimeSummaryOverlayDelta {
     }
 }
 
-fn runtime_record_is_success_for_summary(record: &ApiInvocation) -> bool {
+pub(crate) fn runtime_record_is_success_for_summary(record: &ApiInvocation) -> bool {
     let status = normalized_runtime_text(record.status.as_deref());
     status == "success"
         || status == "completed"
@@ -1431,7 +1462,7 @@ fn runtime_record_is_success_for_summary(record: &ApiInvocation) -> bool {
             && normalized_runtime_text(record.error_message.as_deref()).is_empty())
 }
 
-async fn query_invocation_network_summary(
+pub(crate) async fn query_invocation_network_summary(
     pool: &Pool<Sqlite>,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
@@ -1565,7 +1596,7 @@ async fn query_invocation_network_summary(
     })
 }
 
-async fn query_invocation_new_records_count(
+pub(crate) async fn query_invocation_new_records_count(
     pool: &Pool<Sqlite>,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
@@ -1593,7 +1624,7 @@ async fn query_invocation_new_records_count(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InvocationSuggestionField {
+pub(crate) enum InvocationSuggestionField {
     Model,
     Endpoint,
     FailureKind,
@@ -1643,14 +1674,14 @@ impl InvocationSuggestionField {
     }
 }
 
-fn empty_invocation_suggestion_bucket() -> InvocationSuggestionBucket {
+pub(crate) fn empty_invocation_suggestion_bucket() -> InvocationSuggestionBucket {
     InvocationSuggestionBucket {
         items: Vec::new(),
         has_more: false,
     }
 }
 
-fn suggestion_response_for_field(
+pub(crate) fn suggestion_response_for_field(
     field: InvocationSuggestionField,
     bucket: InvocationSuggestionBucket,
 ) -> InvocationSuggestionsResponse {
@@ -1694,7 +1725,7 @@ fn suggestion_response_for_field(
     }
 }
 
-async fn query_invocation_suggestion_bucket(
+pub(crate) async fn query_invocation_suggestion_bucket(
     pool: &Pool<Sqlite>,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
@@ -1754,7 +1785,7 @@ async fn query_invocation_suggestion_bucket(
     Ok(InvocationSuggestionBucket { items, has_more })
 }
 
-fn is_legacy_invocation_stream_query(params: &ListQuery) -> bool {
+pub(crate) fn is_legacy_invocation_stream_query(params: &ListQuery) -> bool {
     params.limit.is_some()
         && params.page.is_none()
         && params.page_size.is_none()
@@ -1778,7 +1809,7 @@ fn is_legacy_invocation_stream_query(params: &ListQuery) -> bool {
         && params.max_total_ms.is_none()
 }
 
-async fn query_invocation_exception_summary(
+pub(crate) async fn query_invocation_exception_summary(
     pool: &Pool<Sqlite>,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
@@ -2035,20 +2066,20 @@ pub(crate) async fn fetch_invocation_pool_attempts(
 }
 
 #[derive(Debug, FromRow)]
-struct InvocationResponseBodyRow {
-    id: i64,
-    raw_response: String,
-    response_raw_path: Option<String>,
-    response_raw_size: Option<i64>,
-    response_raw_truncated: Option<i64>,
-    response_raw_truncated_reason: Option<String>,
-    detail_level: String,
-    detail_prune_reason: Option<String>,
-    response_content_encoding: Option<String>,
-    failure_class: Option<String>,
+pub(crate) struct InvocationResponseBodyRow {
+    pub(crate) id: i64,
+    pub(crate) raw_response: String,
+    pub(crate) response_raw_path: Option<String>,
+    pub(crate) response_raw_size: Option<i64>,
+    pub(crate) response_raw_truncated: Option<i64>,
+    pub(crate) response_raw_truncated_reason: Option<String>,
+    pub(crate) detail_level: String,
+    pub(crate) detail_prune_reason: Option<String>,
+    pub(crate) response_content_encoding: Option<String>,
+    pub(crate) failure_class: Option<String>,
 }
 
-fn is_abnormal_invocation_failure(failure_class: Option<&str>) -> bool {
+pub(crate) fn is_abnormal_invocation_failure(failure_class: Option<&str>) -> bool {
     matches!(
         failure_class
             .map(str::trim)
@@ -2057,7 +2088,7 @@ fn is_abnormal_invocation_failure(failure_class: Option<&str>) -> bool {
     )
 }
 
-fn truncate_response_preview_text(value: &str) -> (String, bool) {
+pub(crate) fn truncate_response_preview_text(value: &str) -> (String, bool) {
     let mut end = value.len();
     let mut count = 0usize;
     for (index, _) in value.char_indices() {
@@ -2073,7 +2104,7 @@ fn truncate_response_preview_text(value: &str) -> (String, bool) {
     (value[..end].to_string(), true)
 }
 
-fn raw_response_fallback_reason(row: &InvocationResponseBodyRow) -> String {
+pub(crate) fn raw_response_fallback_reason(row: &InvocationResponseBodyRow) -> String {
     if row.detail_level == DETAIL_LEVEL_STRUCTURED_ONLY {
         "detail_pruned".to_string()
     } else if row.response_raw_truncated.unwrap_or_default() != 0 {
@@ -2087,7 +2118,7 @@ fn raw_response_fallback_reason(row: &InvocationResponseBodyRow) -> String {
     }
 }
 
-fn resolve_response_body_text_from_row(
+pub(crate) fn resolve_response_body_text_from_row(
     row: &InvocationResponseBodyRow,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<(String, bool), String> {
@@ -2137,7 +2168,7 @@ fn resolve_response_body_text_from_row(
     Err(raw_response_fallback_reason(row))
 }
 
-async fn fetch_invocation_response_body_row_by_id(
+pub(crate) async fn fetch_invocation_response_body_row_by_id(
     pool: &Pool<Sqlite>,
     id: i64,
 ) -> Result<Option<InvocationResponseBodyRow>, ApiError> {
@@ -2288,29 +2319,27 @@ pub(crate) async fn fetch_invocation_summary(
     .await?;
 
     let runtime_overlay_delta = if request.snapshot_id.is_none() {
-        let db_runtime_keys =
-            query_current_runtime_db_keys(
-                &state.pool,
-                &request.filters,
-                source_scope,
-                Some(SnapshotConstraint::UpTo(snapshot_id)),
-            )
-            .await?;
+        let db_runtime_keys = query_current_runtime_db_keys(
+            &state.pool,
+            &request.filters,
+            source_scope,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?;
         let runtime_records = runtime_overlay_snapshot(state.as_ref());
         let db_terminal_keys = query_terminal_db_keys_for_runtime_records(
             &state.pool,
             &runtime_records,
             Some(SnapshotConstraint::UpTo(snapshot_id)),
         )
-            .await?;
-        let (delta, runtime_new_count, stale_db_runtime_count) =
-            runtime_overlay_total_delta(
-                &request,
-                source_scope,
-                &runtime_records,
-                &db_runtime_keys,
-                &db_terminal_keys,
-            );
+        .await?;
+        let (delta, runtime_new_count, stale_db_runtime_count) = runtime_overlay_total_delta(
+            &request,
+            source_scope,
+            &runtime_records,
+            &db_runtime_keys,
+            &db_terminal_keys,
+        );
         if runtime_new_count > 0 || stale_db_runtime_count > 0 {
             debug!(
                 endpoint = "invocation_summary",
@@ -2524,18 +2553,20 @@ pub(crate) async fn fetch_stats(
     Ok(Json(response))
 }
 
-async fn load_in_progress_conversation_count(
+pub(crate) async fn load_in_progress_conversation_count(
     state: &AppState,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
 ) -> Result<i64, ApiError> {
-    Ok(load_in_progress_summary_snapshot(state, source_scope, upstream_account_id)
-        .await?
-        .in_progress_count)
+    Ok(
+        load_in_progress_summary_snapshot(state, source_scope, upstream_account_id)
+            .await?
+            .in_progress_count,
+    )
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct SummaryLiveAugmentation {
+pub(crate) struct SummaryLiveAugmentation {
     in_progress_conversation_count: Option<i64>,
     in_progress_retry_conversation_count: Option<i64>,
     in_progress_avg_wait_ms: Option<f64>,
@@ -2544,12 +2575,12 @@ struct SummaryLiveAugmentation {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SummaryLiveAugmentationPolicy {
+pub(crate) struct SummaryLiveAugmentationPolicy {
     include_in_progress: bool,
     include_non_success_tokens: bool,
 }
 
-fn summary_window_range(
+pub(crate) fn summary_window_range(
     window: &SummaryWindow,
     reporting_tz: Tz,
     now: DateTime<Utc>,
@@ -2558,18 +2589,21 @@ fn summary_window_range(
         SummaryWindow::All | SummaryWindow::Current(_) => Ok(None),
         SummaryWindow::Duration(duration) => Ok(Some((now - *duration, now))),
         SummaryWindow::Calendar(spec) => {
-            let range = resolve_range_window(spec.as_str(), reporting_tz).map_err(ApiError::from)?;
+            let range =
+                resolve_range_window(spec.as_str(), reporting_tz).map_err(ApiError::from)?;
             Ok(Some((range.start, range.end)))
         }
         SummaryWindow::PreviousFullDays(day_count) => {
             let (start, end) = previous_full_days_range_bounds(*day_count, now, reporting_tz)
-                .ok_or_else(|| ApiError::bad_request(anyhow!("invalid previous full days window")))?;
+                .ok_or_else(|| {
+                    ApiError::bad_request(anyhow!("invalid previous full days window"))
+                })?;
             Ok(Some((start, end)))
         }
     }
 }
 
-async fn load_summary_live_augmentation(
+pub(crate) async fn load_summary_live_augmentation(
     state: &AppState,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
@@ -2577,7 +2611,8 @@ async fn load_summary_live_augmentation(
     policy: SummaryLiveAugmentationPolicy,
 ) -> Result<SummaryLiveAugmentation, ApiError> {
     let in_progress = if policy.include_in_progress {
-        let snapshot = load_in_progress_summary_snapshot(state, source_scope, upstream_account_id).await?;
+        let snapshot =
+            load_in_progress_summary_snapshot(state, source_scope, upstream_account_id).await?;
         (
             Some(snapshot.in_progress_count),
             Some(snapshot.retry_count),
@@ -2589,14 +2624,8 @@ async fn load_summary_live_augmentation(
     };
     let non_success_tokens = if policy.include_non_success_tokens {
         if let Some((start, end)) = range {
-            load_non_success_tokens_snapshot(
-                state,
-                source_scope,
-                upstream_account_id,
-                start,
-                end,
-            )
-            .await?
+            load_non_success_tokens_snapshot(state, source_scope, upstream_account_id, start, end)
+                .await?
         } else {
             None
         }
@@ -2613,7 +2642,7 @@ async fn load_summary_live_augmentation(
     })
 }
 
-fn apply_summary_live_augmentation(
+pub(crate) fn apply_summary_live_augmentation(
     response: &mut StatsResponse,
     augmentation: SummaryLiveAugmentation,
 ) {
@@ -2626,14 +2655,14 @@ fn apply_summary_live_augmentation(
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct InProgressSummarySnapshot {
+pub(crate) struct InProgressSummarySnapshot {
     in_progress_count: i64,
     retry_count: i64,
     avg_wait_ms: Option<f64>,
     phase_counts: InvocationPhaseCountsResponse,
 }
 
-async fn load_in_progress_summary_snapshot(
+pub(crate) async fn load_in_progress_summary_snapshot(
     state: &AppState,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
@@ -2658,7 +2687,9 @@ async fn load_in_progress_summary_snapshot(
     } else {
         match source_scope {
             InvocationSourceScope::All => "live.is_retry_after_failure_all".to_string(),
-            InvocationSourceScope::ProxyOnly => "live.is_retry_after_failure_proxy_only".to_string(),
+            InvocationSourceScope::ProxyOnly => {
+                "live.is_retry_after_failure_proxy_only".to_string()
+            }
         }
     };
     let mut query = QueryBuilder::<Sqlite>::new(
@@ -2829,7 +2860,11 @@ async fn load_in_progress_summary_snapshot(
         .filter(|record| {
             !db_runtime_keys.contains_key(&(record.invoke_id.clone(), record.occurred_at.clone()))
         })
-        .filter_map(|record| record.t_upstream_ttfb_ms.filter(|value| value.is_finite() && *value >= 0.0))
+        .filter_map(|record| {
+            record
+                .t_upstream_ttfb_ms
+                .filter(|value| value.is_finite() && *value >= 0.0)
+        })
         .fold((0.0, 0_i64), |(sum, count), value| (sum + value, count + 1));
     let combined_avg_wait_ms = match (avg_wait_sample_count, ttfb_count) {
         (db_sample_count, runtime_count) if db_sample_count > 0 || runtime_count > 0 => {
@@ -2856,7 +2891,7 @@ async fn load_in_progress_summary_snapshot(
     })
 }
 
-async fn load_live_invocation_ids_in_range(
+pub(crate) async fn load_live_invocation_ids_in_range(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
@@ -2868,7 +2903,8 @@ async fn load_live_invocation_ids_in_range(
         id: i64,
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT id FROM codex_invocations WHERE occurred_at >= ");
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT id FROM codex_invocations WHERE occurred_at >= ");
     query
         .push_bind(db_occurred_at_lower_bound(start))
         .push(" AND occurred_at < ")
@@ -2894,7 +2930,7 @@ async fn load_live_invocation_ids_in_range(
         .collect())
 }
 
-fn summary_live_augmentation_policy(
+pub(crate) fn summary_live_augmentation_policy(
     window: &SummaryWindow,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     now: DateTime<Utc>,
@@ -2910,7 +2946,7 @@ fn summary_live_augmentation_policy(
     }
 }
 
-async fn load_non_success_tokens_snapshot(
+pub(crate) async fn load_non_success_tokens_snapshot(
     state: &AppState,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
@@ -3140,7 +3176,7 @@ pub(crate) async fn build_empty_summary_response(
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct UpstreamAccountActivityMetaRow {
+pub(crate) struct UpstreamAccountActivityMetaRow {
     id: i64,
     kind: String,
     display_name: Option<String>,
@@ -3160,7 +3196,7 @@ struct UpstreamAccountActivityMetaRow {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-struct UpstreamAccountInProgressSummary {
+pub(crate) struct UpstreamAccountInProgressSummary {
     in_progress_count: i64,
     retry_count: i64,
     phase_counts: InvocationPhaseCountsResponse,
@@ -3185,7 +3221,7 @@ impl UpstreamAccountInProgressSummary {
 }
 
 #[derive(Debug, Default)]
-struct UpstreamAccountActivityAccumulator {
+pub(crate) struct UpstreamAccountActivityAccumulator {
     display_name_hint: Option<String>,
     plan_type_hint: Option<String>,
     request_count: i64,
@@ -3212,13 +3248,13 @@ struct UpstreamAccountActivityAccumulator {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct UpstreamAccountRateUsageEvent {
+pub(crate) struct UpstreamAccountRateUsageEvent {
     occurred_at_epoch_ms: i64,
     total_tokens: i64,
     total_cost: f64,
 }
 
-fn normalize_trimmed_optional_string_local(raw: Option<String>) -> Option<String> {
+pub(crate) fn normalize_trimmed_optional_string_local(raw: Option<String>) -> Option<String> {
     raw.and_then(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -3229,7 +3265,7 @@ fn normalize_trimmed_optional_string_local(raw: Option<String>) -> Option<String
     })
 }
 
-fn resolve_upstream_account_activity_display_name(
+pub(crate) fn resolve_upstream_account_activity_display_name(
     account_id: i64,
     meta: Option<&UpstreamAccountActivityMetaRow>,
     hint: Option<&str>,
@@ -3248,7 +3284,7 @@ fn resolve_upstream_account_activity_display_name(
 }
 
 #[derive(Debug, Clone)]
-struct UpstreamAccountActivityStatusFields {
+pub(crate) struct UpstreamAccountActivityStatusFields {
     enabled: bool,
     display_status: String,
     enable_status: String,
@@ -3259,7 +3295,7 @@ struct UpstreamAccountActivityStatusFields {
     last_action_reason_message: Option<String>,
 }
 
-fn build_upstream_account_activity_status_fields(
+pub(crate) fn build_upstream_account_activity_status_fields(
     meta: &UpstreamAccountActivityMetaRow,
     now: DateTime<Utc>,
 ) -> UpstreamAccountActivityStatusFields {
@@ -3317,7 +3353,9 @@ fn build_upstream_account_activity_status_fields(
     }
 }
 
-fn invocation_upstream_account_id_with_attempt_fallback_sql(invocation_ref: &str) -> String {
+pub(crate) fn invocation_upstream_account_id_with_attempt_fallback_sql(
+    invocation_ref: &str,
+) -> String {
     format!(
         "COALESCE(\
            CASE WHEN json_valid({invocation_ref}.payload) \
@@ -3333,7 +3371,7 @@ fn invocation_upstream_account_id_with_attempt_fallback_sql(invocation_ref: &str
     )
 }
 
-fn invocation_account_retry_after_failure_with_attempt_fallback_sql(
+pub(crate) fn invocation_account_retry_after_failure_with_attempt_fallback_sql(
     current_upstream_account_id_sql: &str,
     source_scope: InvocationSourceScope,
 ) -> String {
@@ -3368,7 +3406,7 @@ fn invocation_account_retry_after_failure_with_attempt_fallback_sql(
     )
 }
 
-fn compute_upstream_account_activity_rates(
+pub(crate) fn compute_upstream_account_activity_rates(
     rate_usage_events: &[UpstreamAccountRateUsageEvent],
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
@@ -3389,7 +3427,7 @@ fn compute_upstream_account_activity_rates(
     )
 }
 
-fn compute_upstream_account_activity_tail_rate(
+pub(crate) fn compute_upstream_account_activity_tail_rate(
     rate_usage_events: &[UpstreamAccountRateUsageEvent],
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
@@ -3444,15 +3482,14 @@ fn compute_upstream_account_activity_tail_rate(
     Some(total_value / (active_millis as f64 / MINUTE_MILLIS as f64))
 }
 
-async fn query_live_upstream_account_activity_preview_rows(
+pub(crate) async fn query_live_upstream_account_activity_preview_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
 ) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
-    let mut query =
-        QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
     query
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
         .push(" AS prompt_cache_key, occurred_at, ")
@@ -3531,7 +3568,7 @@ async fn query_live_upstream_account_activity_preview_rows(
         .await?)
 }
 
-fn runtime_upstream_account_activity_preview_row(
+pub(crate) fn runtime_upstream_account_activity_preview_row(
     record: ApiInvocation,
     source_scope: InvocationSourceScope,
 ) -> Option<UpstreamAccountInvocationPreviewRow> {
@@ -3573,9 +3610,7 @@ fn runtime_upstream_account_activity_preview_row(
         downstream_status_code: record.downstream_status_code,
         downstream_error_message: record.downstream_error_message,
         failure_kind: record.failure_kind,
-        is_actionable: record
-            .is_actionable
-            .map(|value| if value { 1 } else { 0 }),
+        is_actionable: record.is_actionable.map(|value| if value { 1 } else { 0 }),
         proxy_display_name: record.proxy_display_name,
         upstream_account_name: record.upstream_account_name,
         upstream_account_plan_type: None,
@@ -3599,7 +3634,7 @@ fn runtime_upstream_account_activity_preview_row(
     })
 }
 
-fn overlay_runtime_upstream_account_activity_preview_rows(
+pub(crate) fn overlay_runtime_upstream_account_activity_preview_rows(
     state: &AppState,
     rows: &mut Vec<UpstreamAccountInvocationPreviewRow>,
     source_scope: InvocationSourceScope,
@@ -3607,7 +3642,8 @@ fn overlay_runtime_upstream_account_activity_preview_rows(
 ) {
     let mut runtime_overlay_row_count = 0_i64;
     for record in state.proxy_runtime_invocations.snapshot() {
-        let Some(mut row) = runtime_upstream_account_activity_preview_row(record, source_scope) else {
+        let Some(mut row) = runtime_upstream_account_activity_preview_row(record, source_scope)
+        else {
             continue;
         };
         let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
@@ -3647,7 +3683,7 @@ fn overlay_runtime_upstream_account_activity_preview_rows(
     }
 }
 
-async fn query_upstream_account_activity_meta(
+pub(crate) async fn query_upstream_account_activity_meta(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
 ) -> Result<HashMap<i64, UpstreamAccountActivityMetaRow>, ApiError> {
@@ -3678,7 +3714,7 @@ async fn query_upstream_account_activity_meta(
         .collect())
 }
 
-async fn query_upstream_account_in_progress_counts(
+pub(crate) async fn query_upstream_account_in_progress_counts(
     state: &AppState,
     source_scope: InvocationSourceScope,
 ) -> Result<HashMap<Option<i64>, UpstreamAccountInProgressSummary>, ApiError> {
@@ -3697,14 +3733,14 @@ async fn query_upstream_account_in_progress_counts(
         resolved_upstream_account_id_sql.as_str(),
         source_scope,
     );
-    let mut db_key_query = QueryBuilder::<Sqlite>::new("SELECT inv.invoke_id AS invoke_id, inv.occurred_at AS occurred_at, ");
+    let mut db_key_query = QueryBuilder::<Sqlite>::new(
+        "SELECT inv.invoke_id AS invoke_id, inv.occurred_at AS occurred_at, ",
+    );
     db_key_query
         .push(resolved_upstream_account_id_sql.as_str())
         .push(" AS upstream_account_id, ")
         .push(retry_sql.as_str())
-        .push(
-            " AS retry_count, ",
-        );
+        .push(" AS retry_count, ");
     db_key_query.push(invocation_live_phase_sql("inv")).push(
         " AS live_phase \
          FROM invocation_in_progress_live live \
@@ -3732,11 +3768,7 @@ async fn query_upstream_account_in_progress_counts(
         .map(|row| {
             (
                 (row.invoke_id, row.occurred_at),
-                (
-                    row.upstream_account_id,
-                    row.retry_count > 0,
-                    row.live_phase,
-                ),
+                (row.upstream_account_id, row.retry_count > 0, row.live_phase),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -3796,17 +3828,16 @@ async fn query_upstream_account_in_progress_counts(
     if runtime_overlay_row_count > 0 {
         debug!(
             endpoint = "/api/upstream-account-activity",
-            runtime_overlay_row_count,
-            "overlayed memory runtime account in-progress counts"
+            runtime_overlay_row_count, "overlayed memory runtime account in-progress counts"
         );
     }
     Ok(counts)
 }
 
-const DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES: i64 = 5;
+pub(crate) const DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES: i64 = 5;
 
 #[derive(Debug)]
-struct DashboardActivitySnapshot {
+pub(crate) struct DashboardActivitySnapshot {
     range: String,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
@@ -3814,8 +3845,26 @@ struct DashboardActivitySnapshot {
     summary: DashboardActivitySummaryResponse,
 }
 
+#[cfg(test)]
+impl DashboardActivitySnapshot {
+    pub(crate) fn exact_range(&self) -> ExactUtcRange {
+        ExactUtcRange {
+            start: self.range_start,
+            end: self.range_end,
+        }
+    }
+
+    pub(crate) fn accounts(&self) -> &[DashboardActivityAccountResponse] {
+        &self.accounts
+    }
+
+    pub(crate) fn summary(&self) -> &DashboardActivitySummaryResponse {
+        &self.summary
+    }
+}
+
 #[derive(Debug, FromRow)]
-struct DashboardActivityRateUsageRow {
+pub(crate) struct DashboardActivityRateUsageRow {
     invoke_id: String,
     occurred_at: String,
     upstream_account_id: Option<i64>,
@@ -3823,7 +3872,7 @@ struct DashboardActivityRateUsageRow {
     total_cost: f64,
 }
 
-fn validate_dashboard_activity_params(
+pub(crate) fn validate_dashboard_activity_params(
     endpoint: &str,
     range: &str,
     recent_limit: Option<i64>,
@@ -3845,7 +3894,7 @@ fn validate_dashboard_activity_params(
     }
 }
 
-fn sum_optional_rates(
+pub(crate) fn sum_optional_rates(
     accounts: &[DashboardActivityAccountResponse],
     value_of: impl Fn(&DashboardActivityAccountResponse) -> Option<f64>,
 ) -> Option<f64> {
@@ -3860,7 +3909,7 @@ fn sum_optional_rates(
     saw_value.then_some(total)
 }
 
-fn build_dashboard_activity_summary(
+pub(crate) fn build_dashboard_activity_summary(
     accounts: &[DashboardActivityAccountResponse],
     include_live_counts: bool,
 ) -> DashboardActivitySummaryResponse {
@@ -3905,8 +3954,18 @@ fn build_dashboard_activity_summary(
                 },
             )
         }),
-        non_success_cost: Some(accounts.iter().map(|account| account.non_success_cost).sum()),
-        non_success_tokens: Some(accounts.iter().map(|account| account.non_success_tokens).sum()),
+        non_success_cost: Some(
+            accounts
+                .iter()
+                .map(|account| account.non_success_cost)
+                .sum(),
+        ),
+        non_success_tokens: Some(
+            accounts
+                .iter()
+                .map(|account| account.non_success_tokens)
+                .sum(),
+        ),
         maintenance: None,
     };
 
@@ -3917,7 +3976,7 @@ fn build_dashboard_activity_summary(
     }
 }
 
-async fn query_dashboard_activity_rate_usage_rows(
+pub(crate) async fn query_dashboard_activity_rate_usage_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
@@ -3927,9 +3986,7 @@ async fn query_dashboard_activity_rate_usage_rows(
         .max(range.end - ChronoDuration::minutes(DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES));
     let upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT invoke_id, occurred_at, ",
-    );
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT invoke_id, occurred_at, ");
     query
         .push(upstream_account_id_sql.as_str())
         .push(
@@ -3952,7 +4009,7 @@ async fn query_dashboard_activity_rate_usage_rows(
         .await?)
 }
 
-async fn load_dashboard_activity_rate_events_by_account(
+pub(crate) async fn load_dashboard_activity_rate_events_by_account(
     state: &AppState,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
@@ -4039,7 +4096,7 @@ async fn load_dashboard_activity_rate_events_by_account(
     Ok(events_by_account)
 }
 
-fn sum_dashboard_activity_rate_events(
+pub(crate) fn sum_dashboard_activity_rate_events(
     events_by_account: &HashMap<Option<i64>, Vec<UpstreamAccountRateUsageEvent>>,
     range: ExactUtcRange,
 ) -> (Option<f64>, Option<f64>) {
@@ -4067,7 +4124,7 @@ fn sum_dashboard_activity_rate_events(
     )
 }
 
-async fn load_dashboard_activity_summary_only_snapshot(
+pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
     state: &AppState,
     range_name: &str,
     source_scope: InvocationSourceScope,
@@ -4089,9 +4146,9 @@ async fn load_dashboard_activity_summary_only_snapshot(
     )
     .await?;
     apply_summary_live_augmentation(&mut stats, augmentation);
-    let rate_events = load_dashboard_activity_rate_events_by_account(state, source_scope, range).await?;
-    let (tokens_per_minute, spend_rate) =
-        sum_dashboard_activity_rate_events(&rate_events, range);
+    let rate_events =
+        load_dashboard_activity_rate_events_by_account(state, source_scope, range).await?;
+    let (tokens_per_minute, spend_rate) = sum_dashboard_activity_rate_events(&rate_events, range);
 
     Ok(DashboardActivitySnapshot {
         range: range_name.to_string(),
@@ -4106,7 +4163,7 @@ async fn load_dashboard_activity_summary_only_snapshot(
     })
 }
 
-async fn load_dashboard_activity_snapshot(
+pub(crate) async fn load_dashboard_activity_snapshot(
     state: &AppState,
     range_name: &str,
     reporting_tz: Tz,
@@ -4171,12 +4228,13 @@ async fn load_dashboard_activity_snapshot(
             row.failure_class.as_deref(),
             row.is_actionable,
         );
-        let is_success = prompt_cache_and_timeseries_shared::invocation_status_is_success_like(
-            Some(row.status.as_str()),
-            row.error_message.as_deref(),
-        ) && classification.failure_class == FailureClass::None;
+        let is_success =
+            prompt_cache_and_timeseries_shared::prompt_invocation_status_is_success_like(
+                Some(row.status.as_str()),
+                row.error_message.as_deref(),
+            ) && classification.failure_class == FailureClass::None;
         let counts_toward_failure =
-            prompt_cache_and_timeseries_shared::invocation_status_counts_toward_terminal_totals(
+            prompt_cache_and_timeseries_shared::prompt_invocation_status_counts_toward_terminal_totals(
                 Some(row.status.as_str()),
             ) && classification.failure_class != FailureClass::None;
         let counts_toward_non_success = invocation_counts_toward_non_success_usage(
@@ -4187,9 +4245,7 @@ async fn load_dashboard_activity_snapshot(
             row.is_actionable,
         );
 
-        let entry = account_activity
-            .entry(row.upstream_account_id)
-            .or_default();
+        let entry = account_activity.entry(row.upstream_account_id).or_default();
         if entry.last_occurred_at_epoch_ms == 0 {
             entry.last_occurred_at_epoch_ms = occurred_at.timestamp_millis();
         }
@@ -4219,7 +4275,10 @@ async fn load_dashboard_activity_snapshot(
                 entry.first_response_byte_total_sample_count += 1;
                 entry.first_response_byte_total_sum_ms += first_response_byte_total_ms;
             }
-            if let Some(total_ms) = row.t_total_ms.filter(|value| value.is_finite() && *value >= 0.0) {
+            if let Some(total_ms) = row
+                .t_total_ms
+                .filter(|value| value.is_finite() && *value >= 0.0)
+            {
                 entry.total_latency_sample_count += 1;
                 entry.total_latency_sum_ms += total_ms;
             }
@@ -4251,9 +4310,9 @@ async fn load_dashboard_activity_snapshot(
             }
         }
         if include_accounts && entry.recent_invocations.len() < recent_limit {
-            entry.recent_invocations.push(
-                upstream_account_invocation_preview_from_row(row.clone()),
-            );
+            entry
+                .recent_invocations
+                .push(upstream_account_invocation_preview_from_row(row.clone()));
         }
     }
 
@@ -4266,7 +4325,10 @@ async fn load_dashboard_activity_snapshot(
         account_activity.entry(*upstream_account_id).or_default();
     }
 
-    let account_ids = account_activity.keys().filter_map(|id| *id).collect::<Vec<_>>();
+    let account_ids = account_activity
+        .keys()
+        .filter_map(|id| *id)
+        .collect::<Vec<_>>();
     let account_meta = if include_accounts {
         query_upstream_account_activity_meta(&state.pool, &account_ids).await?
     } else {
@@ -4376,10 +4438,10 @@ async fn load_dashboard_activity_snapshot(
                 first_response_byte_total_avg_ms: (aggregate
                     .first_response_byte_total_sample_count
                     > 0)
-                    .then_some(
-                        aggregate.first_response_byte_total_sum_ms
-                            / aggregate.first_response_byte_total_sample_count as f64,
-                    ),
+                .then_some(
+                    aggregate.first_response_byte_total_sum_ms
+                        / aggregate.first_response_byte_total_sample_count as f64,
+                ),
                 avg_total_ms: (aggregate.total_latency_sample_count > 0).then_some(
                     aggregate.total_latency_sum_ms / aggregate.total_latency_sample_count as f64,
                 ),
@@ -4408,7 +4470,12 @@ async fn load_dashboard_activity_snapshot(
                     .recent_invocations
                     .first()
                     .map(|row| row.occurred_at.as_str())
-                    .cmp(&left.recent_invocations.first().map(|row| row.occurred_at.as_str()))
+                    .cmp(
+                        &left
+                            .recent_invocations
+                            .first()
+                            .map(|row| row.occurred_at.as_str()),
+                    )
             })
             .then_with(|| {
                 right
@@ -4428,7 +4495,7 @@ async fn load_dashboard_activity_snapshot(
     })
 }
 
-fn dashboard_account_to_upstream_account(
+pub(crate) fn dashboard_account_to_upstream_account(
     account: DashboardActivityAccountResponse,
 ) -> Option<UpstreamAccountActivityAccountResponse> {
     let upstream_account_id = account.upstream_account_id?;
@@ -4709,10 +4776,9 @@ pub(crate) async fn fetch_summary(
     let totals = match window {
         SummaryWindow::All => {
             if let Some(upstream_account_id) = upstream_account_id {
-                let start = Utc
-                    .timestamp_opt(0, 0)
-                    .single()
-                    .ok_or_else(|| ApiError::from(anyhow!("invalid account all-time summary start")))?;
+                let start = Utc.timestamp_opt(0, 0).single().ok_or_else(|| {
+                    ApiError::from(anyhow!("invalid account all-time summary start"))
+                })?;
                 query_hourly_backed_summary_range_for_account(
                     state.as_ref(),
                     start,
@@ -4768,15 +4834,12 @@ pub(crate) async fn fetch_summary(
             }
         }
         SummaryWindow::Calendar(ref spec) => {
-            let range_window = resolve_range_window(spec.as_str(), reporting_tz).map_err(ApiError::from)?;
+            let range_window =
+                resolve_range_window(spec.as_str(), reporting_tz).map_err(ApiError::from)?;
             if range_window.start >= range_window.end {
                 return Ok(Json(
-                    build_empty_summary_response(
-                        state.as_ref(),
-                        source_scope,
-                        upstream_account_id,
-                    )
-                    .await?,
+                    build_empty_summary_response(state.as_ref(), source_scope, upstream_account_id)
+                        .await?,
                 ));
             }
             if let Some(upstream_account_id) = upstream_account_id {
@@ -4800,7 +4863,9 @@ pub(crate) async fn fetch_summary(
         }
         SummaryWindow::PreviousFullDays(day_count) => {
             let (start, end) = previous_full_days_range_bounds(day_count, now, reporting_tz)
-                .ok_or_else(|| ApiError::bad_request(anyhow!("invalid previous full days window")))?;
+                .ok_or_else(|| {
+                    ApiError::bad_request(anyhow!("invalid previous full days window"))
+                })?;
             if let Some(upstream_account_id) = upstream_account_id {
                 query_hourly_backed_summary_range_for_account(
                     state.as_ref(),
@@ -4811,13 +4876,7 @@ pub(crate) async fn fetch_summary(
                 )
                 .await?
             } else {
-                query_hourly_backed_summary_range(
-                    state.as_ref(),
-                    start,
-                    end,
-                    source_scope,
-                )
-                .await?
+                query_hourly_backed_summary_range(state.as_ref(), start, end, source_scope).await?
             }
         }
     };
@@ -4839,7 +4898,7 @@ pub(crate) async fn fetch_summary(
     Ok(Json(response))
 }
 
-async fn load_stats_maintenance_response(
+pub(crate) async fn load_stats_maintenance_response(
     state: &AppState,
 ) -> Result<StatsMaintenanceResponse, ApiError> {
     {

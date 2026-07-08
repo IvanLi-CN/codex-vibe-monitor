@@ -1,8 +1,11 @@
-const GPT55_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_model:gpt-5.5";
-const GPT55_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 gpt-5.5";
-const WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_transport:websocket";
-const WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 WS";
-const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
+use super::*;
+use sqlx::Transaction;
+
+pub(crate) const GPT55_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_model:gpt-5.5";
+pub(crate) const GPT55_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 gpt-5.5";
+pub(crate) const WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_transport:websocket";
+pub(crate) const WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 WS";
+pub(crate) const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
     verified_email,
     chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
@@ -45,11 +48,15 @@ pub(crate) fn unsupported_model_system_tag_key(model: &str) -> Option<String> {
     Some(format!("unsupported_model:{normalized}"))
 }
 
-fn unsupported_model_system_tag_name(model: &str) -> String {
+pub(crate) fn unsupported_model_system_tag_name(model: &str) -> String {
     format!("不支持 {model}")
 }
 
-async fn ensure_protected_system_tag(pool: &Pool<Sqlite>, name: &str, system_key: &str) -> Result<()> {
+pub(crate) async fn ensure_protected_system_tag(
+    pool: &Pool<Sqlite>,
+    name: &str,
+    system_key: &str,
+) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -104,7 +111,7 @@ async fn ensure_protected_system_tag(pool: &Pool<Sqlite>, name: &str, system_key
     Ok(())
 }
 
-async fn ensure_gpt55_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn ensure_gpt55_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> {
     ensure_protected_system_tag(
         pool,
         GPT55_UNSUPPORTED_SYSTEM_TAG_NAME,
@@ -113,7 +120,7 @@ async fn ensure_gpt55_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> 
     .await
 }
 
-async fn ensure_websocket_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn ensure_websocket_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> {
     ensure_protected_system_tag(
         pool,
         WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_NAME,
@@ -241,7 +248,11 @@ pub(crate) async fn account_has_websocket_unsupported_tag(
     account_has_system_tag(pool, account_id, WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY).await
 }
 
-async fn account_has_system_tag(pool: &Pool<Sqlite>, account_id: i64, system_key: &str) -> Result<bool> {
+pub(crate) async fn account_has_system_tag(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    system_key: &str,
+) -> Result<bool> {
     let count = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
@@ -258,7 +269,7 @@ async fn account_has_system_tag(pool: &Pool<Sqlite>, account_id: i64, system_key
     Ok(count > 0)
 }
 
-async fn sync_upstream_account_by_id(
+pub(crate) async fn sync_upstream_account_by_id(
     state: &AppState,
     id: i64,
     cause: SyncCause,
@@ -314,7 +325,7 @@ async fn sync_upstream_account_by_id(
     Ok(Some(detail))
 }
 
-async fn sync_api_key_account(
+pub(crate) async fn sync_api_key_account(
     pool: &Pool<Sqlite>,
     row: &UpstreamAccountRow,
     cause: SyncCause,
@@ -358,20 +369,19 @@ async fn sync_api_key_account(
     .await
 }
 
-async fn sync_oauth_account(
+pub(crate) async fn sync_oauth_account(
     state: &AppState,
     row: &UpstreamAccountRow,
     cause: SyncCause,
 ) -> Result<()> {
     let sync_source = sync_cause_action_source(cause);
     let now = Utc::now();
-    let deferred_status = if row.status.trim().is_empty()
-        || row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING
-    {
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE
-    } else {
-        row.status.as_str()
-    };
+    let deferred_status =
+        if row.status.trim().is_empty() || row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING {
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        } else {
+            row.status.as_str()
+        };
     let crypto_key = state
         .upstream_accounts
         .crypto_key
@@ -418,13 +428,7 @@ async fn sync_oauth_account(
     set_account_status(&state.pool, row.id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None).await?;
 
     if refresh_due && let Some(refresh_token) = oauth_refresh_token(&credentials) {
-        match refresh_oauth_tokens_for_required_scope(
-            state,
-            &refresh_scope,
-            refresh_token,
-        )
-        .await
-        {
+        match refresh_oauth_tokens_for_required_scope(state, &refresh_scope, refresh_token).await {
             Ok(response) => {
                 let token_expires_at = apply_oauth_token_response(&mut credentials, response);
                 persist_oauth_credentials(
@@ -559,12 +563,8 @@ async fn sync_oauth_account(
                 && oauth_refresh_token(&credentials).is_some() =>
         {
             let refresh_token = oauth_refresh_token(&credentials).expect("checked refresh token");
-            match refresh_oauth_tokens_for_required_scope(
-                state,
-                &refresh_scope,
-                refresh_token,
-            )
-            .await
+            match refresh_oauth_tokens_for_required_scope(state, &refresh_scope, refresh_token)
+                .await
             {
                 Ok(response) => {
                     let mut refreshed = credentials.clone();
@@ -609,8 +609,7 @@ async fn sync_oauth_account(
                             return Ok(());
                         }
                         Err(retry_err) => {
-                            let proxy_snapshot =
-                                maintenance_proxy_snapshot_from_error(&retry_err);
+                            let proxy_snapshot = maintenance_proxy_snapshot_from_error(&retry_err);
                             record_classified_account_sync_failure_with_proxy_snapshot(
                                 &state.pool,
                                 &latest_row,
@@ -752,7 +751,7 @@ async fn sync_oauth_account(
     Ok(())
 }
 
-async fn record_oauth_maintenance_throttled(
+pub(crate) async fn record_oauth_maintenance_throttled(
     state: &AppState,
     account_id: i64,
     sync_source: &'static str,
@@ -777,7 +776,7 @@ async fn record_oauth_maintenance_throttled(
     set_account_status(&state.pool, account_id, next_status, None).await
 }
 
-async fn persist_oauth_credentials(
+pub(crate) async fn persist_oauth_credentials(
     pool: &Pool<Sqlite>,
     account_id: i64,
     crypto_key: &[u8; 32],
@@ -793,11 +792,10 @@ async fn persist_oauth_credentials(
         resolve_effective_plan_type_for_account(tx.as_mut(), account_id, row.plan_type.as_deref())
             .await?;
     let next_verified_email = normalize_email_value(claims.email.clone());
-    let should_follow_verified_email =
-        should_replace_email_after_verified_email_change(
-            row.email.as_deref(),
-            row.verified_email.as_deref(),
-        );
+    let should_follow_verified_email = should_replace_email_after_verified_email_change(
+        row.email.as_deref(),
+        row.verified_email.as_deref(),
+    );
     let next_email = if should_follow_verified_email {
         next_verified_email.clone().or_else(|| row.email.clone())
     } else {
@@ -879,7 +877,7 @@ async fn persist_oauth_credentials(
     Ok(())
 }
 
-async fn persist_usage_snapshot(
+pub(crate) async fn persist_usage_snapshot(
     pool: &Pool<Sqlite>,
     account_id: i64,
     effective_plan_type: Option<&str>,
@@ -968,7 +966,7 @@ async fn persist_usage_snapshot(
     Ok(())
 }
 
-async fn apply_imported_oauth_probe_result(
+pub(crate) async fn apply_imported_oauth_probe_result(
     state: &AppState,
     account_id: i64,
     probe: &ImportedOauthProbeOutcome,
@@ -994,7 +992,7 @@ async fn apply_imported_oauth_probe_result(
     Ok(probe.usage_snapshot_warning.clone())
 }
 
-async fn persist_imported_oauth_existing_inner(
+pub(crate) async fn persist_imported_oauth_existing_inner(
     state: &AppState,
     account_id: i64,
     probe: ImportedOauthProbeOutcome,
@@ -1096,31 +1094,31 @@ async fn persist_imported_oauth_existing_inner(
     }
 }
 
-struct OauthAccountUpsert<'a> {
-    account_id: Option<i64>,
-    display_name: &'a str,
-    chosen_email: Option<String>,
-    verified_email: Option<String>,
-    group_name: Option<String>,
-    is_mother: bool,
-    note: Option<String>,
-    tag_ids: Vec<i64>,
-    requested_group_metadata_changes: RequestedGroupMetadataChanges,
-    claims: &'a ChatgptJwtClaims,
-    encrypted_credentials: String,
-    has_refresh_token: bool,
-    token_expires_at: &'a str,
-    external_identity: Option<&'a ExternalAccountIdentity>,
+pub(crate) struct OauthAccountUpsert<'a> {
+    pub(crate) account_id: Option<i64>,
+    pub(crate) display_name: &'a str,
+    pub(crate) chosen_email: Option<String>,
+    pub(crate) verified_email: Option<String>,
+    pub(crate) group_name: Option<String>,
+    pub(crate) is_mother: bool,
+    pub(crate) note: Option<String>,
+    pub(crate) tag_ids: Vec<i64>,
+    pub(crate) requested_group_metadata_changes: RequestedGroupMetadataChanges,
+    pub(crate) claims: &'a ChatgptJwtClaims,
+    pub(crate) encrypted_credentials: String,
+    pub(crate) has_refresh_token: bool,
+    pub(crate) token_expires_at: &'a str,
+    pub(crate) external_identity: Option<&'a ExternalAccountIdentity>,
 }
 
-fn duplicate_display_name_error() -> (StatusCode, String) {
+pub(crate) fn duplicate_display_name_error() -> (StatusCode, String) {
     (
         StatusCode::CONFLICT,
         "displayName must be unique".to_string(),
     )
 }
 
-async fn load_conflicting_display_name_id(
+pub(crate) async fn load_conflicting_display_name_id(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     display_name: &str,
     exclude_id: Option<i64>,
@@ -1143,7 +1141,7 @@ async fn load_conflicting_display_name_id(
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct DisplayNameConflictRow {
+pub(crate) struct DisplayNameConflictRow {
     id: i64,
     kind: String,
     chatgpt_account_id: Option<String>,
@@ -1152,21 +1150,21 @@ struct DisplayNameConflictRow {
     plan_type: Option<String>,
 }
 
-fn normalize_display_name_or_email_key(value: Option<&str>) -> Option<String> {
+pub(crate) fn normalize_display_name_or_email_key(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_ascii_lowercase())
 }
 
-fn normalize_email_value(value: Option<String>) -> Option<String> {
+pub(crate) fn normalize_email_value(value: Option<String>) -> Option<String> {
     let normalized = normalize_optional_text(value)?;
     BASIC_EMAIL_REGEX
         .is_match(&normalized)
         .then(|| normalized.to_ascii_lowercase())
 }
 
-fn normalize_optional_email(
+pub(crate) fn normalize_optional_email(
     value: Option<String>,
     field_name: &str,
 ) -> Result<Option<String>, (StatusCode, String)> {
@@ -1183,11 +1181,11 @@ fn normalize_optional_email(
     Ok(Some(normalized.to_ascii_lowercase()))
 }
 
-fn generated_display_name_from_email(email: Option<&str>) -> Option<String> {
+pub(crate) fn generated_display_name_from_email(email: Option<&str>) -> Option<String> {
     normalize_display_name_or_email_key(email)
 }
 
-fn should_replace_display_name_after_email_change(
+pub(crate) fn should_replace_display_name_after_email_change(
     display_name: Option<&str>,
     previous_email: Option<&str>,
 ) -> bool {
@@ -1201,7 +1199,7 @@ fn should_replace_display_name_after_email_change(
     normalized_display_name == previous_generated_name
 }
 
-fn resolve_display_name_after_email_change(
+pub(crate) fn resolve_display_name_after_email_change(
     previous_display_name: Option<&str>,
     requested_display_name: Option<&str>,
     previous_email: Option<&str>,
@@ -1226,7 +1224,7 @@ fn resolve_display_name_after_email_change(
     normalized_requested.or(normalized_previous)
 }
 
-fn should_replace_email_after_verified_email_change(
+pub(crate) fn should_replace_email_after_verified_email_change(
     current_email: Option<&str>,
     previous_verified_email: Option<&str>,
 ) -> bool {
@@ -1236,7 +1234,7 @@ fn should_replace_email_after_verified_email_change(
         || (normalized_current.is_some() && normalized_current == normalized_previous_verified)
 }
 
-async fn load_conflicting_display_name_rows(
+pub(crate) async fn load_conflicting_display_name_rows(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     display_name: &str,
     exclude_id: Option<i64>,
@@ -1288,7 +1286,7 @@ async fn load_conflicting_display_name_rows(
     .map_err(Into::into)
 }
 
-fn same_real_upstream_identity_for_display_name(
+pub(crate) fn same_real_upstream_identity_for_display_name(
     current_chatgpt_account_id: Option<&str>,
     current_chatgpt_user_id: Option<&str>,
     current_group_name: Option<&str>,
@@ -1322,7 +1320,7 @@ fn same_real_upstream_identity_for_display_name(
     !is_team_shared_org_peer_pair(&current_member, &peer_member)
 }
 
-fn is_mixed_plan_same_upstream_display_name_exempt(
+pub(crate) fn is_mixed_plan_same_upstream_display_name_exempt(
     current_chatgpt_account_id: Option<&str>,
     current_chatgpt_user_id: Option<&str>,
     current_group_name: Option<&str>,
@@ -1350,7 +1348,7 @@ fn is_mixed_plan_same_upstream_display_name_exempt(
     }
 }
 
-async fn ensure_display_name_available(
+pub(crate) async fn ensure_display_name_available(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     display_name: &str,
     exclude_id: Option<i64>,
@@ -1364,7 +1362,7 @@ async fn ensure_display_name_available(
     Ok(())
 }
 
-async fn ensure_display_name_available_for_oauth_identity(
+pub(crate) async fn ensure_display_name_available_for_oauth_identity(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     display_name: &str,
     exclude_id: Option<i64>,
@@ -1390,7 +1388,7 @@ async fn ensure_display_name_available_for_oauth_identity(
     Ok(())
 }
 
-async fn upsert_oauth_account(
+pub(crate) async fn upsert_oauth_account(
     tx: &mut Transaction<'_, Sqlite>,
     payload: OauthAccountUpsert<'_>,
 ) -> Result<i64> {
@@ -1415,7 +1413,8 @@ async fn upsert_oauth_account(
     let now_iso = format_utc_iso(Utc::now());
     let resolved_account_id = account_id;
     let external_client_id = external_identity.map(|value| value.client_id.as_str());
-    let external_source_account_id = external_identity.map(|value| value.source_account_id.as_str());
+    let external_source_account_id =
+        external_identity.map(|value| value.source_account_id.as_str());
 
     if let Some(existing_id) = resolved_account_id {
         let previous_group_name = load_upstream_account_row_conn(tx.as_mut(), existing_id)
@@ -1550,7 +1549,7 @@ async fn upsert_oauth_account(
 }
 
 #[derive(Debug, FromRow)]
-struct UpstreamAccountIdentityRow {
+pub(crate) struct UpstreamAccountIdentityRow {
     id: i64,
     chatgpt_account_id: Option<String>,
     chatgpt_user_id: Option<String>,
@@ -1559,27 +1558,27 @@ struct UpstreamAccountIdentityRow {
 }
 
 #[derive(Debug, Clone)]
-struct UpstreamAccountIdentityClusterMember {
+pub(crate) struct UpstreamAccountIdentityClusterMember {
     id: i64,
     chatgpt_user_id: Option<String>,
     group_name: Option<String>,
     plan_type: Option<String>,
 }
 
-fn normalize_plan_type(plan_type: Option<&str>) -> Option<String> {
+pub(crate) fn normalize_plan_type(plan_type: Option<&str>) -> Option<String> {
     plan_type
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
 
-fn is_team_plan_type(plan_type: Option<&str>) -> bool {
+pub(crate) fn is_team_plan_type(plan_type: Option<&str>) -> bool {
     normalize_plan_type(plan_type)
         .as_deref()
         .is_some_and(|value| value.eq_ignore_ascii_case("team"))
 }
 
-fn should_flag_duplicate_identity_pair(
+pub(crate) fn should_flag_duplicate_identity_pair(
     current_plan_type: Option<&str>,
     peer_plan_type: Option<&str>,
 ) -> bool {
@@ -1592,13 +1591,15 @@ fn should_flag_duplicate_identity_pair(
     }
 }
 
-fn is_team_shared_org_cluster_member(member: &UpstreamAccountIdentityClusterMember) -> bool {
+pub(crate) fn is_team_shared_org_cluster_member(
+    member: &UpstreamAccountIdentityClusterMember,
+) -> bool {
     is_team_plan_type(member.plan_type.as_deref())
         && member.group_name.is_some()
         && member.chatgpt_user_id.is_some()
 }
 
-fn is_team_shared_org_peer_pair(
+pub(crate) fn is_team_shared_org_peer_pair(
     current: &UpstreamAccountIdentityClusterMember,
     peer: &UpstreamAccountIdentityClusterMember,
 ) -> bool {
@@ -1608,14 +1609,14 @@ fn is_team_shared_org_peer_pair(
         && current.chatgpt_user_id != peer.chatgpt_user_id
 }
 
-fn resolve_effective_plan_type(
+pub(crate) fn resolve_effective_plan_type(
     account_plan_type: Option<&str>,
     sample_plan_type: Option<&str>,
 ) -> Option<String> {
     normalize_plan_type(sample_plan_type).or_else(|| normalize_plan_type(account_plan_type))
 }
 
-async fn load_latest_usage_sample_plan_type_with_executor(
+pub(crate) async fn load_latest_usage_sample_plan_type_with_executor(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     account_id: i64,
 ) -> Result<Option<String>> {
@@ -1636,7 +1637,7 @@ async fn load_latest_usage_sample_plan_type_with_executor(
     Ok(normalize_plan_type(sample_plan_type.as_deref()))
 }
 
-async fn resolve_effective_plan_type_for_account(
+pub(crate) async fn resolve_effective_plan_type_for_account(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     account_id: i64,
     account_plan_type: Option<&str>,
@@ -1649,7 +1650,7 @@ async fn resolve_effective_plan_type_for_account(
     ))
 }
 
-async fn resolve_snapshot_plan_type(
+pub(crate) async fn resolve_snapshot_plan_type(
     pool: &Pool<Sqlite>,
     row: &UpstreamAccountRow,
     snapshot: &NormalizedUsageSnapshot,
@@ -1664,7 +1665,7 @@ async fn resolve_snapshot_plan_type(
     Ok(latest_sample_plan_type.or_else(|| normalize_plan_type(row.plan_type.as_deref())))
 }
 
-async fn load_duplicate_info_map(
+pub(crate) async fn load_duplicate_info_map(
     pool: &Pool<Sqlite>,
 ) -> Result<std::collections::HashMap<i64, DuplicateInfo>> {
     let rows = sqlx::query_as::<_, UpstreamAccountIdentityRow>(
@@ -1815,7 +1816,7 @@ async fn load_duplicate_info_map(
     Ok(duplicate_info)
 }
 
-async fn load_duplicate_info_for_account(
+pub(crate) async fn load_duplicate_info_for_account(
     pool: &Pool<Sqlite>,
     account_id: i64,
 ) -> Result<Option<DuplicateInfo>> {
@@ -2017,7 +2018,7 @@ async fn load_duplicate_info_for_account(
     }))
 }
 
-async fn load_account_tag_map(
+pub(crate) async fn load_account_tag_map(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
 ) -> Result<HashMap<i64, Vec<AccountTagSummary>>> {
@@ -2066,7 +2067,7 @@ async fn load_account_tag_map(
     Ok(grouped)
 }
 
-async fn load_tags_by_ids(pool: &Pool<Sqlite>, tag_ids: &[i64]) -> Result<Vec<TagRow>> {
+pub(crate) async fn load_tags_by_ids(pool: &Pool<Sqlite>, tag_ids: &[i64]) -> Result<Vec<TagRow>> {
     if tag_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -2101,7 +2102,7 @@ async fn load_tags_by_ids(pool: &Pool<Sqlite>, tag_ids: &[i64]) -> Result<Vec<Ta
         .map_err(Into::into)
 }
 
-async fn load_tag_row(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagRow>> {
+pub(crate) async fn load_tag_row(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagRow>> {
     sqlx::query_as::<_, TagRow>(
         r#"
         SELECT
@@ -2126,7 +2127,7 @@ async fn load_tag_row(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagRow>
     .map_err(Into::into)
 }
 
-async fn load_tag_detail(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagDetail>> {
+pub(crate) async fn load_tag_detail(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagDetail>> {
     let items = load_tag_summaries(
         pool,
         &ListTagsQuery {
@@ -2143,7 +2144,7 @@ async fn load_tag_detail(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagD
         .map(|summary| TagDetail { summary }))
 }
 
-async fn load_tag_summaries(
+pub(crate) async fn load_tag_summaries(
     pool: &Pool<Sqlite>,
     params: &ListTagsQuery,
 ) -> Result<Vec<TagSummary>> {
@@ -2211,7 +2212,11 @@ async fn load_tag_summaries(
         .collect())
 }
 
-async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> Result<TagDetail> {
+pub(crate) async fn insert_tag(
+    pool: &Pool<Sqlite>,
+    name: &str,
+    rule: &TagRoutingRule,
+) -> Result<TagDetail> {
     let now_iso = format_utc_iso(Utc::now());
     let inserted_id = sqlx::query_scalar::<_, i64>(
         r#"
@@ -2244,7 +2249,7 @@ async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> R
         .ok_or_else(|| anyhow!("tag not found after insert"))
 }
 
-async fn persist_tag_update(
+pub(crate) async fn persist_tag_update(
     pool: &Pool<Sqlite>,
     tag_id: i64,
     name: &str,
@@ -2289,17 +2294,22 @@ async fn persist_tag_update(
         .ok_or_else(|| anyhow!("tag not found after update"))
 }
 
-async fn delete_tag_by_id(pool: &Pool<Sqlite>, tag_id: i64) -> Result<(), (StatusCode, String)> {
-    let is_protected = sqlx::query_scalar::<_, i64>(
-        "SELECT protected FROM pool_tags WHERE id = ?1",
-    )
-    .bind(tag_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal_error_tuple)?
-    .ok_or_else(|| (StatusCode::NOT_FOUND, "tag not found".to_string()))?;
+pub(crate) async fn delete_tag_by_id(
+    pool: &Pool<Sqlite>,
+    tag_id: i64,
+) -> Result<(), (StatusCode, String)> {
+    let is_protected =
+        sqlx::query_scalar::<_, i64>("SELECT protected FROM pool_tags WHERE id = ?1")
+            .bind(tag_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(internal_error_tuple)?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "tag not found".to_string()))?;
     if is_protected != 0 {
-        return Err((StatusCode::CONFLICT, "system tag cannot be deleted".to_string()));
+        return Err((
+            StatusCode::CONFLICT,
+            "system tag cannot be deleted".to_string(),
+        ));
     }
 
     let linked_account_count = sqlx::query_scalar::<_, i64>(
@@ -2343,7 +2353,7 @@ async fn delete_tag_by_id(pool: &Pool<Sqlite>, tag_id: i64) -> Result<(), (Statu
     Ok(())
 }
 
-fn map_tag_write_error(err: anyhow::Error) -> (StatusCode, String) {
+pub(crate) fn map_tag_write_error(err: anyhow::Error) -> (StatusCode, String) {
     let message = err.to_string();
     if message.contains("UNIQUE constraint failed") {
         (StatusCode::CONFLICT, "tag name already exists".to_string())
@@ -2352,7 +2362,7 @@ fn map_tag_write_error(err: anyhow::Error) -> (StatusCode, String) {
     }
 }
 
-async fn validate_tag_ids(
+pub(crate) async fn validate_tag_ids(
     pool: &Pool<Sqlite>,
     tag_ids: &[i64],
 ) -> Result<Vec<i64>, (StatusCode, String)> {
@@ -2378,7 +2388,7 @@ async fn validate_tag_ids(
     Ok(normalized)
 }
 
-async fn sync_account_tag_links_with_executor(
+pub(crate) async fn sync_account_tag_links_with_executor(
     conn: &mut SqliteConnection,
     account_id: i64,
     tag_ids: &[i64],
@@ -2405,7 +2415,7 @@ async fn sync_account_tag_links_with_executor(
     Ok(())
 }
 
-async fn sync_account_tag_links(
+pub(crate) async fn sync_account_tag_links(
     pool: &Pool<Sqlite>,
     account_id: i64,
     tag_ids: &[i64],
@@ -2416,7 +2426,7 @@ async fn sync_account_tag_links(
     Ok(())
 }
 
-async fn load_upstream_account_groups(
+pub(crate) async fn load_upstream_account_groups(
     state: &AppState,
 ) -> Result<Vec<UpstreamAccountGroupSummary>> {
     let rows = sqlx::query_as::<_, UpstreamAccountGroupListRow>(
@@ -2483,77 +2493,74 @@ async fn load_upstream_account_groups(
 
     let mut groups = Vec::with_capacity(rows.len());
     for row in rows {
-                let node_shunt_enabled =
-                    decode_group_node_shunt_enabled(row.node_shunt_enabled.unwrap_or_default());
-                let single_account_rotation_enabled =
-                    decode_group_single_account_rotation_enabled(
-                        row.single_account_rotation_enabled.unwrap_or_default(),
-                    );
-                let upstream_429_retry_enabled = decode_group_upstream_429_retry_enabled(
-                    row.upstream_429_retry_enabled.unwrap_or_default(),
-                );
-                let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
-                    upstream_429_retry_enabled,
-                    decode_group_upstream_429_max_retries(
-                        row.upstream_429_max_retries.unwrap_or_default(),
-                    ),
-                );
-                let routing_rule = group_routing_rule_from_columns(
-                    row.concurrency_limit.unwrap_or_default(),
-                    upstream_429_retry_enabled,
-                    upstream_429_max_retries,
-                    row.policy_allow_cut_out,
-                    row.policy_allow_cut_in,
-                    row.policy_priority_tier.as_deref(),
-                    row.policy_fast_mode_rewrite_mode.as_deref(),
-                    row.policy_image_tool_rewrite_mode.as_deref(),
-                    row.policy_concurrency_limit,
-                    row.policy_upstream_429_retry_enabled,
-                    row.policy_upstream_429_max_retries,
-                    row.policy_available_models_json.as_deref(),
-                    row.policy_status_change_upstream_http_401,
-                    row.policy_status_change_upstream_http_402,
-                    row.policy_status_change_upstream_http_403,
-                    row.policy_status_change_reauth_required,
-                    row.policy_status_change_upstream_http_429_rate_limit,
-                    row.policy_status_change_upstream_http_429_quota_exhausted,
-                    row.policy_status_change_usage_snapshot_exhausted,
-                    row.policy_status_change_quota_still_exhausted,
-                    row.policy_status_change_transport_failure,
-                    row.policy_status_change_upstream_server_overloaded,
-                    row.policy_status_change_upstream_http_5xx,
-                    row.policy_responses_first_byte_timeout_secs,
-                    row.policy_compact_first_byte_timeout_secs,
-                    row.policy_responses_stream_timeout_secs,
-                    row.policy_compact_stream_timeout_secs,
-                );
-                let (effective_timeouts, timeout_field_sources, _) =
-                    load_effective_request_path_timeouts_for_group(
-                        &state.pool,
-                        &state.config,
-                        Some(row.group_name.as_str()),
-                    )
-                    .await?;
-                groups.push(UpstreamAccountGroupSummary {
-                    group_name: row.group_name,
-                    account_count: row.account_count,
-                    note: normalize_optional_text(row.note),
-                    bound_proxy_keys: decode_group_bound_proxy_keys_json(
-                        row.bound_proxy_keys_json.as_deref(),
-                    ),
-                    node_shunt_enabled,
-                    single_account_rotation_enabled,
-                    upstream_429_retry_enabled,
-                    upstream_429_max_retries,
-                    concurrency_limit: row.concurrency_limit.unwrap_or_default(),
-                    effective_timeouts,
-                    timeout_field_sources,
-                    routing_rule,
-                });
+        let node_shunt_enabled =
+            decode_group_node_shunt_enabled(row.node_shunt_enabled.unwrap_or_default());
+        let single_account_rotation_enabled = decode_group_single_account_rotation_enabled(
+            row.single_account_rotation_enabled.unwrap_or_default(),
+        );
+        let upstream_429_retry_enabled = decode_group_upstream_429_retry_enabled(
+            row.upstream_429_retry_enabled.unwrap_or_default(),
+        );
+        let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+            upstream_429_retry_enabled,
+            decode_group_upstream_429_max_retries(row.upstream_429_max_retries.unwrap_or_default()),
+        );
+        let routing_rule = group_routing_rule_from_columns(
+            row.concurrency_limit.unwrap_or_default(),
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
+            row.policy_allow_cut_out,
+            row.policy_allow_cut_in,
+            row.policy_priority_tier.as_deref(),
+            row.policy_fast_mode_rewrite_mode.as_deref(),
+            row.policy_image_tool_rewrite_mode.as_deref(),
+            row.policy_concurrency_limit,
+            row.policy_upstream_429_retry_enabled,
+            row.policy_upstream_429_max_retries,
+            row.policy_available_models_json.as_deref(),
+            row.policy_status_change_upstream_http_401,
+            row.policy_status_change_upstream_http_402,
+            row.policy_status_change_upstream_http_403,
+            row.policy_status_change_reauth_required,
+            row.policy_status_change_upstream_http_429_rate_limit,
+            row.policy_status_change_upstream_http_429_quota_exhausted,
+            row.policy_status_change_usage_snapshot_exhausted,
+            row.policy_status_change_quota_still_exhausted,
+            row.policy_status_change_transport_failure,
+            row.policy_status_change_upstream_server_overloaded,
+            row.policy_status_change_upstream_http_5xx,
+            row.policy_responses_first_byte_timeout_secs,
+            row.policy_compact_first_byte_timeout_secs,
+            row.policy_responses_stream_timeout_secs,
+            row.policy_compact_stream_timeout_secs,
+        );
+        let (effective_timeouts, timeout_field_sources, _) =
+            load_effective_request_path_timeouts_for_group(
+                &state.pool,
+                &state.config,
+                Some(row.group_name.as_str()),
+            )
+            .await?;
+        groups.push(UpstreamAccountGroupSummary {
+            group_name: row.group_name,
+            account_count: row.account_count,
+            note: normalize_optional_text(row.note),
+            bound_proxy_keys: decode_group_bound_proxy_keys_json(
+                row.bound_proxy_keys_json.as_deref(),
+            ),
+            node_shunt_enabled,
+            single_account_rotation_enabled,
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
+            concurrency_limit: row.concurrency_limit.unwrap_or_default(),
+            effective_timeouts,
+            timeout_field_sources,
+            routing_rule,
+        });
     }
     Ok(groups)
 }
-async fn load_upstream_account_summaries(
+pub(crate) async fn load_upstream_account_summaries(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
 ) -> Result<Vec<UpstreamAccountSummary>> {
@@ -2561,7 +2568,7 @@ async fn load_upstream_account_summaries(
         .await
 }
 
-async fn load_upstream_account_summaries_for_query(
+pub(crate) async fn load_upstream_account_summaries_for_query(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     params: &ListUpstreamAccountsQuery,
@@ -2660,7 +2667,7 @@ async fn load_upstream_account_summaries_for_query(
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct LatestUpstreamAccountSampleByAccountRow {
+pub(crate) struct LatestUpstreamAccountSampleByAccountRow {
     account_id: i64,
     captured_at: String,
     limit_id: Option<String>,
@@ -2679,13 +2686,13 @@ struct LatestUpstreamAccountSampleByAccountRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct LatestUpstreamAccountPlanTypeRow {
+pub(crate) struct LatestUpstreamAccountPlanTypeRow {
     account_id: i64,
     captured_at: String,
     plan_type: Option<String>,
 }
 
-async fn load_latest_usage_sample_map(
+pub(crate) async fn load_latest_usage_sample_map(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
 ) -> Result<HashMap<i64, UpstreamAccountSampleRow>> {
@@ -2799,13 +2806,20 @@ async fn load_latest_usage_sample_map(
             let sample_plan_type_row = latest_plan_type_map.get(&account_id);
             let sample_plan_type = sample_plan_type_row
                 .and_then(|value| normalize_plan_type(value.plan_type.as_deref()));
-            let account_plan_is_current =
-                account_plan_type.is_some()
-                    && parse_rfc3339_utc(sample_plan_type_row.map(|value| value.captured_at.as_str()).unwrap_or_default())
-                        .zip(row.account_plan_type_observed_at.as_deref().and_then(parse_rfc3339_utc))
-                        .is_some_and(|(sample_captured_at, account_observed_at)| {
-                            account_observed_at >= sample_captured_at
-                        });
+            let account_plan_is_current = account_plan_type.is_some()
+                && parse_rfc3339_utc(
+                    sample_plan_type_row
+                        .map(|value| value.captured_at.as_str())
+                        .unwrap_or_default(),
+                )
+                .zip(
+                    row.account_plan_type_observed_at
+                        .as_deref()
+                        .and_then(parse_rfc3339_utc),
+                )
+                .is_some_and(|(sample_captured_at, account_observed_at)| {
+                    account_observed_at >= sample_captured_at
+                });
             let effective_plan_type = if account_plan_is_current {
                 account_plan_type.clone().or(sample_plan_type.clone())
             } else {
@@ -2833,7 +2847,7 @@ async fn load_latest_usage_sample_map(
         .collect())
 }
 
-async fn load_upstream_account_rows_by_ids(
+pub(crate) async fn load_upstream_account_rows_by_ids(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
 ) -> Result<Vec<UpstreamAccountRow>> {
@@ -2857,7 +2871,7 @@ async fn load_upstream_account_rows_by_ids(
         .map_err(Into::into)
 }
 
-async fn load_upstream_account_window_usage_summaries(
+pub(crate) async fn load_upstream_account_window_usage_summaries(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     account_ids: &[i64],
@@ -2886,7 +2900,7 @@ async fn load_upstream_account_window_usage_summaries(
     Ok(summaries)
 }
 
-async fn build_bulk_upstream_account_sync_pending_rows(
+pub(crate) async fn build_bulk_upstream_account_sync_pending_rows(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
 ) -> Result<Vec<BulkUpstreamAccountSyncRow>> {
@@ -2906,7 +2920,7 @@ async fn build_bulk_upstream_account_sync_pending_rows(
     Ok(rows)
 }
 
-async fn apply_bulk_upstream_account_action(
+pub(crate) async fn apply_bulk_upstream_account_action(
     state: Arc<AppState>,
     account_id: i64,
     action: &str,
@@ -3000,7 +3014,7 @@ async fn apply_bulk_upstream_account_action(
     Ok(())
 }
 
-async fn has_ungrouped_upstream_accounts(pool: &Pool<Sqlite>) -> Result<bool> {
+pub(crate) async fn has_ungrouped_upstream_accounts(pool: &Pool<Sqlite>) -> Result<bool> {
     let count = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
@@ -3013,7 +3027,7 @@ async fn has_ungrouped_upstream_accounts(pool: &Pool<Sqlite>) -> Result<bool> {
     Ok(count > 0)
 }
 
-async fn load_upstream_account_detail(
+pub(crate) async fn load_upstream_account_detail(
     pool: &Pool<Sqlite>,
     id: i64,
 ) -> Result<Option<UpstreamAccountDetail>> {
@@ -3032,7 +3046,7 @@ pub(crate) struct LoadUpstreamAccountDetailOptions {
     pub(crate) include_recent_actions: bool,
 }
 
-async fn load_upstream_account_detail_with_options(
+pub(crate) async fn load_upstream_account_detail_with_options(
     pool: &Pool<Sqlite>,
     id: i64,
     options: LoadUpstreamAccountDetailOptions,
@@ -3139,7 +3153,7 @@ async fn load_upstream_account_detail_with_options(
     }))
 }
 
-async fn load_upstream_account_detail_with_actual_usage(
+pub(crate) async fn load_upstream_account_detail_with_actual_usage(
     state: &AppState,
     id: i64,
 ) -> Result<Option<UpstreamAccountDetail>> {
@@ -3158,11 +3172,11 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
     id: i64,
     options: LoadUpstreamAccountDetailOptions,
 ) -> Result<Option<UpstreamAccountDetail>> {
-    let mut detail = match load_upstream_account_detail_with_options(&state.pool, id, options).await?
-    {
-        Some(detail) => detail,
-        None => return Ok(None),
-    };
+    let mut detail =
+        match load_upstream_account_detail_with_options(&state.pool, id, options).await? {
+            Some(detail) => detail,
+            None => return Ok(None),
+        };
     enrich_window_actual_usage_for_summaries(state, std::slice::from_mut(&mut detail.summary))
         .await?;
     apply_effective_routing_rules_to_summaries(
@@ -3171,11 +3185,9 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
         std::slice::from_mut(&mut detail.summary),
     )
     .await?;
-    let group = load_canonicalized_upstream_account_group(
-        state,
-        detail.summary.group_name.as_deref(),
-    )
-    .await?;
+    let group =
+        load_canonicalized_upstream_account_group(state, detail.summary.group_name.as_deref())
+            .await?;
     if group.as_ref().is_some_and(|value| value.node_shunt_enabled) {
         let groups = group.into_iter().collect::<Vec<_>>();
         enrich_node_shunt_routing_block_reasons(state, std::slice::from_mut(&mut detail.summary))
@@ -3197,7 +3209,7 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
     Ok(Some(detail))
 }
 
-async fn apply_effective_routing_rules_to_summaries(
+pub(crate) async fn apply_effective_routing_rules_to_summaries(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     summaries: &mut [UpstreamAccountSummary],
@@ -3205,7 +3217,10 @@ async fn apply_effective_routing_rules_to_summaries(
     if summaries.is_empty() {
         return Ok(());
     }
-    let account_ids = summaries.iter().map(|summary| summary.id).collect::<Vec<_>>();
+    let account_ids = summaries
+        .iter()
+        .map(|summary| summary.id)
+        .collect::<Vec<_>>();
     let rules = load_effective_routing_rules_for_accounts(pool, &account_ids).await?;
     let root_timeouts = resolve_pool_routing_timeouts(pool, config).await?;
     for summary in summaries {
@@ -3226,7 +3241,7 @@ pub(crate) async fn load_upstream_account_row(
     load_upstream_account_row_conn(&mut conn, id).await
 }
 
-async fn load_upstream_account_row_conn(
+pub(crate) async fn load_upstream_account_row_conn(
     conn: &mut SqliteConnection,
     id: i64,
 ) -> Result<Option<UpstreamAccountRow>> {
@@ -3239,7 +3254,7 @@ async fn load_upstream_account_row_conn(
     .map_err(Into::into)
 }
 
-async fn load_upstream_account_row_by_external_identity(
+pub(crate) async fn load_upstream_account_row_by_external_identity(
     pool: &Pool<Sqlite>,
     external_client_id: &str,
     external_source_account_id: &str,
@@ -3253,7 +3268,7 @@ async fn load_upstream_account_row_by_external_identity(
     .await
 }
 
-async fn load_upstream_account_row_by_external_identity_conn(
+pub(crate) async fn load_upstream_account_row_by_external_identity_conn(
     conn: &mut SqliteConnection,
     external_client_id: &str,
     external_source_account_id: &str,
@@ -3270,7 +3285,7 @@ async fn load_upstream_account_row_by_external_identity_conn(
     .map_err(Into::into)
 }
 
-async fn load_latest_usage_sample(
+pub(crate) async fn load_latest_usage_sample(
     pool: &Pool<Sqlite>,
     account_id: i64,
 ) -> Result<Option<UpstreamAccountSampleRow>> {
@@ -3279,7 +3294,7 @@ async fn load_latest_usage_sample(
         .remove(&account_id))
 }
 
-fn build_summary_from_row(
+pub(crate) fn build_summary_from_row(
     row: &UpstreamAccountRow,
     sample: Option<&UpstreamAccountSampleRow>,
     last_activity_at: Option<String>,
@@ -3444,7 +3459,7 @@ fn build_summary_from_row(
     }
 }
 
-fn apply_node_shunt_routing_block_reasons_to_summaries(
+pub(crate) fn apply_node_shunt_routing_block_reasons_to_summaries(
     items: &mut [UpstreamAccountSummary],
     assignments: &UpstreamAccountNodeShuntAssignments,
 ) {
@@ -3472,7 +3487,7 @@ fn apply_node_shunt_routing_block_reasons_to_summaries(
     }
 }
 
-async fn enrich_node_shunt_routing_block_reasons(
+pub(crate) async fn enrich_node_shunt_routing_block_reasons(
     state: &AppState,
     items: &mut [UpstreamAccountSummary],
 ) -> Result<()> {
@@ -3484,7 +3499,7 @@ async fn enrich_node_shunt_routing_block_reasons(
     Ok(())
 }
 
-async fn load_canonicalized_upstream_account_groups(
+pub(crate) async fn load_canonicalized_upstream_account_groups(
     state: &AppState,
 ) -> Result<Vec<UpstreamAccountGroupSummary>> {
     let mut groups = load_upstream_account_groups(state).await?;
@@ -3495,24 +3510,23 @@ async fn load_canonicalized_upstream_account_groups(
     Ok(groups)
 }
 
-async fn load_canonicalized_upstream_account_group(
+pub(crate) async fn load_canonicalized_upstream_account_group(
     state: &AppState,
     group_name: Option<&str>,
 ) -> Result<Option<UpstreamAccountGroupSummary>> {
-    let normalized_group_name = group_name
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let normalized_group_name = group_name.map(str::trim).filter(|value| !value.is_empty());
     let Some(group_name) = normalized_group_name else {
         return Ok(None);
     };
     let metadata = load_group_metadata(&state.pool, Some(group_name)).await?;
     let routing_rule = group_routing_rule_from_group_metadata(&metadata);
-    let (effective_timeouts, timeout_field_sources, _) = load_effective_request_path_timeouts_for_group(
-        &state.pool,
-        &state.config,
-        Some(group_name),
-    )
-    .await?;
+    let (effective_timeouts, timeout_field_sources, _) =
+        load_effective_request_path_timeouts_for_group(
+            &state.pool,
+            &state.config,
+            Some(group_name),
+        )
+        .await?;
     Ok(Some(UpstreamAccountGroupSummary {
         group_name: group_name.to_string(),
         account_count: sqlx::query_scalar::<_, i64>(
@@ -3526,7 +3540,8 @@ async fn load_canonicalized_upstream_account_group(
         .fetch_one(&state.pool)
         .await?,
         note: metadata.note.clone(),
-        bound_proxy_keys: canonicalize_forward_proxy_bound_keys(state, &metadata.bound_proxy_keys).await?,
+        bound_proxy_keys: canonicalize_forward_proxy_bound_keys(state, &metadata.bound_proxy_keys)
+            .await?,
         node_shunt_enabled: metadata.node_shunt_enabled,
         single_account_rotation_enabled: metadata.single_account_rotation_enabled,
         upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
@@ -3538,7 +3553,7 @@ async fn load_canonicalized_upstream_account_group(
     }))
 }
 
-fn group_routing_rule_from_group_metadata(
+pub(crate) fn group_routing_rule_from_group_metadata(
     metadata: &UpstreamAccountGroupMetadata,
 ) -> GroupAccountRoutingRule {
     GroupAccountRoutingRule {
@@ -3557,7 +3572,7 @@ fn group_routing_rule_from_group_metadata(
     }
 }
 
-fn assign_current_forward_proxy(
+pub(crate) fn assign_current_forward_proxy(
     item: &mut UpstreamAccountSummary,
     state: &'static str,
     proxy_key: Option<String>,
@@ -3568,7 +3583,7 @@ fn assign_current_forward_proxy(
     item.current_forward_proxy_state = state.to_string();
 }
 
-fn resolve_current_forward_proxy_display_name(
+pub(crate) fn resolve_current_forward_proxy_display_name(
     manager: &crate::forward_proxy::ForwardProxyManager,
     binding_display_names: &HashMap<String, String>,
     metadata_map: &HashMap<String, crate::forward_proxy::ForwardProxyMetadataHistoryRow>,
@@ -3588,7 +3603,7 @@ fn resolve_current_forward_proxy_display_name(
     })
 }
 
-async fn enrich_current_forward_proxy_for_summaries(
+pub(crate) async fn enrich_current_forward_proxy_for_summaries(
     state: &AppState,
     groups: &[UpstreamAccountGroupSummary],
     items: &mut [UpstreamAccountSummary],
@@ -3697,7 +3712,9 @@ async fn enrich_current_forward_proxy_for_summaries(
                     Some(binding_key.clone()),
                     recovered_binding_display_names.get(binding_key).cloned(),
                 );
-            } else if node_shunt_assignments.eligible_account_ids.contains(&item.id)
+            } else if node_shunt_assignments
+                .eligible_account_ids
+                .contains(&item.id)
                 && node_shunt_assignments
                     .group_slots
                     .get(&group_name)
@@ -3727,7 +3744,7 @@ async fn enrich_current_forward_proxy_for_summaries(
     Ok(())
 }
 
-async fn enrich_current_forward_proxy_for_non_node_shunt_detail(
+pub(crate) async fn enrich_current_forward_proxy_for_non_node_shunt_detail(
     state: &AppState,
     group: Option<&UpstreamAccountGroupSummary>,
     item: &mut UpstreamAccountSummary,
@@ -3817,7 +3834,7 @@ async fn enrich_current_forward_proxy_for_non_node_shunt_detail(
     Ok(())
 }
 
-fn collect_forward_proxy_catalog_keys(
+pub(crate) fn collect_forward_proxy_catalog_keys(
     groups: &[UpstreamAccountGroupSummary],
     items: &[UpstreamAccountSummary],
 ) -> Vec<String> {
@@ -3830,7 +3847,8 @@ fn collect_forward_proxy_catalog_keys(
         .filter(|group| relevant_group_names.contains(&group.group_name))
         .flat_map(|group| group.bound_proxy_keys.iter().cloned())
         .chain(
-            items.iter()
+            items
+                .iter()
                 .filter_map(|item| item.current_forward_proxy_key.clone()),
         )
         .collect::<BTreeSet<_>>()
@@ -3838,7 +3856,7 @@ fn collect_forward_proxy_catalog_keys(
         .collect()
 }
 
-async fn enrich_window_actual_usage_for_summaries(
+pub(crate) async fn enrich_window_actual_usage_for_summaries(
     state: &AppState,
     items: &mut [UpstreamAccountSummary],
 ) -> Result<()> {
@@ -3916,7 +3934,10 @@ async fn enrich_window_actual_usage_for_summaries(
         .await?;
         let hourly_rows = hourly_rows
             .into_iter()
-            .filter(|row| !minute_covered_hourly_keys.contains(&(row.upstream_account_id, row.bucket_start_epoch)))
+            .filter(|row| {
+                !minute_covered_hourly_keys
+                    .contains(&(row.upstream_account_id, row.bucket_start_epoch))
+            })
             .collect::<Vec<_>>();
         covered_hourly_keys.extend(collect_account_window_hourly_coverage_keys(&hourly_rows));
         fold_account_window_usage_hourly_rows(&mut usage, &hourly_rows, &plans);
@@ -3924,8 +3945,10 @@ async fn enrich_window_actual_usage_for_summaries(
 
     if has_live_invocations {
         let live_rollup_cursor =
-            load_hourly_rollup_live_progress(&state.pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
-        let partial_minute_bucket_epochs = collect_account_window_partial_minute_bucket_epochs(&plans)?;
+            load_hourly_rollup_live_progress(&state.pool, HOURLY_ROLLUP_DATASET_INVOCATIONS)
+                .await?;
+        let partial_minute_bucket_epochs =
+            collect_account_window_partial_minute_bucket_epochs(&plans)?;
         let partial_hour_bucket_epochs = collect_account_window_partial_bucket_epochs(&plans)?;
         let missing_full_hour_bucket_epochs =
             collect_account_window_missing_full_hour_bucket_epochs(&plans, &covered_hourly_keys);

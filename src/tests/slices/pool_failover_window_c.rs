@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn oauth_streaming_passthrough_backfills_body_prefix_from_replay_status() {
     let crypto_key: [u8; 32] = Sha256::digest(b"test-upstream-account-secret").into();
@@ -529,10 +532,10 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
     assert_eq!(payload["received"]["instructions"], "");
     assert_eq!(payload["received"]["store"], false);
     assert_eq!(payload["received"]["client_metadata"]["other"], "keep-me");
-    let rewritten_installation_id = payload["received"]["client_metadata"]
-        ["x-codex-installation-id"]
-        .as_str()
-        .expect("rewritten installation id should be present");
+    let rewritten_installation_id =
+        payload["received"]["client_metadata"]["x-codex-installation-id"]
+            .as_str()
+            .expect("rewritten installation id should be present");
     assert_ne!(rewritten_installation_id, "downstream-installation-id");
     assert_eq!(rewritten_installation_id.len(), 36);
     assert_eq!(rewritten_installation_id.chars().nth(8), Some('-'));
@@ -950,7 +953,7 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
             test_required_group_bound_proxy_keys(),
         ),
         single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+        upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
@@ -1002,14 +1005,11 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
     assert!(payload["received"].get("instructions").is_none());
     assert!(payload["received"].get("store").is_none());
     assert_eq!(
-        payload["received"]["input"]
-            .as_str()
-            .map(str::len),
+        payload["received"]["input"].as_str().map(str::len),
         Some(OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 256)
     );
     assert_eq!(
-        payload["received"]["client_metadata"]["x-codex-installation-id"]
-            .as_str(),
+        payload["received"]["client_metadata"]["x-codex-installation-id"].as_str(),
         Some("downstream-installation-id")
     );
     let request_debug = upstream
@@ -1087,7 +1087,7 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
             test_required_group_bound_proxy_keys(),
         ),
         single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+        upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
@@ -1398,7 +1398,7 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
             test_required_group_bound_proxy_keys(),
         ),
         single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+        upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
@@ -1552,7 +1552,8 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
         downstream_error_message: Option<String>,
     }
 
-    let (upstream_base, _attempts, upstream_handle) = spawn_pool_late_response_failed_upstream().await;
+    let (upstream_base, _attempts, upstream_handle) =
+        spawn_pool_late_response_failed_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
@@ -1622,25 +1623,26 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
             .expect("latest invocation payload should exist"),
     )
     .expect("decode latest invocation payload");
-    assert_eq!(invocation_payload["downstreamStatusCode"].as_i64(), Some(200));
+    assert_eq!(
+        invocation_payload["downstreamStatusCode"].as_i64(),
+        Some(200)
+    );
     assert!(
         invocation_payload["downstreamErrorMessage"]
             .as_str()
-            .is_some_and(|value| value.contains("downstream closed while streaming upstream response"))
+            .is_some_and(
+                |value| value.contains("downstream closed while streaming upstream response")
+            )
     );
-    let reloaded = load_persisted_api_invocation(
-        &state.pool,
-        &invocation.invoke_id,
-        &invocation.occurred_at,
-    )
-    .await
-    .expect("reload persisted api invocation");
+    let reloaded =
+        load_persisted_api_invocation(&state.pool, &invocation.invoke_id, &invocation.occurred_at)
+            .await
+            .expect("reload persisted api invocation");
     assert_eq!(reloaded.downstream_status_code, Some(200));
     assert!(
-        reloaded
-            .downstream_error_message
-            .as_deref()
-            .is_some_and(|value| value.contains("downstream closed while streaming upstream response"))
+        reloaded.downstream_error_message.as_deref().is_some_and(
+            |value| value.contains("downstream closed while streaming upstream response")
+        )
     );
 
     let attempt = sqlx::query_as::<_, AttemptRow>(
@@ -1654,7 +1656,10 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
     .fetch_one(&state.pool)
     .await
     .expect("load latest pool attempt");
-    assert_eq!(attempt.status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE);
+    assert_eq!(
+        attempt.status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
     assert_eq!(attempt.downstream_http_status, Some(200));
     assert_eq!(
         attempt.failure_kind.as_deref(),
@@ -1667,10 +1672,9 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
             .is_some_and(|value| value.contains("upstream_response_failed"))
     );
     assert!(
-        attempt
-            .downstream_error_message
-            .as_deref()
-            .is_some_and(|value| value.contains("downstream closed while streaming upstream response"))
+        attempt.downstream_error_message.as_deref().is_some_and(
+            |value| value.contains("downstream closed while streaming upstream response")
+        )
     );
 
     upstream_handle.abort();
@@ -1762,7 +1766,11 @@ async fn pool_openai_v1_responses_marks_upstream_read_root_cause_for_truncated_e
             Some(encoding),
             "mode={mode}"
         );
-        assert_eq!(payload["usageObserved"].as_bool(), Some(false), "mode={mode}");
+        assert_eq!(
+            payload["usageObserved"].as_bool(),
+            Some(false),
+            "mode={mode}"
+        );
         assert!(
             payload["upstreamReadErrorKind"].as_str().is_some(),
             "mode={mode} should persist upstream read error kind"
@@ -1832,7 +1840,10 @@ async fn pool_openai_v1_responses_marks_content_decode_root_cause_for_complete_c
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("complete corrupt stream should still transfer bytes");
-        assert!(!body.is_empty(), "mode={mode} should forward raw encoded bytes");
+        assert!(
+            !body.is_empty(),
+            "mode={mode} should forward raw encoded bytes"
+        );
 
         wait_for_codex_invocations(&state.pool, 1).await;
         let (row, payload) = load_latest_invocation_payload_row(state.as_ref()).await;
@@ -1858,17 +1869,19 @@ async fn pool_openai_v1_responses_marks_content_decode_root_cause_for_complete_c
             Some(encoding),
             "mode={mode}"
         );
-        assert_eq!(payload["usageObserved"].as_bool(), Some(false), "mode={mode}");
+        assert_eq!(
+            payload["usageObserved"].as_bool(),
+            Some(false),
+            "mode={mode}"
+        );
         assert!(
-            payload["usageMissingReason"]
-                .as_str()
-                .is_some_and(|value| {
-                    if expected_origin == "content_decode" {
-                        value.contains("response_decode_failed:")
-                    } else {
-                        value.contains("stream_event_parse_error")
-                    }
-                }),
+            payload["usageMissingReason"].as_str().is_some_and(|value| {
+                if expected_origin == "content_decode" {
+                    value.contains("response_decode_failed:")
+                } else {
+                    value.contains("stream_event_parse_error")
+                }
+            }),
             "mode={mode} should record the parser-stage evidence for {expected_origin}"
         );
 
@@ -1878,7 +1891,7 @@ async fn pool_openai_v1_responses_marks_content_decode_root_cause_for_complete_c
 
 #[tokio::test]
 async fn capture_target_pool_route_marks_server_overloaded_after_forward_as_retryable_without_cooldown()
-{
+ {
     #[derive(sqlx::FromRow)]
     struct RouteStateRow {
         status: String,
@@ -2011,9 +2024,14 @@ async fn spawn_raw_slow_success_upstream() -> (String, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind raw slow-success upstream");
-    let addr = listener.local_addr().expect("raw slow-success upstream addr");
+    let addr = listener
+        .local_addr()
+        .expect("raw slow-success upstream addr");
     let handle = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.expect("accept raw upstream connection");
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .expect("accept raw upstream connection");
         stream
             .set_nodelay(true)
             .expect("enable TCP_NODELAY on raw upstream");
@@ -2219,10 +2237,7 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
         payload["requestXForwardedFor"].as_str(),
         Some("198.51.100.8, 192.168.31.1")
     );
-    assert_eq!(
-        payload["requestXRealIp"].as_str(),
-        Some("198.51.100.9")
-    );
+    assert_eq!(payload["requestXRealIp"].as_str(), Some("198.51.100.9"));
     assert_eq!(
         payload["requestForwarded"].as_str(),
         Some("for=198.51.100.10;proto=https;host=example.test")
@@ -2942,9 +2957,7 @@ async fn upstream_account_sticky_keys_reads_inline_rollups_without_read_time_cat
     assert_eq!(conversation["totalTokens"].as_i64(), Some(77));
     assert_eq!(conversation["totalCost"].as_f64(), Some(0.18));
     assert_eq!(
-        conversation["recentInvocations"]
-            .as_array()
-            .map(Vec::len),
+        conversation["recentInvocations"].as_array().map(Vec::len),
         Some(1)
     );
     assert_eq!(
@@ -3376,9 +3389,9 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
         .bind(0.01_f64)
         .bind(payload.to_string())
         .bind("{}")
-    .execute(&state.pool)
-    .await
-    .expect("insert prompt cache test invocation");
+        .execute(&state.pool)
+        .await
+        .expect("insert prompt cache test invocation");
     }
 
     sync_hourly_rollups_from_live_tables(&state.pool)
@@ -3395,7 +3408,7 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await

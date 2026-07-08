@@ -1,3 +1,5 @@
+use super::*;
+
 pub(crate) async fn record_pool_route_success(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -81,7 +83,7 @@ pub(crate) async fn record_pool_route_success_with_image_intent(
     Ok(())
 }
 
-fn image_intent_observes_capability(image_intent: ImageIntent) -> bool {
+pub(crate) fn image_intent_observes_capability(image_intent: ImageIntent) -> bool {
     matches!(image_intent, ImageIntent::Yes | ImageIntent::DirectImage)
 }
 
@@ -149,8 +151,12 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
         && classify_image_tool_capability_observation(status, Some(error_message))
             == ImageToolCapability::Unsupported
     {
-        record_image_tool_capability_observation(pool, account_id, ImageToolCapability::Unsupported)
-            .await?;
+        record_image_tool_capability_observation(
+            pool,
+            account_id,
+            ImageToolCapability::Unsupported,
+        )
+        .await?;
     }
     if route_http_failure_is_retryable_server_overloaded(status, error_message) {
         return record_pool_route_retryable_overload_failure(
@@ -171,8 +177,12 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
     match classification.disposition {
         UpstreamAccountFailureDisposition::HardUnavailable => {
             let now_iso = format_utc_iso(Utc::now());
-            if !account_status_change_reason_is_enabled(pool, account_id, classification.reason_code)
-                .await?
+            if !account_status_change_reason_is_enabled(
+                pool,
+                account_id,
+                classification.reason_code,
+            )
+            .await?
             {
                 record_suppressed_pool_route_status_change(
                     pool,
@@ -323,7 +333,7 @@ pub(crate) async fn record_pool_route_transport_failure(
     Ok(())
 }
 
-async fn record_suppressed_pool_route_status_change(
+pub(crate) async fn record_suppressed_pool_route_status_change(
     pool: &Pool<Sqlite>,
     account_id: i64,
     error_message: &str,
@@ -349,7 +359,6 @@ async fn record_suppressed_pool_route_status_change(
     )
     .await
 }
-
 
 pub(crate) async fn record_account_selected(state: &AppState, account_id: i64) {
     let now_iso = format_utc_iso(Utc::now());

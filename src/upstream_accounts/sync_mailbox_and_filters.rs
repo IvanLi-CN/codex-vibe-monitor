@@ -1,81 +1,83 @@
-#[derive(Debug, Clone)]
-struct ParsedMailboxCode {
-    value: String,
-    source: String,
-    updated_at: String,
-}
+use super::*;
 
 #[derive(Debug, Clone)]
-struct ParsedMailboxInvite {
-    subject: String,
-    copy_value: String,
-    copy_label: String,
-    updated_at: String,
+pub(crate) struct ParsedMailboxCode {
+    pub(crate) value: String,
+    pub(crate) source: String,
+    pub(crate) updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ParsedMailboxInvite {
+    pub(crate) subject: String,
+    pub(crate) copy_value: String,
+    pub(crate) copy_label: String,
+    pub(crate) updated_at: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct KaisouMailMetaPayload {
-    domains: Vec<String>,
+pub(crate) struct KaisouMailMetaPayload {
+    pub(crate) domains: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct KaisouMailMailboxPayload {
-    id: String,
-    address: String,
-    expires_at: Option<String>,
+pub(crate) struct KaisouMailMailboxPayload {
+    pub(crate) id: String,
+    pub(crate) address: String,
+    pub(crate) expires_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct KaisouMailMailboxListPayload {
-    mailboxes: Vec<KaisouMailMailboxSummary>,
+pub(crate) struct KaisouMailMailboxListPayload {
+    pub(crate) mailboxes: Vec<KaisouMailMailboxSummary>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct KaisouMailMailboxSummary {
-    id: String,
-    address: String,
-    expires_at: Option<String>,
+pub(crate) struct KaisouMailMailboxSummary {
+    pub(crate) id: String,
+    pub(crate) address: String,
+    pub(crate) expires_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct KaisouMailMessageListPayload {
+pub(crate) struct KaisouMailMessageListPayload {
     messages: Vec<KaisouMailMessageSummary>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct KaisouMailMessageSummary {
-    id: String,
-    subject: Option<String>,
-    received_at: Option<String>,
+pub(crate) struct KaisouMailMessageSummary {
+    pub(crate) id: String,
+    pub(crate) subject: Option<String>,
+    pub(crate) received_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct KaisouMailMessageDetailPayload {
-    message: KaisouMailMessageDetail,
+pub(crate) struct KaisouMailMessageDetailPayload {
+    pub(crate) message: KaisouMailMessageDetail,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-struct KaisouMailMessageDetail {
-    id: String,
-    subject: Option<String>,
-    content: Option<String>,
-    html: Option<String>,
-    received_at: Option<String>,
+pub(crate) struct KaisouMailMessageDetail {
+    pub(crate) id: String,
+    pub(crate) subject: Option<String>,
+    pub(crate) content: Option<String>,
+    pub(crate) html: Option<String>,
+    pub(crate) received_at: Option<String>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct KaisouMailMessageDetailRaw {
+pub(crate) struct KaisouMailMessageDetailRaw {
     id: String,
     subject: Option<String>,
     content: Option<String>,
@@ -101,9 +103,9 @@ impl<'de> Deserialize<'de> for KaisouMailMessageDetail {
     }
 }
 
-const MAILBOX_CODE_CONTEXT_WINDOW_BYTES: usize = 64;
-const OAUTH_BRAND_MARKERS: &[&str] = &["openai", "chatgpt"];
-const OAUTH_STRONG_CODE_MARKERS: &[&str] = &[
+pub(crate) const MAILBOX_CODE_CONTEXT_WINDOW_BYTES: usize = 64;
+pub(crate) const OAUTH_BRAND_MARKERS: &[&str] = &["openai", "chatgpt"];
+pub(crate) const OAUTH_STRONG_CODE_MARKERS: &[&str] = &[
     "verification code",
     "temporary verification code",
     "one-time code",
@@ -120,7 +122,7 @@ const OAUTH_STRONG_CODE_MARKERS: &[&str] = &[
     "인증 코드",
     "인증번호",
 ];
-const OAUTH_WEAK_CODE_MARKERS: &[&str] = &[
+pub(crate) const OAUTH_WEAK_CODE_MARKERS: &[&str] = &[
     "your code",
     "code is",
     "code:",
@@ -132,7 +134,7 @@ const OAUTH_WEAK_CODE_MARKERS: &[&str] = &[
     "臨時代碼",
     "临时代码",
 ];
-const OAUTH_INVITE_SUBJECT_MARKERS: &[&str] = &[
+pub(crate) const OAUTH_INVITE_SUBJECT_MARKERS: &[&str] = &[
     "has invited you",
     "invited you to",
     "invite you to",
@@ -143,7 +145,7 @@ const OAUTH_INVITE_SUBJECT_MARKERS: &[&str] = &[
     "招待",
     "초대",
 ];
-const OAUTH_INVITE_BODY_MARKERS: &[&str] = &[
+pub(crate) const OAUTH_INVITE_BODY_MARKERS: &[&str] = &[
     "join workspace",
     "join the workspace",
     "accept invitation",
@@ -163,19 +165,19 @@ const OAUTH_INVITE_BODY_MARKERS: &[&str] = &[
     "워크스페이스",
     "초대 수락",
 ];
-static OAUTH_CODE_CANDIDATE_REGEX: Lazy<Regex> = Lazy::new(|| {
+pub(crate) static OAUTH_CODE_CANDIDATE_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?:^|[^0-9])([0-9]{4,8})(?:[^0-9]|$)").expect("valid oauth code candidate regex")
 });
-static URL_REGEX: Lazy<Regex> =
+pub(crate) static URL_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).expect("valid url regex"));
-static HTML_TAG_REGEX: Lazy<Regex> =
+pub(crate) static HTML_TAG_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"<[^>]+>").expect("valid html tag regex"));
-static BASIC_EMAIL_REGEX: Lazy<Regex> = Lazy::new(|| {
+pub(crate) static BASIC_EMAIL_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
         .expect("valid basic email regex")
 });
 
-fn oauth_mailbox_status_from_row(row: &OauthMailboxSessionRow) -> OauthMailboxStatus {
+pub(crate) fn oauth_mailbox_status_from_row(row: &OauthMailboxSessionRow) -> OauthMailboxStatus {
     OauthMailboxStatus {
         session_id: row.session_id.clone(),
         email_address: row.email_address.clone(),
@@ -213,7 +215,7 @@ fn oauth_mailbox_status_from_row(row: &OauthMailboxSessionRow) -> OauthMailboxSt
     }
 }
 
-fn oauth_mailbox_session_supported_response(
+pub(crate) fn oauth_mailbox_session_supported_response(
     session_id: String,
     email_address: String,
     expires_at: String,
@@ -229,7 +231,7 @@ fn oauth_mailbox_session_supported_response(
     }
 }
 
-fn oauth_mailbox_session_unsupported_response(
+pub(crate) fn oauth_mailbox_session_unsupported_response(
     email_address: String,
     reason: &str,
 ) -> OauthMailboxSessionResponse {
@@ -243,7 +245,7 @@ fn oauth_mailbox_session_unsupported_response(
     }
 }
 
-fn normalize_mailbox_address(value: &str) -> Option<String> {
+pub(crate) fn normalize_mailbox_address(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
@@ -251,7 +253,7 @@ fn normalize_mailbox_address(value: &str) -> Option<String> {
     Some(trimmed.to_ascii_lowercase())
 }
 
-fn normalize_mailbox_domain(value: &str) -> Option<String> {
+pub(crate) fn normalize_mailbox_domain(value: &str) -> Option<String> {
     let trimmed = value
         .trim()
         .trim_matches(|ch: char| ch.is_whitespace() || ch == '"' || ch == '\'');
@@ -272,7 +274,7 @@ fn normalize_mailbox_domain(value: &str) -> Option<String> {
     Some(domain_like.to_ascii_lowercase())
 }
 
-fn kaisoumail_supported_domains(payload: &KaisouMailMetaPayload) -> HashSet<String> {
+pub(crate) fn kaisoumail_supported_domains(payload: &KaisouMailMetaPayload) -> HashSet<String> {
     payload
         .domains
         .iter()
@@ -281,7 +283,10 @@ fn kaisoumail_supported_domains(payload: &KaisouMailMetaPayload) -> HashSet<Stri
         .collect()
 }
 
-fn kaisoumail_domain_is_supported(email_domain: &str, supported_domains: &HashSet<String>) -> bool {
+pub(crate) fn kaisoumail_domain_is_supported(
+    email_domain: &str,
+    supported_domains: &HashSet<String>,
+) -> bool {
     if supported_domains.is_empty() {
         return true;
     }
@@ -293,7 +298,7 @@ fn kaisoumail_domain_is_supported(email_domain: &str, supported_domains: &HashSe
     })
 }
 
-fn validate_kaisoumail_mailbox_address_matches_request(
+pub(crate) fn validate_kaisoumail_mailbox_address_matches_request(
     payload: &KaisouMailMailboxPayload,
     requested_email: &str,
 ) -> Result<()> {
@@ -310,13 +315,13 @@ fn validate_kaisoumail_mailbox_address_matches_request(
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum RequestedManualMailboxAddress {
+pub(crate) enum RequestedManualMailboxAddress {
     Missing,
     Valid(String),
     Invalid(String),
 }
 
-fn requested_manual_mailbox_address(
+pub(crate) fn requested_manual_mailbox_address(
     raw_email_address: Option<&str>,
 ) -> RequestedManualMailboxAddress {
     match raw_email_address {
@@ -328,11 +333,11 @@ fn requested_manual_mailbox_address(
     }
 }
 
-fn mailbox_address_is_valid(value: &str) -> bool {
+pub(crate) fn mailbox_address_is_valid(value: &str) -> bool {
     BASIC_EMAIL_REGEX.is_match(value.trim())
 }
 
-fn upstream_mailbox_config(
+pub(crate) fn upstream_mailbox_config(
     config: &AppConfig,
 ) -> Result<&UpstreamAccountsKaisouMailConfig, (StatusCode, String)> {
     config.upstream_accounts_kaisoumail.as_ref().ok_or_else(|| {
@@ -340,14 +345,13 @@ fn upstream_mailbox_config(
             StatusCode::SERVICE_UNAVAILABLE,
             format!(
                 "oauth temp mail requires {} and {}",
-                ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL,
-                ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY
+                ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL, ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY
             ),
         )
     })
 }
 
-fn validate_mailbox_binding_fields(
+pub(crate) fn validate_mailbox_binding_fields(
     mailbox_session_id: Option<&str>,
     mailbox_address: Option<&str>,
 ) -> Result<(), (StatusCode, String)> {
@@ -360,16 +364,19 @@ fn validate_mailbox_binding_fields(
     }
 }
 
-fn mailbox_addresses_match(left: Option<&str>, right: Option<&str>) -> bool {
+pub(crate) fn mailbox_addresses_match(left: Option<&str>, right: Option<&str>) -> bool {
     normalize_mailbox_address(left.unwrap_or_default())
         == normalize_mailbox_address(right.unwrap_or_default())
 }
 
-fn expired_mailbox_session_requires_remote_delete(row: &OauthMailboxSessionRow) -> bool {
+pub(crate) fn expired_mailbox_session_requires_remote_delete(row: &OauthMailboxSessionRow) -> bool {
     row.mailbox_source.as_deref() != Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
 }
 
-fn normalize_mailbox_session_expires_at(value: Option<&str>, fallback: DateTime<Utc>) -> String {
+pub(crate) fn normalize_mailbox_session_expires_at(
+    value: Option<&str>,
+    fallback: DateTime<Utc>,
+) -> String {
     value
         .and_then(|raw| {
             DateTime::parse_from_rfc3339(raw)
@@ -379,14 +386,14 @@ fn normalize_mailbox_session_expires_at(value: Option<&str>, fallback: DateTime<
         .unwrap_or_else(|| format_utc_iso(fallback))
 }
 
-fn mailbox_expires_at_is_expired(value: Option<&str>, now: DateTime<Utc>) -> bool {
+pub(crate) fn mailbox_expires_at_is_expired(value: Option<&str>, now: DateTime<Utc>) -> bool {
     value
         .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
         .map(|expires_at| expires_at.with_timezone(&Utc) <= now)
         .unwrap_or(false)
 }
 
-async fn validate_mailbox_binding(
+pub(crate) async fn validate_mailbox_binding(
     pool: &Pool<Sqlite>,
     mailbox_session_id: Option<&str>,
     mailbox_address: Option<&str>,
@@ -417,11 +424,11 @@ async fn validate_mailbox_binding(
     Ok(())
 }
 
-fn strip_html_tags(raw: &str) -> String {
+pub(crate) fn strip_html_tags(raw: &str) -> String {
     HTML_TAG_REGEX.replace_all(raw, " ").into_owned()
 }
 
-fn normalize_mailbox_text(raw: &str) -> String {
+pub(crate) fn normalize_mailbox_text(raw: &str) -> String {
     let mut normalized = String::with_capacity(raw.len());
     let mut previous_was_space = true;
 
@@ -464,15 +471,15 @@ fn normalize_mailbox_text(raw: &str) -> String {
     normalized.trim().to_string()
 }
 
-fn mailbox_text_contains_any(haystack: &str, needles: &[&str]) -> bool {
+pub(crate) fn mailbox_text_contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
-fn mailbox_text_has_brand(text: &str) -> bool {
+pub(crate) fn mailbox_text_has_brand(text: &str) -> bool {
     mailbox_text_contains_any(text, OAUTH_BRAND_MARKERS)
 }
 
-fn clamp_mailbox_context_start(raw: &str, index: usize) -> usize {
+pub(crate) fn clamp_mailbox_context_start(raw: &str, index: usize) -> usize {
     let mut candidate = index.min(raw.len());
     while candidate > 0 && !raw.is_char_boundary(candidate) {
         candidate -= 1;
@@ -480,7 +487,7 @@ fn clamp_mailbox_context_start(raw: &str, index: usize) -> usize {
     candidate
 }
 
-fn clamp_mailbox_context_end(raw: &str, index: usize) -> usize {
+pub(crate) fn clamp_mailbox_context_end(raw: &str, index: usize) -> usize {
     let mut candidate = index.min(raw.len());
     while candidate < raw.len() && !raw.is_char_boundary(candidate) {
         candidate += 1;
@@ -488,19 +495,22 @@ fn clamp_mailbox_context_end(raw: &str, index: usize) -> usize {
     candidate
 }
 
-fn mailbox_context_slice(raw: &str, start: usize, end: usize, radius: usize) -> &str {
+pub(crate) fn mailbox_context_slice(raw: &str, start: usize, end: usize, radius: usize) -> &str {
     let context_start = clamp_mailbox_context_start(raw, start.saturating_sub(radius));
     let context_end = clamp_mailbox_context_end(raw, end.saturating_add(radius));
     &raw[context_start..context_end]
 }
 
-fn mailbox_context_before(raw: &str, index: usize, radius: usize) -> &str {
+pub(crate) fn mailbox_context_before(raw: &str, index: usize, radius: usize) -> &str {
     let context_start = clamp_mailbox_context_start(raw, index.saturating_sub(radius));
     let context_end = clamp_mailbox_context_end(raw, index);
     &raw[context_start..context_end]
 }
 
-fn extract_mailbox_code_candidate(text: &str, message_has_brand: bool) -> Option<String> {
+pub(crate) fn extract_mailbox_code_candidate(
+    text: &str,
+    message_has_brand: bool,
+) -> Option<String> {
     let mut best_match: Option<(u8, usize, String)> = None;
 
     for captures in OAUTH_CODE_CANDIDATE_REGEX.captures_iter(text) {
@@ -547,7 +557,7 @@ fn extract_mailbox_code_candidate(text: &str, message_has_brand: bool) -> Option
     best_match.map(|(_, _, value)| value)
 }
 
-fn mailbox_url_candidate_urls(url: &str) -> Vec<String> {
+pub(crate) fn mailbox_url_candidate_urls(url: &str) -> Vec<String> {
     let mut candidates = vec![url.trim_end_matches('.').to_string()];
     let Ok(parsed) = Url::parse(url) else {
         return candidates;
@@ -569,7 +579,7 @@ fn mailbox_url_candidate_urls(url: &str) -> Vec<String> {
     candidates
 }
 
-fn mailbox_url_looks_like_direct_invite(url: &str) -> bool {
+pub(crate) fn mailbox_url_looks_like_direct_invite(url: &str) -> bool {
     let Ok(parsed) = Url::parse(url) else {
         return false;
     };
@@ -601,7 +611,7 @@ fn mailbox_url_looks_like_direct_invite(url: &str) -> bool {
     has_invite_action && has_workspace_context && !is_help_like
 }
 
-fn mailbox_url_resolve_invite_target(url: &str) -> Option<String> {
+pub(crate) fn mailbox_url_resolve_invite_target(url: &str) -> Option<String> {
     let candidates = mailbox_url_candidate_urls(url);
     candidates
         .iter()
@@ -616,7 +626,7 @@ fn mailbox_url_resolve_invite_target(url: &str) -> Option<String> {
         })
 }
 
-fn mailbox_url_has_brand(url: &str) -> bool {
+pub(crate) fn mailbox_url_has_brand(url: &str) -> bool {
     mailbox_url_candidate_urls(url)
         .into_iter()
         .any(|candidate| {
@@ -625,7 +635,7 @@ fn mailbox_url_has_brand(url: &str) -> bool {
         })
 }
 
-fn parse_mailbox_code(detail: &KaisouMailMessageDetail) -> Option<ParsedMailboxCode> {
+pub(crate) fn parse_mailbox_code(detail: &KaisouMailMessageDetail) -> Option<ParsedMailboxCode> {
     let subject = detail.subject.as_deref().unwrap_or_default();
     let content = detail.content.as_deref().unwrap_or_default();
     let html_text = strip_html_tags(detail.html.as_deref().unwrap_or_default());
@@ -667,7 +677,9 @@ fn parse_mailbox_code(detail: &KaisouMailMessageDetail) -> Option<ParsedMailboxC
     None
 }
 
-fn parse_mailbox_invite(detail: &KaisouMailMessageDetail) -> Option<ParsedMailboxInvite> {
+pub(crate) fn parse_mailbox_invite(
+    detail: &KaisouMailMessageDetail,
+) -> Option<ParsedMailboxInvite> {
     let subject = detail.subject.as_deref().unwrap_or_default().trim();
     if subject.is_empty() {
         return None;
@@ -714,7 +726,9 @@ fn parse_mailbox_invite(detail: &KaisouMailMessageDetail) -> Option<ParsedMailbo
     })
 }
 
-fn parsed_code_from_mailbox_row(row: &OauthMailboxSessionRow) -> Option<ParsedMailboxCode> {
+pub(crate) fn parsed_code_from_mailbox_row(
+    row: &OauthMailboxSessionRow,
+) -> Option<ParsedMailboxCode> {
     Some(ParsedMailboxCode {
         value: row.latest_code_value.clone()?,
         source: row.latest_code_source.clone()?,
@@ -722,7 +736,9 @@ fn parsed_code_from_mailbox_row(row: &OauthMailboxSessionRow) -> Option<ParsedMa
     })
 }
 
-fn parsed_invite_from_mailbox_row(row: &OauthMailboxSessionRow) -> Option<ParsedMailboxInvite> {
+pub(crate) fn parsed_invite_from_mailbox_row(
+    row: &OauthMailboxSessionRow,
+) -> Option<ParsedMailboxInvite> {
     Some(ParsedMailboxInvite {
         subject: row.invite_subject.clone()?,
         copy_value: row.invite_copy_value.clone()?,
@@ -731,14 +747,14 @@ fn parsed_invite_from_mailbox_row(row: &OauthMailboxSessionRow) -> Option<Parsed
     })
 }
 
-fn mailbox_updated_at_is_newer_or_equal(candidate: &str, baseline: &str) -> bool {
+pub(crate) fn mailbox_updated_at_is_newer_or_equal(candidate: &str, baseline: &str) -> bool {
     match (parse_rfc3339_utc(candidate), parse_rfc3339_utc(baseline)) {
         (Some(candidate), Some(baseline)) => candidate >= baseline,
         _ => candidate >= baseline,
     }
 }
 
-fn merge_mailbox_code(
+pub(crate) fn merge_mailbox_code(
     fresh: Option<ParsedMailboxCode>,
     stored: Option<ParsedMailboxCode>,
 ) -> Option<ParsedMailboxCode> {
@@ -756,7 +772,7 @@ fn merge_mailbox_code(
     }
 }
 
-fn merge_mailbox_invite(
+pub(crate) fn merge_mailbox_invite(
     fresh: Option<ParsedMailboxInvite>,
     stored: Option<ParsedMailboxInvite>,
 ) -> Option<ParsedMailboxInvite> {
@@ -774,15 +790,15 @@ fn merge_mailbox_invite(
     }
 }
 
-fn sort_mailbox_messages_desc(messages: &mut [KaisouMailMessageSummary]) {
+pub(crate) fn sort_mailbox_messages_desc(messages: &mut [KaisouMailMessageSummary]) {
     messages.sort_by(|left, right| right.received_at.cmp(&left.received_at));
 }
 
-fn latest_mailbox_message_id(messages: &[KaisouMailMessageSummary]) -> Option<String> {
+pub(crate) fn latest_mailbox_message_id(messages: &[KaisouMailMessageSummary]) -> Option<String> {
     messages.first().map(|message| message.id.clone())
 }
 
-fn collect_unseen_mailbox_messages(
+pub(crate) fn collect_unseen_mailbox_messages(
     messages: Vec<KaisouMailMessageSummary>,
     last_message_id: Option<&str>,
 ) -> Vec<KaisouMailMessageSummary> {
@@ -800,7 +816,7 @@ fn collect_unseen_mailbox_messages(
     unseen
 }
 
-fn next_mailbox_cursor_after_refresh(
+pub(crate) fn next_mailbox_cursor_after_refresh(
     previous_last_message_id: Option<&str>,
     processed_messages: &[KaisouMailMessageSummary],
 ) -> Option<String> {
@@ -810,7 +826,7 @@ fn next_mailbox_cursor_after_refresh(
         .or_else(|| previous_last_message_id.map(ToOwned::to_owned))
 }
 
-async fn resolve_mailbox_message_state(
+pub(crate) async fn resolve_mailbox_message_state(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
     messages: &[KaisouMailMessageSummary],
@@ -833,19 +849,19 @@ async fn resolve_mailbox_message_state(
     Ok((latest_code, latest_invite))
 }
 
-enum KaisouMailAttachReadState<T> {
+pub(crate) enum KaisouMailAttachReadState<T> {
     Readable(T),
     NotReadable,
 }
 
-fn kaisoumail_attach_status_is_not_readable(status: reqwest::StatusCode) -> bool {
+pub(crate) fn kaisoumail_attach_status_is_not_readable(status: reqwest::StatusCode) -> bool {
     matches!(
         status,
         reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::NOT_FOUND
     )
 }
 
-async fn resolve_mailbox_message_state_for_attach(
+pub(crate) async fn resolve_mailbox_message_state_for_attach(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
     messages: &[KaisouMailMessageSummary],
@@ -857,11 +873,11 @@ async fn resolve_mailbox_message_state_for_attach(
             break;
         }
         let detail = match kaisoumail_get_message_for_attach(client, config, &summary.id).await? {
-                KaisouMailAttachReadState::Readable(detail) => detail,
-                KaisouMailAttachReadState::NotReadable => {
-                    return Ok(KaisouMailAttachReadState::NotReadable);
-                }
-            };
+            KaisouMailAttachReadState::Readable(detail) => detail,
+            KaisouMailAttachReadState::NotReadable => {
+                return Ok(KaisouMailAttachReadState::NotReadable);
+            }
+        };
         if latest_code.is_none() {
             latest_code = parse_mailbox_code(&detail);
         }
@@ -876,7 +892,7 @@ async fn resolve_mailbox_message_state_for_attach(
     )))
 }
 
-async fn kaisoumail_create_mailbox(
+pub(crate) async fn kaisoumail_create_mailbox(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
 ) -> Result<KaisouMailMailboxPayload> {
@@ -903,7 +919,7 @@ async fn kaisoumail_create_mailbox(
         .context("failed to decode kaisoumail create mailbox response")
 }
 
-async fn kaisoumail_ensure_mailbox_for_address(
+pub(crate) async fn kaisoumail_ensure_mailbox_for_address(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
     email_address: &str,
@@ -936,7 +952,7 @@ async fn kaisoumail_ensure_mailbox_for_address(
     Ok(payload)
 }
 
-async fn kaisoumail_get_meta(
+pub(crate) async fn kaisoumail_get_meta(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
 ) -> Result<KaisouMailMetaPayload> {
@@ -960,7 +976,7 @@ async fn kaisoumail_get_meta(
         .context("failed to decode kaisoumail meta response")
 }
 
-async fn kaisoumail_list_mailboxes(
+pub(crate) async fn kaisoumail_list_mailboxes(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
 ) -> Result<Vec<KaisouMailMailboxSummary>> {
@@ -984,7 +1000,7 @@ async fn kaisoumail_list_mailboxes(
     Ok(payload.mailboxes)
 }
 
-async fn kaisoumail_list_messages(
+pub(crate) async fn kaisoumail_list_messages(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
     mailbox_address: &str,
@@ -993,7 +1009,8 @@ async fn kaisoumail_list_messages(
         .base_url
         .join("/api/messages")
         .context("invalid kaisoumail message list endpoint")?;
-    url.query_pairs_mut().append_pair("mailbox", mailbox_address);
+    url.query_pairs_mut()
+        .append_pair("mailbox", mailbox_address);
     let response = client
         .get(url)
         .bearer_auth(config.api_key.as_str())
@@ -1001,7 +1018,9 @@ async fn kaisoumail_list_messages(
         .await
         .with_context(|| format!("failed to list kaisoumail messages for {mailbox_address}"))?
         .error_for_status()
-        .with_context(|| format!("kaisoumail list messages request failed for {mailbox_address}"))?;
+        .with_context(|| {
+            format!("kaisoumail list messages request failed for {mailbox_address}")
+        })?;
 
     let payload = response
         .json::<KaisouMailMessageListPayload>()
@@ -1010,7 +1029,7 @@ async fn kaisoumail_list_messages(
     Ok(payload.messages)
 }
 
-async fn kaisoumail_list_messages_for_attach(
+pub(crate) async fn kaisoumail_list_messages_for_attach(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
     mailbox_address: &str,
@@ -1019,7 +1038,8 @@ async fn kaisoumail_list_messages_for_attach(
         .base_url
         .join("/api/messages")
         .context("invalid kaisoumail message list endpoint")?;
-    url.query_pairs_mut().append_pair("mailbox", mailbox_address);
+    url.query_pairs_mut()
+        .append_pair("mailbox", mailbox_address);
     let response = client
         .get(url)
         .bearer_auth(config.api_key.as_str())
@@ -1029,9 +1049,9 @@ async fn kaisoumail_list_messages_for_attach(
     if kaisoumail_attach_status_is_not_readable(response.status()) {
         return Ok(KaisouMailAttachReadState::NotReadable);
     }
-    let response = response
-        .error_for_status()
-        .with_context(|| format!("kaisoumail list messages request failed for {mailbox_address}"))?;
+    let response = response.error_for_status().with_context(|| {
+        format!("kaisoumail list messages request failed for {mailbox_address}")
+    })?;
 
     let payload = response
         .json::<KaisouMailMessageListPayload>()
@@ -1040,7 +1060,7 @@ async fn kaisoumail_list_messages_for_attach(
     Ok(KaisouMailAttachReadState::Readable(payload.messages))
 }
 
-async fn kaisoumail_get_message(
+pub(crate) async fn kaisoumail_get_message(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
     message_id: &str,
@@ -1066,7 +1086,7 @@ async fn kaisoumail_get_message(
     Ok(payload.message)
 }
 
-async fn kaisoumail_get_message_for_attach(
+pub(crate) async fn kaisoumail_get_message_for_attach(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
     message_id: &str,
@@ -1096,7 +1116,7 @@ async fn kaisoumail_get_message_for_attach(
     Ok(KaisouMailAttachReadState::Readable(payload.message))
 }
 
-async fn kaisoumail_delete_mailbox(
+pub(crate) async fn kaisoumail_delete_mailbox(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
     remote_email_id: &str,
@@ -1117,7 +1137,7 @@ async fn kaisoumail_delete_mailbox(
     Ok(())
 }
 
-async fn refresh_oauth_mailbox_session_status(
+pub(crate) async fn refresh_oauth_mailbox_session_status(
     state: &AppState,
     row: &OauthMailboxSessionRow,
 ) -> Result<OauthMailboxSessionRow> {
@@ -1127,12 +1147,8 @@ async fn refresh_oauth_mailbox_session_status(
     sort_mailbox_messages_desc(&mut messages);
 
     let unseen_messages = collect_unseen_mailbox_messages(messages, row.last_message_id.as_deref());
-    let (fresh_code, fresh_invite) = resolve_mailbox_message_state(
-        &state.http_clients.shared,
-        config,
-        &unseen_messages,
-    )
-    .await?;
+    let (fresh_code, fresh_invite) =
+        resolve_mailbox_message_state(&state.http_clients.shared, config, &unseen_messages).await?;
     let latest_code = merge_mailbox_code(fresh_code, parsed_code_from_mailbox_row(row));
     let latest_invite = merge_mailbox_invite(fresh_invite, parsed_invite_from_mailbox_row(row));
     let next_last_message_id =
@@ -1174,7 +1190,7 @@ async fn refresh_oauth_mailbox_session_status(
         .ok_or_else(|| anyhow!("mailbox session disappeared after status refresh"))
 }
 
-fn normalize_tag_name(value: &str) -> Result<String, (StatusCode, String)> {
+pub(crate) fn normalize_tag_name(value: &str) -> Result<String, (StatusCode, String)> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "tag name is required".to_string()));
@@ -1188,7 +1204,7 @@ fn normalize_tag_name(value: &str) -> Result<String, (StatusCode, String)> {
     Ok(trimmed.to_string())
 }
 
-fn normalize_bulk_upstream_account_ids(
+pub(crate) fn normalize_bulk_upstream_account_ids(
     account_ids: &[i64],
 ) -> Result<Vec<i64>, (StatusCode, String)> {
     let mut normalized = account_ids
@@ -1207,25 +1223,27 @@ fn normalize_bulk_upstream_account_ids(
     Ok(normalized)
 }
 
-fn normalize_upstream_account_list_page(value: Option<usize>) -> usize {
+pub(crate) fn normalize_upstream_account_list_page(value: Option<usize>) -> usize {
     value.filter(|page| *page > 0).unwrap_or(1)
 }
 
-fn normalize_upstream_account_list_page_size(value: Option<usize>) -> usize {
+pub(crate) fn normalize_upstream_account_list_page_size(value: Option<usize>) -> usize {
     value
         .filter(|page_size| UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS.contains(page_size))
         .unwrap_or(DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE)
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-struct LegacyUpstreamAccountStatusFilter {
-    work_status: Option<&'static str>,
-    enable_status: Option<&'static str>,
-    health_status: Option<&'static str>,
-    sync_state: Option<&'static str>,
+pub(crate) struct LegacyUpstreamAccountStatusFilter {
+    pub(crate) work_status: Option<&'static str>,
+    pub(crate) enable_status: Option<&'static str>,
+    pub(crate) health_status: Option<&'static str>,
+    pub(crate) sync_state: Option<&'static str>,
 }
 
-fn normalize_upstream_account_work_status_filter(value: Option<&str>) -> Option<&'static str> {
+pub(crate) fn normalize_upstream_account_work_status_filter(
+    value: Option<&str>,
+) -> Option<&'static str> {
     let normalized = value?.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         return None;
@@ -1242,7 +1260,9 @@ fn normalize_upstream_account_work_status_filter(value: Option<&str>) -> Option<
     }
 }
 
-fn normalize_upstream_account_enable_status_filter(value: Option<&str>) -> Option<&'static str> {
+pub(crate) fn normalize_upstream_account_enable_status_filter(
+    value: Option<&str>,
+) -> Option<&'static str> {
     let normalized = value?.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         return None;
@@ -1254,7 +1274,9 @@ fn normalize_upstream_account_enable_status_filter(value: Option<&str>) -> Optio
     }
 }
 
-fn normalize_upstream_account_health_status_filter(value: Option<&str>) -> Option<&'static str> {
+pub(crate) fn normalize_upstream_account_health_status_filter(
+    value: Option<&str>,
+) -> Option<&'static str> {
     let normalized = value?.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         return None;
@@ -1275,7 +1297,7 @@ fn normalize_upstream_account_health_status_filter(value: Option<&str>) -> Optio
     }
 }
 
-fn collect_normalized_upstream_account_filters(
+pub(crate) fn collect_normalized_upstream_account_filters(
     values: &[String],
     legacy_value: Option<&'static str>,
     normalize: fn(Option<&str>) -> Option<&'static str>,
@@ -1300,7 +1322,7 @@ fn collect_normalized_upstream_account_filters(
     normalized
 }
 
-fn normalize_legacy_upstream_account_status_filter(
+pub(crate) fn normalize_legacy_upstream_account_status_filter(
     value: Option<&str>,
 ) -> LegacyUpstreamAccountStatusFilter {
     let normalized = value
@@ -1357,7 +1379,9 @@ fn normalize_legacy_upstream_account_status_filter(
     }
 }
 
-fn normalize_bulk_upstream_account_action(value: &str) -> Result<String, (StatusCode, String)> {
+pub(crate) fn normalize_bulk_upstream_account_action(
+    value: &str,
+) -> Result<String, (StatusCode, String)> {
     let normalized = value.trim().to_ascii_lowercase();
     match normalized.as_str() {
         BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE
@@ -1371,7 +1395,7 @@ fn normalize_bulk_upstream_account_action(value: &str) -> Result<String, (Status
     }
 }
 
-fn normalize_tag_rule(
+pub(crate) fn normalize_tag_rule(
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: Option<&str>,
@@ -1403,7 +1427,7 @@ fn normalize_tag_rule(
     })
 }
 
-fn normalize_group_account_routing_rule(
+pub(crate) fn normalize_group_account_routing_rule(
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: Option<&str>,
@@ -1442,7 +1466,7 @@ fn normalize_group_account_routing_rule(
     })
 }
 
-fn normalize_available_models(
+pub(crate) fn normalize_available_models(
     value: Option<Vec<String>>,
     field_name: &str,
 ) -> Result<Vec<String>, (StatusCode, String)> {
@@ -1463,7 +1487,7 @@ fn normalize_available_models(
     Ok(normalized)
 }
 
-fn normalize_tag_priority_tier(
+pub(crate) fn normalize_tag_priority_tier(
     value: Option<&str>,
 ) -> Result<TagPriorityTier, (StatusCode, String)> {
     let normalized = value
@@ -1482,7 +1506,7 @@ fn normalize_tag_priority_tier(
     }
 }
 
-fn decode_tag_priority_tier(value: &str) -> TagPriorityTier {
+pub(crate) fn decode_tag_priority_tier(value: &str) -> TagPriorityTier {
     match value.trim() {
         "no_new" => TagPriorityTier::NoNew,
         "fallback" => TagPriorityTier::Fallback,
@@ -1491,7 +1515,7 @@ fn decode_tag_priority_tier(value: &str) -> TagPriorityTier {
     }
 }
 
-fn normalize_tag_fast_mode_rewrite_mode(
+pub(crate) fn normalize_tag_fast_mode_rewrite_mode(
     value: Option<&str>,
 ) -> Result<TagFastModeRewriteMode, (StatusCode, String)> {
     let normalized = value
@@ -1511,7 +1535,7 @@ fn normalize_tag_fast_mode_rewrite_mode(
     }
 }
 
-fn decode_tag_fast_mode_rewrite_mode(value: &str) -> TagFastModeRewriteMode {
+pub(crate) fn decode_tag_fast_mode_rewrite_mode(value: &str) -> TagFastModeRewriteMode {
     match value.trim() {
         "force_remove" => TagFastModeRewriteMode::ForceRemove,
         "fill_missing" => TagFastModeRewriteMode::FillMissing,
@@ -1520,7 +1544,7 @@ fn decode_tag_fast_mode_rewrite_mode(value: &str) -> TagFastModeRewriteMode {
     }
 }
 
-fn normalize_image_tool_rewrite_mode(
+pub(crate) fn normalize_image_tool_rewrite_mode(
     value: Option<&str>,
 ) -> Result<ImageToolRewriteMode, (StatusCode, String)> {
     let normalized = value
@@ -1539,17 +1563,17 @@ fn normalize_image_tool_rewrite_mode(
     }
 }
 
-fn decode_image_tool_rewrite_mode(value: &str) -> ImageToolRewriteMode {
+pub(crate) fn decode_image_tool_rewrite_mode(value: &str) -> ImageToolRewriteMode {
     ImageToolRewriteMode::from_str(value)
 }
 
-fn decode_image_tool_capability(value: Option<&str>) -> ImageToolCapability {
+pub(crate) fn decode_image_tool_capability(value: Option<&str>) -> ImageToolCapability {
     value
         .map(ImageToolCapability::from_str)
         .unwrap_or(ImageToolCapability::Unknown)
 }
 
-fn normalize_concurrency_limit(
+pub(crate) fn normalize_concurrency_limit(
     value: Option<i64>,
     field_name: &str,
 ) -> Result<i64, (StatusCode, String)> {
@@ -1563,7 +1587,7 @@ fn normalize_concurrency_limit(
     Ok(value)
 }
 
-fn parse_tag_ids_json(raw: Option<&str>) -> Vec<i64> {
+pub(crate) fn parse_tag_ids_json(raw: Option<&str>) -> Vec<i64> {
     let Some(raw) = raw else {
         return Vec::new();
     };
@@ -1574,11 +1598,11 @@ fn parse_tag_ids_json(raw: Option<&str>) -> Vec<i64> {
         .collect()
 }
 
-fn encode_tag_ids_json(tag_ids: &[i64]) -> Result<String> {
+pub(crate) fn encode_tag_ids_json(tag_ids: &[i64]) -> Result<String> {
     serde_json::to_string(tag_ids).context("failed to encode tag ids")
 }
 
-fn parse_string_array_json(raw: Option<&str>) -> Vec<String> {
+pub(crate) fn parse_string_array_json(raw: Option<&str>) -> Vec<String> {
     let Some(raw) = raw else {
         return Vec::new();
     };
@@ -1589,11 +1613,11 @@ fn parse_string_array_json(raw: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-fn encode_string_array_json(values: &[String]) -> Result<String> {
+pub(crate) fn encode_string_array_json(values: &[String]) -> Result<String> {
     serde_json::to_string(values).context("failed to encode string array")
 }
 
-fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
+pub(crate) fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
     AccountTagSummary {
         id: row.tag_id,
         name: row.name.clone(),
@@ -1617,7 +1641,7 @@ fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
     }
 }
 
-fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
+pub(crate) fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
     TagSummary {
         id: row.id,
         name: row.name.clone(),
@@ -1644,7 +1668,7 @@ fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
     }
 }
 
-fn status_change_reasons_from_columns(
+pub(crate) fn status_change_reasons_from_columns(
     policy_status_change_upstream_http_401: Option<i64>,
     policy_status_change_upstream_http_402: Option<i64>,
     policy_status_change_upstream_http_403: Option<i64>,
@@ -1711,7 +1735,7 @@ fn status_change_reasons_from_columns(
     reasons
 }
 
-fn group_routing_rule_from_columns(
+pub(crate) fn group_routing_rule_from_columns(
     legacy_concurrency_limit: i64,
     legacy_upstream_429_retry_enabled: bool,
     legacy_upstream_429_max_retries: u8,
@@ -1785,7 +1809,7 @@ fn group_routing_rule_from_columns(
     }
 }
 
-async fn load_group_routing_rule(
+pub(crate) async fn load_group_routing_rule(
     pool: &Pool<Sqlite>,
     group_name: &str,
 ) -> Result<GroupAccountRoutingRule> {
@@ -1819,10 +1843,7 @@ async fn load_group_routing_rule(
         policy_responses_stream_timeout_secs: Option<i64>,
         policy_compact_stream_timeout_secs: Option<i64>,
     }
-    let row = sqlx::query_as::<
-        _,
-        GroupRoutingRuleRow,
-    >(
+    let row = sqlx::query_as::<_, GroupRoutingRuleRow>(
         r#"
         SELECT
             concurrency_limit,
@@ -1860,36 +1881,10 @@ async fn load_group_routing_rule(
     .bind(group_name)
     .fetch_optional(pool)
     .await?;
-    let Some(row) = row
-    else {
+    let Some(row) = row else {
         return Ok(group_routing_rule_from_columns(
-            0,
-            false,
-            0,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            0, false, 0, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None,
         ));
     };
     let upstream_429_retry_enabled =

@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 async fn materialize_prompt_cache_hourly_rollups(pool: &Pool<Sqlite>) {
     sync_hourly_rollups_from_live_tables(pool)
         .await
@@ -443,7 +446,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -962,7 +965,7 @@ async fn prompt_cache_conversations_preserve_upstream_account_history_after_raw_
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1043,7 +1046,7 @@ async fn prompt_cache_conversations_keep_totals_when_recent_preview_is_empty() {
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1127,7 +1130,7 @@ async fn prompt_cache_conversations_count_mode_reports_inactive_recent_history_f
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1219,7 +1222,7 @@ async fn prompt_cache_conversations_count_mode_reports_all_skipped_newer_inactiv
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1308,7 +1311,7 @@ async fn prompt_cache_conversations_count_mode_clamps_sparse_inactive_hidden_row
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1368,7 +1371,7 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1434,7 +1437,7 @@ async fn prompt_cache_conversations_activity_minutes_legacy_path_still_caps_resu
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1542,7 +1545,7 @@ async fn prompt_cache_conversations_activity_minutes_include_running_only_rows_a
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1602,7 +1605,9 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             "#,
         )
         .bind(format!("working-page-{index}"))
-        .bind(format_naive(occurred_at.with_timezone(&Shanghai).naive_local()))
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
         .bind(SOURCE_PROXY)
         .bind(if index % 7 == 0 { "running" } else { "success" })
         .bind(10 + index as i64)
@@ -1631,7 +1636,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1686,7 +1691,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             cursor: Some(first_next_cursor),
             snapshot_at: Some(first_snapshot.clone()),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1695,7 +1700,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
     assert_eq!(second_page.conversations.len(), 20);
     assert_eq!(second_page.total_matched, Some(total_matched));
     assert!(second_page.has_more);
-    assert_eq!(second_page.snapshot_at.as_deref(), Some(first_snapshot.as_str()));
+    assert_eq!(
+        second_page.snapshot_at.as_deref(),
+        Some(first_snapshot.as_str())
+    );
 
     let last_visible_row_cursor = first_page
         .conversations
@@ -1712,7 +1720,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             cursor: Some(last_visible_row_cursor),
             snapshot_at: Some(first_snapshot.clone()),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1745,13 +1753,16 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             cursor: second_page.next_cursor.clone(),
             snapshot_at: Some(first_snapshot),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
     .expect("third paginated working page should succeed");
 
-    assert_eq!(third_page.conversations.len(), (total_matched - 40) as usize);
+    assert_eq!(
+        third_page.conversations.len(),
+        (total_matched - 40) as usize
+    );
     assert_eq!(third_page.total_matched, Some(total_matched));
     assert!(!third_page.has_more);
     assert_eq!(third_page.next_cursor, None);
@@ -1861,7 +1872,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1887,7 +1898,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -1909,7 +1920,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
             cursor: first_page.next_cursor.clone(),
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2016,7 +2027,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_cursor_uses_worki
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2042,7 +2053,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_cursor_uses_worki
             cursor: first_page.next_cursor.clone(),
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2064,7 +2075,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_cursor_uses_worki
             cursor: second_page.next_cursor.clone(),
             snapshot_at: second_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2268,24 +2279,15 @@ async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
     .expect("first pipe-key page should succeed");
 
-    assert_eq!(
-        first_page.conversations[0].prompt_cache_key,
-        "pipe|head"
-    );
-    let snapshot_at = first_page
-        .snapshot_at
-        .clone()
-        .expect("pipe-key snapshotAt");
-    let next_cursor = first_page
-        .next_cursor
-        .clone()
-        .expect("pipe-key nextCursor");
+    assert_eq!(first_page.conversations[0].prompt_cache_key, "pipe|head");
+    let snapshot_at = first_page.snapshot_at.clone().expect("pipe-key snapshotAt");
+    let next_cursor = first_page.next_cursor.clone().expect("pipe-key nextCursor");
     let row_cursor = first_page.conversations[0]
         .cursor
         .clone()
@@ -2301,16 +2303,13 @@ async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_
             cursor: Some(next_cursor),
             snapshot_at: Some(snapshot_at.clone()),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
     .expect("second pipe-key page should succeed");
 
-    assert_eq!(
-        second_page.conversations[0].prompt_cache_key,
-        "pipe|tail"
-    );
+    assert_eq!(second_page.conversations[0].prompt_cache_key, "pipe|tail");
 
     let Json(second_page_from_row_cursor) = fetch_prompt_cache_conversations(
         State(state),
@@ -2322,7 +2321,7 @@ async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_
             cursor: Some(row_cursor),
             snapshot_at: Some(snapshot_at),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2345,10 +2344,7 @@ fn prompt_cache_conversations_omitted_snapshot_preserves_current_precision() {
     assert_eq!(snapshot_at, precise_now);
     assert_eq!(
         db_occurred_at_upper_bound(snapshot_at),
-        db_occurred_at_lower_bound(
-            precise_now
-                + ChronoDuration::seconds(1)
-        )
+        db_occurred_at_lower_bound(precise_now + ChronoDuration::seconds(1))
     );
 }
 
@@ -2369,7 +2365,7 @@ async fn prompt_cache_conversations_paginated_invalid_snapshot_at_returns_bad_re
             cursor: None,
             snapshot_at: Some("not-a-timestamp".to_string()),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2400,7 +2396,7 @@ async fn prompt_cache_conversations_paginated_invalid_cursor_returns_bad_request
             cursor: Some("not-base64".to_string()),
             snapshot_at: Some(Utc::now().to_rfc3339()),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2419,8 +2415,7 @@ async fn prompt_cache_conversations_paginated_invalid_cursor_returns_bad_request
 }
 
 #[tokio::test]
-async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested_snapshot_totals()
-{
+async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested_snapshot_totals() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2505,7 +2500,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
             cursor: None,
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2527,7 +2522,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
             cursor: first_page.next_cursor.clone(),
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2542,8 +2537,8 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
 }
 
 #[tokio::test]
-async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes_same_second_post_snapshot_writes(
-) {
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes_same_second_post_snapshot_writes()
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2630,7 +2625,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             cursor: None,
             snapshot_at: Some(requested_snapshot_at.to_rfc3339()),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2668,7 +2663,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             cursor: first_page.next_cursor.clone(),
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2683,8 +2678,8 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
 }
 
 #[tokio::test]
-async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snapshot_excludes_post_snapshot_writes(
-) {
+async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snapshot_excludes_post_snapshot_writes()
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2768,7 +2763,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snap
             cursor: None,
             snapshot_at: Some(format_utc_iso(snapshot_second)),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2805,7 +2800,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snap
             cursor: first_page.next_cursor.clone(),
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2820,8 +2815,8 @@ async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snap
 }
 
 #[tokio::test]
-async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes_late_persisted_pre_snapshot_occurrence(
-) {
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes_late_persisted_pre_snapshot_occurrence()
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2899,7 +2894,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             cursor: None,
             snapshot_at: Some(requested_snapshot_at.to_rfc3339()),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2932,7 +2927,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             cursor: first_page.next_cursor.clone(),
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2948,7 +2943,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
 
 #[tokio::test]
 async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserves_previous_hour_lifetime_totals()
-{
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -3044,7 +3039,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserve
             cursor: None,
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -3069,14 +3064,17 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserve
             cursor: first_page.next_cursor.clone(),
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
     .expect("second lifetime snapshot page should succeed");
 
     assert_eq!(second_page.conversations.len(), 1);
-    assert_eq!(second_page.conversations[0].prompt_cache_key, "working-window-head");
+    assert_eq!(
+        second_page.conversations[0].prompt_cache_key,
+        "working-window-head"
+    );
     assert_eq!(second_page.conversations[0].request_count, 1);
     assert_eq!(second_page.conversations[0].total_tokens, 20);
     assert!((second_page.conversations[0].total_cost - 0.20).abs() < 1e-9);
@@ -3188,7 +3186,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_includes
 
 #[tokio::test]
 async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes_late_backfilled_rollup_lifecycle_totals()
-{
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -3346,7 +3344,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
 
 #[tokio::test]
 async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hydrated_details_consistent()
-{
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -3446,7 +3444,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hy
             cursor: None,
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("full".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -3468,14 +3466,17 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hy
             cursor: first_page.next_cursor.clone(),
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("full".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
     .expect("second full snapshot page should succeed");
 
     assert_eq!(second_page.conversations.len(), 1);
-    assert_eq!(second_page.conversations[0].prompt_cache_key, "working-snapshot-full-head");
+    assert_eq!(
+        second_page.conversations[0].prompt_cache_key,
+        "working-snapshot-full-head"
+    );
     let target = &first_page.conversations[0];
     assert_eq!(target.prompt_cache_key, "working-snapshot-full-target");
     assert_eq!(target.request_count, 1);
@@ -3501,8 +3502,8 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hy
 }
 
 #[tokio::test]
-async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_full_detail_null_cost_stays_real_zero(
-) {
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_full_detail_null_cost_stays_real_zero()
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -3602,7 +3603,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_full_det
             cursor: None,
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("full".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -3618,14 +3619,17 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_full_det
             cursor: first_page.next_cursor.clone(),
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("full".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
     .expect("second null-cost full snapshot page should succeed");
 
     assert_eq!(first_page.conversations.len(), 1);
-    assert_eq!(first_page.conversations[0].prompt_cache_key, "working-null-cost-full-target");
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "working-null-cost-full-target"
+    );
     assert_eq!(second_page.conversations.len(), 1);
     let target = &first_page.conversations[0];
     assert_eq!(target.prompt_cache_key, "working-null-cost-full-target");
@@ -3656,7 +3660,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_full_det
 
 #[tokio::test]
 async fn prompt_cache_conversations_activity_minutes_paginated_keeps_running_and_pending_working_rows()
-{
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -3744,7 +3748,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_keeps_running_and
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -3836,9 +3840,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_overlays_memory_r
         } else {
             now - ChronoDuration::seconds(index * 10)
         };
-        let occurred_at = format_naive(
-            runtime_started_at.with_timezone(&Shanghai).naive_local(),
-        );
+        let occurred_at = format_naive(runtime_started_at.with_timezone(&Shanghai).naive_local());
         let prompt_cache_key = format!("memory-overlay-running-{}", index + 1);
         let running_record = build_running_proxy_capture_record(
             &format!("memory-overlay-running-invoke-{}", index + 1),
@@ -4035,7 +4037,9 @@ async fn prompt_cache_conversations_activity_minutes_paginated_ignores_stale_ter
     );
     let mut stale_terminal = api_invocation_from_runtime_record(&stale_terminal);
     stale_terminal.status = Some("interrupted".to_string());
-    state.proxy_runtime_invocations.upsert_terminal(stale_terminal);
+    state
+        .proxy_runtime_invocations
+        .upsert_terminal(stale_terminal);
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
@@ -4138,7 +4142,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_sorts_by_newer_in
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4229,7 +4233,7 @@ async fn prompt_cache_conversations_chart_window_caps_history_to_recent_24_hours
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4348,7 +4352,7 @@ async fn prompt_cache_conversation_activity_keeps_http_200_errors_out_of_success
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4408,7 +4412,7 @@ async fn prompt_cache_conversation_timestamps_serialize_as_utc_iso() {
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4505,7 +4509,7 @@ async fn prompt_cache_conversations_live_response_includes_encrypted_owner_metad
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4621,7 +4625,7 @@ async fn prompt_cache_conversations_snapshot_excludes_future_encrypted_owner_loc
             cursor: None,
             snapshot_at: Some(snapshot_at),
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4647,7 +4651,7 @@ async fn prompt_cache_conversations_snapshot_excludes_future_encrypted_owner_loc
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4720,7 +4724,7 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4763,7 +4767,7 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4827,7 +4831,7 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4862,7 +4866,7 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4928,7 +4932,7 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -4958,7 +4962,7 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -5104,7 +5108,7 @@ async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall(
                         cursor: None,
                         snapshot_at: None,
                         detail: None,
-                recent_invocation_limit: None,
+                        recent_invocation_limit: None,
                     }),
                 ),
             )

@@ -1,3 +1,5 @@
+use super::*;
+
 pub(crate) fn deflate_stream_uses_zlib_wrapper(header: &[u8]) -> bool {
     if header.len() < 2 {
         return true;
@@ -178,11 +180,11 @@ pub(crate) fn summarize_pool_upstream_http_failure(
 }
 
 pub(crate) struct NormalizedPoolFailureRecord {
-    attempt_status: &'static str,
-    upstream_http_status: Option<StatusCode>,
-    downstream_http_status: Option<StatusCode>,
-    canonical_error_message: String,
-    downstream_error_message: Option<String>,
+    pub(crate) attempt_status: &'static str,
+    pub(crate) upstream_http_status: Option<StatusCode>,
+    pub(crate) downstream_http_status: Option<StatusCode>,
+    pub(crate) canonical_error_message: String,
+    pub(crate) downstream_error_message: Option<String>,
 }
 
 pub(crate) fn default_oauth_transport_failure_message(failure_kind: &'static str) -> &'static str {
@@ -902,15 +904,16 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         );
         return Ok(());
     }
-    let terminal_enqueued = state
-        .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::TerminalInvocation(
-            BatchedTerminalInvocationWrite {
-                record,
-                capture_started: Some(capture_started),
-                raw_capture: true,
-            },
-        ));
+    let terminal_enqueued =
+        state
+            .sqlite_batch_writer
+            .enqueue(SqliteBatchWrite::TerminalInvocation(
+                BatchedTerminalInvocationWrite {
+                    record,
+                    capture_started: Some(capture_started),
+                    raw_capture: true,
+                },
+            ));
     if !terminal_enqueued {
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations
@@ -998,12 +1001,9 @@ pub(crate) async fn persist_proxy_capture_record_core(
 
     let mut tx = pool.begin().await?;
     let mut core_write_path = "insert_missing";
-    let existing_identity = load_persisted_invocation_identity_tx(
-        tx.as_mut(),
-        &record.invoke_id,
-        &record.occurred_at,
-    )
-    .await?;
+    let existing_identity =
+        load_persisted_invocation_identity_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
+            .await?;
 
     let invocation_id = if let Some(existing) = existing_identity {
         if !persisted_invocation_allows_proxy_record_update(
@@ -1245,7 +1245,10 @@ pub(crate) async fn persist_proxy_capture_record_core(
     Ok(Some(persisted))
 }
 
-pub(crate) fn read_proxy_raw_bytes(path: &str, fallback_root: Option<&Path>) -> io::Result<Vec<u8>> {
+pub(crate) fn read_proxy_raw_bytes(
+    path: &str,
+    fallback_root: Option<&Path>,
+) -> io::Result<Vec<u8>> {
     let mut last_error = None;
     for candidate in resolved_raw_path_read_candidates(path, fallback_root) {
         match fs::read(&candidate) {
@@ -1289,9 +1292,10 @@ pub(crate) async fn current_proxy_usage_backfill_snapshot_max_id(
 ) -> Result<i64> {
     let shared_live_cursor =
         load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
-    let max_live_id = sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
-        .fetch_one(pool)
-        .await?;
+    let max_live_id =
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+            .fetch_one(pool)
+            .await?;
     Ok(shared_live_cursor.max(max_live_id))
 }
 
@@ -1473,7 +1477,7 @@ pub(crate) async fn backfill_proxy_usage_tokens_up_to_id(
 }
 
 #[cfg(test)]
-const TEST_PROXY_USAGE_BACKFILL_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+pub(crate) const TEST_PROXY_USAGE_BACKFILL_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 pub(crate) async fn run_backfill_with_retry(
@@ -1858,10 +1862,9 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 continue;
             }
 
-            let allow_live_fallback =
-                allow_live_upstream_account_fallback(Some(
-                    candidate.live_upstream_account_snapshot_safe,
-                ));
+            let allow_live_fallback = allow_live_upstream_account_fallback(Some(
+                candidate.live_upstream_account_snapshot_safe,
+            ));
             let upstream_account_kind = resolve_backfill_upstream_account_kind(
                 candidate.snapshot_upstream_account_kind.as_deref(),
                 candidate.live_upstream_account_kind.as_deref(),

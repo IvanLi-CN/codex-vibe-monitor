@@ -17,7 +17,10 @@ use crate::{
     ArchiveSegmentGranularity, format_naive, start_of_local_day,
 };
 
-pub(crate) fn resolved_raw_path_candidates(path: &str, fallback_root: Option<&Path>) -> Vec<PathBuf> {
+pub(crate) fn resolved_raw_path_candidates(
+    path: &str,
+    fallback_root: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let primary = PathBuf::from(path);
     candidates.push(normalize_path_for_compare(&primary));
@@ -33,7 +36,10 @@ pub(crate) fn resolved_raw_path_candidates(path: &str, fallback_root: Option<&Pa
     candidates
 }
 
-pub(crate) fn resolved_raw_path_read_candidates(path: &str, fallback_root: Option<&Path>) -> Vec<PathBuf> {
+pub(crate) fn resolved_raw_path_read_candidates(
+    path: &str,
+    fallback_root: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut candidates = resolved_raw_path_candidates(path, fallback_root);
     if let Some(alternate_path) = raw_payload_alternate_db_path(path) {
         for candidate in resolved_raw_path_candidates(&alternate_path, fallback_root) {
@@ -128,7 +134,10 @@ pub(crate) fn shanghai_utc_cutoff_string(days: u64) -> String {
     format_naive(shanghai_retention_cutoff(days).naive_utc())
 }
 
-pub(crate) fn invocation_status_is_success_like(status: Option<&str>, error_message: Option<&str>) -> bool {
+pub(crate) fn invocation_status_is_success_like(
+    status: Option<&str>,
+    error_message: Option<&str>,
+) -> bool {
     let normalized_status = status.map(str::trim).unwrap_or_default();
     let error_message_empty = error_message.map(str::trim).is_none_or(str::is_empty);
 
@@ -177,7 +186,10 @@ pub(crate) fn resolved_archive_dir(config: &AppConfig) -> PathBuf {
     resolve_path_from_database_parent(&config.database_path, &config.archive_dir)
 }
 
-pub(crate) fn resolve_path_from_database_parent(database_path: &Path, configured_path: &Path) -> PathBuf {
+pub(crate) fn resolve_path_from_database_parent(
+    database_path: &Path,
+    configured_path: &Path,
+) -> PathBuf {
     if configured_path.is_absolute() {
         return configured_path.to_path_buf();
     }
@@ -188,7 +200,11 @@ pub(crate) fn resolve_path_from_database_parent(database_path: &Path, configured
     }
 }
 
-pub(crate) fn archive_batch_file_path(config: &AppConfig, dataset: &str, month_key: &str) -> Result<PathBuf> {
+pub(crate) fn archive_batch_file_path(
+    config: &AppConfig,
+    dataset: &str,
+    month_key: &str,
+) -> Result<PathBuf> {
     let year = month_key
         .split('-')
         .next()
@@ -251,7 +267,10 @@ pub(crate) fn archive_layout_for_dataset(config: &AppConfig, dataset: &str) -> A
     }
 }
 
-pub(crate) fn invocation_archive_group_key(config: &AppConfig, occurred_at: &str) -> Result<String> {
+pub(crate) fn invocation_archive_group_key(
+    config: &AppConfig,
+    occurred_at: &str,
+) -> Result<String> {
     match config.codex_invocation_archive_layout {
         ArchiveBatchLayout::LegacyMonth => shanghai_month_key_from_local_naive(occurred_at),
         ArchiveBatchLayout::SegmentV1 => {
@@ -375,4 +394,3 @@ pub(crate) fn sha256_hex_file(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
-

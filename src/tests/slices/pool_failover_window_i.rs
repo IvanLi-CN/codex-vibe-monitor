@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rollups() {
     let mut config = test_config();
@@ -401,7 +404,8 @@ async fn ensure_schema_migrates_codex_invocations_off_raw_expires_at_and_adds_re
     .collect::<Vec<_>>()
     .join(" | ");
     assert!(
-        stale_attempt_plan.contains("idx_pool_upstream_request_attempts_pending_early_phase_started"),
+        stale_attempt_plan
+            .contains("idx_pool_upstream_request_attempts_pending_early_phase_started"),
         "unexpected stale attempt plan: {stale_attempt_plan}"
     );
 }
@@ -563,7 +567,11 @@ async fn ensure_schema_rebuilds_invocation_in_progress_live_from_existing_invoca
     .await
     .expect("load rebuilt live rows");
 
-    assert_eq!(rows.len(), 3, "only running/pending rows should survive rebuild");
+    assert_eq!(
+        rows.len(),
+        3,
+        "only running/pending rows should survive rebuild"
+    );
 
     let pending = rows
         .iter()
@@ -710,7 +718,11 @@ async fn ensure_schema_rebuilds_prompt_cache_working_set_live_from_existing_invo
             0.32_f64,
         ),
     ] {
-        let occurred_at = format_naive((now - ChronoDuration::seconds(seconds_ago)).with_timezone(&Shanghai).naive_local());
+        let occurred_at = format_naive(
+            (now - ChronoDuration::seconds(seconds_ago))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
@@ -745,7 +757,18 @@ async fn ensure_schema_rebuilds_prompt_cache_working_set_live_from_existing_invo
 
     let rows = sqlx::query_as::<
         _,
-        (String, i64, i64, String, String, Option<String>, Option<String>, i64, i64, f64),
+        (
+            String,
+            i64,
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            f64,
+        ),
     >(
         r#"
         SELECT
@@ -767,7 +790,11 @@ async fn ensure_schema_rebuilds_prompt_cache_working_set_live_from_existing_invo
     .await
     .expect("load rebuilt working-set rows");
 
-    assert_eq!(rows.len(), 2, "only recent or in-flight keys should survive rebuild");
+    assert_eq!(
+        rows.len(),
+        2,
+        "only recent or in-flight keys should survive rebuild"
+    );
 
     let key_a = rows
         .iter()
@@ -815,7 +842,11 @@ async fn proxy_only_working_conversation_live_aggregate_keeps_mixed_source_proxy
             "#,
         )
         .bind(invoke_id)
-        .bind(format_naive((now - ChronoDuration::seconds(seconds_ago)).with_timezone(&Shanghai).naive_local()))
+        .bind(format_naive(
+            (now - ChronoDuration::seconds(seconds_ago))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ))
         .bind(source)
         .bind("success")
         .bind(total_tokens)
@@ -1393,7 +1424,7 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
 
     let archive_db_path = temp_dir.join("retention-prune-archive.sqlite");
     inflate_gzip_sqlite_file(&file_path, &archive_db_path).expect("inflate prune archive");
-    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
         .await
         .expect("open prune archive sqlite");
     let archive_columns: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
@@ -1709,9 +1740,10 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
 
     let legacy_archive_db_path = temp_dir.join("legacy-archive.sqlite");
     fs::File::create(&legacy_archive_db_path).expect("create legacy archive sqlite file");
-    let legacy_archive_pool = SqlitePool::connect(&sqlite_url_for_path(&legacy_archive_db_path))
-        .await
-        .expect("open legacy archive sqlite");
+    let legacy_archive_pool =
+        SqlitePool::connect(&test_sqlite_url_for_path(&legacy_archive_db_path))
+            .await
+            .expect("open legacy archive sqlite");
     let legacy_create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
     sqlx::query(&legacy_create_sql)
         .execute(&legacy_archive_pool)
@@ -1770,7 +1802,7 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
     let inflated_legacy_path = temp_dir.join("legacy-archive-inflated.sqlite");
     inflate_gzip_sqlite_file(&final_archive_path, &inflated_legacy_path)
         .expect("inflate retained legacy archive batch");
-    let archived_pool = SqlitePool::connect(&sqlite_url_for_path(&inflated_legacy_path))
+    let archived_pool = SqlitePool::connect(&test_sqlite_url_for_path(&inflated_legacy_path))
         .await
         .expect("open retained legacy archive batch");
     let archived_ids: HashSet<String> =
@@ -1815,9 +1847,10 @@ async fn retention_archives_into_legacy_pool_attempt_archive_batch_without_route
 
     let legacy_archive_db_path = temp_dir.join("legacy-pool-attempt-archive.sqlite");
     fs::File::create(&legacy_archive_db_path).expect("create legacy pool attempt sqlite file");
-    let legacy_archive_pool = SqlitePool::connect(&sqlite_url_for_path(&legacy_archive_db_path))
-        .await
-        .expect("open legacy pool attempt archive sqlite");
+    let legacy_archive_pool =
+        SqlitePool::connect(&test_sqlite_url_for_path(&legacy_archive_db_path))
+            .await
+            .expect("open legacy pool attempt archive sqlite");
     let legacy_create_sql = POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL
         .replace("archive_db.", "")
         .replace("    upstream_route_key TEXT,\n", "");
@@ -1875,7 +1908,7 @@ async fn retention_archives_into_legacy_pool_attempt_archive_batch_without_route
     let inflated_legacy_path = temp_dir.join("legacy-pool-attempt-archive-inflated.sqlite");
     inflate_gzip_sqlite_file(&final_archive_path, &inflated_legacy_path)
         .expect("inflate retained legacy pool attempt archive batch");
-    let archived_pool = SqlitePool::connect(&sqlite_url_for_path(&inflated_legacy_path))
+    let archived_pool = SqlitePool::connect(&test_sqlite_url_for_path(&inflated_legacy_path))
         .await
         .expect("open retained legacy pool attempt archive batch");
     let archived_invoke_ids: HashSet<String> =
@@ -1959,7 +1992,7 @@ async fn fetch_invocation_pool_attempts_does_not_read_archived_records() {
 
     let archive_db_path = temp_dir.join("pool-attempts-archive-route-key.sqlite");
     fs::File::create(&archive_db_path).expect("create archive sqlite file");
-    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
         .await
         .expect("open archive sqlite");
     let create_sql = POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
@@ -2082,7 +2115,7 @@ async fn upstream_last_activity_backfill_reads_archived_batches() {
 
     let archive_db_path = temp_dir.join("upstream-last-activity-archive.sqlite");
     fs::File::create(&archive_db_path).expect("create archive sqlite file");
-    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
         .await
         .expect("open archive sqlite");
     let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
@@ -2669,7 +2702,7 @@ async fn archive_backfill_waits_for_manifest_until_rebuilt() {
         .expect("create manifest backlog archive parent");
     let archive_db_path = temp_dir.join("manifest-backlog.sqlite");
     fs::File::create(&archive_db_path).expect("create manifest backlog archive sqlite file");
-    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
         .await
         .expect("open manifest backlog archive sqlite");
     let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");

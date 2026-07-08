@@ -1,12 +1,14 @@
+use super::*;
+
 #[derive(Debug, Clone)]
-struct LivePoolCandidateEvaluation {
+pub(crate) struct LivePoolCandidateEvaluation {
     score: PoolRoutingCandidateScore,
     resolved_account: Option<PoolResolvedAccount>,
     assigned_blocked: Option<PoolAssignedBlockedAccount>,
     blocked_message: Option<String>,
 }
 
-const POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS: i64 = 300;
+pub(crate) const POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS: i64 = 300;
 
 pub(crate) fn compare_pool_routing_candidate_scores(
     lhs: &PoolRoutingCandidateScore,
@@ -56,7 +58,7 @@ pub(crate) fn compare_pool_routing_candidate_scores(
         })
 }
 
-fn compare_reset_proximity_for_rotation_candidates(
+pub(crate) fn compare_reset_proximity_for_rotation_candidates(
     lhs_enabled: bool,
     lhs_reset: Option<i64>,
     rhs_enabled: bool,
@@ -69,7 +71,10 @@ fn compare_reset_proximity_for_rotation_candidates(
     }
 }
 
-fn compare_optional_reset_proximity(lhs: Option<i64>, rhs: Option<i64>) -> std::cmp::Ordering {
+pub(crate) fn compare_optional_reset_proximity(
+    lhs: Option<i64>,
+    rhs: Option<i64>,
+) -> std::cmp::Ordering {
     match (lhs, rhs) {
         (Some(left), Some(right)) => left.cmp(&right),
         (Some(_), None) => std::cmp::Ordering::Less,
@@ -78,13 +83,13 @@ fn compare_optional_reset_proximity(lhs: Option<i64>, rhs: Option<i64>) -> std::
     }
 }
 
-fn reset_proximity_secs(resets_at: Option<&str>, now: DateTime<Utc>) -> Option<i64> {
+pub(crate) fn reset_proximity_secs(resets_at: Option<&str>, now: DateTime<Utc>) -> Option<i64> {
     resets_at
         .and_then(parse_rfc3339_utc)
         .map(|reset| reset.signed_duration_since(now).num_seconds().abs())
 }
 
-fn build_pool_routing_candidate_score(
+pub(crate) fn build_pool_routing_candidate_score(
     candidate: &AccountRoutingCandidateRow,
     effective_rule: &EffectiveRoutingRule,
     eligibility: PoolRoutingCandidateEligibility,
@@ -120,11 +125,17 @@ fn build_pool_routing_candidate_score(
     }
 }
 
-fn pool_route_binding_penalty_key(upstream_route_key: &str, proxy_binding_key: &str) -> String {
+pub(crate) fn pool_route_binding_penalty_key(
+    upstream_route_key: &str,
+    proxy_binding_key: &str,
+) -> String {
     format!("{upstream_route_key}\n{proxy_binding_key}")
 }
 
-fn pool_route_binding_failure_is_penalized(status: &str, failure_kind: Option<&str>) -> bool {
+pub(crate) fn pool_route_binding_failure_is_penalized(
+    status: &str,
+    failure_kind: Option<&str>,
+) -> bool {
     status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
         && matches!(
             failure_kind,
@@ -134,7 +145,7 @@ fn pool_route_binding_failure_is_penalized(status: &str, failure_kind: Option<&s
         )
 }
 
-async fn load_recent_route_binding_failure_penalties(
+pub(crate) async fn load_recent_route_binding_failure_penalties(
     pool: &Pool<Sqlite>,
 ) -> Result<HashMap<String, i64>> {
     #[derive(Debug, FromRow)]
@@ -183,7 +194,7 @@ async fn load_recent_route_binding_failure_penalties(
     Ok(penalties)
 }
 
-async fn route_binding_keys_for_candidate_scope(
+pub(crate) async fn route_binding_keys_for_candidate_scope(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
 ) -> Vec<String> {
@@ -211,7 +222,7 @@ async fn route_binding_keys_for_candidate_scope(
     }
 }
 
-async fn route_binding_failure_penalty_for_account(
+pub(crate) async fn route_binding_failure_penalty_for_account(
     state: &AppState,
     account: &PoolResolvedAccount,
     penalties: &HashMap<String, i64>,
@@ -232,7 +243,7 @@ async fn route_binding_failure_penalty_for_account(
         .unwrap_or(0)
 }
 
-async fn build_assigned_blocked_account(
+pub(crate) async fn build_assigned_blocked_account(
     state: &AppState,
     row: &UpstreamAccountRow,
     effective_rule: &EffectiveRoutingRule,
@@ -255,7 +266,7 @@ async fn build_assigned_blocked_account(
     }))
 }
 
-async fn evaluate_live_pool_candidate(
+pub(crate) async fn evaluate_live_pool_candidate(
     state: &AppState,
     row: &UpstreamAccountRow,
     candidate: &AccountRoutingCandidateRow,
@@ -667,7 +678,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
     .await
 }
 
-async fn resolve_pool_account_for_request_with_route_requirement_internal(
+pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_internal(
     state: &AppState,
     sticky_key: Option<&str>,
     requested_model: Option<&str>,
@@ -704,21 +715,21 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
     };
     let sticky_source_id = sticky_route.as_ref().map(|route| route.account_id);
     let sticky_source_rule = if let Some(route) = sticky_route.as_ref() {
-        let mut rule = load_effective_routing_rule_for_account(&state.pool, route.account_id).await?;
+        let mut rule =
+            load_effective_routing_rule_for_account(&state.pool, route.account_id).await?;
         apply_conversation_routing_override(&mut rule, conversation_override);
         Some(rule)
     } else {
         None
     };
-    let sticky_cut_out_blocked_by_policy = match conversation_override
-        .and_then(|policy| policy.allow_switch_upstream)
-    {
-        Some(true) => false,
-        Some(false) => true,
-        None => sticky_source_rule
-            .as_ref()
-            .is_some_and(|rule| !rule.allow_cut_out),
-    };
+    let sticky_cut_out_blocked_by_policy =
+        match conversation_override.and_then(|policy| policy.allow_switch_upstream) {
+            Some(true) => false,
+            Some(false) => true,
+            None => sticky_source_rule
+                .as_ref()
+                .is_some_and(|rule| !rule.allow_cut_out),
+        };
     let forced_binding_account_id = match binding_constraint {
         Some(PromptCacheConversationBindingConstraint::UpstreamAccount(account_id)) => {
             Some(*account_id)
@@ -811,23 +822,21 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
             } else if sticky_source_transport_decode_escape {
                 saw_degraded_candidate = true;
             } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
-                    if sticky_source_rule.as_ref().is_none_or(|rule| {
-                        (bypass_requested_model_filter
-                            && !conversation_available_models_override)
-                            || account_accepts_requested_model(requested_model, rule)
-                    }) && account_accepts_requested_image_intent(
-                        image_intent,
-                        sticky_source_rule
-                            .as_ref()
-                            .map(|rule| rule.image_tool_rewrite_mode)
-                            .unwrap_or(ImageToolRewriteMode::KeepOriginal),
-                        crate::ImageToolCapability::from_str(
-                            row.image_tool_capability.as_deref().unwrap_or("unknown"),
-                        ),
-                    )
-                    {
-                        sticky_route_still_reusable = true;
-                        let mut sticky_route_was_excluded = false;
+                if sticky_source_rule.as_ref().is_none_or(|rule| {
+                    (bypass_requested_model_filter && !conversation_available_models_override)
+                        || account_accepts_requested_model(requested_model, rule)
+                }) && account_accepts_requested_image_intent(
+                    image_intent,
+                    sticky_source_rule
+                        .as_ref()
+                        .map(|rule| rule.image_tool_rewrite_mode)
+                        .unwrap_or(ImageToolRewriteMode::KeepOriginal),
+                    crate::ImageToolCapability::from_str(
+                        row.image_tool_capability.as_deref().unwrap_or("unknown"),
+                    ),
+                ) {
+                    sticky_route_still_reusable = true;
+                    let mut sticky_route_was_excluded = false;
                     let group_readiness = if row.bound_proxy_keys().is_empty() {
                         resolve_pool_account_group_proxy_routing_readiness(
                             state,
@@ -921,7 +930,8 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
                                     sticky_assigned_blocked = Some(assigned_blocked.clone());
                                 }
                                 if let Some(message) = evaluation.blocked_message {
-                                    sticky_route_group_proxy_blocked_message = Some(message.clone());
+                                    sticky_route_group_proxy_blocked_message =
+                                        Some(message.clone());
                                     group_proxy_blocked_messages.push(message);
                                 }
                             }
@@ -948,7 +958,8 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
                             }
                         }
                     }
-                    if !sticky_route_was_excluded && sticky_route_group_proxy_blocked_message.is_none()
+                    if !sticky_route_was_excluded
+                        && sticky_route_group_proxy_blocked_message.is_none()
                     {
                         if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
                             saw_degraded_candidate = true;

@@ -1,3 +1,5 @@
+use super::*;
+
 #[derive(Debug, Default)]
 pub(crate) struct RetentionRunSummary {
     pub(crate) dry_run: bool,
@@ -35,135 +37,135 @@ impl RetentionRunSummary {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ArchiveTableSpec {
-    dataset: &'static str,
-    columns: &'static str,
-    create_sql: &'static str,
+pub(crate) struct ArchiveTableSpec {
+    pub(crate) dataset: &'static str,
+    pub(crate) columns: &'static str,
+    pub(crate) create_sql: &'static str,
 }
 
 #[derive(Debug)]
-struct ArchiveBatchOutcome {
-    dataset: &'static str,
-    month_key: String,
-    day_key: Option<String>,
-    part_key: Option<String>,
-    file_path: String,
-    sha256: String,
-    row_count: i64,
-    upstream_last_activity: Vec<(i64, String)>,
-    coverage_start_at: Option<String>,
-    coverage_end_at: Option<String>,
-    archive_expires_at: Option<String>,
-    layout: &'static str,
-    codec: &'static str,
-    writer_version: &'static str,
-    cleanup_state: &'static str,
-    superseded_by: Option<i64>,
+pub(crate) struct ArchiveBatchOutcome {
+    pub(crate) dataset: &'static str,
+    pub(crate) month_key: String,
+    pub(crate) day_key: Option<String>,
+    pub(crate) part_key: Option<String>,
+    pub(crate) file_path: String,
+    pub(crate) sha256: String,
+    pub(crate) row_count: i64,
+    pub(crate) upstream_last_activity: Vec<(i64, String)>,
+    pub(crate) coverage_start_at: Option<String>,
+    pub(crate) coverage_end_at: Option<String>,
+    pub(crate) archive_expires_at: Option<String>,
+    pub(crate) layout: &'static str,
+    pub(crate) codec: &'static str,
+    pub(crate) writer_version: &'static str,
+    pub(crate) cleanup_state: &'static str,
+    pub(crate) superseded_by: Option<i64>,
 }
 
 #[derive(Debug, Default)]
-struct InvocationRollupDelta {
-    total_count: i64,
-    success_count: i64,
-    failure_count: i64,
-    total_tokens: i64,
-    total_cost: f64,
+pub(crate) struct InvocationRollupDelta {
+    pub(crate) total_count: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
 }
 
 #[derive(Debug, FromRow)]
-struct InvocationDetailPruneCandidate {
-    id: i64,
-    occurred_at: String,
-    request_raw_path: Option<String>,
-    response_raw_path: Option<String>,
+pub(crate) struct InvocationDetailPruneCandidate {
+    pub(crate) id: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) request_raw_path: Option<String>,
+    pub(crate) response_raw_path: Option<String>,
 }
 
 #[derive(Debug, FromRow, Clone)]
-struct InvocationArchiveCandidate {
-    id: i64,
-    occurred_at: String,
-    source: String,
-    status: Option<String>,
-    input_tokens: Option<i64>,
-    output_tokens: Option<i64>,
-    cache_input_tokens: Option<i64>,
-    total_tokens: Option<i64>,
-    cost: Option<f64>,
-    payload: Option<String>,
-    request_raw_path: Option<String>,
-    response_raw_path: Option<String>,
+pub(crate) struct InvocationArchiveCandidate {
+    pub(crate) id: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) source: String,
+    pub(crate) status: Option<String>,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) total_tokens: Option<i64>,
+    pub(crate) cost: Option<f64>,
+    pub(crate) payload: Option<String>,
+    pub(crate) request_raw_path: Option<String>,
+    pub(crate) response_raw_path: Option<String>,
 }
 
 #[derive(Debug, FromRow, Clone)]
-struct InvocationRawCompressionFieldCandidate {
-    id: i64,
-    occurred_at: String,
-    raw_path: String,
+pub(crate) struct InvocationRawCompressionFieldCandidate {
+    pub(crate) id: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) raw_path: String,
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct ArchiveBatchFileRow {
-    id: i64,
-    file_path: String,
-    coverage_start_at: Option<String>,
-    coverage_end_at: Option<String>,
+pub(crate) struct ArchiveBatchFileRow {
+    pub(crate) id: i64,
+    pub(crate) file_path: String,
+    pub(crate) coverage_start_at: Option<String>,
+    pub(crate) coverage_end_at: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
-struct InvocationBucketPresenceRow {
-    occurred_at: String,
-    source: String,
+pub(crate) struct InvocationBucketPresenceRow {
+    pub(crate) occurred_at: String,
+    pub(crate) source: String,
 }
 
 #[derive(Debug, FromRow)]
-struct ArchiveManifestBatchRow {
-    id: i64,
-    file_path: String,
+pub(crate) struct ArchiveManifestBatchRow {
+    pub(crate) id: i64,
+    pub(crate) file_path: String,
 }
 
 #[derive(Debug, FromRow)]
-struct ArchiveStorageManifestRow {
-    id: i64,
-    dataset: String,
-    layout: String,
-    file_path: String,
+pub(crate) struct ArchiveStorageManifestRow {
+    pub(crate) id: i64,
+    pub(crate) dataset: String,
+    pub(crate) layout: String,
+    pub(crate) file_path: String,
 }
 
 #[derive(Debug, Default)]
-struct ArchiveTempCleanupSummary {
-    stale_temp_files_removed: usize,
-    stale_temp_bytes_removed: u64,
+pub(crate) struct ArchiveTempCleanupSummary {
+    pub(crate) stale_temp_files_removed: usize,
+    pub(crate) stale_temp_bytes_removed: u64,
 }
 
 #[derive(Debug, Default)]
-struct ArchiveStorageVerificationSummary {
-    manifest_rows: usize,
-    missing_files: usize,
-    orphan_files: usize,
-    stale_temp_files: usize,
-    stale_temp_bytes: u64,
+pub(crate) struct ArchiveStorageVerificationSummary {
+    pub(crate) manifest_rows: usize,
+    pub(crate) missing_files: usize,
+    pub(crate) orphan_files: usize,
+    pub(crate) stale_temp_files: usize,
+    pub(crate) stale_temp_bytes: u64,
 }
 
 #[derive(Debug, Default)]
-struct ArchiveBatchPruneSummary {
-    expired_archive_batches_deleted: usize,
-    legacy_archive_batches_deleted: usize,
+pub(crate) struct ArchiveBatchPruneSummary {
+    pub(crate) expired_archive_batches_deleted: usize,
+    pub(crate) legacy_archive_batches_deleted: usize,
 }
 
 #[derive(Debug, FromRow)]
-struct RawCompressionBacklogAggRow {
-    uncompressed_count: i64,
-    uncompressed_bytes: Option<i64>,
-    oldest_occurred_at: Option<String>,
+pub(crate) struct RawCompressionBacklogAggRow {
+    pub(crate) uncompressed_count: i64,
+    pub(crate) uncompressed_bytes: Option<i64>,
+    pub(crate) oldest_occurred_at: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
-struct ArchivedAccountLastActivityRow {
-    account_id: i64,
-    last_activity_at: String,
+pub(crate) struct ArchivedAccountLastActivityRow {
+    pub(crate) account_id: i64,
+    pub(crate) last_activity_at: String,
 }
 
-fn dedupe_archive_upstream_last_activity(
+pub(crate) fn dedupe_archive_upstream_last_activity(
     values: impl IntoIterator<Item = (i64, String)>,
 ) -> Vec<(i64, String)> {
     let mut deduped = BTreeMap::<i64, String>::new();
@@ -181,33 +183,33 @@ fn dedupe_archive_upstream_last_activity(
 }
 
 #[derive(Debug, Default)]
-struct ArchiveBackfillSummary {
-    scanned_batches: u64,
-    updated_accounts: u64,
-    hit_budget: bool,
-    waiting_for_manifest_backfill: bool,
+pub(crate) struct ArchiveBackfillSummary {
+    pub(crate) scanned_batches: u64,
+    pub(crate) updated_accounts: u64,
+    pub(crate) hit_budget: bool,
+    pub(crate) waiting_for_manifest_backfill: bool,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Default)]
 pub(crate) struct HistoricalRollupMaterializationSummary {
-    scanned_archive_batches: usize,
-    skipped_archive_batches: usize,
-    materialized_archive_batches: usize,
-    blocked_archive_batches: usize,
-    materialized_bucket_count: usize,
-    materialized_invocation_batches: usize,
-    materialized_forward_proxy_batches: usize,
-    last_materialized_bucket_start_epoch: Option<i64>,
+    pub(crate) scanned_archive_batches: usize,
+    pub(crate) skipped_archive_batches: usize,
+    pub(crate) materialized_archive_batches: usize,
+    pub(crate) blocked_archive_batches: usize,
+    pub(crate) materialized_bucket_count: usize,
+    pub(crate) materialized_invocation_batches: usize,
+    pub(crate) materialized_forward_proxy_batches: usize,
+    pub(crate) last_materialized_bucket_start_epoch: Option<i64>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Default)]
 pub(crate) struct LegacyArchivePruneSummary {
-    scanned_archive_batches: usize,
-    deleted_archive_batches: usize,
-    skipped_unmaterialized_batches: usize,
-    skipped_retained_batches: usize,
+    pub(crate) scanned_archive_batches: usize,
+    pub(crate) deleted_archive_batches: usize,
+    pub(crate) skipped_unmaterialized_batches: usize,
+    pub(crate) skipped_retained_batches: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -226,26 +228,28 @@ pub(crate) struct HistoricalRollupBackfillSnapshot {
     pub(crate) alert_level: HistoricalRollupBackfillAlertLevel,
 }
 
-const HOURLY_ROLLUP_DATASET_INVOCATIONS: &str = "codex_invocations";
-const HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempts";
-const HOURLY_ROLLUP_TARGET_INVOCATIONS: &str = "invocation_rollup_hourly";
-const HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES: &str = "invocation_failure_rollup_hourly";
-const HOURLY_ROLLUP_TARGET_PROXY_PERF: &str = "proxy_perf_stage_hourly";
-const HOURLY_ROLLUP_TARGET_PROMPT_CACHE: &str = "prompt_cache_rollup_hourly";
-const HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS: &str =
+pub(crate) const HOURLY_ROLLUP_DATASET_INVOCATIONS: &str = "codex_invocations";
+pub(crate) const HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempts";
+pub(crate) const HOURLY_ROLLUP_TARGET_INVOCATIONS: &str = "invocation_rollup_hourly";
+pub(crate) const HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES: &str =
+    "invocation_failure_rollup_hourly";
+pub(crate) const HOURLY_ROLLUP_TARGET_PROXY_PERF: &str = "proxy_perf_stage_hourly";
+pub(crate) const HOURLY_ROLLUP_TARGET_PROMPT_CACHE: &str = "prompt_cache_rollup_hourly";
+pub(crate) const HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS: &str =
     "prompt_cache_upstream_account_hourly";
-const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE: &str = "upstream_account_usage_hourly";
-const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY: &str =
+pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE: &str =
+    "upstream_account_usage_hourly";
+pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY: &str =
     "upstream_account_stats_hourly";
-const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE: &str =
+pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE: &str =
     "upstream_account_stats_minute";
-const HOURLY_ROLLUP_TARGET_STICKY_KEYS: &str = "upstream_sticky_key_hourly";
-const HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempt_hourly";
-const HISTORICAL_ROLLUP_ARCHIVE_DATASETS: [&str; 2] = [
+pub(crate) const HOURLY_ROLLUP_TARGET_STICKY_KEYS: &str = "upstream_sticky_key_hourly";
+pub(crate) const HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempt_hourly";
+pub(crate) const HISTORICAL_ROLLUP_ARCHIVE_DATASETS: [&str; 2] = [
     HOURLY_ROLLUP_DATASET_INVOCATIONS,
     HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
 ];
-const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 9] = [
+pub(crate) const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 9] = [
     HOURLY_ROLLUP_TARGET_INVOCATIONS,
     HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
     HOURLY_ROLLUP_TARGET_PROXY_PERF,
@@ -256,60 +260,60 @@ const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 9] = [
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
     HOURLY_ROLLUP_TARGET_STICKY_KEYS,
 ];
-const PERF_STAGE_TOTAL: &str = "total";
-const PERF_STAGE_REQUEST_READ: &str = "requestRead";
-const PERF_STAGE_REQUEST_PARSE: &str = "requestParse";
-const PERF_STAGE_UPSTREAM_CONNECT: &str = "upstreamConnect";
-const PERF_STAGE_UPSTREAM_FIRST_BYTE: &str = "upstreamFirstByte";
-const PERF_STAGE_UPSTREAM_STREAM: &str = "upstreamStream";
-const PERF_STAGE_RESPONSE_PARSE: &str = "responseParse";
-const PERF_STAGE_PERSISTENCE: &str = "persistence";
-const HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE: &str = "";
+pub(crate) const PERF_STAGE_TOTAL: &str = "total";
+pub(crate) const PERF_STAGE_REQUEST_READ: &str = "requestRead";
+pub(crate) const PERF_STAGE_REQUEST_PARSE: &str = "requestParse";
+pub(crate) const PERF_STAGE_UPSTREAM_CONNECT: &str = "upstreamConnect";
+pub(crate) const PERF_STAGE_UPSTREAM_FIRST_BYTE: &str = "upstreamFirstByte";
+pub(crate) const PERF_STAGE_UPSTREAM_STREAM: &str = "upstreamStream";
+pub(crate) const PERF_STAGE_RESPONSE_PARSE: &str = "responseParse";
+pub(crate) const PERF_STAGE_PERSISTENCE: &str = "persistence";
+pub(crate) const HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE: &str = "";
 
 #[derive(Debug, Clone, FromRow)]
-struct InvocationHourlySourceRecord {
-    id: i64,
-    occurred_at: String,
-    source: String,
-    status: Option<String>,
-    detail_level: String,
-    input_tokens: Option<i64>,
-    output_tokens: Option<i64>,
-    cache_input_tokens: Option<i64>,
-    total_tokens: Option<i64>,
-    cost: Option<f64>,
-    error_message: Option<String>,
-    failure_kind: Option<String>,
-    failure_class: Option<String>,
-    is_actionable: Option<i64>,
-    payload: Option<String>,
-    t_total_ms: Option<f64>,
-    t_req_read_ms: Option<f64>,
-    t_req_parse_ms: Option<f64>,
-    t_upstream_connect_ms: Option<f64>,
-    t_upstream_ttfb_ms: Option<f64>,
-    t_upstream_stream_ms: Option<f64>,
-    t_resp_parse_ms: Option<f64>,
-    t_persist_ms: Option<f64>,
+pub(crate) struct InvocationHourlySourceRecord {
+    pub(crate) id: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) source: String,
+    pub(crate) status: Option<String>,
+    pub(crate) detail_level: String,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) total_tokens: Option<i64>,
+    pub(crate) cost: Option<f64>,
+    pub(crate) error_message: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) is_actionable: Option<i64>,
+    pub(crate) payload: Option<String>,
+    pub(crate) t_total_ms: Option<f64>,
+    pub(crate) t_req_read_ms: Option<f64>,
+    pub(crate) t_req_parse_ms: Option<f64>,
+    pub(crate) t_upstream_connect_ms: Option<f64>,
+    pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) t_upstream_stream_ms: Option<f64>,
+    pub(crate) t_resp_parse_ms: Option<f64>,
+    pub(crate) t_persist_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct ForwardProxyAttemptHourlySourceRecord {
-    id: i64,
-    proxy_key: String,
-    occurred_at: String,
-    is_success: i64,
-    latency_ms: Option<f64>,
+pub(crate) struct ForwardProxyAttemptHourlySourceRecord {
+    pub(crate) id: i64,
+    pub(crate) proxy_key: String,
+    pub(crate) occurred_at: String,
+    pub(crate) is_success: i64,
+    pub(crate) latency_ms: Option<f64>,
 }
 
 #[derive(Debug)]
-struct TempSqliteCleanup(PathBuf);
+pub(crate) struct TempSqliteCleanup(pub PathBuf);
 
-fn temp_sqlite_source_meta_path(path: &Path) -> PathBuf {
+pub(crate) fn temp_sqlite_source_meta_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.source-meta", path.display()))
 }
 
-fn remove_temp_sqlite_artifacts(path: &Path) {
+pub(crate) fn remove_temp_sqlite_artifacts(path: &Path) {
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(temp_sqlite_source_meta_path(path));
 }
@@ -320,21 +324,21 @@ impl Drop for TempSqliteCleanup {
     }
 }
 
-fn sqlite_url_for_path(path: &Path) -> String {
+pub(crate) fn sqlite_url_for_path(path: &Path) -> String {
     format!("sqlite://{}", path.to_string_lossy())
 }
 
 #[derive(Debug, Default)]
-struct RawCompressionPassSummary {
-    files_considered: usize,
-    files_compressed: usize,
-    bytes_before: u64,
-    bytes_after: u64,
-    estimated_bytes_after: u64,
+pub(crate) struct RawCompressionPassSummary {
+    pub(crate) files_considered: usize,
+    pub(crate) files_compressed: usize,
+    pub(crate) bytes_before: u64,
+    pub(crate) bytes_after: u64,
+    pub(crate) estimated_bytes_after: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RawPayloadField {
+pub(crate) enum RawPayloadField {
     Request,
     Response,
 }
@@ -360,28 +364,28 @@ impl RawPayloadField {
 }
 
 #[derive(Debug, Default)]
-struct RawCompressionFileOutcome {
-    candidate_counted: bool,
-    compressed: bool,
-    bytes_before: u64,
-    bytes_after: u64,
-    estimated_bytes_after: u64,
-    new_db_path: Option<String>,
-    new_codec: Option<String>,
-    old_exact_path: Option<PathBuf>,
+pub(crate) struct RawCompressionFileOutcome {
+    pub(crate) candidate_counted: bool,
+    pub(crate) compressed: bool,
+    pub(crate) bytes_before: u64,
+    pub(crate) bytes_after: u64,
+    pub(crate) estimated_bytes_after: u64,
+    pub(crate) new_db_path: Option<String>,
+    pub(crate) new_codec: Option<String>,
+    pub(crate) old_exact_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Default)]
-struct RawCompressionBacklogSnapshot {
-    oldest_uncompressed_age_secs: u64,
-    uncompressed_count: u64,
-    uncompressed_bytes: u64,
-    alert_level: RawCompressionAlertLevel,
+pub(crate) struct RawCompressionBacklogSnapshot {
+    pub(crate) oldest_uncompressed_age_secs: u64,
+    pub(crate) uncompressed_count: u64,
+    pub(crate) uncompressed_bytes: u64,
+    pub(crate) alert_level: RawCompressionAlertLevel,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-enum RawCompressionAlertLevel {
+pub(crate) enum RawCompressionAlertLevel {
     #[default]
     Ok,
     Warn,
@@ -390,16 +394,16 @@ enum RawCompressionAlertLevel {
 
 #[allow(dead_code)]
 #[derive(Debug, Default)]
-struct ArchiveManifestRefreshSummary {
-    pending_batches: usize,
-    refreshed_batches: usize,
-    account_rows_written: usize,
-    missing_files: usize,
+pub(crate) struct ArchiveManifestRefreshSummary {
+    pub(crate) pending_batches: usize,
+    pub(crate) refreshed_batches: usize,
+    pub(crate) account_rows_written: usize,
+    pub(crate) missing_files: usize,
 }
 
-struct CountingWriter<W> {
-    inner: W,
-    bytes_written: u64,
+pub(crate) struct CountingWriter<W> {
+    pub(crate) inner: W,
+    pub(crate) bytes_written: u64,
 }
 
 impl<W> CountingWriter<W> {
@@ -428,25 +432,25 @@ impl<W: Write> Write for CountingWriter<W> {
 }
 
 #[derive(Debug, FromRow, Clone)]
-struct TimestampedArchiveCandidate {
-    id: i64,
-    timestamp_value: String,
+pub(crate) struct TimestampedArchiveCandidate {
+    pub(crate) id: i64,
+    pub(crate) timestamp_value: String,
 }
 
 #[derive(Debug, FromRow)]
-struct DryRunBatchCount {
-    month_key: String,
-    row_count: i64,
+pub(crate) struct DryRunBatchCount {
+    pub(crate) month_key: String,
+    pub(crate) row_count: i64,
 }
 
-const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_codec, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
-const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
+pub(crate) const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_codec, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
+pub(crate) const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
     "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
-const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, group_name_snapshot, proxy_binding_key_snapshot, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, phase, http_status, downstream_http_status, failure_kind, error_message, downstream_error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, compact_support_status, compact_support_reason, created_at";
-const STATS_SOURCE_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, source, period, stats_date, model, requests, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, all_tokens, cost_input, cost_output, cost_cache_write, cost_cache_read, cost_total, raw_response, captured_at, captured_at_epoch, created_at";
-const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, captured_at, amount_limit, used_amount, remaining_amount, period, period_reset_time, expire_time, is_active, total_cost, total_requests, total_tokens, last_request_time, billing_type, remaining_count, used_count, sub_type_name";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, group_name_snapshot, proxy_binding_key_snapshot, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, phase, http_status, downstream_http_status, failure_kind, error_message, downstream_error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, compact_support_status, compact_support_reason, created_at";
+pub(crate) const STATS_SOURCE_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, source, period, stats_date, model, requests, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, all_tokens, cost_input, cost_output, cost_cache_write, cost_cache_read, cost_total, raw_response, captured_at, captured_at_epoch, created_at";
+pub(crate) const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, captured_at, amount_limit, used_amount, remaining_amount, period, period_reset_time, expire_time, is_active, total_cost, total_requests, total_tokens, last_request_time, billing_type, remaining_count, used_count, sub_type_name";
 
-const CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL: &str = r#"
+pub(crate) const CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS archive_db.codex_invocations (
     id INTEGER PRIMARY KEY,
     invoke_id TEXT NOT NULL,
@@ -494,7 +498,7 @@ CREATE TABLE IF NOT EXISTS archive_db.codex_invocations (
 )
 "#;
 
-const FORWARD_PROXY_ATTEMPTS_ARCHIVE_CREATE_SQL: &str = r#"
+pub(crate) const FORWARD_PROXY_ATTEMPTS_ARCHIVE_CREATE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS archive_db.forward_proxy_attempts (
     id INTEGER PRIMARY KEY,
     proxy_key TEXT NOT NULL,
@@ -506,7 +510,7 @@ CREATE TABLE IF NOT EXISTS archive_db.forward_proxy_attempts (
 )
 "#;
 
-const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL: &str = r#"
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS archive_db.pool_upstream_request_attempts (
     id INTEGER PRIMARY KEY,
     invoke_id TEXT NOT NULL,
@@ -541,7 +545,7 @@ CREATE TABLE IF NOT EXISTS archive_db.pool_upstream_request_attempts (
 )
 "#;
 
-const STATS_SOURCE_SNAPSHOTS_ARCHIVE_CREATE_SQL: &str = r#"
+pub(crate) const STATS_SOURCE_SNAPSHOTS_ARCHIVE_CREATE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS archive_db.stats_source_snapshots (
     id INTEGER PRIMARY KEY,
     source TEXT NOT NULL,
@@ -567,7 +571,7 @@ CREATE TABLE IF NOT EXISTS archive_db.stats_source_snapshots (
 )
 "#;
 
-const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_CREATE_SQL: &str = r#"
+pub(crate) const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_CREATE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS archive_db.codex_quota_snapshots (
     id INTEGER PRIMARY KEY,
     captured_at TEXT NOT NULL,
@@ -589,7 +593,7 @@ CREATE TABLE IF NOT EXISTS archive_db.codex_quota_snapshots (
 )
 "#;
 
-fn archive_table_spec(dataset: &'static str) -> ArchiveTableSpec {
+pub(crate) fn archive_table_spec(dataset: &'static str) -> ArchiveTableSpec {
     match dataset {
         "codex_invocations" => ArchiveTableSpec {
             dataset,
@@ -620,7 +624,7 @@ fn archive_table_spec(dataset: &'static str) -> ArchiveTableSpec {
     }
 }
 
-fn spawn_data_retention_maintenance(
+pub(crate) fn spawn_data_retention_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
@@ -677,7 +681,7 @@ fn spawn_data_retention_maintenance(
     })
 }
 
-async fn run_data_retention_maintenance_best_effort(
+pub(crate) async fn run_data_retention_maintenance_best_effort(
     state: &Arc<AppState>,
     cancel: &CancellationToken,
     rollup_refresh_reason: &'static str,
@@ -760,7 +764,7 @@ async fn run_data_retention_maintenance_best_effort(
     true
 }
 
-fn should_stop_data_retention_maintenance(shutdown: Option<&CancellationToken>) -> bool {
+pub(crate) fn should_stop_data_retention_maintenance(shutdown: Option<&CancellationToken>) -> bool {
     let should_stop = shutdown.is_some_and(CancellationToken::is_cancelled);
     if should_stop {
         info!(
@@ -770,7 +774,7 @@ fn should_stop_data_retention_maintenance(shutdown: Option<&CancellationToken>) 
     should_stop
 }
 
-async fn run_data_retention_maintenance(
+pub(crate) async fn run_data_retention_maintenance(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     dry_run_override: Option<bool>,
@@ -922,7 +926,7 @@ async fn run_data_retention_maintenance(
     Ok(summary)
 }
 
-async fn run_best_effort_retention_pragma(
+pub(crate) async fn run_best_effort_retention_pragma(
     pool: &Pool<Sqlite>,
     sql: &str,
     description: &'static str,
@@ -941,7 +945,7 @@ async fn run_best_effort_retention_pragma(
     }
 }
 
-async fn compress_cold_proxy_raw_payloads(
+pub(crate) async fn compress_cold_proxy_raw_payloads(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     raw_path_fallback_root: Option<&Path>,
@@ -957,7 +961,7 @@ async fn compress_cold_proxy_raw_payloads(
     .await
 }
 
-async fn compress_cold_proxy_raw_payloads_with_budget(
+pub(crate) async fn compress_cold_proxy_raw_payloads_with_budget(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     raw_path_fallback_root: Option<&Path>,
@@ -1015,7 +1019,7 @@ async fn compress_cold_proxy_raw_payloads_with_budget(
     Ok(summary)
 }
 
-fn accumulate_raw_compression_summary(
+pub(crate) fn accumulate_raw_compression_summary(
     target: &mut RawCompressionPassSummary,
     next: RawCompressionPassSummary,
 ) {
@@ -1026,7 +1030,7 @@ fn accumulate_raw_compression_summary(
     target.estimated_bytes_after += next.estimated_bytes_after;
 }
 
-async fn compress_cold_proxy_raw_payload_lane(
+pub(crate) async fn compress_cold_proxy_raw_payload_lane(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     raw_path_fallback_root: Option<&Path>,
@@ -1167,7 +1171,7 @@ async fn compress_cold_proxy_raw_payload_lane(
     Ok((summary, hit_batch_limit))
 }
 
-async fn maybe_compress_proxy_raw_path(
+pub(crate) async fn maybe_compress_proxy_raw_path(
     _pool: &Pool<Sqlite>,
     invocation_id: i64,
     field_name: &str,
@@ -1253,7 +1257,7 @@ async fn maybe_compress_proxy_raw_path(
     })
 }
 
-fn compress_file_to_gzip(source: &Path, destination: &Path) -> Result<u64> {
+pub(crate) fn compress_file_to_gzip(source: &Path, destination: &Path) -> Result<u64> {
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -1313,7 +1317,7 @@ fn compress_file_to_gzip(source: &Path, destination: &Path) -> Result<u64> {
     result
 }
 
-fn estimate_gzip_file_size(source: &Path) -> Result<u64> {
+pub(crate) fn estimate_gzip_file_size(source: &Path) -> Result<u64> {
     let input = fs::File::open(source)
         .with_context(|| format!("failed to open raw payload {}", source.display()))?;
     let mut reader = io::BufReader::new(input);
@@ -1334,7 +1338,7 @@ fn estimate_gzip_file_size(source: &Path) -> Result<u64> {
     Ok(counting_writer.bytes_written())
 }
 
-fn raw_payload_compressed_db_path(raw_path: &str) -> String {
+pub(crate) fn raw_payload_compressed_db_path(raw_path: &str) -> String {
     if raw_path.ends_with(".gz") {
         raw_path.to_string()
     } else {
@@ -1342,28 +1346,31 @@ fn raw_payload_compressed_db_path(raw_path: &str) -> String {
     }
 }
 
-fn raw_codec_from_path(raw_path: Option<&str>) -> String {
+pub(crate) fn raw_codec_from_path(raw_path: Option<&str>) -> String {
     match raw_path {
         Some(path) if path.ends_with(".gz") => RAW_CODEC_GZIP.to_string(),
         _ => RAW_CODEC_IDENTITY.to_string(),
     }
 }
 
-fn raw_codec_is_identity(raw_codec: Option<&str>) -> bool {
+pub(crate) fn raw_codec_is_identity(raw_codec: Option<&str>) -> bool {
     matches!(raw_codec, Some(RAW_CODEC_IDENTITY) | None)
 }
 
-fn raw_payload_compressed_file_path(path: &Path) -> PathBuf {
+pub(crate) fn raw_payload_compressed_file_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.gz", path.display()))
 }
 
-fn locate_existing_proxy_raw_path(path: &str, fallback_root: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn locate_existing_proxy_raw_path(
+    path: &str,
+    fallback_root: Option<&Path>,
+) -> Option<PathBuf> {
     resolved_raw_path_candidates(path, fallback_root)
         .into_iter()
         .find(|candidate| candidate.exists())
 }
 
-fn locate_existing_proxy_raw_compressed_path(
+pub(crate) fn locate_existing_proxy_raw_compressed_path(
     path: &str,
     fallback_root: Option<&Path>,
 ) -> Option<PathBuf> {
@@ -1372,7 +1379,7 @@ fn locate_existing_proxy_raw_compressed_path(
         .find(|candidate| candidate.exists())
 }
 
-fn delete_exact_proxy_raw_path(
+pub(crate) fn delete_exact_proxy_raw_path(
     raw_path: Option<&Path>,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<()> {
@@ -1397,7 +1404,7 @@ fn delete_exact_proxy_raw_path(
     Ok(())
 }
 
-async fn prune_old_invocation_details(
+pub(crate) async fn prune_old_invocation_details(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     raw_path_fallback_root: Option<&Path>,
@@ -1558,7 +1565,7 @@ async fn prune_old_invocation_details(
     Ok((rows_pruned, archive_batches, raw_files_removed))
 }
 
-async fn archive_old_invocations(
+pub(crate) async fn archive_old_invocations(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     raw_path_fallback_root: Option<&Path>,
@@ -1751,7 +1758,7 @@ async fn archive_old_invocations(
     Ok((rows_archived, archive_batches, raw_files_removed))
 }
 
-async fn archive_timestamped_dataset(
+pub(crate) async fn archive_timestamped_dataset(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     spec: ArchiveTableSpec,
@@ -1842,20 +1849,17 @@ async fn archive_timestamped_dataset(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
-            let recreated_pool_upstream_month_archive =
-                if spec.dataset == "pool_upstream_request_attempts" {
-                    let archive_file_path =
-                        archive_batch_file_path(config, spec.dataset, &month_key)?
-                            .to_string_lossy()
-                            .to_string();
-                    pool_upstream_month_archive_reappeared_after_cleanup(
-                        pool,
-                        &archive_file_path,
-                    )
+            let recreated_pool_upstream_month_archive = if spec.dataset
+                == "pool_upstream_request_attempts"
+            {
+                let archive_file_path = archive_batch_file_path(config, spec.dataset, &month_key)?
+                    .to_string_lossy()
+                    .to_string();
+                pool_upstream_month_archive_reappeared_after_cleanup(pool, &archive_file_path)
                     .await?
-                } else {
-                    false
-                };
+            } else {
+                false
+            };
             let materialized_forward_proxy_rows = if spec.dataset == "forward_proxy_attempts" {
                 group
                     .iter()
@@ -1883,12 +1887,11 @@ async fn archive_timestamped_dataset(
                 if recreated_pool_upstream_month_archive
                     && archive_outcome.row_count == ids.len() as i64
                 {
-                    archive_outcome.archive_expires_at = Some(
-                        shanghai_archive_expiry_from_reference_timestamp(
+                    archive_outcome.archive_expires_at =
+                        Some(shanghai_archive_expiry_from_reference_timestamp(
                             &format_utc_iso(Utc::now()),
                             config.pool_upstream_request_attempts_archive_ttl_days,
-                        )?,
-                    );
+                        )?);
                 }
             } else {
                 set_archive_batch_coverage_from_utc_rows(
@@ -1908,7 +1911,8 @@ async fn archive_timestamped_dataset(
                     &archive_outcome.file_path,
                 )
                 .await?;
-                let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
+                let archive_file_contains_only_new_rows =
+                    archive_outcome.row_count == ids.len() as i64;
                 let node_health_archive_already_replayed = hourly_rollup_archive_replayed_tx(
                     tx.as_mut(),
                     POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
@@ -1916,13 +1920,14 @@ async fn archive_timestamped_dataset(
                     &archive_outcome.file_path,
                 )
                 .await?;
-                let node_health_hourly_archive_already_replayed = hourly_rollup_archive_replayed_tx(
-                    tx.as_mut(),
-                    POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
-                    spec.dataset,
-                    &archive_outcome.file_path,
-                )
-                .await?;
+                let node_health_hourly_archive_already_replayed =
+                    hourly_rollup_archive_replayed_tx(
+                        tx.as_mut(),
+                        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+                        spec.dataset,
+                        &archive_outcome.file_path,
+                    )
+                    .await?;
                 cache_pool_upstream_node_health_archive_rows_from_live_ids_tx(
                     tx.as_mut(),
                     &archive_outcome.file_path,
@@ -1935,7 +1940,9 @@ async fn archive_timestamped_dataset(
                     &archive_outcome.file_path,
                 )
                 .await?;
-                if archive_file_contains_only_new_rows || node_health_hourly_archive_already_replayed {
+                if archive_file_contains_only_new_rows
+                    || node_health_hourly_archive_already_replayed
+                {
                     mark_hourly_rollup_archive_replayed_tx(
                         tx.as_mut(),
                         POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
@@ -2022,14 +2029,17 @@ async fn archive_timestamped_dataset(
     Ok((rows_archived, archive_batches))
 }
 
-fn archive_timestamped_dataset_month_key(dataset: &str, timestamp_value: &str) -> Result<String> {
+pub(crate) fn archive_timestamped_dataset_month_key(
+    dataset: &str,
+    timestamp_value: &str,
+) -> Result<String> {
     match dataset {
         "pool_upstream_request_attempts" => shanghai_month_key_from_local_naive(timestamp_value),
         _ => shanghai_month_key_from_utc_naive(timestamp_value),
     }
 }
 
-fn set_archive_batch_coverage_from_local_rows<'a>(
+pub(crate) fn set_archive_batch_coverage_from_local_rows<'a>(
     batch: &mut ArchiveBatchOutcome,
     rows: impl Iterator<Item = &'a str>,
     archive_ttl_days: Option<u64>,
@@ -2051,7 +2061,7 @@ fn set_archive_batch_coverage_from_local_rows<'a>(
     Ok(())
 }
 
-async fn pool_upstream_month_archive_reappeared_after_cleanup(
+pub(crate) async fn pool_upstream_month_archive_reappeared_after_cleanup(
     pool: &Pool<Sqlite>,
     archive_file_path: &str,
 ) -> Result<bool> {
@@ -2084,7 +2094,7 @@ async fn pool_upstream_month_archive_reappeared_after_cleanup(
     Ok(existing_hourly_rows > 0)
 }
 
-fn set_archive_batch_coverage_from_utc_rows<'a>(
+pub(crate) fn set_archive_batch_coverage_from_utc_rows<'a>(
     batch: &mut ArchiveBatchOutcome,
     rows: impl Iterator<Item = &'a str>,
 ) -> Result<()> {
@@ -2100,7 +2110,7 @@ fn set_archive_batch_coverage_from_utc_rows<'a>(
     Ok(())
 }
 
-fn shanghai_archive_expiry_from_local_timestamp(
+pub(crate) fn shanghai_archive_expiry_from_local_timestamp(
     value: &str,
     archive_ttl_days: u64,
 ) -> Result<String> {
@@ -2108,7 +2118,7 @@ fn shanghai_archive_expiry_from_local_timestamp(
     shanghai_archive_expiry_from_local_naive(local, archive_ttl_days)
 }
 
-fn shanghai_archive_expiry_from_reference_timestamp(
+pub(crate) fn shanghai_archive_expiry_from_reference_timestamp(
     value: &str,
     archive_ttl_days: u64,
 ) -> Result<String> {
@@ -2119,7 +2129,7 @@ fn shanghai_archive_expiry_from_reference_timestamp(
     shanghai_archive_expiry_from_local_naive(local, archive_ttl_days)
 }
 
-fn shanghai_archive_expiry_from_local_naive(
+pub(crate) fn shanghai_archive_expiry_from_local_naive(
     local: NaiveDateTime,
     archive_ttl_days: u64,
 ) -> Result<String> {
@@ -2129,7 +2139,7 @@ fn shanghai_archive_expiry_from_local_naive(
 }
 
 #[derive(Debug, FromRow)]
-struct ArchiveExpiryBackfillCandidate {
-    id: i64,
-    coverage_end_at: String,
+pub(crate) struct ArchiveExpiryBackfillCandidate {
+    pub(crate) id: i64,
+    pub(crate) coverage_end_at: String,
 }

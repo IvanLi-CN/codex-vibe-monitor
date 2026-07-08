@@ -1,3 +1,5 @@
+use super::*;
+
 #[derive(Debug, Clone)]
 pub(crate) struct SelectedForwardProxy {
     pub(crate) key: String,
@@ -1379,14 +1381,9 @@ mod tests {
             egress_ip: None,
         };
 
-        persist_forward_proxy_egress_ip_result(
-            &pool,
-            &selected_proxy,
-            Some("203.0.113.24"),
-            None,
-        )
-        .await
-        .expect("persist successful egress IP");
+        persist_forward_proxy_egress_ip_result(&pool, &selected_proxy, Some("203.0.113.24"), None)
+            .await
+            .expect("persist successful egress IP");
         persist_forward_proxy_egress_ip_result(
             &pool,
             &selected_proxy,
@@ -1535,10 +1532,7 @@ mod tests {
             accumulator.failed_targets(),
             vec![FORWARD_PROXY_LATENCY_TARGET_CODEX_RESPONSES]
         );
-        assert_eq!(
-            codex_responses.error.as_deref(),
-            Some("responses timeout")
-        );
+        assert_eq!(codex_responses.error.as_deref(), Some("responses timeout"));
     }
 
     #[test]
@@ -1661,25 +1655,24 @@ mod tests {
             http_status: Some(405),
             error: None,
         };
-        let (_, _, displayed_codex_responses) =
-            accumulated_forward_proxy_latency_target_results(
-                &accumulator,
-                &ForwardProxyLatencyProbeTargetResult {
-                    ok: true,
-                    latency_ms: Some(94.0),
-                    ip: Some("203.0.113.24".to_string()),
-                    http_status: None,
-                    error: None,
-                },
-                &ForwardProxyLatencyProbeTargetResult {
-                    ok: true,
-                    latency_ms: Some(138.0),
-                    ip: None,
-                    http_status: Some(401),
-                    error: None,
-                },
-                &current_success,
-            );
+        let (_, _, displayed_codex_responses) = accumulated_forward_proxy_latency_target_results(
+            &accumulator,
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(94.0),
+                ip: Some("203.0.113.24".to_string()),
+                http_status: None,
+                error: None,
+            },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(138.0),
+                ip: None,
+                http_status: Some(401),
+                error: None,
+            },
+            &current_success,
+        );
         assert!(!displayed_codex_responses.ok);
         assert_eq!(
             displayed_codex_responses.error.as_deref(),

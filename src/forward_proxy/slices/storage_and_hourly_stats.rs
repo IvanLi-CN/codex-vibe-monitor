@@ -1,20 +1,19 @@
-use crate::stats::*;
-use crate::*;
+use super::*;
 
-const FORWARD_PROXY_EGRESS_IP_PROVIDER: &str = "ipify";
-const FORWARD_PROXY_EGRESS_IP_ENDPOINT: &str = "https://api.ipify.org?format=json";
-const FORWARD_PROXY_EGRESS_IP_REFRESH_INTERVAL_SECS: i64 = 600;
-const FORWARD_PROXY_EGRESS_IP_TIMEOUT_SECS: u64 = 5;
-const FORWARD_PROXY_MANUAL_LATENCY_TEST_ROUNDS: usize = 5;
-const FORWARD_PROXY_MANUAL_LATENCY_ROUND_TIMEOUT_SECS: u64 = 5;
-const FORWARD_PROXY_MANUAL_LATENCY_SINGLE_TIMEOUT_SECS: u64 = 15;
-const FORWARD_PROXY_MANUAL_LATENCY_TARGET_COUNT: usize = 3;
-const FORWARD_PROXY_LATENCY_TARGET_EGRESS_IP: &str = "egressIp";
-const FORWARD_PROXY_LATENCY_TARGET_OAUTH_UPSTREAM: &str = "oauthUpstream";
-const FORWARD_PROXY_LATENCY_TARGET_CODEX_RESPONSES: &str = "codexResponses";
+pub(crate) const FORWARD_PROXY_EGRESS_IP_PROVIDER: &str = "ipify";
+pub(crate) const FORWARD_PROXY_EGRESS_IP_ENDPOINT: &str = "https://api.ipify.org?format=json";
+pub(crate) const FORWARD_PROXY_EGRESS_IP_REFRESH_INTERVAL_SECS: i64 = 600;
+pub(crate) const FORWARD_PROXY_EGRESS_IP_TIMEOUT_SECS: u64 = 5;
+pub(crate) const FORWARD_PROXY_MANUAL_LATENCY_TEST_ROUNDS: usize = 5;
+pub(crate) const FORWARD_PROXY_MANUAL_LATENCY_ROUND_TIMEOUT_SECS: u64 = 5;
+pub(crate) const FORWARD_PROXY_MANUAL_LATENCY_SINGLE_TIMEOUT_SECS: u64 = 15;
+pub(crate) const FORWARD_PROXY_MANUAL_LATENCY_TARGET_COUNT: usize = 3;
+pub(crate) const FORWARD_PROXY_LATENCY_TARGET_EGRESS_IP: &str = "egressIp";
+pub(crate) const FORWARD_PROXY_LATENCY_TARGET_OAUTH_UPSTREAM: &str = "oauthUpstream";
+pub(crate) const FORWARD_PROXY_LATENCY_TARGET_CODEX_RESPONSES: &str = "codexResponses";
 
 #[derive(Debug, FromRow)]
-struct PoolUpstreamBindingWindowStatsRow {
+pub(crate) struct PoolUpstreamBindingWindowStatsRow {
     proxy_binding_key_snapshot: String,
     attempts: i64,
     success_count: i64,
@@ -23,7 +22,7 @@ struct PoolUpstreamBindingWindowStatsRow {
 }
 
 #[derive(Debug, FromRow)]
-struct PoolUpstreamBindingHourlyStatsRow {
+pub(crate) struct PoolUpstreamBindingHourlyStatsRow {
     proxy_binding_key_snapshot: String,
     bucket_start_epoch: i64,
     success_count: i64,
@@ -31,7 +30,7 @@ struct PoolUpstreamBindingHourlyStatsRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct PendingPoolUpstreamBindingAttemptRow {
+pub(crate) struct PendingPoolUpstreamBindingAttemptRow {
     proxy_binding_key_snapshot: String,
     occurred_at: String,
     bucket_start_epoch: i64,
@@ -64,7 +63,7 @@ pub(crate) struct ForwardProxyKeyAliasRow {
     pub(crate) endpoint_url: Option<String>,
 }
 
-const POOL_UPSTREAM_BINDING_BUCKET_START_EPOCH_SQL: &str = r#"
+pub(crate) const POOL_UPSTREAM_BINDING_BUCKET_START_EPOCH_SQL: &str = r#"
     ((CASE
         WHEN instr(occurred_at, 'T') > 0
             THEN CAST(strftime('%s', occurred_at) AS INTEGER)
@@ -72,10 +71,10 @@ const POOL_UPSTREAM_BINDING_BUCKET_START_EPOCH_SQL: &str = r#"
     END) / 3600) * 3600
 "#;
 
-const POOL_UPSTREAM_BINDING_SUCCESS_LATENCY_SQL: &str =
+pub(crate) const POOL_UPSTREAM_BINDING_SUCCESS_LATENCY_SQL: &str =
     "COALESCE(first_byte_latency_ms, connect_latency_ms, stream_latency_ms)";
-const POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS: i64 = 3600;
-fn ceil_hour_epoch(epoch: i64) -> i64 {
+pub(crate) const POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS: i64 = 3600;
+pub(crate) fn ceil_hour_epoch(epoch: i64) -> i64 {
     let floor = align_bucket_epoch(epoch, POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS, 0);
     if floor < epoch {
         floor + POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS
@@ -313,7 +312,7 @@ pub(crate) async fn load_forward_proxy_metadata_history(
         .collect())
 }
 
-fn forward_proxy_egress_ip_is_fresh(checked_at: Option<&str>) -> bool {
+pub(crate) fn forward_proxy_egress_ip_is_fresh(checked_at: Option<&str>) -> bool {
     checked_at
         .and_then(|raw| {
             DateTime::parse_from_rfc3339(raw)
@@ -325,7 +324,7 @@ fn forward_proxy_egress_ip_is_fresh(checked_at: Option<&str>) -> bool {
         })
 }
 
-async fn persist_forward_proxy_egress_ip_result(
+pub(crate) async fn persist_forward_proxy_egress_ip_result(
     pool: &Pool<Sqlite>,
     selected_proxy: &SelectedForwardProxy,
     egress_ip: Option<&str>,
@@ -362,12 +361,12 @@ async fn persist_forward_proxy_egress_ip_result(
     .bind(&selected_proxy.key)
     .bind(&selected_proxy.display_name)
     .bind(&selected_proxy.source)
-    .bind(selected_proxy.endpoint_url_raw.as_deref().or_else(|| {
+    .bind(
         selected_proxy
-            .endpoint_url
-            .as_ref()
-            .map(|url| url.as_str())
-    }))
+            .endpoint_url_raw
+            .as_deref()
+            .or_else(|| selected_proxy.endpoint_url.as_ref().map(|url| url.as_str())),
+    )
     .bind(egress_ip)
     .bind(FORWARD_PROXY_EGRESS_IP_PROVIDER)
     .bind(&now_iso)
@@ -384,14 +383,17 @@ async fn persist_forward_proxy_egress_ip_result(
     Ok(())
 }
 
-async fn fetch_forward_proxy_egress_ip(
+pub(crate) async fn fetch_forward_proxy_egress_ip(
     client: &Client,
     request_timeout: Duration,
 ) -> Result<String> {
-    let response = timeout(request_timeout, client.get(FORWARD_PROXY_EGRESS_IP_ENDPOINT).send())
-        .await
-        .map_err(|_| anyhow!("egress IP metadata request timed out"))?
-        .context("failed to request egress IP metadata")?;
+    let response = timeout(
+        request_timeout,
+        client.get(FORWARD_PROXY_EGRESS_IP_ENDPOINT).send(),
+    )
+    .await
+    .map_err(|_| anyhow!("egress IP metadata request timed out"))?
+    .context("failed to request egress IP metadata")?;
     if !response.status().is_success() {
         bail!("egress IP metadata endpoint returned {}", response.status());
     }
@@ -415,9 +417,10 @@ pub(crate) async fn refresh_forward_proxy_egress_ip_if_stale(
     state: &AppState,
     selected_proxy: &SelectedForwardProxy,
 ) -> Result<Option<String>> {
-    let existing = load_forward_proxy_metadata_history(&state.pool, std::slice::from_ref(&selected_proxy.key))
-        .await?
-        .remove(&selected_proxy.key);
+    let existing =
+        load_forward_proxy_metadata_history(&state.pool, std::slice::from_ref(&selected_proxy.key))
+            .await?
+            .remove(&selected_proxy.key);
     if let Some(row) = existing.as_ref()
         && forward_proxy_egress_ip_is_fresh(row.egress_ip_checked_at.as_deref())
     {
@@ -462,13 +465,15 @@ pub(crate) async fn load_forward_proxy_egress_ip_snapshot(
     state: &AppState,
     selected_proxy: &SelectedForwardProxy,
 ) -> Result<Option<String>> {
-    Ok(load_forward_proxy_metadata_history(&state.pool, std::slice::from_ref(&selected_proxy.key))
-        .await?
-        .remove(&selected_proxy.key)
-        .and_then(|row| row.egress_ip))
+    Ok(
+        load_forward_proxy_metadata_history(&state.pool, std::slice::from_ref(&selected_proxy.key))
+            .await?
+            .remove(&selected_proxy.key)
+            .and_then(|row| row.egress_ip),
+    )
 }
 
-fn is_missing_forward_proxy_metadata_history_table(err: &sqlx::Error) -> bool {
+pub(crate) fn is_missing_forward_proxy_metadata_history_table(err: &sqlx::Error) -> bool {
     let sqlx::Error::Database(db_err) = err else {
         return false;
     };
@@ -476,7 +481,10 @@ fn is_missing_forward_proxy_metadata_history_table(err: &sqlx::Error) -> bool {
     message.contains("no such table") && message.contains("forward_proxy_metadata_history")
 }
 
-fn register_forward_proxy_storage_aliases(alias_map: &mut HashMap<String, String>, raw: &str) {
+pub(crate) fn register_forward_proxy_storage_aliases(
+    alias_map: &mut HashMap<String, String>,
+    raw: &str,
+) {
     let Some((canonical, aliases)) = forward_proxy_storage_aliases(raw) else {
         return;
     };
@@ -665,7 +673,7 @@ pub(crate) async fn upsert_forward_proxy_weight_hourly_bucket(
     Ok(())
 }
 
-async fn load_pool_upstream_binding_key_canonical_map(
+pub(crate) async fn load_pool_upstream_binding_key_canonical_map(
     state: &AppState,
     raw_keys: &[String],
 ) -> Result<HashMap<String, String>> {
@@ -685,7 +693,7 @@ async fn load_pool_upstream_binding_key_canonical_map(
         .collect())
 }
 
-fn resolve_pool_upstream_binding_target_key(
+pub(crate) fn resolve_pool_upstream_binding_target_key(
     raw_key: &str,
     canonical_map: &HashMap<String, String>,
     target_keys: Option<&HashSet<String>>,
@@ -702,7 +710,7 @@ fn resolve_pool_upstream_binding_target_key(
     }
 }
 
-fn record_pool_upstream_binding_window_stats(
+pub(crate) fn record_pool_upstream_binding_window_stats(
     grouped: &mut HashMap<String, ForwardProxyAttemptWindowStats>,
     latency_totals: &mut HashMap<String, f64>,
     latency_samples: &mut HashMap<String, i64>,
@@ -721,7 +729,7 @@ fn record_pool_upstream_binding_window_stats(
     *latency_samples.entry(proxy_key).or_insert(0) += latency_sample_count;
 }
 
-fn record_pool_upstream_binding_hourly_stats(
+pub(crate) fn record_pool_upstream_binding_hourly_stats(
     grouped: &mut HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>>,
     proxy_key: String,
     bucket_start_epoch: i64,
@@ -737,7 +745,7 @@ fn record_pool_upstream_binding_hourly_stats(
     point.failure_count += failure_count;
 }
 
-fn ensure_owner_facing_direct_runtime_row(
+pub(crate) fn ensure_owner_facing_direct_runtime_row(
     runtime_rows: &mut Vec<ForwardProxyRuntimeState>,
     algo: ForwardProxyAlgo,
     insert_direct: bool,
@@ -765,7 +773,7 @@ fn ensure_owner_facing_direct_runtime_row(
     });
 }
 
-fn owner_facing_pool_upstream_pending_archive_temp_path(archive_path: &Path) -> PathBuf {
+pub(crate) fn owner_facing_pool_upstream_pending_archive_temp_path(archive_path: &Path) -> PathBuf {
     PathBuf::from(format!(
         "{}.owner-facing-node-health.{}.sqlite",
         archive_path.display(),
@@ -773,19 +781,21 @@ fn owner_facing_pool_upstream_pending_archive_temp_path(archive_path: &Path) -> 
     ))
 }
 
-async fn load_pending_pool_upstream_node_health_archive_file_paths(
+pub(crate) async fn load_pending_pool_upstream_node_health_archive_file_paths(
     pool: &Pool<Sqlite>,
     start_at: &str,
     end_at: &str,
 ) -> Result<Vec<String>> {
-    Ok(load_pending_pool_upstream_node_health_archive_files(pool, Some(start_at), Some(end_at))
-        .await?
-        .into_iter()
-        .map(|row| row.file_path)
-        .collect())
+    Ok(
+        load_pending_pool_upstream_node_health_archive_files(pool, Some(start_at), Some(end_at))
+            .await?
+            .into_iter()
+            .map(|row| row.file_path)
+            .collect(),
+    )
 }
 
-async fn inflate_pending_pool_upstream_node_health_archive_to_temp(
+pub(crate) async fn inflate_pending_pool_upstream_node_health_archive_to_temp(
     archive_path: &Path,
     temp_path: &Path,
 ) -> Result<()> {
@@ -797,7 +807,7 @@ async fn inflate_pending_pool_upstream_node_health_archive_to_temp(
     Ok(())
 }
 
-async fn load_pending_pool_upstream_binding_attempt_rows_from_archive_file(
+pub(crate) async fn load_pending_pool_upstream_binding_attempt_rows_from_archive_file(
     archive_file_path: &str,
     start_at: &str,
     end_at: &str,
@@ -870,7 +880,7 @@ async fn load_pending_pool_upstream_binding_attempt_rows_from_archive_file(
     }
 }
 
-async fn load_pending_pool_upstream_binding_attempt_rows(
+pub(crate) async fn load_pending_pool_upstream_binding_attempt_rows(
     pending_archive_file_paths: &[String],
     start_at: &str,
     end_at: &str,
@@ -892,7 +902,7 @@ async fn load_pending_pool_upstream_binding_attempt_rows(
     Ok(rows)
 }
 
-fn aggregate_pending_pool_upstream_binding_window_stats(
+pub(crate) fn aggregate_pending_pool_upstream_binding_window_stats(
     pending_archive_rows: &[PendingPoolUpstreamBindingAttemptRow],
     start_at: &str,
     end_at: &str,
@@ -921,20 +931,23 @@ fn aggregate_pending_pool_upstream_binding_window_stats(
     grouped.into_values().collect()
 }
 
-async fn query_pending_pool_upstream_binding_window_stats(
+pub(crate) async fn query_pending_pool_upstream_binding_window_stats(
     pending_archive_file_paths: &[String],
     start_at: &str,
     end_at: &str,
 ) -> Result<Vec<PoolUpstreamBindingWindowStatsRow>> {
-    let rows =
-        load_pending_pool_upstream_binding_attempt_rows(pending_archive_file_paths, start_at, end_at)
-            .await?;
+    let rows = load_pending_pool_upstream_binding_attempt_rows(
+        pending_archive_file_paths,
+        start_at,
+        end_at,
+    )
+    .await?;
     Ok(aggregate_pending_pool_upstream_binding_window_stats(
         &rows, start_at, end_at,
     ))
 }
 
-fn aggregate_pending_pool_upstream_binding_hourly_stats(
+pub(crate) fn aggregate_pending_pool_upstream_binding_hourly_stats(
     pending_archive_rows: &[PendingPoolUpstreamBindingAttemptRow],
     range_start_epoch: i64,
     range_end_epoch: i64,
@@ -961,7 +974,7 @@ fn aggregate_pending_pool_upstream_binding_hourly_stats(
     grouped.into_values().collect()
 }
 
-async fn query_pending_pool_upstream_binding_hourly_stats(
+pub(crate) async fn query_pending_pool_upstream_binding_hourly_stats(
     pending_archive_file_paths: &[String],
     range_start_at: &str,
     range_end_at: &str,
@@ -981,7 +994,7 @@ async fn query_pending_pool_upstream_binding_hourly_stats(
     ))
 }
 
-async fn query_materialized_pool_upstream_binding_hourly_stats(
+pub(crate) async fn query_materialized_pool_upstream_binding_hourly_stats(
     pool: &Pool<Sqlite>,
     range_start_epoch: i64,
     range_end_epoch: i64,
@@ -1021,7 +1034,7 @@ async fn query_materialized_pool_upstream_binding_hourly_stats(
     })
 }
 
-async fn query_pool_upstream_binding_window_stats(
+pub(crate) async fn query_pool_upstream_binding_window_stats(
     state: &AppState,
     start_at: &str,
     end_at: &str,
@@ -1159,7 +1172,7 @@ async fn query_pool_upstream_binding_window_stats(
     Ok(grouped)
 }
 
-async fn query_pool_upstream_binding_hourly_stats(
+pub(crate) async fn query_pool_upstream_binding_hourly_stats(
     state: &AppState,
     range_start_epoch: i64,
     range_end_epoch: i64,
@@ -1477,10 +1490,7 @@ pub(crate) async fn build_forward_proxy_settings_response(
 
     let (settings, runtime_rows, runtime_health_key_by_proxy_key) = {
         let manager = state.forward_proxy.lock().await;
-        let mut runtime_rows = manager
-            .snapshot_runtime()
-            .into_iter()
-            .collect::<Vec<_>>();
+        let mut runtime_rows = manager.snapshot_runtime().into_iter().collect::<Vec<_>>();
         ensure_owner_facing_direct_runtime_row(
             &mut runtime_rows,
             manager.algo,
@@ -1575,7 +1585,7 @@ pub(crate) async fn build_forward_proxy_settings_response(
     })
 }
 
-async fn build_forward_proxy_binding_node_catalog(
+pub(crate) async fn build_forward_proxy_binding_node_catalog(
     state: &AppState,
     extra_proxy_keys: &[String],
 ) -> Result<(Vec<ForwardProxyBindingNodeResponse>, HashSet<String>)> {
@@ -1658,7 +1668,7 @@ async fn build_forward_proxy_binding_node_catalog(
     Ok((nodes, current_node_keys))
 }
 
-fn apply_forward_proxy_binding_hourly_buckets(
+pub(crate) fn apply_forward_proxy_binding_hourly_buckets(
     nodes: &mut [ForwardProxyBindingNodeResponse],
     current_node_keys: &HashSet<String>,
     hourly_map: &HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>>,
@@ -1759,7 +1769,7 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
     Ok(nodes)
 }
 
-fn build_forward_proxy_hourly_buckets(
+pub(crate) fn build_forward_proxy_hourly_buckets(
     hourly: Option<&HashMap<i64, ForwardProxyHourlyStatsPoint>>,
     range_start_epoch: i64,
     bucket_seconds: i64,
@@ -1809,10 +1819,7 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
 
     let (runtime_rows, runtime_health_key_by_proxy_key) = {
         let manager = state.forward_proxy.lock().await;
-        let mut runtime_rows = manager
-            .snapshot_runtime()
-            .into_iter()
-            .collect::<Vec<_>>();
+        let mut runtime_rows = manager.snapshot_runtime().into_iter().collect::<Vec<_>>();
         ensure_owner_facing_direct_runtime_row(
             &mut runtime_rows,
             manager.algo,
@@ -2006,10 +2013,7 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
 
     let (runtime_rows, runtime_health_key_by_proxy_key) = {
         let manager = state.forward_proxy.lock().await;
-        let mut runtime_rows = manager
-            .snapshot_runtime()
-            .into_iter()
-            .collect::<Vec<_>>();
+        let mut runtime_rows = manager.snapshot_runtime().into_iter().collect::<Vec<_>>();
         ensure_owner_facing_direct_runtime_row(
             &mut runtime_rows,
             manager.algo,
@@ -2403,11 +2407,11 @@ pub(crate) fn parse_forward_proxy_nodes_latency_test_keys(raw_query: &str) -> Ve
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ForwardProxyLatencyProbeTargetResult {
-    ok: bool,
-    latency_ms: Option<f64>,
-    ip: Option<String>,
-    http_status: Option<u16>,
-    error: Option<String>,
+    pub(crate) ok: bool,
+    pub(crate) latency_ms: Option<f64>,
+    pub(crate) ip: Option<String>,
+    pub(crate) http_status: Option<u16>,
+    pub(crate) error: Option<String>,
 }
 
 impl ForwardProxyLatencyProbeTargetResult {
@@ -2419,22 +2423,22 @@ impl ForwardProxyLatencyProbeTargetResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ForwardProxyLatencyTestNodeProgress {
-    key: String,
-    display_name: String,
-    round: usize,
-    total_rounds: usize,
-    completed_rounds: usize,
-    success_count: usize,
-    attempt_count: usize,
-    average_latency_ms: Option<u64>,
-    egress_ip: ForwardProxyLatencyProbeTargetResult,
-    oauth_upstream: ForwardProxyLatencyProbeTargetResult,
-    codex_responses: ForwardProxyLatencyProbeTargetResult,
-    all_targets_ok: bool,
-    failed_targets: Vec<&'static str>,
-    done: bool,
-    timed_out: bool,
-    message: String,
+    pub(crate) key: String,
+    pub(crate) display_name: String,
+    pub(crate) round: usize,
+    pub(crate) total_rounds: usize,
+    pub(crate) completed_rounds: usize,
+    pub(crate) success_count: usize,
+    pub(crate) attempt_count: usize,
+    pub(crate) average_latency_ms: Option<u64>,
+    pub(crate) egress_ip: ForwardProxyLatencyProbeTargetResult,
+    pub(crate) oauth_upstream: ForwardProxyLatencyProbeTargetResult,
+    pub(crate) codex_responses: ForwardProxyLatencyProbeTargetResult,
+    pub(crate) all_targets_ok: bool,
+    pub(crate) failed_targets: Vec<&'static str>,
+    pub(crate) done: bool,
+    pub(crate) timed_out: bool,
+    pub(crate) message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2446,15 +2450,15 @@ pub(crate) struct ForwardProxyLatencyTestStreamEvent {
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ForwardProxyLatencyAccumulator {
-    total_latency_ms: f64,
-    success_count: usize,
-    completed_rounds: usize,
-    egress_ip_failures: usize,
-    oauth_upstream_failures: usize,
-    codex_responses_failures: usize,
-    last_egress_ip: Option<ForwardProxyLatencyProbeTargetResult>,
-    last_oauth_upstream: Option<ForwardProxyLatencyProbeTargetResult>,
-    last_codex_responses: Option<ForwardProxyLatencyProbeTargetResult>,
+    pub(crate) total_latency_ms: f64,
+    pub(crate) success_count: usize,
+    pub(crate) completed_rounds: usize,
+    pub(crate) egress_ip_failures: usize,
+    pub(crate) oauth_upstream_failures: usize,
+    pub(crate) codex_responses_failures: usize,
+    pub(crate) last_egress_ip: Option<ForwardProxyLatencyProbeTargetResult>,
+    pub(crate) last_oauth_upstream: Option<ForwardProxyLatencyProbeTargetResult>,
+    pub(crate) last_codex_responses: Option<ForwardProxyLatencyProbeTargetResult>,
 }
 
 impl ForwardProxyLatencyAccumulator {
@@ -2516,7 +2520,7 @@ impl ForwardProxyLatencyAccumulator {
             && self.codex_responses_failures == 0
     }
 
-    fn failed_targets(&self) -> Vec<&'static str> {
+    pub(crate) fn failed_targets(&self) -> Vec<&'static str> {
         let mut targets = Vec::new();
         if self.egress_ip_failures > 0 {
             targets.push(FORWARD_PROXY_LATENCY_TARGET_EGRESS_IP);
@@ -2531,7 +2535,7 @@ impl ForwardProxyLatencyAccumulator {
     }
 }
 
-fn preserve_forward_proxy_latency_target_result(
+pub(crate) fn preserve_forward_proxy_latency_target_result(
     slot: &mut Option<ForwardProxyLatencyProbeTargetResult>,
     failure_count: usize,
     result: &ForwardProxyLatencyProbeTargetResult,
@@ -2541,7 +2545,7 @@ fn preserve_forward_proxy_latency_target_result(
     }
 }
 
-fn accumulated_forward_proxy_latency_target_results(
+pub(crate) fn accumulated_forward_proxy_latency_target_results(
     accumulator: &ForwardProxyLatencyAccumulator,
     egress_ip: &ForwardProxyLatencyProbeTargetResult,
     oauth_upstream: &ForwardProxyLatencyProbeTargetResult,
@@ -2588,7 +2592,7 @@ pub(crate) fn forward_proxy_latency_breadth_first_schedule(
         .collect()
 }
 
-fn forward_proxy_latency_test_event(
+pub(crate) fn forward_proxy_latency_test_event(
     event_name: &'static str,
     payload: &ForwardProxyLatencyTestStreamEvent,
 ) -> Option<Event> {
@@ -2601,7 +2605,7 @@ fn forward_proxy_latency_test_event(
     }
 }
 
-fn resolve_forward_proxy_endpoint_for_test(
+pub(crate) fn resolve_forward_proxy_endpoint_for_test(
     manager: &ForwardProxyManager,
     proxy_key: &str,
 ) -> Option<ForwardProxyEndpoint> {
@@ -2630,7 +2634,7 @@ fn resolve_forward_proxy_endpoint_for_test(
         })
 }
 
-async fn load_forward_proxy_endpoints_for_latency_test(
+pub(crate) async fn load_forward_proxy_endpoints_for_latency_test(
     state: &AppState,
     proxy_keys: &[String],
 ) -> Result<Vec<ForwardProxyEndpoint>, (StatusCode, String)> {
@@ -2649,7 +2653,10 @@ async fn load_forward_proxy_endpoints_for_latency_test(
         }
     }
     if endpoints.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "no proxy keys provided".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "no proxy keys provided".to_string(),
+        ));
     }
     if !missing.is_empty() {
         return Err((
@@ -2660,7 +2667,7 @@ async fn load_forward_proxy_endpoints_for_latency_test(
     Ok(endpoints)
 }
 
-async fn timed_forward_proxy_egress_ip_probe(
+pub(crate) async fn timed_forward_proxy_egress_ip_probe(
     state: &AppState,
     selected_proxy: &SelectedForwardProxy,
     client: &Client,
@@ -2669,13 +2676,9 @@ async fn timed_forward_proxy_egress_ip_probe(
     let started = Instant::now();
     match fetch_forward_proxy_egress_ip(client, request_timeout).await {
         Ok(ip) => {
-            if let Err(err) = persist_forward_proxy_egress_ip_result(
-                &state.pool,
-                selected_proxy,
-                Some(&ip),
-                None,
-            )
-            .await
+            if let Err(err) =
+                persist_forward_proxy_egress_ip_result(&state.pool, selected_proxy, Some(&ip), None)
+                    .await
             {
                 warn!(
                     proxy_key_ref = %forward_proxy_log_ref(&selected_proxy.key),
@@ -2717,7 +2720,7 @@ async fn timed_forward_proxy_egress_ip_probe(
     }
 }
 
-async fn timed_forward_proxy_oauth_upstream_probe(
+pub(crate) async fn timed_forward_proxy_oauth_upstream_probe(
     client: &Client,
     request_timeout: Duration,
 ) -> ForwardProxyLatencyProbeTargetResult {
@@ -2782,7 +2785,7 @@ pub(crate) fn oauth_codex_latency_probe_target(path_segment: &str) -> Result<Url
     Ok(target)
 }
 
-async fn timed_forward_proxy_codex_responses_probe(
+pub(crate) async fn timed_forward_proxy_codex_responses_probe(
     client: &Client,
     request_timeout: Duration,
 ) -> ForwardProxyLatencyProbeTargetResult {
@@ -2837,7 +2840,7 @@ async fn timed_forward_proxy_codex_responses_probe(
     }
 }
 
-fn failed_forward_proxy_latency_targets(
+pub(crate) fn failed_forward_proxy_latency_targets(
     egress_ip: &ForwardProxyLatencyProbeTargetResult,
     oauth_upstream: &ForwardProxyLatencyProbeTargetResult,
     codex_responses: &ForwardProxyLatencyProbeTargetResult,
@@ -2855,7 +2858,9 @@ fn failed_forward_proxy_latency_targets(
     targets
 }
 
-fn forward_proxy_latency_target_timed_out(result: &ForwardProxyLatencyProbeTargetResult) -> bool {
+pub(crate) fn forward_proxy_latency_target_timed_out(
+    result: &ForwardProxyLatencyProbeTargetResult,
+) -> bool {
     let Some(error) = result.error.as_deref() else {
         return false;
     };
@@ -2866,7 +2871,7 @@ pub(crate) fn is_manual_latency_probe_reachable_status(status: StatusCode) -> bo
     status.as_u16() < 500
 }
 
-async fn run_forward_proxy_latency_test_round(
+pub(crate) async fn run_forward_proxy_latency_test_round(
     state: Arc<AppState>,
     endpoint: &ForwardProxyEndpoint,
     accumulator: &mut ForwardProxyLatencyAccumulator,
@@ -2919,11 +2924,9 @@ async fn run_forward_proxy_latency_test_round(
                             round_timeout,
                         )
                         .await;
-                        let remaining_round = remaining_timeout_budget(
-                            round_timeout,
-                            round_started.elapsed(),
-                        )
-                        .filter(|remaining| !remaining.is_zero());
+                        let remaining_round =
+                            remaining_timeout_budget(round_timeout, round_started.elapsed())
+                                .filter(|remaining| !remaining.is_zero());
                         oauth_upstream = match remaining_round {
                             Some(remaining) => {
                                 timed_forward_proxy_oauth_upstream_probe(&client, remaining).await
@@ -2933,14 +2936,14 @@ async fn run_forward_proxy_latency_test_round(
                                 latency_ms: None,
                                 ip: None,
                                 http_status: None,
-                                error: Some("manual latency test round budget exhausted".to_string()),
+                                error: Some(
+                                    "manual latency test round budget exhausted".to_string(),
+                                ),
                             },
                         };
-                        let remaining_round = remaining_timeout_budget(
-                            round_timeout,
-                            round_started.elapsed(),
-                        )
-                        .filter(|remaining| !remaining.is_zero());
+                        let remaining_round =
+                            remaining_timeout_budget(round_timeout, round_started.elapsed())
+                                .filter(|remaining| !remaining.is_zero());
                         codex_responses = match remaining_round {
                             Some(remaining) => {
                                 timed_forward_proxy_codex_responses_probe(&client, remaining).await
@@ -3021,13 +3024,9 @@ async fn run_forward_proxy_latency_test_round(
             &codex_responses,
         );
     let timed_out = done
-        && [
-            &egress_ip,
-            &oauth_upstream,
-            &codex_responses,
-        ]
-        .into_iter()
-        .any(forward_proxy_latency_target_timed_out);
+        && [&egress_ip, &oauth_upstream, &codex_responses]
+            .into_iter()
+            .any(forward_proxy_latency_target_timed_out);
     let message = if !failed_targets.is_empty() {
         format!("failed targets: {}", failed_targets.join(", "))
     } else if let Some(avg) = accumulator.average_latency_ms() {
@@ -3062,7 +3061,7 @@ async fn run_forward_proxy_latency_test_round(
     }
 }
 
-fn forward_proxy_latency_timeout_progress(
+pub(crate) fn forward_proxy_latency_timeout_progress(
     endpoint: &ForwardProxyEndpoint,
     accumulator: &ForwardProxyLatencyAccumulator,
 ) -> ForwardProxyLatencyTestNodeProgress {
@@ -3137,7 +3136,7 @@ fn forward_proxy_latency_timeout_progress(
     }
 }
 
-fn stream_forward_proxy_latency_tests(
+pub(crate) fn stream_forward_proxy_latency_tests(
     state: Arc<AppState>,
     endpoints: Vec<ForwardProxyEndpoint>,
     is_single_node_test: bool,
@@ -3176,8 +3175,12 @@ fn stream_forward_proxy_latency_tests(
                     node: progress,
                 };
                 let event = forward_proxy_latency_test_event("completed", &payload).map(Ok);
-                return event
-                    .map(|event| (event, (state, endpoints, accumulators, round, index, started_at)));
+                return event.map(|event| {
+                    (
+                        event,
+                        (state, endpoints, accumulators, round, index, started_at),
+                    )
+                });
             }
             if index >= endpoints.len() {
                 round += 1;
@@ -3196,14 +3199,23 @@ fn stream_forward_proxy_latency_tests(
                 is_single_node_test,
             )
             .await;
-            let event_name = if progress.done { "completed" } else { "progress" };
+            let event_name = if progress.done {
+                "completed"
+            } else {
+                "progress"
+            };
             let payload = ForwardProxyLatencyTestStreamEvent {
                 kind: event_name,
                 node: progress,
             };
             index += 1;
             let event = forward_proxy_latency_test_event(event_name, &payload).map(Ok);
-            event.map(|event| (event, (state, endpoints, accumulators, round, index, started_at)))
+            event.map(|event| {
+                (
+                    event,
+                    (state, endpoints, accumulators, round, index, started_at),
+                )
+            })
         },
     );
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
@@ -3221,7 +3233,8 @@ pub(crate) async fn stream_forward_proxy_node_latency_test(
             "cross-origin settings writes are forbidden".to_string(),
         ));
     }
-    let endpoints = load_forward_proxy_endpoints_for_latency_test(state.as_ref(), &[proxy_key]).await?;
+    let endpoints =
+        load_forward_proxy_endpoints_for_latency_test(state.as_ref(), &[proxy_key]).await?;
     Ok(stream_forward_proxy_latency_tests(state, endpoints, true))
 }
 
@@ -3238,7 +3251,8 @@ pub(crate) async fn stream_forward_proxy_nodes_latency_test(
         ));
     }
     let proxy_keys = parse_forward_proxy_nodes_latency_test_keys(uri.query().unwrap_or_default());
-    let endpoints = load_forward_proxy_endpoints_for_latency_test(state.as_ref(), &proxy_keys).await?;
+    let endpoints =
+        load_forward_proxy_endpoints_for_latency_test(state.as_ref(), &proxy_keys).await?;
     Ok(stream_forward_proxy_latency_tests(state, endpoints, false))
 }
 
@@ -3459,7 +3473,7 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
     bail!(message)
 }
 
-struct ProbeCancellationGuard(CancellationToken);
+pub(crate) struct ProbeCancellationGuard(CancellationToken);
 
 impl Drop for ProbeCancellationGuard {
     fn drop(&mut self) {
@@ -3467,7 +3481,7 @@ impl Drop for ProbeCancellationGuard {
     }
 }
 
-async fn probe_subscription_endpoint_with_retries(
+pub(crate) async fn probe_subscription_endpoint_with_retries(
     state: &AppState,
     endpoint: &ForwardProxyEndpoint,
     attempts: usize,
@@ -3516,7 +3530,7 @@ async fn probe_subscription_endpoint_with_retries(
     Err(last_error.unwrap_or_else(|| anyhow!("subscription proxy probe did not run")))
 }
 
-fn shutdown_cancelled_forward_proxy_probe() -> anyhow::Error {
+pub(crate) fn shutdown_cancelled_forward_proxy_probe() -> anyhow::Error {
     anyhow!("forward proxy probe cancelled because shutdown is in progress")
 }
 
