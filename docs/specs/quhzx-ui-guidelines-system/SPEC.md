@@ -73,12 +73,12 @@
   story_id_or_title: `Pages/DashboardPage / Full Page Desktop` (`pages-dashboardpage--full-page-desktop`)
   target_program: mock-only
   capture_scope: element
-  requested_viewport: 1440x1100
+  requested_viewport: desktop1660
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
   submission_gate: approved
   state: full-page desktop dashboard
-  evidence_note: verifies the moved page-level Storybook surface still renders from `web/src/features/*` after the frontend structure migration.
+  evidence_note: verifies the moved page-level Storybook surface still renders from `web/src/features/*` after the frontend structure migration and rebase sync.
   image:
   PR: include
   ![Dashboard page Storybook evidence](./assets/frontend-feature-structure-dashboard.png)
