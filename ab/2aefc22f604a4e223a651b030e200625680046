@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.20.4",
+  "base_stable_version": "2.20.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-08T07:00:02Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.20.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a9ce2b54f892daf4920d4817939a64ec94cbfb5d",
+  "pr_number": 573,
+  "pr_title": "fix(web): truncate dashboard invocation error summaries",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.20.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.20.4",
+  "target_sha": "ab2aefc22f604a4e223a651b030e200625680046",
+  "type_label": "type:patch"
+}
