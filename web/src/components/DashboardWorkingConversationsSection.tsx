@@ -46,6 +46,7 @@ import { emitUpstreamAccountsChanged } from "../lib/upstreamAccountsEvents";
 import { Alert } from "./ui/alert";
 import { AnimatedDigits } from "./AnimatedDigits";
 import { Badge } from "./ui/badge";
+import { InvocationErrorSummary } from "./InvocationErrorSummary";
 import {
   InvocationPhaseBadge,
   InvocationPhaseSegments,
@@ -1859,12 +1860,11 @@ function AccountRecentInvocationRow({
         <span>T {viewModel.totalTokensValue}</span>
       </div>
       {viewModel.collapsedErrorSummary ? (
-        <div
-          className="mt-1 truncate text-[10px] text-error"
-          title={viewModel.collapsedErrorSummary}
-        >
-          {viewModel.collapsedErrorSummary}
-        </div>
+        <InvocationErrorSummary
+          className="mt-1 max-w-full"
+          textClassName="text-[10px] text-error"
+          message={viewModel.collapsedErrorSummary}
+        />
       ) : null}
     </button>
   );
@@ -2346,8 +2346,13 @@ function InvocationSlot({
         {viewModel.collapsedErrorSummary ? (
           <InvocationMetaLine
             label={lineLabels.error}
-            value={viewModel.collapsedErrorSummary}
-            title={viewModel.collapsedErrorSummary}
+            value={
+              <InvocationErrorSummary
+                className="max-w-full"
+                textClassName="text-[9.5px] text-error"
+                message={viewModel.collapsedErrorSummary}
+              />
+            }
             toneClassName="text-error"
           />
         ) : null}

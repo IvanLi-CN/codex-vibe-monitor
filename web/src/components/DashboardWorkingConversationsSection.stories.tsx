@@ -439,6 +439,9 @@ function createUpstreamAccountActivityStoryResponse(
   };
 }
 
+const LONG_ERROR_SUMMARY =
+  '[upstream_http_5xx] pool upstream responded with 502: {"error":{"message":"Upstream request failed","type":"upstream_error"}} event: response.failed data: {"type":"response.failed","response":{"id":"resp_story_error_summary","model":"gpt-5.4","status":"failed"}}';
+
 const currentAndPreviousResponse = createResponse([
   createConversation("pck-current-previous", [
     createPreview({
@@ -3474,6 +3477,150 @@ export const UpstreamAccountMetricTooltips: Story = {
       description: {
         story:
           "Stable interaction coverage for the four upstream-account metric cards. Each whole metric card opens a structured tooltip with explicit field labels, values, and related computed data while the card surface stays compact.",
+      },
+    },
+  },
+};
+
+export const ErrorSummaryTooltips: Story = {
+  args: {
+    activeRange: "today",
+    cards: buildCards(
+      createResponse([
+        createConversation("pck-story-error-summary-tooltips", [
+          createPreview({
+            id: 9941,
+            invokeId: "story-error-summary-current",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "http_502",
+            failureClass: "service_failure",
+            failureKind: "upstream_http_5xx",
+            errorMessage: LONG_ERROR_SUMMARY,
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+            tUpstreamTtfbMs: null,
+            tUpstreamStreamMs: null,
+            tTotalMs: 18_420,
+          }),
+          createPreview({
+            id: 9940,
+            invokeId: "story-error-summary-previous",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "success",
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+          }),
+        ]),
+      ]),
+    ),
+    isLoading: false,
+    error: null,
+  },
+  render: () => {
+    const upstreamAccountActivity = createUpstreamAccountActivityStoryResponse();
+    upstreamAccountActivity.accounts[0] = {
+      ...upstreamAccountActivity.accounts[0],
+      recentInvocations: upstreamAccountActivity.accounts[0].recentInvocations.map(
+        (invocation, index) =>
+          index === 0
+            ? {
+                ...invocation,
+                status: "http_502",
+                failureClass: "service_failure",
+                failureKind: "upstream_http_5xx",
+                errorMessage: LONG_ERROR_SUMMARY,
+                tUpstreamTtfbMs: null,
+                tUpstreamStreamMs: null,
+                tTotalMs: 21_006,
+              }
+            : invocation,
+      ),
+    };
+
+    return (
+      <ForcedWorkspaceViewStory view="conversations">
+        <DrawerPreviewStory
+          response={createResponse([
+            createConversation("pck-story-error-summary-tooltips", [
+              createPreview({
+                id: 9941,
+                invokeId: "story-error-summary-current",
+                occurredAt: "2026-04-04T10:05:00Z",
+                status: "http_502",
+                failureClass: "service_failure",
+                failureKind: "upstream_http_5xx",
+                errorMessage: LONG_ERROR_SUMMARY,
+                upstreamAccountId: 42,
+                upstreamAccountName: "Pool Alpha",
+                tUpstreamTtfbMs: null,
+                tUpstreamStreamMs: null,
+                tTotalMs: 18_420,
+              }),
+              createPreview({
+                id: 9940,
+                invokeId: "story-error-summary-previous",
+                occurredAt: "2026-04-04T10:03:00Z",
+                status: "success",
+                upstreamAccountId: 42,
+                upstreamAccountName: "Pool Alpha",
+              }),
+            ]),
+          ])}
+          upstreamAccountActivity={upstreamAccountActivity}
+        />
+      </ForcedWorkspaceViewStory>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const currentSlot = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLElement)) {
+      throw new Error("missing failed current slot");
+    }
+
+    const slotErrorSummary = currentSlot.querySelector(
+      '[data-testid="invocation-error-summary"]',
+    );
+    const slotErrorTrigger = slotErrorSummary?.parentElement;
+    if (!(slotErrorSummary instanceof HTMLElement) || !(slotErrorTrigger instanceof HTMLElement)) {
+      throw new Error("missing current slot error summary trigger");
+    }
+
+    await userEvent.hover(slotErrorTrigger);
+    await waitFor(() => {
+      const tooltip = document.body.querySelector('[role="tooltip"]');
+      expect(tooltip?.textContent).toContain(LONG_ERROR_SUMMARY);
+    });
+    await userEvent.unhover(slotErrorTrigger);
+
+    const canvas = within(canvasElement);
+    const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+
+    const recentRow = await canvas.findByTestId(
+      "dashboard-upstream-account-recent-row",
+    );
+    const recentErrorSummary = recentRow.querySelector(
+      '[data-testid="invocation-error-summary"]',
+    );
+    const recentErrorTrigger = recentErrorSummary?.parentElement;
+    if (!(recentErrorSummary instanceof HTMLElement) || !(recentErrorTrigger instanceof HTMLElement)) {
+      throw new Error("missing recent row error summary trigger");
+    }
+
+    await userEvent.hover(recentErrorTrigger);
+    await waitFor(() => {
+      const tooltip = document.body.querySelector('[role="tooltip"]');
+      expect(tooltip?.textContent).toContain(LONG_ERROR_SUMMARY);
+    });
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Long failed invocation summaries stay single-line and truncated inside both the current slot and upstream-account recent rows, while hover opens the shared tooltip with the full upstream error payload.",
       },
     },
   },

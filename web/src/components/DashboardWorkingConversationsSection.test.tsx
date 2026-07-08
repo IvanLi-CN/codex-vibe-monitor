@@ -33,6 +33,9 @@ import {
   readPersistedDashboardWorkspaceView,
 } from "./dashboardActivityRange";
 
+const LONG_ERROR_SUMMARY =
+  '[upstream_http_5xx] pool upstream responded with 502: {"error":{"message":"Upstream request failed","type":"upstream_error"}} event: response.failed data: {"type":"response.failed","response":{"id":"resp_test_error_summary","model":"gpt-5.4","status":"failed"}}';
+
 const virtualizerMocks = vi.hoisted(() => ({
   rowIndexes: null as number[] | null,
   totalSize: null as number | null,
@@ -3979,7 +3982,7 @@ describe("DashboardWorkingConversationsSection", () => {
             occurredAt: "2026-04-04T10:05:00Z",
             status: "http_502",
             failureClass: "service_failure",
-            errorMessage: "upstream gateway closed before first byte",
+            errorMessage: LONG_ERROR_SUMMARY,
             failureKind: "upstream_timeout",
           }),
         ]),
@@ -4007,14 +4010,71 @@ describe("DashboardWorkingConversationsSection", () => {
     }
 
     expect(statusIcon.getAttribute("aria-label")).toContain("失败");
-    expect(statusIcon.getAttribute("aria-label")).toContain(
-      "upstream gateway closed before first byte",
-    );
+    expect(statusIcon.getAttribute("aria-label")).toContain(LONG_ERROR_SUMMARY);
     expect(
       slotHeader.querySelectorAll(
-        '[title*="upstream gateway closed before first byte"]',
+        `[title*="${LONG_ERROR_SUMMARY.slice(0, 48)}"]`,
       ),
     ).toHaveLength(1);
+  });
+
+  it("renders the slot error summary as a truncated trigger and exposes the full message on hover", async () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-slot-error-tooltip", [
+          createPreview({
+            id: 82,
+            invokeId: "invoke-slot-error-tooltip",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "http_502",
+            failureClass: "service_failure",
+            failureKind: "upstream_http_5xx",
+            errorMessage: LONG_ERROR_SUMMARY,
+          }),
+        ]),
+      ]),
+    );
+
+    const currentSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLElement)) {
+      throw new Error("missing slot for tooltip test");
+    }
+
+    const errorSummary = currentSlot.querySelector(
+      '[data-testid="invocation-error-summary"]',
+    );
+    const errorText = currentSlot.querySelector(
+      '[data-testid="invocation-error-summary-text"]',
+    );
+    const errorTrigger = errorSummary?.parentElement;
+    if (
+      !(errorSummary instanceof HTMLElement) ||
+      !(errorTrigger instanceof HTMLElement) ||
+      !(errorText instanceof HTMLElement)
+    ) {
+      throw new Error("missing shared error summary");
+    }
+
+    expect(errorTrigger.getAttribute("title")).toBeNull();
+    expect(errorText.getAttribute("title")).toBeNull();
+    expect(errorText.className).toContain("truncate");
+    expect(errorText.className).toContain("whitespace-nowrap");
+
+    expect(errorTrigger.getAttribute("tabindex")).toBe("0");
+    expect(errorTrigger.getAttribute("aria-label")).toBe(LONG_ERROR_SUMMARY);
+
+    await act(async () => {
+      fireEvent.mouseOver(errorTrigger);
+    });
+
+    await waitFor(() => {
+      const tooltip = Array.from(
+        document.body.querySelectorAll('[role="tooltip"]'),
+      ).find((node) => node.textContent?.includes(LONG_ERROR_SUMMARY));
+      expect(tooltip).toBeInstanceOf(HTMLElement);
+    });
   });
 
   it("keeps completed slot readings on a single no-wrap row", () => {
@@ -4071,6 +4131,97 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(slotReadings.className).toContain("flex-nowrap");
     expect(latencyPills.className).toContain("flex-nowrap");
+  });
+
+  it("renders the recent-row error summary as a truncated trigger and exposes the full message on focus", async () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamAccountActivityMock.data = {
+      ...upstreamActivity,
+      accounts: [
+        {
+          ...upstreamActivity.accounts[0],
+          recentInvocations: upstreamActivity.accounts[0].recentInvocations.map(
+            (invocation, index) =>
+              index === 0
+                ? {
+                    ...invocation,
+                    status: "http_502",
+                    failureClass: "service_failure",
+                    failureKind: "upstream_http_5xx",
+                    errorMessage: LONG_ERROR_SUMMARY,
+                    tUpstreamTtfbMs: null,
+                    tUpstreamStreamMs: null,
+                    tTotalMs: 22_044,
+                  }
+                : invocation,
+          ),
+        },
+      ],
+    };
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-recent-error-tooltip", [
+          createPreview({
+            id: 83,
+            invokeId: "invoke-upstream-recent-error-tooltip",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((node) => node.textContent?.includes("上游账号"));
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const recentRow = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"]',
+    );
+    if (!(recentRow instanceof HTMLElement)) {
+      throw new Error("missing recent row for tooltip test");
+    }
+
+    const errorSummary = recentRow.querySelector(
+      '[data-testid="invocation-error-summary"]',
+    );
+    const errorText = recentRow.querySelector(
+      '[data-testid="invocation-error-summary-text"]',
+    );
+    const errorTrigger = errorSummary?.parentElement;
+    if (
+      !(errorSummary instanceof HTMLElement) ||
+      !(errorTrigger instanceof HTMLElement) ||
+      !(errorText instanceof HTMLElement)
+    ) {
+      throw new Error("missing recent row error summary");
+    }
+
+    expect(errorTrigger.getAttribute("title")).toBeNull();
+    expect(errorText.getAttribute("title")).toBeNull();
+    expect(errorText.className).toContain("truncate");
+    expect(errorText.className).toContain("whitespace-nowrap");
+    expect(errorTrigger.getAttribute("tabindex")).toBe("0");
+    expect(errorTrigger.getAttribute("aria-label")).toBe(LONG_ERROR_SUMMARY);
+
+    await act(async () => {
+      errorTrigger.focus();
+    });
+
+    await waitFor(() => {
+      const tooltip = Array.from(
+        document.body.querySelectorAll('[role="tooltip"]'),
+      ).find((node) => node.textContent?.includes(LONG_ERROR_SUMMARY));
+      expect(tooltip).toBeInstanceOf(HTMLElement);
+    });
   });
 
   it("formats dashboard latency pills with at most two decimals and without overflowing past four digits", () => {
