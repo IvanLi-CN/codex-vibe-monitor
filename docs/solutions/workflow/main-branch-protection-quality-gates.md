@@ -31,13 +31,17 @@
 - `Lint & Format Check`
 - `Front-end Tests`
 - `Records Overlay E2E`
-- `Backend Tests`
+- `Backend Tests (Lightweight)`
+- `Backend Tests (Stateful SQLite)`
+- `Backend Tests (Archive / File I/O)`
 - `Build Artifacts`
 - `Review Policy Gate`
 
 ## 实施要点
 
 - `.github/quality-gates.json` 与 fixtures 必须同步更新，避免 contract self-test 通过而 live fixtures 仍停留在旧规则。
+- `CI PR` 可以对 same-repo stacked PR 保持开启，但 `Label Gate` 与 `Review Policy` 仍应只对 `base=main` 的 PR 生效；这样 stacked PR 也有服务端 CI 证据，而 owner-facing merge policy 仍只绑定 `main`。
+- live GitHub rules 对齐检查同样只应阻断 `base=main` 的 PR；stacked PR 可以复用当前分支 contract 自检，但不应要求 `main` 的服务端 ruleset 预先反映未合并的拓扑改动。
 - `check_quality_gates_contract.py` 应明确禁止为 PR gate 保留 `informational_checks`。
 - `check_live_quality_gates.py` 的输出需要单独带出 `bypass_actor_status`，方便区分 `verified` 与 `unverified`。
 - 由上游 workflow 触发的发布链路应把上游失败转成显式 failed gate，而不是依赖后续 job 的 `if` 条件自然跳过；否则失败通知通常只监听 `failure`，不会覆盖 `skipped`。

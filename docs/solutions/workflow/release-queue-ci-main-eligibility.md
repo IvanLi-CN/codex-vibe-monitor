@@ -56,7 +56,7 @@ Keep the immutable snapshot queue, but add a second eligibility gate when select
 - Fail open on `unknown` visibility states. Missing workflow-run indexing and transient Actions API read failures are not proof that a pending snapshot became invalid, and treating them as hard failures can silently reorder the release queue.
 - Reuse the exact same success-or-snapshot-only-failure rule for automatic queue selection and manual backfill validation so the release contract stays coherent.
 - Add regression coverage for both cases:
-  - an older pending snapshot is skipped because `Backend Tests` failed;
+  - an older pending snapshot is skipped because one of the split backend jobs such as `Backend Tests (Stateful SQLite)` failed;
   - a snapshot-only `CI Main` failure remains releasable.
   - a pending snapshot stays selectable while `CI Main` visibility is temporarily unknown.
 

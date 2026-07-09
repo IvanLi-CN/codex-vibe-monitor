@@ -57,7 +57,15 @@
               "integration_id": 15368
             },
             {
-              "context": "Backend Tests",
+              "context": "Backend Tests (Lightweight)",
+              "integration_id": 15368
+            },
+            {
+              "context": "Backend Tests (Stateful SQLite)",
+              "integration_id": 15368
+            },
+            {
+              "context": "Backend Tests (Archive / File I/O)",
               "integration_id": 15368
             },
             {

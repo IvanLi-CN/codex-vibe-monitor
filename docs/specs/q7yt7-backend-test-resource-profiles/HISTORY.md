@@ -9,6 +9,10 @@
 - 2026-07-09：owner-facing backend required checks 冻结为三个 job：`Backend Tests (Lightweight)`、`Backend Tests (Stateful SQLite)`、`Backend Tests (Archive / File I/O)`。
 - 2026-07-09：运行时目标冻结为 `CI Main` 中最慢 backend required job 的 wall time `<= 6m30s`。
 - 2026-07-09：PR1 完成两条测试树的真实模块化入口，`pool_failover_window_*`、`tests_part_*` 与 `parts.rs` 退出代码真相源。
+- 2026-07-09：PR2 将 backend runner 固定为 profile-aware nextest 入口，并把 quality-gates / CI / release snapshot 合同一起切到三路 backend checks。
+- 2026-07-09：review-loop 指出 profile split 漏掉生产模块里的内联 backend unit tests；修复后将这 136 个用例并回 `lightweight` profile，避免 required checks coverage 回归。
+- 2026-07-09：实际打开 stacked PR 后发现 `CI PR` 只对 `base=main` 触发，无法为 PR2 提供服务端 CI 证据；因此放开 `CI PR` 的 `pull_request` base 过滤，同时保留 `Label Gate` / `Review Policy` 与 live rules 对齐检查继续只绑定 `main`。
+- 2026-07-09：修复后的本地热缓存测量显示三个 profile wall time 分别约为 `3.83s`、`66.97s`、`29.14s`，拆分后 critical path 远低于 `6m30s` 预算。
 
 ## Key Reasons / Replacements
 

@@ -162,14 +162,16 @@ try:
                 "jobs": [
                     {"name": "Release Snapshot", "conclusion": "failure"},
                     {"name": "Lint & Format Check", "conclusion": "success"},
-                    {"name": "Backend Tests", "conclusion": "success"},
+                    {"name": "Backend Tests (Lightweight)", "conclusion": "success"},
+                    {"name": "Backend Tests (Stateful SQLite)", "conclusion": "success"},
+                    {"name": "Backend Tests (Archive / File I/O)", "conclusion": "success"},
                 ]
             }
         if path.endswith("/actions/runs/30/jobs"):
             return {
                 "jobs": [
                     {"name": "Release Snapshot", "conclusion": "skipped"},
-                    {"name": "Backend Tests", "conclusion": "failure"},
+                    {"name": "Backend Tests (Stateful SQLite)", "conclusion": "failure"},
                 ]
             }
         raise AssertionError(f"unexpected GitHub API path: {path}")
