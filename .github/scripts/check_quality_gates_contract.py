@@ -433,7 +433,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require("push" not in on_section, "ci-pr.yml: push must stay disabled")
     require("workflow_dispatch" not in on_section, "ci-pr.yml: workflow_dispatch must stay disabled")
     pull_request_config = event_config(workflow, "pull_request", "ci-pr.yml")
-    assert_event_branches(pull_request_config, {"main"}, "ci-pr.yml.on.pull_request")
+    require("branches" not in pull_request_config, "ci-pr.yml.on.pull_request.branches must stay unset")
+    require("branches-ignore" not in pull_request_config, "ci-pr.yml.on.pull_request.branches-ignore must stay unset")
     assert_event_types(pull_request_config, CI_PULL_REQUEST_TYPES, "ci-pr.yml.on.pull_request")
     merge_group_config = event_config(workflow, "merge_group", "ci-pr.yml")
     assert_event_types(merge_group_config, {"checks_requested"}, "ci-pr.yml.on.merge_group")
@@ -484,7 +485,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
 
     live_step = step_config(lint_job, "Quality-gates live rules check", "ci-pr.yml.jobs.lint")
     require(
-        live_step.get("if") == "steps.trusted-quality-gates.outputs.supports_final_topology == 'true'",
+        live_step.get("if")
+        == "steps.trusted-quality-gates.outputs.supports_final_topology == 'true' && (github.event_name != 'pull_request' || github.base_ref == 'main')",
         "ci-pr.yml.jobs.lint: live rules rollout gate drifted",
     )
     live_env = require_mapping(live_step.get("env"), "ci-pr.yml.jobs.lint.steps['Quality-gates live rules check'].env")
@@ -558,7 +560,15 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
 
     release_snapshot = named_job_config(workflow, "release-snapshot", expected_jobs, "ci-main.yml")
     require(
-        release_snapshot.get("needs") == ["lint", "frontend-tests", "records-overlay-e2e", "unit-tests"],
+        release_snapshot.get("needs")
+        == [
+            "lint",
+            "frontend-tests",
+            "records-overlay-e2e",
+            "backend-tests-lightweight",
+            "backend-tests-stateful-sqlite",
+            "backend-tests-archive-file-io",
+        ],
         "ci-main.yml.jobs.release-snapshot.needs drifted",
     )
     release_snapshot_permissions = require_mapping(

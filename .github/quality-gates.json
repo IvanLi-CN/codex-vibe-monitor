@@ -22,7 +22,9 @@
           "Lint & Format Check": 15368,
           "Front-end Tests": 15368,
           "Records Overlay E2E": 15368,
-          "Backend Tests": 15368,
+          "Backend Tests (Lightweight)": 15368,
+          "Backend Tests (Stateful SQLite)": 15368,
+          "Backend Tests (Archive / File I/O)": 15368,
           "Build Artifacts": 15368,
           "Review Policy Gate": 15368
         }
@@ -52,7 +54,9 @@
     "Lint & Format Check",
     "Front-end Tests",
     "Records Overlay E2E",
-    "Backend Tests",
+    "Backend Tests (Lightweight)",
+    "Backend Tests (Stateful SQLite)",
+    "Backend Tests (Archive / File I/O)",
     "Build Artifacts",
     "Review Policy Gate"
   ],
@@ -71,7 +75,9 @@
         "Lint & Format Check",
         "Front-end Tests",
         "Records Overlay E2E",
-        "Backend Tests",
+        "Backend Tests (Lightweight)",
+        "Backend Tests (Stateful SQLite)",
+        "Backend Tests (Archive / File I/O)",
         "Build Artifacts"
       ]
     },
@@ -89,7 +95,9 @@
         "Lint & Format Check",
         "Front-end Tests",
         "Records Overlay E2E",
-        "Backend Tests",
+        "Backend Tests (Lightweight)",
+        "Backend Tests (Stateful SQLite)",
+        "Backend Tests (Archive / File I/O)",
         "Release Snapshot"
       ]
     }

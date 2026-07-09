@@ -2,8 +2,6 @@ name: CI PR
 
 on:
   pull_request:
-    branches:
-      - main
     types:
       - opened
       - reopened
@@ -202,7 +200,7 @@ jobs:
             --metadata-script "${{ steps.trusted-quality-gates.outputs.metadata_script }}"
 
       - name: Quality-gates live rules check
-        if: steps.trusted-quality-gates.outputs.supports_final_topology == 'true'
+        if: steps.trusted-quality-gates.outputs.supports_final_topology == 'true' && (github.event_name != 'pull_request' || github.base_ref == 'main')
         env:
           QUALITY_GATES_LIVE_RULES_MODE: require
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -344,8 +342,41 @@ jobs:
             kill "$(cat /tmp/codex-vibe-monitor-vite.pid)" || true
           fi
 
-  unit-tests:
-    name: Backend Tests
+  backend-tests-lightweight:
+    name: Backend Tests (Lightweight)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.96.0
+
+      - name: Cache cargo directories
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run lightweight backend profile
+        run: bash .github/scripts/run-backend-tests.sh --profile lightweight
+
+  backend-tests-stateful-sqlite:
+    name: Backend Tests (Stateful SQLite)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -371,8 +402,44 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run cargo test
-        run: cargo test --locked --all-features
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run stateful SQLite backend profile
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite
+
+  backend-tests-archive-file-io:
+    name: Backend Tests (Archive / File I/O)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.96.0
+
+      - name: Cache cargo directories
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run archive / file I/O backend profile
+        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io
 
   build:
     name: Build Artifacts
