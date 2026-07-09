@@ -24,3 +24,4 @@
 - 2026-07-04: 明确并修正 current in-flight 语义：进程内 `running/pending` overlay 不受 5 分钟 activity window 或自然日窗口限制。Dashboard 当前 summary、当前 working conversations 与上游账号活动都必须展示所有仍在内存中的进行中调用；历史 terminal DB 行继续按所选窗口过滤。
 - 2026-07-05: `/v1/*` 请求入口在 route context 解析前就创建 admit-time running shell；route validation failure 会 terminalize 同一 runtime key，避免前端看到假 running。terminal follow-up 不再强制 `flush_now` SQLite barrier，active subscriber 先依赖 terminal overlay 收敛，summary/quota 后续最终一致。
 - 2026-07-07: Dashboard active truth 从“唯一 promptCacheKey 进行中对话”修正为 invocation phase counts。`queued` 单独展示为排队中，`requesting + responding` 展示为进行中；working conversation 卡片列表仍用 5 分钟工作集筛选，但卡片 totals 使用 prompt-cache key 完整生命周期聚合，并在 snapshot 分页下遵守 snapshot 边界。
+- 2026-07-09: Dashboard 主活动总览在顶层已持有 `dashboardActivity` snapshot 时，不再为可见 `today` / `yesterday` 面板额外挂载同窗口 `useSummary`。同窗口 KPI 与 rate 改由 snapshot 直接驱动，只保留 `yesterday` / `previous7d` 等比较窗口的独立 summary 读取，避免重复 SSE/HTTP reconcile 放大。

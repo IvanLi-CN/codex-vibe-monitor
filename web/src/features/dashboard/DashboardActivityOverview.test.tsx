@@ -20,6 +20,10 @@ const componentState = vi.hoisted(() => ({
   chartRenderCount: 0,
 }))
 
+const sseState = vi.hoisted(() => ({
+  listeners: new Set<(payload: unknown) => void>(),
+}))
+
 vi.mock('../../hooks/useStats', () => ({
   useSummary: hookMocks.useSummary,
 }))
@@ -30,6 +34,14 @@ vi.mock('../../hooks/useTimeseries', () => ({
 
 vi.mock('../../hooks/useParallelWorkStats', () => ({
   useParallelWorkStats: hookMocks.useParallelWorkStats,
+}))
+
+vi.mock('../../lib/sse', () => ({
+  subscribeToSse: (listener: (payload: unknown) => void) => {
+    sseState.listeners.add(listener)
+    return () => sseState.listeners.delete(listener)
+  },
+  subscribeToSseOpen: () => () => {},
 }))
 
 vi.mock('../../theme', () => ({
@@ -253,6 +265,7 @@ afterEach(() => {
   window.localStorage.clear()
   componentState.chartRenderCount = 0
   summaryStore.reset()
+  sseState.listeners.clear()
   vi.clearAllMocks()
 })
 
@@ -416,8 +429,14 @@ function getFirstSeenSummaryWindows() {
   return ordered
 }
 
+function emitSse(payload: unknown) {
+  for (const listener of [...sseState.listeners]) {
+    listener(payload)
+  }
+}
+
 describe('DashboardActivityOverview', () => {
-  it('uses a dashboard activity snapshot for the visible top KPI rate and live counts', () => {
+  it('uses a dashboard activity snapshot for the visible top KPI summary overlay without remounting duplicate today summary fetches', () => {
     installSummaryMocks()
 
     render(
@@ -455,6 +474,74 @@ describe('DashboardActivityOverview', () => {
 
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
       'total:21;inProgress:7;retry:1;wait:2500;nonSuccessCost:0.04;nonSuccessTokens:300;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
+    )
+    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).not.toContain(
+      'today',
+    )
+
+    act(() => {
+      emitSse({
+        type: 'summary',
+        window: 'today',
+        summary: {
+          totalCount: 34,
+          successCount: 29,
+          failureCount: 3,
+          totalCost: 0.66,
+          totalTokens: 6600,
+          inProgressConversationCount: 9,
+          inProgressRetryConversationCount: 2,
+          inProgressAvgWaitMs: 1100,
+          nonSuccessCost: 0.08,
+          nonSuccessTokens: 420,
+        },
+      })
+    })
+
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
+      'total:34;inProgress:9;retry:2;wait:1100;nonSuccessCost:0.08;nonSuccessTokens:420;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
+    )
+  })
+
+  it('skips the duplicate yesterday summary hook when a snapshot-backed yesterday panel is visible', () => {
+    installSummaryMocks()
+
+    render(
+      <DashboardActivityOverview
+        dashboardActivity={{
+          range: 'yesterday',
+          rangeStart: '2026-07-04T00:00:00Z',
+          rangeEnd: '2026-07-05T00:00:00Z',
+          snapshotId: 1783147200000,
+          rateWindow: {
+            start: '2026-07-04T23:55:00Z',
+            end: '2026-07-05T00:00:00Z',
+            windowMinutes: 5,
+            mode: 'account_active_tail_sum',
+          },
+          summary: {
+            stats: {
+              totalCount: 9,
+              successCount: 8,
+              failureCount: 1,
+              totalCost: 0.18,
+              totalTokens: 1800,
+              inProgressConversationCount: 0,
+              inProgressRetryConversationCount: 0,
+              inProgressAvgWaitMs: 0,
+              nonSuccessCost: 0.02,
+              nonSuccessTokens: 120,
+            },
+            tokensPerMinute: 88,
+            spendRate: 0.09,
+          },
+        }}
+        activeRange="yesterday"
+      />,
+    )
+
+    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).not.toContain(
+      'yesterday',
     )
   })
 
