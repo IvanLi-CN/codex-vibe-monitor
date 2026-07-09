@@ -15,8 +15,8 @@ function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): Settin
       responseBodyLoggingEnabled: true,
       encryptedSessionOwnerRoutingEnabled: true,
       defaultHijackEnabled: false,
-      models: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro'],
-      enabledModels: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro'],
+      models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro'],
+      enabledModels: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro'],
     },
     forwardProxy: {
       proxyUrls: [],
@@ -48,6 +48,9 @@ function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): Settin
 describe('extractAvailableModelOptions', () => {
   it('uses only proxy preset models and excludes pricing-only models', () => {
     expect(extractAvailableModelOptions(createSettingsPayload())).toEqual([
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
       'gpt-5.5',
       'gpt-5.5-pro',
       'gpt-5.4',
@@ -59,12 +62,12 @@ describe('extractAvailableModelOptions', () => {
     const settings = createSettingsPayload({
       proxy: {
         ...createSettingsPayload().proxy,
-        models: ['gpt-5.5', ' gpt-5.4-mini ', 'gpt-5.5', '', 'gpt-5.4'],
+        models: ['gpt-5.6-sol', ' gpt-5.4-mini ', 'gpt-5.6-sol', '', 'gpt-5.4'],
       },
     })
 
     expect(extractAvailableModelOptions(settings)).toEqual([
-      'gpt-5.5',
+      'gpt-5.6-sol',
       'gpt-5.4-mini',
       'gpt-5.4',
     ])

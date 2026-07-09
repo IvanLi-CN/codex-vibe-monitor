@@ -978,6 +978,8 @@ export interface PricingEntry {
   inputPer1m: number;
   outputPer1m: number;
   cacheInputPer1m?: number | null;
+  cacheReadPer1m?: number | null;
+  cacheWritePer1m?: number | null;
   reasoningPer1m?: number | null;
   source: string;
 }
@@ -1695,13 +1697,18 @@ function normalizePricingEntry(raw: unknown): PricingEntry | null {
   const outputPer1m = normalizeFiniteNumber(payload.outputPer1m);
   if (!model || inputPer1m === undefined || outputPer1m === undefined)
     return null;
-  const cacheInputPer1m = normalizeFiniteNumber(payload.cacheInputPer1m);
+  const legacyCacheInputPer1m = normalizeFiniteNumber(payload.cacheInputPer1m);
+  const cacheReadPer1m =
+    normalizeFiniteNumber(payload.cacheReadPer1m) ?? legacyCacheInputPer1m;
+  const cacheWritePer1m = normalizeFiniteNumber(payload.cacheWritePer1m);
   const reasoningPer1m = normalizeFiniteNumber(payload.reasoningPer1m);
   return {
     model,
     inputPer1m,
     outputPer1m,
-    cacheInputPer1m: cacheInputPer1m ?? null,
+    cacheInputPer1m: cacheReadPer1m ?? null,
+    cacheReadPer1m: cacheReadPer1m ?? null,
+    cacheWritePer1m: cacheWritePer1m ?? null,
     reasoningPer1m: reasoningPer1m ?? null,
     source:
       typeof payload.source === "string" && payload.source.trim()

@@ -1292,8 +1292,8 @@ describe("settings normalization", () => {
               responseBodyLoggingEnabled: true,
               encryptedSessionOwnerRoutingEnabled: true,
               defaultHijackEnabled: false,
-              models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
-              enabledModels: ["gpt-5.5", "gpt-5.5-pro", "missing-model"],
+              models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"],
+              enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra", "missing-model"],
             },
             forwardProxy: {
               proxyUrls: ["socks5://127.0.0.1:1080"],
@@ -1319,7 +1319,23 @@ describe("settings normalization", () => {
             },
             pricing: {
               catalogVersion: "v1",
-              entries: [],
+              entries: [
+                {
+                  model: "gpt-5.6-sol",
+                  inputPer1m: 5,
+                  outputPer1m: 30,
+                  cacheReadPer1m: 0.5,
+                  cacheWritePer1m: 6.25,
+                  source: "official",
+                },
+                {
+                  model: "gpt-5.4-mini",
+                  inputPer1m: 0.6,
+                  outputPer1m: 2.4,
+                  cacheInputPer1m: 0.075,
+                  source: "official",
+                },
+              ],
             },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -1333,10 +1349,32 @@ describe("settings normalization", () => {
     expect(settings.proxy.websocketEnabled).toBe(true);
     expect(settings.proxy.upstreamWebsocketDefaultEnabled).toBe(false);
     expect(settings.proxy.encryptedSessionOwnerRoutingEnabled).toBe(true);
-    expect(settings.proxy.enabledModels).toEqual(["gpt-5.5", "gpt-5.5-pro"]);
+    expect(settings.proxy.enabledModels).toEqual(["gpt-5.6-sol", "gpt-5.6-terra"]);
     expect(settings.forwardProxy.subscriptionUpdateIntervalSecs).toBe(900);
     expect(settings.forwardProxy.nodes).toHaveLength(1);
     expect(settings.forwardProxy.nodes[0].displayName).toBe("JP Edge 01");
+    expect(settings.pricing.entries).toEqual([
+      {
+        model: "gpt-5.4-mini",
+        inputPer1m: 0.6,
+        outputPer1m: 2.4,
+        cacheInputPer1m: 0.075,
+        cacheReadPer1m: 0.075,
+        cacheWritePer1m: null,
+        reasoningPer1m: null,
+        source: "official",
+      },
+      {
+        model: "gpt-5.6-sol",
+        inputPer1m: 5,
+        outputPer1m: 30,
+        cacheInputPer1m: 0.5,
+        cacheReadPer1m: 0.5,
+        cacheWritePer1m: 6.25,
+        reasoningPer1m: null,
+        source: "official",
+      },
+    ]);
   });
 
   it("defaults encrypted owner routing to disabled when the field is missing", async () => {
@@ -1355,8 +1393,8 @@ describe("settings normalization", () => {
               requestBodyLoggingEnabled: true,
               responseBodyLoggingEnabled: true,
               defaultHijackEnabled: false,
-              models: ["gpt-5.5"],
-              enabledModels: ["gpt-5.5"],
+              models: ["gpt-5.6-sol"],
+              enabledModels: ["gpt-5.6-sol"],
             },
             forwardProxy: {
               proxyUrls: [],
@@ -1393,8 +1431,8 @@ describe("settings normalization", () => {
             requestBodyLoggingEnabled: false,
             responseBodyLoggingEnabled: false,
             defaultHijackEnabled: false,
-            models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
-            enabledModels: ["gpt-5.5", "gpt-5.5-pro", "missing-model"],
+            models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"],
+            enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra", "missing-model"],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
@@ -1410,7 +1448,7 @@ describe("settings normalization", () => {
       upstreamWebsocketDefaultEnabled: true,
       requestBodyLoggingEnabled: false,
       responseBodyLoggingEnabled: false,
-      enabledModels: ["gpt-5.5", "gpt-5.5-pro"],
+      enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra"],
     });
 
     expect(response.hijackEnabled).toBe(true);
@@ -1420,7 +1458,7 @@ describe("settings normalization", () => {
     expect(response.upstreamWebsocketDefaultEnabled).toBe(true);
     expect(response.requestBodyLoggingEnabled).toBe(false);
     expect(response.responseBodyLoggingEnabled).toBe(false);
-    expect(response.enabledModels).toEqual(["gpt-5.5", "gpt-5.5-pro"]);
+    expect(response.enabledModels).toEqual(["gpt-5.6-sol", "gpt-5.6-terra"]);
   });
 
   it("normalizes bound proxy keys and binding nodes in upstream account list", async () => {

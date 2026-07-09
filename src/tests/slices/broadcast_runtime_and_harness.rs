@@ -1370,6 +1370,21 @@ async fn ensure_schema_appends_new_proxy_models_when_enabled_list_matches_legacy
             .enabled_preset_models
             .contains(&"gpt-5.5-pro".to_string())
     );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.6-sol".to_string())
+    );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.6-terra".to_string())
+    );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.6-luna".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1386,6 +1401,9 @@ async fn ensure_schema_orders_default_proxy_models_newest_first() {
     assert_eq!(
         settings.enabled_preset_models,
         vec![
+            "gpt-5.6-sol".to_string(),
+            "gpt-5.6-terra".to_string(),
+            "gpt-5.6-luna".to_string(),
             "gpt-5.5".to_string(),
             "gpt-5.5-pro".to_string(),
             "gpt-5.4".to_string(),
@@ -1442,6 +1460,21 @@ async fn ensure_schema_appends_latest_proxy_models_when_enabled_list_matches_pre
             .enabled_preset_models
             .contains(&"gpt-5.5-pro".to_string())
     );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.6-sol".to_string())
+    );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.6-terra".to_string())
+    );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.6-luna".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1487,6 +1520,7 @@ async fn ensure_schema_allows_opting_out_of_new_proxy_models_after_migration() {
         .iter()
         .map(|id| (*id).to_string())
         .collect::<Vec<_>>();
+    let normalized_legacy_enabled = normalize_enabled_preset_models(legacy_enabled.clone());
     let legacy_enabled_json =
         serde_json::to_string(&legacy_enabled).expect("serialize legacy enabled list");
 
@@ -1530,6 +1564,21 @@ async fn ensure_schema_allows_opting_out_of_new_proxy_models_after_migration() {
             .enabled_preset_models
             .contains(&"gpt-5.5-pro".to_string())
     );
+    assert!(
+        migrated
+            .enabled_preset_models
+            .contains(&"gpt-5.6-sol".to_string())
+    );
+    assert!(
+        migrated
+            .enabled_preset_models
+            .contains(&"gpt-5.6-terra".to_string())
+    );
+    assert!(
+        migrated
+            .enabled_preset_models
+            .contains(&"gpt-5.6-luna".to_string())
+    );
 
     // User explicitly removes the new models after migration; schema re-run should not
     // force them back in.
@@ -1552,16 +1601,7 @@ async fn ensure_schema_allows_opting_out_of_new_proxy_models_after_migration() {
     let settings = load_proxy_model_settings(&pool)
         .await
         .expect("load proxy model settings after opt-out");
-    assert_eq!(
-        settings.enabled_preset_models,
-        vec![
-            "gpt-5.3-codex".to_string(),
-            "gpt-5.2".to_string(),
-            "gpt-5.2-codex".to_string(),
-            "gpt-5.1-codex-max".to_string(),
-            "gpt-5.1-codex-mini".to_string(),
-        ]
-    );
+    assert_eq!(settings.enabled_preset_models, normalized_legacy_enabled);
 }
 
 #[tokio::test]
@@ -3896,6 +3936,9 @@ async fn pricing_settings_api_reads_and_persists_updates() {
         .await
         .expect("get settings should succeed");
     assert_eq!(initial.proxy.fast_mode_rewrite_mode, "disabled");
+    assert!(initial.proxy.models.contains(&"gpt-5.6-sol".to_string()));
+    assert!(initial.proxy.models.contains(&"gpt-5.6-terra".to_string()));
+    assert!(initial.proxy.models.contains(&"gpt-5.6-luna".to_string()));
     assert!(initial.proxy.models.contains(&"gpt-5.5".to_string()));
     assert!(initial.proxy.models.contains(&"gpt-5.5-pro".to_string()));
     assert!(!initial.pricing.entries.is_empty());
@@ -3905,6 +3948,27 @@ async fn pricing_settings_api_reads_and_persists_updates() {
             .entries
             .iter()
             .any(|entry| entry.model == "gpt-5.2-codex")
+    );
+    assert!(
+        initial
+            .pricing
+            .entries
+            .iter()
+            .any(|entry| entry.model == "gpt-5.6-sol")
+    );
+    assert!(
+        initial
+            .pricing
+            .entries
+            .iter()
+            .any(|entry| entry.model == "gpt-5.6-terra")
+    );
+    assert!(
+        initial
+            .pricing
+            .entries
+            .iter()
+            .any(|entry| entry.model == "gpt-5.6-luna")
     );
     assert!(
         initial
@@ -3938,6 +4002,8 @@ async fn pricing_settings_api_reads_and_persists_updates() {
                 input_per_1m: 8.8,
                 output_per_1m: 18.8,
                 cache_input_per_1m: Some(0.88),
+                cache_read_per_1m: Some(0.88),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "custom".to_string(),
             }],
@@ -3950,6 +4016,9 @@ async fn pricing_settings_api_reads_and_persists_updates() {
     assert_eq!(updated.entries.len(), 1);
     assert_eq!(updated.entries[0].model, "gpt-5.2-codex");
     assert_eq!(updated.entries[0].input_per_1m, 8.8);
+    assert_eq!(updated.entries[0].cache_input_per_1m, Some(0.88));
+    assert_eq!(updated.entries[0].cache_read_per_1m, Some(0.88));
+    assert_eq!(updated.entries[0].cache_write_per_1m, None);
 
     let persisted = load_pricing_catalog(&state.pool)
         .await

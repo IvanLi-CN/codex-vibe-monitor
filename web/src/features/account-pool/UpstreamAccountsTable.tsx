@@ -530,7 +530,7 @@ export function renderTagBadges(tags?: AccountTagSummary[] | null) {
   return (
     <>
       {visible.map((tag) => {
-        const isSystemUnsupportedModel = tag.systemKey === 'unsupported_model:gpt-5.5'
+        const isSystemUnsupportedModel = tag.systemKey?.startsWith('unsupported_model:') === true
         return (
           <Badge
             key={tag.id}
@@ -555,16 +555,24 @@ export function renderAllTagBadges(tags?: AccountTagSummary[] | null) {
   const safeTags = tags ?? []
   return (
     <>
-      {safeTags.map((tag) => (
-        <Badge
-          key={tag.id}
-          variant="secondary"
-          className="min-w-0 max-w-[7.5rem] truncate border-base-300/90 bg-base-200/90 px-2 py-px text-[11px] font-medium leading-4 text-base-content/92"
-          title={tag.name}
-        >
-          {tag.name}
-        </Badge>
-      ))}
+      {safeTags.map((tag) => {
+        const isSystemUnsupportedModel = tag.systemKey?.startsWith('unsupported_model:') === true
+        return (
+          <Badge
+            key={tag.id}
+            variant={isSystemUnsupportedModel ? 'warning' : 'secondary'}
+            className={cn(
+              'min-w-0 max-w-[7.5rem] truncate px-2 py-px text-[11px] font-medium leading-4',
+              isSystemUnsupportedModel
+                ? 'border-fuchsia-400/45 bg-fuchsia-500/15 text-fuchsia-700 dark:border-fuchsia-300/45 dark:bg-fuchsia-400/18 dark:text-fuchsia-100'
+                : 'border-base-300/90 bg-base-200/90 text-base-content/92',
+            )}
+            title={tag.name}
+          >
+            {tag.name}
+          </Badge>
+        )
+      })}
     </>
   )
 }

@@ -96,9 +96,9 @@ const compactDefaultTags: AccountTagSummary[] = [
   },
   {
     id: 5,
-    name: '不支持 gpt-5.5',
+    name: '不支持 gpt-5.6-sol',
     routingRule: defaultEffectiveRoutingRule,
-    systemKey: 'unsupported_model:gpt-5.5',
+    systemKey: 'unsupported_model:gpt-5.6-sol',
     protected: true,
   },
   {
