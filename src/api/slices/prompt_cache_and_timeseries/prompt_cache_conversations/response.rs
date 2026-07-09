@@ -1,13 +1,20 @@
 use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
 
-fn prompt_cache_runtime_record_source_matches(
+pub(crate) fn prompt_cache_runtime_record_source_matches(
     record: &ApiInvocation,
     source_scope: InvocationSourceScope,
 ) -> bool {
     source_scope == InvocationSourceScope::All || record.source == SOURCE_PROXY
 }
 
-fn prompt_cache_runtime_record_is_in_flight(record: &ApiInvocation) -> bool {
+pub(crate) fn prompt_cache_runtime_record_is_in_flight(record: &ApiInvocation) -> bool {
     matches!(
         record
             .status
@@ -20,7 +27,7 @@ fn prompt_cache_runtime_record_is_in_flight(record: &ApiInvocation) -> bool {
     )
 }
 
-fn prompt_cache_runtime_record_is_in_working_window(
+pub(crate) fn prompt_cache_runtime_record_is_in_working_window(
     record: &ApiInvocation,
     range_start_bound: &str,
 ) -> bool {
@@ -30,11 +37,14 @@ fn prompt_cache_runtime_record_is_in_working_window(
         })
 }
 
-fn prompt_cache_runtime_record_sort_anchor(record: &ApiInvocation) -> String {
+pub(crate) fn prompt_cache_runtime_record_sort_anchor(record: &ApiInvocation) -> String {
     record.occurred_at.clone()
 }
 
-fn max_optional_timestamp(left: Option<String>, right: Option<String>) -> Option<String> {
+pub(crate) fn max_optional_timestamp(
+    left: Option<String>,
+    right: Option<String>,
+) -> Option<String> {
     match (left, right) {
         (Some(left), Some(right)) => Some(left.max(right)),
         (Some(left), None) => Some(left),
@@ -43,7 +53,7 @@ fn max_optional_timestamp(left: Option<String>, right: Option<String>) -> Option
     }
 }
 
-fn merge_runtime_prompt_cache_aggregate(
+pub(crate) fn merge_runtime_prompt_cache_aggregate(
     aggregate: &mut PromptCacheConversationAggregateRow,
     runtime: PromptCacheConversationAggregateRow,
 ) {
@@ -60,11 +70,13 @@ fn merge_runtime_prompt_cache_aggregate(
         max_optional_timestamp(aggregate.sort_anchor_at.take(), runtime.sort_anchor_at);
     aggregate.last_terminal_at =
         max_optional_timestamp(aggregate.last_terminal_at.take(), runtime.last_terminal_at);
-    aggregate.last_in_flight_at =
-        max_optional_timestamp(aggregate.last_in_flight_at.take(), runtime.last_in_flight_at);
+    aggregate.last_in_flight_at = max_optional_timestamp(
+        aggregate.last_in_flight_at.take(),
+        runtime.last_in_flight_at,
+    );
 }
 
-fn runtime_prompt_cache_aggregate_from_record(
+pub(crate) fn runtime_prompt_cache_aggregate_from_record(
     record: &ApiInvocation,
 ) -> Option<PromptCacheConversationAggregateRow> {
     let prompt_cache_key = record.prompt_cache_key.as_deref()?.trim();
@@ -87,7 +99,7 @@ fn runtime_prompt_cache_aggregate_from_record(
     })
 }
 
-fn runtime_prompt_cache_overlay_records(
+pub(crate) fn runtime_prompt_cache_overlay_records(
     state: &AppState,
     source_scope: InvocationSourceScope,
     range_start_bound: &str,
@@ -109,7 +121,9 @@ fn runtime_prompt_cache_overlay_records(
         .collect()
 }
 
-fn runtime_prompt_cache_overlay_keys(runtime_overlay_records: &[ApiInvocation]) -> HashSet<String> {
+pub(crate) fn runtime_prompt_cache_overlay_keys(
+    runtime_overlay_records: &[ApiInvocation],
+) -> HashSet<String> {
     runtime_overlay_records
         .iter()
         .filter_map(|record| {
@@ -123,7 +137,7 @@ fn runtime_prompt_cache_overlay_keys(runtime_overlay_records: &[ApiInvocation]) 
         .collect()
 }
 
-fn merge_runtime_prompt_cache_aggregates(
+pub(crate) fn merge_runtime_prompt_cache_aggregates(
     aggregates: Vec<PromptCacheConversationAggregateRow>,
     runtime_overlay_records: &[ApiInvocation],
     cursor: Option<&(String, String, String, Option<i64>)>,
@@ -141,8 +155,12 @@ fn merge_runtime_prompt_cache_aggregates(
         let Some(runtime) = runtime_prompt_cache_aggregate_from_record(record) else {
             continue;
         };
-        if let Some((cursor_sort_anchor_at, cursor_created_at, cursor_prompt_cache_key, _)) = cursor {
-            let sort_anchor_at = runtime.sort_anchor_at.as_deref().unwrap_or(&runtime.last_activity_at);
+        if let Some((cursor_sort_anchor_at, cursor_created_at, cursor_prompt_cache_key, _)) = cursor
+        {
+            let sort_anchor_at = runtime
+                .sort_anchor_at
+                .as_deref()
+                .unwrap_or(&runtime.last_activity_at);
             let cursor_sort_anchor_at = cursor_sort_anchor_at.as_str();
             let cursor_created_at = cursor_created_at.as_str();
             let cursor_prompt_cache_key = cursor_prompt_cache_key.as_str();
@@ -171,7 +189,7 @@ fn merge_runtime_prompt_cache_aggregates(
     rows
 }
 
-async fn apply_prompt_cache_lifecycle_aggregate_totals(
+pub(crate) async fn apply_prompt_cache_lifecycle_aggregate_totals(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     aggregates: &mut [PromptCacheConversationAggregateRow],
@@ -230,11 +248,22 @@ async fn apply_prompt_cache_lifecycle_aggregate_totals(
     Ok(())
 }
 
-fn sort_prompt_cache_working_aggregates(rows: &mut [PromptCacheConversationAggregateRow]) {
+pub(crate) fn sort_prompt_cache_working_aggregates(
+    rows: &mut [PromptCacheConversationAggregateRow],
+) {
     rows.sort_by(|left, right| {
-        let left_sort = left.sort_anchor_at.as_deref().unwrap_or(&left.last_activity_at);
-        let right_sort = right.sort_anchor_at.as_deref().unwrap_or(&right.last_activity_at);
-        let left_cursor_created = left.cursor_created_at.as_deref().unwrap_or(&left.created_at);
+        let left_sort = left
+            .sort_anchor_at
+            .as_deref()
+            .unwrap_or(&left.last_activity_at);
+        let right_sort = right
+            .sort_anchor_at
+            .as_deref()
+            .unwrap_or(&right.last_activity_at);
+        let left_cursor_created = left
+            .cursor_created_at
+            .as_deref()
+            .unwrap_or(&left.created_at);
         let right_cursor_created = right
             .cursor_created_at
             .as_deref()
@@ -261,7 +290,10 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
         return Ok(match request.detail_level {
             PromptCacheConversationDetailLevel::Full => response,
             PromptCacheConversationDetailLevel::Compact => {
-                compact_prompt_cache_conversations_response(response, request.recent_invocation_limit)
+                compact_prompt_cache_conversations_response(
+                    response,
+                    request.recent_invocation_limit,
+                )
             }
         });
     }
@@ -427,7 +459,7 @@ pub(crate) async fn build_prompt_cache_conversations_response(
     build_prompt_cache_conversations_response_with_recent_limit(state, selection, None).await
 }
 
-async fn build_prompt_cache_conversations_response_with_recent_limit(
+pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
     state: &AppState,
     selection: PromptCacheConversationSelection,
     recent_invocation_limit: Option<i64>,

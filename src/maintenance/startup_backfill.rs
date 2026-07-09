@@ -1,11 +1,13 @@
-fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
+use super::*;
+
+pub(crate) fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
     if samples.len() < STARTUP_BACKFILL_LOG_SAMPLE_LIMIT {
         samples.push(sample);
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StartupBackfillTask {
+pub(crate) enum StartupBackfillTask {
     ProxyUsage,
     ProxyCost,
     PromptCacheKey,
@@ -20,7 +22,7 @@ enum StartupBackfillTask {
 }
 
 impl StartupBackfillTask {
-    fn ordered_tasks() -> &'static [Self] {
+    pub(crate) fn ordered_tasks() -> &'static [Self] {
         &[
             Self::ProxyUsage,
             Self::PromptCacheKey,
@@ -36,7 +38,7 @@ impl StartupBackfillTask {
         ]
     }
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::ProxyUsage => STARTUP_BACKFILL_TASK_PROXY_USAGE,
             Self::ProxyCost => STARTUP_BACKFILL_TASK_PROXY_COST,
@@ -54,7 +56,7 @@ impl StartupBackfillTask {
         }
     }
 
-    fn log_label(self) -> &'static str {
+    pub(crate) fn log_label(self) -> &'static str {
         match self {
             Self::ProxyUsage => "proxy usage",
             Self::ProxyCost => "proxy cost",
@@ -72,7 +74,7 @@ impl StartupBackfillTask {
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct StartupBackfillProgressRow {
+pub(crate) struct StartupBackfillProgressRow {
     task_name: String,
     cursor_id: i64,
     next_run_after: Option<String>,
@@ -85,20 +87,20 @@ struct StartupBackfillProgressRow {
 }
 
 #[derive(Debug, Clone)]
-struct StartupBackfillProgress {
-    task_name: String,
-    cursor_id: i64,
-    next_run_after: Option<String>,
-    zero_update_streak: u32,
-    last_started_at: Option<String>,
-    last_finished_at: Option<String>,
-    last_scanned: u64,
-    last_updated: u64,
-    last_status: String,
+pub(crate) struct StartupBackfillProgress {
+    pub(crate) task_name: String,
+    pub(crate) cursor_id: i64,
+    pub(crate) next_run_after: Option<String>,
+    pub(crate) zero_update_streak: u32,
+    pub(crate) last_started_at: Option<String>,
+    pub(crate) last_finished_at: Option<String>,
+    pub(crate) last_scanned: u64,
+    pub(crate) last_updated: u64,
+    pub(crate) last_status: String,
 }
 
 impl StartupBackfillProgress {
-    fn pending(task_name: impl Into<String>) -> Self {
+    pub(crate) fn pending(task_name: impl Into<String>) -> Self {
         Self {
             task_name: task_name.into(),
             cursor_id: 0,
@@ -112,7 +114,7 @@ impl StartupBackfillProgress {
         }
     }
 
-    fn is_due(&self, now: DateTime<Utc>) -> bool {
+    pub(crate) fn is_due(&self, now: DateTime<Utc>) -> bool {
         self.next_run_after
             .as_deref()
             .and_then(parse_to_utc_datetime)
@@ -137,7 +139,7 @@ impl From<StartupBackfillProgressRow> for StartupBackfillProgress {
 }
 
 #[derive(Debug, Clone, Default)]
-struct StartupBackfillRunState {
+pub(crate) struct StartupBackfillRunState {
     next_cursor_id: i64,
     scanned: u64,
     updated: u64,
@@ -146,7 +148,10 @@ struct StartupBackfillRunState {
     samples: Vec<String>,
 }
 
-fn startup_backfill_next_delay(run: &StartupBackfillRunState, zero_update_streak: u32) -> Duration {
+pub(crate) fn startup_backfill_next_delay(
+    run: &StartupBackfillRunState,
+    zero_update_streak: u32,
+) -> Duration {
     if run.force_idle {
         Duration::from_secs(STARTUP_BACKFILL_IDLE_INTERVAL_SECS)
     } else if run.hit_scan_limit || run.updated > 0 {
@@ -158,7 +163,7 @@ fn startup_backfill_next_delay(run: &StartupBackfillRunState, zero_update_streak
     }
 }
 
-fn startup_backfill_next_run_after(
+pub(crate) fn startup_backfill_next_run_after(
     run: &StartupBackfillRunState,
     zero_update_streak: u32,
 ) -> String {
@@ -171,7 +176,7 @@ fn startup_backfill_next_run_after(
     )
 }
 
-fn historical_rollup_startup_backfill_run_state(
+pub(crate) fn historical_rollup_startup_backfill_run_state(
     cursor_id: i64,
     zero_update_streak: u32,
     before: &HistoricalRollupBackfillSnapshot,
@@ -208,21 +213,21 @@ fn historical_rollup_startup_backfill_run_state(
 }
 
 #[derive(Debug, Clone)]
-struct BackfillBatchOutcome<T> {
-    summary: T,
-    next_cursor_id: i64,
-    hit_budget: bool,
-    samples: Vec<String>,
+pub(crate) struct BackfillBatchOutcome<T> {
+    pub(crate) summary: T,
+    pub(crate) next_cursor_id: i64,
+    pub(crate) hit_budget: bool,
+    pub(crate) samples: Vec<String>,
 }
 
-fn startup_backfill_query_limit(scanned: u64, scan_limit: Option<u64>) -> i64 {
+pub(crate) fn startup_backfill_query_limit(scanned: u64, scan_limit: Option<u64>) -> i64 {
     let remaining = scan_limit
         .map(|limit| limit.saturating_sub(scanned))
         .unwrap_or(BACKFILL_BATCH_SIZE as u64);
     remaining.min(BACKFILL_BATCH_SIZE as u64).max(1) as i64
 }
 
-fn startup_backfill_budget_reached(
+pub(crate) fn startup_backfill_budget_reached(
     started_at: Instant,
     scanned: u64,
     scan_limit: Option<u64>,
@@ -233,7 +238,7 @@ fn startup_backfill_budget_reached(
     hit_scan_limit || hit_elapsed_limit
 }
 
-fn startup_backfill_samples_text(samples: &[String]) -> String {
+pub(crate) fn startup_backfill_samples_text(samples: &[String]) -> String {
     if samples.is_empty() {
         "-".to_string()
     } else {
@@ -241,7 +246,10 @@ fn startup_backfill_samples_text(samples: &[String]) -> String {
     }
 }
 
-async fn startup_backfill_task_progress_key(state: &AppState, task: StartupBackfillTask) -> String {
+pub(crate) async fn startup_backfill_task_progress_key(
+    state: &AppState,
+    task: StartupBackfillTask,
+) -> String {
     match task {
         StartupBackfillTask::ProxyCost => {
             let catalog = state.pricing_catalog.read().await;
@@ -255,7 +263,7 @@ async fn startup_backfill_task_progress_key(state: &AppState, task: StartupBackf
     }
 }
 
-async fn load_startup_backfill_progress(
+pub(crate) async fn load_startup_backfill_progress(
     pool: &Pool<Sqlite>,
     task_name: &str,
 ) -> Result<StartupBackfillProgress> {
@@ -283,7 +291,7 @@ async fn load_startup_backfill_progress(
     .unwrap_or_else(|| StartupBackfillProgress::pending(task_name.to_string())))
 }
 
-async fn mark_startup_backfill_running(
+pub(crate) async fn mark_startup_backfill_running(
     pool: &Pool<Sqlite>,
     task_name: &str,
     cursor_id: i64,
@@ -318,16 +326,16 @@ async fn mark_startup_backfill_running(
     Ok(())
 }
 
-struct StartupBackfillProgressUpdate<'a> {
-    cursor_id: i64,
-    scanned: u64,
-    updated: u64,
-    zero_update_streak: u32,
-    next_run_after: &'a str,
-    status: &'a str,
+pub(crate) struct StartupBackfillProgressUpdate<'a> {
+    pub(crate) cursor_id: i64,
+    pub(crate) scanned: u64,
+    pub(crate) updated: u64,
+    pub(crate) zero_update_streak: u32,
+    pub(crate) next_run_after: &'a str,
+    pub(crate) status: &'a str,
 }
 
-async fn save_startup_backfill_progress(
+pub(crate) async fn save_startup_backfill_progress(
     pool: &Pool<Sqlite>,
     task_name: &str,
     update: StartupBackfillProgressUpdate<'_>,
@@ -370,7 +378,10 @@ async fn save_startup_backfill_progress(
     Ok(())
 }
 
-async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &CancellationToken) {
+pub(crate) async fn run_startup_backfill_maintenance_pass(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+) {
     let task_run = begin_system_task_run(
         &state.pool,
         SystemTaskKind::StartupBackfill,
@@ -430,14 +441,14 @@ async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &Ca
     }
 }
 
-fn startup_backfill_task_enabled(state: &AppState, task: StartupBackfillTask) -> bool {
+pub(crate) fn startup_backfill_task_enabled(state: &AppState, task: StartupBackfillTask) -> bool {
     match task {
         StartupBackfillTask::ProxyUsage => state.config.proxy_usage_backfill_on_startup,
         _ => true,
     }
 }
 
-async fn run_startup_backfill_task_if_due(
+pub(crate) async fn run_startup_backfill_task_if_due(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
 ) -> Result<()> {
@@ -566,7 +577,7 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
     Ok(())
 }
 
-async fn run_startup_backfill_task(
+pub(crate) async fn run_startup_backfill_task(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
     cursor_id: i64,
@@ -850,7 +861,8 @@ async fn run_startup_backfill_task(
             ))
         }
         StartupBackfillTask::HistoricalRollups => {
-            let before = load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
+            let before =
+                load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
             if before.legacy_archive_pending == 0 {
                 return Ok((
                     StartupBackfillRunState {
@@ -875,7 +887,8 @@ async fn run_startup_backfill_task(
                 skip_pending_archives,
             )
             .await?;
-            let after = load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
+            let after =
+                load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
             Ok((
                 historical_rollup_startup_backfill_run_state(
                     cursor_id,
@@ -915,8 +928,7 @@ mod startup_backfill_tests {
             ..HistoricalRollupMaterializationSummary::default()
         };
 
-        let run =
-            historical_rollup_startup_backfill_run_state(7, 0, &before, &after, &summary);
+        let run = historical_rollup_startup_backfill_run_state(7, 0, &before, &after, &summary);
 
         assert_eq!(run.next_cursor_id, 8);
         assert_eq!(run.scanned, 1);
@@ -946,8 +958,7 @@ mod startup_backfill_tests {
             ..HistoricalRollupMaterializationSummary::default()
         };
 
-        let run =
-            historical_rollup_startup_backfill_run_state(11, 0, &before, &after, &summary);
+        let run = historical_rollup_startup_backfill_run_state(11, 0, &before, &after, &summary);
 
         assert_eq!(run.next_cursor_id, 12);
         assert_eq!(run.scanned, 1);
@@ -957,7 +968,8 @@ mod startup_backfill_tests {
     }
 
     #[test]
-    fn historical_rollup_backfill_run_state_stays_active_when_partial_scan_found_only_blocked_work() {
+    fn historical_rollup_backfill_run_state_stays_active_when_partial_scan_found_only_blocked_work()
+    {
         let before = HistoricalRollupBackfillSnapshot {
             pending_buckets: 8,
             legacy_archive_pending: 3,
@@ -971,8 +983,7 @@ mod startup_backfill_tests {
             ..HistoricalRollupMaterializationSummary::default()
         };
 
-        let run =
-            historical_rollup_startup_backfill_run_state(5, 0, &before, &after, &summary);
+        let run = historical_rollup_startup_backfill_run_state(5, 0, &before, &after, &summary);
 
         assert_eq!(run.next_cursor_id, 6);
         assert_eq!(run.scanned, 1);
@@ -982,7 +993,8 @@ mod startup_backfill_tests {
     }
 
     #[test]
-    fn historical_rollup_backfill_run_state_does_not_back_off_when_only_blocked_archive_was_after_skip() {
+    fn historical_rollup_backfill_run_state_does_not_back_off_when_only_blocked_archive_was_after_skip()
+     {
         let before = HistoricalRollupBackfillSnapshot {
             pending_buckets: 8,
             legacy_archive_pending: 2,
@@ -997,8 +1009,7 @@ mod startup_backfill_tests {
             ..HistoricalRollupMaterializationSummary::default()
         };
 
-        let run =
-            historical_rollup_startup_backfill_run_state(9, 0, &before, &after, &summary);
+        let run = historical_rollup_startup_backfill_run_state(9, 0, &before, &after, &summary);
 
         assert_eq!(run.next_cursor_id, 10);
         assert_eq!(run.scanned, 2);
@@ -1023,8 +1034,7 @@ mod startup_backfill_tests {
             ..HistoricalRollupMaterializationSummary::default()
         };
 
-        let run =
-            historical_rollup_startup_backfill_run_state(9, 1, &before, &after, &summary);
+        let run = historical_rollup_startup_backfill_run_state(9, 1, &before, &after, &summary);
 
         assert_eq!(run.next_cursor_id, 10);
         assert_eq!(run.scanned, 2);
@@ -1034,7 +1044,7 @@ mod startup_backfill_tests {
     }
 }
 
-async fn run_startup_persistent_prep_best_effort(
+pub(crate) async fn run_startup_persistent_prep_best_effort(
     state: &Arc<AppState>,
     prep_cli: &CliArgs,
 ) -> bool {
@@ -1076,7 +1086,7 @@ async fn run_startup_persistent_prep_best_effort(
     }
 }
 
-fn spawn_startup_backfill_maintenance(
+pub(crate) fn spawn_startup_backfill_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {

@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn pool_route_existing_sticky_owner_preserves_last_failure_after_cutout_alternate_fails() {
     #[derive(Debug, sqlx::FromRow)]
@@ -659,7 +662,11 @@ async fn pool_route_returns_429_after_three_distinct_accounts_hit_upstream_429()
     upstream_handle.abort();
 }
 
-async fn wait_for_pool_attempt_status(pool: &SqlitePool, attempt_index: i64, expected: &str) {
+pub(crate) async fn wait_for_pool_attempt_status(
+    pool: &SqlitePool,
+    attempt_index: i64,
+    expected: &str,
+) {
     for _ in 0..100 {
         let status: Option<String> = sqlx::query_scalar(
             r#"
@@ -723,12 +730,8 @@ async fn pool_route_retries_upstream_413_once_on_same_account_then_succeeds() {
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(2));
     drop(attempts);
     wait_for_pool_attempt_row_count(&state.pool, 2).await;
-    wait_for_pool_attempt_status(
-        &state.pool,
-        2,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-    )
-    .await;
+    wait_for_pool_attempt_status(&state.pool, 2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+        .await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRow>(
         r#"
@@ -806,12 +809,8 @@ async fn pool_route_switches_account_after_upstream_413_retry_fails() {
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
     drop(attempts);
     wait_for_pool_attempt_row_count(&state.pool, 3).await;
-    wait_for_pool_attempt_status(
-        &state.pool,
-        3,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-    )
-    .await;
+    wait_for_pool_attempt_status(&state.pool, 3, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+        .await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRow>(
         r#"
@@ -893,12 +892,8 @@ async fn pool_route_retries_first_upstream_413_after_prior_5xx_same_account() {
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
     drop(attempts);
     wait_for_pool_attempt_row_count(&state.pool, 3).await;
-    wait_for_pool_attempt_status(
-        &state.pool,
-        3,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-    )
-    .await;
+    wait_for_pool_attempt_status(&state.pool, 3, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+        .await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRow>(
         r#"
@@ -966,9 +961,7 @@ async fn pool_route_retries_first_upstream_413_at_end_of_same_account_budget() {
             http_header::AUTHORIZATION,
             HeaderValue::from_static("Bearer pool-live-key"),
         )]),
-        Body::from(
-            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-413-budget-tail"}"#,
-        ),
+        Body::from(r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-413-budget-tail"}"#),
     )
     .await;
 
@@ -980,12 +973,8 @@ async fn pool_route_retries_first_upstream_413_at_end_of_same_account_budget() {
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(4));
     drop(attempts);
     wait_for_pool_attempt_row_count(&state.pool, 4).await;
-    wait_for_pool_attempt_status(
-        &state.pool,
-        4,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-    )
-    .await;
+    wait_for_pool_attempt_status(&state.pool, 4, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+        .await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRow>(
         r#"
@@ -2419,14 +2408,13 @@ async fn pool_route_fails_over_on_unsupported_model_bad_request() {
     }
 
     let attempts = Arc::new(StdMutex::new(HashMap::new()));
-    let app = Router::new()
-        .route(
-            "/v1/responses",
-            post({
-                let attempts = attempts.clone();
-                move |headers| unsupported_model_failover_upstream(attempts.clone(), headers)
-            }),
-        );
+    let app = Router::new().route(
+        "/v1/responses",
+        post({
+            let attempts = attempts.clone();
+            move |headers| unsupported_model_failover_upstream(attempts.clone(), headers)
+        }),
+    );
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind unsupported-model failover upstream");
@@ -2477,12 +2465,8 @@ async fn pool_route_fails_over_on_unsupported_model_bad_request() {
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
     )
     .await;
-    wait_for_pool_attempt_status(
-        &state.pool,
-        2,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-    )
-    .await;
+    wait_for_pool_attempt_status(&state.pool, 2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+        .await;
     let attempt_rows = sqlx::query_as::<_, (i64, Option<i64>, Option<String>)>(
         r#"
         SELECT attempt_index, http_status, failure_kind

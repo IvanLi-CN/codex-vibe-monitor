@@ -1,4 +1,11 @@
 use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
 
 pub(crate) async fn query_prompt_cache_conversation_events(
     pool: &Pool<Sqlite>,
@@ -424,10 +431,8 @@ pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries_at
         return Ok(Vec::new());
     }
 
-    const KEY_EXPR: &str =
-        "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
-    let success_like_sql =
-        "(LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') OR (LOWER(TRIM(COALESCE(status, ''))) = 'http_200' AND TRIM(COALESCE(error_message, '')) = ''))";
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+    let success_like_sql = "(LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') OR (LOWER(TRIM(COALESCE(status, ''))) = 'http_200' AND TRIM(COALESCE(error_message, '')) = ''))";
     let mut query = QueryBuilder::<Sqlite>::new("WITH ranked AS (SELECT ");
     query
         .push(KEY_EXPR)
@@ -440,9 +445,11 @@ pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries_at
              ROW_NUMBER() OVER (PARTITION BY ",
         )
         .push(KEY_EXPR)
-        .push(" ORDER BY occurred_at DESC, id DESC) AS row_number \
+        .push(
+            " ORDER BY occurred_at DESC, id DESC) AS row_number \
             FROM codex_invocations \
-            WHERE ")
+            WHERE ",
+        )
         .push(KEY_EXPR)
         .push(" IN (");
 

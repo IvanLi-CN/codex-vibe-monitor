@@ -1,12 +1,15 @@
+use super::*;
+
 trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
-type BoxedWsIo = Box<dyn AsyncReadWrite>;
-type UpstreamWsStream = WebSocketStream<MaybeTlsStream<BoxedWsIo>>;
-const WS_UPSTREAM_DRAIN_AFTER_DOWNSTREAM_CLOSE_TIMEOUT: Duration = Duration::from_millis(1500);
+pub(crate) type BoxedWsIo = Box<dyn AsyncReadWrite>;
+pub(crate) type UpstreamWsStream = WebSocketStream<MaybeTlsStream<BoxedWsIo>>;
+pub(crate) const WS_UPSTREAM_DRAIN_AFTER_DOWNSTREAM_CLOSE_TIMEOUT: Duration =
+    Duration::from_millis(1500);
 
-struct PrefixedIo {
+pub(crate) struct PrefixedIo {
     prefix: std::io::Cursor<Vec<u8>>,
     inner: BoxedWsIo,
 }
@@ -80,7 +83,7 @@ pub(crate) fn websocket_routing_keys_from_headers(
     )
 }
 
-fn requested_websocket_subprotocol(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn requested_websocket_subprotocol(headers: &HeaderMap) -> Option<String> {
     headers
         .get(HeaderName::from_static("sec-websocket-protocol"))
         .and_then(|value| value.to_str().ok())
@@ -96,7 +99,7 @@ pub(crate) fn websocket_effective_prompt_cache_key(prompt_cache_key: Option<&str
         .filter(|value| !value.is_empty())
 }
 
-fn extract_requested_model_from_websocket_uri(original_uri: &Uri) -> Option<String> {
+pub(crate) fn extract_requested_model_from_websocket_uri(original_uri: &Uri) -> Option<String> {
     let raw_query = original_uri.query()?;
     url::form_urlencoded::parse(raw_query.as_bytes()).find_map(|(key, value)| {
         (key == "model")
@@ -227,7 +230,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     })
 }
 
-fn websocket_requires_response_create_first_frame(path: &str) -> bool {
+pub(crate) fn websocket_requires_response_create_first_frame(path: &str) -> bool {
     path == "/v1/responses" || path.starts_with("/v1/responses/")
 }
 
@@ -243,7 +246,7 @@ pub(crate) struct PreparedUpstreamWebSocket {
     requires_response_create_first_frame: bool,
 }
 
-struct PoolRoutingReservationGuard {
+pub(crate) struct PoolRoutingReservationGuard {
     state: Arc<AppState>,
     reservation_key: String,
     armed: bool,
@@ -279,7 +282,7 @@ pub(crate) struct WsPrepareError {
     pub(crate) message: String,
 }
 
-struct WsAttemptFailure {
+pub(crate) struct WsAttemptFailure {
     status: StatusCode,
     message: String,
     retryable: bool,
@@ -588,7 +591,7 @@ pub(crate) async fn prepare_upstream_websocket(
     }
 }
 
-fn exclude_retryable_ws_attempt_failure(
+pub(crate) fn exclude_retryable_ws_attempt_failure(
     failure: &WsAttemptFailure,
     excluded_account_ids: &mut Vec<i64>,
     excluded_upstream_route_keys: &mut HashSet<String>,
@@ -607,14 +610,14 @@ fn exclude_retryable_ws_attempt_failure(
     Ok(())
 }
 
-async fn account_supports_upstream_websocket(
+pub(crate) async fn account_supports_upstream_websocket(
     state: &AppState,
     account: &PoolResolvedAccount,
 ) -> Result<bool> {
     Ok(!account_has_websocket_unsupported_tag(&state.pool, account.account_id).await?)
 }
 
-async fn prepare_single_upstream_websocket_attempt(
+pub(crate) async fn prepare_single_upstream_websocket_attempt(
     state: Arc<AppState>,
     proxy_request_id: u64,
     original_uri: &Uri,
@@ -955,7 +958,7 @@ async fn prepare_single_upstream_websocket_attempt(
     })
 }
 
-async fn proxy_websocket_tunnel(
+pub(crate) async fn proxy_websocket_tunnel(
     state: Arc<AppState>,
     downstream: WebSocket,
     prepared: PreparedUpstreamWebSocket,
@@ -1236,7 +1239,8 @@ async fn proxy_websocket_tunnel(
                 .saturating_sub(drain_started.elapsed());
             if remaining.is_zero() {
                 failure_kind_override = Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED);
-                failure = Some("downstream websocket closed before upstream terminal event".to_string());
+                failure =
+                    Some("downstream websocket closed before upstream terminal event".to_string());
                 break;
             }
             match timeout(remaining, upstream_rx.next()).await {
@@ -1245,7 +1249,9 @@ async fn proxy_websocket_tunnel(
                     if let TungsteniteMessage::Text(text) = &message {
                         let text = text.as_str();
                         let terminal_for_message = ws_text_event_is_terminal(text);
-                        usage_tracker.observe_upstream_text(state.as_ref(), text).await;
+                        usage_tracker
+                            .observe_upstream_text(state.as_ref(), text)
+                            .await;
                         if terminal_for_message {
                             break;
                         }
@@ -1259,7 +1265,8 @@ async fn proxy_websocket_tunnel(
                     }
                 }
                 Ok(Some(Err(err))) => {
-                    let message = format!("upstream websocket error during downstream drain: {err}");
+                    let message =
+                        format!("upstream websocket error during downstream drain: {err}");
                     upstream_route_failure = Some(message.clone());
                     failure = Some(message);
                     break;
@@ -1334,7 +1341,7 @@ async fn proxy_websocket_tunnel(
     reservation_guard.release();
 }
 
-async fn proxy_websocket_tunnel_deferred_prepare(
+pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
     state: Arc<AppState>,
     mut downstream: WebSocket,
     proxy_request_id: u64,
@@ -1352,9 +1359,8 @@ async fn proxy_websocket_tunnel_deferred_prepare(
         match timeout(runtime_timeouts.request_read_timeout, downstream.next()).await {
             Ok(Some(Ok(message))) => message,
             Ok(Some(Err(err))) => {
-                let message = format!(
-                    "failed to read websocket first response.create frame: {err}"
-                );
+                let message =
+                    format!("failed to read websocket first response.create frame: {err}");
                 warn!(
                     proxy_request_id,
                     error = %message,
@@ -1403,32 +1409,30 @@ async fn proxy_websocket_tunnel_deferred_prepare(
         return;
     }
 
-    let payload_inspection = match inspect_ws_initial_response_create_message(
-        &first_downstream_message,
-    ) {
-        Ok(inspection) => inspection,
-        Err(reason) => {
-            warn!(
-                proxy_request_id,
-                reason,
-                "websocket first downstream frame rejected"
-            );
-            record_ws_pre_upstream_failure(
-                state.as_ref(),
-                &trace,
-                PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
-                reason,
-            )
-            .await;
-            let _ = downstream
-                .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
-                    code: axum::extract::ws::close_code::ERROR,
-                    reason: reason.into(),
-                })))
+    let payload_inspection =
+        match inspect_ws_initial_response_create_message(&first_downstream_message) {
+            Ok(inspection) => inspection,
+            Err(reason) => {
+                warn!(
+                    proxy_request_id,
+                    reason, "websocket first downstream frame rejected"
+                );
+                record_ws_pre_upstream_failure(
+                    state.as_ref(),
+                    &trace,
+                    PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    reason,
+                )
                 .await;
-            return;
-        }
-    };
+                let _ = downstream
+                    .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::ERROR,
+                        reason: reason.into(),
+                    })))
+                    .await;
+                return;
+            }
+        };
 
     let requested_model = payload_inspection
         .requested_model
@@ -1496,7 +1500,9 @@ async fn proxy_websocket_tunnel_deferred_prepare(
                     reason: "upstream_unavailable; retry".into(),
                 }
             };
-            let _ = downstream.send(AxumWsMessage::Close(Some(close_frame))).await;
+            let _ = downstream
+                .send(AxumWsMessage::Close(Some(close_frame)))
+                .await;
             return;
         }
     };
@@ -1510,7 +1516,7 @@ async fn proxy_websocket_tunnel_deferred_prepare(
     .await;
 }
 
-async fn record_ws_pre_upstream_failure(
+pub(crate) async fn record_ws_pre_upstream_failure(
     state: &AppState,
     trace: &PoolUpstreamAttemptTraceContext,
     failure_kind: &'static str,
@@ -1561,7 +1567,7 @@ async fn record_ws_pre_upstream_failure(
     }
 }
 
-async fn proxy_websocket_tunnel_immediate_prepare(
+pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
     state: Arc<AppState>,
     mut downstream: WebSocket,
     proxy_request_id: u64,
@@ -1631,21 +1637,16 @@ async fn proxy_websocket_tunnel_immediate_prepare(
                     reason: "upstream_unavailable; retry".into(),
                 }
             };
-            let _ = downstream.send(AxumWsMessage::Close(Some(close_frame))).await;
+            let _ = downstream
+                .send(AxumWsMessage::Close(Some(close_frame)))
+                .await;
             return;
         }
     };
-    proxy_websocket_tunnel(
-        state,
-        downstream,
-        prepared,
-        proxy_request_permit,
-        None,
-    )
-    .await;
+    proxy_websocket_tunnel(state, downstream, prepared, proxy_request_permit, None).await;
 }
 
-struct WsUsageTracker {
+pub(crate) struct WsUsageTracker {
     account: PoolResolvedAccount,
     trace: PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<String>,
@@ -1695,7 +1696,7 @@ impl WsUsageTracker {
     }
 }
 
-struct WsUsageEvent {
+pub(crate) struct WsUsageEvent {
     event_type: String,
     response_id: Option<String>,
     response_status: Option<String>,
@@ -1706,7 +1707,7 @@ struct WsUsageEvent {
 }
 
 #[derive(Debug)]
-struct WsRequestPayloadInspection {
+pub(crate) struct WsRequestPayloadInspection {
     event_type: Option<String>,
     requested_model: Option<String>,
     previous_response_id: Option<String>,
@@ -1720,7 +1721,7 @@ pub(crate) struct WsRequestPayloadGuardOutcome {
     pub(crate) owner_guard_blocked: bool,
 }
 
-fn inspect_ws_initial_response_create_message(
+pub(crate) fn inspect_ws_initial_response_create_message(
     message: &AxumWsMessage,
 ) -> std::result::Result<WsRequestPayloadInspection, &'static str> {
     let AxumWsMessage::Text(text) = message else {
@@ -1735,7 +1736,7 @@ fn inspect_ws_initial_response_create_message(
     Ok(inspection)
 }
 
-fn ws_message_payload_bytes(message: &AxumWsMessage) -> Option<&[u8]> {
+pub(crate) fn ws_message_payload_bytes(message: &AxumWsMessage) -> Option<&[u8]> {
     match message {
         AxumWsMessage::Text(text) => Some(text.as_bytes()),
         AxumWsMessage::Binary(bytes) => Some(bytes.as_ref()),
@@ -1743,7 +1744,7 @@ fn ws_message_payload_bytes(message: &AxumWsMessage) -> Option<&[u8]> {
     }
 }
 
-fn ws_message_starts_response_create_turn(message: &AxumWsMessage) -> bool {
+pub(crate) fn ws_message_starts_response_create_turn(message: &AxumWsMessage) -> bool {
     match message {
         AxumWsMessage::Text(text) => std::str::from_utf8(text.as_bytes())
             .ok()
@@ -1752,7 +1753,7 @@ fn ws_message_starts_response_create_turn(message: &AxumWsMessage) -> bool {
     }
 }
 
-fn ws_text_event_is_response_create(text: &str) -> bool {
+pub(crate) fn ws_text_event_is_response_create(text: &str) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(text) else {
         return false;
     };
@@ -1762,7 +1763,7 @@ fn ws_text_event_is_response_create(text: &str) -> bool {
         .is_some_and(|event_type| event_type == "response.create")
 }
 
-fn extract_nonempty_json_string(value: &Value, pointers: &[&str]) -> Option<String> {
+pub(crate) fn extract_nonempty_json_string(value: &Value, pointers: &[&str]) -> Option<String> {
     pointers.iter().find_map(|pointer| {
         value
             .pointer(pointer)
@@ -1773,7 +1774,7 @@ fn extract_nonempty_json_string(value: &Value, pointers: &[&str]) -> Option<Stri
     })
 }
 
-fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
+pub(crate) fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
     let value = serde_json::from_str::<Value>(text).ok()?;
     let event_type = value.get("type")?.as_str()?.trim().to_string();
     if !ws_event_type_has_billable_usage(event_type.as_str()) {
@@ -1814,14 +1815,16 @@ fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
     })
 }
 
-fn ws_event_type_has_billable_usage(event_type: &str) -> bool {
+pub(crate) fn ws_event_type_has_billable_usage(event_type: &str) -> bool {
     matches!(
         event_type,
         "response.completed" | "response.done" | "response.failed"
     )
 }
 
-fn websocket_upstream_error_marks_account_ws_unsupported(err: &tungstenite::Error) -> bool {
+pub(crate) fn websocket_upstream_error_marks_account_ws_unsupported(
+    err: &tungstenite::Error,
+) -> bool {
     match err {
         tungstenite::Error::Http(response) => matches!(
             response.status(),
@@ -1835,7 +1838,7 @@ fn websocket_upstream_error_marks_account_ws_unsupported(err: &tungstenite::Erro
     }
 }
 
-fn websocket_post_upgrade_close_marks_account_ws_unsupported(
+pub(crate) fn websocket_post_upgrade_close_marks_account_ws_unsupported(
     requires_response_create_first_frame: bool,
     account: &PoolResolvedAccount,
     close_frame: Option<&tungstenite::protocol::CloseFrame>,
@@ -1855,14 +1858,16 @@ fn websocket_post_upgrade_close_marks_account_ws_unsupported(
         })
 }
 
-fn websocket_account_uses_official_openai_base_url(account: &PoolResolvedAccount) -> bool {
+pub(crate) fn websocket_account_uses_official_openai_base_url(
+    account: &PoolResolvedAccount,
+) -> bool {
     account
         .upstream_base_url
         .host_str()
         .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
 }
 
-fn ws_text_event_is_terminal(event_type: &str) -> bool {
+pub(crate) fn ws_text_event_is_terminal(event_type: &str) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(event_type) else {
         return false;
     };
@@ -1872,14 +1877,14 @@ fn ws_text_event_is_terminal(event_type: &str) -> bool {
         .is_some_and(ws_event_type_has_billable_usage)
 }
 
-fn ws_upstream_close_requires_retry(
+pub(crate) fn ws_upstream_close_requires_retry(
     saw_downstream_request: bool,
     saw_terminal_upstream_event: bool,
 ) -> bool {
     saw_downstream_request && !saw_terminal_upstream_event
 }
 
-fn inspect_ws_request_payload(bytes: &[u8]) -> Option<WsRequestPayloadInspection> {
+pub(crate) fn inspect_ws_request_payload(bytes: &[u8]) -> Option<WsRequestPayloadInspection> {
     let value = serde_json::from_slice::<Value>(bytes).ok()?;
     Some(WsRequestPayloadInspection {
         event_type: extract_nonempty_json_string(&value, &["/type"]),
@@ -1898,7 +1903,7 @@ fn inspect_ws_request_payload(bytes: &[u8]) -> Option<WsRequestPayloadInspection
     })
 }
 
-fn ws_request_payload_contains_encrypted_content(bytes: &[u8]) -> bool {
+pub(crate) fn ws_request_payload_contains_encrypted_content(bytes: &[u8]) -> bool {
     inspect_ws_request_payload(bytes).is_some_and(|value| value.contains_encrypted_content)
 }
 
@@ -1944,7 +1949,7 @@ pub(crate) async fn inspect_ws_request_payload_guard(
     })
 }
 
-async fn apply_ws_downstream_payload_guard(
+pub(crate) async fn apply_ws_downstream_payload_guard(
     state: &AppState,
     usage_tracker: &mut WsUsageTracker,
     payload_bytes: &[u8],
@@ -1965,7 +1970,7 @@ async fn apply_ws_downstream_payload_guard(
     Ok(outcome.owner_guard_blocked)
 }
 
-fn ws_usage_event_is_completed_success(event: &WsUsageEvent) -> bool {
+pub(crate) fn ws_usage_event_is_completed_success(event: &WsUsageEvent) -> bool {
     match event.event_type.as_str() {
         "response.completed" => true,
         "response.done" => event
@@ -1976,7 +1981,7 @@ fn ws_usage_event_is_completed_success(event: &WsUsageEvent) -> bool {
     }
 }
 
-async fn persist_ws_usage_event(
+pub(crate) async fn persist_ws_usage_event(
     state: &AppState,
     account: &PoolResolvedAccount,
     trace: &PoolUpstreamAttemptTraceContext,
@@ -2124,7 +2129,7 @@ async fn persist_ws_usage_event(
                         let status = event.response_status.as_deref().unwrap_or("unknown");
                         format!("websocket response terminal status was {status}")
                     })
-            }),
+                }),
             failure_kind: failure_kind.map(str::to_string),
             payload: Some(payload),
             raw_response: raw_event.to_string(),
@@ -2146,7 +2151,7 @@ async fn persist_ws_usage_event(
     .await
 }
 
-fn mark_websocket_payload_transport(payload: String) -> Result<String> {
+pub(crate) fn mark_websocket_payload_transport(payload: String) -> Result<String> {
     let mut value = serde_json::from_str::<Value>(&payload)
         .context("failed to parse websocket proxy payload summary")?;
     if let Some(object) = value.as_object_mut() {
@@ -2158,7 +2163,7 @@ fn mark_websocket_payload_transport(payload: String) -> Result<String> {
     serde_json::to_string(&value).context("failed to serialize websocket proxy payload summary")
 }
 
-fn ws_terminal_event_failure_kind(event: &WsUsageEvent) -> Option<&'static str> {
+pub(crate) fn ws_terminal_event_failure_kind(event: &WsUsageEvent) -> Option<&'static str> {
     if event.event_type == "response.failed" {
         Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
     } else {
@@ -2166,7 +2171,7 @@ fn ws_terminal_event_failure_kind(event: &WsUsageEvent) -> Option<&'static str> 
     }
 }
 
-async fn finalize_ws_attempt(
+pub(crate) async fn finalize_ws_attempt(
     state: &AppState,
     pending: Option<&PendingPoolAttemptRecord>,
     status: &str,
@@ -2227,7 +2232,7 @@ pub(crate) fn build_websocket_upstream_url(base: &Url, original_uri: &Uri) -> Re
     build_proxy_upstream_url(&ws_base, original_uri)
 }
 
-fn build_upstream_ws_request(
+pub(crate) fn build_upstream_ws_request(
     upstream_url: &Url,
     headers: &HeaderMap,
     account: &PoolResolvedAccount,
@@ -2279,7 +2284,7 @@ fn build_upstream_ws_request(
     Ok(request)
 }
 
-async fn connect_upstream_websocket(
+pub(crate) async fn connect_upstream_websocket(
     request: TungsteniteRequest<()>,
     upstream_url: &Url,
     forward_proxy_url: Option<&Url>,
@@ -2421,7 +2426,7 @@ async fn connect_upstream_websocket(
     client_async_tls_with_config(request, stream, None, None).await
 }
 
-async fn connect_tcp_target(
+pub(crate) async fn connect_tcp_target(
     upstream_url: &Url,
 ) -> std::result::Result<TcpStream, tungstenite::Error> {
     let host = upstream_url
@@ -2437,7 +2442,7 @@ async fn connect_tcp_target(
         .map_err(tungstenite::Error::Io)
 }
 
-async fn connect_http_forward_proxy(
+pub(crate) async fn connect_http_forward_proxy(
     forward_proxy_url: &Url,
     proxy_host: &str,
     proxy_port: u16,
@@ -2469,7 +2474,7 @@ async fn connect_http_forward_proxy(
     Ok(Box::new(stream))
 }
 
-async fn connect_socks5_forward_proxy(
+pub(crate) async fn connect_socks5_forward_proxy(
     forward_proxy_url: &Url,
     proxy_host: &str,
     proxy_port: u16,
@@ -2607,7 +2612,7 @@ async fn connect_socks5_forward_proxy(
     Ok(stream)
 }
 
-async fn resolve_socks5_local_target_host(
+pub(crate) async fn resolve_socks5_local_target_host(
     upstream_host: &str,
     upstream_port: u16,
 ) -> std::result::Result<String, tungstenite::Error> {
@@ -2626,7 +2631,7 @@ async fn resolve_socks5_local_target_host(
     Ok(address.ip().to_string())
 }
 
-fn forward_proxy_basic_auth_credential(forward_proxy_url: &Url) -> Option<String> {
+pub(crate) fn forward_proxy_basic_auth_credential(forward_proxy_url: &Url) -> Option<String> {
     let username = forward_proxy_username(forward_proxy_url);
     if username.is_empty() {
         return None;
@@ -2637,15 +2642,15 @@ fn forward_proxy_basic_auth_credential(forward_proxy_url: &Url) -> Option<String
     })
 }
 
-fn forward_proxy_username(forward_proxy_url: &Url) -> String {
+pub(crate) fn forward_proxy_username(forward_proxy_url: &Url) -> String {
     percent_decode_once_lossy(forward_proxy_url.username())
 }
 
-fn forward_proxy_password(forward_proxy_url: &Url) -> Option<String> {
+pub(crate) fn forward_proxy_password(forward_proxy_url: &Url) -> Option<String> {
     forward_proxy_url.password().map(percent_decode_once_lossy)
 }
 
-fn should_forward_websocket_header(
+pub(crate) fn should_forward_websocket_header(
     name: &HeaderName,
     connection_scoped: &HashSet<HeaderName>,
 ) -> bool {
@@ -2659,7 +2664,7 @@ fn should_forward_websocket_header(
         )
 }
 
-fn axum_to_tungstenite_message(message: AxumWsMessage) -> Option<TungsteniteMessage> {
+pub(crate) fn axum_to_tungstenite_message(message: AxumWsMessage) -> Option<TungsteniteMessage> {
     match message {
         AxumWsMessage::Text(value) => Some(TungsteniteMessage::Text(value.into())),
         AxumWsMessage::Binary(value) => Some(TungsteniteMessage::Binary(value.into())),
@@ -2674,7 +2679,7 @@ fn axum_to_tungstenite_message(message: AxumWsMessage) -> Option<TungsteniteMess
     }
 }
 
-fn tungstenite_to_axum_message(message: TungsteniteMessage) -> Option<AxumWsMessage> {
+pub(crate) fn tungstenite_to_axum_message(message: TungsteniteMessage) -> Option<AxumWsMessage> {
     match message {
         TungsteniteMessage::Text(value) => Some(AxumWsMessage::Text(value.to_string())),
         TungsteniteMessage::Binary(value) => Some(AxumWsMessage::Binary(value.to_vec())),
@@ -3127,7 +3132,10 @@ mod websocket_tests {
             inspect_ws_initial_response_create_message(&first_message).expect("first frame");
 
         assert_eq!(inspection.event_type.as_deref(), Some("response.create"));
-        assert_eq!(inspection.requested_model.as_deref(), Some("gpt-5-realtime"));
+        assert_eq!(
+            inspection.requested_model.as_deref(),
+            Some("gpt-5-realtime")
+        );
         assert_eq!(inspection.prompt_cache_key.as_deref(), Some("pck-ws-turn"));
         assert_eq!(
             inspection.previous_response_id.as_deref(),

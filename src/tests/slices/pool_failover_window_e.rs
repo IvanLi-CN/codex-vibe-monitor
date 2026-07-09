@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_metadata() {
@@ -2476,9 +2479,7 @@ async fn yesterday_summary_and_timeseries_only_include_previous_local_day() {
     let yesterday_occurred = yesterday
         .and_hms_opt(12, 34, 0)
         .expect("valid yesterday timestamp");
-    let today_occurred = today
-        .and_hms_opt(12, 34, 0)
-        .expect("valid today timestamp");
+    let today_occurred = today.and_hms_opt(12, 34, 0).expect("valid today timestamp");
 
     sqlx::query(
         r#"
@@ -2595,8 +2596,7 @@ async fn yesterday_summary_and_timeseries_only_include_previous_local_day() {
     assert_eq!(timeseries.points.len(), 24);
     assert!(
         timeseries.points.iter().all(|point| {
-            point.total_count == 0
-                || point.bucket_start.as_str() < expected_end.as_str()
+            point.total_count == 0 || point.bucket_start.as_str() < expected_end.as_str()
         }),
         "non-zero yesterday buckets must stay inside the previous local day"
     );
@@ -2678,7 +2678,7 @@ fn resolve_prompt_cache_conversation_selection_rejects_mutually_exclusive_params
         cursor: None,
         snapshot_at: None,
         detail: None,
-                recent_invocation_limit: None,
+        recent_invocation_limit: None,
     })
     .expect_err("selection should reject mutually exclusive params");
 
@@ -2701,7 +2701,7 @@ fn resolve_prompt_cache_conversation_selection_rejects_activity_hours_and_minute
         cursor: None,
         snapshot_at: None,
         detail: None,
-                recent_invocation_limit: None,
+        recent_invocation_limit: None,
     })
     .expect_err("selection should reject mixed hour and minute windows");
 
@@ -2840,7 +2840,7 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2887,7 +2887,11 @@ async fn prompt_cache_last24h_requests_keep_null_status_rows_neutral() {
     )
     .await;
     let now = Utc::now();
-    let occurred_at = format_naive((now - ChronoDuration::minutes(20)).with_timezone(&Shanghai).naive_local());
+    let occurred_at = format_naive(
+        (now - ChronoDuration::minutes(20))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
 
     sqlx::query(
         r#"
@@ -2949,7 +2953,7 @@ async fn prompt_cache_last24h_requests_keep_null_status_rows_neutral() {
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -3016,7 +3020,7 @@ async fn prompt_cache_last24h_requests_treat_running_rows_with_failure_class_as_
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -3082,7 +3086,7 @@ async fn prompt_cache_last24h_requests_treat_running_rows_with_error_text_as_fai
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -3155,7 +3159,7 @@ async fn prompt_cache_last24h_requests_treat_pending_rows_with_failure_kind_as_f
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -3221,7 +3225,7 @@ async fn prompt_cache_last24h_requests_keep_status_only_http_failures_marked_as_
             cursor: None,
             snapshot_at: None,
             detail: None,
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -3264,13 +3268,11 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
         None,
     )
     .await;
-    sqlx::query(
-        "UPDATE pool_upstream_accounts SET encrypted_credentials = NULL WHERE id = ?1",
-    )
-    .bind(unselectable_account_id)
-    .execute(&state.pool)
-    .await
-    .expect("make prompt cache binding target unselectable");
+    sqlx::query("UPDATE pool_upstream_accounts SET encrypted_credentials = NULL WHERE id = ?1")
+        .bind(unselectable_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("make prompt cache binding target unselectable");
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -3286,13 +3288,12 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     .await
     .expect("seed account policy for inherited conversation response");
 
-    let both_payload: UpdatePromptCacheConversationBindingRequest =
-        serde_json::from_value(json!({
-            "bindingKind": "group",
-            "groupName": group_name,
-            "upstreamAccountId": account_id,
-        }))
-        .expect("deserialize mutually exclusive binding payload");
+    let both_payload: UpdatePromptCacheConversationBindingRequest = serde_json::from_value(json!({
+        "bindingKind": "group",
+        "groupName": group_name,
+        "upstreamAccountId": account_id,
+    }))
+    .expect("deserialize mutually exclusive binding payload");
     let prompt_cache_key = "prompt-cache-binding-api+literal&part=value";
     let both_err = patch_prompt_cache_conversation_binding(
         State(state.clone()),
@@ -3334,7 +3335,10 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     )
     .await
     .expect("account binding without policy override should save");
-    assert_eq!(inherited_account_response.allow_switch_upstream, Some(false));
+    assert_eq!(
+        inherited_account_response.allow_switch_upstream,
+        Some(false)
+    );
     assert_eq!(
         inherited_account_response.fast_mode_rewrite_mode,
         Some(TagFastModeRewriteMode::ForceRemove)
@@ -3424,7 +3428,10 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
             "gpt-5.1-codex-mini".to_string()
         ])
     );
-    assert_eq!(account_response.forward_proxy_key.as_deref(), Some("__direct__"));
+    assert_eq!(
+        account_response.forward_proxy_key.as_deref(),
+        Some("__direct__")
+    );
     let conversation_override =
         load_prompt_cache_conversation_routing_override(&state.pool, Some(prompt_cache_key))
             .await
@@ -3482,7 +3489,7 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
             "availableModels": null,
             "forwardProxyKey": null,
         }))
-            .expect("deserialize clear binding payload");
+        .expect("deserialize clear binding payload");
     let Json(clear_response) = patch_prompt_cache_conversation_binding(
         State(state.clone()),
         AxumPath(prompt_cache_key.to_string()),
@@ -3539,12 +3546,10 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
             .await
             .expect("clearing a binding should leave existing sticky route intact");
     assert_eq!(sticky_account_id_after_clear, account_id);
-    let Json(get_response) = get_prompt_cache_conversation_binding(
-        State(state),
-        AxumPath(prompt_cache_key.to_string()),
-    )
-    .await
-    .expect("get cleared binding");
+    let Json(get_response) =
+        get_prompt_cache_conversation_binding(State(state), AxumPath(prompt_cache_key.to_string()))
+            .await
+            .expect("get cleared binding");
     assert_eq!(get_response.binding_kind, "none");
 }
 
@@ -3578,13 +3583,12 @@ async fn prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slot
     .expect("enable node shunt group with no selectable slot proxies");
 
     let prompt_cache_key = "prompt-cache-proxy-override-node-shunt";
-    let payload: UpdatePromptCacheConversationBindingRequest =
-        serde_json::from_value(json!({
-            "bindingKind": "upstreamAccount",
-            "upstreamAccountId": account_id,
-            "forwardProxyKey": "__direct__",
-        }))
-        .expect("deserialize proxy override payload");
+    let payload: UpdatePromptCacheConversationBindingRequest = serde_json::from_value(json!({
+        "bindingKind": "upstreamAccount",
+        "upstreamAccountId": account_id,
+        "forwardProxyKey": "__direct__",
+    }))
+    .expect("deserialize proxy override payload");
     let Json(_) = patch_prompt_cache_conversation_binding(
         State(state.clone()),
         AxumPath(prompt_cache_key.to_string()),
@@ -3679,7 +3683,10 @@ async fn prompt_cache_conversation_binding_route_accepts_encoded_key() {
         .await
         .expect("patch route binding over router");
     let patch_status = patch_response.status();
-    let patch_body = patch_response.text().await.expect("read patch response body");
+    let patch_body = patch_response
+        .text()
+        .await
+        .expect("read patch response body");
     assert_eq!(
         patch_status,
         reqwest::StatusCode::OK,
@@ -3804,8 +3811,14 @@ async fn prompt_cache_group_binding_timeout_response_ignores_account_overrides()
         group_response.timeouts.compact_first_byte_timeout_secs,
         Some(22)
     );
-    assert_eq!(group_response.timeouts.responses_stream_timeout_secs, Some(33));
-    assert_eq!(group_response.timeouts.compact_stream_timeout_secs, Some(91));
+    assert_eq!(
+        group_response.timeouts.responses_stream_timeout_secs,
+        Some(33)
+    );
+    assert_eq!(
+        group_response.timeouts.compact_stream_timeout_secs,
+        Some(91)
+    );
     assert_eq!(
         group_response
             .timeout_field_sources
@@ -3819,20 +3832,22 @@ async fn prompt_cache_group_binding_timeout_response_ignores_account_overrides()
         "root"
     );
     assert_eq!(
-        group_response.timeout_field_sources.responses_stream_timeout_secs,
+        group_response
+            .timeout_field_sources
+            .responses_stream_timeout_secs,
         "group"
     );
     assert_eq!(
-        group_response.timeout_field_sources.compact_stream_timeout_secs,
+        group_response
+            .timeout_field_sources
+            .compact_stream_timeout_secs,
         "conversation"
     );
 
-    let Json(get_response) = get_prompt_cache_conversation_binding(
-        State(state),
-        AxumPath(prompt_cache_key.to_string()),
-    )
-    .await
-    .expect("get group timeout binding");
+    let Json(get_response) =
+        get_prompt_cache_conversation_binding(State(state), AxumPath(prompt_cache_key.to_string()))
+            .await
+            .expect("get group timeout binding");
     assert_eq!(
         get_response.timeouts.responses_first_byte_timeout_secs,
         group_response.timeouts.responses_first_byte_timeout_secs
@@ -3866,12 +3881,20 @@ async fn prompt_cache_group_binding_timeout_response_ignores_account_overrides()
             .compact_first_byte_timeout_secs
     );
     assert_eq!(
-        get_response.timeout_field_sources.responses_stream_timeout_secs,
-        group_response.timeout_field_sources.responses_stream_timeout_secs
+        get_response
+            .timeout_field_sources
+            .responses_stream_timeout_secs,
+        group_response
+            .timeout_field_sources
+            .responses_stream_timeout_secs
     );
     assert_eq!(
-        get_response.timeout_field_sources.compact_stream_timeout_secs,
-        group_response.timeout_field_sources.compact_stream_timeout_secs
+        get_response
+            .timeout_field_sources
+            .compact_stream_timeout_secs,
+        group_response
+            .timeout_field_sources
+            .compact_stream_timeout_secs
     );
 }
 
@@ -4063,9 +4086,13 @@ async fn prompt_cache_group_binding_promotes_to_account_after_encrypted_owner_lo
     upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, account_id)
         .await
         .expect("persist owner before promotion");
-    promote_prompt_cache_group_binding_to_upstream_account(&state.pool, prompt_cache_key, account_id)
-        .await
-        .expect("promote group binding to account");
+    promote_prompt_cache_group_binding_to_upstream_account(
+        &state.pool,
+        prompt_cache_key,
+        account_id,
+    )
+    .await
+    .expect("promote group binding to account");
 
     let Json(promoted_response) = get_prompt_cache_conversation_binding(
         State(state.clone()),
@@ -4591,7 +4618,10 @@ async fn prompt_cache_group_promotion_ignores_stale_group_after_operator_rebind(
     .await
     .expect("load binding after valid rebound promotion");
     assert_eq!(promoted_binding.binding_kind, "upstreamAccount");
-    assert_eq!(promoted_binding.upstream_account_id, Some(rebound_account_id));
+    assert_eq!(
+        promoted_binding.upstream_account_id,
+        Some(rebound_account_id)
+    );
 }
 
 #[tokio::test]
@@ -4625,9 +4655,13 @@ async fn prompt_cache_stale_success_cannot_reclaim_owner_after_override_migratio
     .await;
     let prompt_cache_key = "prompt-cache-owner-migration-guard-key";
 
-    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, original_owner_account_id)
-        .await
-        .expect("seed original encrypted owner");
+    upsert_prompt_cache_encrypted_session_owner(
+        &state.pool,
+        prompt_cache_key,
+        original_owner_account_id,
+    )
+    .await
+    .expect("seed original encrypted owner");
 
     let target_group_payload: UpdatePromptCacheConversationBindingRequest =
         serde_json::from_value(json!({

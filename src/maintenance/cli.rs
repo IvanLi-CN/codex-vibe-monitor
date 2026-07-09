@@ -1,4 +1,6 @@
-async fn run_cli_command(
+use super::*;
+
+pub(crate) async fn run_cli_command(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     command: &CliCommand,

@@ -1,110 +1,112 @@
+use super::*;
+
 #[allow(dead_code)]
 #[derive(Debug, FromRow)]
 pub(crate) struct UpstreamAccountRow {
-    id: i64,
-    kind: String,
-    provider: String,
-    display_name: String,
-    group_name: Option<String>,
-    is_mother: i64,
-    note: Option<String>,
-    status: String,
-    enabled: i64,
-    email: Option<String>,
+    pub(crate) id: i64,
+    pub(crate) kind: String,
+    pub(crate) provider: String,
+    pub(crate) display_name: String,
+    pub(crate) group_name: Option<String>,
+    pub(crate) is_mother: i64,
+    pub(crate) note: Option<String>,
+    pub(crate) status: String,
+    pub(crate) enabled: i64,
+    pub(crate) email: Option<String>,
     #[sqlx(default)]
-    verified_email: Option<String>,
-    chatgpt_account_id: Option<String>,
-    chatgpt_user_id: Option<String>,
-    plan_type: Option<String>,
-    plan_type_observed_at: Option<String>,
-    masked_api_key: Option<String>,
-    encrypted_credentials: Option<String>,
+    pub(crate) verified_email: Option<String>,
+    pub(crate) chatgpt_account_id: Option<String>,
+    pub(crate) chatgpt_user_id: Option<String>,
+    pub(crate) plan_type: Option<String>,
+    pub(crate) plan_type_observed_at: Option<String>,
+    pub(crate) masked_api_key: Option<String>,
+    pub(crate) encrypted_credentials: Option<String>,
     #[sqlx(default)]
-    has_refresh_token: Option<i64>,
-    token_expires_at: Option<String>,
-    last_refreshed_at: Option<String>,
-    last_synced_at: Option<String>,
-    last_successful_sync_at: Option<String>,
-    last_activity_at: Option<String>,
-    last_error: Option<String>,
-    last_error_at: Option<String>,
-    last_action: Option<String>,
-    last_action_source: Option<String>,
-    last_action_reason_code: Option<String>,
-    last_action_reason_message: Option<String>,
-    last_action_http_status: Option<i64>,
-    last_action_invoke_id: Option<String>,
-    last_action_at: Option<String>,
-    last_selected_at: Option<String>,
-    last_route_failure_at: Option<String>,
-    last_route_failure_kind: Option<String>,
-    cooldown_until: Option<String>,
-    consecutive_route_failures: i64,
-    temporary_route_failure_streak_started_at: Option<String>,
-    compact_support_status: Option<String>,
-    compact_support_observed_at: Option<String>,
-    compact_support_reason: Option<String>,
+    pub(crate) has_refresh_token: Option<i64>,
+    pub(crate) token_expires_at: Option<String>,
+    pub(crate) last_refreshed_at: Option<String>,
+    pub(crate) last_synced_at: Option<String>,
+    pub(crate) last_successful_sync_at: Option<String>,
+    pub(crate) last_activity_at: Option<String>,
+    pub(crate) last_error: Option<String>,
+    pub(crate) last_error_at: Option<String>,
+    pub(crate) last_action: Option<String>,
+    pub(crate) last_action_source: Option<String>,
+    pub(crate) last_action_reason_code: Option<String>,
+    pub(crate) last_action_reason_message: Option<String>,
+    pub(crate) last_action_http_status: Option<i64>,
+    pub(crate) last_action_invoke_id: Option<String>,
+    pub(crate) last_action_at: Option<String>,
+    pub(crate) last_selected_at: Option<String>,
+    pub(crate) last_route_failure_at: Option<String>,
+    pub(crate) last_route_failure_kind: Option<String>,
+    pub(crate) cooldown_until: Option<String>,
+    pub(crate) consecutive_route_failures: i64,
+    pub(crate) temporary_route_failure_streak_started_at: Option<String>,
+    pub(crate) compact_support_status: Option<String>,
+    pub(crate) compact_support_observed_at: Option<String>,
+    pub(crate) compact_support_reason: Option<String>,
     #[sqlx(default)]
-    image_tool_capability: Option<String>,
-    local_primary_limit: Option<f64>,
-    local_secondary_limit: Option<f64>,
-    local_limit_unit: Option<String>,
-    policy_allow_cut_out: Option<i64>,
+    pub(crate) image_tool_capability: Option<String>,
+    pub(crate) local_primary_limit: Option<f64>,
+    pub(crate) local_secondary_limit: Option<f64>,
+    pub(crate) local_limit_unit: Option<String>,
+    pub(crate) policy_allow_cut_out: Option<i64>,
     #[sqlx(default)]
-    policy_allow_cut_in: Option<i64>,
+    pub(crate) policy_allow_cut_in: Option<i64>,
     #[sqlx(default)]
-    policy_priority_tier: Option<String>,
+    pub(crate) policy_priority_tier: Option<String>,
     #[sqlx(default)]
-    policy_fast_mode_rewrite_mode: Option<String>,
+    pub(crate) policy_fast_mode_rewrite_mode: Option<String>,
     #[sqlx(default)]
-    policy_image_tool_rewrite_mode: Option<String>,
+    pub(crate) policy_image_tool_rewrite_mode: Option<String>,
     #[sqlx(default)]
-    policy_concurrency_limit: Option<i64>,
+    pub(crate) policy_concurrency_limit: Option<i64>,
     #[sqlx(default)]
-    policy_upstream_429_retry_enabled: Option<i64>,
+    pub(crate) policy_upstream_429_retry_enabled: Option<i64>,
     #[sqlx(default)]
-    policy_upstream_429_max_retries: Option<i64>,
+    pub(crate) policy_upstream_429_max_retries: Option<i64>,
     #[sqlx(default)]
-    policy_available_models_json: Option<String>,
+    pub(crate) policy_available_models_json: Option<String>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_401: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_401: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_402: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_402: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_403: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_403: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_reauth_required: Option<i64>,
+    pub(crate) policy_status_change_reauth_required: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_429_rate_limit: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_429_rate_limit: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_usage_snapshot_exhausted: Option<i64>,
+    pub(crate) policy_status_change_usage_snapshot_exhausted: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_quota_still_exhausted: Option<i64>,
+    pub(crate) policy_status_change_quota_still_exhausted: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_transport_failure: Option<i64>,
+    pub(crate) policy_status_change_transport_failure: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_server_overloaded: Option<i64>,
+    pub(crate) policy_status_change_upstream_server_overloaded: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_5xx: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_5xx: Option<i64>,
     #[sqlx(default)]
-    policy_responses_first_byte_timeout_secs: Option<i64>,
+    pub(crate) policy_responses_first_byte_timeout_secs: Option<i64>,
     #[sqlx(default)]
-    policy_compact_first_byte_timeout_secs: Option<i64>,
+    pub(crate) policy_compact_first_byte_timeout_secs: Option<i64>,
     #[sqlx(default)]
-    policy_responses_stream_timeout_secs: Option<i64>,
+    pub(crate) policy_responses_stream_timeout_secs: Option<i64>,
     #[sqlx(default)]
-    policy_compact_stream_timeout_secs: Option<i64>,
+    pub(crate) policy_compact_stream_timeout_secs: Option<i64>,
     #[sqlx(default)]
-    bound_proxy_keys_json: Option<String>,
-    upstream_base_url: Option<String>,
+    pub(crate) bound_proxy_keys_json: Option<String>,
+    pub(crate) upstream_base_url: Option<String>,
     #[sqlx(default)]
-    external_client_id: Option<String>,
+    pub(crate) external_client_id: Option<String>,
     #[sqlx(default)]
-    external_source_account_id: Option<String>,
-    created_at: String,
-    updated_at: String,
+    pub(crate) external_source_account_id: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
 }
 
 impl UpstreamAccountRow {
@@ -126,29 +128,29 @@ impl UpstreamAccountRow {
 
 #[derive(Debug, FromRow)]
 pub(crate) struct PoolRoutingSettingsRow {
-    encrypted_api_key: Option<String>,
-    masked_api_key: Option<String>,
-    primary_sync_interval_secs: Option<i64>,
-    secondary_sync_interval_secs: Option<i64>,
-    priority_available_account_cap: Option<i64>,
-    responses_first_byte_timeout_secs: Option<i64>,
-    compact_first_byte_timeout_secs: Option<i64>,
-    responses_stream_timeout_secs: Option<i64>,
-    compact_stream_timeout_secs: Option<i64>,
-    default_first_byte_timeout_secs: Option<i64>,
-    upstream_handshake_timeout_secs: Option<i64>,
-    request_read_timeout_secs: Option<i64>,
+    pub(crate) encrypted_api_key: Option<String>,
+    pub(crate) masked_api_key: Option<String>,
+    pub(crate) primary_sync_interval_secs: Option<i64>,
+    pub(crate) secondary_sync_interval_secs: Option<i64>,
+    pub(crate) priority_available_account_cap: Option<i64>,
+    pub(crate) responses_first_byte_timeout_secs: Option<i64>,
+    pub(crate) compact_first_byte_timeout_secs: Option<i64>,
+    pub(crate) responses_stream_timeout_secs: Option<i64>,
+    pub(crate) compact_stream_timeout_secs: Option<i64>,
+    pub(crate) default_first_byte_timeout_secs: Option<i64>,
+    pub(crate) upstream_handshake_timeout_secs: Option<i64>,
+    pub(crate) request_read_timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PoolRoutingMaintenanceSettings {
-    primary_sync_interval_secs: u64,
-    secondary_sync_interval_secs: u64,
-    priority_available_account_cap: usize,
+    pub(crate) primary_sync_interval_secs: u64,
+    pub(crate) secondary_sync_interval_secs: u64,
+    pub(crate) priority_available_account_cap: usize,
 }
 
 impl PoolRoutingMaintenanceSettings {
-    fn into_response(self) -> PoolRoutingMaintenanceSettingsResponse {
+    pub(crate) fn into_response(self) -> PoolRoutingMaintenanceSettingsResponse {
         PoolRoutingMaintenanceSettingsResponse {
             primary_sync_interval_secs: self.primary_sync_interval_secs,
             secondary_sync_interval_secs: self.secondary_sync_interval_secs,
@@ -166,34 +168,34 @@ pub(crate) enum MaintenanceTier {
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct MaintenanceCandidateRow {
-    id: i64,
-    status: String,
-    last_synced_at: Option<String>,
-    last_action_source: Option<String>,
-    last_action_at: Option<String>,
-    last_selected_at: Option<String>,
-    last_error_at: Option<String>,
-    last_error: Option<String>,
-    last_route_failure_at: Option<String>,
-    last_route_failure_kind: Option<String>,
-    last_action_reason_code: Option<String>,
-    cooldown_until: Option<String>,
-    temporary_route_failure_streak_started_at: Option<String>,
-    token_expires_at: Option<String>,
-    primary_used_percent: Option<f64>,
-    primary_resets_at: Option<String>,
-    secondary_used_percent: Option<f64>,
-    secondary_resets_at: Option<String>,
-    credits_has_credits: Option<i64>,
-    credits_unlimited: Option<i64>,
-    credits_balance: Option<String>,
+    pub(crate) id: i64,
+    pub(crate) status: String,
+    pub(crate) last_synced_at: Option<String>,
+    pub(crate) last_action_source: Option<String>,
+    pub(crate) last_action_at: Option<String>,
+    pub(crate) last_selected_at: Option<String>,
+    pub(crate) last_error_at: Option<String>,
+    pub(crate) last_error: Option<String>,
+    pub(crate) last_route_failure_at: Option<String>,
+    pub(crate) last_route_failure_kind: Option<String>,
+    pub(crate) last_action_reason_code: Option<String>,
+    pub(crate) cooldown_until: Option<String>,
+    pub(crate) temporary_route_failure_streak_started_at: Option<String>,
+    pub(crate) token_expires_at: Option<String>,
+    pub(crate) primary_used_percent: Option<f64>,
+    pub(crate) primary_resets_at: Option<String>,
+    pub(crate) secondary_used_percent: Option<f64>,
+    pub(crate) secondary_resets_at: Option<String>,
+    pub(crate) credits_has_credits: Option<i64>,
+    pub(crate) credits_unlimited: Option<i64>,
+    pub(crate) credits_balance: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MaintenanceDispatchPlan {
-    account_id: i64,
-    tier: MaintenanceTier,
-    sync_interval_secs: u64,
+    pub(crate) account_id: i64,
+    pub(crate) tier: MaintenanceTier,
+    pub(crate) sync_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -204,7 +206,9 @@ pub(crate) enum OptionalField<T> {
     Value(T),
 }
 
-fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<OptionalField<T>, D::Error>
+pub(crate) fn deserialize_optional_field<'de, D, T>(
+    deserializer: D,
+) -> Result<OptionalField<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: serde::de::DeserializeOwned,
@@ -222,41 +226,41 @@ where
 #[derive(Debug, FromRow)]
 #[allow(dead_code)]
 pub(crate) struct PoolStickyRouteRow {
-    sticky_key: String,
-    account_id: i64,
-    created_at: String,
-    updated_at: String,
-    last_seen_at: String,
+    pub(crate) sticky_key: String,
+    pub(crate) account_id: i64,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) last_seen_at: String,
 }
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct AccountRoutingCandidateRow {
-    id: i64,
-    plan_type: Option<String>,
-    secondary_used_percent: Option<f64>,
-    secondary_window_minutes: Option<i64>,
-    secondary_resets_at: Option<String>,
-    primary_used_percent: Option<f64>,
-    primary_window_minutes: Option<i64>,
-    primary_resets_at: Option<String>,
-    local_primary_limit: Option<f64>,
-    local_secondary_limit: Option<f64>,
-    credits_has_credits: Option<i64>,
-    credits_unlimited: Option<i64>,
-    credits_balance: Option<String>,
-    last_selected_at: Option<String>,
-    active_sticky_conversations: i64,
+    pub(crate) id: i64,
+    pub(crate) plan_type: Option<String>,
+    pub(crate) secondary_used_percent: Option<f64>,
+    pub(crate) secondary_window_minutes: Option<i64>,
+    pub(crate) secondary_resets_at: Option<String>,
+    pub(crate) primary_used_percent: Option<f64>,
+    pub(crate) primary_window_minutes: Option<i64>,
+    pub(crate) primary_resets_at: Option<String>,
+    pub(crate) local_primary_limit: Option<f64>,
+    pub(crate) local_secondary_limit: Option<f64>,
+    pub(crate) credits_has_credits: Option<i64>,
+    pub(crate) credits_unlimited: Option<i64>,
+    pub(crate) credits_balance: Option<String>,
+    pub(crate) last_selected_at: Option<String>,
+    pub(crate) active_sticky_conversations: i64,
     #[sqlx(default)]
-    in_flight_reservations: i64,
+    pub(crate) in_flight_reservations: i64,
 }
 
 impl AccountRoutingCandidateRow {
-    fn effective_load(&self) -> i64 {
+    pub(crate) fn effective_load(&self) -> i64 {
         self.active_sticky_conversations
             .saturating_add(self.in_flight_reservations.max(0))
     }
 
-    fn capacity_profile(&self) -> RoutingCapacityProfile {
+    pub(crate) fn capacity_profile(&self) -> RoutingCapacityProfile {
         let signals = self.window_signals();
         if signals.short_signal {
             RoutingCapacityProfile {
@@ -342,7 +346,7 @@ impl AccountRoutingCandidateRow {
         }
     }
 
-    fn scarcity_score(&self, now: DateTime<Utc>) -> f64 {
+    pub(crate) fn scarcity_score(&self, now: DateTime<Utc>) -> f64 {
         let pressure = self.normalized_window_pressure(now);
         match (pressure.short_pressure, pressure.long_pressure) {
             (Some(short), Some(long)) => (0.65 * short) + (0.35 * long),
@@ -354,36 +358,36 @@ impl AccountRoutingCandidateRow {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RoutingCapacityProfile {
-    soft_limit: i64,
-    hard_cap: i64,
+pub(crate) struct RoutingCapacityProfile {
+    pub(crate) soft_limit: i64,
+    pub(crate) hard_cap: i64,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NormalizedRoutingPressure {
-    short_pressure: Option<f64>,
-    long_pressure: Option<f64>,
+pub(crate) struct NormalizedRoutingPressure {
+    pub(crate) short_pressure: Option<f64>,
+    pub(crate) long_pressure: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RoutingWindowSignals {
-    short_signal: bool,
-    long_signal: bool,
+pub(crate) struct RoutingWindowSignals {
+    pub(crate) short_signal: bool,
+    pub(crate) long_signal: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RoutingWindowState {
-    bucket: RoutingWindowBucket,
-    pressure: f64,
+pub(crate) struct RoutingWindowState {
+    pub(crate) bucket: RoutingWindowBucket,
+    pub(crate) pressure: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RoutingWindowBucket {
+pub(crate) enum RoutingWindowBucket {
     Short,
     Long,
 }
 
-fn routing_window_state(
+pub(crate) fn routing_window_state(
     used_percent: Option<f64>,
     window_minutes: Option<i64>,
     resets_at: Option<&str>,
@@ -417,7 +421,7 @@ fn routing_window_state(
     })
 }
 
-fn normalize_unit_ratio(value: f64) -> f64 {
+pub(crate) fn normalize_unit_ratio(value: f64) -> f64 {
     if !value.is_finite() {
         return 0.0;
     }
@@ -425,194 +429,194 @@ fn normalize_unit_ratio(value: f64) -> f64 {
 }
 
 #[derive(Debug, FromRow)]
-struct AccountActiveConversationCountRow {
-    account_id: i64,
-    active_conversation_count: i64,
+pub(crate) struct AccountActiveConversationCountRow {
+    pub(crate) account_id: i64,
+    pub(crate) active_conversation_count: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct TagRow {
-    name: String,
+pub(crate) struct TagRow {
+    pub(crate) name: String,
     #[sqlx(default)]
-    system_key: Option<String>,
+    pub(crate) system_key: Option<String>,
     #[sqlx(default)]
-    protected: i64,
-    allow_cut_out: i64,
-    allow_cut_in: i64,
-    priority_tier: String,
-    fast_mode_rewrite_mode: String,
-    concurrency_limit: i64,
+    pub(crate) protected: i64,
+    pub(crate) allow_cut_out: i64,
+    pub(crate) allow_cut_in: i64,
+    pub(crate) priority_tier: String,
+    pub(crate) fast_mode_rewrite_mode: String,
+    pub(crate) concurrency_limit: i64,
     #[sqlx(default)]
-    upstream_429_retry_enabled: i64,
+    pub(crate) upstream_429_retry_enabled: i64,
     #[sqlx(default)]
-    upstream_429_max_retries: i64,
+    pub(crate) upstream_429_max_retries: i64,
     #[sqlx(default)]
-    available_models_json: Option<String>,
+    pub(crate) available_models_json: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct AccountTagRow {
-    account_id: i64,
-    tag_id: i64,
-    name: String,
+pub(crate) struct AccountTagRow {
+    pub(crate) account_id: i64,
+    pub(crate) tag_id: i64,
+    pub(crate) name: String,
     #[sqlx(default)]
-    system_key: Option<String>,
+    pub(crate) system_key: Option<String>,
     #[sqlx(default)]
-    protected: i64,
-    allow_cut_out: i64,
-    allow_cut_in: i64,
-    priority_tier: String,
-    fast_mode_rewrite_mode: String,
-    concurrency_limit: i64,
+    pub(crate) protected: i64,
+    pub(crate) allow_cut_out: i64,
+    pub(crate) allow_cut_in: i64,
+    pub(crate) priority_tier: String,
+    pub(crate) fast_mode_rewrite_mode: String,
+    pub(crate) concurrency_limit: i64,
     #[sqlx(default)]
-    upstream_429_retry_enabled: i64,
+    pub(crate) upstream_429_retry_enabled: i64,
     #[sqlx(default)]
-    upstream_429_max_retries: i64,
+    pub(crate) upstream_429_max_retries: i64,
     #[sqlx(default)]
-    available_models_json: Option<String>,
+    pub(crate) available_models_json: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct TagListRow {
-    id: i64,
-    name: String,
+pub(crate) struct TagListRow {
+    pub(crate) id: i64,
+    pub(crate) name: String,
     #[sqlx(default)]
-    system_key: Option<String>,
+    pub(crate) system_key: Option<String>,
     #[sqlx(default)]
-    protected: i64,
-    allow_cut_out: i64,
-    allow_cut_in: i64,
-    priority_tier: String,
-    fast_mode_rewrite_mode: String,
-    concurrency_limit: i64,
+    pub(crate) protected: i64,
+    pub(crate) allow_cut_out: i64,
+    pub(crate) allow_cut_in: i64,
+    pub(crate) priority_tier: String,
+    pub(crate) fast_mode_rewrite_mode: String,
+    pub(crate) concurrency_limit: i64,
     #[sqlx(default)]
-    upstream_429_retry_enabled: i64,
+    pub(crate) upstream_429_retry_enabled: i64,
     #[sqlx(default)]
-    upstream_429_max_retries: i64,
+    pub(crate) upstream_429_max_retries: i64,
     #[sqlx(default)]
-    available_models_json: Option<String>,
-    updated_at: String,
-    account_count: i64,
-    group_count: i64,
+    pub(crate) available_models_json: Option<String>,
+    pub(crate) updated_at: String,
+    pub(crate) account_count: i64,
+    pub(crate) group_count: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct UpstreamAccountGroupListRow {
-    group_name: String,
-    account_count: i64,
-    note: Option<String>,
-    bound_proxy_keys_json: Option<String>,
-    node_shunt_enabled: Option<i64>,
-    single_account_rotation_enabled: Option<i64>,
-    upstream_429_retry_enabled: Option<i64>,
-    upstream_429_max_retries: Option<i64>,
-    concurrency_limit: Option<i64>,
-    policy_allow_cut_out: Option<i64>,
-    policy_allow_cut_in: Option<i64>,
-    policy_priority_tier: Option<String>,
-    policy_fast_mode_rewrite_mode: Option<String>,
+pub(crate) struct UpstreamAccountGroupListRow {
+    pub(crate) group_name: String,
+    pub(crate) account_count: i64,
+    pub(crate) note: Option<String>,
+    pub(crate) bound_proxy_keys_json: Option<String>,
+    pub(crate) node_shunt_enabled: Option<i64>,
+    pub(crate) single_account_rotation_enabled: Option<i64>,
+    pub(crate) upstream_429_retry_enabled: Option<i64>,
+    pub(crate) upstream_429_max_retries: Option<i64>,
+    pub(crate) concurrency_limit: Option<i64>,
+    pub(crate) policy_allow_cut_out: Option<i64>,
+    pub(crate) policy_allow_cut_in: Option<i64>,
+    pub(crate) policy_priority_tier: Option<String>,
+    pub(crate) policy_fast_mode_rewrite_mode: Option<String>,
     #[sqlx(default)]
-    policy_image_tool_rewrite_mode: Option<String>,
-    policy_concurrency_limit: Option<i64>,
-    policy_upstream_429_retry_enabled: Option<i64>,
-    policy_upstream_429_max_retries: Option<i64>,
-    policy_available_models_json: Option<String>,
+    pub(crate) policy_image_tool_rewrite_mode: Option<String>,
+    pub(crate) policy_concurrency_limit: Option<i64>,
+    pub(crate) policy_upstream_429_retry_enabled: Option<i64>,
+    pub(crate) policy_upstream_429_max_retries: Option<i64>,
+    pub(crate) policy_available_models_json: Option<String>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_401: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_401: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_402: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_402: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_403: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_403: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_reauth_required: Option<i64>,
+    pub(crate) policy_status_change_reauth_required: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_429_rate_limit: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_429_rate_limit: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_usage_snapshot_exhausted: Option<i64>,
+    pub(crate) policy_status_change_usage_snapshot_exhausted: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_quota_still_exhausted: Option<i64>,
+    pub(crate) policy_status_change_quota_still_exhausted: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_transport_failure: Option<i64>,
+    pub(crate) policy_status_change_transport_failure: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_server_overloaded: Option<i64>,
+    pub(crate) policy_status_change_upstream_server_overloaded: Option<i64>,
     #[sqlx(default)]
-    policy_status_change_upstream_http_5xx: Option<i64>,
+    pub(crate) policy_status_change_upstream_http_5xx: Option<i64>,
     #[sqlx(default)]
-    policy_responses_first_byte_timeout_secs: Option<i64>,
+    pub(crate) policy_responses_first_byte_timeout_secs: Option<i64>,
     #[sqlx(default)]
-    policy_compact_first_byte_timeout_secs: Option<i64>,
+    pub(crate) policy_compact_first_byte_timeout_secs: Option<i64>,
     #[sqlx(default)]
-    policy_responses_stream_timeout_secs: Option<i64>,
+    pub(crate) policy_responses_stream_timeout_secs: Option<i64>,
     #[sqlx(default)]
-    policy_compact_stream_timeout_secs: Option<i64>,
+    pub(crate) policy_compact_stream_timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, FromRow)]
 pub(crate) struct StickyKeyAggregateRow {
-    sticky_key: String,
-    request_count: i64,
-    total_tokens: i64,
-    total_cost: f64,
-    created_at: String,
-    last_activity_at: String,
+    pub(crate) sticky_key: String,
+    pub(crate) request_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+    pub(crate) created_at: String,
+    pub(crate) last_activity_at: String,
 }
 
 #[derive(Debug, FromRow)]
-struct AccountLastActivityRow {
-    account_id: i64,
-    last_activity_at: String,
+pub(crate) struct AccountLastActivityRow {
+    pub(crate) account_id: i64,
+    pub(crate) last_activity_at: String,
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct AccountWindowUsageRow {
-    id: i64,
-    occurred_at: String,
-    upstream_account_id: i64,
-    input_tokens: Option<i64>,
-    output_tokens: Option<i64>,
-    cache_input_tokens: Option<i64>,
-    total_tokens: Option<i64>,
-    cost: Option<f64>,
+pub(crate) struct AccountWindowUsageRow {
+    pub(crate) id: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) upstream_account_id: i64,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) total_tokens: Option<i64>,
+    pub(crate) cost: Option<f64>,
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct AccountWindowUsageHourlyRow {
-    bucket_start_epoch: i64,
-    upstream_account_id: i64,
-    request_count: i64,
-    total_tokens: i64,
-    total_cost: f64,
-    input_tokens: i64,
-    output_tokens: i64,
-    cache_input_tokens: i64,
+pub(crate) struct AccountWindowUsageHourlyRow {
+    pub(crate) bucket_start_epoch: i64,
+    pub(crate) upstream_account_id: i64,
+    pub(crate) request_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct AccountWindowUsageMinuteRow {
-    bucket_start_epoch: i64,
-    upstream_account_id: i64,
-    request_count: i64,
-    total_tokens: i64,
-    total_cost: f64,
-    input_tokens: i64,
-    output_tokens: i64,
-    cache_input_tokens: i64,
+pub(crate) struct AccountWindowUsageMinuteRow {
+    pub(crate) bucket_start_epoch: i64,
+    pub(crate) upstream_account_id: i64,
+    pub(crate) request_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct AccountWindowUsageAccumulator {
-    request_count: i64,
-    total_tokens: i64,
-    total_cost: f64,
-    input_tokens: i64,
-    output_tokens: i64,
-    cache_input_tokens: i64,
+pub(crate) struct AccountWindowUsageAccumulator {
+    pub(crate) request_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
 }
 
 impl AccountWindowUsageAccumulator {
-    fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.request_count += other.request_count;
         self.total_tokens += other.total_tokens;
         self.total_cost += other.total_cost;
@@ -621,7 +625,7 @@ impl AccountWindowUsageAccumulator {
         self.cache_input_tokens += other.cache_input_tokens;
     }
 
-    fn add_row(&mut self, row: &AccountWindowUsageRow) {
+    pub(crate) fn add_row(&mut self, row: &AccountWindowUsageRow) {
         self.request_count += 1;
         self.total_tokens += row.total_tokens.unwrap_or_default();
         self.total_cost += row.cost.unwrap_or_default();
@@ -630,7 +634,7 @@ impl AccountWindowUsageAccumulator {
         self.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
     }
 
-    fn add_hourly_row(&mut self, row: &AccountWindowUsageHourlyRow) {
+    pub(crate) fn add_hourly_row(&mut self, row: &AccountWindowUsageHourlyRow) {
         self.request_count += row.request_count.max(0);
         self.total_tokens += row.total_tokens.max(0);
         self.total_cost += row.total_cost.max(0.0);
@@ -639,7 +643,7 @@ impl AccountWindowUsageAccumulator {
         self.cache_input_tokens += row.cache_input_tokens.max(0);
     }
 
-    fn add_minute_row(&mut self, row: &AccountWindowUsageMinuteRow) {
+    pub(crate) fn add_minute_row(&mut self, row: &AccountWindowUsageMinuteRow) {
         self.request_count += row.request_count.max(0);
         self.total_tokens += row.total_tokens.max(0);
         self.total_cost += row.total_cost.max(0.0);
@@ -648,7 +652,7 @@ impl AccountWindowUsageAccumulator {
         self.cache_input_tokens += row.cache_input_tokens.max(0);
     }
 
-    fn into_snapshot(self) -> RateWindowActualUsage {
+    pub(crate) fn into_snapshot(self) -> RateWindowActualUsage {
         RateWindowActualUsage {
             request_count: self.request_count,
             total_tokens: self.total_tokens,
@@ -661,31 +665,31 @@ impl AccountWindowUsageAccumulator {
 }
 
 #[derive(Debug, Clone, Default)]
-struct AccountWindowUsagePlan {
-    primary: Option<AccountWindowUsageRange>,
-    secondary: Option<AccountWindowUsageRange>,
+pub(crate) struct AccountWindowUsagePlan {
+    pub(crate) primary: Option<AccountWindowUsageRange>,
+    pub(crate) secondary: Option<AccountWindowUsageRange>,
 }
 
 #[derive(Debug, Clone)]
-struct AccountWindowUsageRange {
-    start_at: String,
-    end_at: String,
-    start_at_epoch: i64,
-    end_at_epoch: i64,
-    full_minute_start_epoch: Option<i64>,
-    full_minute_end_epoch: Option<i64>,
-    full_hour_start_epoch: Option<i64>,
-    full_hour_end_epoch: Option<i64>,
+pub(crate) struct AccountWindowUsageRange {
+    pub(crate) start_at: String,
+    pub(crate) end_at: String,
+    pub(crate) start_at_epoch: i64,
+    pub(crate) end_at_epoch: i64,
+    pub(crate) full_minute_start_epoch: Option<i64>,
+    pub(crate) full_minute_end_epoch: Option<i64>,
+    pub(crate) full_hour_start_epoch: Option<i64>,
+    pub(crate) full_hour_end_epoch: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct AccountWindowUsageRangeBounds {
-    start_at: DateTime<Utc>,
-    end_at: DateTime<Utc>,
+pub(crate) struct AccountWindowUsageRangeBounds {
+    pub(crate) start_at: DateTime<Utc>,
+    pub(crate) end_at: DateTime<Utc>,
 }
 
 impl AccountWindowUsageRangeBounds {
-    fn into_range(self) -> AccountWindowUsageRange {
+    pub(crate) fn into_range(self) -> AccountWindowUsageRange {
         let start_epoch = self.start_at.timestamp();
         let end_epoch = self.end_at.timestamp();
         let full_minute_start_epoch = if start_epoch.rem_euclid(60) == 0 {
@@ -718,171 +722,171 @@ impl AccountWindowUsageRangeBounds {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct AccountWindowUsageSummary {
-    primary: AccountWindowUsageAccumulator,
-    secondary: AccountWindowUsageAccumulator,
+pub(crate) struct AccountWindowUsageSummary {
+    pub(crate) primary: AccountWindowUsageAccumulator,
+    pub(crate) secondary: AccountWindowUsageAccumulator,
 }
 
 impl AccountWindowUsageSummary {
-    fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.primary.merge(other.primary);
         self.secondary.merge(other.secondary);
     }
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct UpstreamAccountActionEventRow {
-    id: i64,
-    occurred_at: String,
-    action: String,
-    source: String,
-    account_display_name: Option<String>,
-    account_group_name: Option<String>,
-    forward_proxy_key: Option<String>,
-    forward_proxy_display_name: Option<String>,
-    forward_proxy_egress_ip: Option<String>,
-    result: Option<String>,
-    result_description: Option<String>,
-    reason_code: Option<String>,
-    reason_message: Option<String>,
-    http_status: Option<i64>,
-    failure_kind: Option<String>,
-    invoke_id: Option<String>,
-    sticky_key: Option<String>,
-    created_at: String,
+pub(crate) struct UpstreamAccountActionEventRow {
+    pub(crate) id: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) action: String,
+    pub(crate) source: String,
+    pub(crate) account_display_name: Option<String>,
+    pub(crate) account_group_name: Option<String>,
+    pub(crate) forward_proxy_key: Option<String>,
+    pub(crate) forward_proxy_display_name: Option<String>,
+    pub(crate) forward_proxy_egress_ip: Option<String>,
+    pub(crate) result: Option<String>,
+    pub(crate) result_description: Option<String>,
+    pub(crate) reason_code: Option<String>,
+    pub(crate) reason_message: Option<String>,
+    pub(crate) http_status: Option<i64>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) invoke_id: Option<String>,
+    pub(crate) sticky_key: Option<String>,
+    pub(crate) created_at: String,
 }
 
 #[derive(Debug, FromRow)]
 pub(crate) struct StickyKeyEventRow {
-    occurred_at: String,
-    status: String,
-    request_tokens: i64,
-    sticky_key: String,
+    pub(crate) occurred_at: String,
+    pub(crate) status: String,
+    pub(crate) request_tokens: i64,
+    pub(crate) sticky_key: String,
 }
 
 #[derive(Debug, FromRow)]
 pub(crate) struct AccountStickyKeyInvocationPreviewRow {
-    sticky_key: String,
-    id: i64,
-    invoke_id: String,
-    occurred_at: String,
-    status: String,
-    failure_class: Option<String>,
-    route_mode: Option<String>,
-    model: Option<String>,
-    request_model: Option<String>,
-    response_model: Option<String>,
-    total_tokens: i64,
-    cost: Option<f64>,
-    source: Option<String>,
-    input_tokens: Option<i64>,
-    output_tokens: Option<i64>,
-    cache_input_tokens: Option<i64>,
-    reasoning_tokens: Option<i64>,
-    reasoning_effort: Option<String>,
-    error_message: Option<String>,
-    downstream_status_code: Option<i64>,
-    downstream_error_message: Option<String>,
-    failure_kind: Option<String>,
-    is_actionable: Option<i64>,
-    proxy_display_name: Option<String>,
-    upstream_account_id: Option<i64>,
-    upstream_account_name: Option<String>,
-    response_content_encoding: Option<String>,
-    transport: Option<String>,
-    requested_service_tier: Option<String>,
-    service_tier: Option<String>,
-    billing_service_tier: Option<String>,
-    t_req_read_ms: Option<f64>,
-    t_req_parse_ms: Option<f64>,
-    t_upstream_connect_ms: Option<f64>,
-    t_upstream_ttfb_ms: Option<f64>,
-    t_upstream_stream_ms: Option<f64>,
-    t_resp_parse_ms: Option<f64>,
-    t_persist_ms: Option<f64>,
-    t_total_ms: Option<f64>,
-    endpoint: Option<String>,
-    compaction_request_kind: Option<String>,
-    compaction_response_kind: Option<String>,
-    image_intent: Option<String>,
+    pub(crate) sticky_key: String,
+    pub(crate) id: i64,
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
+    pub(crate) status: String,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) route_mode: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) request_model: Option<String>,
+    pub(crate) response_model: Option<String>,
+    pub(crate) total_tokens: i64,
+    pub(crate) cost: Option<f64>,
+    pub(crate) source: Option<String>,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) reasoning_tokens: Option<i64>,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) error_message: Option<String>,
+    pub(crate) downstream_status_code: Option<i64>,
+    pub(crate) downstream_error_message: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) is_actionable: Option<i64>,
+    pub(crate) proxy_display_name: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) response_content_encoding: Option<String>,
+    pub(crate) transport: Option<String>,
+    pub(crate) requested_service_tier: Option<String>,
+    pub(crate) service_tier: Option<String>,
+    pub(crate) billing_service_tier: Option<String>,
+    pub(crate) t_req_read_ms: Option<f64>,
+    pub(crate) t_req_parse_ms: Option<f64>,
+    pub(crate) t_upstream_connect_ms: Option<f64>,
+    pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) t_upstream_stream_ms: Option<f64>,
+    pub(crate) t_resp_parse_ms: Option<f64>,
+    pub(crate) t_persist_ms: Option<f64>,
+    pub(crate) t_total_ms: Option<f64>,
+    pub(crate) endpoint: Option<String>,
+    pub(crate) compaction_request_kind: Option<String>,
+    pub(crate) compaction_response_kind: Option<String>,
+    pub(crate) image_intent: Option<String>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, FromRow)]
-struct UpstreamAccountSampleRow {
-    captured_at: String,
-    limit_id: Option<String>,
-    limit_name: Option<String>,
-    plan_type: Option<String>,
-    primary_used_percent: Option<f64>,
-    primary_window_minutes: Option<i64>,
-    primary_resets_at: Option<String>,
-    secondary_used_percent: Option<f64>,
-    secondary_window_minutes: Option<i64>,
-    secondary_resets_at: Option<String>,
-    credits_has_credits: Option<i64>,
-    credits_unlimited: Option<i64>,
-    credits_balance: Option<String>,
+pub(crate) struct UpstreamAccountSampleRow {
+    pub(crate) captured_at: String,
+    pub(crate) limit_id: Option<String>,
+    pub(crate) limit_name: Option<String>,
+    pub(crate) plan_type: Option<String>,
+    pub(crate) primary_used_percent: Option<f64>,
+    pub(crate) primary_window_minutes: Option<i64>,
+    pub(crate) primary_resets_at: Option<String>,
+    pub(crate) secondary_used_percent: Option<f64>,
+    pub(crate) secondary_window_minutes: Option<i64>,
+    pub(crate) secondary_resets_at: Option<String>,
+    pub(crate) credits_has_credits: Option<i64>,
+    pub(crate) credits_unlimited: Option<i64>,
+    pub(crate) credits_balance: Option<String>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct OauthLoginSessionRow {
-    login_id: String,
-    account_id: Option<i64>,
-    display_name: Option<String>,
+    pub(crate) login_id: String,
+    pub(crate) account_id: Option<i64>,
+    pub(crate) display_name: Option<String>,
     #[sqlx(default)]
-    email: Option<String>,
-    group_name: Option<String>,
-    group_bound_proxy_keys_json: Option<String>,
-    group_node_shunt_enabled: i64,
-    group_node_shunt_enabled_requested: i64,
-    group_single_account_rotation_enabled: i64,
-    group_single_account_rotation_enabled_requested: i64,
-    is_mother: i64,
-    note: Option<String>,
-    tag_ids_json: Option<String>,
-    group_note: Option<String>,
-    group_concurrency_limit: i64,
-    mailbox_session_id: Option<String>,
-    mailbox_address: Option<String>,
-    state: String,
-    pkce_verifier: String,
-    redirect_uri: String,
-    status: String,
-    auth_url: String,
-    error_message: Option<String>,
-    pending_encrypted_credentials: Option<String>,
-    pending_token_expires_at: Option<String>,
-    pending_verified_email: Option<String>,
-    pending_chatgpt_account_id: Option<String>,
-    pending_chatgpt_user_id: Option<String>,
-    pending_plan_type: Option<String>,
-    pending_has_refresh_token: Option<i64>,
-    expires_at: String,
-    consumed_at: Option<String>,
-    created_at: String,
-    updated_at: String,
+    pub(crate) email: Option<String>,
+    pub(crate) group_name: Option<String>,
+    pub(crate) group_bound_proxy_keys_json: Option<String>,
+    pub(crate) group_node_shunt_enabled: i64,
+    pub(crate) group_node_shunt_enabled_requested: i64,
+    pub(crate) group_single_account_rotation_enabled: i64,
+    pub(crate) group_single_account_rotation_enabled_requested: i64,
+    pub(crate) is_mother: i64,
+    pub(crate) note: Option<String>,
+    pub(crate) tag_ids_json: Option<String>,
+    pub(crate) group_note: Option<String>,
+    pub(crate) group_concurrency_limit: i64,
+    pub(crate) mailbox_session_id: Option<String>,
+    pub(crate) mailbox_address: Option<String>,
+    pub(crate) state: String,
+    pub(crate) pkce_verifier: String,
+    pub(crate) redirect_uri: String,
+    pub(crate) status: String,
+    pub(crate) auth_url: String,
+    pub(crate) error_message: Option<String>,
+    pub(crate) pending_encrypted_credentials: Option<String>,
+    pub(crate) pending_token_expires_at: Option<String>,
+    pub(crate) pending_verified_email: Option<String>,
+    pub(crate) pending_chatgpt_account_id: Option<String>,
+    pub(crate) pending_chatgpt_user_id: Option<String>,
+    pub(crate) pending_plan_type: Option<String>,
+    pub(crate) pending_has_refresh_token: Option<i64>,
+    pub(crate) expires_at: String,
+    pub(crate) consumed_at: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, FromRow)]
-struct OauthMailboxSessionRow {
-    session_id: String,
-    remote_email_id: String,
-    email_address: String,
-    email_domain: String,
-    mailbox_source: Option<String>,
-    latest_code_value: Option<String>,
-    latest_code_source: Option<String>,
-    latest_code_updated_at: Option<String>,
-    invite_subject: Option<String>,
-    invite_copy_value: Option<String>,
-    invite_copy_label: Option<String>,
-    invite_updated_at: Option<String>,
-    invited: i64,
-    last_message_id: Option<String>,
-    created_at: String,
-    updated_at: String,
-    expires_at: String,
+pub(crate) struct OauthMailboxSessionRow {
+    pub(crate) session_id: String,
+    pub(crate) remote_email_id: String,
+    pub(crate) email_address: String,
+    pub(crate) email_domain: String,
+    pub(crate) mailbox_source: Option<String>,
+    pub(crate) latest_code_value: Option<String>,
+    pub(crate) latest_code_source: Option<String>,
+    pub(crate) latest_code_updated_at: Option<String>,
+    pub(crate) invite_subject: Option<String>,
+    pub(crate) invite_copy_value: Option<String>,
+    pub(crate) invite_copy_label: Option<String>,
+    pub(crate) invite_updated_at: Option<String>,
+    pub(crate) invited: i64,
+    pub(crate) last_message_id: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) expires_at: String,
 }

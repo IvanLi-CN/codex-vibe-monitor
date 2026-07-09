@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[test]
 fn same_origin_settings_write_rejects_mismatched_origin() {
     let mut headers = HeaderMap::new();
@@ -2292,8 +2295,7 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
 
     let mut retention_config = state.config.clone();
     retention_config.pool_upstream_request_attempts_archive_ttl_days = 30;
-    let summary =
-        run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
+    let summary = run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
         .await
         .expect("run retention maintenance");
     assert_eq!(summary.pool_upstream_request_attempt_rows_archived, 2);
@@ -2390,7 +2392,8 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
 }
 
 #[tokio::test]
-async fn forward_proxy_timeseries_preserves_materialized_history_when_same_month_archive_reappears() {
+async fn forward_proxy_timeseries_preserves_materialized_history_when_same_month_archive_reappears()
+{
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
@@ -2481,7 +2484,10 @@ async fn forward_proxy_timeseries_preserves_materialized_history_when_same_month
         run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
             .await
             .expect("run second retention pass");
-    assert_eq!(second_summary.pool_upstream_request_attempt_rows_archived, 1);
+    assert_eq!(
+        second_summary.pool_upstream_request_attempt_rows_archived,
+        1
+    );
 
     let remaining_after_second: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts'",
@@ -2619,10 +2625,9 @@ async fn forward_proxy_timeseries_reads_pending_archived_node_health_without_mat
 
     let mut retention_config = state.config.clone();
     retention_config.pool_upstream_request_attempts_archive_ttl_days = 120;
-    let summary =
-        run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
-            .await
-            .expect("run retention maintenance");
+    let summary = run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
+        .await
+        .expect("run retention maintenance");
     assert_eq!(summary.pool_upstream_request_attempt_rows_archived, 2);
 
     sqlx::query("DELETE FROM pool_upstream_node_health_archive")
@@ -2671,8 +2676,16 @@ async fn forward_proxy_timeseries_reads_pending_archived_node_health_without_mat
         .iter()
         .find(|node| node.key == manual_runtime_key)
         .expect("manual node should remain queryable");
-    let success_total: i64 = manual.buckets.iter().map(|bucket| bucket.success_count).sum();
-    let failure_total: i64 = manual.buckets.iter().map(|bucket| bucket.failure_count).sum();
+    let success_total: i64 = manual
+        .buckets
+        .iter()
+        .map(|bucket| bucket.success_count)
+        .sum();
+    let failure_total: i64 = manual
+        .buckets
+        .iter()
+        .map(|bucket| bucket.failure_count)
+        .sum();
     assert_eq!(success_total, 1);
     assert_eq!(failure_total, 1);
 
@@ -2739,10 +2752,9 @@ async fn forward_proxy_live_stats_best_effort_skip_unreadable_pending_node_healt
     .await;
     let mut retention_config = state.config.clone();
     retention_config.pool_upstream_request_attempts_archive_ttl_days = 120;
-    let summary =
-        run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
-            .await
-            .expect("run retention maintenance");
+    let summary = run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
+        .await
+        .expect("run retention maintenance");
     assert_eq!(summary.pool_upstream_request_attempt_rows_archived, 1);
 
     let archive_path = sqlx::query_scalar::<_, String>(
@@ -2839,7 +2851,10 @@ async fn forward_proxy_timeseries_ignores_cached_rows_for_pending_node_health_ar
     };
 
     let older_attempt_at = Utc
-        .timestamp_opt(Utc::now().timestamp() - ChronoDuration::days(68).num_seconds(), 0)
+        .timestamp_opt(
+            Utc::now().timestamp() - ChronoDuration::days(68).num_seconds(),
+            0,
+        )
         .single()
         .expect("older archived attempt timestamp should be valid");
     let newer_attempt_at = older_attempt_at
@@ -2864,10 +2879,9 @@ async fn forward_proxy_timeseries_ignores_cached_rows_for_pending_node_health_ar
 
     let mut retention_config = state.config.clone();
     retention_config.pool_upstream_request_attempts_archive_ttl_days = 120;
-    let summary =
-        run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
-            .await
-            .expect("run retention maintenance");
+    let summary = run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
+        .await
+        .expect("run retention maintenance");
     assert_eq!(summary.pool_upstream_request_attempt_rows_archived, 2);
 
     let cached_rows_before: i64 = sqlx::query_scalar(
@@ -2924,8 +2938,16 @@ async fn forward_proxy_timeseries_ignores_cached_rows_for_pending_node_health_ar
         .iter()
         .find(|node| node.key == manual_runtime_key)
         .expect("manual node should remain queryable");
-    let success_total: i64 = manual.buckets.iter().map(|bucket| bucket.success_count).sum();
-    let failure_total: i64 = manual.buckets.iter().map(|bucket| bucket.failure_count).sum();
+    let success_total: i64 = manual
+        .buckets
+        .iter()
+        .map(|bucket| bucket.success_count)
+        .sum();
+    let failure_total: i64 = manual
+        .buckets
+        .iter()
+        .map(|bucket| bucket.failure_count)
+        .sum();
     assert_eq!(success_total, 1);
     assert_eq!(failure_total, 1);
 
@@ -3245,8 +3267,8 @@ async fn forward_proxy_live_stats_use_real_pool_attempts_and_ignore_forward_prox
         None,
         false,
     )
-        .await
-        .expect("insert successful forward proxy attempt");
+    .await
+    .expect("insert successful forward proxy attempt");
     insert_forward_proxy_attempt(
         &state.pool,
         &manual_runtime_key,
@@ -3463,7 +3485,8 @@ async fn forward_proxy_timeseries_keeps_archived_direct_history_after_direct_is_
 }
 
 #[tokio::test]
-async fn forward_proxy_binding_nodes_use_real_pool_attempts_and_ignore_forward_proxy_health_checks() {
+async fn forward_proxy_binding_nodes_use_real_pool_attempts_and_ignore_forward_proxy_health_checks()
+{
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
@@ -3500,8 +3523,8 @@ async fn forward_proxy_binding_nodes_use_real_pool_attempts_and_ignore_forward_p
         None,
         false,
     )
-        .await
-        .expect("insert successful forward proxy attempt");
+    .await
+    .expect("insert successful forward proxy attempt");
     insert_forward_proxy_attempt(
         &state.pool,
         &manual_runtime_key,
@@ -3873,18 +3896,8 @@ async fn pricing_settings_api_reads_and_persists_updates() {
         .await
         .expect("get settings should succeed");
     assert_eq!(initial.proxy.fast_mode_rewrite_mode, "disabled");
-    assert!(
-        initial
-            .proxy
-            .models
-            .contains(&"gpt-5.5".to_string())
-    );
-    assert!(
-        initial
-            .proxy
-            .models
-            .contains(&"gpt-5.5-pro".to_string())
-    );
+    assert!(initial.proxy.models.contains(&"gpt-5.5".to_string()));
+    assert!(initial.proxy.models.contains(&"gpt-5.5-pro".to_string()));
     assert!(!initial.pricing.entries.is_empty());
     assert!(
         initial

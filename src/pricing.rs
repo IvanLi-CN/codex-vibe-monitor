@@ -1,4 +1,6 @@
-async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<ProxyModelSettings> {
+use super::*;
+
+pub(crate) async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<ProxyModelSettings> {
     let row = sqlx::query_as::<_, ProxyModelSettingsRow>(
         r#"
         SELECT
@@ -26,7 +28,7 @@ async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<ProxyModelSett
         .unwrap_or_else(ProxyModelSettings::default))
 }
 
-async fn save_proxy_model_settings(
+pub(crate) async fn save_proxy_model_settings(
     pool: &Pool<Sqlite>,
     settings: ProxyModelSettings,
 ) -> Result<()> {
@@ -68,7 +70,9 @@ async fn save_proxy_model_settings(
     Ok(())
 }
 
-async fn ensure_proxy_enabled_models_contains_new_presets(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn ensure_proxy_enabled_models_contains_new_presets(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
     let migrated = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT preset_models_migrated
@@ -131,12 +135,13 @@ async fn ensure_proxy_enabled_models_contains_new_presets(pool: &Pool<Sqlite>) -
         return Ok(());
     }
 
-    settings.enabled_preset_models = normalize_enabled_preset_models(settings.enabled_preset_models);
+    settings.enabled_preset_models =
+        normalize_enabled_preset_models(settings.enabled_preset_models);
     save_proxy_model_settings(pool, settings).await?;
     mark_proxy_preset_models_migrated(pool).await
 }
 
-async fn ensure_proxy_websocket_settings_initialized(
+pub(crate) async fn ensure_proxy_websocket_settings_initialized(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
 ) -> Result<()> {
@@ -177,7 +182,7 @@ async fn ensure_proxy_websocket_settings_initialized(
     Ok(())
 }
 
-async fn ensure_proxy_encrypted_session_owner_routing_setting_initialized(
+pub(crate) async fn ensure_proxy_encrypted_session_owner_routing_setting_initialized(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
 ) -> Result<()> {
@@ -216,7 +221,7 @@ async fn ensure_proxy_encrypted_session_owner_routing_setting_initialized(
     Ok(())
 }
 
-async fn mark_proxy_preset_models_migrated(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn mark_proxy_preset_models_migrated(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
         UPDATE proxy_model_settings
@@ -233,12 +238,12 @@ async fn mark_proxy_preset_models_migrated(pool: &Pool<Sqlite>) -> Result<()> {
 }
 
 #[derive(Debug, FromRow)]
-struct PricingSettingsMetaRow {
+pub(crate) struct PricingSettingsMetaRow {
     catalog_version: String,
 }
 
 #[derive(Debug, FromRow)]
-struct PricingSettingsModelRow {
+pub(crate) struct PricingSettingsModelRow {
     model: String,
     input_per_1m: f64,
     output_per_1m: f64,
@@ -247,7 +252,7 @@ struct PricingSettingsModelRow {
     source: String,
 }
 
-async fn ensure_pricing_model_present(
+pub(crate) async fn ensure_pricing_model_present(
     pool: &Pool<Sqlite>,
     model: &str,
     pricing: ModelPricing,
@@ -278,7 +283,7 @@ async fn ensure_pricing_model_present(
     Ok(())
 }
 
-async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result<()> {
     ensure_pricing_model_present(
         pool,
         "gpt-5.4",
@@ -342,7 +347,7 @@ async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-fn is_repo_managed_default_pricing_catalog_version(version: &str) -> bool {
+pub(crate) fn is_repo_managed_default_pricing_catalog_version(version: &str) -> bool {
     matches!(
         version,
         DEFAULT_PRICING_CATALOG_VERSION
@@ -351,7 +356,7 @@ fn is_repo_managed_default_pricing_catalog_version(version: &str) -> bool {
     )
 }
 
-async fn normalize_default_pricing_sources(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn normalize_default_pricing_sources(pool: &Pool<Sqlite>) -> Result<()> {
     // Legacy versions used `temporary` for some built-in models; keep the pricing untouched
     // but normalize the metadata so UI and reporting remain consistent.
     sqlx::query(
@@ -368,12 +373,12 @@ async fn normalize_default_pricing_sources(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-async fn seed_default_pricing_catalog(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn seed_default_pricing_catalog(pool: &Pool<Sqlite>) -> Result<()> {
     let legacy_path = resolve_legacy_pricing_catalog_path();
     seed_default_pricing_catalog_with_legacy_path(pool, Some(&legacy_path)).await
 }
 
-async fn seed_default_pricing_catalog_with_legacy_path(
+pub(crate) async fn seed_default_pricing_catalog_with_legacy_path(
     pool: &Pool<Sqlite>,
     legacy_path: Option<&Path>,
 ) -> Result<()> {
@@ -469,7 +474,7 @@ async fn seed_default_pricing_catalog_with_legacy_path(
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct LegacyPricingCatalogFile {
+pub(crate) struct LegacyPricingCatalogFile {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
@@ -477,7 +482,7 @@ struct LegacyPricingCatalogFile {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct LegacyModelPricing {
+pub(crate) struct LegacyModelPricing {
     input_per_1m: f64,
     output_per_1m: f64,
     #[serde(default)]
@@ -488,14 +493,14 @@ struct LegacyModelPricing {
     source: Option<String>,
 }
 
-fn resolve_legacy_pricing_catalog_path() -> PathBuf {
+pub(crate) fn resolve_legacy_pricing_catalog_path() -> PathBuf {
     env::var("PROXY_PRICING_CATALOG_PATH")
         .ok()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_PROXY_PRICING_CATALOG_PATH))
 }
 
-fn load_legacy_pricing_catalog(path: &Path) -> Result<Option<PricingCatalog>> {
+pub(crate) fn load_legacy_pricing_catalog(path: &Path) -> Result<Option<PricingCatalog>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -535,7 +540,7 @@ fn load_legacy_pricing_catalog(path: &Path) -> Result<Option<PricingCatalog>> {
     Ok(Some(PricingCatalog { version, models }))
 }
 
-async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingCatalog> {
+pub(crate) async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingCatalog> {
     seed_default_pricing_catalog(pool).await?;
 
     let meta = sqlx::query_as::<_, PricingSettingsMetaRow>(
@@ -581,7 +586,10 @@ async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingCatalog> {
     Ok(PricingCatalog { version, models })
 }
 
-async fn save_pricing_catalog(pool: &Pool<Sqlite>, catalog: &PricingCatalog) -> Result<()> {
+pub(crate) async fn save_pricing_catalog(
+    pool: &Pool<Sqlite>,
+    catalog: &PricingCatalog,
+) -> Result<()> {
     let mut tx = pool
         .begin()
         .await
@@ -644,7 +652,7 @@ async fn save_pricing_catalog(pool: &Pool<Sqlite>, catalog: &PricingCatalog) -> 
     Ok(())
 }
 
-fn default_pricing_catalog() -> PricingCatalog {
+pub(crate) fn default_pricing_catalog() -> PricingCatalog {
     let models = [
         (
             "gpt-5.3-codex",

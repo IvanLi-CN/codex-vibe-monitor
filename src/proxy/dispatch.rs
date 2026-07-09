@@ -1,10 +1,12 @@
-fn proxy_stream_usage_observed(response_info: &ResponseCaptureInfo) -> bool {
+use super::*;
+
+pub(crate) fn proxy_stream_usage_observed(response_info: &ResponseCaptureInfo) -> bool {
     response_info.usage.total_tokens.is_some()
         || response_info.usage.input_tokens.is_some()
         || response_info.usage.output_tokens.is_some()
 }
 
-fn proxy_stream_failure_origin_from_usage_reason(
+pub(crate) fn proxy_stream_failure_origin_from_usage_reason(
     usage_missing_reason: Option<&str>,
 ) -> Option<&'static str> {
     let reason = usage_missing_reason?;
@@ -20,7 +22,7 @@ fn proxy_stream_failure_origin_from_usage_reason(
     }
 }
 
-fn proxy_stream_upstream_read_error_kind(err: &io::Error) -> &'static str {
+pub(crate) fn proxy_stream_upstream_read_error_kind(err: &io::Error) -> &'static str {
     if let Some(source) = err.get_ref()
         && let Some(reqwest_err) = source.downcast_ref::<reqwest::Error>()
     {
@@ -48,16 +50,16 @@ fn proxy_stream_upstream_read_error_kind(err: &io::Error) -> &'static str {
     }
 }
 
-const PROXY_DOWNSTREAM_WRITE_ERROR_GRACE_PERIOD: Duration = Duration::from_secs(2);
+pub(crate) const PROXY_DOWNSTREAM_WRITE_ERROR_GRACE_PERIOD: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DownstreamBodyTerminalState {
+pub(crate) enum DownstreamBodyTerminalState {
     Open,
     Completed,
     Dropped,
 }
 
-struct TrackedDownstreamReceiverStream {
+pub(crate) struct TrackedDownstreamReceiverStream {
     inner: ReceiverStream<Result<Bytes, io::Error>>,
     terminal_tx: watch::Sender<DownstreamBodyTerminalState>,
     terminal_state: DownstreamBodyTerminalState,
@@ -104,7 +106,7 @@ impl Drop for TrackedDownstreamReceiverStream {
     }
 }
 
-fn proxy_stream_observe_downstream_body_terminal(
+pub(crate) fn proxy_stream_observe_downstream_body_terminal(
     state: DownstreamBodyTerminalState,
     downstream_closed: &mut bool,
     downstream_write_error_kind: &mut Option<&'static str>,
@@ -124,7 +126,7 @@ fn proxy_stream_observe_downstream_body_terminal(
     }
 }
 
-async fn wait_for_downstream_body_terminal_until(
+pub(crate) async fn wait_for_downstream_body_terminal_until(
     downstream_body_terminal_rx: &mut watch::Receiver<DownstreamBodyTerminalState>,
     deadline: Instant,
     downstream_closed: &mut bool,
@@ -305,7 +307,10 @@ pub(crate) async fn proxy_openai_v1_inner(
     });
 }
 
-pub(crate) fn capture_target_for_request(path: &str, method: &Method) -> Option<ProxyCaptureTarget> {
+pub(crate) fn capture_target_for_request(
+    path: &str,
+    method: &Method,
+) -> Option<ProxyCaptureTarget> {
     if *method != Method::POST {
         return None;
     }
@@ -320,7 +325,7 @@ pub(crate) fn capture_target_for_request(path: &str, method: &Method) -> Option<
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn persist_pre_attempt_proxy_capture_error(
+pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     state: &AppState,
     proxy_request_id: u64,
     capture_started: Instant,
@@ -618,8 +623,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     target: capture_target,
                     status: read_err.status,
                     is_stream: request_info.is_stream,
-                    request_contains_encrypted_content:
-                        request_info.contains_encrypted_content,
+                    request_contains_encrypted_content: request_info.contains_encrypted_content,
                     response_contains_encrypted_content: false,
                     compaction_request_kind: request_info.compaction_request_kind,
                     compaction_response_kind: None,
@@ -921,57 +925,59 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             Instant::now(),
         );
     }
-    let (prompt_cache_binding_constraint, encrypted_owner_auto_guard_active) =
-        if pool_route_active {
-            let encrypted_owner_routing_enabled =
-                encrypted_session_owner_routing_enabled(state.as_ref()).await;
-            let binding_constraint_result = resolve_prompt_cache_effective_routing_constraint(
-                &state.pool,
-                prompt_cache_key.as_deref(),
-                request_info.contains_encrypted_content,
-                encrypted_owner_routing_enabled,
-            )
-            .await;
-            match binding_constraint_result {
-                Ok(value) => value,
-                Err(err) => {
-                    let status = StatusCode::BAD_GATEWAY;
-                    let message =
-                        format!("failed to resolve prompt cache conversation binding: {err}");
-                    let terminal_invocation_persisted = persist_pre_attempt_proxy_capture_error(
-                        state.as_ref(),
-                        proxy_request_id,
-                        capture_started,
-                        &invoke_id,
-                        &occurred_at,
-                        capture_target,
-                        &request_info,
-                        requester_ip.as_deref(),
-                        &request_chain_metadata,
-                        sticky_key.as_deref(),
-                        prompt_cache_key.as_deref(),
-                        &client_attribution_context,
-                        Bytes::from(upstream_body.clone()),
-                        proxy_settings.request_body_logging_enabled,
-                        t_req_read_ms,
-                        elapsed_ms(req_parse_started),
-                        status,
-                        PROXY_FAILURE_POOL_ROUTING_BLOCKED,
-                        &message,
-                    )
-                    .await;
-                    if terminal_invocation_persisted {
-                        disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
-                    }
-                    return Err((status, message));
+    let (prompt_cache_binding_constraint, encrypted_owner_auto_guard_active) = if pool_route_active
+    {
+        let encrypted_owner_routing_enabled =
+            encrypted_session_owner_routing_enabled(state.as_ref()).await;
+        let binding_constraint_result = resolve_prompt_cache_effective_routing_constraint(
+            &state.pool,
+            prompt_cache_key.as_deref(),
+            request_info.contains_encrypted_content,
+            encrypted_owner_routing_enabled,
+        )
+        .await;
+        match binding_constraint_result {
+            Ok(value) => value,
+            Err(err) => {
+                let status = StatusCode::BAD_GATEWAY;
+                let message = format!("failed to resolve prompt cache conversation binding: {err}");
+                let terminal_invocation_persisted = persist_pre_attempt_proxy_capture_error(
+                    state.as_ref(),
+                    proxy_request_id,
+                    capture_started,
+                    &invoke_id,
+                    &occurred_at,
+                    capture_target,
+                    &request_info,
+                    requester_ip.as_deref(),
+                    &request_chain_metadata,
+                    sticky_key.as_deref(),
+                    prompt_cache_key.as_deref(),
+                    &client_attribution_context,
+                    Bytes::from(upstream_body.clone()),
+                    proxy_settings.request_body_logging_enabled,
+                    t_req_read_ms,
+                    elapsed_ms(req_parse_started),
+                    status,
+                    PROXY_FAILURE_POOL_ROUTING_BLOCKED,
+                    &message,
+                )
+                .await;
+                if terminal_invocation_persisted {
+                    disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
                 }
+                return Err((status, message));
             }
-        } else {
-            (None, false)
-        };
+        }
+    } else {
+        (None, false)
+    };
     let prompt_cache_conversation_override = if pool_route_active {
-        match load_prompt_cache_conversation_routing_override(&state.pool, prompt_cache_key.as_deref())
-            .await
+        match load_prompt_cache_conversation_routing_override(
+            &state.pool,
+            prompt_cache_key.as_deref(),
+        )
+        .await
         {
             Ok(value) => value,
             Err(err) => {
@@ -1045,11 +1051,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         0.0,
         0.0,
     );
-    if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
-        state.as_ref(),
-        initial_running_record,
-    )
-    .await
+    if let Err(err) =
+        persist_and_broadcast_proxy_capture_runtime_snapshot(state.as_ref(), initial_running_record)
+            .await
     {
         warn!(
             ?err,
@@ -1192,8 +1196,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         target: capture_target,
                         status: err.status,
                         is_stream: request_info.is_stream,
-                        request_contains_encrypted_content:
-                            request_info.contains_encrypted_content,
+                        request_contains_encrypted_content: request_info.contains_encrypted_content,
                         response_contains_encrypted_content: false,
                         compaction_request_kind: request_info.compaction_request_kind,
                         compaction_response_kind: None,
@@ -1208,9 +1211,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         failure_kind: Some(err.failure_kind),
                         requester_ip: requester_ip.as_deref(),
                         request_user_agent: request_chain_metadata.user_agent.as_deref(),
-                        request_x_forwarded_for: request_chain_metadata
-                            .x_forwarded_for
-                            .as_deref(),
+                        request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
                         request_forwarded: request_chain_metadata.forwarded.as_deref(),
                         request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
                         upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
@@ -1430,8 +1431,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         target: capture_target,
                         status: err.status,
                         is_stream: request_info.is_stream,
-                        request_contains_encrypted_content:
-                            request_info.contains_encrypted_content,
+                        request_contains_encrypted_content: request_info.contains_encrypted_content,
                         response_contains_encrypted_content: false,
                         compaction_request_kind: request_info.compaction_request_kind,
                         compaction_response_kind: None,
@@ -1446,9 +1446,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         failure_kind: Some(err.failure_kind),
                         requester_ip: requester_ip.as_deref(),
                         request_user_agent: request_chain_metadata.user_agent.as_deref(),
-                        request_x_forwarded_for: request_chain_metadata
-                            .x_forwarded_for
-                            .as_deref(),
+                        request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
                         request_forwarded: request_chain_metadata.forwarded.as_deref(),
                         request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
                         upstream_scope: INVOCATION_UPSTREAM_SCOPE_EXTERNAL,
@@ -1604,8 +1602,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     target: capture_target,
                     status: StatusCode::BAD_GATEWAY,
                     is_stream: request_info.is_stream,
-                    request_contains_encrypted_content:
-                        request_info.contains_encrypted_content,
+                    request_contains_encrypted_content: request_info.contains_encrypted_content,
                     response_contains_encrypted_content: false,
                     compaction_request_kind: request_info.compaction_request_kind,
                     compaction_response_kind: None,
@@ -1639,8 +1636,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         .prompt_cache_key_attribution_source
                         .as_deref(),
                     client_fingerprint: client_attribution_context.fingerprint.as_deref(),
-                    client_header_fingerprints: Some(&client_attribution_context.header_fingerprints)
-                        .filter(|fingerprints| !fingerprints.is_empty()),
+                    client_header_fingerprints: Some(
+                        &client_attribution_context.header_fingerprints,
+                    )
+                    .filter(|fingerprints| !fingerprints.is_empty()),
                     upstream_account_id: pool_account.as_ref().map(|account| account.account_id),
                     upstream_account_name: pool_account
                         .as_ref()
@@ -1795,10 +1794,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         }
     }
     if let Ok(header_value) = HeaderValue::from_str(&invoke_id) {
-        response_builder = response_builder.header(
-            HeaderName::from_static(CVM_INVOKE_ID_HEADER),
-            header_value,
-        );
+        response_builder =
+            response_builder.header(HeaderName::from_static(CVM_INVOKE_ID_HEADER), header_value);
     }
 
     let state_for_task = state.clone();
@@ -1864,13 +1861,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let mut active_stream_timeout =
             prefetched_stream_timeout_for_task.or(stream_timeout_for_task);
         let mut response_preview = RawResponsePreviewBuffer::default();
-        let mut response_raw_writer =
-            AsyncStreamingRawPayloadWriter::new(
-                state_for_task.as_ref(),
-                &invoke_id_for_task,
-                "response",
-                proxy_settings.response_body_logging_enabled,
-            );
+        let mut response_raw_writer = AsyncStreamingRawPayloadWriter::new(
+            state_for_task.as_ref(),
+            &invoke_id_for_task,
+            "response",
+            proxy_settings.response_body_logging_enabled,
+        );
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
         let mut nonstream_parse_buffer = (!response_is_event_stream_for_task).then(|| {
             BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
@@ -2104,12 +2100,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             pool_account_for_task
                                 .as_ref()
                                 .map(|account| account.display_name.as_str()),
-                            payload_summary_upstream_account_kind(
-                                pool_account_for_task.as_ref(),
-                            ),
-                            payload_summary_upstream_base_url_host(
-                                pool_account_for_task.as_ref(),
-                            ),
+                            payload_summary_upstream_account_kind(pool_account_for_task.as_ref()),
+                            payload_summary_upstream_base_url_host(pool_account_for_task.as_ref()),
                             selected_proxy_display_name_for_task.as_deref(),
                             pool_account_for_task
                                 .as_ref()
@@ -2369,8 +2361,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         } else {
             None
         };
-        let status =
-            proxy_capture_invocation_status(upstream_status, error_message.is_some(), pure_downstream_closed);
+        let status = proxy_capture_invocation_status(
+            upstream_status,
+            error_message.is_some(),
+            pure_downstream_closed,
+        );
         if stream_failure_origin.is_none() {
             if had_logical_stream_failure {
                 stream_failure_origin = Some("logical_terminal");
@@ -2440,7 +2435,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         had_stream_error,
                         had_logical_stream_failure,
                     );
-                let request_image_intent = request_info_for_task.image_intent.as_deref()
+                let request_image_intent = request_info_for_task
+                    .image_intent
+                    .as_deref()
                     .map(crate::ImageIntent::from_str)
                     .unwrap_or(crate::ImageIntent::Unknown);
                 let route_result = if pool_route_success || pure_downstream_closed {
@@ -2483,10 +2480,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                     );
-                    if response_info_is_retryable_server_overloaded(
-                        upstream_status,
-                        &response_info,
-                    ) {
+                    if response_info_is_retryable_server_overloaded(upstream_status, &response_info)
+                    {
                         record_pool_route_retryable_overload_failure(
                             &state_for_task.pool,
                             account.account_id,
@@ -2556,10 +2551,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 Ok(()) => true,
                 Err(err) => {
                     warn!(
-                    invoke_id = %pending_attempt_record.invoke_id,
-                    error = %err,
-                    "failed to persist final pool attempt"
-                );
+                        invoke_id = %pending_attempt_record.invoke_id,
+                        error = %err,
+                        "failed to persist final pool attempt"
+                    );
                     false
                 }
             };
@@ -2649,8 +2644,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             target: capture_target,
             status: upstream_status,
             is_stream: request_info_for_task.is_stream,
-            request_contains_encrypted_content: request_info_for_task
-                .contains_encrypted_content,
+            request_contains_encrypted_content: request_info_for_task.contains_encrypted_content,
             response_contains_encrypted_content: response_info.contains_encrypted_content,
             compaction_request_kind: request_info_for_task.compaction_request_kind,
             compaction_response_kind: resolve_compaction_response_kind_for_payload(
@@ -2821,7 +2815,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         if terminal_invocation_persisted {
             disarm_pool_invocation_cleanup_guard(&mut stream_invocation_cleanup_guard);
         }
-        if terminal_invocation_persisted && deferred_pool_early_phase_cleanup_guard_for_task.is_some()
+        if terminal_invocation_persisted
+            && deferred_pool_early_phase_cleanup_guard_for_task.is_some()
         {
             finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocation(
                 &mut deferred_pool_early_phase_cleanup_guard_for_task,
@@ -3217,14 +3212,14 @@ pub(crate) async fn read_request_body_snapshot_with_partial_limit(
     }
 }
 
-fn append_bounded_partial_body(partial_body: &mut Vec<u8>, chunk: &[u8], limit: usize) {
+pub(crate) fn append_bounded_partial_body(partial_body: &mut Vec<u8>, chunk: &[u8], limit: usize) {
     let remaining = limit.saturating_sub(partial_body.len());
     if remaining > 0 {
         partial_body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
 }
 
-fn request_body_size_bucket(bytes: usize) -> &'static str {
+pub(crate) fn request_body_size_bucket(bytes: usize) -> &'static str {
     match bytes {
         0 => "empty",
         1..=4096 => "le_4k",
@@ -3235,15 +3230,15 @@ fn request_body_size_bucket(bytes: usize) -> &'static str {
     }
 }
 
-fn capture_request_body_read_log_at_info(bytes: usize, elapsed_ms: f64) -> bool {
+pub(crate) fn capture_request_body_read_log_at_info(bytes: usize, elapsed_ms: f64) -> bool {
     bytes >= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES || elapsed_ms >= 1_000.0
 }
 
-fn downstream_first_byte_log_at_info(elapsed_ms: u64) -> bool {
+pub(crate) fn downstream_first_byte_log_at_info(elapsed_ms: u64) -> bool {
     elapsed_ms >= 2_000
 }
 
-fn raw_response_write_log_at_info(elapsed_ms: u64, bytes: i64) -> bool {
+pub(crate) fn raw_response_write_log_at_info(elapsed_ms: u64, bytes: i64) -> bool {
     elapsed_ms >= 500 || bytes >= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES as i64
 }
 

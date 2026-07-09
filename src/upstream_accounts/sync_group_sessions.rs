@@ -1,4 +1,6 @@
-fn collect_account_window_usage_plans(
+use super::*;
+
+pub(crate) fn collect_account_window_usage_plans(
     items: &[UpstreamAccountSummary],
     now: DateTime<Utc>,
 ) -> Option<(
@@ -54,7 +56,7 @@ fn collect_account_window_usage_plans(
     Some((plans, earliest_start_at?, latest_end_at?))
 }
 
-fn build_window_usage_range(
+pub(crate) fn build_window_usage_range(
     now: DateTime<Utc>,
     window_duration_mins: i64,
     resets_at: Option<&str>,
@@ -69,7 +71,7 @@ fn build_window_usage_range(
     })
 }
 
-async fn load_window_actual_usage_rows_from_pool(
+pub(crate) async fn load_window_actual_usage_rows_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
     start_at: &str,
@@ -140,7 +142,7 @@ async fn load_window_actual_usage_rows_from_pool(
         .map_err(Into::into)
 }
 
-async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
+pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
     bucket_epochs: &HashSet<i64>,
@@ -162,10 +164,8 @@ async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
             occurred_at,
         "#,
     );
-    query
-        .push(upstream_account_id_sql)
-        .push(
-            r#"
+    query.push(upstream_account_id_sql).push(
+        r#"
             AS upstream_account_id,
             input_tokens,
             output_tokens,
@@ -175,13 +175,19 @@ async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
         FROM codex_invocations
         WHERE
         "#,
-        );
+    );
 
     if let Some(min_id_exclusive) = min_id_exclusive {
-        query.push(" id > ").push_bind(min_id_exclusive.max(0)).push(" AND");
+        query
+            .push(" id > ")
+            .push_bind(min_id_exclusive.max(0))
+            .push(" AND");
     }
     if let Some(max_id_inclusive) = max_id_inclusive {
-        query.push(" id <= ").push_bind(max_id_inclusive.max(0)).push(" AND");
+        query
+            .push(" id <= ")
+            .push_bind(max_id_inclusive.max(0))
+            .push(" AND");
     }
 
     query.push(" (");
@@ -199,9 +205,13 @@ async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
             .ok_or_else(|| anyhow!("invalid usage bucket end epoch: {bucket_epoch}"))?;
         query
             .push("(occurred_at >= ")
-            .push_bind(format_naive(bucket_start.with_timezone(&Shanghai).naive_local()))
+            .push_bind(format_naive(
+                bucket_start.with_timezone(&Shanghai).naive_local(),
+            ))
             .push(" AND occurred_at < ")
-            .push_bind(format_naive(bucket_end.with_timezone(&Shanghai).naive_local()))
+            .push_bind(format_naive(
+                bucket_end.with_timezone(&Shanghai).naive_local(),
+            ))
             .push(")");
     }
     query
@@ -225,7 +235,7 @@ async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
         .map_err(Into::into)
 }
 
-async fn load_window_actual_usage_hourly_rows_from_pool(
+pub(crate) async fn load_window_actual_usage_hourly_rows_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
     start_bucket_epoch: i64,
@@ -270,7 +280,7 @@ async fn load_window_actual_usage_hourly_rows_from_pool(
         .map_err(Into::into)
 }
 
-async fn load_window_actual_usage_minute_rows_from_pool(
+pub(crate) async fn load_window_actual_usage_minute_rows_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
     start_bucket_epoch: i64,
@@ -315,7 +325,7 @@ async fn load_window_actual_usage_minute_rows_from_pool(
         .map_err(Into::into)
 }
 
-async fn load_window_actual_usage_rows_from_archives(
+pub(crate) async fn load_window_actual_usage_rows_from_archives(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
     start_at: &str,
@@ -388,7 +398,7 @@ async fn load_window_actual_usage_rows_from_archives(
     Ok(rows)
 }
 
-fn resolve_archive_batch_path(archive_dir: &Path, file_path: &str) -> PathBuf {
+pub(crate) fn resolve_archive_batch_path(archive_dir: &Path, file_path: &str) -> PathBuf {
     let path = PathBuf::from(file_path);
     if path.is_absolute() {
         path
@@ -399,7 +409,7 @@ fn resolve_archive_batch_path(archive_dir: &Path, file_path: &str) -> PathBuf {
     }
 }
 
-fn collect_account_window_partial_bucket_epochs(
+pub(crate) fn collect_account_window_partial_bucket_epochs(
     plans: &HashMap<i64, AccountWindowUsagePlan>,
 ) -> Result<HashSet<i64>> {
     let mut bucket_epochs = HashSet::new();
@@ -417,7 +427,7 @@ fn collect_account_window_partial_bucket_epochs(
     Ok(bucket_epochs)
 }
 
-fn collect_account_window_partial_minute_bucket_epochs(
+pub(crate) fn collect_account_window_partial_minute_bucket_epochs(
     plans: &HashMap<i64, AccountWindowUsagePlan>,
 ) -> Result<HashSet<i64>> {
     let mut bucket_epochs = HashSet::new();
@@ -438,7 +448,7 @@ fn collect_account_window_partial_minute_bucket_epochs(
     Ok(bucket_epochs)
 }
 
-fn collect_account_window_full_hour_bounds(
+pub(crate) fn collect_account_window_full_hour_bounds(
     plans: &HashMap<i64, AccountWindowUsagePlan>,
 ) -> Option<(i64, i64)> {
     let mut minimum_start_epoch: Option<i64> = None;
@@ -469,7 +479,7 @@ fn collect_account_window_full_hour_bounds(
     Some((minimum_start_epoch?, maximum_end_epoch?))
 }
 
-fn collect_account_window_full_minute_bounds(
+pub(crate) fn collect_account_window_full_minute_bounds(
     plans: &HashMap<i64, AccountWindowUsagePlan>,
 ) -> Option<(i64, i64)> {
     let mut minimum_start_epoch: Option<i64> = None;
@@ -502,7 +512,7 @@ fn collect_account_window_full_minute_bounds(
     Some((minimum_start_epoch?, maximum_end_epoch?))
 }
 
-fn collect_account_window_missing_full_hour_bucket_epochs(
+pub(crate) fn collect_account_window_missing_full_hour_bucket_epochs(
     plans: &HashMap<i64, AccountWindowUsagePlan>,
     covered_hourly_keys: &HashSet<(i64, i64)>,
 ) -> HashSet<i64> {
@@ -531,7 +541,7 @@ fn collect_account_window_missing_full_hour_bucket_epochs(
     missing_bucket_epochs
 }
 
-fn fold_account_window_usage_rows(
+pub(crate) fn fold_account_window_usage_rows(
     rows: Vec<AccountWindowUsageRow>,
     plans: &HashMap<i64, AccountWindowUsagePlan>,
 ) -> HashMap<i64, AccountWindowUsageSummary> {
@@ -563,7 +573,7 @@ fn fold_account_window_usage_rows(
     usage
 }
 
-fn fold_account_window_usage_hourly_rows(
+pub(crate) fn fold_account_window_usage_hourly_rows(
     usage: &mut HashMap<i64, AccountWindowUsageSummary>,
     rows: &[AccountWindowUsageHourlyRow],
     plans: &HashMap<i64, AccountWindowUsagePlan>,
@@ -596,7 +606,7 @@ fn fold_account_window_usage_hourly_rows(
     }
 }
 
-fn fold_account_window_usage_minute_rows(
+pub(crate) fn fold_account_window_usage_minute_rows(
     usage: &mut HashMap<i64, AccountWindowUsageSummary>,
     rows: &[AccountWindowUsageMinuteRow],
     plans: &HashMap<i64, AccountWindowUsagePlan>,
@@ -628,7 +638,7 @@ fn fold_account_window_usage_minute_rows(
     }
 }
 
-fn collect_account_window_hourly_coverage_keys(
+pub(crate) fn collect_account_window_hourly_coverage_keys(
     rows: &[AccountWindowUsageHourlyRow],
 ) -> HashSet<(i64, i64)> {
     rows.iter()
@@ -636,7 +646,7 @@ fn collect_account_window_hourly_coverage_keys(
         .collect()
 }
 
-fn filter_account_window_usage_rows_for_exact_fallback(
+pub(crate) fn filter_account_window_usage_rows_for_exact_fallback(
     rows: Vec<AccountWindowUsageRow>,
     partial_minute_bucket_epochs: &HashSet<i64>,
     partial_bucket_epochs: &HashSet<i64>,
@@ -667,7 +677,7 @@ fn filter_account_window_usage_rows_for_exact_fallback(
     Ok(filtered_rows)
 }
 
-fn apply_window_actual_usage_to_summaries(
+pub(crate) fn apply_window_actual_usage_to_summaries(
     items: &mut [UpstreamAccountSummary],
     usage: &HashMap<i64, AccountWindowUsageSummary>,
 ) {
@@ -682,7 +692,7 @@ fn apply_window_actual_usage_to_summaries(
     }
 }
 
-async fn load_account_active_conversation_count_map(
+pub(crate) async fn load_account_active_conversation_count_map(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
     now: DateTime<Utc>,
@@ -721,7 +731,7 @@ async fn load_account_active_conversation_count_map(
         .collect())
 }
 
-fn build_compact_support_state(row: &UpstreamAccountRow) -> CompactSupportState {
+pub(crate) fn build_compact_support_state(row: &UpstreamAccountRow) -> CompactSupportState {
     let status = row
         .compact_support_status
         .as_deref()
@@ -743,7 +753,9 @@ fn build_compact_support_state(row: &UpstreamAccountRow) -> CompactSupportState 
     }
 }
 
-fn build_action_event_from_row(row: &UpstreamAccountActionEventRow) -> UpstreamAccountActionEvent {
+pub(crate) fn build_action_event_from_row(
+    row: &UpstreamAccountActionEventRow,
+) -> UpstreamAccountActionEvent {
     UpstreamAccountActionEvent {
         id: row.id,
         occurred_at: row.occurred_at.clone(),
@@ -827,12 +839,15 @@ pub(crate) async fn backfill_upstream_account_last_activity_from_live_invocation
     Ok(updated.rows_affected())
 }
 
-async fn group_has_accounts(pool: &Pool<Sqlite>, group_name: &str) -> Result<bool> {
+pub(crate) async fn group_has_accounts(pool: &Pool<Sqlite>, group_name: &str) -> Result<bool> {
     let mut conn = pool.acquire().await?;
     group_has_accounts_conn(&mut conn, group_name).await
 }
 
-async fn group_account_count_conn(conn: &mut SqliteConnection, group_name: &str) -> Result<i64> {
+pub(crate) async fn group_account_count_conn(
+    conn: &mut SqliteConnection,
+    group_name: &str,
+) -> Result<i64> {
     sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
@@ -846,7 +861,10 @@ async fn group_account_count_conn(conn: &mut SqliteConnection, group_name: &str)
     .map_err(Into::into)
 }
 
-async fn group_has_accounts_conn(conn: &mut SqliteConnection, group_name: &str) -> Result<bool> {
+pub(crate) async fn group_has_accounts_conn(
+    conn: &mut SqliteConnection,
+    group_name: &str,
+) -> Result<bool> {
     Ok(group_account_count_conn(conn, group_name).await? > 0)
 }
 
@@ -859,37 +877,37 @@ pub(crate) fn normalize_bound_proxy_keys(bound_proxy_keys: Vec<String>) -> Vec<S
         .collect()
 }
 
-fn decode_group_bound_proxy_keys_json(raw: Option<&str>) -> Vec<String> {
+pub(crate) fn decode_group_bound_proxy_keys_json(raw: Option<&str>) -> Vec<String> {
     raw.and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
         .map(normalize_bound_proxy_keys)
         .unwrap_or_default()
 }
 
-fn decode_group_node_shunt_enabled(raw: i64) -> bool {
+pub(crate) fn decode_group_node_shunt_enabled(raw: i64) -> bool {
     raw != 0
 }
 
-fn decode_group_single_account_rotation_enabled(raw: i64) -> bool {
+pub(crate) fn decode_group_single_account_rotation_enabled(raw: i64) -> bool {
     raw != 0
 }
 
-fn decode_group_requested_flag(raw: i64) -> bool {
+pub(crate) fn decode_group_requested_flag(raw: i64) -> bool {
     raw != 0
 }
 
-fn decode_group_upstream_429_retry_enabled(raw: i64) -> bool {
+pub(crate) fn decode_group_upstream_429_retry_enabled(raw: i64) -> bool {
     raw != 0
 }
 
-fn normalize_group_upstream_429_max_retries(value: u8) -> u8 {
+pub(crate) fn normalize_group_upstream_429_max_retries(value: u8) -> u8 {
     value.min(MAX_PROXY_UPSTREAM_429_MAX_RETRIES)
 }
 
-fn normalize_enabled_group_upstream_429_max_retries(value: u8) -> u8 {
+pub(crate) fn normalize_enabled_group_upstream_429_max_retries(value: u8) -> u8 {
     normalize_group_upstream_429_max_retries(value).max(1)
 }
 
-fn normalize_group_upstream_429_retry_metadata(
+pub(crate) fn normalize_group_upstream_429_retry_metadata(
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
 ) -> u8 {
@@ -900,47 +918,47 @@ fn normalize_group_upstream_429_retry_metadata(
     }
 }
 
-fn decode_group_upstream_429_max_retries(raw: i64) -> u8 {
+pub(crate) fn decode_group_upstream_429_max_retries(raw: i64) -> u8 {
     normalize_group_upstream_429_max_retries(raw.max(0) as u8)
 }
 
-fn encode_group_bound_proxy_keys_json(bound_proxy_keys: &[String]) -> Result<String> {
+pub(crate) fn encode_group_bound_proxy_keys_json(bound_proxy_keys: &[String]) -> Result<String> {
     serde_json::to_string(bound_proxy_keys).context("failed to encode group bound proxy keys")
 }
 
-fn group_node_shunt_unassigned_error_message() -> &'static str {
+pub(crate) fn group_node_shunt_unassigned_error_message() -> &'static str {
     UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED_MESSAGE
 }
 
-fn group_node_shunt_unassigned_error() -> anyhow::Error {
+pub(crate) fn group_node_shunt_unassigned_error() -> anyhow::Error {
     anyhow!(group_node_shunt_unassigned_error_message())
 }
 
-fn is_group_node_shunt_unassigned_message(message: &str) -> bool {
+pub(crate) fn is_group_node_shunt_unassigned_message(message: &str) -> bool {
     message
         .trim()
         .contains(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED_MESSAGE)
 }
 
-fn missing_request_group_error_message() -> String {
+pub(crate) fn missing_request_group_error_message() -> String {
     "groupName is required for upstream accounts".to_string()
 }
 
-fn missing_account_group_error_message() -> String {
+pub(crate) fn missing_account_group_error_message() -> String {
     "upstream account is not assigned to a group; assign it to a group with at least one bound forward proxy node".to_string()
 }
 
-fn missing_group_bound_proxy_error_message(group_name: &str) -> String {
+pub(crate) fn missing_group_bound_proxy_error_message(group_name: &str) -> String {
     format!(
         "upstream account group \"{group_name}\" has no bound forward proxy nodes; bind at least one proxy node to the group"
     )
 }
 
-fn missing_selectable_group_bound_proxy_error_message(group_name: &str) -> String {
+pub(crate) fn missing_selectable_group_bound_proxy_error_message(group_name: &str) -> String {
     format!("upstream account group \"{group_name}\" has no selectable bound forward proxy nodes")
 }
 
-fn build_requested_group_metadata_changes(
+pub(crate) fn build_requested_group_metadata_changes(
     note: Option<String>,
     note_was_requested: bool,
     bound_proxy_keys: Option<Vec<String>>,
@@ -991,7 +1009,7 @@ pub(crate) fn required_account_forward_proxy_scope(
     })
 }
 
-fn map_required_group_proxy_selection_error(
+pub(crate) fn map_required_group_proxy_selection_error(
     scope: &ForwardProxyRouteScope,
     err: anyhow::Error,
 ) -> anyhow::Error {
@@ -1009,7 +1027,7 @@ fn map_required_group_proxy_selection_error(
     }
 }
 
-async fn ensure_required_group_proxy_scope_selectable(
+pub(crate) async fn ensure_required_group_proxy_scope_selectable(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
 ) -> Result<()> {
@@ -1019,7 +1037,7 @@ async fn ensure_required_group_proxy_scope_selectable(
         .map_err(|err| map_required_group_proxy_selection_error(scope, err))
 }
 
-async fn resolve_required_group_proxy_binding_for_write(
+pub(crate) async fn resolve_required_group_proxy_binding_for_write(
     state: &AppState,
     group_name: Option<String>,
     requested_bound_proxy_keys: Option<Vec<String>>,
@@ -1065,7 +1083,7 @@ async fn resolve_required_group_proxy_binding_for_write(
     })
 }
 
-async fn load_group_metadata_conn(
+pub(crate) async fn load_group_metadata_conn(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     group_name: &str,
 ) -> Result<Option<UpstreamAccountGroupMetadata>> {
@@ -1123,7 +1141,7 @@ async fn load_group_metadata_conn(
     .map_err(Into::into)
 }
 
-async fn load_group_metadata(
+pub(crate) async fn load_group_metadata(
     pool: &Pool<Sqlite>,
     group_name: Option<&str>,
 ) -> Result<UpstreamAccountGroupMetadata> {
@@ -1151,7 +1169,7 @@ pub(crate) async fn load_required_account_forward_proxy_scope_from_group_metadat
     required_account_forward_proxy_scope(Some(group_name), bound_proxy_keys)
 }
 
-async fn save_group_metadata_record_conn(
+pub(crate) async fn save_group_metadata_record_conn(
     conn: &mut SqliteConnection,
     group_name: &str,
     metadata: UpstreamAccountGroupMetadata,
@@ -1247,7 +1265,7 @@ async fn save_group_metadata_record_conn(
 }
 
 #[allow(dead_code)]
-async fn save_group_note_record(
+pub(crate) async fn save_group_note_record(
     pool: &Pool<Sqlite>,
     group_name: &str,
     note: Option<String>,
@@ -1256,7 +1274,7 @@ async fn save_group_note_record(
     save_group_note_record_conn(&mut conn, group_name, note).await
 }
 
-async fn save_group_note_record_conn(
+pub(crate) async fn save_group_note_record_conn(
     conn: &mut SqliteConnection,
     group_name: &str,
     note: Option<String>,
@@ -1268,7 +1286,7 @@ async fn save_group_note_record_conn(
     save_group_metadata_record_conn(conn, group_name, metadata).await
 }
 
-async fn save_requested_group_metadata_changes(
+pub(crate) async fn save_requested_group_metadata_changes(
     conn: &mut SqliteConnection,
     group_name: Option<&str>,
     changes: &RequestedGroupMetadataChanges,
@@ -1300,7 +1318,7 @@ async fn save_requested_group_metadata_changes(
     save_group_metadata_record_conn(conn, group_name, metadata).await
 }
 
-async fn save_group_metadata_after_account_write(
+pub(crate) async fn save_group_metadata_after_account_write(
     conn: &mut SqliteConnection,
     group_name: Option<&str>,
     changes: &RequestedGroupMetadataChanges,
@@ -1309,7 +1327,7 @@ async fn save_group_metadata_after_account_write(
     save_requested_group_metadata_changes(conn, group_name, changes).await
 }
 
-async fn cleanup_orphaned_group_metadata(
+pub(crate) async fn cleanup_orphaned_group_metadata(
     conn: &mut SqliteConnection,
     group_name: Option<&str>,
 ) -> Result<()> {
@@ -1319,19 +1337,19 @@ async fn cleanup_orphaned_group_metadata(
 }
 
 #[derive(Debug, Clone, Default)]
-struct GroupNodeShuntSlots {
-    valid_proxy_keys: Vec<String>,
+pub(crate) struct GroupNodeShuntSlots {
+    pub(crate) valid_proxy_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UpstreamAccountNodeShuntAssignments {
-    account_proxy_keys: HashMap<i64, String>,
-    group_slots: HashMap<String, GroupNodeShuntSlots>,
-    group_assigned_proxy_keys: HashMap<String, HashSet<String>>,
-    eligible_account_ids: HashSet<i64>,
+    pub(crate) account_proxy_keys: HashMap<i64, String>,
+    pub(crate) group_slots: HashMap<String, GroupNodeShuntSlots>,
+    pub(crate) group_assigned_proxy_keys: HashMap<String, HashSet<String>>,
+    pub(crate) eligible_account_ids: HashSet<i64>,
 }
 
-fn compare_node_shunt_reserved_candidates(
+pub(crate) fn compare_node_shunt_reserved_candidates(
     lhs: &AccountRoutingCandidateRow,
     rhs: &AccountRoutingCandidateRow,
 ) -> std::cmp::Ordering {
@@ -1340,7 +1358,7 @@ fn compare_node_shunt_reserved_candidates(
         .then_with(|| compare_routing_candidates(lhs, rhs))
 }
 
-async fn load_node_shunt_enabled_group_metadata_map(
+pub(crate) async fn load_node_shunt_enabled_group_metadata_map(
     pool: &Pool<Sqlite>,
 ) -> Result<HashMap<String, UpstreamAccountGroupMetadata>> {
     let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, i64, i64, i64)>(
@@ -1400,7 +1418,7 @@ async fn load_node_shunt_enabled_group_metadata_map(
     Ok(groups)
 }
 
-async fn load_upstream_account_rows_for_groups(
+pub(crate) async fn load_upstream_account_rows_for_groups(
     pool: &Pool<Sqlite>,
     group_names: &[String],
 ) -> Result<Vec<UpstreamAccountRow>> {
@@ -1430,7 +1448,7 @@ async fn load_upstream_account_rows_for_groups(
         .map_err(Into::into)
 }
 
-fn account_is_node_shunt_slot_eligible(
+pub(crate) fn account_is_node_shunt_slot_eligible(
     row: &UpstreamAccountRow,
     snapshot_exhausted: bool,
     now: DateTime<Utc>,
@@ -1478,7 +1496,7 @@ fn account_is_node_shunt_slot_eligible(
     )
 }
 
-async fn build_upstream_account_node_shunt_assignments(
+pub(crate) async fn build_upstream_account_node_shunt_assignments(
     state: &AppState,
 ) -> Result<UpstreamAccountNodeShuntAssignments> {
     let group_metadata_map = load_node_shunt_enabled_group_metadata_map(&state.pool).await?;
@@ -1663,7 +1681,7 @@ async fn build_upstream_account_node_shunt_assignments(
     Ok(assignments)
 }
 
-async fn prepare_pool_account_with_node_shunt_refresh(
+pub(crate) async fn prepare_pool_account_with_node_shunt_refresh(
     state: &AppState,
     row: &UpstreamAccountRow,
     effective_rule: &EffectiveRoutingRule,
@@ -1702,7 +1720,7 @@ async fn prepare_pool_account_with_node_shunt_refresh(
     prepared_account
 }
 
-fn resolve_account_forward_proxy_scope_from_assignments(
+pub(crate) fn resolve_account_forward_proxy_scope_from_assignments(
     account_id: i64,
     group_name: Option<&str>,
     group_metadata: &UpstreamAccountGroupMetadata,
@@ -1728,7 +1746,9 @@ fn resolve_account_forward_proxy_scope_from_assignments(
     Ok(ForwardProxyRouteScope::pinned(proxy_key.clone()))
 }
 
-fn account_bound_forward_proxy_scope(row: &UpstreamAccountRow) -> Option<ForwardProxyRouteScope> {
+pub(crate) fn account_bound_forward_proxy_scope(
+    row: &UpstreamAccountRow,
+) -> Option<ForwardProxyRouteScope> {
     let bound_proxy_keys = row.bound_proxy_keys();
     (!bound_proxy_keys.is_empty()).then(|| {
         ForwardProxyRouteScope::bound_scope(format!("account:{}", row.id()), bound_proxy_keys)
@@ -1762,7 +1782,7 @@ pub(crate) async fn resolve_account_forward_proxy_scope(
     )
 }
 
-async fn resolve_account_forward_proxy_scope_for_sync(
+pub(crate) async fn resolve_account_forward_proxy_scope_for_sync(
     state: &AppState,
     row: &UpstreamAccountRow,
     group_metadata: Option<UpstreamAccountGroupMetadata>,
@@ -1821,7 +1841,7 @@ async fn resolve_account_forward_proxy_scope_for_sync(
     required_account_forward_proxy_scope(Some(normalized_group_name), valid_proxy_keys)
 }
 
-async fn resolve_group_forward_proxy_scope_for_provisioning(
+pub(crate) async fn resolve_group_forward_proxy_scope_for_provisioning(
     state: &AppState,
     binding: &ResolvedRequiredGroupProxyBinding,
     assignments: Option<&UpstreamAccountNodeShuntAssignments>,
@@ -1885,7 +1905,7 @@ async fn resolve_group_forward_proxy_scope_for_provisioning(
     Err(group_node_shunt_unassigned_error())
 }
 
-fn reserve_imported_oauth_node_shunt_scope(
+pub(crate) fn reserve_imported_oauth_node_shunt_scope(
     state: &AppState,
     source_id: &str,
     account_id: Option<i64>,
@@ -1913,13 +1933,16 @@ fn reserve_imported_oauth_node_shunt_scope(
     Ok(Some(reservation_key))
 }
 
-fn release_imported_oauth_node_shunt_scope(state: &AppState, reservation_key: Option<String>) {
+pub(crate) fn release_imported_oauth_node_shunt_scope(
+    state: &AppState,
+    reservation_key: Option<String>,
+) {
     if let Some(reservation_key) = reservation_key {
         crate::release_pool_routing_reservation(state, &reservation_key);
     }
 }
 
-async fn load_login_session_by_login_id_with_executor(
+pub(crate) async fn load_login_session_by_login_id_with_executor(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     login_id: &str,
 ) -> Result<Option<OauthLoginSessionRow>> {
@@ -1945,14 +1968,14 @@ async fn load_login_session_by_login_id_with_executor(
     .map_err(Into::into)
 }
 
-async fn load_login_session_by_login_id(
+pub(crate) async fn load_login_session_by_login_id(
     pool: &Pool<Sqlite>,
     login_id: &str,
 ) -> Result<Option<OauthLoginSessionRow>> {
     load_login_session_by_login_id_with_executor(pool, login_id).await
 }
 
-async fn load_login_session_by_state(
+pub(crate) async fn load_login_session_by_state(
     pool: &Pool<Sqlite>,
     state_value: &str,
 ) -> Result<Option<OauthLoginSessionRow>> {
@@ -1978,7 +2001,7 @@ async fn load_login_session_by_state(
     .map_err(Into::into)
 }
 
-async fn expire_pending_login_sessions(pool: &Pool<Sqlite>) -> Result<()> {
+pub(crate) async fn expire_pending_login_sessions(pool: &Pool<Sqlite>) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -2004,7 +2027,7 @@ async fn expire_pending_login_sessions(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-async fn load_oauth_mailbox_session(
+pub(crate) async fn load_oauth_mailbox_session(
     pool: &Pool<Sqlite>,
     session_id: &str,
 ) -> Result<Option<OauthMailboxSessionRow>> {
@@ -2026,7 +2049,7 @@ async fn load_oauth_mailbox_session(
     .map_err(Into::into)
 }
 
-async fn load_oauth_mailbox_sessions(
+pub(crate) async fn load_oauth_mailbox_sessions(
     pool: &Pool<Sqlite>,
     session_ids: &[String],
 ) -> Result<Vec<OauthMailboxSessionRow>> {
@@ -2057,7 +2080,7 @@ async fn load_oauth_mailbox_sessions(
         .map_err(Into::into)
 }
 
-async fn delete_oauth_mailbox_session_with_executor(
+pub(crate) async fn delete_oauth_mailbox_session_with_executor(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     session_id: &str,
 ) -> Result<u64> {
@@ -2074,7 +2097,7 @@ async fn delete_oauth_mailbox_session_with_executor(
     Ok(affected)
 }
 
-async fn cleanup_expired_oauth_mailbox_sessions(state: &AppState) -> Result<()> {
+pub(crate) async fn cleanup_expired_oauth_mailbox_sessions(state: &AppState) -> Result<()> {
     let kaisoumail_meta = state.config.upstream_accounts_kaisoumail.as_ref();
     let now_iso = format_utc_iso(Utc::now());
     let expired_rows = sqlx::query_as::<_, OauthMailboxSessionRow>(
@@ -2097,7 +2120,8 @@ async fn cleanup_expired_oauth_mailbox_sessions(state: &AppState) -> Result<()> 
         if expired_mailbox_session_requires_remote_delete(&row)
             && let Some(config) = kaisoumail_meta
             && let Err(err) =
-                kaisoumail_delete_mailbox(&state.http_clients.shared, config, &row.remote_email_id).await
+                kaisoumail_delete_mailbox(&state.http_clients.shared, config, &row.remote_email_id)
+                    .await
         {
             debug!(
                 mailbox_session_id = %row.session_id,
@@ -2111,7 +2135,7 @@ async fn cleanup_expired_oauth_mailbox_sessions(state: &AppState) -> Result<()> 
     Ok(())
 }
 
-async fn complete_login_session_with_executor(
+pub(crate) async fn complete_login_session_with_executor(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     login_id: &str,
     account_id: i64,
@@ -2157,7 +2181,7 @@ async fn complete_login_session_with_executor(
     Ok(())
 }
 
-async fn load_group_metadata_snapshot_conn(
+pub(crate) async fn load_group_metadata_snapshot_conn(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     group_name: Option<&str>,
     fallback_note: Option<&str>,
@@ -2165,7 +2189,7 @@ async fn load_group_metadata_snapshot_conn(
     load_group_metadata_snapshot_conn_with_limit(executor, group_name, fallback_note, 0).await
 }
 
-async fn load_group_metadata_snapshot_conn_with_limit(
+pub(crate) async fn load_group_metadata_snapshot_conn_with_limit(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     group_name: Option<&str>,
     fallback_note: Option<&str>,
@@ -2201,7 +2225,7 @@ async fn load_group_metadata_snapshot_conn_with_limit(
     })
 }
 
-fn next_login_session_updated_at(previous_updated_at: Option<&str>) -> String {
+pub(crate) fn next_login_session_updated_at(previous_updated_at: Option<&str>) -> String {
     let mut next_updated_at =
         parse_rfc3339_utc(&Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
             .unwrap_or_else(Utc::now);
@@ -2214,7 +2238,7 @@ fn next_login_session_updated_at(previous_updated_at: Option<&str>) -> String {
     next_updated_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-async fn fail_login_session_with_executor(
+pub(crate) async fn fail_login_session_with_executor(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     login_id: &str,
     error_message: &str,
@@ -2246,7 +2270,7 @@ async fn fail_login_session_with_executor(
     Ok(())
 }
 
-async fn fail_login_session(
+pub(crate) async fn fail_login_session(
     pool: &Pool<Sqlite>,
     login_id: &str,
     error_message: &str,
@@ -2254,7 +2278,7 @@ async fn fail_login_session(
     fail_login_session_with_executor(pool, login_id, error_message).await
 }
 
-async fn mark_login_session_expired(pool: &Pool<Sqlite>, login_id: &str) -> Result<()> {
+pub(crate) async fn mark_login_session_expired(pool: &Pool<Sqlite>, login_id: &str) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -2272,7 +2296,7 @@ async fn mark_login_session_expired(pool: &Pool<Sqlite>, login_id: &str) -> Resu
     Ok(())
 }
 
-fn login_session_to_response(row: &OauthLoginSessionRow) -> LoginSessionStatusResponse {
+pub(crate) fn login_session_to_response(row: &OauthLoginSessionRow) -> LoginSessionStatusResponse {
     LoginSessionStatusResponse {
         login_id: row.login_id.clone(),
         status: row.status.clone(),
@@ -2296,7 +2320,7 @@ fn login_session_to_response(row: &OauthLoginSessionRow) -> LoginSessionStatusRe
     }
 }
 
-fn login_session_identity_confirmation_response(
+pub(crate) fn login_session_identity_confirmation_response(
     row: &OauthLoginSessionRow,
 ) -> Option<OauthIdentityConfirmationResponse> {
     if row.status != LOGIN_SESSION_STATUS_NEEDS_IDENTITY_CONFIRMATION {
@@ -2324,7 +2348,7 @@ fn login_session_identity_confirmation_response(
     })
 }
 
-fn login_session_to_response_with_sync_applied(
+pub(crate) fn login_session_to_response_with_sync_applied(
     row: &OauthLoginSessionRow,
     sync_applied: bool,
 ) -> LoginSessionStatusResponse {
@@ -2333,7 +2357,7 @@ fn login_session_to_response_with_sync_applied(
     response
 }
 
-fn login_session_required_forward_proxy_scope(
+pub(crate) fn login_session_required_forward_proxy_scope(
     row: &OauthLoginSessionRow,
 ) -> Result<ForwardProxyRouteScope> {
     required_account_forward_proxy_scope(

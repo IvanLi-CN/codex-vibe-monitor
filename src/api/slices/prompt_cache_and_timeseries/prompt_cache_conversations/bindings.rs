@@ -1,7 +1,14 @@
 use super::*;
-const PROMPT_CACHE_BINDING_KIND_GROUP: &str = "group";
-const PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT: &str = "upstream_account";
-const PROMPT_CACHE_BINDING_KIND_NONE: &str = "none";
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
+pub(crate) const PROMPT_CACHE_BINDING_KIND_GROUP: &str = "group";
+pub(crate) const PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT: &str = "upstream_account";
+pub(crate) const PROMPT_CACHE_BINDING_KIND_NONE: &str = "none";
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct PromptCacheConversationBindingRow {
@@ -76,7 +83,7 @@ pub(crate) struct PromptCacheConversationBindingResponse {
 }
 
 #[derive(Debug, Clone, Default)]
-enum PatchField<T> {
+pub(crate) enum PatchField<T> {
     #[default]
     Missing,
     Null,
@@ -93,7 +100,7 @@ impl<T> PatchField<T> {
     }
 }
 
-fn deserialize_patch_field<'de, D, T>(deserializer: D) -> Result<PatchField<T>, D::Error>
+pub(crate) fn deserialize_patch_field<'de, D, T>(deserializer: D) -> Result<PatchField<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: serde::de::DeserializeOwned,
@@ -156,7 +163,7 @@ pub(crate) fn normalize_prompt_cache_conversation_key(raw: &str) -> Result<Strin
     Ok(normalized.to_string())
 }
 
-async fn binding_response_for_none(
+pub(crate) async fn binding_response_for_none(
     state: &AppState,
     config: &AppConfig,
     prompt_cache_key: String,
@@ -181,13 +188,14 @@ async fn binding_response_for_none(
         .await?;
         (timeouts, sources)
     } else {
-        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
-            &state.pool,
-            config,
-            None,
-            Some(prompt_cache_key.as_str()),
-        )
-        .await?;
+        let (timeouts, sources, _) =
+            load_effective_request_path_timeouts_for_group_and_conversation(
+                &state.pool,
+                config,
+                None,
+                Some(prompt_cache_key.as_str()),
+            )
+            .await?;
         (timeouts, sources)
     };
     let forward_proxy_key =
@@ -214,14 +222,14 @@ async fn binding_response_for_none(
             .map(|models| models.to_vec()),
         forward_proxy_key,
         forward_proxy_keys,
-        policy_field_sources: PromptCacheConversationPolicyFieldSources::inherited(
-            Some(&effective_policy),
-        ),
+        policy_field_sources: PromptCacheConversationPolicyFieldSources::inherited(Some(
+            &effective_policy,
+        )),
         updated_at: None,
     })
 }
 
-async fn binding_response_from_row(
+pub(crate) async fn binding_response_from_row(
     state: &AppState,
     config: &AppConfig,
     row: PromptCacheConversationBindingRow,
@@ -242,11 +250,13 @@ async fn binding_response_from_row(
         Some(load_effective_routing_rule_for_group(&state.pool, row.group_name.as_deref()).await?)
     } else if row.binding_kind == PROMPT_CACHE_BINDING_KIND_NONE {
         if let Some(owner) = owner {
-            Some(load_effective_routing_rule_for_account(
-                &state.pool,
-                owner.owner_upstream_account_id,
+            Some(
+                load_effective_routing_rule_for_account(
+                    &state.pool,
+                    owner.owner_upstream_account_id,
+                )
+                .await?,
             )
-            .await?)
         } else if let Some(account_id) = sticky_account_id {
             Some(load_effective_routing_rule_for_account(&state.pool, account_id).await?)
         } else {
@@ -260,62 +270,68 @@ async fn binding_response_from_row(
     let effective_available_models = effective_policy
         .as_ref()
         .and_then(|rule| rule.available_models().map(|models| models.to_vec()));
-    let (timeouts, timeout_field_sources) = if row.binding_kind == PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT {
-        if let Some(account_id) = row.upstream_account_id {
+    let (timeouts, timeout_field_sources) =
+        if row.binding_kind == PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT {
+            if let Some(account_id) = row.upstream_account_id {
+                let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
+                    &state.pool,
+                    config,
+                    account_id,
+                    Some(row.prompt_cache_key.as_str()),
+                )
+                .await?;
+                (timeouts, sources)
+            } else {
+                let (timeouts, sources, _) =
+                    load_effective_request_path_timeouts_for_group_and_conversation(
+                        &state.pool,
+                        config,
+                        None,
+                        Some(row.prompt_cache_key.as_str()),
+                    )
+                    .await?;
+                (timeouts, sources)
+            }
+        } else if row.binding_kind == PROMPT_CACHE_BINDING_KIND_GROUP {
+            let (timeouts, sources, _) =
+                load_effective_request_path_timeouts_for_group_and_conversation(
+                    &state.pool,
+                    config,
+                    row.group_name.as_deref(),
+                    Some(row.prompt_cache_key.as_str()),
+                )
+                .await?;
+            (timeouts, sources)
+        } else if let Some(owner) = owner {
             let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
                 &state.pool,
                 config,
-                account_id,
+                owner.owner_upstream_account_id,
                 Some(row.prompt_cache_key.as_str()),
             )
             .await?;
             (timeouts, sources)
         } else {
-            let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
-                &state.pool,
-                config,
-                None,
-                Some(row.prompt_cache_key.as_str()),
-            )
-            .await?;
+            let (timeouts, sources, _) =
+                load_effective_request_path_timeouts_for_group_and_conversation(
+                    &state.pool,
+                    config,
+                    None,
+                    Some(row.prompt_cache_key.as_str()),
+                )
+                .await?;
             (timeouts, sources)
-        }
-    } else if row.binding_kind == PROMPT_CACHE_BINDING_KIND_GROUP {
-        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
-            &state.pool,
-            config,
-            row.group_name.as_deref(),
-            Some(row.prompt_cache_key.as_str()),
-        )
-        .await?;
-        (timeouts, sources)
-    } else if let Some(owner) = owner {
-        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_account(
-            &state.pool,
-            config,
-            owner.owner_upstream_account_id,
-            Some(row.prompt_cache_key.as_str()),
-        )
-        .await?;
-        (timeouts, sources)
-    } else {
-        let (timeouts, sources, _) = load_effective_request_path_timeouts_for_group_and_conversation(
-            &state.pool,
-            config,
-            None,
-            Some(row.prompt_cache_key.as_str()),
-        )
-        .await?;
-        (timeouts, sources)
-    };
+        };
     let row_forward_proxy_keys =
         parse_forward_proxy_keys_json(row.forward_proxy_keys_json.as_deref());
     let forward_proxy_key = row
         .forward_proxy_key
         .clone()
         .or_else(|| row_forward_proxy_keys.first().cloned())
-        .or(resolve_effective_forward_proxy_key_for_row(state, &row, owner, sticky_account_id)
-            .await);
+        .or(
+            resolve_effective_forward_proxy_key_for_row(state, &row, owner, sticky_account_id)
+                .await,
+        );
     let forward_proxy_keys = if row_forward_proxy_keys.is_empty() {
         forward_proxy_key.iter().cloned().collect::<Vec<_>>()
     } else {
@@ -347,12 +363,20 @@ async fn binding_response_from_row(
             .fast_mode_rewrite_mode
             .as_deref()
             .map(parse_fast_mode_rewrite_mode_lossy)
-            .or_else(|| effective_policy.as_ref().map(|rule| rule.fast_mode_rewrite_mode)),
+            .or_else(|| {
+                effective_policy
+                    .as_ref()
+                    .map(|rule| rule.fast_mode_rewrite_mode)
+            }),
         image_tool_rewrite_mode: row
             .image_tool_rewrite_mode
             .as_deref()
             .map(ImageToolRewriteMode::from_str)
-            .or_else(|| effective_policy.as_ref().map(|rule| rule.image_tool_rewrite_mode)),
+            .or_else(|| {
+                effective_policy
+                    .as_ref()
+                    .map(|rule| rule.image_tool_rewrite_mode)
+            }),
         available_models: row
             .available_models_json
             .as_deref()
@@ -418,7 +442,7 @@ impl PromptCacheConversationPolicyFieldSources {
     }
 }
 
-fn source_for_optional<T>(value: Option<&T>) -> String {
+pub(crate) fn source_for_optional<T>(value: Option<&T>) -> String {
     if value.is_some() {
         "conversation"
     } else {
@@ -427,7 +451,10 @@ fn source_for_optional<T>(value: Option<&T>) -> String {
     .to_string()
 }
 
-fn source_for_optional_or_effective<T>(value: Option<&T>, effective_source: Option<&str>) -> String {
+pub(crate) fn source_for_optional_or_effective<T>(
+    value: Option<&T>,
+    effective_source: Option<&str>,
+) -> String {
     if value.is_some() {
         "conversation"
     } else {
@@ -436,7 +463,10 @@ fn source_for_optional_or_effective<T>(value: Option<&T>, effective_source: Opti
     .to_string()
 }
 
-async fn load_sticky_account_id(pool: &Pool<Sqlite>, prompt_cache_key: &str) -> Result<Option<i64>> {
+pub(crate) async fn load_sticky_account_id(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+) -> Result<Option<i64>> {
     sqlx::query_scalar::<_, i64>(
         "SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1 LIMIT 1",
     )
@@ -446,7 +476,7 @@ async fn load_sticky_account_id(pool: &Pool<Sqlite>, prompt_cache_key: &str) -> 
     .map_err(Into::into)
 }
 
-async fn resolve_effective_forward_proxy_key_for_account(
+pub(crate) async fn resolve_effective_forward_proxy_key_for_account(
     state: &AppState,
     account_id: Option<i64>,
 ) -> Option<String> {
@@ -455,12 +485,12 @@ async fn resolve_effective_forward_proxy_key_for_account(
         .await
         .ok()??;
     let scope = resolve_account_forward_proxy_scope(state, &row, None)
-    .await
-    .ok()?;
+        .await
+        .ok()?;
     forward_proxy_key_for_scope(state, &scope).await
 }
 
-async fn load_first_group_account_id_for_forward_proxy(
+pub(crate) async fn load_first_group_account_id_for_forward_proxy(
     pool: &Pool<Sqlite>,
     group_name: &str,
 ) -> Result<Option<i64>> {
@@ -483,14 +513,15 @@ async fn load_first_group_account_id_for_forward_proxy(
     .map_err(Into::into)
 }
 
-async fn resolve_effective_forward_proxy_key_for_row(
+pub(crate) async fn resolve_effective_forward_proxy_key_for_row(
     state: &AppState,
     row: &PromptCacheConversationBindingRow,
     owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
     sticky_account_id: Option<i64>,
 ) -> Option<String> {
     if row.binding_kind == PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT {
-        return resolve_effective_forward_proxy_key_for_account(state, row.upstream_account_id).await;
+        return resolve_effective_forward_proxy_key_for_account(state, row.upstream_account_id)
+            .await;
     }
     if row.binding_kind == PROMPT_CACHE_BINDING_KIND_GROUP {
         let account_id =
@@ -505,7 +536,7 @@ async fn resolve_effective_forward_proxy_key_for_row(
     resolve_effective_forward_proxy_key_for_account(state, effective_account_id).await
 }
 
-async fn forward_proxy_key_for_scope(
+pub(crate) async fn forward_proxy_key_for_scope(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
 ) -> Option<String> {
@@ -522,7 +553,7 @@ async fn forward_proxy_key_for_scope(
     }
 }
 
-fn apply_owner_to_none_response(
+pub(crate) fn apply_owner_to_none_response(
     mut response: PromptCacheConversationBindingResponse,
     owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
 ) -> PromptCacheConversationBindingResponse {
@@ -535,7 +566,7 @@ fn apply_owner_to_none_response(
     response
 }
 
-async fn load_prompt_cache_conversation_binding_row_executor<'e, E>(
+pub(crate) async fn load_prompt_cache_conversation_binding_row_executor<'e, E>(
     executor: E,
     prompt_cache_key: &str,
 ) -> Result<Option<PromptCacheConversationBindingRow>>
@@ -581,7 +612,7 @@ pub(crate) async fn load_prompt_cache_conversation_binding_row(
     load_prompt_cache_conversation_binding_row_executor(pool, prompt_cache_key).await
 }
 
-fn parse_fast_mode_rewrite_mode_lossy(value: &str) -> TagFastModeRewriteMode {
+pub(crate) fn parse_fast_mode_rewrite_mode_lossy(value: &str) -> TagFastModeRewriteMode {
     match value.trim() {
         "force_remove" => TagFastModeRewriteMode::ForceRemove,
         "fill_missing" => TagFastModeRewriteMode::FillMissing,
@@ -590,7 +621,7 @@ fn parse_fast_mode_rewrite_mode_lossy(value: &str) -> TagFastModeRewriteMode {
     }
 }
 
-fn normalize_fast_mode_rewrite_mode(
+pub(crate) fn normalize_fast_mode_rewrite_mode(
     value: PatchField<String>,
 ) -> Result<PatchField<TagFastModeRewriteMode>, ApiError> {
     let value = match value {
@@ -609,7 +640,7 @@ fn normalize_fast_mode_rewrite_mode(
     }
 }
 
-fn normalize_image_tool_rewrite_mode(
+pub(crate) fn normalize_image_tool_rewrite_mode(
     value: PatchField<String>,
 ) -> Result<PatchField<ImageToolRewriteMode>, ApiError> {
     let value = match value {
@@ -628,7 +659,7 @@ fn normalize_image_tool_rewrite_mode(
     }
 }
 
-fn normalize_available_models_patch(
+pub(crate) fn normalize_available_models_patch(
     value: PatchField<Vec<String>>,
 ) -> Result<PatchField<Vec<String>>, ApiError> {
     let values = match value {
@@ -651,7 +682,7 @@ fn normalize_available_models_patch(
     Ok(PatchField::Value(normalized))
 }
 
-fn parse_available_models_json(value: &str) -> Option<Vec<String>> {
+pub(crate) fn parse_available_models_json(value: &str) -> Option<Vec<String>> {
     serde_json::from_str::<Vec<String>>(value)
         .ok()
         .map(|values| {
@@ -664,14 +695,14 @@ fn parse_available_models_json(value: &str) -> Option<Vec<String>> {
         .filter(|values| !values.is_empty())
 }
 
-fn parse_forward_proxy_keys_json(value: Option<&str>) -> Vec<String> {
+pub(crate) fn parse_forward_proxy_keys_json(value: Option<&str>) -> Vec<String> {
     value
         .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
         .map(normalize_bound_proxy_keys)
         .unwrap_or_default()
 }
 
-fn conversation_routing_override_from_row(
+pub(crate) fn conversation_routing_override_from_row(
     row: &PromptCacheConversationBindingRow,
 ) -> Option<ConversationRoutingOverride> {
     let forward_proxy_keys = parse_forward_proxy_keys_json(row.forward_proxy_keys_json.as_deref());
@@ -698,7 +729,9 @@ fn conversation_routing_override_from_row(
         forward_proxy_keys,
         forward_proxy_scope_key: format!("conversation:{}", row.prompt_cache_key),
     };
-    override_policy.has_policy_override().then_some(override_policy)
+    override_policy
+        .has_policy_override()
+        .then_some(override_policy)
 }
 
 pub(crate) async fn load_prompt_cache_conversation_routing_override(
@@ -711,13 +744,15 @@ pub(crate) async fn load_prompt_cache_conversation_routing_override(
     else {
         return Ok(None);
     };
-    Ok(load_prompt_cache_conversation_binding_row(pool, prompt_cache_key)
-        .await?
-        .as_ref()
-        .and_then(conversation_routing_override_from_row))
+    Ok(
+        load_prompt_cache_conversation_binding_row(pool, prompt_cache_key)
+            .await?
+            .as_ref()
+            .and_then(conversation_routing_override_from_row),
+    )
 }
 
-async fn load_prompt_cache_encrypted_session_owner_row_executor<'e, E>(
+pub(crate) async fn load_prompt_cache_encrypted_session_owner_row_executor<'e, E>(
     executor: E,
     prompt_cache_key: &str,
 ) -> Result<Option<PromptCacheEncryptedSessionOwnerRow>>
@@ -754,7 +789,7 @@ pub(crate) async fn load_prompt_cache_encrypted_session_owner_row(
     load_prompt_cache_encrypted_session_owner_row_executor(pool, prompt_cache_key).await
 }
 
-async fn load_prompt_cache_encrypted_session_owner_row_if_enabled(
+pub(crate) async fn load_prompt_cache_encrypted_session_owner_row_if_enabled(
     state: &AppState,
     prompt_cache_key: &str,
 ) -> Result<Option<PromptCacheEncryptedSessionOwnerRow>> {
@@ -779,12 +814,14 @@ pub(crate) async fn load_prompt_cache_encrypted_session_owner_account_id(
     else {
         return Ok(None);
     };
-    Ok(load_prompt_cache_encrypted_session_owner_row(pool, prompt_cache_key)
-        .await?
-        .map(|row| row.owner_upstream_account_id))
+    Ok(
+        load_prompt_cache_encrypted_session_owner_row(pool, prompt_cache_key)
+            .await?
+            .map(|row| row.owner_upstream_account_id),
+    )
 }
 
-fn manual_binding_overrides_encrypted_owner(
+pub(crate) fn manual_binding_overrides_encrypted_owner(
     binding_row: &PromptCacheConversationBindingRow,
     owner: &PromptCacheEncryptedSessionOwnerRow,
 ) -> bool {
@@ -795,14 +832,12 @@ fn manual_binding_overrides_encrypted_owner(
         PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {
             binding_row.upstream_account_id != Some(owner.owner_upstream_account_id)
         }
-        PROMPT_CACHE_BINDING_KIND_GROUP => {
-            binding_row
-                .group_name
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .is_some()
-        }
+        PROMPT_CACHE_BINDING_KIND_GROUP => binding_row
+            .group_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some(),
         _ => false,
     }
 }
@@ -862,7 +897,7 @@ pub(crate) async fn resolve_prompt_cache_encrypted_session_routing_context(
     }
 }
 
-async fn upsert_prompt_cache_encrypted_session_owner_executor<'e, E>(
+pub(crate) async fn upsert_prompt_cache_encrypted_session_owner_executor<'e, E>(
     executor: E,
     prompt_cache_key: &str,
     owner_upstream_account_id: i64,
@@ -1129,7 +1164,10 @@ pub(crate) async fn load_prompt_cache_conversation_binding_constraint(
     })
 }
 
-async fn ensure_group_binding_target(pool: &Pool<Sqlite>, group_name: &str) -> Result<(), ApiError> {
+pub(crate) async fn ensure_group_binding_target(
+    pool: &Pool<Sqlite>,
+    group_name: &str,
+) -> Result<(), ApiError> {
     let account_count: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
@@ -1152,7 +1190,7 @@ async fn ensure_group_binding_target(pool: &Pool<Sqlite>, group_name: &str) -> R
     Ok(())
 }
 
-async fn ensure_upstream_account_binding_target(
+pub(crate) async fn ensure_upstream_account_binding_target(
     pool: &Pool<Sqlite>,
     upstream_account_id: i64,
 ) -> Result<String, ApiError> {
@@ -1194,7 +1232,7 @@ async fn ensure_upstream_account_binding_target(
     Ok(row.display_name)
 }
 
-async fn normalize_forward_proxy_key_patch(
+pub(crate) async fn normalize_forward_proxy_key_patch(
     state: &AppState,
     value: PatchField<String>,
 ) -> Result<PatchField<String>, ApiError> {
@@ -1225,7 +1263,7 @@ async fn normalize_forward_proxy_key_patch(
     Ok(PatchField::Value(canonical))
 }
 
-async fn normalize_forward_proxy_keys_patch(
+pub(crate) async fn normalize_forward_proxy_keys_patch(
     state: &AppState,
     value: PatchField<Vec<String>>,
 ) -> Result<PatchField<Vec<String>>, ApiError> {
@@ -1251,7 +1289,7 @@ async fn normalize_forward_proxy_keys_patch(
     Ok(PatchField::Value(canonical))
 }
 
-fn next_optional_patch_value<T: Clone>(
+pub(crate) fn next_optional_patch_value<T: Clone>(
     incoming: PatchField<T>,
     current: Option<T>,
 ) -> Option<T> {
@@ -1262,7 +1300,7 @@ fn next_optional_patch_value<T: Clone>(
     }
 }
 
-fn next_optional_value<T: Clone>(
+pub(crate) fn next_optional_value<T: Clone>(
     incoming: Option<Option<T>>,
     current: Option<T>,
 ) -> Option<T> {
@@ -1275,11 +1313,22 @@ pub(crate) async fn get_prompt_cache_conversation_binding(
 ) -> Result<Json<PromptCacheConversationBindingResponse>, ApiError> {
     let prompt_cache_key = normalize_prompt_cache_conversation_key(&encoded_prompt_cache_key)?;
     let owner =
-        load_prompt_cache_encrypted_session_owner_row_if_enabled(state.as_ref(), &prompt_cache_key).await?;
-    let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await? {
-        Some(row) => binding_response_from_row(state.as_ref(), &state.config, row, owner.as_ref()).await?,
+        load_prompt_cache_encrypted_session_owner_row_if_enabled(state.as_ref(), &prompt_cache_key)
+            .await?;
+    let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
+        .await?
+    {
+        Some(row) => {
+            binding_response_from_row(state.as_ref(), &state.config, row, owner.as_ref()).await?
+        }
         None => apply_owner_to_none_response(
-            binding_response_for_none(state.as_ref(), &state.config, prompt_cache_key, owner.as_ref()).await?,
+            binding_response_for_none(
+                state.as_ref(),
+                &state.config,
+                prompt_cache_key,
+                owner.as_ref(),
+            )
+            .await?,
             owner.as_ref(),
         ),
     };
@@ -1327,9 +1376,8 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
     let allow_switch_upstream = payload
         .allow_switch_upstream
         .map(|enabled| if enabled { 1 } else { 0 });
-    let fast_mode_rewrite_mode =
-        normalize_fast_mode_rewrite_mode(payload.fast_mode_rewrite_mode)?
-            .map(|mode| mode.as_str().to_string());
+    let fast_mode_rewrite_mode = normalize_fast_mode_rewrite_mode(payload.fast_mode_rewrite_mode)?
+        .map(|mode| mode.as_str().to_string());
     let image_tool_rewrite_mode =
         normalize_image_tool_rewrite_mode(payload.image_tool_rewrite_mode)?
             .map(|mode| mode.as_str().to_string());
@@ -1352,22 +1400,54 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
     };
     let existing_row =
         load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await?;
-    let next_responses_first_byte_timeout_secs =
-        next_optional_value(responses_first_byte_timeout_secs, existing_row.as_ref().and_then(|row| row.responses_first_byte_timeout_secs));
-    let next_compact_first_byte_timeout_secs =
-        next_optional_value(compact_first_byte_timeout_secs, existing_row.as_ref().and_then(|row| row.compact_first_byte_timeout_secs));
-    let next_responses_stream_timeout_secs =
-        next_optional_value(responses_stream_timeout_secs, existing_row.as_ref().and_then(|row| row.responses_stream_timeout_secs));
-    let next_compact_stream_timeout_secs =
-        next_optional_value(compact_stream_timeout_secs, existing_row.as_ref().and_then(|row| row.compact_stream_timeout_secs));
-    let next_allow_switch_upstream =
-        next_optional_patch_value(allow_switch_upstream, existing_row.as_ref().and_then(|row| row.allow_switch_upstream));
-    let next_fast_mode_rewrite_mode =
-        next_optional_patch_value(fast_mode_rewrite_mode, existing_row.as_ref().and_then(|row| row.fast_mode_rewrite_mode.clone()));
-    let next_image_tool_rewrite_mode =
-        next_optional_patch_value(image_tool_rewrite_mode, existing_row.as_ref().and_then(|row| row.image_tool_rewrite_mode.clone()));
-    let next_available_models =
-        next_optional_patch_value(available_models, existing_row.as_ref().and_then(|row| row.available_models_json.clone()));
+    let next_responses_first_byte_timeout_secs = next_optional_value(
+        responses_first_byte_timeout_secs,
+        existing_row
+            .as_ref()
+            .and_then(|row| row.responses_first_byte_timeout_secs),
+    );
+    let next_compact_first_byte_timeout_secs = next_optional_value(
+        compact_first_byte_timeout_secs,
+        existing_row
+            .as_ref()
+            .and_then(|row| row.compact_first_byte_timeout_secs),
+    );
+    let next_responses_stream_timeout_secs = next_optional_value(
+        responses_stream_timeout_secs,
+        existing_row
+            .as_ref()
+            .and_then(|row| row.responses_stream_timeout_secs),
+    );
+    let next_compact_stream_timeout_secs = next_optional_value(
+        compact_stream_timeout_secs,
+        existing_row
+            .as_ref()
+            .and_then(|row| row.compact_stream_timeout_secs),
+    );
+    let next_allow_switch_upstream = next_optional_patch_value(
+        allow_switch_upstream,
+        existing_row
+            .as_ref()
+            .and_then(|row| row.allow_switch_upstream),
+    );
+    let next_fast_mode_rewrite_mode = next_optional_patch_value(
+        fast_mode_rewrite_mode,
+        existing_row
+            .as_ref()
+            .and_then(|row| row.fast_mode_rewrite_mode.clone()),
+    );
+    let next_image_tool_rewrite_mode = next_optional_patch_value(
+        image_tool_rewrite_mode,
+        existing_row
+            .as_ref()
+            .and_then(|row| row.image_tool_rewrite_mode.clone()),
+    );
+    let next_available_models = next_optional_patch_value(
+        available_models,
+        existing_row
+            .as_ref()
+            .and_then(|row| row.available_models_json.clone()),
+    );
     let next_forward_proxy_keys = next_optional_patch_value(
         forward_proxy_keys,
         existing_row
@@ -1464,16 +1544,35 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                 .execute(&state.pool)
                 .await?;
             }
-            let owner =
-                load_prompt_cache_encrypted_session_owner_row_if_enabled(state.as_ref(), &prompt_cache_key)
-                    .await?;
-            let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await? {
-                Some(row) => binding_response_from_row(state.as_ref(), &state.config, row, owner.as_ref()).await?,
-                None => apply_owner_to_none_response(
-                    binding_response_for_none(state.as_ref(), &state.config, prompt_cache_key, owner.as_ref()).await?,
-                    owner.as_ref(),
-                ),
-            };
+            let owner = load_prompt_cache_encrypted_session_owner_row_if_enabled(
+                state.as_ref(),
+                &prompt_cache_key,
+            )
+            .await?;
+            let response =
+                match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
+                    .await?
+                {
+                    Some(row) => {
+                        binding_response_from_row(
+                            state.as_ref(),
+                            &state.config,
+                            row,
+                            owner.as_ref(),
+                        )
+                        .await?
+                    }
+                    None => apply_owner_to_none_response(
+                        binding_response_for_none(
+                            state.as_ref(),
+                            &state.config,
+                            prompt_cache_key,
+                            owner.as_ref(),
+                        )
+                        .await?,
+                        owner.as_ref(),
+                    ),
+                };
             Ok(Json(response))
         }
         "group" => {
@@ -1534,18 +1633,22 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             .bind(&next_forward_proxy_keys_json)
             .execute(&state.pool)
             .await?;
-            let owner =
-                load_prompt_cache_encrypted_session_owner_row_if_enabled(state.as_ref(), &prompt_cache_key)
-                    .await?;
-            Ok(Json(binding_response_from_row(
+            let owner = load_prompt_cache_encrypted_session_owner_row_if_enabled(
                 state.as_ref(),
-                &state.config,
-                load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
-                    .await?
-                    .expect("saved prompt cache group binding should exist"),
-                owner.as_ref(),
+                &prompt_cache_key,
             )
-            .await?))
+            .await?;
+            Ok(Json(
+                binding_response_from_row(
+                    state.as_ref(),
+                    &state.config,
+                    load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
+                        .await?
+                        .expect("saved prompt cache group binding should exist"),
+                    owner.as_ref(),
+                )
+                .await?,
+            ))
         }
         "upstreamAccount" => {
             let upstream_account_id = upstream_account_id.ok_or_else(|| {
@@ -1553,7 +1656,8 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     "upstreamAccountId is required for upstream account binding"
                 ))
             })?;
-            let _ = ensure_upstream_account_binding_target(&state.pool, upstream_account_id).await?;
+            let _ =
+                ensure_upstream_account_binding_target(&state.pool, upstream_account_id).await?;
             sqlx::query(
                 r#"
                 INSERT INTO prompt_cache_conversation_bindings (
@@ -1608,20 +1712,29 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             .execute(&state.pool)
             .await?;
             let now_iso = format_utc_iso(Utc::now());
-            upsert_sticky_route(&state.pool, &prompt_cache_key, upstream_account_id, &now_iso)
-                .await?;
-            let owner =
-                load_prompt_cache_encrypted_session_owner_row_if_enabled(state.as_ref(), &prompt_cache_key)
-                    .await?;
-            Ok(Json(binding_response_from_row(
-                state.as_ref(),
-                &state.config,
-                load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
-                    .await?
-                    .expect("saved prompt cache account binding should exist"),
-                owner.as_ref(),
+            upsert_sticky_route(
+                &state.pool,
+                &prompt_cache_key,
+                upstream_account_id,
+                &now_iso,
             )
-            .await?))
+            .await?;
+            let owner = load_prompt_cache_encrypted_session_owner_row_if_enabled(
+                state.as_ref(),
+                &prompt_cache_key,
+            )
+            .await?;
+            Ok(Json(
+                binding_response_from_row(
+                    state.as_ref(),
+                    &state.config,
+                    load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
+                        .await?
+                        .expect("saved prompt cache account binding should exist"),
+                    owner.as_ref(),
+                )
+                .await?,
+            ))
         }
         _ => Err(ApiError::bad_request(anyhow!(
             "bindingKind must be one of: none, group, upstreamAccount"

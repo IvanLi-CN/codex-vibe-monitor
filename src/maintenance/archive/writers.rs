@@ -1,9 +1,12 @@
 use super::*;
+use anyhow::{anyhow, bail};
+use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use std::str::FromStr;
+use tracing::warn;
 
 #[derive(Debug, Clone, FromRow)]
-struct PoolUpstreamRequestAttemptArchiveRow {
+pub(crate) struct PoolUpstreamRequestAttemptArchiveRow {
     id: i64,
     invoke_id: String,
     occurred_at: String,
@@ -36,7 +39,7 @@ struct PoolUpstreamRequestAttemptArchiveRow {
     created_at: String,
 }
 
-async fn open_archive_sqlite_connection(path: &Path) -> Result<SqliteConnection> {
+pub(crate) async fn open_archive_sqlite_connection(path: &Path) -> Result<SqliteConnection> {
     ensure_attachable_archive_sqlite_path(path)?;
     let database_url = format!("sqlite://{}", path.to_string_lossy());
     let connect_opts = SqliteConnectOptions::from_str(&database_url)
@@ -49,7 +52,7 @@ async fn open_archive_sqlite_connection(path: &Path) -> Result<SqliteConnection>
         .with_context(|| format!("failed to open archive sqlite file {}", path.display()))
 }
 
-fn ensure_attachable_archive_sqlite_path(path: &Path) -> Result<()> {
+pub(crate) fn ensure_attachable_archive_sqlite_path(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create archive directory: {}", parent.display()))?;
@@ -61,7 +64,7 @@ fn ensure_attachable_archive_sqlite_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn finalize_archive_sqlite_file(path: &Path) -> Result<()> {
+pub(crate) async fn finalize_archive_sqlite_file(path: &Path) -> Result<()> {
     let mut connection = open_archive_sqlite_connection(path).await?;
     sqlx::query("VACUUM")
         .execute(&mut connection)
@@ -71,7 +74,7 @@ async fn finalize_archive_sqlite_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
+pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
     conn: &mut SqliteConnection,
 ) -> Result<()> {
     let archive_columns = sqlx::query("PRAGMA table_info('pool_upstream_request_attempts')")
@@ -98,16 +101,14 @@ async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
                 .execute(&mut *conn)
                 .await
                 .with_context(|| {
-                    format!(
-                        "failed to add pool_upstream_request_attempts archive column {column}"
-                    )
+                    format!("failed to add pool_upstream_request_attempts archive column {column}")
                 })?;
         }
     }
     Ok(())
 }
 
-async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
+pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
     pool: &Pool<Sqlite>,
     spec: ArchiveTableSpec,
     ids: &[i64],
@@ -236,10 +237,8 @@ pub(crate) async fn archive_rows_into_month_batch(
         ensure_attachable_archive_sqlite_path(&work_path)?;
     }
     let row_count = if spec.dataset == "pool_upstream_request_attempts" {
-        archive_pool_upstream_request_attempt_rows_into_month_batch(
-            pool, spec, ids, &work_path,
-        )
-        .await
+        archive_pool_upstream_request_attempt_rows_into_month_batch(pool, spec, ids, &work_path)
+            .await
     } else {
         async {
         let mut conn = pool.acquire().await?;

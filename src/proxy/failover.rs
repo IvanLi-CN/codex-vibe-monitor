@@ -1,7 +1,8 @@
+use super::*;
+
 #[cfg(test)]
-fn pool_no_available_wait_hooks() -> &'static std::sync::Mutex<
-    std::collections::HashMap<usize, Vec<std::sync::mpsc::Sender<()>>>,
-> {
+pub(crate) fn pool_no_available_wait_hooks()
+-> &'static std::sync::Mutex<std::collections::HashMap<usize, Vec<std::sync::mpsc::Sender<()>>>> {
     static HOOKS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<usize, Vec<std::sync::mpsc::Sender<()>>>>,
     > = std::sync::OnceLock::new();
@@ -23,7 +24,7 @@ pub(crate) fn register_pool_no_available_wait_hook(
 }
 
 #[cfg(test)]
-fn notify_pool_no_available_wait_hook(state: &AppState) {
+pub(crate) fn notify_pool_no_available_wait_hook(state: &AppState) {
     let listeners = pool_no_available_wait_hooks()
         .lock()
         .expect("lock pool no-available wait hooks")
@@ -36,7 +37,7 @@ fn notify_pool_no_available_wait_hook(state: &AppState) {
 }
 
 #[cfg(not(test))]
-fn notify_pool_no_available_wait_hook(_state: &AppState) {}
+pub(crate) fn notify_pool_no_available_wait_hook(_state: &AppState) {}
 
 pub(crate) fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
     let text = value.to_str().ok()?.trim();
@@ -57,7 +58,7 @@ pub(crate) fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
     )))
 }
 
-async fn canonical_pool_attempt_proxy_binding_key(
+pub(crate) async fn canonical_pool_attempt_proxy_binding_key(
     state: &AppState,
     selected_proxy_key: &str,
 ) -> Option<String> {
@@ -65,13 +66,13 @@ async fn canonical_pool_attempt_proxy_binding_key(
     manager.canonicalize_bound_proxy_key(selected_proxy_key, None)
 }
 
-fn normalize_pool_attempt_group_name(group_name: Option<String>) -> Option<String> {
+pub(crate) fn normalize_pool_attempt_group_name(group_name: Option<String>) -> Option<String> {
     group_name
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }
 
-fn pool_attempt_image_intent_observes_capability(image_intent: ImageIntent) -> bool {
+pub(crate) fn pool_attempt_image_intent_observes_capability(image_intent: ImageIntent) -> bool {
     matches!(image_intent, ImageIntent::Yes | ImageIntent::DirectImage)
 }
 
@@ -221,7 +222,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     .await
 }
 
-async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_internal(
+pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_internal(
     state: &AppState,
     sticky_key: Option<&str>,
     requested_model: Option<&str>,
@@ -244,17 +245,17 @@ async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_inter
         }
         let resolution =
             resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override(
-            state,
-            sticky_key,
-            requested_model,
-            excluded_ids,
-            excluded_upstream_route_keys,
-            required_upstream_route_key,
-            binding_constraint,
-            conversation_override,
-            image_intent,
+                state,
+                sticky_key,
+                requested_model,
+                excluded_ids,
+                excluded_upstream_route_keys,
+                required_upstream_route_key,
+                binding_constraint,
+                conversation_override,
+                image_intent,
             )
-        .await?;
+            .await?;
         if wait_for_no_available
             && matches!(
                 resolution,
@@ -370,9 +371,9 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     let mut excluded_ids = failover_progress.excluded_account_ids;
     let mut excluded_upstream_route_keys = failover_progress.excluded_upstream_route_keys;
     let mut last_error = failover_progress.last_error;
-    let mut preserve_sticky_owner_terminal_error =
-        failover_progress.preserve_sticky_owner_terminal_error
-            || pool_upstream_error_preserves_existing_sticky_owner(last_error.as_ref());
+    let mut preserve_sticky_owner_terminal_error = failover_progress
+        .preserve_sticky_owner_terminal_error
+        || pool_upstream_error_preserves_existing_sticky_owner(last_error.as_ref());
     let mut overload_required_upstream_route_key =
         failover_progress.overload_required_upstream_route_key;
     let mut attempted_account_ids = excluded_ids.iter().copied().collect::<HashSet<_>>();
@@ -393,16 +394,18 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     let mut preferred_account = preferred_account
         .filter(|account| !excluded_upstream_route_keys.contains(&account.upstream_route_key()))
         .filter(|account| {
-            binding_constraint.as_ref().is_none_or(|constraint| match constraint {
-                PromptCacheConversationBindingConstraint::Group(group_name) => account
-                    .group_name
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|value| value == group_name),
-                PromptCacheConversationBindingConstraint::UpstreamAccount(account_id) => {
-                    account.account_id == *account_id
-                }
-            })
+            binding_constraint
+                .as_ref()
+                .is_none_or(|constraint| match constraint {
+                    PromptCacheConversationBindingConstraint::Group(group_name) => account
+                        .group_name
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|value| value == group_name),
+                    PromptCacheConversationBindingConstraint::UpstreamAccount(account_id) => {
+                        account.account_id == *account_id
+                    }
+                })
         });
     let initial_same_account_attempts = same_account_attempts.max(1);
     let mut attempt_count = failover_progress.attempt_count;
@@ -587,8 +590,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         None
                     }
                 });
-            let route_scoped_overload_selection =
-                overload_required_upstream_route_key.clone();
+            let route_scoped_overload_selection = overload_required_upstream_route_key.clone();
             match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
                 state.as_ref(),
                 sticky_key,
@@ -1206,9 +1208,10 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
         let mut group_upstream_429_retry_count = 0_u8;
         let mut retried_upstream_413_for_account = last_error.as_ref().is_some_and(|err| {
             err.status == StatusCode::PAYLOAD_TOO_LARGE
-                && err.account.as_ref().is_some_and(|err_account| {
-                    err_account.account_id == account.account_id
-                })
+                && err
+                    .account
+                    .as_ref()
+                    .is_some_and(|err_account| err_account.account_id == account.account_id)
         });
         let mut first_response_attempt_started_at = None;
 
@@ -1313,21 +1316,21 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         &mut last_error,
                         &mut preserve_sticky_owner_terminal_error,
                         PoolUpstreamError {
-                        account: Some(account.clone()),
-                        status: StatusCode::BAD_GATEWAY,
-                        message,
-                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                        connect_latency_ms: 0.0,
-                        upstream_error_code: None,
-                        upstream_error_message: None,
-                        canonical_error_message: None,
-                        downstream_error_message: None,
-                        upstream_request_id: None,
-                        proxy_binding_key_snapshot: None,
-                        oauth_responses_debug: None,
-                        attempt_summary: PoolAttemptSummary::default(),
-                        requested_service_tier: None,
-                        request_body_for_capture: None,
+                            account: Some(account.clone()),
+                            status: StatusCode::BAD_GATEWAY,
+                            message,
+                            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            connect_latency_ms: 0.0,
+                            upstream_error_code: None,
+                            upstream_error_message: None,
+                            canonical_error_message: None,
+                            downstream_error_message: None,
+                            upstream_request_id: None,
+                            proxy_binding_key_snapshot: None,
+                            oauth_responses_debug: None,
+                            attempt_summary: PoolAttemptSummary::default(),
+                            requested_service_tier: None,
+                            request_body_for_capture: None,
                         },
                     );
                     exhausted_accounts_all_rate_limited = false;
@@ -1362,23 +1365,23 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     &mut last_error,
                                     &mut preserve_sticky_owner_terminal_error,
                                     PoolUpstreamError {
-                                    account: Some(account.clone()),
-                                    status: StatusCode::BAD_GATEWAY,
-                                    message: message.clone(),
-                                    canonical_error_message: None,
-                                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                                    connect_latency_ms: 0.0,
-                                    upstream_error_code: None,
-                                    upstream_error_message: None,
-                                    downstream_error_message: None,
-                                    upstream_request_id: None,
-                                    proxy_binding_key_snapshot: None,
-                                    oauth_responses_debug: None,
-                                    attempt_summary: PoolAttemptSummary::default(),
-                                    requested_service_tier: attempted_requested_service_tier
-                                        .clone(),
-                                    request_body_for_capture: attempted_request_body_for_capture
-                                        .clone(),
+                                        account: Some(account.clone()),
+                                        status: StatusCode::BAD_GATEWAY,
+                                        message: message.clone(),
+                                        canonical_error_message: None,
+                                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                        connect_latency_ms: 0.0,
+                                        upstream_error_code: None,
+                                        upstream_error_message: None,
+                                        downstream_error_message: None,
+                                        upstream_request_id: None,
+                                        proxy_binding_key_snapshot: None,
+                                        oauth_responses_debug: None,
+                                        attempt_summary: PoolAttemptSummary::default(),
+                                        requested_service_tier: attempted_requested_service_tier
+                                            .clone(),
+                                        request_body_for_capture:
+                                            attempted_request_body_for_capture.clone(),
                                     },
                                 );
                                 release_pool_routing_reservation(state.as_ref(), &reservation_key);
@@ -1428,12 +1431,11 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     record_account_selected(state.as_ref(), account.account_id).await;
                     let group_name_snapshot =
                         normalize_pool_attempt_group_name(account.group_name.clone());
-                    let proxy_binding_key_snapshot =
-                        canonical_pool_attempt_proxy_binding_key(
-                            state.as_ref(),
-                            selected_proxy.key.as_str(),
-                        )
-                        .await;
+                    let proxy_binding_key_snapshot = canonical_pool_attempt_proxy_binding_key(
+                        state.as_ref(),
+                        selected_proxy.key.as_str(),
+                    )
+                    .await;
                     pending_attempt_record = if let Some(trace) = trace_context.as_ref() {
                         Some(
                             begin_pool_upstream_request_attempt_with_scope(
@@ -1480,9 +1482,9 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         )
                         .await;
                     }
-                    early_phase_cleanup_guard = pending_attempt_record
-                        .as_ref()
-                        .map(|pending| PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone()));
+                    early_phase_cleanup_guard = pending_attempt_record.as_ref().map(|pending| {
+                        PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone())
+                    });
                     if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                         && let Err(err) = advance_pool_upstream_request_attempt_phase(
                             state.as_ref(),
@@ -1630,22 +1632,23 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 &mut last_error,
                                 &mut preserve_sticky_owner_terminal_error,
                                 PoolUpstreamError {
-                                account: Some(account.clone()),
-                                status: StatusCode::BAD_GATEWAY,
-                                message: message.clone(),
-                                canonical_error_message: None,
-                                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                                connect_latency_ms: elapsed_ms(connect_started),
-                                upstream_error_code: None,
-                                upstream_error_message: None,
-                                downstream_error_message: None,
-                                upstream_request_id: None,
-                                proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
-                                oauth_responses_debug: None,
-                                attempt_summary: PoolAttemptSummary::default(),
-                                requested_service_tier: attempted_requested_service_tier.clone(),
-                                request_body_for_capture: attempted_request_body_for_capture
-                                    .clone(),
+                                    account: Some(account.clone()),
+                                    status: StatusCode::BAD_GATEWAY,
+                                    message: message.clone(),
+                                    canonical_error_message: None,
+                                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                    connect_latency_ms: elapsed_ms(connect_started),
+                                    upstream_error_code: None,
+                                    upstream_error_message: None,
+                                    downstream_error_message: None,
+                                    upstream_request_id: None,
+                                    proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
+                                    oauth_responses_debug: None,
+                                    attempt_summary: PoolAttemptSummary::default(),
+                                    requested_service_tier: attempted_requested_service_tier
+                                        .clone(),
+                                    request_body_for_capture: attempted_request_body_for_capture
+                                        .clone(),
                                 },
                             );
                             exhausted_accounts_all_rate_limited = false;
@@ -1820,22 +1823,23 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 &mut last_error,
                                 &mut preserve_sticky_owner_terminal_error,
                                 PoolUpstreamError {
-                                account: Some(account.clone()),
-                                status: StatusCode::BAD_GATEWAY,
-                                message: message.clone(),
-                                canonical_error_message: None,
-                                failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
-                                connect_latency_ms: elapsed_ms(connect_started),
-                                upstream_error_code: None,
-                                upstream_error_message: None,
-                                downstream_error_message: None,
-                                upstream_request_id: None,
-                                proxy_binding_key_snapshot: None,
-                                oauth_responses_debug: None,
-                                attempt_summary: PoolAttemptSummary::default(),
-                                requested_service_tier: attempted_requested_service_tier.clone(),
-                                request_body_for_capture: attempted_request_body_for_capture
-                                    .clone(),
+                                    account: Some(account.clone()),
+                                    status: StatusCode::BAD_GATEWAY,
+                                    message: message.clone(),
+                                    canonical_error_message: None,
+                                    failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                                    connect_latency_ms: elapsed_ms(connect_started),
+                                    upstream_error_code: None,
+                                    upstream_error_message: None,
+                                    downstream_error_message: None,
+                                    upstream_request_id: None,
+                                    proxy_binding_key_snapshot: None,
+                                    oauth_responses_debug: None,
+                                    attempt_summary: PoolAttemptSummary::default(),
+                                    requested_service_tier: attempted_requested_service_tier
+                                        .clone(),
+                                    request_body_for_capture: attempted_request_body_for_capture
+                                        .clone(),
                                 },
                             );
                             exhausted_accounts_all_rate_limited = false;
@@ -1874,23 +1878,23 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     &mut last_error,
                                     &mut preserve_sticky_owner_terminal_error,
                                     PoolUpstreamError {
-                                    account: Some(account.clone()),
-                                    status: StatusCode::BAD_GATEWAY,
-                                    message: message.clone(),
-                                    canonical_error_message: None,
-                                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                                    connect_latency_ms: 0.0,
-                                    upstream_error_code: None,
-                                    upstream_error_message: None,
-                                    downstream_error_message: None,
-                                    upstream_request_id: None,
-                                    proxy_binding_key_snapshot: None,
-                                    oauth_responses_debug: None,
-                                    attempt_summary: PoolAttemptSummary::default(),
-                                    requested_service_tier: attempted_requested_service_tier
-                                        .clone(),
-                                    request_body_for_capture: attempted_request_body_for_capture
-                                        .clone(),
+                                        account: Some(account.clone()),
+                                        status: StatusCode::BAD_GATEWAY,
+                                        message: message.clone(),
+                                        canonical_error_message: None,
+                                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                        connect_latency_ms: 0.0,
+                                        upstream_error_code: None,
+                                        upstream_error_message: None,
+                                        downstream_error_message: None,
+                                        upstream_request_id: None,
+                                        proxy_binding_key_snapshot: None,
+                                        oauth_responses_debug: None,
+                                        attempt_summary: PoolAttemptSummary::default(),
+                                        requested_service_tier: attempted_requested_service_tier
+                                            .clone(),
+                                        request_body_for_capture:
+                                            attempted_request_body_for_capture.clone(),
                                     },
                                 );
                                 release_pool_routing_reservation(state.as_ref(), &reservation_key);
@@ -2076,9 +2080,9 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         )
                         .await;
                     }
-                    early_phase_cleanup_guard = pending_attempt_record
-                        .as_ref()
-                        .map(|pending| PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone()));
+                    early_phase_cleanup_guard = pending_attempt_record.as_ref().map(|pending| {
+                        PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone())
+                    });
                     if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                         && let Err(err) = advance_pool_upstream_request_attempt_phase(
                             state.as_ref(),
@@ -2157,41 +2161,50 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     .await;
                 }
                 let response_headers = response.headers().clone();
-                let (error_body_bytes, upstream_error_code, upstream_error_message, upstream_request_id, message) =
-                    match read_pool_upstream_bytes_with_timeout(
-                        response,
-                        attempt_pre_first_byte_timeout,
-                        connect_started,
-                        "reading upstream error body",
-                    )
-                    .await
-                    {
-                        Ok(body_bytes) => {
-                            let (upstream_error_code, upstream_error_message, upstream_request_id, message) =
-                                summarize_pool_upstream_http_failure(
-                                    status,
-                                    upstream_request_id_header.as_deref(),
-                                    &body_bytes,
-                                );
-                            (
-                                Some(body_bytes),
-                                upstream_error_code,
-                                upstream_error_message,
-                                upstream_request_id,
-                                message,
-                            )
-                        }
-                        Err(err) => (
-                            None,
-                            None,
-                            None,
-                            upstream_request_id_header,
-                            format!(
-                                "pool upstream responded with {} (failed to read error body: {err})",
-                                status.as_u16()
-                            ),
+                let (
+                    error_body_bytes,
+                    upstream_error_code,
+                    upstream_error_message,
+                    upstream_request_id,
+                    message,
+                ) = match read_pool_upstream_bytes_with_timeout(
+                    response,
+                    attempt_pre_first_byte_timeout,
+                    connect_started,
+                    "reading upstream error body",
+                )
+                .await
+                {
+                    Ok(body_bytes) => {
+                        let (
+                            upstream_error_code,
+                            upstream_error_message,
+                            upstream_request_id,
+                            message,
+                        ) = summarize_pool_upstream_http_failure(
+                            status,
+                            upstream_request_id_header.as_deref(),
+                            &body_bytes,
+                        );
+                        (
+                            Some(body_bytes),
+                            upstream_error_code,
+                            upstream_error_message,
+                            upstream_request_id,
+                            message,
+                        )
+                    }
+                    Err(err) => (
+                        None,
+                        None,
+                        None,
+                        upstream_request_id_header,
+                        format!(
+                            "pool upstream responded with {} (failed to read error body: {err})",
+                            status.as_u16()
                         ),
-                    };
+                    ),
+                };
                 let route_error_message = upstream_error_code
                     .as_deref()
                     .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
@@ -2203,17 +2216,16 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     if let Some(guard) = early_phase_cleanup_guard.as_mut() {
                         guard.mark_first_byte_observed(first_byte_latency_ms);
                     }
-                    let proxy_binding_key_snapshot = if let Some((_, selected_proxy)) =
-                        forward_proxy_selection.as_ref()
-                    {
-                        canonical_pool_attempt_proxy_binding_key(
-                            state.as_ref(),
-                            selected_proxy.key.as_str(),
-                        )
-                        .await
-                    } else {
-                        None
-                    };
+                    let proxy_binding_key_snapshot =
+                        if let Some((_, selected_proxy)) = forward_proxy_selection.as_ref() {
+                            canonical_pool_attempt_proxy_binding_key(
+                                state.as_ref(),
+                                selected_proxy.key.as_str(),
+                            )
+                            .await
+                        } else {
+                            None
+                        };
 
                     let mut response_builder = Response::builder().status(status);
                     let connection_scoped = connection_scoped_header_names(&response_headers);
@@ -2222,25 +2234,27 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             response_builder = response_builder.header(name, value);
                         }
                     }
-                    let response = response_builder
-                        .body(Body::empty())
-                        .map_err(|err| PoolUpstreamError {
-                        account: Some(account.clone()),
-                        status: StatusCode::INTERNAL_SERVER_ERROR,
-                        message: format!("failed to build proxy response: {err}"),
-                        canonical_error_message: None,
-                        failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
-                        connect_latency_ms,
-                        upstream_error_code: None,
-                        upstream_error_message: None,
-                        downstream_error_message: None,
-                        upstream_request_id: upstream_request_id.clone(),
-                        proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
-                        oauth_responses_debug: oauth_responses_debug.clone(),
-                        attempt_summary: PoolAttemptSummary::default(),
-                        requested_service_tier: attempted_requested_service_tier.clone(),
-                        request_body_for_capture: attempted_request_body_for_capture.clone(),
-                    })?;
+                    let response =
+                        response_builder
+                            .body(Body::empty())
+                            .map_err(|err| PoolUpstreamError {
+                                account: Some(account.clone()),
+                                status: StatusCode::INTERNAL_SERVER_ERROR,
+                                message: format!("failed to build proxy response: {err}"),
+                                canonical_error_message: None,
+                                failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                                connect_latency_ms,
+                                upstream_error_code: None,
+                                upstream_error_message: None,
+                                downstream_error_message: None,
+                                upstream_request_id: upstream_request_id.clone(),
+                                proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
+                                oauth_responses_debug: oauth_responses_debug.clone(),
+                                attempt_summary: PoolAttemptSummary::default(),
+                                requested_service_tier: attempted_requested_service_tier.clone(),
+                                request_body_for_capture: attempted_request_body_for_capture
+                                    .clone(),
+                            })?;
                     let first_chunk = error_body_bytes.filter(|bytes| !bytes.is_empty());
 
                     let mut deferred_early_phase_cleanup_guard = None;
@@ -2542,31 +2556,31 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     &mut last_error,
                     &mut preserve_sticky_owner_terminal_error,
                     PoolUpstreamError {
-                    account: Some(account.clone()),
-                    status,
-                    message: message.clone(),
-                    canonical_error_message: canonical_override,
-                    failure_kind,
-                    connect_latency_ms,
-                    upstream_error_code,
-                    upstream_error_message,
-                    downstream_error_message: normalized_failure.downstream_error_message,
-                    upstream_request_id,
-                    proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
-                        forward_proxy_selection.as_ref()
-                    {
-                        canonical_pool_attempt_proxy_binding_key(
-                            state.as_ref(),
-                            selected_proxy.key.as_str(),
-                        )
-                        .await
-                    } else {
-                        None
-                    },
-                    oauth_responses_debug: oauth_responses_debug.clone(),
-                    attempt_summary: PoolAttemptSummary::default(),
-                    requested_service_tier: attempted_requested_service_tier.clone(),
-                    request_body_for_capture: attempted_request_body_for_capture.clone(),
+                        account: Some(account.clone()),
+                        status,
+                        message: message.clone(),
+                        canonical_error_message: canonical_override,
+                        failure_kind,
+                        connect_latency_ms,
+                        upstream_error_code,
+                        upstream_error_message,
+                        downstream_error_message: normalized_failure.downstream_error_message,
+                        upstream_request_id,
+                        proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
+                            forward_proxy_selection.as_ref()
+                        {
+                            canonical_pool_attempt_proxy_binding_key(
+                                state.as_ref(),
+                                selected_proxy.key.as_str(),
+                            )
+                            .await
+                        } else {
+                            None
+                        },
+                        oauth_responses_debug: oauth_responses_debug.clone(),
+                        attempt_summary: PoolAttemptSummary::default(),
+                        requested_service_tier: attempted_requested_service_tier.clone(),
+                        request_body_for_capture: attempted_request_body_for_capture.clone(),
                     },
                 );
                 exhausted_accounts_all_rate_limited &= status == StatusCode::TOO_MANY_REQUESTS;
@@ -2757,31 +2771,31 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         &mut last_error,
                         &mut preserve_sticky_owner_terminal_error,
                         PoolUpstreamError {
-                        account: Some(account.clone()),
-                        status: StatusCode::BAD_GATEWAY,
-                        message: message.clone(),
-                        canonical_error_message: None,
-                        failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                        connect_latency_ms,
-                        upstream_error_code: None,
-                        upstream_error_message: None,
-                        downstream_error_message: None,
-                        upstream_request_id: None,
-                        proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
-                            forward_proxy_selection.as_ref()
-                        {
-                            canonical_pool_attempt_proxy_binding_key(
-                                state.as_ref(),
-                                selected_proxy.key.as_str(),
-                            )
-                            .await
-                        } else {
-                            None
-                        },
-                        oauth_responses_debug: oauth_responses_debug.clone(),
-                        attempt_summary: PoolAttemptSummary::default(),
-                        requested_service_tier: attempted_requested_service_tier.clone(),
-                        request_body_for_capture: attempted_request_body_for_capture.clone(),
+                            account: Some(account.clone()),
+                            status: StatusCode::BAD_GATEWAY,
+                            message: message.clone(),
+                            canonical_error_message: None,
+                            failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                            connect_latency_ms,
+                            upstream_error_code: None,
+                            upstream_error_message: None,
+                            downstream_error_message: None,
+                            upstream_request_id: None,
+                            proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
+                                forward_proxy_selection.as_ref()
+                            {
+                                canonical_pool_attempt_proxy_binding_key(
+                                    state.as_ref(),
+                                    selected_proxy.key.as_str(),
+                                )
+                                .await
+                            } else {
+                                None
+                            },
+                            oauth_responses_debug: oauth_responses_debug.clone(),
+                            attempt_summary: PoolAttemptSummary::default(),
+                            requested_service_tier: attempted_requested_service_tier.clone(),
+                            request_body_for_capture: attempted_request_body_for_capture.clone(),
                         },
                     );
                     exhausted_accounts_all_rate_limited = false;
@@ -2816,11 +2830,15 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 )
                 .await
             } else if original_uri.path() == "/v1/responses/compact" && status == StatusCode::OK {
-                Ok(gate_pool_initial_compact_response(status, response.headers(), first_chunk.as_ref())
-                    .unwrap_or(PoolInitialResponseGateOutcome::Forward {
-                        response,
-                        prefetched_bytes: first_chunk,
-                    }))
+                Ok(gate_pool_initial_compact_response(
+                    status,
+                    response.headers(),
+                    first_chunk.as_ref(),
+                )
+                .unwrap_or(PoolInitialResponseGateOutcome::Forward {
+                    response,
+                    prefetched_bytes: first_chunk,
+                }))
             } else {
                 Ok(PoolInitialResponseGateOutcome::Forward {
                     response,
@@ -2911,31 +2929,31 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         &mut last_error,
                         &mut preserve_sticky_owner_terminal_error,
                         PoolUpstreamError {
-                        account: Some(account.clone()),
-                        status,
-                        message: message.clone(),
-                        canonical_error_message: None,
-                        failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
-                        connect_latency_ms,
-                        upstream_error_code,
-                        upstream_error_message,
-                        downstream_error_message: None,
-                        upstream_request_id,
-                        proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
-                            forward_proxy_selection.as_ref()
-                        {
-                            canonical_pool_attempt_proxy_binding_key(
-                                state.as_ref(),
-                                selected_proxy.key.as_str(),
-                            )
-                            .await
-                        } else {
-                            None
-                        },
-                        oauth_responses_debug: oauth_responses_debug.clone(),
-                        attempt_summary: PoolAttemptSummary::default(),
-                        requested_service_tier: attempted_requested_service_tier.clone(),
-                        request_body_for_capture: attempted_request_body_for_capture.clone(),
+                            account: Some(account.clone()),
+                            status,
+                            message: message.clone(),
+                            canonical_error_message: None,
+                            failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                            connect_latency_ms,
+                            upstream_error_code,
+                            upstream_error_message,
+                            downstream_error_message: None,
+                            upstream_request_id,
+                            proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
+                                forward_proxy_selection.as_ref()
+                            {
+                                canonical_pool_attempt_proxy_binding_key(
+                                    state.as_ref(),
+                                    selected_proxy.key.as_str(),
+                                )
+                                .await
+                            } else {
+                                None
+                            },
+                            oauth_responses_debug: oauth_responses_debug.clone(),
+                            attempt_summary: PoolAttemptSummary::default(),
+                            requested_service_tier: attempted_requested_service_tier.clone(),
+                            request_body_for_capture: attempted_request_body_for_capture.clone(),
                         },
                     );
                     exhausted_accounts_all_rate_limited = false;
@@ -3000,31 +3018,31 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         &mut last_error,
                         &mut preserve_sticky_owner_terminal_error,
                         PoolUpstreamError {
-                        account: Some(account.clone()),
-                        status: StatusCode::BAD_GATEWAY,
-                        message: message.clone(),
-                        canonical_error_message: None,
-                        failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                        connect_latency_ms,
-                        upstream_error_code: None,
-                        upstream_error_message: None,
-                        downstream_error_message: None,
-                        upstream_request_id: None,
-                        proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
-                            forward_proxy_selection.as_ref()
-                        {
-                            canonical_pool_attempt_proxy_binding_key(
-                                state.as_ref(),
-                                selected_proxy.key.as_str(),
-                            )
-                            .await
-                        } else {
-                            None
-                        },
-                        oauth_responses_debug: oauth_responses_debug.clone(),
-                        attempt_summary: PoolAttemptSummary::default(),
-                        requested_service_tier: attempted_requested_service_tier.clone(),
-                        request_body_for_capture: attempted_request_body_for_capture.clone(),
+                            account: Some(account.clone()),
+                            status: StatusCode::BAD_GATEWAY,
+                            message: message.clone(),
+                            canonical_error_message: None,
+                            failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                            connect_latency_ms,
+                            upstream_error_code: None,
+                            upstream_error_message: None,
+                            downstream_error_message: None,
+                            upstream_request_id: None,
+                            proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
+                                forward_proxy_selection.as_ref()
+                            {
+                                canonical_pool_attempt_proxy_binding_key(
+                                    state.as_ref(),
+                                    selected_proxy.key.as_str(),
+                                )
+                                .await
+                            } else {
+                                None
+                            },
+                            oauth_responses_debug: oauth_responses_debug.clone(),
+                            attempt_summary: PoolAttemptSummary::default(),
+                            requested_service_tier: attempted_requested_service_tier.clone(),
+                            request_body_for_capture: attempted_request_body_for_capture.clone(),
                         },
                     );
                     exhausted_accounts_all_rate_limited = false;

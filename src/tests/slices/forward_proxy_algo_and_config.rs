@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn refresh_forward_proxy_subscriptions_triggers_bootstrap_probe_for_added_nodes() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
@@ -239,8 +242,12 @@ async fn async_streaming_raw_payload_writer_respects_global_backpressure_semapho
     );
     assert_eq!(state.proxy_raw_async_semaphore.available_permits(), 0);
 
-    let mut writer =
-        AsyncStreamingRawPayloadWriter::new(state.as_ref(), "invoke-backpressure", "response", true);
+    let mut writer = AsyncStreamingRawPayloadWriter::new(
+        state.as_ref(),
+        "invoke-backpressure",
+        "response",
+        true,
+    );
     writer.append(b"hello");
     let meta = writer.finish().await;
 
@@ -987,7 +994,10 @@ fn should_prebuffer_for_body_sticky_probe_respects_memory_threshold() {
 
 #[tokio::test]
 async fn capture_snapshot_reader_spills_large_body_to_file_and_preserves_bytes() {
-    let body_bytes = Bytes::from(vec![b'x'; POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 1024]);
+    let body_bytes = Bytes::from(vec![
+        b'x';
+        POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 1024
+    ]);
 
     let snapshot = read_request_body_snapshot_with_partial_limit(
         Body::from(body_bytes.clone()),
@@ -999,7 +1009,10 @@ async fn capture_snapshot_reader_spills_large_body_to_file_and_preserves_bytes()
     .expect("large body should read into replay snapshot");
 
     assert_eq!(pool_request_snapshot_kind(&snapshot), "file");
-    assert_eq!(pool_request_snapshot_body_bytes(&snapshot), body_bytes.len());
+    assert_eq!(
+        pool_request_snapshot_body_bytes(&snapshot),
+        body_bytes.len()
+    );
     assert_eq!(
         snapshot.to_bytes().await.expect("read replay snapshot"),
         body_bytes
@@ -1014,15 +1027,24 @@ async fn pool_replay_snapshot_from_bytes_uses_file_for_large_body() {
     let small_snapshot = pool_replay_snapshot_from_bytes(45, small.clone()).await;
     assert_eq!(pool_request_snapshot_kind(&small_snapshot), "memory");
     assert_eq!(
-        small_snapshot.to_bytes().await.expect("read small snapshot"),
+        small_snapshot
+            .to_bytes()
+            .await
+            .expect("read small snapshot"),
         small
     );
 
     let large_snapshot = pool_replay_snapshot_from_bytes(46, large.clone()).await;
     assert_eq!(pool_request_snapshot_kind(&large_snapshot), "file");
-    assert_eq!(pool_request_snapshot_body_bytes(&large_snapshot), large.len());
     assert_eq!(
-        large_snapshot.to_bytes().await.expect("read large snapshot"),
+        pool_request_snapshot_body_bytes(&large_snapshot),
+        large.len()
+    );
+    assert_eq!(
+        large_snapshot
+            .to_bytes()
+            .await
+            .expect("read large snapshot"),
         large
     );
 }
@@ -1439,7 +1461,10 @@ fn app_config_from_sources_accepts_kaisoumail_base_url_and_api_key_only() {
             ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL,
             Some("https://km.example.test"),
         ),
-        (ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY, Some("cfm_test_key")),
+        (
+            ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY,
+            Some("cfm_test_key"),
+        ),
         (ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN, None),
         (ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN, None),
         (LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL, None),
@@ -1678,7 +1703,7 @@ fn app_config_from_sources_rejects_zero_pool_upstream_responses_total_timeout() 
     );
 }
 
-fn test_config() -> AppConfig {
+pub(crate) fn test_config() -> AppConfig {
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
         database_path: PathBuf::from(":memory:"),
@@ -1763,7 +1788,7 @@ fn test_config() -> AppConfig {
     }
 }
 
-fn make_temp_test_dir(prefix: &str) -> PathBuf {
+pub(crate) fn make_temp_test_dir(prefix: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "{prefix}-{}-{}",
         std::process::id(),
@@ -1773,13 +1798,13 @@ fn make_temp_test_dir(prefix: &str) -> PathBuf {
     dir
 }
 
-fn set_file_mtime_seconds_ago(path: &Path, seconds: u64) {
+pub(crate) fn set_file_mtime_seconds_ago(path: &Path, seconds: u64) {
     let modified_at = std::time::SystemTime::now() - Duration::from_secs(seconds);
     let modified_at = filetime::FileTime::from_system_time(modified_at);
     filetime::set_file_mtime(path, modified_at).expect("set file mtime");
 }
 
-fn write_gzip_test_file(path: &Path, content: &[u8]) {
+pub(crate) fn write_gzip_test_file(path: &Path, content: &[u8]) {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(content).expect("write gzip payload");
     let bytes = encoder.finish().expect("finish gzip payload");
@@ -1906,13 +1931,7 @@ async fn write_streaming_raw_payload_to_file_born_gzips_large_streams() {
         .expect("send second chunk");
     drop(tx);
 
-    let meta = write_streaming_raw_payload_to_file(
-        raw_path.clone(),
-        None,
-        Some(8),
-        &mut rx,
-    )
-    .await;
+    let meta = write_streaming_raw_payload_to_file(raw_path.clone(), None, Some(8), &mut rx).await;
 
     let stored_path = PathBuf::from(meta.path.expect("streaming born-gzip path"));
     assert!(stored_path.ends_with("stream-response.bin.gz"));
@@ -2323,15 +2342,17 @@ fn search_raw_script_reports_find_enumeration_errors() {
     cleanup_temp_test_dir(&temp_dir);
 }
 
-fn sqlite_url_for_path(path: &Path) -> String {
+pub(crate) fn test_sqlite_url_for_path(path: &Path) -> String {
     format!("sqlite://{}", path.to_string_lossy())
 }
 
-async fn retention_test_pool_and_config(prefix: &str) -> (SqlitePool, AppConfig, PathBuf) {
+pub(crate) async fn retention_test_pool_and_config(
+    prefix: &str,
+) -> (SqlitePool, AppConfig, PathBuf) {
     let temp_dir = make_temp_test_dir(prefix);
     let db_path = temp_dir.join("codex-vibe-monitor.db");
     fs::File::create(&db_path).expect("create retention sqlite file");
-    let db_url = sqlite_url_for_path(&db_path);
+    let db_url = test_sqlite_url_for_path(&db_path);
     let pool = SqlitePoolOptions::new()
         .max_connections(2)
         .connect(&db_url)
@@ -2350,7 +2371,9 @@ async fn retention_test_pool_and_config(prefix: &str) -> (SqlitePool, AppConfig,
     (pool, config, temp_dir)
 }
 
-async fn retention_memory_test_pool_and_config(prefix: &str) -> (SqlitePool, AppConfig, PathBuf) {
+pub(crate) async fn retention_memory_test_pool_and_config(
+    prefix: &str,
+) -> (SqlitePool, AppConfig, PathBuf) {
     let temp_dir = make_temp_test_dir(prefix);
     let db_path = temp_dir.join("codex-vibe-monitor.db");
     let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
@@ -2375,12 +2398,12 @@ async fn retention_memory_test_pool_and_config(prefix: &str) -> (SqlitePool, App
     (pool, config, temp_dir)
 }
 
-fn cleanup_temp_test_dir(path: &Path) {
+pub(crate) fn cleanup_temp_test_dir(path: &Path) {
     let _ = fs::remove_dir_all(path);
 }
 
 #[cfg(unix)]
-fn current_process_rss_kib() -> Option<u64> {
+pub(crate) fn current_process_rss_kib() -> Option<u64> {
     let output = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &std::process::id().to_string()])
         .output()
@@ -2395,7 +2418,7 @@ fn current_process_rss_kib() -> Option<u64> {
         .ok()
 }
 
-fn shanghai_local_days_ago(days: i64, hour: u32, minute: u32, second: u32) -> String {
+pub(crate) fn shanghai_local_days_ago(days: i64, hour: u32, minute: u32, second: u32) -> String {
     let now_local = Utc::now().with_timezone(&Shanghai);
     let naive = (now_local.date_naive() - ChronoDuration::days(days))
         .and_hms_opt(hour, minute, second)
@@ -2408,7 +2431,7 @@ fn shanghai_local_now_minus_secs(secs: i64) -> String {
     format_naive(now_local - ChronoDuration::seconds(secs))
 }
 
-fn utc_naive_from_shanghai_local_days_ago(
+pub(crate) fn utc_naive_from_shanghai_local_days_ago(
     days: i64,
     hour: u32,
     minute: u32,
@@ -2422,7 +2445,7 @@ fn utc_naive_from_shanghai_local_days_ago(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn insert_retention_invocation(
+pub(crate) async fn insert_retention_invocation(
     pool: &SqlitePool,
     invoke_id: &str,
     occurred_at: &str,
@@ -2498,7 +2521,7 @@ async fn insert_retention_invocation(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn insert_retention_pool_upstream_request_attempt(
+pub(crate) async fn insert_retention_pool_upstream_request_attempt(
     pool: &SqlitePool,
     invoke_id: &str,
     occurred_at: &str,
@@ -2568,7 +2591,11 @@ async fn insert_retention_pool_upstream_request_attempt(
     .expect("insert retention pool attempt");
 }
 
-async fn insert_stats_source_snapshot_row(pool: &SqlitePool, captured_at: &str, stats_date: &str) {
+pub(crate) async fn insert_stats_source_snapshot_row(
+    pool: &SqlitePool,
+    captured_at: &str,
+    stats_date: &str,
+) {
     sqlx::query(
         r#"
         INSERT INTO stats_source_snapshots (
@@ -2990,9 +3017,9 @@ async fn fetch_stats_reuses_cached_maintenance_snapshot_within_ttl() {
 }
 
 #[derive(Debug)]
-struct FakeSqliteCodeDatabaseError {
-    message: &'static str,
-    code: &'static str,
+pub(crate) struct FakeSqliteCodeDatabaseError {
+    pub(crate) message: &'static str,
+    pub(crate) code: &'static str,
 }
 
 impl std::fmt::Display for FakeSqliteCodeDatabaseError {
@@ -3029,6 +3056,6 @@ impl DatabaseError for FakeSqliteCodeDatabaseError {
     }
 }
 
-fn write_backfill_response_payload(path: &Path) {
+pub(crate) fn write_backfill_response_payload(path: &Path) {
     write_backfill_response_payload_with_service_tier(path, None);
 }

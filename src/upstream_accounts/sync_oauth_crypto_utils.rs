@@ -1,5 +1,14 @@
-const ACCOUNT_MAINTENANCE_EGRESS_MIN_INTERVAL_SECS: i64 = 10;
-const ACCOUNT_MAINTENANCE_EGRESS_RUNTIME_WAIT_MAX_SECS: u64 = 180;
+use super::*;
+use crate::oauth_bridge::oauth_codex_upstream_base_url;
+use aes_gcm::{
+    Aes256Gcm,
+    aead::{Aead, KeyInit},
+};
+use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
+use rand::{RngCore, rngs::OsRng};
+
+pub(crate) const ACCOUNT_MAINTENANCE_EGRESS_MIN_INTERVAL_SECS: i64 = 10;
+pub(crate) const ACCOUNT_MAINTENANCE_EGRESS_RUNTIME_WAIT_MAX_SECS: u64 = 180;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AccountMaintenanceEgressThrottleError {
@@ -14,8 +23,7 @@ impl std::fmt::Display for AccountMaintenanceEgressThrottleError {
         write!(
             f,
             "maintenance egress via {} is throttled for another {} seconds",
-            self.proxy_display_name,
-            self.retry_after_secs
+            self.proxy_display_name, self.retry_after_secs
         )
     }
 }
@@ -40,7 +48,7 @@ impl AccountMaintenanceProxySnapshot {
 }
 
 #[derive(Debug)]
-struct AccountMaintenanceProxyAwareError {
+pub(crate) struct AccountMaintenanceProxyAwareError {
     proxy_snapshot: AccountMaintenanceProxySnapshot,
     message: String,
 }
@@ -63,7 +71,7 @@ pub(crate) fn maintenance_proxy_snapshot_from_error(
     })
 }
 
-async fn record_account_update_action(
+pub(crate) async fn record_account_update_action(
     pool: &Pool<Sqlite>,
     account_id: i64,
     message: &str,
@@ -87,7 +95,7 @@ async fn record_account_update_action(
     .await
 }
 
-async fn exchange_authorization_code(
+pub(crate) async fn exchange_authorization_code(
     client: &Client,
     config: &AppConfig,
     code: &str,
@@ -116,7 +124,7 @@ async fn exchange_authorization_code(
     parse_token_response(response).await
 }
 
-async fn client_for_required_proxy_scope(
+pub(crate) async fn client_for_required_proxy_scope(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
 ) -> Result<Client> {
@@ -129,7 +137,7 @@ async fn client_for_required_proxy_scope(
         .context("failed to initialize required forward proxy client")
 }
 
-async fn client_for_required_maintenance_proxy_scope(
+pub(crate) async fn client_for_required_maintenance_proxy_scope(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
 ) -> Result<(Client, AccountMaintenanceProxySnapshot)> {
@@ -153,7 +161,7 @@ async fn client_for_required_maintenance_proxy_scope(
     Ok((client, snapshot))
 }
 
-async fn reserve_account_maintenance_egress_slot(
+pub(crate) async fn reserve_account_maintenance_egress_slot(
     pool: &Pool<Sqlite>,
     selected_proxy: &SelectedForwardProxy,
 ) -> Result<()> {
@@ -215,7 +223,7 @@ async fn reserve_account_maintenance_egress_slot(
     Ok(())
 }
 
-async fn reserve_account_maintenance_egress_slot_for_runtime(
+pub(crate) async fn reserve_account_maintenance_egress_slot_for_runtime(
     pool: &Pool<Sqlite>,
     selected_proxy: &SelectedForwardProxy,
 ) -> Result<()> {
@@ -235,7 +243,7 @@ async fn reserve_account_maintenance_egress_slot_for_runtime(
     .await
 }
 
-async fn reserve_account_maintenance_egress_slot_with_bounded_wait(
+pub(crate) async fn reserve_account_maintenance_egress_slot_with_bounded_wait(
     pool: &Pool<Sqlite>,
     selected_proxy: &SelectedForwardProxy,
     max_wait_secs: u64,
@@ -245,8 +253,7 @@ async fn reserve_account_maintenance_egress_slot_with_bounded_wait(
         match reserve_account_maintenance_egress_slot(pool, selected_proxy).await {
             Ok(()) => return Ok(()),
             Err(err) => {
-                let Some(throttle) =
-                    err.downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                let Some(throttle) = err.downcast_ref::<AccountMaintenanceEgressThrottleError>()
                 else {
                     return Err(err);
                 };
@@ -254,10 +261,7 @@ async fn reserve_account_maintenance_egress_slot_with_bounded_wait(
                     return Err(err);
                 }
                 let remaining_wait_budget = max_wait_secs - waited_secs;
-                let wait_secs = throttle
-                    .retry_after_secs
-                    .min(remaining_wait_budget)
-                    .max(1);
+                let wait_secs = throttle.retry_after_secs.min(remaining_wait_budget).max(1);
                 sleep(Duration::from_secs(wait_secs)).await;
                 waited_secs += wait_secs;
             }
@@ -265,7 +269,7 @@ async fn reserve_account_maintenance_egress_slot_with_bounded_wait(
     }
 }
 
-async fn exchange_authorization_code_for_required_scope(
+pub(crate) async fn exchange_authorization_code_for_required_scope(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
     code: &str,
@@ -276,7 +280,7 @@ async fn exchange_authorization_code_for_required_scope(
     exchange_authorization_code(&client, &state.config, code, code_verifier, redirect_uri).await
 }
 
-async fn refresh_oauth_tokens(
+pub(crate) async fn refresh_oauth_tokens(
     client: &Client,
     config: &AppConfig,
     refresh_token: &str,
@@ -301,12 +305,13 @@ async fn refresh_oauth_tokens(
     parse_token_response(response).await
 }
 
-async fn refresh_oauth_tokens_for_required_scope(
+pub(crate) async fn refresh_oauth_tokens_for_required_scope(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
     refresh_token: &str,
 ) -> Result<OAuthTokenResponse> {
-    let (client, proxy_snapshot) = client_for_required_maintenance_proxy_scope(state, scope).await?;
+    let (client, proxy_snapshot) =
+        client_for_required_maintenance_proxy_scope(state, scope).await?;
     match refresh_oauth_tokens(&client, &state.config, refresh_token).await {
         Ok(response) => Ok(response),
         Err(err) => Err(anyhow!(AccountMaintenanceProxyAwareError {
@@ -316,7 +321,9 @@ async fn refresh_oauth_tokens_for_required_scope(
     }
 }
 
-async fn parse_token_response(response: reqwest::Response) -> Result<OAuthTokenResponse> {
+pub(crate) async fn parse_token_response(
+    response: reqwest::Response,
+) -> Result<OAuthTokenResponse> {
     let status = response.status();
     let body = response
         .text()
@@ -329,7 +336,7 @@ async fn parse_token_response(response: reqwest::Response) -> Result<OAuthTokenR
     serde_json::from_str(&body).context("failed to decode OAuth token response")
 }
 
-fn build_usage_endpoint_url(base_url: &Url) -> Result<Url> {
+pub(crate) fn build_usage_endpoint_url(base_url: &Url) -> Result<Url> {
     let usage_path = if base_url.path().contains("/backend-api") {
         USAGE_PATH_STYLE_CHATGPT
     } else {
@@ -346,7 +353,7 @@ fn build_usage_endpoint_url(base_url: &Url) -> Result<Url> {
     Ok(url)
 }
 
-async fn fetch_usage_snapshot(
+pub(crate) async fn fetch_usage_snapshot(
     client: &Client,
     config: &AppConfig,
     access_token: &str,
@@ -388,10 +395,12 @@ async fn fetch_usage_snapshot(
         UPSTREAM_USAGE_BROWSER_USER_AGENT,
     )
     .await
-    .map_err(|retry_error| usage_snapshot_browser_user_agent_retry_error(primary_error, retry_error))
+    .map_err(|retry_error| {
+        usage_snapshot_browser_user_agent_retry_error(primary_error, retry_error)
+    })
 }
 
-fn usage_snapshot_error_is_network_failure(err: &anyhow::Error) -> bool {
+pub(crate) fn usage_snapshot_error_is_network_failure(err: &anyhow::Error) -> bool {
     let normalized = err.to_string().to_ascii_lowercase();
     normalized.contains("failed to request usage snapshot")
         || normalized.contains("failed to read usage snapshot response")
@@ -400,16 +409,17 @@ fn usage_snapshot_error_is_network_failure(err: &anyhow::Error) -> bool {
         || normalized.contains("transport")
 }
 
-fn usage_snapshot_error_skips_browser_user_agent_retry(err: &anyhow::Error) -> bool {
+pub(crate) fn usage_snapshot_error_skips_browser_user_agent_retry(err: &anyhow::Error) -> bool {
     maintenance_upstream_rejected_error_message(&err.to_string())
 }
 
-fn usage_snapshot_browser_user_agent_retry_error(
+pub(crate) fn usage_snapshot_browser_user_agent_retry_error(
     primary_error: anyhow::Error,
     retry_error: anyhow::Error,
 ) -> anyhow::Error {
-    let primary_context =
-        format!("initial usage snapshot attempt with configured user agent failed: {primary_error:#}");
+    let primary_context = format!(
+        "initial usage snapshot attempt with configured user agent failed: {primary_error:#}"
+    );
     if usage_snapshot_error_skips_browser_user_agent_retry(&retry_error) {
         anyhow!("{primary_context}; browser user agent retry failed: {retry_error:#}")
     } else {
@@ -417,7 +427,7 @@ fn usage_snapshot_browser_user_agent_retry_error(
     }
 }
 
-async fn fetch_usage_snapshot_via_forward_proxy(
+pub(crate) async fn fetch_usage_snapshot_via_forward_proxy(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
     config: &AppConfig,
@@ -462,10 +472,12 @@ async fn fetch_usage_snapshot_via_forward_proxy(
         UPSTREAM_USAGE_BROWSER_USER_AGENT,
     )
     .await
-    .map_err(|retry_error| usage_snapshot_browser_user_agent_retry_error(primary_error, retry_error))
+    .map_err(|retry_error| {
+        usage_snapshot_browser_user_agent_retry_error(primary_error, retry_error)
+    })
 }
 
-async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
+pub(crate) async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
     config: &AppConfig,
@@ -548,7 +560,7 @@ async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
         })
 }
 
-async fn request_usage_snapshot_with_user_agent(
+pub(crate) async fn request_usage_snapshot_with_user_agent(
     client: &Client,
     config: &AppConfig,
     access_token: &str,
@@ -587,7 +599,7 @@ async fn request_usage_snapshot_with_user_agent(
     normalize_usage_snapshot(&value)
 }
 
-fn normalize_usage_snapshot(value: &Value) -> Result<NormalizedUsageSnapshot> {
+pub(crate) fn normalize_usage_snapshot(value: &Value) -> Result<NormalizedUsageSnapshot> {
     let updated_at = optional_string(value, &["updated_at", "updatedAt"])
         .and_then(|value| parse_rfc3339_utc(&value));
     let limit = value
@@ -624,7 +636,7 @@ fn normalize_usage_snapshot(value: &Value) -> Result<NormalizedUsageSnapshot> {
     })
 }
 
-fn normalize_usage_window(
+pub(crate) fn normalize_usage_window(
     value: Option<&Value>,
     updated_at: Option<DateTime<Utc>>,
 ) -> Option<NormalizedUsageWindow> {
@@ -664,7 +676,7 @@ fn normalize_usage_window(
     })
 }
 
-fn normalize_credits_snapshot(value: &Value) -> Result<CreditsSnapshot> {
+pub(crate) fn normalize_credits_snapshot(value: &Value) -> Result<CreditsSnapshot> {
     Ok(CreditsSnapshot {
         has_credits: value
             .get("has_credits")
@@ -682,7 +694,7 @@ fn normalize_credits_snapshot(value: &Value) -> Result<CreditsSnapshot> {
     })
 }
 
-fn build_oauth_authorize_url(
+pub(crate) fn build_oauth_authorize_url(
     issuer: &Url,
     client_id: &str,
     redirect_uri: &str,
@@ -708,7 +720,7 @@ fn build_oauth_authorize_url(
     Ok(url.to_string())
 }
 
-fn build_manual_callback_redirect_uri() -> Result<String> {
+pub(crate) fn build_manual_callback_redirect_uri() -> Result<String> {
     let mut url =
         Url::parse("http://localhost").context("failed to build localhost callback URL")?;
     let _ = url.set_port(Some(DEFAULT_MANUAL_OAUTH_CALLBACK_PORT));
@@ -716,7 +728,7 @@ fn build_manual_callback_redirect_uri() -> Result<String> {
     Ok(url.to_string())
 }
 
-fn derive_secret_key(secret: &str) -> [u8; 32] {
+pub(crate) fn derive_secret_key(secret: &str) -> [u8; 32] {
     let digest = Sha256::digest(secret.as_bytes());
     let mut key = [0u8; 32];
     key.copy_from_slice(&digest);
@@ -724,7 +736,10 @@ fn derive_secret_key(secret: &str) -> [u8; 32] {
 }
 
 #[allow(deprecated)]
-fn encrypt_credentials(key: &[u8; 32], credentials: &StoredCredentials) -> Result<String> {
+pub(crate) fn encrypt_credentials(
+    key: &[u8; 32],
+    credentials: &StoredCredentials,
+) -> Result<String> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|err| anyhow!("invalid AES key: {err}"))?;
     let plaintext = serde_json::to_vec(credentials).context("failed to serialize credentials")?;
     let mut nonce = [0u8; 12];
@@ -741,7 +756,7 @@ fn encrypt_credentials(key: &[u8; 32], credentials: &StoredCredentials) -> Resul
 }
 
 #[allow(deprecated)]
-fn decrypt_credentials(key: &[u8; 32], payload: &str) -> Result<StoredCredentials> {
+pub(crate) fn decrypt_credentials(key: &[u8; 32], payload: &str) -> Result<StoredCredentials> {
     let payload: EncryptedCredentialsPayload =
         serde_json::from_str(payload).context("failed to decode encrypted credentials payload")?;
     if payload.v != 1 {
@@ -763,7 +778,7 @@ fn decrypt_credentials(key: &[u8; 32], payload: &str) -> Result<StoredCredential
     serde_json::from_slice(&plaintext).context("failed to decode credential JSON")
 }
 
-fn decode_jwt_payload(token: &str, token_name: &str) -> Result<Vec<u8>> {
+pub(crate) fn decode_jwt_payload(token: &str, token_name: &str) -> Result<Vec<u8>> {
     let mut parts = token.split('.');
     let (_header, payload, _sig) = match (parts.next(), parts.next(), parts.next()) {
         (Some(header), Some(payload), Some(sig))
@@ -779,7 +794,7 @@ fn decode_jwt_payload(token: &str, token_name: &str) -> Result<Vec<u8>> {
         .with_context(|| format!("failed to decode {token_name} payload"))
 }
 
-fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaims> {
+pub(crate) fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaims> {
     let payload_bytes = decode_jwt_payload(id_token, "id_token")?;
     let claims: ChatgptJwtOuterClaims =
         serde_json::from_slice(&payload_bytes).context("failed to parse id_token payload")?;
@@ -804,7 +819,7 @@ fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaims> {
     })
 }
 
-fn parse_jwt_expiration_utc(token: &str, token_name: &str) -> Option<DateTime<Utc>> {
+pub(crate) fn parse_jwt_expiration_utc(token: &str, token_name: &str) -> Option<DateTime<Utc>> {
     let payload_bytes = decode_jwt_payload(token, token_name).ok()?;
     let claims: JwtExpiryClaims = serde_json::from_slice(&payload_bytes).ok()?;
     claims
@@ -812,7 +827,7 @@ fn parse_jwt_expiration_utc(token: &str, token_name: &str) -> Option<DateTime<Ut
         .and_then(|exp| DateTime::<Utc>::from_timestamp(exp, 0))
 }
 
-fn resolve_imported_token_expires_at(
+pub(crate) fn resolve_imported_token_expires_at(
     expired: Option<&str>,
     access_token: &str,
     id_token: &str,
@@ -829,7 +844,7 @@ fn resolve_imported_token_expires_at(
         .ok_or_else(|| "expired is required when token exp is unavailable".to_string())
 }
 
-fn render_callback_page(success: bool, title: &str, message: &str) -> String {
+pub(crate) fn render_callback_page(success: bool, title: &str, message: &str) -> String {
     let accent = if success { "#0f8b6f" } else { "#d9485f" };
     let script = if success {
         "setTimeout(() => { try { window.close(); } catch (_) {} }, 1200);"
@@ -898,7 +913,7 @@ fn render_callback_page(success: bool, title: &str, message: &str) -> String {
     )
 }
 
-fn normalize_required_display_name(raw: &str) -> Result<String, (StatusCode, String)> {
+pub(crate) fn normalize_required_display_name(raw: &str) -> Result<String, (StatusCode, String)> {
     let value = raw.trim();
     if value.is_empty() {
         return Err((
@@ -915,7 +930,7 @@ fn normalize_required_display_name(raw: &str) -> Result<String, (StatusCode, Str
     Ok(value.to_string())
 }
 
-fn validate_group_note_target(
+pub(crate) fn validate_group_note_target(
     group_name: Option<&str>,
     has_group_note: bool,
 ) -> Result<(), (StatusCode, String)> {
@@ -928,21 +943,22 @@ fn validate_group_note_target(
     Ok(())
 }
 
-fn normalize_optional_text(value: Option<String>) -> Option<String> {
+pub(crate) fn normalize_optional_text(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }
 
-fn normalize_upstream_account_group_name(value: Option<String>) -> String {
-    normalize_optional_text(value).unwrap_or_else(|| DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME.to_string())
+pub(crate) fn normalize_upstream_account_group_name(value: Option<String>) -> String {
+    normalize_optional_text(value)
+        .unwrap_or_else(|| DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME.to_string())
 }
 
-fn normalize_legacy_ungrouped_group_name(value: Option<String>) -> Option<String> {
+pub(crate) fn normalize_legacy_ungrouped_group_name(value: Option<String>) -> Option<String> {
     normalize_optional_text(value).filter(|value| value != DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME)
 }
 
-fn normalize_optional_upstream_base_url(
+pub(crate) fn normalize_optional_upstream_base_url(
     value: Option<String>,
 ) -> Result<Option<String>, (StatusCode, String)> {
     let Some(raw) = normalize_optional_text(value) else {
@@ -972,7 +988,7 @@ fn normalize_optional_upstream_base_url(
     Ok(Some(parsed.to_string()))
 }
 
-fn resolve_pool_account_upstream_base_url(
+pub(crate) fn resolve_pool_account_upstream_base_url(
     row: &UpstreamAccountRow,
     global_upstream_base_url: &Url,
 ) -> Result<Url> {
@@ -1012,7 +1028,10 @@ pub(crate) fn canonical_pool_upstream_route_key(url: &Url) -> String {
     normalized.to_string()
 }
 
-fn normalize_required_secret(raw: &str, field_name: &str) -> Result<String, (StatusCode, String)> {
+pub(crate) fn normalize_required_secret(
+    raw: &str,
+    field_name: &str,
+) -> Result<String, (StatusCode, String)> {
     let value = raw.trim();
     if value.is_empty() {
         return Err((StatusCode::BAD_REQUEST, format!("{field_name} is required")));
@@ -1020,14 +1039,14 @@ fn normalize_required_secret(raw: &str, field_name: &str) -> Result<String, (Sta
     Ok(value.to_string())
 }
 
-fn normalize_limit_unit(value: Option<String>) -> String {
+pub(crate) fn normalize_limit_unit(value: Option<String>) -> String {
     value
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_API_KEY_LIMIT_UNIT.to_string())
 }
 
-fn validate_local_limits(
+pub(crate) fn validate_local_limits(
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
 ) -> Result<(), (StatusCode, String)> {
@@ -1044,7 +1063,7 @@ fn validate_local_limits(
     Ok(())
 }
 
-fn is_import_invalid_error_message(message: &str) -> bool {
+pub(crate) fn is_import_invalid_error_message(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
     is_explicit_reauth_error_message(message)
         || is_scope_permission_error_message(message)
@@ -1053,7 +1072,7 @@ fn is_import_invalid_error_message(message: &str) -> bool {
         || normalized.contains("returned 403")
 }
 
-fn persisted_usage_snapshot_is_exhausted(
+pub(crate) fn persisted_usage_snapshot_is_exhausted(
     primary_used_percent: Option<f64>,
     secondary_used_percent: Option<f64>,
     credits_has_credits: Option<bool>,
@@ -1070,7 +1089,7 @@ fn persisted_usage_snapshot_is_exhausted(
     primary_exhausted || secondary_exhausted || credits_exhausted
 }
 
-fn imported_snapshot_is_exhausted(snapshot: &NormalizedUsageSnapshot) -> bool {
+pub(crate) fn imported_snapshot_is_exhausted(snapshot: &NormalizedUsageSnapshot) -> bool {
     persisted_usage_snapshot_is_exhausted(
         snapshot.primary.as_ref().map(|window| window.used_percent),
         snapshot
@@ -1086,7 +1105,9 @@ fn imported_snapshot_is_exhausted(snapshot: &NormalizedUsageSnapshot) -> bool {
     )
 }
 
-fn persisted_usage_sample_is_exhausted(sample: Option<&UpstreamAccountSampleRow>) -> bool {
+pub(crate) fn persisted_usage_sample_is_exhausted(
+    sample: Option<&UpstreamAccountSampleRow>,
+) -> bool {
     sample.is_some_and(|sample| {
         persisted_usage_snapshot_is_exhausted(
             sample.primary_used_percent,
@@ -1098,7 +1119,9 @@ fn persisted_usage_sample_is_exhausted(sample: Option<&UpstreamAccountSampleRow>
     })
 }
 
-fn routing_candidate_snapshot_is_exhausted(candidate: &AccountRoutingCandidateRow) -> bool {
+pub(crate) fn routing_candidate_snapshot_is_exhausted(
+    candidate: &AccountRoutingCandidateRow,
+) -> bool {
     persisted_usage_snapshot_is_exhausted(
         candidate.primary_used_percent,
         candidate.secondary_used_percent,
@@ -1108,7 +1131,7 @@ fn routing_candidate_snapshot_is_exhausted(candidate: &AccountRoutingCandidateRo
     )
 }
 
-fn imported_match_key(email: &str, account_id: &str) -> String {
+pub(crate) fn imported_match_key(email: &str, account_id: &str) -> String {
     let normalized_account_id = account_id.trim().to_ascii_lowercase();
     if !normalized_account_id.is_empty() {
         return format!("account:{normalized_account_id}");
@@ -1116,7 +1139,7 @@ fn imported_match_key(email: &str, account_id: &str) -> String {
     format!("email:{}", email.trim().to_ascii_lowercase())
 }
 
-fn import_match_summary_from_row(row: &UpstreamAccountRow) -> ImportedOauthMatchSummary {
+pub(crate) fn import_match_summary_from_row(row: &UpstreamAccountRow) -> ImportedOauthMatchSummary {
     ImportedOauthMatchSummary {
         account_id: row.id,
         display_name: row.display_name.clone(),
@@ -1125,7 +1148,7 @@ fn import_match_summary_from_row(row: &UpstreamAccountRow) -> ImportedOauthMatch
     }
 }
 
-fn normalize_imported_oauth_credentials(
+pub(crate) fn normalize_imported_oauth_credentials(
     item: &ImportOauthCredentialFileRequest,
 ) -> Result<NormalizedImportedOauthCredentials, String> {
     let source_id = normalize_optional_text(Some(item.source_id.clone()))
@@ -1179,25 +1202,25 @@ fn normalize_imported_oauth_credentials(
     })
 }
 
-fn normalize_optional_json_text(value: Option<serde_json::Value>) -> Option<String> {
+pub(crate) fn normalize_optional_json_text(value: Option<serde_json::Value>) -> Option<String> {
     match value {
         Some(serde_json::Value::String(value)) => normalize_optional_text(Some(value)),
         _ => None,
     }
 }
 
-fn parse_rfc3339_utc(raw: &str) -> Option<DateTime<Utc>> {
+pub(crate) fn parse_rfc3339_utc(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .ok()
         .map(|value| value.with_timezone(&Utc))
 }
 
-fn code_challenge_for_verifier(verifier: &str) -> String {
+pub(crate) fn code_challenge_for_verifier(verifier: &str) -> String {
     let hash = Sha256::digest(verifier.as_bytes());
     URL_SAFE_NO_PAD.encode(hash)
 }
 
-fn random_hex(size: usize) -> Result<String, (StatusCode, String)> {
+pub(crate) fn random_hex(size: usize) -> Result<String, (StatusCode, String)> {
     let mut bytes = vec![0u8; size];
     OsRng.fill_bytes(&mut bytes);
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -1210,7 +1233,7 @@ fn random_hex(size: usize) -> Result<String, (StatusCode, String)> {
 }
 
 #[cfg(test)]
-fn random_base36(size: usize) -> Result<String, (StatusCode, String)> {
+pub(crate) fn random_base36(size: usize) -> Result<String, (StatusCode, String)> {
     const ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     const LETTERS: &[u8; 26] = b"abcdefghijklmnopqrstuvwxyz";
     const DIGITS: &[u8; 10] = b"0123456789";
@@ -1236,7 +1259,7 @@ fn random_base36(size: usize) -> Result<String, (StatusCode, String)> {
     String::from_utf8(output).map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
 }
 
-fn format_window_label(window_duration_mins: i64) -> String {
+pub(crate) fn format_window_label(window_duration_mins: i64) -> String {
     match window_duration_mins {
         300 => "5h quota".to_string(),
         10_080 => "7d quota".to_string(),
@@ -1246,7 +1269,7 @@ fn format_window_label(window_duration_mins: i64) -> String {
     }
 }
 
-fn format_percent(value: f64) -> String {
+pub(crate) fn format_percent(value: f64) -> String {
     if (value.fract()).abs() < 0.05 {
         format!("{}", value.round() as i64)
     } else {
@@ -1254,7 +1277,7 @@ fn format_percent(value: f64) -> String {
     }
 }
 
-fn format_compact_decimal(value: f64) -> String {
+pub(crate) fn format_compact_decimal(value: f64) -> String {
     let rounded = format!("{value:.2}");
     rounded
         .trim_end_matches('0')
@@ -1262,21 +1285,21 @@ fn format_compact_decimal(value: f64) -> String {
         .to_string()
 }
 
-fn mask_api_key(api_key: &str) -> String {
+pub(crate) fn mask_api_key(api_key: &str) -> String {
     if api_key.len() <= 8 {
         return "••••••••".to_string();
     }
     format!("{}••••{}", &api_key[..4], &api_key[api_key.len() - 4..])
 }
 
-fn normalize_sticky_key_limit(raw: Option<i64>) -> i64 {
+pub(crate) fn normalize_sticky_key_limit(raw: Option<i64>) -> i64 {
     match raw {
         Some(20 | 50 | 100) => raw.unwrap_or(DEFAULT_STICKY_KEY_LIMIT),
         _ => DEFAULT_STICKY_KEY_LIMIT,
     }
 }
 
-fn normalize_sticky_key_activity_hours(raw: Option<i64>) -> Option<i64> {
+pub(crate) fn normalize_sticky_key_activity_hours(raw: Option<i64>) -> Option<i64> {
     match raw {
         Some(1 | 3 | 6 | 12 | 24) => raw,
         _ => None,
@@ -1306,17 +1329,17 @@ pub(crate) fn resolve_sticky_key_selection(
     ))
 }
 
-fn seconds_to_window_minutes(seconds: i64) -> i64 {
+pub(crate) fn seconds_to_window_minutes(seconds: i64) -> i64 {
     (seconds + 59) / 60
 }
 
-fn optional_string(value: &Value, keys: &[&str]) -> Option<String> {
+pub(crate) fn optional_string(value: &Value, keys: &[&str]) -> Option<String> {
     keys.iter()
         .find_map(|key| value.get(*key))
         .and_then(value_as_string)
 }
 
-fn value_as_string(value: &Value) -> Option<String> {
+pub(crate) fn value_as_string(value: &Value) -> Option<String> {
     match value {
         Value::String(raw) => Some(raw.clone()),
         Value::Number(raw) => Some(raw.to_string()),
@@ -1324,7 +1347,7 @@ fn value_as_string(value: &Value) -> Option<String> {
     }
 }
 
-fn value_as_bool(value: &Value) -> Option<bool> {
+pub(crate) fn value_as_bool(value: &Value) -> Option<bool> {
     match value {
         Value::Bool(raw) => Some(*raw),
         Value::String(raw) => match raw.to_ascii_lowercase().as_str() {
@@ -1336,7 +1359,7 @@ fn value_as_bool(value: &Value) -> Option<bool> {
     }
 }
 
-fn value_as_f64(value: &Value) -> Option<f64> {
+pub(crate) fn value_as_f64(value: &Value) -> Option<f64> {
     match value {
         Value::Number(raw) => raw.as_f64(),
         Value::String(raw) => raw.parse::<f64>().ok(),
@@ -1344,7 +1367,7 @@ fn value_as_f64(value: &Value) -> Option<f64> {
     }
 }
 
-fn value_as_i64(value: &Value) -> Option<i64> {
+pub(crate) fn value_as_i64(value: &Value) -> Option<i64> {
     match value {
         Value::Number(raw) => raw.as_i64(),
         Value::String(raw) => raw.parse::<i64>().ok(),
@@ -1352,11 +1375,11 @@ fn value_as_i64(value: &Value) -> Option<i64> {
     }
 }
 
-fn value_as_timestamp(value: &Value) -> Option<DateTime<Utc>> {
+pub(crate) fn value_as_timestamp(value: &Value) -> Option<DateTime<Utc>> {
     value_as_i64(value).and_then(|seconds| Utc.timestamp_opt(seconds, 0).single())
 }
 
-fn extract_error_message(body: &str) -> String {
+pub(crate) fn extract_error_message(body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<Value>(body)
         && let Some(message) = value
             .get("error_description")
@@ -1383,7 +1406,7 @@ pub(crate) fn is_scope_permission_error_message(message: &str) -> bool {
         || msg.contains("api.model.read")
 }
 
-fn is_upstream_unavailable_error_message(message: &str) -> bool {
+pub(crate) fn is_upstream_unavailable_error_message(message: &str) -> bool {
     let msg = message.to_ascii_lowercase();
     msg.contains("failed to contact oauth codex upstream")
         || msg.contains("oauth_upstream_unavailable")
@@ -1433,7 +1456,7 @@ pub(crate) fn is_explicit_reauth_error_message(message: &str) -> bool {
         || msg.contains("reauthorize")
 }
 
-fn is_upstream_rejected_error_message(message: &str) -> bool {
+pub(crate) fn is_upstream_rejected_error_message(message: &str) -> bool {
     let msg = message.to_ascii_lowercase();
     is_scope_permission_error_message(message)
         || msg.contains("oauth_upstream_rejected_request")
@@ -1446,7 +1469,7 @@ fn is_upstream_rejected_error_message(message: &str) -> bool {
         || msg.contains("http_403")
 }
 
-fn maintenance_upstream_rejected_error_message(message: &str) -> bool {
+pub(crate) fn maintenance_upstream_rejected_error_message(message: &str) -> bool {
     let msg = message.to_ascii_lowercase();
     msg.contains("deactivated_workspace")
         || msg.contains("upstream_http_402")
@@ -1458,15 +1481,15 @@ fn maintenance_upstream_rejected_error_message(message: &str) -> bool {
                 || msg.contains("returned 402")))
 }
 
-fn is_reauth_error(err: &anyhow::Error) -> bool {
+pub(crate) fn is_reauth_error(err: &anyhow::Error) -> bool {
     is_explicit_reauth_error_message(&err.to_string())
 }
 
-fn internal_error_tuple(err: impl ToString) -> (StatusCode, String) {
+pub(crate) fn internal_error_tuple(err: impl ToString) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
 }
 
-fn request_runtime_error_tuple(err: impl ToString) -> (StatusCode, String) {
+pub(crate) fn request_runtime_error_tuple(err: impl ToString) -> (StatusCode, String) {
     let message = err.to_string();
     if is_group_node_shunt_unassigned_message(&message) {
         return (StatusCode::CONFLICT, message);
@@ -1474,7 +1497,7 @@ fn request_runtime_error_tuple(err: impl ToString) -> (StatusCode, String) {
     internal_error_tuple(message)
 }
 
-fn internal_error_html(err: impl ToString) -> (StatusCode, String) {
+pub(crate) fn internal_error_html(err: impl ToString) -> (StatusCode, String) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         render_callback_page(false, "OAuth callback failed", &err.to_string()),
@@ -1540,8 +1563,7 @@ mod account_maintenance_egress_throttle_tests {
         reserve_account_maintenance_egress_slot(&pool, &proxy)
             .await
             .expect("first egress should reserve");
-        let nearly_available_at =
-            format_utc_iso(Utc::now() - ChronoDuration::seconds(9));
+        let nearly_available_at = format_utc_iso(Utc::now() - ChronoDuration::seconds(9));
         sqlx::query(
             r#"
             UPDATE pool_upstream_account_egress_throttle
@@ -1562,9 +1584,10 @@ mod account_maintenance_egress_throttle_tests {
         let err = reserve_account_maintenance_egress_slot(&pool, &proxy)
             .await
             .expect_err("runtime wait should reserve the egress slot before returning");
-        assert!(err
-            .downcast_ref::<AccountMaintenanceEgressThrottleError>()
-            .is_some());
+        assert!(
+            err.downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -1575,10 +1598,9 @@ mod account_maintenance_egress_throttle_tests {
         reserve_account_maintenance_egress_slot(&pool, &proxy)
             .await
             .expect("first egress should reserve");
-        let err =
-            reserve_account_maintenance_egress_slot_with_bounded_wait(&pool, &proxy, 0)
-                .await
-                .expect_err("exhausted wait budget should preserve throttle error");
+        let err = reserve_account_maintenance_egress_slot_with_bounded_wait(&pool, &proxy, 0)
+            .await
+            .expect_err("exhausted wait budget should preserve throttle error");
 
         let throttle = err
             .downcast_ref::<AccountMaintenanceEgressThrottleError>()

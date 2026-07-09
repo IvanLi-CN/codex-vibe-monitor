@@ -1,6 +1,13 @@
 use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
 
-fn append_working_set_freshness_filter<'a>(
+pub(crate) fn append_working_set_freshness_filter<'a>(
     query: &mut QueryBuilder<'a, Sqlite>,
     range_start_bound: &'a str,
     last_activity_column: &str,
@@ -492,7 +499,7 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
         .map_err(Into::into)
 }
 
-fn merge_prompt_cache_lifecycle_aggregate_row(
+pub(crate) fn merge_prompt_cache_lifecycle_aggregate_row(
     aggregates: &mut HashMap<String, PromptCacheConversationAggregateRow>,
     row: PromptCacheConversationAggregateRow,
 ) {
@@ -515,7 +522,7 @@ fn merge_prompt_cache_lifecycle_aggregate_row(
     }
 }
 
-async fn query_prompt_cache_lifecycle_rollup_aggregates_tx(
+pub(crate) async fn query_prompt_cache_lifecycle_rollup_aggregates_tx(
     tx: &mut SqliteConnection,
     source_scope: InvocationSourceScope,
     selected_keys: &[String],
@@ -559,7 +566,7 @@ async fn query_prompt_cache_lifecycle_rollup_aggregates_tx(
         .map_err(Into::into)
 }
 
-async fn query_prompt_cache_lifecycle_snapshot_rollup_aggregates_tx(
+pub(crate) async fn query_prompt_cache_lifecycle_snapshot_rollup_aggregates_tx(
     tx: &mut SqliteConnection,
     source_scope: InvocationSourceScope,
     selected_keys: &[String],
@@ -573,12 +580,9 @@ async fn query_prompt_cache_lifecycle_snapshot_rollup_aggregates_tx(
 
     const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
     const EXACT_BUCKET_EXPR: &str = "((CASE WHEN instr(occurred_at, 'T') > 0 THEN CAST(strftime('%s', occurred_at) AS INTEGER) ELSE CAST(strftime('%s', occurred_at || '+08:00') AS INTEGER) END) / 3600) * 3600";
-    const DELTA_COUNT_EXPR: &str =
-        "CASE WHEN r.request_count > COALESCE(e.request_count, 0) THEN r.request_count - COALESCE(e.request_count, 0) ELSE 0 END";
-    const DELTA_TOKENS_EXPR: &str =
-        "CASE WHEN r.request_count > COALESCE(e.request_count, 0) THEN MAX(r.total_tokens - COALESCE(e.total_tokens, 0), 0) ELSE 0 END";
-    const DELTA_COST_EXPR: &str =
-        "CASE WHEN r.request_count > COALESCE(e.request_count, 0) THEN MAX(r.total_cost - COALESCE(e.total_cost, 0.0), 0.0) ELSE 0.0 END";
+    const DELTA_COUNT_EXPR: &str = "CASE WHEN r.request_count > COALESCE(e.request_count, 0) THEN r.request_count - COALESCE(e.request_count, 0) ELSE 0 END";
+    const DELTA_TOKENS_EXPR: &str = "CASE WHEN r.request_count > COALESCE(e.request_count, 0) THEN MAX(r.total_tokens - COALESCE(e.total_tokens, 0), 0) ELSE 0 END";
+    const DELTA_COST_EXPR: &str = "CASE WHEN r.request_count > COALESCE(e.request_count, 0) THEN MAX(r.total_cost - COALESCE(e.total_cost, 0.0), 0.0) ELSE 0.0 END";
 
     let mut query = QueryBuilder::<Sqlite>::new("WITH exact_live AS (SELECT source, ");
     query
@@ -609,7 +613,9 @@ async fn query_prompt_cache_lifecycle_snapshot_rollup_aggregates_tx(
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
-    query.push(" GROUP BY source, prompt_cache_key, bucket_start_epoch) SELECT r.prompt_cache_key, SUM(");
+    query.push(
+        " GROUP BY source, prompt_cache_key, bucket_start_epoch) SELECT r.prompt_cache_key, SUM(",
+    );
     query
         .push(DELTA_COUNT_EXPR)
         .push(") AS request_count, SUM(")
@@ -653,7 +659,7 @@ async fn query_prompt_cache_lifecycle_snapshot_rollup_aggregates_tx(
         .map_err(Into::into)
 }
 
-async fn query_prompt_cache_lifecycle_exact_tail_aggregates_tx(
+pub(crate) async fn query_prompt_cache_lifecycle_exact_tail_aggregates_tx(
     tx: &mut SqliteConnection,
     source_scope: InvocationSourceScope,
     selected_keys: &[String],
@@ -667,10 +673,8 @@ async fn query_prompt_cache_lifecycle_exact_tail_aggregates_tx(
 
     const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
     let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key, \
+    query.push(KEY_EXPR).push(
+        " AS prompt_cache_key, \
              COUNT(*) AS request_count, \
              COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens, \
              COALESCE(SUM(COALESCE(cost, 0.0)), 0.0) AS total_cost, \
@@ -678,7 +682,7 @@ async fn query_prompt_cache_lifecycle_exact_tail_aggregates_tx(
              MAX(occurred_at) AS last_activity_at \
          FROM codex_invocations \
          WHERE ",
-        );
+    );
     if let Some(snapshot_filter) = snapshot_filter {
         query.push("id <= ").push_bind(
             snapshot_filter

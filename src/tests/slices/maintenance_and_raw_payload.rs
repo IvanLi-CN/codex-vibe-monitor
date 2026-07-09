@@ -1,4 +1,10 @@
-fn write_backfill_response_payload_with_service_tier(path: &Path, service_tier: Option<&str>) {
+use super::*;
+use serde_json::json;
+
+pub(crate) fn write_backfill_response_payload_with_service_tier(
+    path: &Path,
+    service_tier: Option<&str>,
+) {
     let mut response = json!({
         "type": "response.completed",
         "response": {
@@ -47,7 +53,8 @@ async fn system_status_aggregates_counts_and_file_sizes() {
         .join("pool_upstream_request_attempts")
         .join("2026");
     fs::create_dir_all(&other_archive_root).expect("create non-invocation archive tree");
-    let other_archive_file = other_archive_root.join("pool-upstream-request-attempts-2026-06.sqlite.gz");
+    let other_archive_file =
+        other_archive_root.join("pool-upstream-request-attempts-2026-06.sqlite.gz");
     fs::write(&other_archive_file, vec![b'o'; 23]).expect("write non-invocation archive payload");
 
     let raw_dir = state.config.resolved_proxy_raw_dir();
@@ -281,15 +288,13 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         None,
     )
     .await;
-    sqlx::query(
-        "UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3",
-    )
-    .bind("2026-06-22 08:45:00")
-    .bind("2026-06-22 08:45:01")
-    .bind(scheduler_handle.id)
-    .execute(&state.pool)
-    .await
-    .expect("pin scheduler task timestamps");
+    sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
+        .bind("2026-06-22 08:45:00")
+        .bind("2026-06-22 08:45:01")
+        .bind(scheduler_handle.id)
+        .execute(&state.pool)
+        .await
+        .expect("pin scheduler task timestamps");
 
     let retention_handle = begin_system_task_run(
         &state.pool,
@@ -307,15 +312,13 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         Some("disk full".to_string()),
     )
     .await;
-    sqlx::query(
-        "UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3",
-    )
-    .bind("2026-06-22 09:15:00")
-    .bind("2026-06-22 09:15:02")
-    .bind(retention_handle.id)
-    .execute(&state.pool)
-    .await
-    .expect("pin retention task timestamps");
+    sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
+        .bind("2026-06-22 09:15:00")
+        .bind("2026-06-22 09:15:02")
+        .bind(retention_handle.id)
+        .execute(&state.pool)
+        .await
+        .expect("pin retention task timestamps");
 
     let filtered = list_system_task_runs(
         State(state.clone()),
@@ -469,7 +472,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     assert!(payload.get("refreshedAt").is_some());
 }
 
-fn write_backfill_response_payload_with_terminal_service_tier(
+pub(crate) fn write_backfill_response_payload_with_terminal_service_tier(
     path: &Path,
     initial_service_tier: Option<&str>,
     terminal_service_tier: Option<&str>,
@@ -519,7 +522,7 @@ fn write_backfill_response_payload_with_terminal_service_tier(
     fs::write(path, compressed).expect("write response payload");
 }
 
-fn write_backfill_request_payload(path: &Path, prompt_cache_key: Option<&str>) {
+pub(crate) fn write_backfill_request_payload(path: &Path, prompt_cache_key: Option<&str>) {
     write_backfill_request_payload_with_fields(
         path,
         prompt_cache_key,
@@ -529,7 +532,7 @@ fn write_backfill_request_payload(path: &Path, prompt_cache_key: Option<&str>) {
     );
 }
 
-fn write_backfill_request_payload_with_requested_service_tier(
+pub(crate) fn write_backfill_request_payload_with_requested_service_tier(
     path: &Path,
     requested_service_tier: Option<&str>,
     target: ProxyCaptureTarget,
@@ -537,7 +540,7 @@ fn write_backfill_request_payload_with_requested_service_tier(
     write_backfill_request_payload_with_fields(path, None, None, requested_service_tier, target);
 }
 
-fn write_backfill_request_payload_with_reasoning(
+pub(crate) fn write_backfill_request_payload_with_reasoning(
     path: &Path,
     prompt_cache_key: Option<&str>,
     reasoning_effort: Option<&str>,
@@ -609,7 +612,11 @@ fn write_backfill_request_payload_with_fields(
     fs::write(path, encoded).expect("write request payload");
 }
 
-async fn insert_proxy_backfill_row(pool: &SqlitePool, invoke_id: &str, response_path: &Path) {
+pub(crate) async fn insert_proxy_backfill_row(
+    pool: &SqlitePool,
+    invoke_id: &str,
+    response_path: &Path,
+) {
     sqlx::query(
         r#"
         INSERT INTO codex_invocations (
@@ -632,7 +639,7 @@ async fn insert_proxy_backfill_row(pool: &SqlitePool, invoke_id: &str, response_
     .expect("insert proxy row");
 }
 
-async fn insert_proxy_cost_backfill_row(
+pub(crate) async fn insert_proxy_cost_backfill_row(
     pool: &SqlitePool,
     invoke_id: &str,
     model: Option<&str>,
@@ -664,7 +671,7 @@ async fn insert_proxy_cost_backfill_row(
     .expect("insert proxy cost row");
 }
 
-async fn insert_proxy_prompt_cache_backfill_row(
+pub(crate) async fn insert_proxy_prompt_cache_backfill_row(
     pool: &SqlitePool,
     invoke_id: &str,
     request_path: &Path,
@@ -690,7 +697,7 @@ async fn insert_proxy_prompt_cache_backfill_row(
     .expect("insert proxy prompt cache key row");
 }
 
-async fn test_state_with_openai_base(openai_base: Url) -> Arc<AppState> {
+pub(crate) async fn test_state_with_openai_base(openai_base: Url) -> Arc<AppState> {
     test_state_with_openai_base_and_body_limit(
         openai_base,
         DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
@@ -698,7 +705,7 @@ async fn test_state_with_openai_base(openai_base: Url) -> Arc<AppState> {
     .await
 }
 
-async fn test_state_with_openai_base_and_body_limit(
+pub(crate) async fn test_state_with_openai_base_and_body_limit(
     openai_base: Url,
     body_limit: usize,
 ) -> Arc<AppState> {
@@ -710,7 +717,7 @@ async fn test_state_with_openai_base_and_body_limit(
     .await
 }
 
-async fn test_state_with_openai_base_body_limit_and_read_timeout(
+pub(crate) async fn test_state_with_openai_base_body_limit_and_read_timeout(
     openai_base: Url,
     body_limit: usize,
     request_read_timeout: Duration,
@@ -725,7 +732,7 @@ async fn test_state_with_openai_base_body_limit_and_read_timeout(
     .await
 }
 
-async fn test_state_with_openai_base_and_proxy_timeouts(
+pub(crate) async fn test_state_with_openai_base_and_proxy_timeouts(
     openai_base: Url,
     body_limit: usize,
     handshake_timeout: Duration,
@@ -741,7 +748,7 @@ async fn test_state_with_openai_base_and_proxy_timeouts(
     test_state_from_config(config, true).await
 }
 
-async fn test_state_with_openai_base_and_pool_no_available_wait(
+pub(crate) async fn test_state_with_openai_base_and_pool_no_available_wait(
     openai_base: Url,
     timeout: Duration,
     poll_interval: Duration,
@@ -760,7 +767,10 @@ async fn test_state_with_openai_base_and_pool_no_available_wait(
     .await
 }
 
-async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<AppState> {
+pub(crate) async fn test_state_from_config(
+    config: AppConfig,
+    startup_ready: bool,
+) -> Arc<AppState> {
     test_state_from_config_with_pool_no_available_wait(
         config,
         startup_ready,
@@ -791,7 +801,7 @@ fn isolate_stateful_test_config_runtime_paths(mut config: AppConfig, db_id: u64)
     config
 }
 
-async fn test_state_from_config_with_pool_no_available_wait(
+pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
     config: AppConfig,
     startup_ready: bool,
     pool_no_available_wait: PoolNoAvailableWaitSettings,
@@ -816,8 +826,9 @@ async fn test_state_from_config_with_pool_no_available_wait(
         .expect("pricing catalog should initialize");
     let prompt_cache_conversation_cache =
         Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
-    let sqlite_batch_writer =
-        SqliteBatchWriter::spawn_for_test_with_prompt_cache(prompt_cache_conversation_cache.clone());
+    let sqlite_batch_writer = SqliteBatchWriter::spawn_for_test_with_prompt_cache(
+        prompt_cache_conversation_cache.clone(),
+    );
     let proxy_runtime_invocations = Arc::new(ProxyRuntimeInvocationStore::default());
     sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
 
@@ -866,12 +877,12 @@ async fn test_state_from_config_with_pool_no_available_wait(
     })
 }
 
-async fn enable_encrypted_session_owner_routing_for_test(state: &Arc<AppState>) {
+pub(crate) async fn enable_encrypted_session_owner_routing_for_test(state: &Arc<AppState>) {
     let mut settings = state.proxy_model_settings.write().await;
     settings.encrypted_session_owner_routing_enabled = true;
 }
 
-fn clone_state_with_upstream_accounts(
+pub(crate) fn clone_state_with_upstream_accounts(
     state: &Arc<AppState>,
     upstream_accounts: Arc<UpstreamAccountsRuntime>,
 ) -> Arc<AppState> {
@@ -916,7 +927,7 @@ fn clone_state_with_upstream_accounts(
     })
 }
 
-fn clone_state_with_pool_group_429_retry_delay_override(
+pub(crate) fn clone_state_with_pool_group_429_retry_delay_override(
     state: &Arc<AppState>,
     delay: Option<Duration>,
 ) -> Arc<AppState> {
@@ -961,7 +972,7 @@ fn clone_state_with_pool_group_429_retry_delay_override(
     })
 }
 
-async fn test_state_from_existing_pool(
+pub(crate) async fn test_state_from_existing_pool(
     pool: SqlitePool,
     config: AppConfig,
     startup_ready: bool,
@@ -1024,7 +1035,7 @@ async fn test_state_from_existing_pool(
     })
 }
 
-async fn apply_forward_proxy_settings_without_bootstrap(
+pub(crate) async fn apply_forward_proxy_settings_without_bootstrap(
     state: &Arc<AppState>,
     settings: ForwardProxySettings,
 ) -> ForwardProxySettingsResponse {
@@ -1040,7 +1051,7 @@ async fn apply_forward_proxy_settings_without_bootstrap(
         .expect("build forward proxy settings response")
 }
 
-async fn seed_pool_routing_api_key(state: &Arc<AppState>, api_key: &str) {
+pub(crate) async fn seed_pool_routing_api_key(state: &Arc<AppState>, api_key: &str) {
     ensure_upstream_accounts_schema(&state.pool)
         .await
         .expect("ensure upstream account schema");
@@ -1053,15 +1064,19 @@ async fn seed_pool_routing_api_key(state: &Arc<AppState>, api_key: &str) {
         .expect("save pool routing api key");
 }
 
-fn test_required_group_name() -> &'static str {
+pub(crate) fn test_required_group_name() -> &'static str {
     "test-direct-group"
 }
 
-fn test_required_group_bound_proxy_keys() -> Vec<String> {
+pub(crate) fn test_required_group_bound_proxy_keys() -> Vec<String> {
     vec![FORWARD_PROXY_DIRECT_KEY.to_string()]
 }
 
-async fn ensure_test_group_binding(pool: &SqlitePool, group_name: &str, note: Option<&str>) {
+pub(crate) async fn ensure_test_group_binding(
+    pool: &SqlitePool,
+    group_name: &str,
+    note: Option<&str>,
+) {
     let now_iso = format_utc_iso(Utc::now());
     let bound_proxy_keys_json = serde_json::to_string(&test_required_group_bound_proxy_keys())
         .expect("encode test direct group bindings");
@@ -1085,7 +1100,7 @@ async fn ensure_test_group_binding(pool: &SqlitePool, group_name: &str, note: Op
     .expect("ensure test group binding");
 }
 
-async fn insert_test_pool_api_key_account(
+pub(crate) async fn insert_test_pool_api_key_account(
     state: &Arc<AppState>,
     display_name: &str,
     api_key: &str,
@@ -1094,7 +1109,7 @@ async fn insert_test_pool_api_key_account(
         .await
 }
 
-async fn insert_test_pool_api_key_account_with_options(
+pub(crate) async fn insert_test_pool_api_key_account_with_options(
     state: &Arc<AppState>,
     display_name: &str,
     api_key: &str,
@@ -1128,7 +1143,7 @@ async fn insert_test_pool_api_key_account_with_options(
         .expect("load inserted test pool upstream account id")
 }
 
-async fn create_test_fast_mode_tag(
+pub(crate) async fn create_test_fast_mode_tag(
     state: &Arc<AppState>,
     name: &str,
     fast_mode_rewrite_mode: &str,
@@ -1155,7 +1170,7 @@ async fn create_test_fast_mode_tag(
     .expect("insert fast mode system tag")
 }
 
-async fn create_test_tagged_pool_api_key_account(
+pub(crate) async fn create_test_tagged_pool_api_key_account(
     state: &Arc<AppState>,
     display_name: &str,
     api_key: &str,
@@ -1173,11 +1188,12 @@ async fn create_test_tagged_pool_api_key_account(
     let Json(_) = create_api_key_account(State(state.clone()), HeaderMap::new(), Json(payload))
         .await
         .expect("create tagged pool account");
-    let account_id: i64 = sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
-        .bind(display_name)
-        .fetch_one(&state.pool)
-        .await
-        .expect("load tagged pool account id");
+    let account_id: i64 =
+        sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
+            .bind(display_name)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load tagged pool account id");
     if !tag_ids.is_empty() {
         let now_iso = format_utc_iso(Utc::now());
         for tag_id in tag_ids {
@@ -1199,7 +1215,7 @@ async fn create_test_tagged_pool_api_key_account(
     account_id
 }
 
-async fn insert_test_pool_limit_sample(
+pub(crate) async fn insert_test_pool_limit_sample(
     state: &Arc<AppState>,
     account_id: i64,
     primary_used_percent: Option<f64>,
@@ -1220,7 +1236,7 @@ async fn insert_test_pool_limit_sample(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn insert_test_pool_limit_sample_with_windows(
+pub(crate) async fn insert_test_pool_limit_sample_with_windows(
     state: &Arc<AppState>,
     account_id: i64,
     plan_type: Option<&str>,
@@ -1264,7 +1280,7 @@ async fn insert_test_pool_limit_sample_with_windows(
     .expect("insert test pool limit sample");
 }
 
-async fn reserve_test_pool_routing_account(
+pub(crate) async fn reserve_test_pool_routing_account(
     state: &Arc<AppState>,
     reservation_key: &str,
     account_id: i64,
@@ -1294,7 +1310,7 @@ async fn reserve_test_pool_routing_account(
     reserve_pool_routing_account(state.as_ref(), reservation_key, &account);
 }
 
-async fn set_test_account_local_limits(
+pub(crate) async fn set_test_account_local_limits(
     pool: &SqlitePool,
     account_id: i64,
     local_primary_limit: Option<f64>,
@@ -1319,7 +1335,7 @@ async fn set_test_account_local_limits(
     .expect("set test account local limits");
 }
 
-async fn set_test_account_status(pool: &SqlitePool, account_id: i64, status: &str) {
+pub(crate) async fn set_test_account_status(pool: &SqlitePool, account_id: i64, status: &str) {
     sqlx::query("UPDATE pool_upstream_accounts SET status = ?1 WHERE id = ?2")
         .bind(status)
         .bind(account_id)
@@ -1328,7 +1344,7 @@ async fn set_test_account_status(pool: &SqlitePool, account_id: i64, status: &st
         .expect("set test pool account status");
 }
 
-async fn clear_test_account_credentials(pool: &SqlitePool, account_id: i64) {
+pub(crate) async fn clear_test_account_credentials(pool: &SqlitePool, account_id: i64) {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -1345,7 +1361,7 @@ async fn clear_test_account_credentials(pool: &SqlitePool, account_id: i64) {
     .expect("clear test pool account credentials");
 }
 
-async fn set_test_account_rate_limited_cooldown(
+pub(crate) async fn set_test_account_rate_limited_cooldown(
     pool: &SqlitePool,
     account_id: i64,
     cooldown_secs: i64,
@@ -1360,7 +1376,7 @@ async fn set_test_account_rate_limited_cooldown(
     .await;
 }
 
-async fn set_test_account_generic_route_cooldown(
+pub(crate) async fn set_test_account_generic_route_cooldown(
     pool: &SqlitePool,
     account_id: i64,
     cooldown_secs: i64,
@@ -1375,7 +1391,7 @@ async fn set_test_account_generic_route_cooldown(
     .await;
 }
 
-async fn set_test_account_degraded_route_state(
+pub(crate) async fn set_test_account_degraded_route_state(
     pool: &SqlitePool,
     account_id: i64,
     failure_kind: &str,
@@ -1443,7 +1459,7 @@ async fn set_test_account_route_cooldown(
     .expect("set test pool account route cooldown");
 }
 
-async fn upsert_test_sticky_route_at(
+pub(crate) async fn upsert_test_sticky_route_at(
     pool: &SqlitePool,
     sticky_key: &str,
     account_id: i64,
@@ -1468,15 +1484,15 @@ async fn upsert_test_sticky_route_at(
     .expect("upsert test sticky route");
 }
 
-fn format_test_recent_active_timestamp(now: DateTime<Utc>) -> String {
+pub(crate) fn format_test_recent_active_timestamp(now: DateTime<Utc>) -> String {
     format_utc_iso(now - ChronoDuration::minutes(4))
 }
 
-fn format_test_stale_active_timestamp(now: DateTime<Utc>) -> String {
+pub(crate) fn format_test_stale_active_timestamp(now: DateTime<Utc>) -> String {
     format_utc_iso(now - ChronoDuration::minutes(6))
 }
 
-async fn insert_test_pool_oauth_account(
+pub(crate) async fn insert_test_pool_oauth_account(
     state: &Arc<AppState>,
     display_name: &str,
     access_token: &str,
@@ -1490,7 +1506,7 @@ async fn insert_test_pool_oauth_account(
     .await
 }
 
-async fn insert_test_pool_oauth_account_with_chatgpt_account_id(
+pub(crate) async fn insert_test_pool_oauth_account_with_chatgpt_account_id(
     state: &Arc<AppState>,
     display_name: &str,
     access_token: &str,

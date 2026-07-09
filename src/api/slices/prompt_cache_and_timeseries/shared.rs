@@ -1,6 +1,13 @@
 use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
 
-fn split_exact_range_by_retention(
+pub(crate) fn split_exact_range_by_retention(
     live_ranges: &mut Vec<ExactUtcRange>,
     range: ExactUtcRange,
     raw_cutoff: DateTime<Utc>,
@@ -11,7 +18,7 @@ fn split_exact_range_by_retention(
     Ok(())
 }
 
-pub(super) fn build_hourly_rollup_exact_range_plan(
+pub(crate) fn build_hourly_rollup_exact_range_plan(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     raw_cutoff: DateTime<Utc>,
@@ -87,7 +94,10 @@ pub(super) fn resolve_timeseries_fill_end_epoch(
     )?)
 }
 
-pub(super) fn invocation_status_is_success_like(status: Option<&str>, error_message: Option<&str>) -> bool {
+pub(crate) fn prompt_invocation_status_is_success_like(
+    status: Option<&str>,
+    error_message: Option<&str>,
+) -> bool {
     let normalized_status = status.map(str::trim).unwrap_or_default();
     let error_message_empty = error_message.map(str::trim).is_none_or(str::is_empty);
 
@@ -96,7 +106,7 @@ pub(super) fn invocation_status_is_success_like(status: Option<&str>, error_mess
         || (normalized_status.eq_ignore_ascii_case("http_200") && error_message_empty)
 }
 
-pub(super) fn invocation_status_counts_toward_terminal_totals(status: Option<&str>) -> bool {
+pub(crate) fn prompt_invocation_status_counts_toward_terminal_totals(status: Option<&str>) -> bool {
     let normalized_status = status.map(str::trim).unwrap_or_default();
     !normalized_status.eq_ignore_ascii_case("running")
         && !normalized_status.eq_ignore_ascii_case("pending")
@@ -108,11 +118,11 @@ pub(super) fn invocation_status_is_in_flight(status: Option<&str>) -> bool {
         || normalized_status.eq_ignore_ascii_case("pending")
 }
 
-fn invocation_metadata_has_failure_text(value: Option<&str>) -> bool {
+pub(crate) fn invocation_metadata_has_failure_text(value: Option<&str>) -> bool {
     value.map(str::trim).is_some_and(|text| !text.is_empty())
 }
 
-fn invocation_point_has_explicit_failure_metadata(
+pub(crate) fn invocation_point_has_explicit_failure_metadata(
     error_message: Option<&str>,
     downstream_error_message: Option<&str>,
     failure_kind: Option<&str>,
@@ -133,12 +143,12 @@ fn invocation_point_has_explicit_failure_metadata(
     true
 }
 
-fn invocation_point_is_success(
+pub(crate) fn invocation_point_is_success(
     status: Option<&str>,
     error_message: Option<&str>,
     failure_class: Option<&str>,
 ) -> bool {
-    invocation_status_is_success_like(status, error_message)
+    prompt_invocation_status_is_success_like(status, error_message)
         && failure_class
             .map(str::trim)
             .unwrap_or_default()
@@ -175,7 +185,7 @@ pub(super) fn invocation_point_outcome(
     "neutral"
 }
 
-async fn load_pool_attempt_account_names(
+pub(crate) async fn load_pool_attempt_account_names(
     pool: &Pool<Sqlite>,
     records: &mut [ApiPoolUpstreamRequestAttempt],
 ) -> Result<(), ApiError> {
@@ -278,7 +288,7 @@ pub(crate) async fn query_pool_attempt_records_from_live(
     Ok(records)
 }
 
-async fn query_invocation_aggregate_records_from_live_range_executor<'e, E>(
+pub(crate) async fn query_invocation_aggregate_records_from_live_range_executor<'e, E>(
     executor: E,
     range: ExactUtcRange,
     source_scope: InvocationSourceScope,
@@ -380,7 +390,7 @@ pub(super) async fn query_invocation_aggregate_records_from_live_range_for_accou
     .await
 }
 
-async fn query_invocation_aggregate_records_from_live_range_tx(
+pub(crate) async fn query_invocation_aggregate_records_from_live_range_tx(
     tx: &mut SqliteConnection,
     range: ExactUtcRange,
     source_scope: InvocationSourceScope,
@@ -398,7 +408,7 @@ async fn query_invocation_aggregate_records_from_live_range_tx(
     .await
 }
 
-async fn query_invocation_aggregate_records_from_live_range_tx_for_account(
+pub(crate) async fn query_invocation_aggregate_records_from_live_range_tx_for_account(
     tx: &mut SqliteConnection,
     range: ExactUtcRange,
     source_scope: InvocationSourceScope,
@@ -417,7 +427,7 @@ async fn query_invocation_aggregate_records_from_live_range_tx_for_account(
     .await
 }
 
-fn extend_unique_invocation_records(
+pub(crate) fn extend_unique_invocation_records(
     records: &mut Vec<InvocationAggregateRecord>,
     seen_ids: &mut HashSet<i64>,
     candidates: Vec<InvocationAggregateRecord>,
@@ -429,7 +439,7 @@ fn extend_unique_invocation_records(
     }
 }
 
-pub(super) async fn query_invocation_exact_records(
+pub(crate) async fn query_invocation_exact_records(
     pool: &Pool<Sqlite>,
     range_plan: &HourlyRollupExactRangePlan,
     source_scope: InvocationSourceScope,
@@ -692,40 +702,39 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
     range_end_epoch: i64,
     source_scope: InvocationSourceScope,
 ) -> Result<Vec<InvocationHourlyRollupRecord>, ApiError> {
-    let cache_input_tokens_expr =
-        if sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "cache_input_tokens").await? {
-            "COALESCE(cache_input_tokens, 0) AS cache_input_tokens"
-        } else {
-            "0 AS cache_input_tokens"
-        };
+    let cache_input_tokens_expr = if sqlite_table_has_column_tx(
+        tx,
+        "invocation_rollup_hourly",
+        "cache_input_tokens",
+    )
+    .await?
+    {
+        "COALESCE(cache_input_tokens, 0) AS cache_input_tokens"
+    } else {
+        "0 AS cache_input_tokens"
+    };
     let non_success_cost_expr =
         if sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "non_success_cost").await? {
             "COALESCE(non_success_cost, 0.0) AS non_success_cost"
         } else {
             "0.0 AS non_success_cost"
         };
-    let total_latency_sample_count_expr = if sqlite_table_has_column_tx(
-        tx,
-        "invocation_rollup_hourly",
-        "total_latency_sample_count",
-    )
-    .await?
-    {
-        "COALESCE(total_latency_sample_count, 0) AS total_latency_sample_count"
-    } else {
-        "0 AS total_latency_sample_count"
-    };
-    let total_latency_sum_ms_expr = if sqlite_table_has_column_tx(
-        tx,
-        "invocation_rollup_hourly",
-        "total_latency_sum_ms",
-    )
-    .await?
-    {
-        "COALESCE(total_latency_sum_ms, 0.0) AS total_latency_sum_ms"
-    } else {
-        "0.0 AS total_latency_sum_ms"
-    };
+    let total_latency_sample_count_expr =
+        if sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "total_latency_sample_count")
+            .await?
+        {
+            "COALESCE(total_latency_sample_count, 0) AS total_latency_sample_count"
+        } else {
+            "0 AS total_latency_sample_count"
+        };
+    let total_latency_sum_ms_expr =
+        if sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "total_latency_sum_ms")
+            .await?
+        {
+            "COALESCE(total_latency_sum_ms, 0.0) AS total_latency_sum_ms"
+        } else {
+            "0.0 AS total_latency_sum_ms"
+        };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -773,28 +782,22 @@ pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
     range_end_epoch: i64,
     upstream_account_id: i64,
 ) -> Result<Vec<UpstreamAccountUsageHourlyRollupRecord>, ApiError> {
-    let cache_input_tokens_expr = if sqlite_table_has_column_tx(
-        tx,
-        "upstream_account_usage_hourly",
-        "cache_input_tokens",
-    )
-    .await?
-    {
-        "cache_input_tokens"
-    } else {
-        "0 AS cache_input_tokens"
-    };
-    let non_success_cost_expr = if sqlite_table_has_column_tx(
-        tx,
-        "upstream_account_usage_hourly",
-        "non_success_cost",
-    )
-    .await?
-    {
-        "COALESCE(non_success_cost, 0.0) AS non_success_cost"
-    } else {
-        "0.0 AS non_success_cost"
-    };
+    let cache_input_tokens_expr =
+        if sqlite_table_has_column_tx(tx, "upstream_account_usage_hourly", "cache_input_tokens")
+            .await?
+        {
+            "cache_input_tokens"
+        } else {
+            "0 AS cache_input_tokens"
+        };
+    let non_success_cost_expr =
+        if sqlite_table_has_column_tx(tx, "upstream_account_usage_hourly", "non_success_cost")
+            .await?
+        {
+            "COALESCE(non_success_cost, 0.0) AS non_success_cost"
+        } else {
+            "0.0 AS non_success_cost"
+        };
     let query = format!(
         r#"
         SELECT
@@ -814,10 +817,10 @@ pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
         "#,
     );
     sqlx::query_as::<_, UpstreamAccountUsageHourlyRollupRecord>(&query)
-    .bind(range_start_epoch)
-    .bind(range_end_epoch)
-    .bind(upstream_account_id)
-    .fetch_all(&mut *tx)
+        .bind(range_start_epoch)
+        .bind(range_end_epoch)
+        .bind(upstream_account_id)
+        .fetch_all(&mut *tx)
         .await
         .map_err(Into::into)
 }
@@ -830,35 +833,24 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
     source_scope: InvocationSourceScope,
     upstream_account_id: i64,
 ) -> Result<Vec<UpstreamAccountStatsRollupRecord>, ApiError> {
-    let non_success_cost_expr = if sqlite_table_has_column_tx(tx, table_name, "non_success_cost")
-        .await?
-    {
-        "COALESCE(non_success_cost, 0.0) AS non_success_cost"
-    } else {
-        "0.0 AS non_success_cost"
-    };
-    let total_latency_sample_count_expr = if sqlite_table_has_column_tx(
-        tx,
-        table_name,
-        "total_latency_sample_count",
-    )
-    .await?
-    {
-        "COALESCE(total_latency_sample_count, 0) AS total_latency_sample_count"
-    } else {
-        "0 AS total_latency_sample_count"
-    };
-    let total_latency_sum_ms_expr = if sqlite_table_has_column_tx(
-        tx,
-        table_name,
-        "total_latency_sum_ms",
-    )
-    .await?
-    {
-        "COALESCE(total_latency_sum_ms, 0.0) AS total_latency_sum_ms"
-    } else {
-        "0.0 AS total_latency_sum_ms"
-    };
+    let non_success_cost_expr =
+        if sqlite_table_has_column_tx(tx, table_name, "non_success_cost").await? {
+            "COALESCE(non_success_cost, 0.0) AS non_success_cost"
+        } else {
+            "0.0 AS non_success_cost"
+        };
+    let total_latency_sample_count_expr =
+        if sqlite_table_has_column_tx(tx, table_name, "total_latency_sample_count").await? {
+            "COALESCE(total_latency_sample_count, 0) AS total_latency_sample_count"
+        } else {
+            "0 AS total_latency_sample_count"
+        };
+    let total_latency_sum_ms_expr =
+        if sqlite_table_has_column_tx(tx, table_name, "total_latency_sum_ms").await? {
+            "COALESCE(total_latency_sum_ms, 0.0) AS total_latency_sum_ms"
+        } else {
+            "0.0 AS total_latency_sum_ms"
+        };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -905,7 +897,7 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
         .map_err(Into::into)
 }
 
-async fn sqlite_table_has_column_tx(
+pub(crate) async fn sqlite_table_has_column_tx(
     tx: &mut SqliteConnection,
     table_name: &str,
     column_name: &str,
@@ -931,11 +923,13 @@ pub(super) fn add_invocation_record_to_summary_totals(
         record.failure_class.as_deref(),
         record.is_actionable,
     );
-    if invocation_status_is_success_like(record.status.as_deref(), record.error_message.as_deref())
-        && classification.failure_class == FailureClass::None
+    if prompt_invocation_status_is_success_like(
+        record.status.as_deref(),
+        record.error_message.as_deref(),
+    ) && classification.failure_class == FailureClass::None
     {
         totals.success_count += 1;
-    } else if invocation_status_counts_toward_terminal_totals(record.status.as_deref())
+    } else if prompt_invocation_status_counts_toward_terminal_totals(record.status.as_deref())
         && classification.failure_class != FailureClass::None
     {
         totals.failure_count += 1;
@@ -960,7 +954,7 @@ pub(crate) fn db_occurred_at_upper_bound(end_utc: DateTime<Utc>) -> String {
     db_occurred_at_lower_bound(end_utc)
 }
 
-pub(super) fn record_perf_stage_sample(
+pub(crate) fn record_perf_stage_sample(
     by_stage: &mut BTreeMap<String, (i64, f64, f64, ApproxHistogramCounts)>,
     stage: &str,
     value: Option<f64>,

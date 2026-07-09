@@ -1,17 +1,17 @@
-use crate::*;
+use super::*;
 use axum::extract::Path as AxumPath;
 use rand::RngCore;
 
-const EXTERNAL_API_KEY_STATUS_ACTIVE: &str = "active";
-const EXTERNAL_API_KEY_STATUS_DISABLED: &str = "disabled";
-const EXTERNAL_API_KEY_STATUS_ROTATED: &str = "rotated";
-const EXTERNAL_API_KEY_SECRET_PREFIX_LEN: usize = 12;
-const EXTERNAL_API_KEY_NAME_MAX_LEN: usize = 80;
-const EXTERNAL_API_KEY_CLIENT_ID_HEX_LEN: usize = 16;
-const EXTERNAL_API_KEY_CREATE_MAX_ATTEMPTS: usize = 8;
+pub(crate) const EXTERNAL_API_KEY_STATUS_ACTIVE: &str = "active";
+pub(crate) const EXTERNAL_API_KEY_STATUS_DISABLED: &str = "disabled";
+pub(crate) const EXTERNAL_API_KEY_STATUS_ROTATED: &str = "rotated";
+pub(crate) const EXTERNAL_API_KEY_SECRET_PREFIX_LEN: usize = 12;
+pub(crate) const EXTERNAL_API_KEY_NAME_MAX_LEN: usize = 80;
+pub(crate) const EXTERNAL_API_KEY_CLIENT_ID_HEX_LEN: usize = 16;
+pub(crate) const EXTERNAL_API_KEY_CREATE_MAX_ATTEMPTS: usize = 8;
 
 #[derive(Debug, Clone, FromRow)]
-struct ExternalApiKeyRow {
+pub(crate) struct ExternalApiKeyRow {
     id: i64,
     client_id: String,
     name: String,
@@ -76,11 +76,11 @@ pub(crate) struct CreateExternalApiKeyRequest {
 }
 
 #[derive(Debug, Clone)]
-struct ExternalApiPrincipal {
+pub(crate) struct ExternalApiPrincipal {
     client_id: String,
 }
 
-fn hash_external_api_key_secret(secret: &str) -> String {
+pub(crate) fn hash_external_api_key_secret(secret: &str) -> String {
     let digest = Sha256::digest(secret.as_bytes());
     let mut output = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -90,7 +90,7 @@ fn hash_external_api_key_secret(secret: &str) -> String {
     output
 }
 
-fn normalize_optional_text_local(value: Option<String>) -> Option<String> {
+pub(crate) fn normalize_optional_text_local(value: Option<String>) -> Option<String> {
     value.and_then(|raw| {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -101,7 +101,7 @@ fn normalize_optional_text_local(value: Option<String>) -> Option<String> {
     })
 }
 
-fn random_hex_local(size: usize) -> Result<String, (StatusCode, String)> {
+pub(crate) fn random_hex_local(size: usize) -> Result<String, (StatusCode, String)> {
     let byte_len = size.div_ceil(2);
     let mut bytes = vec![0_u8; byte_len];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -114,14 +114,14 @@ fn random_hex_local(size: usize) -> Result<String, (StatusCode, String)> {
     Ok(output)
 }
 
-fn internal_error_tuple_local(err: impl ToString) -> (StatusCode, String) {
+pub(crate) fn internal_error_tuple_local(err: impl ToString) -> (StatusCode, String) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         err.to_string().trim().to_string(),
     )
 }
 
-fn normalize_external_api_key_name(raw: &str) -> Result<String, (StatusCode, String)> {
+pub(crate) fn normalize_external_api_key_name(raw: &str) -> Result<String, (StatusCode, String)> {
     let Some(name) = normalize_optional_text_local(Some(raw.to_string())) else {
         return Err((StatusCode::BAD_REQUEST, "name is required".to_string()));
     };
@@ -134,7 +134,7 @@ fn normalize_external_api_key_name(raw: &str) -> Result<String, (StatusCode, Str
     Ok(name)
 }
 
-fn build_external_api_key_secret(
+pub(crate) fn build_external_api_key_secret(
     client_id: &str,
 ) -> Result<(String, String, String), (StatusCode, String)> {
     let short_client_id = client_id
@@ -156,13 +156,15 @@ fn build_external_api_key_secret(
     Ok((secret, secret_hash, prefix))
 }
 
-fn is_external_api_key_uniqueness_error(err: &sqlx::Error) -> bool {
+pub(crate) fn is_external_api_key_uniqueness_error(err: &sqlx::Error) -> bool {
     let message = err.to_string();
     message.contains("UNIQUE constraint failed: external_api_keys.client_id")
         || message.contains("UNIQUE constraint failed: external_api_keys.secret_hash")
 }
 
-async fn list_external_api_key_rows(pool: &Pool<Sqlite>) -> Result<Vec<ExternalApiKeyRow>> {
+pub(crate) async fn list_external_api_key_rows(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<ExternalApiKeyRow>> {
     sqlx::query_as::<_, ExternalApiKeyRow>(
         r#"
         SELECT
@@ -187,7 +189,7 @@ async fn list_external_api_key_rows(pool: &Pool<Sqlite>) -> Result<Vec<ExternalA
     .map_err(Into::into)
 }
 
-async fn load_external_api_key_row(
+pub(crate) async fn load_external_api_key_row(
     pool: &Pool<Sqlite>,
     id: i64,
 ) -> Result<Option<ExternalApiKeyRow>> {
@@ -215,7 +217,7 @@ async fn load_external_api_key_row(
     .map_err(Into::into)
 }
 
-async fn load_external_api_key_row_by_secret_hash(
+pub(crate) async fn load_external_api_key_row_by_secret_hash(
     pool: &Pool<Sqlite>,
     secret_hash: &str,
 ) -> Result<Option<ExternalApiKeyRow>> {
@@ -243,7 +245,7 @@ async fn load_external_api_key_row_by_secret_hash(
     .map_err(Into::into)
 }
 
-async fn ensure_external_api_key_name_available(
+pub(crate) async fn ensure_external_api_key_name_available(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     name: &str,
     exclude_id: Option<i64>,
@@ -274,7 +276,7 @@ async fn ensure_external_api_key_name_available(
     Ok(())
 }
 
-async fn create_external_api_key_inner(
+pub(crate) async fn create_external_api_key_inner(
     state: Arc<AppState>,
     payload: CreateExternalApiKeyRequest,
 ) -> Result<ExternalApiKeySecretResponse, (StatusCode, String)> {
@@ -341,7 +343,7 @@ async fn create_external_api_key_inner(
     ))
 }
 
-async fn rotate_external_api_key_inner(
+pub(crate) async fn rotate_external_api_key_inner(
     state: Arc<AppState>,
     id: i64,
 ) -> Result<ExternalApiKeySecretResponse, (StatusCode, String)> {
@@ -459,7 +461,7 @@ async fn rotate_external_api_key_inner(
     })
 }
 
-async fn disable_external_api_key_inner(
+pub(crate) async fn disable_external_api_key_inner(
     state: Arc<AppState>,
     id: i64,
 ) -> Result<ExternalApiKeyMutationResponse, (StatusCode, String)> {
@@ -507,7 +509,7 @@ async fn disable_external_api_key_inner(
     })
 }
 
-fn bearer_token_from_headers(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn bearer_token_from_headers(headers: &HeaderMap) -> Option<&str> {
     let header = headers.get(header::AUTHORIZATION)?;
     let raw = header.to_str().ok()?;
     let (scheme, token) = raw.split_once(' ')?;
@@ -521,7 +523,7 @@ fn bearer_token_from_headers(headers: &HeaderMap) -> Option<&str> {
     Some(token)
 }
 
-fn require_browser_same_origin_settings_write(
+pub(crate) fn require_browser_same_origin_settings_write(
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, String)> {
     if headers.get(header::ORIGIN).is_none() {
@@ -539,7 +541,7 @@ fn require_browser_same_origin_settings_write(
     Ok(())
 }
 
-async fn authenticate_external_api_key(
+pub(crate) async fn authenticate_external_api_key(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<ExternalApiPrincipal, (StatusCode, String)> {

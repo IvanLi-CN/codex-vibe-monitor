@@ -1,3 +1,5 @@
+use super::*;
+
 pub(crate) async fn run() -> Result<()> {
     dotenv().ok();
     dotenvy::from_filename(".env.local").ok();
@@ -110,8 +112,7 @@ pub(crate) async fn run() -> Result<()> {
     let upstream_accounts = Arc::new(UpstreamAccountsRuntime::from_env()?);
     let (tx, _rx) = broadcast::channel(128);
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
-    let proxy_raw_async_semaphore =
-        Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
+    let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
     let shutdown = CancellationToken::new();
 
     let prompt_cache_conversation_cache =
@@ -175,7 +176,7 @@ pub(crate) async fn run() -> Result<()> {
     .await
 }
 
-const POOL_EARLY_PHASE_ORPHAN_RECOVERY_INTERVAL: Duration = Duration::from_secs(60);
+pub(crate) const POOL_EARLY_PHASE_ORPHAN_RECOVERY_INTERVAL: Duration = Duration::from_secs(60);
 
 pub(crate) async fn warm_pool_routing_runtime_cache_best_effort(state: &AppState) {
     refresh_pool_routing_runtime_cache_best_effort(state, "startup warmup").await;
@@ -194,7 +195,7 @@ pub(crate) async fn refresh_pool_routing_runtime_cache_best_effort(
     }
 }
 
-fn begin_runtime_shutdown_if_requested<F>(
+pub(crate) fn begin_runtime_shutdown_if_requested<F>(
     shutdown_signal: &Shared<F>,
     cancel: &CancellationToken,
 ) -> bool
@@ -211,12 +212,12 @@ where
     false
 }
 
-enum StartupStageOutcome<T> {
+pub(crate) enum StartupStageOutcome<T> {
     SkippedByShutdown,
     Completed { result: T, shutdown_requested: bool },
 }
 
-struct TrackedStartupStage<Stage> {
+pub(crate) struct TrackedStartupStage<Stage> {
     stage: std::pin::Pin<Box<Stage>>,
     started: bool,
 }
@@ -260,7 +261,7 @@ where
     }
 }
 
-async fn run_startup_stage_until_shutdown<T, Stage, Shutdown>(
+pub(crate) async fn run_startup_stage_until_shutdown<T, Stage, Shutdown>(
     shutdown_signal: &Shared<Shutdown>,
     cancel: &CancellationToken,
     stage: Stage,
@@ -296,7 +297,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn drain_runtime_after_pending_shutdown(
+pub(crate) async fn drain_runtime_after_pending_shutdown(
     state: Arc<AppState>,
     mut shutdown_watcher: JoinHandle<()>,
     server_handle: Option<JoinHandle<()>>,
@@ -748,21 +749,21 @@ where
     .await
 }
 
-fn begin_runtime_shutdown(cancel: &CancellationToken) {
+pub(crate) fn begin_runtime_shutdown(cancel: &CancellationToken) {
     if !cancel.is_cancelled() {
         info!("shutdown signal received; beginning graceful shutdown");
         cancel.cancel();
     }
 }
 
-async fn drain_scheduler_inflight(mut inflight: Vec<JoinHandle<()>>) {
+pub(crate) async fn drain_scheduler_inflight(mut inflight: Vec<JoinHandle<()>>) {
     inflight.retain(|handle| !handle.is_finished());
     for handle in inflight {
         let _ = handle.await;
     }
 }
 
-async fn drain_runtime_after_shutdown(
+pub(crate) async fn drain_runtime_after_shutdown(
     state: Arc<AppState>,
     server_handle: Option<JoinHandle<()>>,
     poller_handle: Option<JoinHandle<()>>,
@@ -875,7 +876,7 @@ pub(crate) fn log_startup_phase(phase: &'static str, started_at: Instant) {
     );
 }
 
-fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandle<()> {
+pub(crate) fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut inflight: Vec<JoinHandle<()>> = Vec::new();
         if cancel.is_cancelled() {
@@ -922,7 +923,7 @@ fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandl
     })
 }
 
-fn spawn_forward_proxy_maintenance(
+pub(crate) fn spawn_forward_proxy_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
@@ -963,7 +964,7 @@ fn spawn_forward_proxy_maintenance(
             warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
         } else if let Some(run) = startup_run.as_ref() {
             finish_system_task_run_batched(
-                    state.as_ref(),
+                state.as_ref(),
                 run,
                 SystemTaskStatus::Success,
                 Some("forward proxy startup refresh completed".to_string()),
@@ -1017,7 +1018,7 @@ fn spawn_forward_proxy_maintenance(
     })
 }
 
-fn spawn_pool_orphan_recovery_maintenance(
+pub(crate) fn spawn_pool_orphan_recovery_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {

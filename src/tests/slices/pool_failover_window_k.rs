@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn bootstrap_hourly_rollups_ignores_missing_invocation_archive_batch() {
     let (pool, _config, temp_dir) =
@@ -119,7 +122,7 @@ async fn retention_orphan_sweep_anchors_relative_raw_dir_to_database_parent() {
 
     let db_path = db_root.join("codex-vibe-monitor.db");
     fs::File::create(&db_path).expect("create sqlite file");
-    let pool = SqlitePool::connect(&sqlite_url_for_path(&db_path))
+    let pool = SqlitePool::connect(&test_sqlite_url_for_path(&db_path))
         .await
         .expect("connect retention sqlite");
     ensure_schema(&pool).await.expect("ensure retention schema");
@@ -736,7 +739,10 @@ async fn retention_cold_compression_budget_counts_missing_rows() {
 
     assert_eq!(summary.files_considered, 0);
     assert_eq!(summary.files_compressed, 0);
-    assert!(good.exists(), "second row should not be compressed once budget is spent");
+    assert!(
+        good.exists(),
+        "second row should not be compressed once budget is spent"
+    );
     assert!(!PathBuf::from(format!("{}.gz", good.display())).exists());
 
     let stored_path: Option<String> =
@@ -745,7 +751,10 @@ async fn retention_cold_compression_budget_counts_missing_rows() {
             .fetch_one(&pool)
             .await
             .expect("load good row path after budgeted run");
-    assert_eq!(stored_path.as_deref(), Some(good.to_string_lossy().as_ref()));
+    assert_eq!(
+        stored_path.as_deref(),
+        Some(good.to_string_lossy().as_ref())
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -2144,21 +2153,25 @@ async fn broadcast_recovered_proxy_invocations_skips_follow_up_without_subscribe
     .await
     .expect("insert running invocation for recovery broadcast");
 
-    let selectors = vec![InvocationRecoverySelector::new(invoke_id, occurred_at.clone())];
+    let selectors = vec![InvocationRecoverySelector::new(
+        invoke_id,
+        occurred_at.clone(),
+    )];
     let recovered = recover_proxy_invocations_with_scope(
         &state.pool,
         ProxyInvocationRecoveryScope::Selectors(&selectors),
     )
     .await
     .expect("recover invocation for runtime broadcast");
-    assert_eq!(recovered.len(), 1, "test setup should recover exactly one invocation");
+    assert_eq!(
+        recovered.len(),
+        1,
+        "test setup should recover exactly one invocation"
+    );
 
-    broadcast_recovered_proxy_invocations(
-        state.as_ref(),
-        &recovered,
-    )
-    .await
-    .expect("broadcast recovered invocation without subscribers");
+    broadcast_recovered_proxy_invocations(state.as_ref(), &recovered)
+        .await
+        .expect("broadcast recovered invocation without subscribers");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
@@ -2290,8 +2303,8 @@ async fn finalize_pool_upstream_request_attempt_updates_pending_row_in_place() {
     assert_eq!(rows[0].4.as_deref(), Some("2026-03-23 20:49:05"));
     assert_eq!(rows[0].5, Some(42.5));
     assert_eq!(rows[0].6, Some(15.0));
-   assert_eq!(rows[0].7, Some(188.4));
-   assert_eq!(rows[0].8.as_deref(), Some("req_pool_123"));
+    assert_eq!(rows[0].7, Some(188.4));
+    assert_eq!(rows[0].8.as_deref(), Some("req_pool_123"));
 }
 
 #[tokio::test]
@@ -2347,8 +2360,8 @@ async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapsho
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let account_id = insert_test_pool_api_key_account(&state, "Scoped fallback", "upstream-fallback")
-        .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Scoped fallback", "upstream-fallback").await;
     let pending = PendingPoolAttemptRecord {
         attempt_id: None,
         invoke_id: "pending-attempt-scope-fallback".to_string(),
@@ -2406,7 +2419,10 @@ async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapsho
     .expect("load fallback scoped attempt row");
     assert_eq!(row.0.as_deref(), Some("prod"));
     assert_eq!(row.1.as_deref(), Some(FORWARD_PROXY_DIRECT_KEY));
-    assert_eq!(row.2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE);
+    assert_eq!(
+        row.2,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+    );
 }
 
 #[tokio::test]
@@ -2488,7 +2504,10 @@ async fn insert_pool_upstream_terminal_attempt_preserves_scope_snapshots() {
     .expect("load scoped terminal attempt row");
     assert_eq!(row.0.as_deref(), Some("prod"));
     assert_eq!(row.1.as_deref(), Some(FORWARD_PROXY_DIRECT_KEY));
-    assert_eq!(row.2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL);
+    assert_eq!(
+        row.2,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
+    );
 }
 
 #[tokio::test]
@@ -2513,9 +2532,7 @@ async fn insert_pool_upstream_terminal_attempt_preserves_oauth_transport_normali
             status: StatusCode::BAD_GATEWAY,
             message: "pool upstream responded with 502: oauth codex upstream handshake timed out"
                 .to_string(),
-            canonical_error_message: Some(
-                "oauth codex upstream handshake timed out".to_string(),
-            ),
+            canonical_error_message: Some("oauth codex upstream handshake timed out".to_string()),
             failure_kind: PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
             connect_latency_ms: 0.0,
             upstream_error_code: None,
@@ -2570,7 +2587,10 @@ async fn insert_pool_upstream_terminal_attempt_preserves_oauth_transport_normali
     .await
     .expect("load terminal oauth transport attempt");
 
-    assert_eq!(row.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL);
+    assert_eq!(
+        row.0,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
+    );
     assert_eq!(row.1, None);
     assert_eq!(row.2, Some(502));
     assert_eq!(
@@ -4718,7 +4738,7 @@ async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_w
 
 #[tokio::test]
 async fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocation_marks_terminal_even_without_final_attempt_persist()
-{
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -4860,7 +4880,7 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
             test_required_group_bound_proxy_keys(),
         ),
         single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+        upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
@@ -4978,7 +4998,7 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
             test_required_group_bound_proxy_keys(),
         ),
         single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+        upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
@@ -5111,7 +5131,7 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
             test_required_group_bound_proxy_keys(),
         ),
         single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+        upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
@@ -5182,9 +5202,18 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     };
-    assert_eq!(attempt.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE);
-    assert_eq!(attempt.1.as_deref(), Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED));
-    assert_eq!(attempt.2.as_deref(), Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED));
+    assert_eq!(
+        attempt.0,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+    );
+    assert_eq!(
+        attempt.1.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+    );
+    assert_eq!(
+        attempt.2.as_deref(),
+        Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
+    );
 
     let invocation_count = {
         let mut poll_count = 0;
@@ -5476,17 +5505,16 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
     );
     assert_eq!(stale_post_first_byte_attempt.2, Some(120.0));
 
-    let stale_post_first_byte_invocation_count =
-        sqlx::query_scalar::<_, i64>(
-            r#"
+    let stale_post_first_byte_invocation_count = sqlx::query_scalar::<_, i64>(
+        r#"
             SELECT COUNT(*)
             FROM codex_invocations
             WHERE invoke_id = 'stale-early-phase-post-first-byte'
             "#,
-        )
-        .fetch_one(&state.pool)
-        .await
-        .expect("count stale post-first-byte invocation rows");
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count stale post-first-byte invocation rows");
     assert_eq!(stale_post_first_byte_invocation_count, 0);
 
     let stale_attempt_first_byte_progress_attempt =
@@ -5512,17 +5540,16 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
     );
     assert_eq!(stale_attempt_first_byte_progress_attempt.2, Some(120.0));
 
-    let stale_attempt_first_byte_progress_invocation_count =
-        sqlx::query_scalar::<_, i64>(
-            r#"
+    let stale_attempt_first_byte_progress_invocation_count = sqlx::query_scalar::<_, i64>(
+        r#"
             SELECT COUNT(*)
             FROM codex_invocations
             WHERE invoke_id = 'stale-early-phase-attempt-first-byte-progress'
             "#,
-        )
-        .fetch_one(&state.pool)
-        .await
-        .expect("count stale attempt-first-byte-progress invocation rows");
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count stale attempt-first-byte-progress invocation rows");
     assert_eq!(stale_attempt_first_byte_progress_invocation_count, 0);
 
     let fresh_attempt = sqlx::query_as::<_, (String, Option<String>)>(

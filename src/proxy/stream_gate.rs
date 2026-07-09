@@ -1,6 +1,8 @@
+use super::*;
+
 pub(crate) const HEADER_STICKY_EARLY_STICKY_SCAN_BYTES: usize = 64 * 1024;
 
-fn value_contains_compaction_output_item(value: &Value) -> bool {
+pub(crate) fn value_contains_compaction_output_item(value: &Value) -> bool {
     value
         .get("output")
         .and_then(Value::as_array)
@@ -13,7 +15,7 @@ fn value_contains_compaction_output_item(value: &Value) -> bool {
         })
 }
 
-fn response_value_indicates_remote_v2_compaction(value: &Value) -> bool {
+pub(crate) fn response_value_indicates_remote_v2_compaction(value: &Value) -> bool {
     value
         .get("object")
         .and_then(Value::as_str)
@@ -29,7 +31,7 @@ fn response_value_indicates_remote_v2_compaction(value: &Value) -> bool {
         })
 }
 
-fn best_effort_extract_json_string_for_patterns(
+pub(crate) fn best_effort_extract_json_string_for_patterns(
     bytes: &[u8],
     patterns: &[&[u8]],
 ) -> Option<String> {
@@ -263,7 +265,10 @@ mod request_prefix_tests {
     #[test]
     fn prefix_model_extractor_ignores_nested_model_without_top_level_field() {
         let payload = br#"{"input":"{\"model\":\"gpt-4o\"}"}"#;
-        assert_eq!(best_effort_extract_model_from_request_body_prefix(payload), None);
+        assert_eq!(
+            best_effort_extract_model_from_request_body_prefix(payload),
+            None
+        );
     }
 
     #[test]
@@ -456,7 +461,10 @@ pub(crate) fn pool_upstream_send_timeout(
     }
 }
 
-pub(crate) fn pool_uses_responses_timeout_failover_policy(original_uri: &Uri, method: &Method) -> bool {
+pub(crate) fn pool_uses_responses_timeout_failover_policy(
+    original_uri: &Uri,
+    method: &Method,
+) -> bool {
     method == Method::POST
         && matches!(
             original_uri.path(),
@@ -530,14 +538,19 @@ pub(crate) fn build_pool_total_timeout_exhausted_error(
     final_error
 }
 
-pub(crate) fn pool_pre_attempt_total_timeout_error(total_timeout: Duration) -> (StatusCode, String) {
+pub(crate) fn pool_pre_attempt_total_timeout_error(
+    total_timeout: Duration,
+) -> (StatusCode, String) {
     (
         StatusCode::GATEWAY_TIMEOUT,
         pool_total_timeout_exhausted_message(total_timeout),
     )
 }
 
-pub(crate) fn pool_uses_responses_family_retry_budget_policy(original_uri: &Uri, method: &Method) -> bool {
+pub(crate) fn pool_uses_responses_family_retry_budget_policy(
+    original_uri: &Uri,
+    method: &Method,
+) -> bool {
     method == Method::POST
         && matches!(
             original_uri.path(),
@@ -830,7 +843,8 @@ pub(crate) fn build_response_capture_info_from_bytes(
                     model,
                     usage: ParsedUsage::default(),
                     usage_missing_reason: Some("response_not_json".to_string()),
-                    contains_encrypted_content: best_effort_extract_encrypted_content_from_request_body_prefix(bytes),
+                    contains_encrypted_content:
+                        best_effort_extract_encrypted_content_from_request_body_prefix(bytes),
                     service_tier,
                     compaction_response_kind: None,
                     stream_terminal_event: None,
@@ -1130,7 +1144,7 @@ impl StreamResponsePayloadParser {
         }
     }
 
-    fn finish(self) -> ResponseCaptureInfo {
+    pub(crate) fn finish(self) -> ResponseCaptureInfo {
         let usage_missing_reason = if self.usage_found {
             None
         } else if self.stream_terminal_event.is_some() {
@@ -1157,8 +1171,8 @@ impl StreamResponsePayloadParser {
 }
 
 pub(crate) struct StreamResponsePayloadParseOutcome {
-    response_info: ResponseCaptureInfo,
-    saw_stream_fields: bool,
+    pub(crate) response_info: ResponseCaptureInfo,
+    pub(crate) saw_stream_fields: bool,
 }
 
 pub(crate) struct StreamResponsePayloadChunkParser {
@@ -1236,7 +1250,7 @@ impl StreamResponsePayloadChunkParser {
         }
     }
 
-    fn ingest_bytes(&mut self, bytes: &[u8]) {
+    pub(crate) fn ingest_bytes(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
@@ -1253,7 +1267,7 @@ impl StreamResponsePayloadChunkParser {
         }
     }
 
-    fn finish(mut self) -> StreamResponsePayloadParseOutcome {
+    pub(crate) fn finish(mut self) -> StreamResponsePayloadParseOutcome {
         if self.discarding_oversized_line {
             self.parser.parse_error_seen = true;
         } else {
@@ -1455,7 +1469,11 @@ pub(crate) fn initial_sse_event_kind(bytes: &[u8]) -> Option<String> {
 
     serde_json::from_str::<Value>(&payload)
         .ok()
-        .and_then(|value| event_name.clone().or_else(|| extract_stream_payload_type(&value)))
+        .and_then(|value| {
+            event_name
+                .clone()
+                .or_else(|| extract_stream_payload_type(&value))
+        })
         .or(event_name)
 }
 
@@ -1562,9 +1580,14 @@ pub(crate) async fn gate_pool_initial_response_stream(
 
     let mut gate_stream_error: Option<io::Error> = None;
     loop {
-        while let Some(relative_event_end) = find_first_sse_event_boundary(&buffered[scanned_bytes..]) {
+        while let Some(relative_event_end) =
+            find_first_sse_event_boundary(&buffered[scanned_bytes..])
+        {
             let event_end = scanned_bytes + relative_event_end;
-            match classify_pool_initial_responses_sse_event(status, &buffered[scanned_bytes..event_end]) {
+            match classify_pool_initial_responses_sse_event(
+                status,
+                &buffered[scanned_bytes..event_end],
+            ) {
                 PoolInitialResponsesSseEventDecision::ContinueMetadata => {
                     scanned_bytes = event_end;
                 }
@@ -1780,7 +1803,9 @@ pub(crate) fn decode_single_content_encoding<'a>(
     }
 }
 
-pub(crate) fn decode_gzip_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u8]>, String> {
+pub(crate) fn decode_gzip_payload<'a>(
+    bytes: &'a [u8],
+) -> std::result::Result<Cow<'a, [u8]>, String> {
     let mut decoder = GzDecoder::new(bytes);
     let mut decoded = Vec::new();
     decoder
@@ -1789,7 +1814,9 @@ pub(crate) fn decode_gzip_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Co
     Ok(Cow::Owned(decoded))
 }
 
-pub(crate) fn decode_brotli_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u8]>, String> {
+pub(crate) fn decode_brotli_payload<'a>(
+    bytes: &'a [u8],
+) -> std::result::Result<Cow<'a, [u8]>, String> {
     let mut decoder = BrotliDecompressor::new(bytes, 4096);
     let mut decoded = Vec::new();
     decoder
@@ -1798,7 +1825,9 @@ pub(crate) fn decode_brotli_payload<'a>(bytes: &'a [u8]) -> std::result::Result<
     Ok(Cow::Owned(decoded))
 }
 
-pub(crate) fn decode_deflate_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u8]>, String> {
+pub(crate) fn decode_deflate_payload<'a>(
+    bytes: &'a [u8],
+) -> std::result::Result<Cow<'a, [u8]>, String> {
     let mut zlib_decoder = ZlibDecoder::new(bytes);
     let mut decoded = Vec::new();
     match zlib_decoder.read_to_end(&mut decoded) {
@@ -1877,7 +1906,7 @@ pub(crate) enum ProxyPricingMode {
 }
 
 impl ProxyPricingMode {
-    fn price_version_suffix(self) -> &'static str {
+    pub(crate) fn price_version_suffix(self) -> &'static str {
         match self {
             Self::ResponseTier => RESPONSE_TIER_PRICE_VERSION_SUFFIX,
             Self::RequestedTier => REQUESTED_TIER_PRICE_VERSION_SUFFIX,
@@ -1953,11 +1982,15 @@ pub(crate) fn resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
     )
 }
 
-pub(crate) fn payload_summary_upstream_account_kind(account: Option<&PoolResolvedAccount>) -> Option<&str> {
+pub(crate) fn payload_summary_upstream_account_kind(
+    account: Option<&PoolResolvedAccount>,
+) -> Option<&str> {
     account.map(|entry| entry.kind.as_str())
 }
 
-pub(crate) fn payload_summary_upstream_base_url_host(account: Option<&PoolResolvedAccount>) -> Option<&str> {
+pub(crate) fn payload_summary_upstream_base_url_host(
+    account: Option<&PoolResolvedAccount>,
+) -> Option<&str> {
     account.and_then(|entry| entry.upstream_base_url.host_str())
 }
 
@@ -1966,7 +1999,10 @@ pub(crate) fn resolve_backfill_upstream_account_kind(
     live_kind: Option<&str>,
     allow_live_fallback: bool,
 ) -> Option<String> {
-    if let Some(value) = snapshot_kind.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(value) = snapshot_kind
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         return Some(value.to_string());
     }
 
@@ -1989,12 +2025,14 @@ pub(crate) fn resolve_backfill_upstream_base_url_host(
     live_host: Option<&str>,
     allow_live_fallback: bool,
 ) -> Option<String> {
-    snapshot_host.and_then(normalize_upstream_base_url_host).or_else(|| {
-        allow_live_fallback
-            .then_some(live_host)
-            .flatten()
-            .and_then(normalize_upstream_base_url_host)
-    })
+    snapshot_host
+        .and_then(normalize_upstream_base_url_host)
+        .or_else(|| {
+            allow_live_fallback
+                .then_some(live_host)
+                .flatten()
+                .and_then(normalize_upstream_base_url_host)
+        })
 }
 
 pub(crate) fn extract_service_tier_from_payload(value: &Value) -> Option<String> {

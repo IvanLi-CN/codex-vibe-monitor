@@ -1,3 +1,5 @@
+use super::*;
+
 pub(crate) fn requested_model_matches_constraint(
     requested_model: &str,
     candidate_model: &str,
@@ -127,7 +129,8 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
         .into_iter()
         .collect::<Vec<_>>();
     let group_policy_overrides = load_group_routing_policy_override_map(pool, &group_names).await?;
-    let account_policy_overrides = load_account_routing_policy_override_map(pool, account_ids).await?;
+    let account_policy_overrides =
+        load_account_routing_policy_override_map(pool, account_ids).await?;
     let mut rules = HashMap::with_capacity(account_group_map.len());
     for (account_id, group_name) in account_group_map {
         let mut rule = build_effective_routing_rule(&[]);
@@ -297,7 +300,7 @@ pub(crate) fn summarize_pool_group_proxy_blocked_messages(messages: &[String]) -
     ))
 }
 
-async fn canonical_group_bound_proxy_keys(
+pub(crate) async fn canonical_group_bound_proxy_keys(
     state: &AppState,
     bound_proxy_keys: &[String],
 ) -> Vec<String> {
@@ -310,7 +313,7 @@ async fn canonical_group_bound_proxy_keys(
         .collect()
 }
 
-async fn selectable_group_bound_proxy_keys(
+pub(crate) async fn selectable_group_bound_proxy_keys(
     state: &AppState,
     bound_proxy_keys: &[String],
 ) -> Vec<String> {
@@ -318,7 +321,7 @@ async fn selectable_group_bound_proxy_keys(
     manager.selectable_bound_proxy_keys_in_order(bound_proxy_keys)
 }
 
-fn build_pool_resolved_account(
+pub(crate) fn build_pool_resolved_account(
     row: &UpstreamAccountRow,
     effective_rule: &EffectiveRoutingRule,
     group_metadata: &UpstreamAccountGroupMetadata,
@@ -366,7 +369,7 @@ pub(crate) fn conversation_forward_proxy_scope(
     })
 }
 
-async fn prepare_pool_account_with_scopes(
+pub(crate) async fn prepare_pool_account_with_scopes(
     state: &AppState,
     row: &UpstreamAccountRow,
     effective_rule: &EffectiveRoutingRule,
@@ -407,13 +410,12 @@ async fn prepare_pool_account_with_scopes(
                             )
                 })
                 .unwrap_or(true);
-            let deferred_status = if row.status.trim().is_empty()
-                || row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING
-            {
-                UPSTREAM_ACCOUNT_STATUS_ACTIVE
-            } else {
-                row.status.as_str()
-            };
+            let deferred_status =
+                if row.status.trim().is_empty() || row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING {
+                    UPSTREAM_ACCOUNT_STATUS_ACTIVE
+                } else {
+                    row.status.as_str()
+                };
             if refresh_due && let Some(refresh_token) = oauth_refresh_token(&value) {
                 match refresh_oauth_tokens_for_required_scope(
                     state,
@@ -581,12 +583,12 @@ async fn prepare_pool_account_with_scopes(
                                 .bind(failure_kind)
                                 .execute(&state.pool)
                                 .await?;
-                        record_upstream_account_action_with_proxy_snapshot(
-                            &state.pool,
-                            row.id,
-                            UpstreamAccountActionPayload {
-                                action: UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE,
-                                source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+                                record_upstream_account_action_with_proxy_snapshot(
+                                    &state.pool,
+                                    row.id,
+                                    UpstreamAccountActionPayload {
+                                        action: UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE,
+                                        source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
                                         reason_code: Some(reason_code),
                                         reason_message: Some(&err_text),
                                         http_status,
@@ -683,20 +685,23 @@ pub(crate) async fn prepare_pool_account(
 ) -> Result<Option<PoolResolvedAccount>> {
     let conversation_proxy_scope = conversation_forward_proxy_scope(conversation_override);
     let account_proxy_scope = account_bound_forward_proxy_scope(row);
-    let refresh_proxy_scope = conversation_proxy_scope.clone().unwrap_or(
-        account_proxy_scope.clone().unwrap_or(required_account_forward_proxy_scope(
-            row.group_name.as_deref(),
-            group_metadata.bound_proxy_keys.clone(),
-        )?),
-    );
-    let forward_proxy_scope = conversation_proxy_scope.unwrap_or(
-        account_proxy_scope.unwrap_or(resolve_account_forward_proxy_scope_from_assignments(
+    let refresh_proxy_scope =
+        conversation_proxy_scope
+            .clone()
+            .unwrap_or(account_proxy_scope.clone().unwrap_or(
+                required_account_forward_proxy_scope(
+                    row.group_name.as_deref(),
+                    group_metadata.bound_proxy_keys.clone(),
+                )?,
+            ));
+    let forward_proxy_scope = conversation_proxy_scope.unwrap_or(account_proxy_scope.unwrap_or(
+        resolve_account_forward_proxy_scope_from_assignments(
             row.id,
             row.group_name.as_deref(),
             &group_metadata,
             node_shunt_assignments,
-        )?),
-    );
+        )?,
+    ));
     prepare_pool_account_with_scopes(
         state,
         row,
@@ -761,7 +766,10 @@ pub(crate) fn is_routing_eligible_account(row: &UpstreamAccountRow) -> bool {
     is_pool_account_routing_candidate(row) && row.encrypted_credentials.is_some()
 }
 
-pub(crate) fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow, snapshot_exhausted: bool) -> bool {
+pub(crate) fn is_account_rate_limited_for_routing(
+    row: &UpstreamAccountRow,
+    snapshot_exhausted: bool,
+) -> bool {
     if row.provider != UPSTREAM_ACCOUNT_PROVIDER_CODEX
         || row.enabled == 0
         || row.encrypted_credentials.is_none()
@@ -1058,16 +1066,14 @@ pub(crate) async fn load_transport_decode_sticky_escape_account_ids(
                     WHEN failure_kind =
         "#,
         );
-    query
-        .push_bind(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
-        .push(
-            r#"
+    query.push_bind(PROXY_FAILURE_UPSTREAM_STREAM_ERROR).push(
+        r#"
                     THEN 1
                     ELSE 0
                 END
             ) = 2
         "#,
-        );
+    );
 
     let rows = query.build_query_as::<EscapeRow>().fetch_all(pool).await?;
     Ok(rows

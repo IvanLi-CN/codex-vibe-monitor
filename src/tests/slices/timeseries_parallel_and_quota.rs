@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[test]
 fn pool_same_account_attempt_budget_keeps_legacy_budget_for_non_responses_routes() {
     assert_eq!(
@@ -785,7 +788,8 @@ async fn pool_large_metadata_prefixed_response_failed_retry_upstream(
             .copied()
             .unwrap_or(0)
     {
-        let oversized_metadata = less_compressible_test_string(RAW_RESPONSE_PREVIEW_LIMIT + 8 * 1024);
+        let oversized_metadata =
+            less_compressible_test_string(RAW_RESPONSE_PREVIEW_LIMIT + 8 * 1024);
         let created = format!(
             "event: response.created\n\
              data: {}\n\n",
@@ -941,7 +945,9 @@ async fn pool_delayed_first_chunk_upstream(
         .expect("build delayed first chunk response")
 }
 
-async fn spawn_pool_delayed_first_chunk_upstream(delay: Duration) -> (String, JoinHandle<()>) {
+pub(crate) async fn spawn_pool_delayed_first_chunk_upstream(
+    delay: Duration,
+) -> (String, JoinHandle<()>) {
     let app = Router::new()
         .route("/v1/responses", post(pool_delayed_first_chunk_upstream))
         .with_state(PoolDelayedFirstChunkUpstreamState {
@@ -975,7 +981,9 @@ async fn pool_delayed_headers_upstream(
         .into_response()
 }
 
-async fn spawn_pool_delayed_headers_upstream(delay: Duration) -> (String, JoinHandle<()>) {
+pub(crate) async fn spawn_pool_delayed_headers_upstream(
+    delay: Duration,
+) -> (String, JoinHandle<()>) {
     let app = Router::new()
         .route("/v1/responses", post(pool_delayed_headers_upstream))
         .with_state(PoolDelayedHeadersUpstreamState {
@@ -1036,7 +1044,7 @@ async fn pool_delayed_headers_retry_upstream(
         .into_response()
 }
 
-async fn spawn_pool_delayed_headers_retry_upstream(
+pub(crate) async fn spawn_pool_delayed_headers_retry_upstream(
     delay: Duration,
     fail_before_success: &[(&str, usize)],
 ) -> (
@@ -1088,7 +1096,7 @@ async fn pool_http_failure_upstream(State(state): State<PoolHttpFailureUpstreamS
         .into_response()
 }
 
-async fn spawn_oauth_codex_http_failure(
+pub(crate) async fn spawn_oauth_codex_http_failure(
     status: StatusCode,
     error_code: Option<&str>,
     error_message: &str,
@@ -1216,7 +1224,7 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         .into_response()
 }
 
-async fn spawn_oauth_codex_capture_upstream() -> (String, JoinHandle<()>) {
+pub(crate) async fn spawn_oauth_codex_capture_upstream() -> (String, JoinHandle<()>) {
     let app = Router::new().route(
         "/backend-api/codex/*path",
         any(oauth_codex_capture_upstream),
@@ -1301,7 +1309,8 @@ async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request)
     let body = to_bytes(request.into_body(), usize::MAX)
         .await
         .expect("read oauth codex responses capture request body");
-    let (decoded_body, decode_error) = decode_response_payload(&body, content_encoding.as_deref(), false);
+    let (decoded_body, decode_error) =
+        decode_response_payload(&body, content_encoding.as_deref(), false);
     assert!(
         decode_error.is_none(),
         "decode oauth capture body: {decode_error:?}"
@@ -1352,7 +1361,7 @@ async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request)
         .into_response()
 }
 
-async fn spawn_oauth_codex_responses_capture_upstream() -> (String, JoinHandle<()>) {
+pub(crate) async fn spawn_oauth_codex_responses_capture_upstream() -> (String, JoinHandle<()>) {
     let app = Router::new().route(
         "/backend-api/codex/responses",
         post(oauth_codex_responses_capture_upstream),
@@ -1385,7 +1394,9 @@ async fn oauth_codex_delayed_headers_upstream(
         .into_response()
 }
 
-async fn spawn_oauth_codex_delayed_headers_upstream(delay: Duration) -> (String, JoinHandle<()>) {
+pub(crate) async fn spawn_oauth_codex_delayed_headers_upstream(
+    delay: Duration,
+) -> (String, JoinHandle<()>) {
     let app = Router::new()
         .route(
             "/backend-api/codex/responses",
@@ -1433,7 +1444,7 @@ async fn oauth_codex_slow_models_upstream() -> impl IntoResponse {
     )
 }
 
-async fn spawn_oauth_codex_slow_models_upstream() -> (String, JoinHandle<()>) {
+pub(crate) async fn spawn_oauth_codex_slow_models_upstream() -> (String, JoinHandle<()>) {
     let app = Router::new().route(
         "/backend-api/codex/models",
         get(oauth_codex_slow_models_upstream),
@@ -1452,7 +1463,7 @@ async fn spawn_oauth_codex_slow_models_upstream() -> (String, JoinHandle<()>) {
     (format!("http://{addr}"), handle)
 }
 
-async fn spawn_pool_retry_upstream(
+pub(crate) async fn spawn_pool_retry_upstream(
     fail_before_success: &[(&str, usize)],
 ) -> (
     String,
@@ -1487,7 +1498,7 @@ async fn spawn_pool_retry_upstream(
     (format!("http://{addr}"), attempts, handle)
 }
 
-async fn spawn_pool_rate_limit_responses_upstream(
+pub(crate) async fn spawn_pool_rate_limit_responses_upstream(
     rate_limit_attempts: &[(&str, usize)],
 ) -> (
     String,
@@ -1521,7 +1532,7 @@ async fn spawn_pool_rate_limit_responses_upstream(
     (format!("http://{addr}"), attempts, handle)
 }
 
-async fn spawn_pool_static_failure_responses_upstream(
+pub(crate) async fn spawn_pool_static_failure_responses_upstream(
     statuses: &[(&str, StatusCode)],
 ) -> (
     String,
@@ -1558,7 +1569,7 @@ async fn spawn_pool_static_failure_responses_upstream(
     (format!("http://{addr}"), attempts, handle)
 }
 
-async fn spawn_pool_sequential_failure_responses_upstream(
+pub(crate) async fn spawn_pool_sequential_failure_responses_upstream(
     statuses_by_attempt: Vec<(&str, Vec<StatusCode>)>,
 ) -> (
     String,
@@ -1595,7 +1606,7 @@ async fn spawn_pool_sequential_failure_responses_upstream(
     (format!("http://{addr}"), attempts, handle)
 }
 
-async fn spawn_pool_compact_unsupported_upstream() -> (
+pub(crate) async fn spawn_pool_compact_unsupported_upstream() -> (
     String,
     Arc<StdMutex<HashMap<String, usize>>>,
     JoinHandle<()>,
@@ -1623,7 +1634,7 @@ async fn spawn_pool_compact_unsupported_upstream() -> (
     (format!("http://{addr}"), attempts, handle)
 }
 
-async fn spawn_pool_rate_limit_echo_upstream(
+pub(crate) async fn spawn_pool_rate_limit_echo_upstream(
     rate_limit_attempts: &[(&str, usize)],
 ) -> (
     String,
@@ -1657,7 +1668,7 @@ async fn spawn_pool_rate_limit_echo_upstream(
     (format!("http://{addr}"), attempts, handle)
 }
 
-async fn spawn_pool_first_chunk_retry_upstream(
+pub(crate) async fn spawn_pool_first_chunk_retry_upstream(
     fail_before_success: &[(&str, usize)],
 ) -> (
     String,
@@ -1725,7 +1736,7 @@ async fn spawn_pool_response_failed_retry_upstream(
     (format!("http://{addr}"), attempts, handle)
 }
 
-async fn spawn_pool_metadata_prefixed_response_failed_retry_upstream(
+pub(crate) async fn spawn_pool_metadata_prefixed_response_failed_retry_upstream(
     fail_before_success: &[(&str, usize)],
 ) -> (
     String,
@@ -1762,7 +1773,7 @@ async fn spawn_pool_metadata_prefixed_response_failed_retry_upstream(
     (format!("http://{addr}"), attempts, handle)
 }
 
-async fn spawn_pool_large_metadata_prefixed_response_failed_retry_upstream(
+pub(crate) async fn spawn_pool_large_metadata_prefixed_response_failed_retry_upstream(
     fail_before_success: &[(&str, usize)],
 ) -> (
     String,
@@ -1799,7 +1810,7 @@ async fn spawn_pool_large_metadata_prefixed_response_failed_retry_upstream(
     (format!("http://{addr}"), attempts, handle)
 }
 
-async fn spawn_pool_compact_overloaded_retry_upstream(
+pub(crate) async fn spawn_pool_compact_overloaded_retry_upstream(
     fail_before_success: &[(&str, usize)],
 ) -> (
     String,
@@ -1836,7 +1847,7 @@ async fn spawn_pool_compact_overloaded_retry_upstream(
     (format!("http://{addr}"), attempts, handle)
 }
 
-async fn spawn_pool_late_response_failed_upstream() -> (
+pub(crate) async fn spawn_pool_late_response_failed_upstream() -> (
     String,
     Arc<StdMutex<HashMap<String, usize>>>,
     JoinHandle<()>,
@@ -1861,7 +1872,7 @@ async fn spawn_pool_late_response_failed_upstream() -> (
     (format!("http://{addr}"), attempts, handle)
 }
 
-async fn spawn_pool_http_failure_upstream(
+pub(crate) async fn spawn_pool_http_failure_upstream(
     status: StatusCode,
     error_code: Option<&str>,
     error_message: &str,
@@ -1887,7 +1898,10 @@ async fn spawn_pool_http_failure_upstream(
     (format!("http://{addr}"), handle)
 }
 
-async fn load_test_sticky_route_account_id(pool: &SqlitePool, sticky_key: &str) -> Option<i64> {
+pub(crate) async fn load_test_sticky_route_account_id(
+    pool: &SqlitePool,
+    sticky_key: &str,
+) -> Option<i64> {
     sqlx::query_scalar("SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1")
         .bind(sticky_key)
         .fetch_optional(pool)
@@ -1895,7 +1909,7 @@ async fn load_test_sticky_route_account_id(pool: &SqlitePool, sticky_key: &str) 
         .expect("load test sticky route")
 }
 
-async fn wait_for_pool_attempt_row_count(pool: &SqlitePool, min_count: i64) {
+pub(crate) async fn wait_for_pool_attempt_row_count(pool: &SqlitePool, min_count: i64) {
     for _ in 0..20 {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_request_attempts")
             .fetch_one(pool)
@@ -1908,7 +1922,10 @@ async fn wait_for_pool_attempt_row_count(pool: &SqlitePool, min_count: i64) {
     }
 }
 
-async fn wait_for_test_sticky_route_account_id(pool: &SqlitePool, sticky_key: &str) -> Option<i64> {
+pub(crate) async fn wait_for_test_sticky_route_account_id(
+    pool: &SqlitePool,
+    sticky_key: &str,
+) -> Option<i64> {
     for _ in 0..10 {
         if let Some(account_id) = load_test_sticky_route_account_id(pool, sticky_key).await {
             return Some(account_id);
@@ -2427,7 +2444,9 @@ async fn resolve_pool_account_for_request_blocks_timeout_failover_past_cut_out_r
     {
         PoolAccountResolution::AssignedBlocked(blocked) => blocked,
         other => {
-            panic!("pool account should block after excluding no-cut-out sticky route, got {other:?}")
+            panic!(
+                "pool account should block after excluding no-cut-out sticky route, got {other:?}"
+            )
         }
     };
 

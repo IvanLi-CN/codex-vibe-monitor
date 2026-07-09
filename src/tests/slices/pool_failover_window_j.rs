@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_file() {
     let (pool, config, temp_dir) =
@@ -40,7 +43,7 @@ async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_fi
 
     let archive_db_path = temp_dir.join("archive-manifest-refresh-dedupe.sqlite");
     fs::File::create(&archive_db_path).expect("create archive sqlite file");
-    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
         .await
         .expect("open archive sqlite");
     let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
@@ -290,7 +293,7 @@ async fn startup_persistent_prep_rebuilds_manifest_before_archive_backfill() {
         .expect("create startup prep archive parent");
     let archive_db_path = temp_dir.join("startup-prep-manifest.sqlite");
     fs::File::create(&archive_db_path).expect("create startup prep sqlite file");
-    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
         .await
         .expect("open startup prep sqlite");
     let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
@@ -1468,9 +1471,10 @@ async fn materialize_historical_rollups_bounded_counts_fully_blocked_archive_bud
         .expect("insert replay marker for non-keyed invocation target");
     }
 
-    let first_summary = materialize_historical_rollups_bounded(&pool, &config, false, Some(1), None)
-        .await
-        .expect("fully blocked archive should still consume the one-archive budget");
+    let first_summary =
+        materialize_historical_rollups_bounded(&pool, &config, false, Some(1), None)
+            .await
+            .expect("fully blocked archive should still consume the one-archive budget");
     assert_eq!(first_summary.materialized_invocation_batches, 0);
     assert_eq!(first_summary.blocked_archive_batches, 1);
 
@@ -1743,15 +1747,10 @@ async fn materialize_historical_rollups_bounded_skips_live_replay_when_elapsed_b
     )
     .await;
 
-    let summary = materialize_historical_rollups_bounded(
-        &pool,
-        &config,
-        false,
-        None,
-        Some(Duration::ZERO),
-    )
-    .await
-    .expect("bounded materialization with zero elapsed budget");
+    let summary =
+        materialize_historical_rollups_bounded(&pool, &config, false, None, Some(Duration::ZERO))
+            .await
+            .expect("bounded materialization with zero elapsed budget");
     assert_eq!(summary.materialized_archive_batches, 0);
 
     let total_count: i64 = sqlx::query_scalar(
@@ -1766,13 +1765,12 @@ async fn materialize_historical_rollups_bounded_skips_live_replay_when_elapsed_b
         "zero elapsed budget should leave live rollup catch-up for a later pass"
     );
 
-    let live_cursor: Option<i64> = sqlx::query_scalar(
-        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
-    )
-    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .fetch_optional(&pool)
-    .await
-    .expect("load invocation live cursor after zero-budget bounded pass");
+    let live_cursor: Option<i64> =
+        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
+            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+            .fetch_optional(&pool)
+            .await
+            .expect("load invocation live cursor after zero-budget bounded pass");
     assert_eq!(
         live_cursor, None,
         "zero elapsed budget should not advance the shared live replay cursor"
@@ -1900,7 +1898,7 @@ async fn materialize_historical_rollups_marks_replayed_batches_as_materialized()
 
 #[tokio::test]
 async fn materialize_historical_rollups_marks_account_replay_targets_when_only_account_targets_are_pending()
-{
+ {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-account-target-markers").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
@@ -2547,12 +2545,10 @@ async fn retention_accumulates_pool_upstream_hourly_history_when_reusing_monthly
         - ChronoDuration::days(31))
     .format("%Y-%m")
     .to_string();
-    let first_attempt_at =
-        parse_to_utc_datetime(&format!("{archive_month_prefix}-10 09:30:00"))
-            .expect("first attempt timestamp should parse");
-    let second_attempt_at =
-        parse_to_utc_datetime(&format!("{archive_month_prefix}-11 09:30:00"))
-            .expect("second attempt timestamp should parse");
+    let first_attempt_at = parse_to_utc_datetime(&format!("{archive_month_prefix}-10 09:30:00"))
+        .expect("first attempt timestamp should parse");
+    let second_attempt_at = parse_to_utc_datetime(&format!("{archive_month_prefix}-11 09:30:00"))
+        .expect("second attempt timestamp should parse");
     seed_pool_upstream_attempt_at(
         &pool,
         "retention-pool-hourly-accumulates-success",
@@ -2579,19 +2575,23 @@ async fn retention_accumulates_pool_upstream_hourly_history_when_reusing_monthly
     let second_summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run second pool upstream retention pass");
-    assert_eq!(second_summary.pool_upstream_request_attempt_rows_archived, 1);
+    assert_eq!(
+        second_summary.pool_upstream_request_attempt_rows_archived,
+        1
+    );
 
-    let archive_batches = sqlx::query_as::<_, (i64, String, String, Option<String>, Option<String>, i64)>(
-        r#"
+    let archive_batches =
+        sqlx::query_as::<_, (i64, String, String, Option<String>, Option<String>, i64)>(
+            r#"
         SELECT id, month_key, file_path, day_key, part_key, row_count
         FROM archive_batches
         WHERE dataset = 'pool_upstream_request_attempts'
         ORDER BY id
         "#,
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("load retained pool upstream archive batches");
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("load retained pool upstream archive batches");
     let archive_batch_count = archive_batches.len() as i64;
     assert_eq!(
         archive_batch_count, 1,
@@ -2631,12 +2631,10 @@ async fn retention_keeps_preexisting_pool_node_health_month_archives_pending_aft
         - ChronoDuration::days(31))
     .format("%Y-%m")
     .to_string();
-    let first_attempt_at =
-        parse_to_utc_datetime(&format!("{archive_month_prefix}-12 09:30:00"))
-            .expect("first attempt timestamp should parse");
-    let second_attempt_at =
-        parse_to_utc_datetime(&format!("{archive_month_prefix}-13 09:30:00"))
-            .expect("second attempt timestamp should parse");
+    let first_attempt_at = parse_to_utc_datetime(&format!("{archive_month_prefix}-12 09:30:00"))
+        .expect("first attempt timestamp should parse");
+    let second_attempt_at = parse_to_utc_datetime(&format!("{archive_month_prefix}-13 09:30:00"))
+        .expect("second attempt timestamp should parse");
 
     seed_pool_upstream_attempt_at(
         &pool,
@@ -2712,7 +2710,10 @@ async fn retention_keeps_preexisting_pool_node_health_month_archives_pending_aft
     let second_summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run second pool upstream retention pass");
-    assert_eq!(second_summary.pool_upstream_request_attempt_rows_archived, 1);
+    assert_eq!(
+        second_summary.pool_upstream_request_attempt_rows_archived,
+        1
+    );
 
     let pending_cache_batches = pending_pool_upstream_node_health_archive_batches(&pool)
         .await
@@ -3163,8 +3164,12 @@ async fn cleanup_expired_pool_upstream_archives_waits_for_cache_replay_completio
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("pool-node-health-cleanup-cache-replay-gate").await;
     let coverage_end_at = shanghai_local_days_ago(14, 9, 0, 0);
-    let archive_file_path = archive_batch_file_path(&config, "pool_upstream_request_attempts", &coverage_end_at[..7])
-        .expect("resolve expired pool upstream archive path");
+    let archive_file_path = archive_batch_file_path(
+        &config,
+        "pool_upstream_request_attempts",
+        &coverage_end_at[..7],
+    )
+    .expect("resolve expired pool upstream archive path");
     fs::create_dir_all(archive_file_path.parent().expect("archive parent"))
         .expect("create archive parent for cleanup gate");
     fs::write(&archive_file_path, b"placeholder-archive")
@@ -3238,8 +3243,12 @@ async fn cleanup_expired_pool_upstream_archives_preserves_recent_exact_window_hi
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("pool-node-health-cleanup-window-gate").await;
     let coverage_end_at = shanghai_local_days_ago(2, 9, 0, 0);
-    let archive_file_path = archive_batch_file_path(&config, "pool_upstream_request_attempts", &coverage_end_at[..7])
-        .expect("resolve recent pool upstream archive path");
+    let archive_file_path = archive_batch_file_path(
+        &config,
+        "pool_upstream_request_attempts",
+        &coverage_end_at[..7],
+    )
+    .expect("resolve recent pool upstream archive path");
     fs::create_dir_all(archive_file_path.parent().expect("archive parent"))
         .expect("create archive parent for window gate");
     fs::write(&archive_file_path, b"placeholder-archive")
@@ -3338,7 +3347,10 @@ async fn pool_upstream_node_health_archive_backfill_reuses_stable_temp_db_when_b
     let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run pool attempt retention");
-    assert_eq!(summary.pool_upstream_request_attempt_rows_archived, row_count);
+    assert_eq!(
+        summary.pool_upstream_request_attempt_rows_archived,
+        row_count
+    );
 
     let archive_path = PathBuf::from(
         sqlx::query_scalar::<_, String>(
@@ -3406,9 +3418,10 @@ async fn pool_upstream_node_health_archive_backfill_reuses_stable_temp_db_when_b
     .expect("list archive temp directory")
     .filter_map(|entry| entry.ok())
     .filter(|entry| {
-        entry.file_name().to_string_lossy().ends_with(
-            ".pool-upstream-node-health.sqlite",
-        )
+        entry
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".pool-upstream-node-health.sqlite")
     })
     .count();
     assert!(
@@ -3416,7 +3429,10 @@ async fn pool_upstream_node_health_archive_backfill_reuses_stable_temp_db_when_b
         "budget-limited retries must not leak multiple temp sqlite files"
     );
     if second.hit_budget {
-        assert!(temp_path.exists(), "stable temp sqlite should be reused across passes");
+        assert!(
+            temp_path.exists(),
+            "stable temp sqlite should be reused across passes"
+        );
         let final_summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
             .await
             .expect("finish node health archive backfill");
@@ -3443,12 +3459,9 @@ async fn pool_upstream_node_health_archive_backfill_marks_missing_archives_repla
         retention_test_pool_and_config("pool-node-health-missing-archive").await;
     let missing_occurred_at = shanghai_local_days_ago(45, 9, 0, 0);
     let month_key = missing_occurred_at[..7].to_string();
-    let missing_archive_path = archive_batch_file_path(
-        &config,
-        "pool_upstream_request_attempts",
-        &month_key,
-    )
-    .expect("resolve missing pool node health archive path");
+    let missing_archive_path =
+        archive_batch_file_path(&config, "pool_upstream_request_attempts", &month_key)
+            .expect("resolve missing pool node health archive path");
 
     sqlx::query(
         r#"
@@ -3539,7 +3552,10 @@ async fn pool_upstream_node_health_archive_backfill_refreshes_stale_temp_after_a
     let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run initial pool attempt retention");
-    assert_eq!(summary.pool_upstream_request_attempt_rows_archived, row_count);
+    assert_eq!(
+        summary.pool_upstream_request_attempt_rows_archived,
+        row_count
+    );
 
     let archive_path = PathBuf::from(
         sqlx::query_scalar::<_, String>(
@@ -3608,7 +3624,10 @@ async fn pool_upstream_node_health_archive_backfill_refreshes_stale_temp_after_a
         partial_cursor > 0,
         "stale-temp rewrite coverage requires a partial replay cursor before the month archive is rewritten"
     );
-    assert!(temp_path.exists(), "budget-limited replay should keep a temp sqlite");
+    assert!(
+        temp_path.exists(),
+        "budget-limited replay should keep a temp sqlite"
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(10));
     let appended_occurred_at = Shanghai
@@ -3628,7 +3647,10 @@ async fn pool_upstream_node_health_archive_backfill_refreshes_stale_temp_after_a
     let second_retention = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("rerun retention so the month archive gets rewritten with a new appended row");
-    assert_eq!(second_retention.pool_upstream_request_attempt_rows_archived, 1);
+    assert_eq!(
+        second_retention.pool_upstream_request_attempt_rows_archived,
+        1
+    );
 
     let final_summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
         .await
@@ -3636,10 +3658,11 @@ async fn pool_upstream_node_health_archive_backfill_refreshes_stale_temp_after_a
     assert!(!final_summary.hit_budget);
     assert_eq!(final_summary.pending_batches, 0);
 
-    let cached_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_node_health_archive")
-        .fetch_one(&pool)
-        .await
-        .expect("count cached node health archive rows after archive rewrite");
+    let cached_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_node_health_archive")
+            .fetch_one(&pool)
+            .await
+            .expect("count cached node health archive rows after archive rewrite");
     assert_eq!(
         cached_rows,
         (row_count + 1) as i64,
@@ -3846,17 +3869,8 @@ async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged(
         parse_shanghai_local_naive(&old_invocation).expect("valid old invocation time"),
         Shanghai,
     );
-    insert_invocation_hourly_rollup_bucket(
-        &pool,
-        bucket_start,
-        SOURCE_PROXY,
-        1,
-        1,
-        0,
-        42,
-        0.42,
-    )
-    .await;
+    insert_invocation_hourly_rollup_bucket(&pool, bucket_start, SOURCE_PROXY, 1, 1, 0, 42, 0.42)
+        .await;
     sqlx::query(
         r#"
         INSERT INTO forward_proxy_attempt_hourly (
@@ -4541,13 +4555,12 @@ async fn ensure_schema_rebuilds_account_stats_when_live_progress_table_is_missin
     .fetch_one(&pool)
     .await
     .expect("load rebuilt account stats minute row");
-    let live_cursor: i64 = sqlx::query_scalar(
-        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
-    )
-    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .fetch_one(&pool)
-    .await
-    .expect("load recreated live progress cursor");
+    let live_cursor: i64 =
+        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
+            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+            .fetch_one(&pool)
+            .await
+            .expect("load recreated live progress cursor");
 
     assert_eq!(hourly_counts, (1, 1, 1));
     assert_eq!(minute_counts, (1, 1, 1));

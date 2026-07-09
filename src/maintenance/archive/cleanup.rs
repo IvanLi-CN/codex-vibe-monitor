@@ -1,4 +1,7 @@
 use super::*;
+use anyhow::{anyhow, bail};
+use sqlx::FromRow;
+use tracing::warn;
 
 pub(crate) async fn backfill_invocation_archive_expiries(
     pool: &Pool<Sqlite>,
@@ -266,7 +269,7 @@ pub(crate) async fn verify_archive_storage(
 }
 
 #[derive(Debug, FromRow)]
-struct ArchiveBatchCleanupCandidate {
+pub(crate) struct ArchiveBatchCleanupCandidate {
     id: i64,
     dataset: String,
     file_path: String,
@@ -435,7 +438,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
 }
 
 #[derive(Debug, FromRow)]
-struct HistoricalRollupPendingArchiveBatchRow {
+pub(crate) struct HistoricalRollupPendingArchiveBatchRow {
     dataset: String,
     month_key: String,
     file_path: String,
@@ -444,7 +447,7 @@ struct HistoricalRollupPendingArchiveBatchRow {
 }
 
 #[derive(Debug, FromRow)]
-struct LegacyArchivePruneCandidateRow {
+pub(crate) struct LegacyArchivePruneCandidateRow {
     id: i64,
     dataset: String,
     file_path: String,
@@ -452,7 +455,7 @@ struct LegacyArchivePruneCandidateRow {
     coverage_end_at: Option<String>,
 }
 
-fn estimate_historical_rollup_pending_bucket_count(
+pub(crate) fn estimate_historical_rollup_pending_bucket_count(
     row: &HistoricalRollupPendingArchiveBatchRow,
 ) -> u64 {
     if let (Some(start), Some(end)) = (&row.coverage_start_at, &row.coverage_end_at)
@@ -557,7 +560,9 @@ pub(crate) async fn load_latest_materialized_legacy_invocation_rollup_bucket_epo
     }))
 }
 
-pub(crate) async fn count_materialized_historical_rollup_buckets(pool: &Pool<Sqlite>) -> Result<i64> {
+pub(crate) async fn count_materialized_historical_rollup_buckets(
+    pool: &Pool<Sqlite>,
+) -> Result<i64> {
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT COUNT(*) FROM hourly_rollup_materialized_buckets WHERE target IN (",
     );
@@ -692,16 +697,15 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
     .await?;
     let remaining_budget =
         historical_rollup_materialization_remaining_budget(started_at, max_elapsed);
-    let forward_proxy_summary =
-        replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
-            tx.as_mut(),
-            started_at,
-            max_archive_batches
-                .map(|limit| limit.saturating_sub(invocation_summary.budget_consumed_batches)),
-            remaining_budget,
-            invocation_summary.remaining_skip_batches,
-        )
-        .await?;
+    let forward_proxy_summary = replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
+        tx.as_mut(),
+        started_at,
+        max_archive_batches
+            .map(|limit| limit.saturating_sub(invocation_summary.budget_consumed_batches)),
+        remaining_budget,
+        invocation_summary.remaining_skip_batches,
+    )
+    .await?;
     loop {
         if historical_rollup_materialization_budget_exhausted(started_at, max_elapsed) {
             break;
@@ -728,7 +732,8 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
         skipped_archive_batches: (invocation_summary.skipped_batches
             + forward_proxy_summary.skipped_batches) as usize,
         materialized_archive_batches: (invocation_summary.materialized_batches
-            + forward_proxy_summary.materialized_batches) as usize,
+            + forward_proxy_summary.materialized_batches)
+            as usize,
         blocked_archive_batches: invocation_summary.blocked_batches as usize,
         materialized_bucket_count: count_materialized_historical_rollup_buckets(pool).await?
             as usize,
@@ -857,14 +862,14 @@ pub(crate) async fn prune_legacy_archive_batches(
     Ok(summary)
 }
 
-fn historical_rollup_materialization_remaining_budget(
+pub(crate) fn historical_rollup_materialization_remaining_budget(
     started_at: Instant,
     max_elapsed: Option<Duration>,
 ) -> Option<Duration> {
     max_elapsed.map(|limit| limit.saturating_sub(started_at.elapsed()))
 }
 
-fn historical_rollup_materialization_budget_exhausted(
+pub(crate) fn historical_rollup_materialization_budget_exhausted(
     started_at: Instant,
     max_elapsed: Option<Duration>,
 ) -> bool {

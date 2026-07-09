@@ -1,22 +1,24 @@
+use super::*;
+
 #[derive(Debug, Default)]
-struct StartupPersistentPrepSummary {
-    stale_archive_temp_files_removed: usize,
-    refreshed_manifest_batches: usize,
-    refreshed_manifest_account_rows: usize,
-    missing_manifest_files: usize,
-    backfilled_archive_expiries: usize,
-    bootstrapped_hourly_rollups: bool,
-    pending_historical_rollup_archive_batches: usize,
+pub(crate) struct StartupPersistentPrepSummary {
+    pub(crate) stale_archive_temp_files_removed: usize,
+    pub(crate) refreshed_manifest_batches: usize,
+    pub(crate) refreshed_manifest_account_rows: usize,
+    pub(crate) missing_manifest_files: usize,
+    pub(crate) backfilled_archive_expiries: usize,
+    pub(crate) bootstrapped_hourly_rollups: bool,
+    pub(crate) pending_historical_rollup_archive_batches: usize,
 }
 
 #[derive(Debug, Default)]
-struct StatsMaintenanceCacheState {
-    cached_at: Option<Instant>,
-    response: Option<StatsMaintenanceResponse>,
+pub(crate) struct StatsMaintenanceCacheState {
+    pub(crate) cached_at: Option<Instant>,
+    pub(crate) response: Option<StatsMaintenanceResponse>,
 }
 
 impl StatsMaintenanceCacheState {
-    fn fresh_response(&self) -> Option<StatsMaintenanceResponse> {
+    pub(crate) fn fresh_response(&self) -> Option<StatsMaintenanceResponse> {
         let cached_at = self.cached_at?;
         if cached_at.elapsed() > Duration::from_secs(STATS_MAINTENANCE_CACHE_TTL_SECS) {
             return None;
@@ -24,13 +26,13 @@ impl StatsMaintenanceCacheState {
         self.response.clone()
     }
 
-    fn store(&mut self, response: StatsMaintenanceResponse) {
+    pub(crate) fn store(&mut self, response: StatsMaintenanceResponse) {
         self.cached_at = Some(Instant::now());
         self.response = Some(response);
     }
 }
 
-fn should_run_startup_persistent_prep(cli: &CliArgs) -> bool {
+pub(crate) fn should_run_startup_persistent_prep(cli: &CliArgs) -> bool {
     if cli.command.is_some() {
         return false;
     }
@@ -40,15 +42,15 @@ fn should_run_startup_persistent_prep(cli: &CliArgs) -> bool {
     true
 }
 
-fn should_run_blocking_startup_persistent_prep(cli: &CliArgs) -> bool {
+pub(crate) fn should_run_blocking_startup_persistent_prep(cli: &CliArgs) -> bool {
     cli.command.is_none() && cli.retention_run_once && !cli.retention_dry_run
 }
 
-fn should_run_blocking_startup_hourly_rollup_bootstrap(cli: &CliArgs) -> bool {
+pub(crate) fn should_run_blocking_startup_hourly_rollup_bootstrap(cli: &CliArgs) -> bool {
     cli.command.is_none() && !cli.retention_run_once && !cli.retention_dry_run
 }
 
-async fn run_startup_persistent_prep_inner(
+pub(crate) async fn run_startup_persistent_prep_inner(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     cli: &CliArgs,
@@ -79,7 +81,7 @@ async fn run_startup_persistent_prep_inner(
     })
 }
 
-async fn run_startup_persistent_prep(
+pub(crate) async fn run_startup_persistent_prep(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     cli: &CliArgs,

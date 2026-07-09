@@ -20,6 +20,7 @@ use flate2::{
     write::{DeflateEncoder, GzEncoder, ZlibEncoder},
 };
 use rand::{RngCore, rngs::OsRng};
+use reqwest::Url;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::error::{DatabaseError, ErrorKind};
@@ -27,10 +28,10 @@ use sqlx::{Connection, SqliteConnection, SqlitePool, sqlite::SqlitePoolOptions};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
+    convert::Infallible,
     env,
     ffi::OsString,
     fs,
-    convert::Infallible,
     io::Write,
     path::{Path, PathBuf},
     sync::{
@@ -43,21 +44,20 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore, broadcast};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use reqwest::Url;
 
-static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<AsyncMutex<()>> =
+pub(crate) static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<AsyncMutex<()>> =
     once_cell::sync::Lazy::new(|| AsyncMutex::new(()));
 
-struct CurrentDirGuard {
+pub(crate) struct CurrentDirGuard {
     original: PathBuf,
 }
 
-struct EnvVarGuard {
+pub(crate) struct EnvVarGuard {
     previous: Vec<(String, Option<OsString>)>,
 }
 
 impl CurrentDirGuard {
-    fn change_to(path: &Path) -> Self {
+    pub(crate) fn change_to(path: &Path) -> Self {
         let original = env::current_dir().expect("read current dir");
         env::set_current_dir(path).expect("set current dir");
         Self { original }
@@ -65,7 +65,7 @@ impl CurrentDirGuard {
 }
 
 impl EnvVarGuard {
-    fn set(cases: &[(&str, Option<&str>)]) -> Self {
+    pub(crate) fn set(cases: &[(&str, Option<&str>)]) -> Self {
         let previous = cases
             .iter()
             .map(|(name, _)| ((*name).to_string(), env::var_os(name)))
@@ -106,8 +106,7 @@ async fn acquire_proxy_request_concurrency_permit_tracks_multiple_in_flight_requ
     let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
 
     let permit =
-        acquire_proxy_request_concurrency_permit(state.as_ref(), 1002, &Method::POST, &uri)
-            .await;
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1002, &Method::POST, &uri).await;
     let permit2 =
         acquire_proxy_request_concurrency_permit(state.as_ref(), 1003, &Method::POST, &uri).await;
     assert_eq!(
@@ -236,8 +235,8 @@ async fn proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure() {
             break;
         }
     }
-    let running_record =
-        running_record.expect("tracked proxy request should emit a running shell before route validation");
+    let running_record = running_record
+        .expect("tracked proxy request should emit a running shell before route validation");
     let terminal_record =
         terminal_record.expect("route validation failure should terminalize the running shell");
     assert_eq!(terminal_record.invoke_id, running_record.invoke_id);
@@ -297,8 +296,8 @@ async fn proxy_openai_v1_missing_pool_key_terminalizes_admitted_running_shell() 
         }
     }
 
-    let running_record =
-        running_record.expect("tracked proxy request should emit a running shell before missing-key validation");
+    let running_record = running_record
+        .expect("tracked proxy request should emit a running shell before missing-key validation");
     let terminal_record =
         terminal_record.expect("missing pool key should terminalize the running shell");
     assert_eq!(terminal_record.invoke_id, running_record.invoke_id);
@@ -591,7 +590,10 @@ fn exclusive_epoch_upper_bound_preserves_fractional_current_second() {
         .expect("valid exact second");
     let fractional_second = exact_second + ChronoDuration::nanoseconds(1);
 
-    assert_eq!(exclusive_epoch_upper_bound(exact_second), exact_second.timestamp());
+    assert_eq!(
+        exclusive_epoch_upper_bound(exact_second),
+        exact_second.timestamp()
+    );
     assert_eq!(
         exclusive_epoch_upper_bound(fractional_second),
         exact_second.timestamp() + 1

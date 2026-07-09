@@ -1,23 +1,29 @@
 use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
 
 pub(crate) async fn fetch_prompt_cache_conversations(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PromptCacheConversationsQuery>,
 ) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
     let request = resolve_prompt_cache_conversations_request(params)?;
-    let response =
-        if request.uses_legacy_cache() {
-            let response =
-                fetch_prompt_cache_conversations_cached(state.as_ref(), request.selection).await?;
-            match request.detail_level {
-                PromptCacheConversationDetailLevel::Full => response,
-                PromptCacheConversationDetailLevel::Compact => {
-                    compact_prompt_cache_conversations_response(response, None)
-                }
+    let response = if request.uses_legacy_cache() {
+        let response =
+            fetch_prompt_cache_conversations_cached(state.as_ref(), request.selection).await?;
+        match request.detail_level {
+            PromptCacheConversationDetailLevel::Full => response,
+            PromptCacheConversationDetailLevel::Compact => {
+                compact_prompt_cache_conversations_response(response, None)
             }
-        } else {
-            build_prompt_cache_conversations_response_for_request(state.as_ref(), request).await?
-        };
+        }
+    } else {
+        build_prompt_cache_conversations_response_for_request(state.as_ref(), request).await?
+    };
     Ok(Json(response))
 }
 
@@ -77,7 +83,7 @@ pub(crate) fn resolve_prompt_cache_conversation_selection(
     ))
 }
 
-fn normalize_prompt_cache_conversation_page_size(
+pub(crate) fn normalize_prompt_cache_conversation_page_size(
     raw: Option<i64>,
 ) -> Result<Option<i64>, ApiError> {
     let Some(value) = raw else {
@@ -91,7 +97,7 @@ fn normalize_prompt_cache_conversation_page_size(
     Ok(Some(value))
 }
 
-fn normalize_prompt_cache_conversation_recent_invocation_limit(
+pub(crate) fn normalize_prompt_cache_conversation_recent_invocation_limit(
     raw: Option<i64>,
 ) -> Result<Option<i64>, ApiError> {
     let Some(value) = raw else {
@@ -105,7 +111,7 @@ fn normalize_prompt_cache_conversation_recent_invocation_limit(
     Ok(Some(value))
 }
 
-fn resolve_prompt_cache_conversation_detail_level(
+pub(crate) fn resolve_prompt_cache_conversation_detail_level(
     raw: Option<&str>,
 ) -> Result<PromptCacheConversationDetailLevel, ApiError> {
     let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -120,7 +126,7 @@ fn resolve_prompt_cache_conversation_detail_level(
     }
 }
 
-fn resolve_prompt_cache_conversations_request(
+pub(crate) fn resolve_prompt_cache_conversations_request(
     params: PromptCacheConversationsQuery,
 ) -> Result<PromptCacheConversationsRequest, ApiError> {
     let selection = resolve_prompt_cache_conversation_selection(PromptCacheConversationsQuery {
@@ -186,7 +192,7 @@ pub(crate) fn resolve_prompt_cache_conversation_snapshot_at(
     resolve_prompt_cache_conversation_snapshot_at_with_default(raw, Utc::now())
 }
 
-fn resolve_working_conversation_sort_anchor<'a>(
+pub(crate) fn resolve_working_conversation_sort_anchor<'a>(
     last_terminal_at: Option<&'a str>,
     last_in_flight_at: Option<&'a str>,
     created_at: &'a str,
@@ -205,7 +211,7 @@ fn resolve_working_conversation_sort_anchor<'a>(
     }
 }
 
-fn encode_prompt_cache_conversation_cursor(
+pub(crate) fn encode_prompt_cache_conversation_cursor(
     sort_anchor_at: &str,
     created_at: &str,
     prompt_cache_key: &str,
@@ -305,7 +311,7 @@ pub(crate) fn build_prompt_cache_conversation_cursor(
     )
 }
 
-async fn query_prompt_cache_conversation_snapshot_row_id_ceiling(
+pub(crate) async fn query_prompt_cache_conversation_snapshot_row_id_ceiling(
     pool: &Pool<Sqlite>,
     snapshot_at: DateTime<Utc>,
     source_scope: InvocationSourceScope,

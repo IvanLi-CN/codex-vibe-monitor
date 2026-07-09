@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 async fn insert_parallel_work_prompt_cache_rollup_hourly_row(
     pool: &SqlitePool,
     bucket_start: DateTime<Utc>,
@@ -95,7 +98,7 @@ async fn insert_parallel_work_prompt_cache_upstream_account_hourly_row(
     .expect("insert prompt cache upstream-account hourly row");
 }
 
-async fn seed_invocation_archive_batch(
+pub(crate) async fn seed_invocation_archive_batch(
     pool: &SqlitePool,
     config: &AppConfig,
     batch_name: &str,
@@ -178,24 +181,24 @@ async fn insert_hourly_rollup_archive_replay_marker(
 }
 
 #[derive(Clone, Copy)]
-struct SeedInvocationArchiveBatchRow<'a> {
-    id: i64,
-    invoke_id: &'a str,
-    occurred_at: &'a str,
-    source: &'a str,
-    status: &'a str,
-    total_tokens: i64,
-    cost: f64,
-    ttfb_ms: Option<f64>,
-    payload: Option<&'a str>,
-    detail_level: &'a str,
-    error_message: Option<&'a str>,
-    failure_kind: Option<&'a str>,
-    failure_class: Option<&'a str>,
-    is_actionable: Option<i64>,
+pub(crate) struct SeedInvocationArchiveBatchRow<'a> {
+    pub(crate) id: i64,
+    pub(crate) invoke_id: &'a str,
+    pub(crate) occurred_at: &'a str,
+    pub(crate) source: &'a str,
+    pub(crate) status: &'a str,
+    pub(crate) total_tokens: i64,
+    pub(crate) cost: f64,
+    pub(crate) ttfb_ms: Option<f64>,
+    pub(crate) payload: Option<&'a str>,
+    pub(crate) detail_level: &'a str,
+    pub(crate) error_message: Option<&'a str>,
+    pub(crate) failure_kind: Option<&'a str>,
+    pub(crate) failure_class: Option<&'a str>,
+    pub(crate) is_actionable: Option<i64>,
 }
 
-async fn seed_invocation_archive_batch_with_details(
+pub(crate) async fn seed_invocation_archive_batch_with_details(
     pool: &SqlitePool,
     config: &AppConfig,
     batch_name: &str,
@@ -218,7 +221,7 @@ async fn seed_invocation_archive_batch_with_details(
     let archive_db_path = config.archive_dir.join(format!("{batch_name}.sqlite"));
     let _ = fs::remove_file(&archive_db_path);
     fs::File::create(&archive_db_path).expect("create invocation archive sqlite file");
-    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
         .await
         .expect("open invocation archive sqlite");
     let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
@@ -287,19 +290,11 @@ fn shanghai_bucket_date(bucket_start: &str) -> NaiveDate {
     bucket_date_in_tz(bucket_start, Shanghai)
 }
 
-fn assert_f64_close(actual: f64, expected: f64) {
+pub(crate) fn assert_f64_close(actual: f64, expected: f64) {
     let diff = (actual - expected).abs();
     assert!(
         diff < 1e-6,
         "expected {expected}, got {actual}, diff={diff}"
-    );
-}
-
-fn assert_f64_close_with_tolerance(actual: f64, expected: f64, tolerance: f64) {
-    let diff = (actual - expected).abs();
-    assert!(
-        diff < tolerance,
-        "expected {expected}, got {actual}, diff={diff}, tolerance={tolerance}"
     );
 }
 
@@ -409,13 +404,10 @@ async fn parallel_work_stats_returns_not_modified_for_matching_etag() {
         time_zone: Some("Asia/Shanghai".to_string()),
         upstream_account_id: None,
     };
-    let first_response = fetch_parallel_work_stats_cached(
-        State(state.clone()),
-        HeaderMap::new(),
-        Query(query()),
-    )
-    .await
-    .expect("fetch first parallel-work stats response");
+    let first_response =
+        fetch_parallel_work_stats_cached(State(state.clone()), HeaderMap::new(), Query(query()))
+            .await
+            .expect("fetch first parallel-work stats response");
     assert_eq!(first_response.status(), StatusCode::OK);
     let etag = first_response
         .headers()
@@ -429,16 +421,15 @@ async fn parallel_work_stats_returns_not_modified_for_matching_etag() {
 
     let mut headers = HeaderMap::new();
     headers.insert(axum::http::header::IF_NONE_MATCH, etag.clone());
-    let second_response = fetch_parallel_work_stats_cached(
-        State(state),
-        headers,
-        Query(query()),
-    )
-    .await
-    .expect("fetch cached parallel-work stats response");
+    let second_response = fetch_parallel_work_stats_cached(State(state), headers, Query(query()))
+        .await
+        .expect("fetch cached parallel-work stats response");
 
     assert_eq!(second_response.status(), StatusCode::NOT_MODIFIED);
-    assert_eq!(second_response.headers().get(axum::http::header::ETAG), Some(&etag));
+    assert_eq!(
+        second_response.headers().get(axum::http::header::ETAG),
+        Some(&etag)
+    );
     let second_body = axum::body::to_bytes(second_response.into_body(), usize::MAX)
         .await
         .expect("read cached response body");
@@ -851,7 +842,10 @@ async fn parallel_work_stats_account_scoped_day_bucket_aggregates_distinct_keys(
     assert_eq!(response.current.active_bucket_count, 2);
     assert_eq!(response.current.max_count, Some(2));
     assert_f64_close(
-        response.current.avg_count.expect("avg count should be present"),
+        response
+            .current
+            .avg_count
+            .expect("avg count should be present"),
         3.0 / response.current.complete_bucket_count as f64,
     );
 }
@@ -903,9 +897,8 @@ async fn parallel_work_stats_hourly_rollups_include_aligned_leading_bucket() {
     .await;
     let now = Utc::now();
     let range_start = now - ChronoDuration::days(7);
-    let leading_hour_epoch =
-        align_reporting_bucket_epoch(range_start.timestamp(), 3_600, Shanghai)
-            .expect("align leading hour");
+    let leading_hour_epoch = align_reporting_bucket_epoch(range_start.timestamp(), 3_600, Shanghai)
+        .expect("align leading hour");
     let leading_hour = Utc
         .timestamp_opt(leading_hour_epoch, 0)
         .single()
@@ -1200,7 +1193,10 @@ async fn timeseries_reports_snapshot_id_for_live_exact_queries() {
             .with_timezone(&Shanghai)
             .naive_local(),
     );
-    for (id, invoke_id, status) in [(101_i64, "snapshot-row-1", "success"), (105_i64, "snapshot-row-2", "failed")] {
+    for (id, invoke_id, status) in [
+        (101_i64, "snapshot-row-1", "success"),
+        (105_i64, "snapshot-row-2", "failed"),
+    ] {
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
@@ -2832,8 +2828,8 @@ async fn all_time_summary_fallback_aggregates_missing_rows_across_archive_parts(
 }
 
 #[tokio::test]
-async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_sibling_archive_part_is_materialized(
-) {
+async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_sibling_archive_part_is_materialized()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -2966,8 +2962,8 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_sibling_archiv
 }
 
 #[tokio::test]
-async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_materialized_sibling_archive_is_unreadable(
-) {
+async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_materialized_sibling_archive_is_unreadable()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -3103,8 +3099,8 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_materialized_s
 }
 
 #[tokio::test]
-async fn all_time_summary_skips_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable(
-) {
+async fn all_time_summary_skips_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -3176,11 +3172,10 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
         )],
     )
     .await;
-    let unreadable_archive_path =
-        state
-            .config
-            .archive_dir
-            .join("summary-same-bucket-unreadable-sibling-broken.sqlite.gz");
+    let unreadable_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-same-bucket-unreadable-sibling-broken.sqlite.gz");
     let _ = fs::remove_file(&unreadable_archive_path);
     fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
         .expect("move unreadable same-bucket summary archive batch to a unique path");
@@ -3310,8 +3305,8 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
 }
 
 #[tokio::test]
-async fn all_time_summary_skips_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable(
-) {
+async fn all_time_summary_skips_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -3352,13 +3347,16 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
         )],
     )
     .await;
-    let materialized_archive_path = state.config.archive_dir.join(
-        "summary-same-month-unreadable-sibling-materialized.sqlite.gz",
-    );
+    let materialized_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-same-month-unreadable-sibling-materialized.sqlite.gz");
     let _ = fs::remove_file(&materialized_archive_path);
-    fs::rename(&materialized_archive_original_path, &materialized_archive_path).expect(
-        "move readable materialized summary archive batch to a unique same-month path",
-    );
+    fs::rename(
+        &materialized_archive_original_path,
+        &materialized_archive_path,
+    )
+    .expect("move readable materialized summary archive batch to a unique same-month path");
     sqlx::query(
         "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
     )
@@ -3386,11 +3384,10 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
         )],
     )
     .await;
-    let unreadable_archive_path =
-        state
-            .config
-            .archive_dir
-            .join("summary-same-month-unreadable-sibling-broken.sqlite.gz");
+    let unreadable_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-same-month-unreadable-sibling-broken.sqlite.gz");
     let _ = fs::remove_file(&unreadable_archive_path);
     fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
         .expect("move unreadable summary sibling archive batch to a unique same-month path");
@@ -3634,7 +3631,8 @@ async fn archived_failure_fallback_skips_already_materialized_archive_buckets() 
     )
     .await
     .expect("fetch error distribution with partially materialized archive");
-    let total_distribution_count: i64 = error_distribution.items.iter().map(|item| item.count).sum();
+    let total_distribution_count: i64 =
+        error_distribution.items.iter().map(|item| item.count).sum();
     assert_eq!(total_distribution_count, 2);
 }
 
@@ -3905,8 +3903,8 @@ async fn archived_failure_fallback_aggregates_missing_rows_across_archive_parts(
 }
 
 #[tokio::test]
-async fn archived_failure_fallback_keeps_unmaterialized_rows_when_sibling_archive_part_is_materialized(
-) {
+async fn archived_failure_fallback_keeps_unmaterialized_rows_when_sibling_archive_part_is_materialized()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -4056,8 +4054,8 @@ async fn archived_failure_fallback_keeps_unmaterialized_rows_when_sibling_archiv
 }
 
 #[tokio::test]
-async fn archived_failure_fallback_keeps_unmaterialized_rows_when_materialized_sibling_archive_is_unreadable(
-) {
+async fn archived_failure_fallback_keeps_unmaterialized_rows_when_materialized_sibling_archive_is_unreadable()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -4210,8 +4208,8 @@ async fn archived_failure_fallback_keeps_unmaterialized_rows_when_materialized_s
 }
 
 #[tokio::test]
-async fn archived_failure_fallback_skips_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable(
-) {
+async fn archived_failure_fallback_skips_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -4295,11 +4293,10 @@ async fn archived_failure_fallback_skips_double_count_for_readable_materialized_
         }],
     )
     .await;
-    let unreadable_archive_path =
-        state
-            .config
-            .archive_dir
-            .join("failure-same-bucket-unreadable-sibling-broken.sqlite.gz");
+    let unreadable_archive_path = state
+        .config
+        .archive_dir
+        .join("failure-same-bucket-unreadable-sibling-broken.sqlite.gz");
     let _ = fs::remove_file(&unreadable_archive_path);
     fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
         .expect("move unreadable same-bucket failure archive batch to a unique path");
@@ -4494,8 +4491,8 @@ async fn historical_failure_read_path_skips_unreadable_pending_archives() {
 }
 
 #[tokio::test]
-async fn archived_failure_fallback_skips_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable(
-) {
+async fn archived_failure_fallback_skips_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -4542,13 +4539,16 @@ async fn archived_failure_fallback_skips_double_count_for_readable_materialized_
         }],
     )
     .await;
-    let materialized_archive_path = state.config.archive_dir.join(
-        "failure-same-month-unreadable-sibling-materialized.sqlite.gz",
-    );
+    let materialized_archive_path = state
+        .config
+        .archive_dir
+        .join("failure-same-month-unreadable-sibling-materialized.sqlite.gz");
     let _ = fs::remove_file(&materialized_archive_path);
-    fs::rename(&materialized_archive_original_path, &materialized_archive_path).expect(
-        "move readable materialized failure archive batch to a unique same-month path",
-    );
+    fs::rename(
+        &materialized_archive_original_path,
+        &materialized_archive_path,
+    )
+    .expect("move readable materialized failure archive batch to a unique same-month path");
     sqlx::query(
         "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
     )
@@ -4582,11 +4582,10 @@ async fn archived_failure_fallback_skips_double_count_for_readable_materialized_
         }],
     )
     .await;
-    let unreadable_archive_path =
-        state
-            .config
-            .archive_dir
-            .join("failure-same-month-unreadable-sibling-broken.sqlite.gz");
+    let unreadable_archive_path = state
+        .config
+        .archive_dir
+        .join("failure-same-month-unreadable-sibling-broken.sqlite.gz");
     let _ = fs::remove_file(&unreadable_archive_path);
     fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
         .expect("move unreadable same-month failure sibling archive batch to a unique path");
@@ -4671,7 +4670,8 @@ async fn archived_failure_fallback_skips_double_count_for_readable_materialized_
 }
 
 #[tokio::test]
-async fn archived_failure_fallback_includes_missing_categories_from_partially_materialized_bucket() {
+async fn archived_failure_fallback_includes_missing_categories_from_partially_materialized_bucket()
+{
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -5048,8 +5048,8 @@ async fn historical_perf_stats_include_unreplayed_full_hour_tail_without_inline_
 }
 
 #[tokio::test]
-async fn historical_perf_archive_delta_distinguishes_materialized_sibling_parts_and_stale_pending_overlap(
-) {
+async fn historical_perf_archive_delta_distinguishes_materialized_sibling_parts_and_stale_pending_overlap()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -5097,8 +5097,11 @@ async fn historical_perf_archive_delta_distinguishes_materialized_sibling_parts_
         .archive_dir
         .join("perf-mixed-state-archive-a.sqlite.gz");
     let _ = fs::remove_file(&materialized_archive_path);
-    fs::rename(&materialized_archive_original_path, &materialized_archive_path)
-        .expect("move mixed-state materialized perf archive batch to a unique path");
+    fs::rename(
+        &materialized_archive_original_path,
+        &materialized_archive_path,
+    )
+    .expect("move mixed-state materialized perf archive batch to a unique path");
     sqlx::query(
         "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now') WHERE dataset = 'codex_invocations' AND file_path = ?2",
     )
@@ -5194,8 +5197,8 @@ async fn historical_perf_archive_delta_distinguishes_materialized_sibling_parts_
 }
 
 #[tokio::test]
-async fn historical_perf_archive_delta_keeps_pending_stage_rows_when_materialized_sibling_archive_is_unreadable(
-) {
+async fn historical_perf_archive_delta_keeps_pending_stage_rows_when_materialized_sibling_archive_is_unreadable()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -5243,8 +5246,11 @@ async fn historical_perf_archive_delta_keeps_pending_stage_rows_when_materialize
         .archive_dir
         .join("perf-mixed-state-unreadable-archive-a.sqlite.gz");
     let _ = fs::remove_file(&materialized_archive_path);
-    fs::rename(&materialized_archive_original_path, &materialized_archive_path)
-        .expect("move unreadable mixed-state materialized perf archive batch to a unique path");
+    fs::rename(
+        &materialized_archive_original_path,
+        &materialized_archive_path,
+    )
+    .expect("move unreadable mixed-state materialized perf archive batch to a unique path");
     sqlx::query(
         "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now') WHERE dataset = 'codex_invocations' AND file_path = ?2",
     )
@@ -5306,7 +5312,9 @@ async fn historical_perf_archive_delta_keeps_pending_stage_rows_when_materialize
     .bind(2_i64)
     .bind(500.0_f64)
     .bind(300.0_f64)
-    .bind(encode_approx_histogram(&histogram).expect("encode unreadable mixed-state perf histogram"))
+    .bind(
+        encode_approx_histogram(&histogram).expect("encode unreadable mixed-state perf histogram"),
+    )
     .execute(&state.pool)
     .await
     .expect("seed unreadable mixed-state materialized perf row");
@@ -5343,8 +5351,8 @@ async fn historical_perf_archive_delta_keeps_pending_stage_rows_when_materialize
 }
 
 #[tokio::test]
-async fn historical_perf_stats_skip_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable(
-) {
+async fn historical_perf_stats_skip_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -5382,11 +5390,10 @@ async fn historical_perf_stats_skip_double_count_for_readable_materialized_archi
         )],
     )
     .await;
-    let readable_archive_path =
-        state
-            .config
-            .archive_dir
-            .join("perf-same-bucket-unreadable-sibling-materialized.sqlite.gz");
+    let readable_archive_path = state
+        .config
+        .archive_dir
+        .join("perf-same-bucket-unreadable-sibling-materialized.sqlite.gz");
     let _ = fs::remove_file(&readable_archive_path);
     fs::rename(&readable_archive_original_path, &readable_archive_path)
         .expect("move readable same-bucket perf archive batch to a unique path");
@@ -5417,11 +5424,10 @@ async fn historical_perf_stats_skip_double_count_for_readable_materialized_archi
         )],
     )
     .await;
-    let unreadable_archive_path =
-        state
-            .config
-            .archive_dir
-            .join("perf-same-bucket-unreadable-sibling-broken.sqlite.gz");
+    let unreadable_archive_path = state
+        .config
+        .archive_dir
+        .join("perf-same-bucket-unreadable-sibling-broken.sqlite.gz");
     let _ = fs::remove_file(&unreadable_archive_path);
     fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
         .expect("move unreadable same-bucket perf archive batch to a unique path");
@@ -5496,8 +5502,8 @@ async fn historical_perf_stats_skip_double_count_for_readable_materialized_archi
 }
 
 #[tokio::test]
-async fn historical_perf_stats_skip_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable(
-) {
+async fn historical_perf_stats_skip_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -5538,15 +5544,16 @@ async fn historical_perf_stats_skip_double_count_for_readable_materialized_archi
         )],
     )
     .await;
-    let materialized_archive_path =
-        state
-            .config
-            .archive_dir
-            .join("perf-same-month-unreadable-sibling-materialized.sqlite.gz");
+    let materialized_archive_path = state
+        .config
+        .archive_dir
+        .join("perf-same-month-unreadable-sibling-materialized.sqlite.gz");
     let _ = fs::remove_file(&materialized_archive_path);
-    fs::rename(&materialized_archive_original_path, &materialized_archive_path).expect(
-        "move readable materialized perf archive batch to a unique same-month path",
-    );
+    fs::rename(
+        &materialized_archive_original_path,
+        &materialized_archive_path,
+    )
+    .expect("move readable materialized perf archive batch to a unique same-month path");
     sqlx::query(
         "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
     )
@@ -5574,11 +5581,10 @@ async fn historical_perf_stats_skip_double_count_for_readable_materialized_archi
         )],
     )
     .await;
-    let unreadable_archive_path =
-        state
-            .config
-            .archive_dir
-            .join("perf-same-month-unreadable-sibling-broken.sqlite.gz");
+    let unreadable_archive_path = state
+        .config
+        .archive_dir
+        .join("perf-same-month-unreadable-sibling-broken.sqlite.gz");
     let _ = fs::remove_file(&unreadable_archive_path);
     fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
         .expect("move unreadable same-month perf sibling archive batch to a unique path");
@@ -6275,8 +6281,7 @@ async fn historical_timeseries_skips_unreadable_replayed_legacy_archives() {
     .await
     .expect("seed replayed timeseries rollup row");
 
-    fs::write(&archive_path, b"not-a-gzip-archive")
-        .expect("corrupt replayed timeseries archive");
+    fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt replayed timeseries archive");
 
     let Json(response) = fetch_timeseries_from_hourly_rollups(
         state,
@@ -6594,7 +6599,9 @@ async fn timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_qu
     )
     .await
     .expect("load repaired invocation hourly rollup row");
-    let row = rows.first().expect("repaired hourly rollup row should exist");
+    let row = rows
+        .first()
+        .expect("repaired hourly rollup row should exist");
     assert_eq!(row.total_count, 3);
     assert_eq!(row.success_count, 1);
     assert_eq!(row.failure_count, 1);
@@ -6913,8 +6920,7 @@ async fn all_time_summary_missing_summary_markers_do_not_replay_materialized_arc
 }
 
 #[tokio::test]
-async fn all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing()
-{
+async fn all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -7382,8 +7388,8 @@ async fn all_time_summary_repair_replays_existing_materialized_archives_when_oth
     .await
     .expect("mark pruned archive as materialized");
 
-    let pruned_bucket_start_epoch = invocation_bucket_start_epoch(&pruned_success_at)
-        .expect("derive pruned bucket epoch");
+    let pruned_bucket_start_epoch =
+        invocation_bucket_start_epoch(&pruned_success_at).expect("derive pruned bucket epoch");
     sqlx::query(
         r#"
         INSERT INTO invocation_rollup_hourly (
@@ -7472,8 +7478,8 @@ async fn all_time_summary_repair_replays_existing_materialized_archives_when_oth
     .await
     .expect("mark existing archive as materialized");
 
-    let existing_bucket_start_epoch = invocation_bucket_start_epoch(&existing_success_at)
-        .expect("derive existing bucket epoch");
+    let existing_bucket_start_epoch =
+        invocation_bucket_start_epoch(&existing_success_at).expect("derive existing bucket epoch");
     sqlx::query(
         r#"
         INSERT INTO invocation_rollup_hourly (
@@ -7592,8 +7598,8 @@ async fn all_time_summary_read_path_skips_unreadable_materialized_archives() {
     .await
     .expect("mark summary archive as materialized");
 
-    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_success_at)
-        .expect("derive summary bucket epoch");
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&archived_success_at).expect("derive summary bucket epoch");
     sqlx::query(
         r#"
         INSERT INTO invocation_rollup_hourly (
@@ -7730,8 +7736,7 @@ async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() 
     .await
     .expect("seed replayed summary rollup row");
 
-    fs::write(&archive_path, b"not-a-gzip-archive")
-        .expect("corrupt replayed legacy archive batch");
+    fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt replayed legacy archive batch");
 
     let Json(summary) = fetch_summary(
         State(state),
@@ -7908,8 +7913,8 @@ async fn summary_rollup_repair_best_effort_skips_unreadable_pending_archives() {
 }
 
 #[tokio::test]
-async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_preserving_pruned_materialized_archives(
-) {
+async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_preserving_pruned_materialized_archives()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -7955,8 +7960,8 @@ async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_prese
     .await
     .expect("mark pruned archive as materialized");
 
-    let pruned_bucket_start_epoch = invocation_bucket_start_epoch(&pruned_success_at)
-        .expect("derive pruned bucket epoch");
+    let pruned_bucket_start_epoch =
+        invocation_bucket_start_epoch(&pruned_success_at).expect("derive pruned bucket epoch");
     sqlx::query(
         r#"
         INSERT INTO invocation_rollup_hourly (
@@ -8033,8 +8038,8 @@ async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_prese
     .await
     .expect("mark boundary archive as materialized");
 
-    let boundary_bucket_start_epoch = invocation_bucket_start_epoch(&archived_boundary_at)
-        .expect("derive boundary bucket epoch");
+    let boundary_bucket_start_epoch =
+        invocation_bucket_start_epoch(&archived_boundary_at).expect("derive boundary bucket epoch");
     sqlx::query(
         r#"
         INSERT INTO invocation_rollup_hourly (
@@ -8136,13 +8141,12 @@ async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_prese
     .expect("load repaired boundary rollup total count");
     assert_eq!(boundary_rollup_total_count, 2);
 
-    let repair_live_cursor: i64 = sqlx::query_scalar(
-        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
-    )
-    .bind("codex_invocations_summary_rollup_v2_live_cursor")
-    .fetch_one(&state.pool)
-    .await
-    .expect("load summary repair live cursor after boundary repair");
+    let repair_live_cursor: i64 =
+        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
+            .bind("codex_invocations_summary_rollup_v2_live_cursor")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load summary repair live cursor after boundary repair");
     assert_eq!(repair_live_cursor, 10);
 }
 
@@ -8193,8 +8197,8 @@ async fn all_time_summary_repair_rebuilds_non_materialized_archives_when_others_
     .await
     .expect("mark pruned archive as materialized");
 
-    let pruned_bucket_start_epoch = invocation_bucket_start_epoch(&pruned_success_at)
-        .expect("derive pruned bucket epoch");
+    let pruned_bucket_start_epoch =
+        invocation_bucket_start_epoch(&pruned_success_at).expect("derive pruned bucket epoch");
     sqlx::query(
         r#"
         INSERT INTO invocation_rollup_hourly (
@@ -8270,8 +8274,8 @@ async fn all_time_summary_repair_rebuilds_non_materialized_archives_when_others_
     )
     .await;
 
-    let existing_bucket_start_epoch = invocation_bucket_start_epoch(&existing_success_at)
-        .expect("derive existing bucket epoch");
+    let existing_bucket_start_epoch =
+        invocation_bucket_start_epoch(&existing_success_at).expect("derive existing bucket epoch");
     sqlx::query(
         r#"
         INSERT INTO invocation_rollup_hourly (
@@ -8541,13 +8545,12 @@ async fn summary_rollup_repair_refreshes_stale_repair_live_cursor_from_shared_pr
         .await
         .expect("refresh stale summary repair live cursor");
 
-    let repair_live_cursor: i64 = sqlx::query_scalar(
-        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
-    )
-    .bind("codex_invocations_summary_rollup_v2_live_cursor")
-    .fetch_one(&state.pool)
-    .await
-    .expect("load repaired summary live cursor");
+    let repair_live_cursor: i64 =
+        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
+            .bind("codex_invocations_summary_rollup_v2_live_cursor")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load repaired summary live cursor");
     assert_eq!(repair_live_cursor, 25);
 }
 
@@ -11640,7 +11643,11 @@ async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
         )
         .bind(id)
         .bind(invoke_id)
-        .bind(if id == 501 { &earlier_today } else { &occurred_at })
+        .bind(if id == 501 {
+            &earlier_today
+        } else {
+            &occurred_at
+        })
         .bind(SOURCE_PROXY)
         .bind(status)
         .bind(total_tokens)
@@ -11656,9 +11663,12 @@ async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
     }
 
     let mut tx = state.pool.begin().await.expect("begin rollup rebuild tx");
-    recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[501, 502, 503, 504, 505, 506, 507])
-        .await
-        .expect("rebuild summary rollups for direct test rows");
+    recompute_invocation_hourly_rollups_for_ids_tx(
+        tx.as_mut(),
+        &[501, 502, 503, 504, 505, 506, 507],
+    )
+    .await
+    .expect("rebuild summary rollups for direct test rows");
     save_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS, 507)
         .await
         .expect("mark directly rebuilt summary rollups as live cursor covered");
@@ -11759,7 +11769,11 @@ async fn account_scoped_natural_day_summary_keeps_augmentation_fields_scoped() {
         .bind(status)
         .bind(total_tokens)
         .bind(cost)
-        .bind(if status == "failed" { Some("account scoped failure") } else { None })
+        .bind(if status == "failed" {
+            Some("account scoped failure")
+        } else {
+            None
+        })
         .bind(if status == "failed" {
             Some("upstream_response_failed")
         } else if status == "interrupted" {
@@ -12051,8 +12065,14 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
         account
             .first_byte_avg_ms
             .expect("first response byte total avg should exist"),
-        (83.434948_f64 + 2.762219_f64 + 2_123.797426_f64 + 0.006021_f64
-            + 49.329286_f64 + 1.973188_f64 + 3_474.776073_f64 + 0.002344_f64)
+        (83.434948_f64
+            + 2.762219_f64
+            + 2_123.797426_f64
+            + 0.006021_f64
+            + 49.329286_f64
+            + 1.973188_f64
+            + 3_474.776073_f64
+            + 0.002344_f64)
             / 2.0,
     );
     assert_f64_close(
@@ -12065,7 +12085,11 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     assert_eq!(account.retry_invocation_count, Some(1));
     let effective_routing_rule =
         serde_json::to_value(&account.effective_routing_rule).expect("serialize routing rule");
-    assert!(effective_routing_rule.get("blockNewConversations").is_none());
+    assert!(
+        effective_routing_rule
+            .get("blockNewConversations")
+            .is_none()
+    );
     assert_eq!(
         effective_routing_rule["allowCutIn"],
         serde_json::Value::Bool(false)
@@ -12095,7 +12119,10 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
         account.recent_invocations[2].invoke_id,
         "upstream-activity-pending-retry"
     );
-    assert_eq!(account.recent_invocations[3].invoke_id, "upstream-activity-failed");
+    assert_eq!(
+        account.recent_invocations[3].invoke_id,
+        "upstream-activity-failed"
+    );
 
     let Json(expanded_activity) = fetch_upstream_account_activity(
         State(state.clone()),
@@ -12157,14 +12184,18 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     .await
     .expect("fetch yesterday upstream account activity");
 
-    assert!(yesterday_activity
-        .accounts
-        .iter()
-        .all(|account| account.in_progress_invocation_count.is_none()));
-    assert!(yesterday_activity
-        .accounts
-        .iter()
-        .all(|account| account.retry_invocation_count.is_none()));
+    assert!(
+        yesterday_activity
+            .accounts
+            .iter()
+            .all(|account| account.in_progress_invocation_count.is_none())
+    );
+    assert!(
+        yesterday_activity
+            .accounts
+            .iter()
+            .all(|account| account.retry_invocation_count.is_none())
+    );
 }
 
 #[tokio::test]
@@ -12231,15 +12262,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     .execute(&state.pool)
     .await
     .expect("insert previous unassigned failure");
-    for (
-        id,
-        invoke_id,
-        upstream_account_id,
-        status,
-        total_tokens,
-        cost,
-        ttfb_ms,
-    ) in [
+    for (id, invoke_id, upstream_account_id, status, total_tokens, cost, ttfb_ms) in [
         (
             8_001_i64,
             "dashboard-activity-alpha-success",
@@ -12334,11 +12357,13 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     .bind("success")
     .bind(4_000_i64)
     .bind(0.40_f64)
-    .bind(json!({
-        "promptCacheKey": "pck-dashboard-activity-yesterday-success",
-        "upstreamAccountId": 42_i64,
-    })
-    .to_string())
+    .bind(
+        json!({
+            "promptCacheKey": "pck-dashboard-activity-yesterday-success",
+            "upstreamAccountId": 42_i64,
+        })
+        .to_string(),
+    )
     .bind("{}")
     .execute(&state.pool)
     .await
@@ -12441,11 +12466,12 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         t_persist_ms: None,
         created_at: format_naive(base_local),
     };
-    state.proxy_runtime_invocations.upsert(runtime_today.clone());
+    state
+        .proxy_runtime_invocations
+        .upsert(runtime_today.clone());
     let mut runtime_before_today = runtime_today.clone();
     runtime_before_today.id = 8_006_i64;
-    runtime_before_today.invoke_id =
-        "dashboard-activity-runtime-before-today-running".to_string();
+    runtime_before_today.invoke_id = "dashboard-activity-runtime-before-today-running".to_string();
     runtime_before_today.occurred_at = format_naive(
         base_local
             .checked_sub_signed(ChronoDuration::days(2))
@@ -12457,19 +12483,11 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         Some("pck-dashboard-activity-runtime-before-today-running".to_string());
     state.proxy_runtime_invocations.upsert(runtime_before_today);
 
-    let Json(activity) = fetch_dashboard_activity(
-        State(state.clone()),
-        Query(DashboardActivityQuery {
-            range: "today".to_string(),
-            recent_limit: Some(4),
-            time_zone: Some("Asia/Shanghai".to_string()),
-            include_accounts: true,
-        }),
-    )
-    .await
-    .expect("fetch dashboard activity snapshot");
+    let activity = load_dashboard_activity_snapshot(state.as_ref(), "today", Shanghai, 4, true)
+        .await
+        .expect("load dashboard activity snapshot");
 
-    let accounts = activity.accounts.expect("accounts included");
+    let accounts = activity.accounts();
     assert_eq!(accounts.len(), 3);
     assert!(accounts.iter().any(|account| account.is_unassigned));
     let unassigned = accounts
@@ -12478,20 +12496,29 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         .expect("unassigned account bucket");
     assert_eq!(unassigned.retry_invocation_count, Some(1));
     assert_eq!(
-        activity.summary.stats.total_count,
-        accounts.iter().map(|account| account.request_count).sum::<i64>(),
+        activity.summary().stats.total_count,
+        accounts
+            .iter()
+            .map(|account| account.request_count)
+            .sum::<i64>(),
     );
     assert_eq!(
-        activity.summary.stats.total_tokens,
-        accounts.iter().map(|account| account.total_tokens).sum::<i64>(),
+        activity.summary().stats.total_tokens,
+        accounts
+            .iter()
+            .map(|account| account.total_tokens)
+            .sum::<i64>(),
     );
-    assert_eq!(activity.summary.stats.total_tokens, 16_499);
+    assert_eq!(activity.summary().stats.total_tokens, 16_499);
     assert_f64_close(
-        activity.summary.stats.total_cost,
-        accounts.iter().map(|account| account.total_cost).sum::<f64>(),
+        activity.summary().stats.total_cost,
+        accounts
+            .iter()
+            .map(|account| account.total_cost)
+            .sum::<f64>(),
     );
     assert_eq!(
-        activity.summary.stats.in_progress_conversation_count,
+        activity.summary().stats.in_progress_conversation_count,
         Some(
             accounts
                 .iter()
@@ -12499,9 +12526,15 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
                 .sum::<i64>(),
         ),
     );
-    assert_eq!(activity.summary.stats.in_progress_conversation_count, Some(4));
     assert_eq!(
-        activity.summary.stats.in_progress_retry_conversation_count,
+        activity.summary().stats.in_progress_conversation_count,
+        Some(4)
+    );
+    assert_eq!(
+        activity
+            .summary()
+            .stats
+            .in_progress_retry_conversation_count,
         Some(
             accounts
                 .iter()
@@ -12511,7 +12544,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     );
     assert_f64_close(
         activity
-            .summary
+            .summary()
             .tokens_per_minute
             .expect("summary token rate"),
         accounts
@@ -12520,13 +12553,25 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .sum::<f64>(),
     );
     assert_f64_close(
-        activity.summary.spend_rate.expect("summary spend rate"),
+        activity.summary().spend_rate.expect("summary spend rate"),
         accounts
             .iter()
             .map(|account| account.spend_rate.unwrap_or(0.0))
             .sum::<f64>(),
     );
-    let Json(summary_only_activity) = fetch_dashboard_activity(
+    let source_scope = resolve_default_source_scope(&state.pool)
+        .await
+        .expect("resolve source scope");
+    let summary_only_activity = load_dashboard_activity_summary_only_snapshot(
+        state.as_ref(),
+        "today",
+        source_scope,
+        activity.exact_range(),
+    )
+    .await
+    .expect("load summary-only dashboard activity snapshot");
+    assert!(summary_only_activity.accounts().is_empty());
+    let Json(summary_only_response) = fetch_dashboard_activity(
         State(state.clone()),
         Query(DashboardActivityQuery {
             range: "today".to_string(),
@@ -12537,43 +12582,43 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     )
     .await
     .expect("fetch summary-only dashboard activity snapshot");
-    assert!(summary_only_activity.accounts.is_none());
+    assert!(summary_only_response.accounts.is_none());
     assert_eq!(
         summary_only_activity
-            .summary
+            .summary()
             .stats
             .in_progress_conversation_count,
-        activity.summary.stats.in_progress_conversation_count,
+        activity.summary().stats.in_progress_conversation_count,
     );
     assert_eq!(
         summary_only_activity
-            .summary
+            .summary()
             .stats
             .in_progress_retry_conversation_count,
-        activity.summary.stats.in_progress_retry_conversation_count,
+        activity
+            .summary()
+            .stats
+            .in_progress_retry_conversation_count,
     );
-    // The `today` window is resolved independently for each request, so allow a
-    // small tail-window drift between the full snapshot and the summary-only snapshot.
-    // Full-suite load can add enough delay for high-throughput fixtures to move
-    // rates slightly while still preserving the same underlying aggregation.
-    assert_f64_close_with_tolerance(
+    assert_f64_close(
         summary_only_activity
-            .summary
+            .summary()
             .tokens_per_minute
             .expect("summary-only token rate"),
         activity
-            .summary
+            .summary()
             .tokens_per_minute
             .expect("full snapshot token rate"),
-        25.0,
     );
-    assert_f64_close_with_tolerance(
+    assert_f64_close(
         summary_only_activity
-            .summary
+            .summary()
             .spend_rate
             .expect("summary-only spend rate"),
-        activity.summary.spend_rate.expect("full snapshot spend rate"),
-        0.02,
+        activity
+            .summary()
+            .spend_rate
+            .expect("full snapshot spend rate"),
     );
 
     let Json(yesterday_activity) = fetch_dashboard_activity(
@@ -12601,7 +12646,9 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .in_progress_retry_conversation_count,
         None,
     );
-    let yesterday_accounts = yesterday_activity.accounts.expect("yesterday accounts included");
+    let yesterday_accounts = yesterday_activity
+        .accounts
+        .expect("yesterday accounts included");
     assert_eq!(yesterday_activity.summary.stats.total_tokens, 4_000);
     assert_eq!(yesterday_accounts.len(), 1);
     assert!(
@@ -12826,7 +12873,10 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
     .expect("fetch upstream activity with running fallback");
 
     assert_eq!(activity.accounts.len(), 1);
-    let account = activity.accounts.first().expect("fallback activity account");
+    let account = activity
+        .accounts
+        .first()
+        .expect("fallback activity account");
     assert_eq!(account.upstream_account_id, 77);
     assert_eq!(account.display_name, "Pool Fallback");
     assert_eq!(account.request_count, 2);
@@ -12865,7 +12915,10 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
     .await
     .expect("fetch fallback account summary");
     assert_eq!(account_summary.in_progress_conversation_count, Some(1));
-    assert_eq!(account_summary.in_progress_retry_conversation_count, Some(1));
+    assert_eq!(
+        account_summary.in_progress_retry_conversation_count,
+        Some(1)
+    );
     let account_summary_phase_counts = account_summary
         .in_progress_phase_counts
         .expect("account summary should include live phase counts");
@@ -13233,13 +13286,12 @@ async fn account_scoped_historical_stats_include_unmaterialized_archived_hours()
     assert_f64_close(archived_point.total_cost, 0.30);
     assert_f64_close(archived_point.non_success_cost, 0.20);
 
-    let account_usage_replay_markers: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1",
-    )
-    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
-    .fetch_one(&state.pool)
-    .await
-    .expect("load account usage replay marker count");
+    let account_usage_replay_markers: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1")
+            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load account usage replay marker count");
     assert_eq!(account_usage_replay_markers, 0);
 }
 

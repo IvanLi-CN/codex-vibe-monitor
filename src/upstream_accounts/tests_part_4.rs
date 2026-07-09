@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn current_quota_route_failure_survives_informational_account_updates() {
     let pool = test_pool().await;
@@ -82,7 +85,7 @@ async fn oauth_summary_exports_missing_refresh_token_flag() {
     assert!(!summary.has_refresh_token);
 }
 
-async fn insert_limit_sample(
+pub(crate) async fn insert_limit_sample(
     pool: &SqlitePool,
     account_id: i64,
     captured_at: &str,
@@ -111,7 +114,7 @@ async fn insert_limit_sample(
     .expect("insert limit sample");
 }
 
-async fn insert_limit_sample_with_usage(
+pub(crate) async fn insert_limit_sample_with_usage(
     pool: &SqlitePool,
     account_id: i64,
     captured_at: &str,
@@ -142,7 +145,7 @@ async fn insert_limit_sample_with_usage(
     .expect("insert limit sample with usage");
 }
 
-async fn insert_limit_sample_with_reset_times(
+pub(crate) async fn insert_limit_sample_with_reset_times(
     pool: &SqlitePool,
     account_id: i64,
     captured_at: &str,
@@ -177,7 +180,7 @@ async fn insert_limit_sample_with_reset_times(
     .expect("insert limit sample with reset times");
 }
 
-async fn seed_route_cooldown(
+pub(crate) async fn seed_route_cooldown(
     pool: &SqlitePool,
     account_id: i64,
     failure_kind: &str,
@@ -222,7 +225,7 @@ fn pool_blocked_failure_kinds_are_not_temporary_route_failures() {
     )));
 }
 
-async fn seed_hard_unavailable_route_failure(
+pub(crate) async fn seed_hard_unavailable_route_failure(
     pool: &SqlitePool,
     account_id: i64,
     status: &str,
@@ -783,7 +786,10 @@ async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
         panic!("unexpected credential kind after refresh-due sync")
     };
     assert_eq!(credentials.access_token, "proxy-refreshed-access-token");
-    assert_eq!(credentials.refresh_token.as_deref(), Some("proxy-refreshed-refresh-token"));
+    assert_eq!(
+        credentials.refresh_token.as_deref(),
+        Some("proxy-refreshed-refresh-token")
+    );
 
     server.abort();
 }
@@ -1497,7 +1503,7 @@ async fn updating_api_key_reactivates_manually_recoverable_account() {
                 group_note: None,
                 concurrency_limit: None,
                 upstream_base_url: OptionalField::Missing,
-            bound_proxy_keys: OptionalField::Missing,
+                bound_proxy_keys: OptionalField::Missing,
                 enabled: None,
                 is_mother: None,
                 api_key: Some("sk-live-new".to_string()),
@@ -1903,7 +1909,10 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
         panic!("unexpected credential kind after refresh")
     };
     assert_eq!(credentials.access_token, "refreshed-access-token");
-    assert_eq!(credentials.refresh_token.as_deref(), Some("refresh-token-rotated"));
+    assert_eq!(
+        credentials.refresh_token.as_deref(),
+        Some("refresh-token-rotated")
+    );
 
     let summary = build_summary_from_row(
         &after,
@@ -2732,15 +2741,30 @@ async fn classified_sync_failure_emits_suppressed_event_when_reason_toggle_disab
         .await
         .expect("load suppressed sync detail")
         .expect("suppressed sync detail exists");
-    assert_eq!(detail.summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(detail.summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(detail.summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+    assert_eq!(
+        detail.summary.display_status,
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE
+    );
+    assert_eq!(
+        detail.summary.health_status,
+        UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+    );
+    assert_eq!(
+        detail.summary.work_status,
+        UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+    );
     let event = detail
         .recent_actions
         .first()
         .expect("suppressed sync event should be recorded");
-    assert_eq!(event.action, UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED);
-    assert_eq!(event.source, UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE);
+    assert_eq!(
+        event.action,
+        UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED
+    );
+    assert_eq!(
+        event.source,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE
+    );
     assert_eq!(
         event.reason_code.as_deref(),
         Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402)
@@ -3061,10 +3085,8 @@ async fn resolver_reuses_sticky_snapshot_exhausted_account_until_conversation_ge
     )
     .await;
     let now_iso = format_utc_iso(Utc::now());
-    insert_limit_sample_with_usage(&state.pool, exhausted, &now_iso, Some(100.0), Some(20.0))
-        .await;
-    insert_limit_sample_with_usage(&state.pool, available, &now_iso, Some(42.0), Some(10.0))
-        .await;
+    insert_limit_sample_with_usage(&state.pool, exhausted, &now_iso, Some(100.0), Some(20.0)).await;
+    insert_limit_sample_with_usage(&state.pool, available, &now_iso, Some(42.0), Some(10.0)).await;
     upsert_sticky_route(
         &state.pool,
         "sticky-snapshot-exhausted",
@@ -3137,14 +3159,10 @@ async fn resolver_preserves_sticky_record_but_rotates_after_auth_hard_failure() 
         Some(failed),
     );
 
-    let resolution = resolve_pool_account_for_request(
-        &state,
-        Some("sticky-auth-failed"),
-        &[],
-        &HashSet::new(),
-    )
-    .await
-    .expect("resolve after auth hard failure");
+    let resolution =
+        resolve_pool_account_for_request(&state, Some("sticky-auth-failed"), &[], &HashSet::new())
+            .await
+            .expect("resolve after auth hard failure");
     let PoolAccountResolution::Resolved(account) = resolution else {
         panic!("expected resolver to rotate to another available account, got {resolution:?}");
     };
@@ -3185,15 +3203,15 @@ async fn resolver_prefers_primary_priority_before_normal_and_fallback() {
 
     let mut fallback_rule = test_tag_routing_rule();
     fallback_rule.priority_tier = TagPriorityTier::Fallback;
-    let fallback_tag = insert_tag(&state.pool, "fallback-priority", &fallback_rule)
+    let fallback_tag = insert_test_tag(&state.pool, "fallback-priority", &fallback_rule)
         .await
         .expect("insert fallback tag");
-    let normal_tag = insert_tag(&state.pool, "normal-priority", &test_tag_routing_rule())
+    let normal_tag = insert_test_tag(&state.pool, "normal-priority", &test_tag_routing_rule())
         .await
         .expect("insert normal tag");
     let mut primary_rule = test_tag_routing_rule();
     primary_rule.priority_tier = TagPriorityTier::Primary;
-    let primary_tag = insert_tag(&state.pool, "primary-priority", &primary_rule)
+    let primary_tag = insert_test_tag(&state.pool, "primary-priority", &primary_rule)
         .await
         .expect("insert primary tag");
     sync_account_tag_links(&state.pool, fallback_account_id, &[fallback_tag.summary.id])
@@ -3276,10 +3294,10 @@ async fn resolver_keeps_higher_priority_soft_degraded_candidate_ahead_of_lower_p
 
     let mut primary_rule = test_tag_routing_rule();
     primary_rule.priority_tier = TagPriorityTier::Primary;
-    let primary_tag = insert_tag(&state.pool, "soft-degrade-owner-primary", &primary_rule)
+    let primary_tag = insert_test_tag(&state.pool, "soft-degrade-owner-primary", &primary_rule)
         .await
         .expect("insert primary owner tag");
-    let normal_tag = insert_tag(
+    let normal_tag = insert_test_tag(
         &state.pool,
         "soft-degrade-target-normal",
         &test_tag_routing_rule(),
@@ -3288,7 +3306,7 @@ async fn resolver_keeps_higher_priority_soft_degraded_candidate_ahead_of_lower_p
     .expect("insert normal target tag");
     let mut fallback_rule = test_tag_routing_rule();
     fallback_rule.priority_tier = TagPriorityTier::Fallback;
-    let fallback_tag = insert_tag(&state.pool, "soft-degrade-ready-fallback", &fallback_rule)
+    let fallback_tag = insert_test_tag(&state.pool, "soft-degrade-ready-fallback", &fallback_rule)
         .await
         .expect("insert fallback ready tag");
     sync_account_tag_links(&state.pool, slot_owner_id, &[primary_tag.summary.id])

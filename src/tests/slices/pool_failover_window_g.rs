@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn ensure_schema_adds_upstream_account_pressure_hot_path_indexes() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -1724,7 +1727,7 @@ async fn run_best_effort_retention_pragma_tolerates_sqlite_lock_errors() {
 async fn build_sqlite_connect_options_enforces_wal_and_busy_timeout_defaults() {
     let temp_dir = make_temp_test_dir("sqlite-connect-options");
     let db_path = temp_dir.join("options.db");
-    let db_url = sqlite_url_for_path(&db_path);
+    let db_url = test_sqlite_url_for_path(&db_path);
 
     let options = build_sqlite_connect_options(
         &db_url,
@@ -1754,13 +1757,13 @@ async fn build_sqlite_connect_options_enforces_wal_and_busy_timeout_defaults() {
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
-async fn file_backed_test_state_with_busy_timeout(
+pub(crate) async fn file_backed_test_state_with_busy_timeout(
     prefix: &str,
     busy_timeout: Duration,
 ) -> (Arc<AppState>, PathBuf, String) {
     let temp_dir = make_temp_test_dir(prefix);
     let db_path = temp_dir.join("state.db");
-    let db_url = sqlite_url_for_path(&db_path);
+    let db_url = test_sqlite_url_for_path(&db_path);
     let connect_options =
         build_sqlite_connect_options(&db_url, busy_timeout).expect("build sqlite options");
     let pool = SqlitePoolOptions::new()
@@ -1845,17 +1848,17 @@ async fn wait_for_summary_quota_workers(state: &AppState) {
         std::mem::take(&mut *guard)
     };
     for handle in handles {
-        handle.await.expect("summary/quota worker should join cleanly");
+        handle
+            .await
+            .expect("summary/quota worker should join cleanly");
     }
 }
 
 #[tokio::test]
 async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
-    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
-        "dashboard-read-lock",
-        Duration::from_millis(100),
-    )
-    .await;
+    let (state, temp_dir, db_url) =
+        file_backed_test_state_with_busy_timeout("dashboard-read-lock", Duration::from_millis(100))
+            .await;
     let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     persist_proxy_capture_record(
         &state.pool,
@@ -1926,7 +1929,7 @@ async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
             cursor: None,
             snapshot_at: None,
             detail: Some("compact".to_string()),
-                recent_invocation_limit: None,
+            recent_invocation_limit: None,
         }),
     )
     .await
@@ -2016,7 +2019,11 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
         "runtime snapshots should not invalidate prompt-cache conversations"
     );
 
-    let runtime_snapshot_follow_up_handles = state.proxy_summary_quota_broadcast_handle.lock().await.len();
+    let runtime_snapshot_follow_up_handles = state
+        .proxy_summary_quota_broadcast_handle
+        .lock()
+        .await
+        .len();
     assert_eq!(
         runtime_snapshot_follow_up_handles, 0,
         "runtime snapshots should not schedule the summary/quota follow-up worker"
@@ -2133,7 +2140,11 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
         terminal_prompt_cache_requests, 1,
         "terminal proxy captures should keep prompt-cache rollups queryable"
     );
-    let terminal_follow_up_handles = state.proxy_summary_quota_broadcast_handle.lock().await.len();
+    let terminal_follow_up_handles = state
+        .proxy_summary_quota_broadcast_handle
+        .lock()
+        .await
+        .len();
     assert!(
         terminal_follow_up_handles == 0,
         "terminal proxy captures without subscribers should not schedule the summary/quota follow-up worker"
@@ -2144,7 +2155,7 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
 async fn run_backfill_with_retry_succeeds_after_lock_release() {
     let temp_dir = make_temp_test_dir("proxy-backfill-retry-success");
     let db_path = temp_dir.join("lock-success.db");
-    let db_url = sqlite_url_for_path(&db_path);
+    let db_url = test_sqlite_url_for_path(&db_path);
     let connect_options = build_sqlite_connect_options(&db_url, Duration::from_millis(100))
         .expect("build sqlite options");
     let pool = SqlitePoolOptions::new()
@@ -2206,7 +2217,7 @@ async fn run_backfill_with_retry_succeeds_after_lock_release() {
 async fn run_backfill_with_retry_fails_when_lock_persists() {
     let temp_dir = make_temp_test_dir("proxy-backfill-retry-fail");
     let db_path = temp_dir.join("lock-fail.db");
-    let db_url = sqlite_url_for_path(&db_path);
+    let db_url = test_sqlite_url_for_path(&db_path);
     let connect_options = build_sqlite_connect_options(&db_url, Duration::from_millis(100))
         .expect("build sqlite options");
     let pool = SqlitePoolOptions::new()
@@ -2268,7 +2279,7 @@ async fn run_backfill_with_retry_fails_when_lock_persists() {
 async fn run_backfill_with_retry_does_not_retry_non_lock_errors() {
     let temp_dir = make_temp_test_dir("proxy-backfill-retry-non-lock");
     let db_path = temp_dir.join("non-lock.db");
-    let db_url = sqlite_url_for_path(&db_path);
+    let db_url = test_sqlite_url_for_path(&db_path);
     let connect_options = build_sqlite_connect_options(&db_url, Duration::from_millis(100))
         .expect("build sqlite options");
     let pool = SqlitePoolOptions::new()
@@ -2301,7 +2312,7 @@ async fn run_backfill_with_retry_does_not_retry_non_lock_errors() {
 async fn run_cost_backfill_with_retry_succeeds_after_lock_release() {
     let temp_dir = make_temp_test_dir("proxy-cost-backfill-retry-success");
     let db_path = temp_dir.join("lock-success.db");
-    let db_url = sqlite_url_for_path(&db_path);
+    let db_url = test_sqlite_url_for_path(&db_path);
     let connect_options = build_sqlite_connect_options(&db_url, Duration::from_millis(100))
         .expect("build sqlite options");
     let pool = SqlitePoolOptions::new()
@@ -2383,7 +2394,7 @@ async fn run_cost_backfill_with_retry_succeeds_after_lock_release() {
 async fn run_cost_backfill_with_retry_does_not_retry_non_lock_errors() {
     let temp_dir = make_temp_test_dir("proxy-cost-backfill-retry-non-lock");
     let db_path = temp_dir.join("non-lock.db");
-    let db_url = sqlite_url_for_path(&db_path);
+    let db_url = test_sqlite_url_for_path(&db_path);
     let connect_options = build_sqlite_connect_options(&db_url, Duration::from_millis(100))
         .expect("build sqlite options");
     let pool = SqlitePoolOptions::new()
@@ -2510,7 +2521,7 @@ async fn quota_latest_returns_seeded_historical_snapshot() {
     assert_f64_close(snapshot.total_cost, 10.0);
 }
 
-async fn insert_timeseries_invocation(
+pub(crate) async fn insert_timeseries_invocation(
     pool: &SqlitePool,
     invoke_id: &str,
     occurred_at: &str,
@@ -2530,7 +2541,7 @@ async fn insert_timeseries_invocation(
     .await;
 }
 
-async fn insert_timeseries_invocation_with_stages(
+pub(crate) async fn insert_timeseries_invocation_with_stages(
     pool: &SqlitePool,
     invoke_id: &str,
     occurred_at: &str,
@@ -2574,7 +2585,7 @@ async fn insert_timeseries_invocation_with_stages(
     .expect("insert timeseries invocation");
 }
 
-async fn insert_parallel_work_invocation(
+pub(crate) async fn insert_parallel_work_invocation(
     pool: &SqlitePool,
     invoke_id: &str,
     occurred_at: DateTime<Utc>,
@@ -2610,7 +2621,7 @@ async fn insert_parallel_work_invocation(
     .expect("insert parallel-work invocation");
 }
 
-async fn insert_invocation_rollup(
+pub(crate) async fn insert_invocation_rollup(
     pool: &SqlitePool,
     stats_date: NaiveDate,
     source: &str,
@@ -2654,7 +2665,7 @@ fn max_f64_sample(samples: &[f64]) -> f64 {
         .fold(0.0_f64, |current, value| current.max(value))
 }
 
-async fn insert_invocation_rollup_with_latency_samples(
+pub(crate) async fn insert_invocation_rollup_with_latency_samples(
     pool: &SqlitePool,
     stats_date: NaiveDate,
     source: &str,
@@ -2744,7 +2755,7 @@ async fn insert_invocation_rollup_with_latency_samples(
     .expect("insert invocation hourly rollup");
 }
 
-async fn insert_invocation_hourly_rollup_bucket(
+pub(crate) async fn insert_invocation_hourly_rollup_bucket(
     pool: &SqlitePool,
     bucket_start: DateTime<Utc>,
     source: &str,

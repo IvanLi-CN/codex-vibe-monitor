@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_rejects_oversized_request_body() {
@@ -626,7 +629,8 @@ fn prepare_target_request_body_detects_remote_v2_compaction_requests() {
         prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
 
     assert_eq!(
-        info.compaction_request_kind.map(CompactionKind::as_payload_str),
+        info.compaction_request_kind
+            .map(CompactionKind::as_payload_str),
         Some("remote_v2")
     );
 }
@@ -647,7 +651,8 @@ fn prepare_target_request_body_detects_remote_v2_compaction_request_object_shape
         prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
 
     assert_eq!(
-        info.compaction_request_kind.map(CompactionKind::as_payload_str),
+        info.compaction_request_kind
+            .map(CompactionKind::as_payload_str),
         Some("remote_v2")
     );
 }
@@ -1552,7 +1557,9 @@ fn parse_target_response_payload_detects_remote_v2_compaction_stream_events() {
         parse_target_response_payload(ProxyCaptureTarget::Responses, raw.as_bytes(), true, None);
 
     assert_eq!(
-        parsed.compaction_response_kind.map(CompactionKind::as_payload_str),
+        parsed
+            .compaction_response_kind
+            .map(CompactionKind::as_payload_str),
         Some("remote_v2")
     );
 }
@@ -1586,7 +1593,9 @@ fn parse_target_response_payload_detects_response_compaction_json_shape() {
     );
 
     assert_eq!(
-        parsed.compaction_response_kind.map(CompactionKind::as_payload_str),
+        parsed
+            .compaction_response_kind
+            .map(CompactionKind::as_payload_str),
         Some("remote_v2")
     );
 }
@@ -1620,7 +1629,9 @@ fn compact_responses_keep_legacy_compaction_kind_even_with_compaction_payload_sh
     );
 
     assert_eq!(
-        parsed.compaction_response_kind.map(CompactionKind::as_payload_str),
+        parsed
+            .compaction_response_kind
+            .map(CompactionKind::as_payload_str),
         Some("remote_v2")
     );
 
@@ -1813,11 +1824,11 @@ async fn proxy_capture_target_gzip_stream_without_event_stream_header_still_extr
     upstream_handle.abort();
 }
 
-fn reset_proxy_capture_hot_path_raw_fallbacks() {
+pub(crate) fn reset_proxy_capture_hot_path_raw_fallbacks() {
     reset_response_capture_raw_fallback_counters();
 }
 
-fn assert_proxy_capture_hot_path_skips_raw_fallbacks() {
+pub(crate) fn assert_proxy_capture_hot_path_skips_raw_fallbacks() {
     let (sse_hint_fallbacks, parse_fallbacks) = response_capture_raw_fallback_counts();
     assert_eq!(
         sse_hint_fallbacks, 0,

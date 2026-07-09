@@ -1,4 +1,12 @@
 use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use chrono::Offset;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
 
 pub(crate) async fn fetch_forward_proxy_live_stats(
     State(state): State<Arc<AppState>>,
@@ -24,7 +32,7 @@ pub(crate) async fn fetch_forward_proxy_timeseries(
     Ok(Json(response))
 }
 
-fn ensure_forward_proxy_hourly_tz_supported(
+pub(crate) fn ensure_forward_proxy_hourly_tz_supported(
     reporting_tz: Tz,
     range_window: &RangeWindow,
 ) -> Result<(), ApiError> {

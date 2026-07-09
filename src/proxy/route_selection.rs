@@ -1,3 +1,5 @@
+use super::*;
+
 pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     let authorization = headers.get(header::AUTHORIZATION)?.to_str().ok()?.trim();
     let (scheme, token) = authorization.split_once(' ')?;
@@ -12,7 +14,7 @@ pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     }
 }
 
-fn pool_route_response_status_is_success(status: StatusCode) -> bool {
+pub(crate) fn pool_route_response_status_is_success(status: StatusCode) -> bool {
     status.is_success() || status.is_redirection()
 }
 
@@ -105,11 +107,9 @@ pub(crate) async fn extract_prompt_cache_key_from_replay_snapshot(
 ) -> Option<String> {
     match snapshot {
         PoolReplayBodySnapshot::Empty => None,
-        PoolReplayBodySnapshot::Memory(bytes) => {
-            serde_json::from_slice::<Value>(bytes.as_ref())
-                .ok()
-                .and_then(|value| extract_prompt_cache_key_from_request_body(&value))
-        }
+        PoolReplayBodySnapshot::Memory(bytes) => serde_json::from_slice::<Value>(bytes.as_ref())
+            .ok()
+            .and_then(|value| extract_prompt_cache_key_from_request_body(&value)),
         PoolReplayBodySnapshot::File { temp_file, .. } => {
             let path = temp_file.path.clone();
             tokio::task::spawn_blocking(move || {
@@ -196,7 +196,7 @@ pub(crate) async fn confirm_prompt_cache_encrypted_session_owner_success_if_enab
     .await
 }
 
-async fn load_via_pool_prompt_cache_binding_constraint(
+pub(crate) async fn load_via_pool_prompt_cache_binding_constraint(
     state: &AppState,
     prompt_cache_key: Option<&str>,
 ) -> Result<Option<PromptCacheConversationBindingConstraint>, (StatusCode, String)> {
@@ -284,7 +284,8 @@ pub(crate) fn should_prebuffer_for_body_sticky_probe(
     body_size_hint_exact: Option<usize>,
 ) -> bool {
     !has_header_sticky_key
-        && content_type.is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
+        && content_type
+            .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
         && body_size_hint_exact
             .is_some_and(|value| value <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES)
 }
@@ -299,7 +300,7 @@ pub(crate) async fn live_first_proxy_binding_key_snapshot(
     canonical_pool_attempt_proxy_binding_key(state, selected_proxy.key.as_str()).await
 }
 
-fn build_via_pool_attempt_trace_context(
+pub(crate) fn build_via_pool_attempt_trace_context(
     proxy_request_id: u64,
     endpoint: &str,
     sticky_key: Option<String>,
@@ -314,14 +315,14 @@ fn build_via_pool_attempt_trace_context(
 }
 
 #[derive(Debug, Clone)]
-struct ViaPoolResolutionTerminalError {
-    status: StatusCode,
-    message: String,
-    assigned_blocked: Option<PoolAssignedBlockedAccount>,
+pub(crate) struct ViaPoolResolutionTerminalError {
+    pub(crate) status: StatusCode,
+    pub(crate) message: String,
+    pub(crate) assigned_blocked: Option<PoolAssignedBlockedAccount>,
 }
 
 impl ViaPoolResolutionTerminalError {
-    fn plain(status: StatusCode, message: impl Into<String>) -> Self {
+    pub(crate) fn plain(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
             status,
             message: message.into(),
@@ -329,7 +330,7 @@ impl ViaPoolResolutionTerminalError {
         }
     }
 
-    fn assigned_blocked(blocked: PoolAssignedBlockedAccount) -> Self {
+    pub(crate) fn assigned_blocked(blocked: PoolAssignedBlockedAccount) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             message: blocked.message.clone(),
@@ -337,7 +338,7 @@ impl ViaPoolResolutionTerminalError {
         }
     }
 
-    async fn persist_if_needed(
+    pub(crate) async fn persist_if_needed(
         &self,
         state: &AppState,
         trace_context: Option<&PoolUpstreamAttemptTraceContext>,
@@ -376,7 +377,7 @@ impl ViaPoolResolutionTerminalError {
     }
 }
 
-async fn maybe_persist_encrypted_session_owner_guard_terminal_error(
+pub(crate) async fn maybe_persist_encrypted_session_owner_guard_terminal_error(
     state: &AppState,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     owner_auto_guard_active: bool,
@@ -412,7 +413,7 @@ async fn maybe_persist_encrypted_session_owner_guard_terminal_error(
     Some((err.status, err.message))
 }
 
-async fn unwrap_via_pool_initial_account(
+pub(crate) async fn unwrap_via_pool_initial_account(
     state: &AppState,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     resolution: Result<PoolAccountResolutionWithWait>,
@@ -528,7 +529,7 @@ async fn unwrap_via_pool_initial_account(
     Ok((initial_account, no_available_wait_deadline))
 }
 
-async fn header_sticky_account_matches_request_requirements(
+pub(crate) async fn header_sticky_account_matches_request_requirements(
     state: &AppState,
     account: &PoolResolvedAccount,
     requested_model: Option<&str>,
@@ -556,7 +557,7 @@ async fn header_sticky_account_matches_request_requirements(
     Ok(model_matches && image_matches)
 }
 
-async fn finalize_tracked_live_first_pool_attempt(
+pub(crate) async fn finalize_tracked_live_first_pool_attempt(
     state: &AppState,
     pending_attempt_record: Option<&PendingPoolAttemptRecord>,
     status: &str,
@@ -585,7 +586,7 @@ async fn finalize_tracked_live_first_pool_attempt(
     .await;
 }
 
-async fn finalize_tracked_pool_attempt(
+pub(crate) async fn finalize_tracked_pool_attempt(
     state: &AppState,
     pending_attempt_record: Option<&PendingPoolAttemptRecord>,
     status: &str,
@@ -678,7 +679,11 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         upstream_request_id: None,
         proxy_binding_key_snapshot: None,
         oauth_responses_debug: None,
-        attempt_summary: pool_attempt_summary(0, 1, Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string())),
+        attempt_summary: pool_attempt_summary(
+            0,
+            1,
+            Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
+        ),
         requested_service_tier: None,
         request_body_for_capture: None,
     })?;
@@ -1080,41 +1085,46 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             .await;
         }
         let response_headers = response.headers().clone();
-        let (error_body_bytes, upstream_error_code, upstream_error_message, upstream_request_id, message) =
-            match read_pool_upstream_bytes_with_timeout(
-                response,
-                attempt_pre_first_byte_timeout,
-                connect_started,
-                "reading upstream error body",
-            )
-            .await
-            {
-                Ok(body_bytes) => {
-                    let (upstream_error_code, upstream_error_message, upstream_request_id, message) =
-                        summarize_pool_upstream_http_failure(
-                            status,
-                            upstream_request_id_header.as_deref(),
-                            &body_bytes,
-                        );
-                    (
-                        Some(body_bytes),
-                        upstream_error_code,
-                        upstream_error_message,
-                        upstream_request_id,
-                        message,
-                    )
-                }
-                Err(err) => (
-                    None,
-                    None,
-                    None,
-                    upstream_request_id_header,
-                    format!(
-                        "pool upstream responded with {} (failed to read error body: {err})",
-                        status.as_u16()
-                    ),
+        let (
+            error_body_bytes,
+            upstream_error_code,
+            upstream_error_message,
+            upstream_request_id,
+            message,
+        ) = match read_pool_upstream_bytes_with_timeout(
+            response,
+            attempt_pre_first_byte_timeout,
+            connect_started,
+            "reading upstream error body",
+        )
+        .await
+        {
+            Ok(body_bytes) => {
+                let (upstream_error_code, upstream_error_message, upstream_request_id, message) =
+                    summarize_pool_upstream_http_failure(
+                        status,
+                        upstream_request_id_header.as_deref(),
+                        &body_bytes,
+                    );
+                (
+                    Some(body_bytes),
+                    upstream_error_code,
+                    upstream_error_message,
+                    upstream_request_id,
+                    message,
+                )
+            }
+            Err(err) => (
+                None,
+                None,
+                None,
+                upstream_request_id_header,
+                format!(
+                    "pool upstream responded with {} (failed to read error body: {err})",
+                    status.as_u16()
                 ),
-            };
+            ),
+        };
         let route_error_message = upstream_error_code
             .as_deref()
             .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
@@ -1162,25 +1172,26 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     .map(|(_, selected_proxy)| selected_proxy),
             )
             .await;
-            let response = response_builder
-                .body(Body::empty())
-                .map_err(|err| PoolUpstreamError {
-                    account: Some(account.clone()),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: format!("failed to build proxy response: {err}"),
-                    canonical_error_message: None,
-                    failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
-                    connect_latency_ms,
-                    upstream_error_code: None,
-                    upstream_error_message: None,
-                    downstream_error_message: None,
-                    upstream_request_id: upstream_request_id.clone(),
-                    proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
-                    oauth_responses_debug: None,
-                    attempt_summary: PoolAttemptSummary::default(),
-                    requested_service_tier: attempted_requested_service_tier.clone(),
-                    request_body_for_capture: attempted_request_body_for_capture.clone(),
-                })?;
+            let response =
+                response_builder
+                    .body(Body::empty())
+                    .map_err(|err| PoolUpstreamError {
+                        account: Some(account.clone()),
+                        status: StatusCode::INTERNAL_SERVER_ERROR,
+                        message: format!("failed to build proxy response: {err}"),
+                        canonical_error_message: None,
+                        failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                        connect_latency_ms,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        downstream_error_message: None,
+                        upstream_request_id: upstream_request_id.clone(),
+                        proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
+                        oauth_responses_debug: None,
+                        attempt_summary: PoolAttemptSummary::default(),
+                        requested_service_tier: attempted_requested_service_tier.clone(),
+                        request_body_for_capture: attempted_request_body_for_capture.clone(),
+                    })?;
             return Ok(PoolUpstreamResponse {
                 account,
                 response: ProxyUpstreamResponseBody::Axum(response),
@@ -1682,28 +1693,28 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 replay_owner_auto_guard_active,
                 replay_conversation_override,
             ) = load_via_pool_effective_routing(
-                    state.as_ref(),
-                    replay_prompt_cache_key.as_deref(),
-                    replay_contains_encrypted_content,
-                )
-                .await
-                .map_err(|(status, message)| PoolUpstreamError {
-                    account: Some(initial_account.clone()),
-                    status,
-                    message,
-                    canonical_error_message: None,
-                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                    connect_latency_ms: first_error.connect_latency_ms,
-                    upstream_error_code: None,
-                    upstream_error_message: None,
-                    downstream_error_message: None,
-                    upstream_request_id: None,
-                    proxy_binding_key_snapshot: None,
-                    oauth_responses_debug: first_error.oauth_responses_debug.clone(),
-                    attempt_summary: first_error.attempt_summary.clone(),
-                    requested_service_tier: first_error.requested_service_tier.clone(),
-                    request_body_for_capture: first_error.request_body_for_capture.clone(),
-                })?;
+                state.as_ref(),
+                replay_prompt_cache_key.as_deref(),
+                replay_contains_encrypted_content,
+            )
+            .await
+            .map_err(|(status, message)| PoolUpstreamError {
+                account: Some(initial_account.clone()),
+                status,
+                message,
+                canonical_error_message: None,
+                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                connect_latency_ms: first_error.connect_latency_ms,
+                upstream_error_code: None,
+                upstream_error_message: None,
+                downstream_error_message: None,
+                upstream_request_id: None,
+                proxy_binding_key_snapshot: None,
+                oauth_responses_debug: first_error.oauth_responses_debug.clone(),
+                attempt_summary: first_error.attempt_summary.clone(),
+                requested_service_tier: first_error.requested_service_tier.clone(),
+                request_body_for_capture: first_error.request_body_for_capture.clone(),
+            })?;
             let uses_timeout_route_failover =
                 pool_uses_responses_timeout_failover_policy(original_uri, &method);
             let first_error_is_timeout_shaped = uses_timeout_route_failover
@@ -1915,7 +1926,7 @@ pub(crate) async fn maybe_backfill_oauth_request_debug_from_replay_status(
     );
 }
 
-fn infer_request_image_intent(
+pub(crate) fn infer_request_image_intent(
     capture_target: Option<ProxyCaptureTarget>,
     parsed_request_body: Option<&Value>,
 ) -> crate::ImageIntent {
@@ -1930,7 +1941,7 @@ fn infer_request_image_intent(
     }
 }
 
-fn infer_request_compaction_kind(
+pub(crate) fn infer_request_compaction_kind(
     capture_target: Option<ProxyCaptureTarget>,
     parsed_request_body: Option<&Value>,
 ) -> Option<CompactionKind> {
@@ -1943,7 +1954,7 @@ fn infer_request_compaction_kind(
     }
 }
 
-fn live_first_image_intent_known(
+pub(crate) fn live_first_image_intent_known(
     capture_target: Option<ProxyCaptureTarget>,
     image_intent: crate::ImageIntent,
 ) -> bool {
@@ -2005,335 +2016,550 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         .and_then(|value| usize::try_from(value).ok());
     let (upstream, sticky_key, prompt_cache_key, request_contains_encrypted_content) =
         if request_may_have_body(&method, &headers) {
-        let should_prebuffer_for_body_sticky = should_prebuffer_for_body_sticky_probe(
-            header_sticky_key.is_some(),
-            headers
-                .get(header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok()),
-            headers
-                .get(header::CONTENT_LENGTH)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<usize>().ok())
-                .or(body_size_hint_exact),
-        );
-
-        if should_prebuffer_for_body_sticky {
-            let request_body_bytes = read_request_body_with_limit(
-                body,
-                body_limit,
-                runtime_timeouts.request_read_timeout,
-                proxy_request_id,
-            )
-            .await
-            .map_err(|err| (err.status, err.message))?;
-            if pre_attempt_total_timeout_exceeded() {
-                return Err(pre_attempt_total_timeout_error());
-            }
-            let request_body_bytes = Bytes::from(request_body_bytes);
-            let parsed_request_body = serde_json::from_slice::<Value>(&request_body_bytes).ok();
-            let requested_model = parsed_request_body
-                .as_ref()
-                .and_then(extract_model_from_payload);
-            request_image_intent =
-                infer_request_image_intent(capture_target, parsed_request_body.as_ref());
-            request_compaction_kind =
-                infer_request_compaction_kind(capture_target, parsed_request_body.as_ref());
-            let body_sticky_key = parsed_request_body
-                .as_ref()
-                .and_then(extract_sticky_key_from_request_body);
-            let body_prompt_cache_key = parsed_request_body
-                .as_ref()
-                .and_then(extract_prompt_cache_key_from_request_body);
-            let request_contains_encrypted_content = parsed_request_body
-                .as_ref()
-                .is_some_and(value_contains_encrypted_content);
-            let effective_prompt_cache_key =
-                body_prompt_cache_key.clone().or(header_prompt_cache_key.clone());
-            let (
-                prompt_cache_binding_constraint,
-                owner_auto_guard_active,
-                conversation_override,
-            ) = load_via_pool_effective_routing(
-                state.as_ref(),
-                effective_prompt_cache_key.as_deref(),
-                request_contains_encrypted_content,
-            )
-            .await?;
-            let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
-                proxy_request_id,
-                original_uri.path(),
-                body_sticky_key.clone(),
+            let should_prebuffer_for_body_sticky = should_prebuffer_for_body_sticky_probe(
+                header_sticky_key.is_some(),
+                headers
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok()),
+                headers
+                    .get(header::CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .or(body_size_hint_exact),
             );
-            let request_body_snapshot =
-                pool_replay_snapshot_from_bytes(proxy_request_id, request_body_bytes.clone())
-                    .await;
-            (
-                send_pool_request_with_failover_and_binding_constraint(
-                    state.clone(),
+
+            if should_prebuffer_for_body_sticky {
+                let request_body_bytes = read_request_body_with_limit(
+                    body,
+                    body_limit,
+                    runtime_timeouts.request_read_timeout,
                     proxy_request_id,
-                    method,
-                    original_uri,
-                    &headers,
-                    Some(request_body_snapshot),
-                    handshake_timeout,
-                    Some(pool_attempt_trace_context),
-                    Some(PoolAttemptRuntimeSnapshotContext {
-                        capture_target: capture_target.unwrap_or(ProxyCaptureTarget::Responses),
-                        request_info: RequestCaptureInfo {
-                            model: requested_model,
-                            contains_encrypted_content: request_contains_encrypted_content,
-                            image_intent: Some(request_image_intent.as_str().to_string()),
-                            compaction_request_kind: request_compaction_kind,
-                            ..RequestCaptureInfo::default()
-                        },
-                        prompt_cache_key: effective_prompt_cache_key.clone(),
-                        owner_auto_guard_active,
-                        t_req_read_ms: 0.0,
-                        t_req_parse_ms: 0.0,
-                    }),
-                    body_sticky_key.as_deref(),
-                    prompt_cache_binding_constraint,
-                    conversation_override,
-                    None,
-                    PoolFailoverProgress {
-                        responses_total_timeout_started_at:
-                            responses_total_timeout_started_at_from_request,
-                        ..PoolFailoverProgress::default()
-                    },
-                    POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
                 )
                 .await
-                .map_err(|err| (err.status, err.message))?,
-                body_sticky_key,
-                effective_prompt_cache_key,
-                request_contains_encrypted_content,
-            )
-        } else {
-            let (
-                request_body_snapshot,
-                body_sticky_key,
-                initial_account,
-                no_available_wait_deadline,
-                prompt_cache_binding_constraint,
-                body_prompt_cache_key,
-                conversation_override,
-                request_body_model,
-                request_contains_encrypted_content,
-                owner_auto_guard_active,
-            ) = if let Some(sticky_key) = header_sticky_key.clone() {
-                let initial_header_sticky_resolution = resolve_pool_account_for_request_with_image_intent(
+                .map_err(|err| (err.status, err.message))?;
+                if pre_attempt_total_timeout_exceeded() {
+                    return Err(pre_attempt_total_timeout_error());
+                }
+                let request_body_bytes = Bytes::from(request_body_bytes);
+                let parsed_request_body = serde_json::from_slice::<Value>(&request_body_bytes).ok();
+                let requested_model = parsed_request_body
+                    .as_ref()
+                    .and_then(extract_model_from_payload);
+                request_image_intent =
+                    infer_request_image_intent(capture_target, parsed_request_body.as_ref());
+                request_compaction_kind =
+                    infer_request_compaction_kind(capture_target, parsed_request_body.as_ref());
+                let body_sticky_key = parsed_request_body
+                    .as_ref()
+                    .and_then(extract_sticky_key_from_request_body);
+                let body_prompt_cache_key = parsed_request_body
+                    .as_ref()
+                    .and_then(extract_prompt_cache_key_from_request_body);
+                let request_contains_encrypted_content = parsed_request_body
+                    .as_ref()
+                    .is_some_and(value_contains_encrypted_content);
+                let effective_prompt_cache_key = body_prompt_cache_key
+                    .clone()
+                    .or(header_prompt_cache_key.clone());
+                let (
+                    prompt_cache_binding_constraint,
+                    owner_auto_guard_active,
+                    conversation_override,
+                ) = load_via_pool_effective_routing(
                     state.as_ref(),
-                    Some(sticky_key.as_str()),
-                    None,
-                    &[],
-                    &HashSet::new(),
-                    request_image_intent,
+                    effective_prompt_cache_key.as_deref(),
+                    request_contains_encrypted_content,
                 )
-                .await;
-                let state_for_wait = state.clone();
-                let wait_task_sticky_key = sticky_key.clone();
-                let shared_wait_deadline = Arc::new(std::sync::Mutex::new(None));
-                let shared_wait_deadline_for_task = shared_wait_deadline.clone();
-                let header_sticky_resolution = async move {
-                    let excluded_ids = Vec::new();
-                    let excluded_upstream_route_keys = HashSet::new();
-                    let mut no_available_wait_deadline = None;
-                    let poll_interval = state_for_wait
-                        .pool_no_available_wait
-                        .normalized_poll_interval();
-                    loop {
-                        let now = Instant::now();
-                        if pre_attempt_total_timeout_deadline
-                            .is_some_and(|deadline| now >= deadline)
-                        {
-                            break (
-                                Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
-                                no_available_wait_deadline,
-                            );
-                        }
-                        let resolution = resolve_pool_account_for_request_with_image_intent(
-                            state_for_wait.as_ref(),
-                            Some(wait_task_sticky_key.as_str()),
+                .await?;
+                let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
+                    proxy_request_id,
+                    original_uri.path(),
+                    body_sticky_key.clone(),
+                );
+                let request_body_snapshot =
+                    pool_replay_snapshot_from_bytes(proxy_request_id, request_body_bytes.clone())
+                        .await;
+                (
+                    send_pool_request_with_failover_and_binding_constraint(
+                        state.clone(),
+                        proxy_request_id,
+                        method,
+                        original_uri,
+                        &headers,
+                        Some(request_body_snapshot),
+                        handshake_timeout,
+                        Some(pool_attempt_trace_context),
+                        Some(PoolAttemptRuntimeSnapshotContext {
+                            capture_target: capture_target.unwrap_or(ProxyCaptureTarget::Responses),
+                            request_info: RequestCaptureInfo {
+                                model: requested_model,
+                                contains_encrypted_content: request_contains_encrypted_content,
+                                image_intent: Some(request_image_intent.as_str().to_string()),
+                                compaction_request_kind: request_compaction_kind,
+                                ..RequestCaptureInfo::default()
+                            },
+                            prompt_cache_key: effective_prompt_cache_key.clone(),
+                            owner_auto_guard_active,
+                            t_req_read_ms: 0.0,
+                            t_req_parse_ms: 0.0,
+                        }),
+                        body_sticky_key.as_deref(),
+                        prompt_cache_binding_constraint,
+                        conversation_override,
+                        None,
+                        PoolFailoverProgress {
+                            responses_total_timeout_started_at:
+                                responses_total_timeout_started_at_from_request,
+                            ..PoolFailoverProgress::default()
+                        },
+                        POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+                    )
+                    .await
+                    .map_err(|err| (err.status, err.message))?,
+                    body_sticky_key,
+                    effective_prompt_cache_key,
+                    request_contains_encrypted_content,
+                )
+            } else {
+                let (
+                    request_body_snapshot,
+                    body_sticky_key,
+                    initial_account,
+                    no_available_wait_deadline,
+                    prompt_cache_binding_constraint,
+                    body_prompt_cache_key,
+                    conversation_override,
+                    request_body_model,
+                    request_contains_encrypted_content,
+                    owner_auto_guard_active,
+                ) = if let Some(sticky_key) = header_sticky_key.clone() {
+                    let initial_header_sticky_resolution =
+                        resolve_pool_account_for_request_with_image_intent(
+                            state.as_ref(),
+                            Some(sticky_key.as_str()),
                             None,
-                            &excluded_ids,
-                            &excluded_upstream_route_keys,
+                            &[],
+                            &HashSet::new(),
                             request_image_intent,
                         )
                         .await;
-                        if matches!(
-                            resolution,
-                            Ok(PoolAccountResolution::Unavailable
-                                | PoolAccountResolution::NoCandidate)
-                        ) && no_available_wait_deadline.is_none()
-                        {
-                            let deadline =
-                                Instant::now() + state_for_wait.pool_no_available_wait.timeout;
-                            no_available_wait_deadline = Some(deadline);
-                            *shared_wait_deadline_for_task
-                                .lock()
-                                .expect("lock shared header wait deadline") = Some(deadline);
-                        }
-                        if pre_attempt_total_timeout_deadline
-                            .is_some_and(|deadline| Instant::now() >= deadline)
-                        {
-                            break (
-                                Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
-                                no_available_wait_deadline,
-                            );
-                        }
-                        match resolution {
-                            Ok(
-                                resolution @ (PoolAccountResolution::Unavailable
-                                | PoolAccountResolution::NoCandidate),
-                            ) => {
-                                let wait_deadline =
-                                    if let Some(deadline) = no_available_wait_deadline {
-                                        deadline
-                                    } else {
-                                        let deadline = Instant::now()
-                                            + state_for_wait.pool_no_available_wait.timeout;
-                                        no_available_wait_deadline = Some(deadline);
-                                        *shared_wait_deadline_for_task
-                                            .lock()
-                                            .expect("lock shared header wait deadline") =
-                                            Some(deadline);
-                                        deadline
-                                    };
-                                let effective_deadline = pre_attempt_total_timeout_deadline
-                                    .map(|deadline| std::cmp::min(wait_deadline, deadline))
-                                    .unwrap_or(wait_deadline);
-                                let now = Instant::now();
-                                if now >= effective_deadline {
-                                    if pre_attempt_total_timeout_deadline
-                                        .is_some_and(|deadline| deadline <= wait_deadline)
-                                    {
-                                        break (
+                    let state_for_wait = state.clone();
+                    let wait_task_sticky_key = sticky_key.clone();
+                    let shared_wait_deadline = Arc::new(std::sync::Mutex::new(None));
+                    let shared_wait_deadline_for_task = shared_wait_deadline.clone();
+                    let header_sticky_resolution = async move {
+                        let excluded_ids = Vec::new();
+                        let excluded_upstream_route_keys = HashSet::new();
+                        let mut no_available_wait_deadline = None;
+                        let poll_interval = state_for_wait
+                            .pool_no_available_wait
+                            .normalized_poll_interval();
+                        loop {
+                            let now = Instant::now();
+                            if pre_attempt_total_timeout_deadline
+                                .is_some_and(|deadline| now >= deadline)
+                            {
+                                break (
+                                    Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
+                                    no_available_wait_deadline,
+                                );
+                            }
+                            let resolution = resolve_pool_account_for_request_with_image_intent(
+                                state_for_wait.as_ref(),
+                                Some(wait_task_sticky_key.as_str()),
+                                None,
+                                &excluded_ids,
+                                &excluded_upstream_route_keys,
+                                request_image_intent,
+                            )
+                            .await;
+                            if matches!(
+                                resolution,
+                                Ok(PoolAccountResolution::Unavailable
+                                    | PoolAccountResolution::NoCandidate)
+                            ) && no_available_wait_deadline.is_none()
+                            {
+                                let deadline =
+                                    Instant::now() + state_for_wait.pool_no_available_wait.timeout;
+                                no_available_wait_deadline = Some(deadline);
+                                *shared_wait_deadline_for_task
+                                    .lock()
+                                    .expect("lock shared header wait deadline") = Some(deadline);
+                            }
+                            if pre_attempt_total_timeout_deadline
+                                .is_some_and(|deadline| Instant::now() >= deadline)
+                            {
+                                break (
+                                    Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
+                                    no_available_wait_deadline,
+                                );
+                            }
+                            match resolution {
+                                Ok(
+                                    resolution @ (PoolAccountResolution::Unavailable
+                                    | PoolAccountResolution::NoCandidate),
+                                ) => {
+                                    let wait_deadline =
+                                        if let Some(deadline) = no_available_wait_deadline {
+                                            deadline
+                                        } else {
+                                            let deadline = Instant::now()
+                                                + state_for_wait.pool_no_available_wait.timeout;
+                                            no_available_wait_deadline = Some(deadline);
+                                            *shared_wait_deadline_for_task
+                                                .lock()
+                                                .expect("lock shared header wait deadline") =
+                                                Some(deadline);
+                                            deadline
+                                        };
+                                    let effective_deadline = pre_attempt_total_timeout_deadline
+                                        .map(|deadline| std::cmp::min(wait_deadline, deadline))
+                                        .unwrap_or(wait_deadline);
+                                    let now = Instant::now();
+                                    if now >= effective_deadline {
+                                        if pre_attempt_total_timeout_deadline
+                                            .is_some_and(|deadline| deadline <= wait_deadline)
+                                        {
+                                            break (
                                             Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
                                             no_available_wait_deadline,
                                         );
+                                        }
+                                        break (
+                                            Ok(PoolAccountResolutionWithWait::Resolution(
+                                                resolution,
+                                            )),
+                                            no_available_wait_deadline,
+                                        );
                                     }
+                                    notify_pool_no_available_wait_hook(state_for_wait.as_ref());
+                                    tokio::time::sleep(
+                                        poll_interval
+                                            .min(effective_deadline.saturating_duration_since(now)),
+                                    )
+                                    .await;
+                                }
+                                Ok(resolution) => {
                                     break (
                                         Ok(PoolAccountResolutionWithWait::Resolution(resolution)),
                                         no_available_wait_deadline,
                                     );
                                 }
-                                notify_pool_no_available_wait_hook(state_for_wait.as_ref());
-                                tokio::time::sleep(
-                                    poll_interval
-                                        .min(effective_deadline.saturating_duration_since(now)),
-                                )
-                                .await;
+                                Err(err) => break (Err(err), no_available_wait_deadline),
                             }
-                            Ok(resolution) => {
-                                break (
-                                    Ok(PoolAccountResolutionWithWait::Resolution(resolution)),
-                                    no_available_wait_deadline,
-                                );
-                            }
-                            Err(err) => break (Err(err), no_available_wait_deadline),
                         }
-                    }
-                };
-                tokio::pin!(header_sticky_resolution);
-                let mut header_sticky_resolution_finished = false;
-                let mut pending_header_sticky_terminal_error: Option<
-                    ViaPoolResolutionTerminalError,
-                > = None;
-                let mut resolved_header_sticky_account: Option<PoolResolvedAccount> = None;
-                let mut header_sticky_wait_deadline = None;
-                match initial_header_sticky_resolution {
-                    Ok(PoolAccountResolution::Resolved(account)) => {
-                        resolved_header_sticky_account = Some(account);
-                        header_sticky_resolution_finished = true;
-                    }
-                    Ok(PoolAccountResolution::RateLimited) => {
-                        pending_header_sticky_terminal_error =
-                            Some(ViaPoolResolutionTerminalError::plain(
-                                StatusCode::TOO_MANY_REQUESTS,
-                                POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
-                            ));
-                        header_sticky_resolution_finished = true;
-                    }
-                    Ok(PoolAccountResolution::DegradedOnly) => {
-                        pending_header_sticky_terminal_error =
-                            Some(ViaPoolResolutionTerminalError::plain(
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
-                            ));
-                        header_sticky_resolution_finished = true;
-                    }
-                    Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
-                        pending_header_sticky_terminal_error =
-                            Some(ViaPoolResolutionTerminalError::plain(
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                message,
-                            ));
-                        header_sticky_resolution_finished = true;
-                    }
-                    Ok(PoolAccountResolution::AssignedBlocked(blocked)) => {
-                        pending_header_sticky_terminal_error =
-                            Some(ViaPoolResolutionTerminalError::assigned_blocked(blocked));
-                        header_sticky_resolution_finished = true;
-                    }
-                    Err(err) => {
-                        pending_header_sticky_terminal_error =
-                            Some(ViaPoolResolutionTerminalError::plain(
-                                StatusCode::BAD_GATEWAY,
-                                format!("failed to resolve pool account: {err}"),
-                            ));
-                        header_sticky_resolution_finished = true;
-                    }
-                    Ok(PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate) => {
-                    }
-                }
-                let mut request_body_buffer = PoolReplayBodyBuffer::new(proxy_request_id);
-                let mut request_body_stream = body.into_data_stream();
-                let request_body_deadline = Instant::now() + runtime_timeouts.request_read_timeout;
-                let mut request_body_len = 0usize;
-                let mut observed_body_sticky_key = None;
-                let mut observed_body_prompt_cache_key = None;
-                let mut sticky_key_probe = Vec::new();
-                let mut sticky_key_probe_exhausted = false;
-                let request_body_timeout_error = || RequestBodyReadError {
-                    status: StatusCode::REQUEST_TIMEOUT,
-                    message: format!(
-                        "request body read timed out after {}ms",
-                        runtime_timeouts.request_read_timeout.as_millis()
-                    ),
-                    failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
-                    partial_body: Vec::new(),
-                };
-                let request_body_snapshot = loop {
-                    let now = Instant::now();
-                    let remaining = request_body_deadline.saturating_duration_since(now);
-                    if remaining.is_zero() {
-                        return Err((
-                            request_body_timeout_error().status,
-                            request_body_timeout_error().message,
-                        ));
-                    }
-                    let request_body_wait_budget = if let Some(total_timeout_deadline) =
-                        pre_attempt_total_timeout_deadline
-                    {
-                        let total_timeout_remaining =
-                            total_timeout_deadline.saturating_duration_since(now);
-                        if total_timeout_remaining.is_zero() {
-                            let total_timeout = responses_total_timeout.expect(
-                                "pre-attempt total-timeout expiry requires responses timeout",
-                            );
-                            return Err((
-                                StatusCode::GATEWAY_TIMEOUT,
-                                pool_total_timeout_exhausted_message(total_timeout),
-                            ));
-                        }
-                        remaining.min(total_timeout_remaining)
-                    } else {
-                        remaining
                     };
-                    tokio::select! {
-                        resolution_result = &mut header_sticky_resolution, if !header_sticky_resolution_finished => {
+                    tokio::pin!(header_sticky_resolution);
+                    let mut header_sticky_resolution_finished = false;
+                    let mut pending_header_sticky_terminal_error: Option<
+                        ViaPoolResolutionTerminalError,
+                    > = None;
+                    let mut resolved_header_sticky_account: Option<PoolResolvedAccount> = None;
+                    let mut header_sticky_wait_deadline = None;
+                    match initial_header_sticky_resolution {
+                        Ok(PoolAccountResolution::Resolved(account)) => {
+                            resolved_header_sticky_account = Some(account);
                             header_sticky_resolution_finished = true;
-                            let (resolution, no_available_wait_deadline) = resolution_result;
+                        }
+                        Ok(PoolAccountResolution::RateLimited) => {
+                            pending_header_sticky_terminal_error =
+                                Some(ViaPoolResolutionTerminalError::plain(
+                                    StatusCode::TOO_MANY_REQUESTS,
+                                    POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                                ));
+                            header_sticky_resolution_finished = true;
+                        }
+                        Ok(PoolAccountResolution::DegradedOnly) => {
+                            pending_header_sticky_terminal_error =
+                                Some(ViaPoolResolutionTerminalError::plain(
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+                                ));
+                            header_sticky_resolution_finished = true;
+                        }
+                        Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+                            pending_header_sticky_terminal_error =
+                                Some(ViaPoolResolutionTerminalError::plain(
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    message,
+                                ));
+                            header_sticky_resolution_finished = true;
+                        }
+                        Ok(PoolAccountResolution::AssignedBlocked(blocked)) => {
+                            pending_header_sticky_terminal_error =
+                                Some(ViaPoolResolutionTerminalError::assigned_blocked(blocked));
+                            header_sticky_resolution_finished = true;
+                        }
+                        Err(err) => {
+                            pending_header_sticky_terminal_error =
+                                Some(ViaPoolResolutionTerminalError::plain(
+                                    StatusCode::BAD_GATEWAY,
+                                    format!("failed to resolve pool account: {err}"),
+                                ));
+                            header_sticky_resolution_finished = true;
+                        }
+                        Ok(
+                            PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate,
+                        ) => {}
+                    }
+                    let mut request_body_buffer = PoolReplayBodyBuffer::new(proxy_request_id);
+                    let mut request_body_stream = body.into_data_stream();
+                    let request_body_deadline =
+                        Instant::now() + runtime_timeouts.request_read_timeout;
+                    let mut request_body_len = 0usize;
+                    let mut observed_body_sticky_key = None;
+                    let mut observed_body_prompt_cache_key = None;
+                    let mut sticky_key_probe = Vec::new();
+                    let mut sticky_key_probe_exhausted = false;
+                    let request_body_timeout_error = || RequestBodyReadError {
+                        status: StatusCode::REQUEST_TIMEOUT,
+                        message: format!(
+                            "request body read timed out after {}ms",
+                            runtime_timeouts.request_read_timeout.as_millis()
+                        ),
+                        failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                        partial_body: Vec::new(),
+                    };
+                    let request_body_snapshot = loop {
+                        let now = Instant::now();
+                        let remaining = request_body_deadline.saturating_duration_since(now);
+                        if remaining.is_zero() {
+                            return Err((
+                                request_body_timeout_error().status,
+                                request_body_timeout_error().message,
+                            ));
+                        }
+                        let request_body_wait_budget = if let Some(total_timeout_deadline) =
+                            pre_attempt_total_timeout_deadline
+                        {
+                            let total_timeout_remaining =
+                                total_timeout_deadline.saturating_duration_since(now);
+                            if total_timeout_remaining.is_zero() {
+                                let total_timeout = responses_total_timeout.expect(
+                                    "pre-attempt total-timeout expiry requires responses timeout",
+                                );
+                                return Err((
+                                    StatusCode::GATEWAY_TIMEOUT,
+                                    pool_total_timeout_exhausted_message(total_timeout),
+                                ));
+                            }
+                            remaining.min(total_timeout_remaining)
+                        } else {
+                            remaining
+                        };
+                        tokio::select! {
+                            resolution_result = &mut header_sticky_resolution, if !header_sticky_resolution_finished => {
+                                header_sticky_resolution_finished = true;
+                                let (resolution, no_available_wait_deadline) = resolution_result;
+                                header_sticky_wait_deadline = no_available_wait_deadline;
+                                match resolution {
+                                    Ok(PoolAccountResolutionWithWait::Resolution(
+                                        PoolAccountResolution::Resolved(account),
+                                    )) => {
+                                        resolved_header_sticky_account = Some(account);
+                                    }
+                                    Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
+                                        let total_timeout =
+                                            responses_total_timeout.expect(
+                                                "pre-attempt total-timeout expiry requires responses timeout",
+                                            );
+                                        return Err((
+                                            StatusCode::GATEWAY_TIMEOUT,
+                                            pool_total_timeout_exhausted_message(total_timeout),
+                                        ));
+                                    }
+                                    Ok(PoolAccountResolutionWithWait::Resolution(
+                                        PoolAccountResolution::RateLimited,
+                                    )) => {
+                                        pending_header_sticky_terminal_error = Some(
+                                            ViaPoolResolutionTerminalError::plain(
+                                                StatusCode::TOO_MANY_REQUESTS,
+                                                POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                                            ),
+                                        );
+                                    }
+                                    Ok(PoolAccountResolutionWithWait::Resolution(
+                                        PoolAccountResolution::DegradedOnly,
+                                    )) => {
+                                        pending_header_sticky_terminal_error = Some(
+                                            ViaPoolResolutionTerminalError::plain(
+                                                StatusCode::SERVICE_UNAVAILABLE,
+                                                POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+                                            ),
+                                        );
+                                    }
+                                    Ok(PoolAccountResolutionWithWait::Resolution(
+                                        PoolAccountResolution::AssignedBlocked(blocked),
+                                    )) => {
+                                        pending_header_sticky_terminal_error = Some(
+                                            ViaPoolResolutionTerminalError::assigned_blocked(blocked),
+                                        );
+                                    }
+                                    Ok(PoolAccountResolutionWithWait::Resolution(
+                                        PoolAccountResolution::BlockedByPolicy(message),
+                                    )) => {
+                                        pending_header_sticky_terminal_error = Some(
+                                            ViaPoolResolutionTerminalError::plain(
+                                                StatusCode::SERVICE_UNAVAILABLE,
+                                                message,
+                                            ),
+                                        );
+                                    }
+                                    Err(err) => {
+                                        pending_header_sticky_terminal_error = Some(
+                                            ViaPoolResolutionTerminalError::plain(
+                                                StatusCode::BAD_GATEWAY,
+                                                format!("failed to resolve pool account: {err}"),
+                                            ),
+                                        );
+                                    }
+                                    Ok(PoolAccountResolutionWithWait::Resolution(
+                                        PoolAccountResolution::Unavailable,
+                                    ))
+                                    | Ok(PoolAccountResolutionWithWait::Resolution(
+                                        PoolAccountResolution::NoCandidate,
+                                    )) => {}
+                                }
+                                if observed_body_sticky_key.as_deref() == Some(sticky_key.as_str())
+                                    && let Some(terminal_error) =
+                                        pending_header_sticky_terminal_error.clone()
+                                {
+                                    let (prompt_cache_binding_constraint, _, conversation_override) =
+                                        load_via_pool_effective_routing(
+                                            state.as_ref(),
+                                            observed_body_prompt_cache_key
+                                                .as_deref()
+                                                .or(header_prompt_cache_key.as_deref()),
+                                            false,
+                                        )
+                                        .await?;
+                                    if prompt_cache_binding_constraint.is_none()
+                                        && conversation_override.is_none()
+                                    {
+                                        let trace_context = build_via_pool_attempt_trace_context(
+                                            proxy_request_id,
+                                            original_uri.path(),
+                                            Some(sticky_key.clone()),
+                                        );
+                                        terminal_error
+                                            .persist_if_needed(state.as_ref(), Some(&trace_context))
+                                            .await;
+                                        return Err((terminal_error.status, terminal_error.message));
+                                    }
+                                }
+                            }
+                            next_chunk = timeout(request_body_wait_budget, request_body_stream.next()) => {
+                                let next_chunk = match next_chunk {
+                                    Ok(chunk) => chunk,
+                                    Err(_) => {
+                                        if pre_attempt_total_timeout_deadline
+                                            .is_some_and(|deadline| Instant::now() >= deadline)
+                                        {
+                                            let total_timeout = responses_total_timeout.expect(
+                                                "pre-attempt total-timeout expiry requires responses timeout",
+                                            );
+                                            return Err((
+                                                StatusCode::GATEWAY_TIMEOUT,
+                                                pool_total_timeout_exhausted_message(total_timeout),
+                                            ));
+                                        }
+                                        let err = request_body_timeout_error();
+                                        return Err((err.status, err.message));
+                                    }
+                                };
+                                let Some(chunk) = next_chunk else {
+                                    break request_body_buffer.finish().await.map_err(|err| {
+                                        (
+                                            StatusCode::BAD_GATEWAY,
+                                            format!("failed to cache request body for oauth replay: {err}"),
+                                        )
+                                    })?;
+                                };
+                                let chunk = match chunk {
+                                    Ok(chunk) => chunk,
+                                    Err(err) => {
+                                        return Err((
+                                            StatusCode::BAD_REQUEST,
+                                            format!("failed to read request body stream: {err}"),
+                                        ));
+                                    }
+                                };
+                                if request_body_len.saturating_add(chunk.len()) > body_limit {
+                                    return Err((
+                                        StatusCode::PAYLOAD_TOO_LARGE,
+                                        format!("request body exceeds {body_limit} bytes"),
+                                    ));
+                                }
+                                request_body_len = request_body_len.saturating_add(chunk.len());
+                                request_body_buffer.append(&chunk).await.map_err(|err| {
+                                    (
+                                        StatusCode::BAD_GATEWAY,
+                                        format!("failed to cache request body for oauth replay: {err}"),
+                                    )
+                                })?;
+                                if !sticky_key_probe_exhausted
+                                    && observed_body_sticky_key.is_none()
+                                    && sticky_key_probe.len() < HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
+                                {
+                                    let probe_remaining = HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
+                                        .saturating_sub(sticky_key_probe.len());
+                                    sticky_key_probe.extend_from_slice(&chunk[..chunk.len().min(probe_remaining)]);
+                                    observed_body_sticky_key =
+                                        best_effort_extract_sticky_key_from_request_body_prefix(
+                                            &sticky_key_probe,
+                                        );
+                                    observed_body_prompt_cache_key =
+                                        best_effort_extract_prompt_cache_key_from_request_body_prefix(
+                                            &sticky_key_probe,
+                                        );
+                                    sticky_key_probe_exhausted =
+                                        observed_body_sticky_key.is_some()
+                                            || sticky_key_probe.len()
+                                                >= HEADER_STICKY_EARLY_STICKY_SCAN_BYTES;
+                                }
+                                if header_sticky_resolution_finished
+                                    && observed_body_sticky_key.as_deref() == Some(sticky_key.as_str())
+                                    && let Some(terminal_error) =
+                                        pending_header_sticky_terminal_error.clone()
+                                {
+                                    let (prompt_cache_binding_constraint, _, conversation_override) =
+                                        load_via_pool_effective_routing(
+                                            state.as_ref(),
+                                            observed_body_prompt_cache_key
+                                                .as_deref()
+                                                .or(header_prompt_cache_key.as_deref()),
+                                            false,
+                                        )
+                                        .await?;
+                                    if prompt_cache_binding_constraint.is_none()
+                                        && conversation_override.is_none()
+                                    {
+                                        let trace_context = build_via_pool_attempt_trace_context(
+                                            proxy_request_id,
+                                            original_uri.path(),
+                                            Some(sticky_key.clone()),
+                                        );
+                                        terminal_error
+                                            .persist_if_needed(state.as_ref(), Some(&trace_context))
+                                            .await;
+                                        return Err((terminal_error.status, terminal_error.message));
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    let body_sticky_key =
+                        if let Some(observed_body_sticky_key) = observed_body_sticky_key {
+                            Some(observed_body_sticky_key)
+                        } else {
+                            extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
+                                .await
+                                .or(Some(sticky_key.clone()))
+                        };
+                    if !header_sticky_resolution_finished {
+                        if body_sticky_key.as_deref() == Some(sticky_key.as_str()) {
+                            let (resolution, no_available_wait_deadline) =
+                                header_sticky_resolution.await;
                             header_sticky_wait_deadline = no_available_wait_deadline;
                             match resolution {
                                 Ok(PoolAccountResolutionWithWait::Resolution(
@@ -2342,10 +2568,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                     resolved_header_sticky_account = Some(account);
                                 }
                                 Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
-                                    let total_timeout =
-                                        responses_total_timeout.expect(
-                                            "pre-attempt total-timeout expiry requires responses timeout",
-                                        );
+                                    let total_timeout = responses_total_timeout.expect(
+                                    "pre-attempt total-timeout expiry requires responses timeout",
+                                );
                                     return Err((
                                         StatusCode::GATEWAY_TIMEOUT,
                                         pool_total_timeout_exhausted_message(total_timeout),
@@ -2354,22 +2579,20 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 Ok(PoolAccountResolutionWithWait::Resolution(
                                     PoolAccountResolution::RateLimited,
                                 )) => {
-                                    pending_header_sticky_terminal_error = Some(
-                                        ViaPoolResolutionTerminalError::plain(
+                                    pending_header_sticky_terminal_error =
+                                        Some(ViaPoolResolutionTerminalError::plain(
                                             StatusCode::TOO_MANY_REQUESTS,
                                             POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
-                                        ),
-                                    );
+                                        ));
                                 }
                                 Ok(PoolAccountResolutionWithWait::Resolution(
                                     PoolAccountResolution::DegradedOnly,
                                 )) => {
-                                    pending_header_sticky_terminal_error = Some(
-                                        ViaPoolResolutionTerminalError::plain(
+                                    pending_header_sticky_terminal_error =
+                                        Some(ViaPoolResolutionTerminalError::plain(
                                             StatusCode::SERVICE_UNAVAILABLE,
                                             POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
-                                        ),
-                                    );
+                                        ));
                                 }
                                 Ok(PoolAccountResolutionWithWait::Resolution(
                                     PoolAccountResolution::AssignedBlocked(blocked),
@@ -2381,20 +2604,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 Ok(PoolAccountResolutionWithWait::Resolution(
                                     PoolAccountResolution::BlockedByPolicy(message),
                                 )) => {
-                                    pending_header_sticky_terminal_error = Some(
-                                        ViaPoolResolutionTerminalError::plain(
+                                    pending_header_sticky_terminal_error =
+                                        Some(ViaPoolResolutionTerminalError::plain(
                                             StatusCode::SERVICE_UNAVAILABLE,
                                             message,
-                                        ),
-                                    );
+                                        ));
                                 }
                                 Err(err) => {
-                                    pending_header_sticky_terminal_error = Some(
-                                        ViaPoolResolutionTerminalError::plain(
+                                    pending_header_sticky_terminal_error =
+                                        Some(ViaPoolResolutionTerminalError::plain(
                                             StatusCode::BAD_GATEWAY,
                                             format!("failed to resolve pool account: {err}"),
-                                        ),
-                                    );
+                                        ));
                                 }
                                 Ok(PoolAccountResolutionWithWait::Resolution(
                                     PoolAccountResolution::Unavailable,
@@ -2403,267 +2624,70 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                     PoolAccountResolution::NoCandidate,
                                 )) => {}
                             }
-                            if observed_body_sticky_key.as_deref() == Some(sticky_key.as_str())
-                                && let Some(terminal_error) =
-                                    pending_header_sticky_terminal_error.clone()
-                            {
-                                let (prompt_cache_binding_constraint, _, conversation_override) =
-                                    load_via_pool_effective_routing(
-                                        state.as_ref(),
-                                        observed_body_prompt_cache_key
-                                            .as_deref()
-                                            .or(header_prompt_cache_key.as_deref()),
-                                        false,
-                                    )
-                                    .await?;
-                                if prompt_cache_binding_constraint.is_none()
-                                    && conversation_override.is_none()
-                                {
-                                    let trace_context = build_via_pool_attempt_trace_context(
-                                        proxy_request_id,
-                                        original_uri.path(),
-                                        Some(sticky_key.clone()),
-                                    );
-                                    terminal_error
-                                        .persist_if_needed(state.as_ref(), Some(&trace_context))
-                                        .await;
-                                    return Err((terminal_error.status, terminal_error.message));
-                                }
-                            }
-                        }
-                        next_chunk = timeout(request_body_wait_budget, request_body_stream.next()) => {
-                            let next_chunk = match next_chunk {
-                                Ok(chunk) => chunk,
-                                Err(_) => {
-                                    if pre_attempt_total_timeout_deadline
-                                        .is_some_and(|deadline| Instant::now() >= deadline)
-                                    {
-                                        let total_timeout = responses_total_timeout.expect(
-                                            "pre-attempt total-timeout expiry requires responses timeout",
-                                        );
-                                        return Err((
-                                            StatusCode::GATEWAY_TIMEOUT,
-                                            pool_total_timeout_exhausted_message(total_timeout),
-                                        ));
-                                    }
-                                    let err = request_body_timeout_error();
-                                    return Err((err.status, err.message));
-                                }
-                            };
-                            let Some(chunk) = next_chunk else {
-                                break request_body_buffer.finish().await.map_err(|err| {
-                                    (
-                                        StatusCode::BAD_GATEWAY,
-                                        format!("failed to cache request body for oauth replay: {err}"),
-                                    )
-                                })?;
-                            };
-                            let chunk = match chunk {
-                                Ok(chunk) => chunk,
-                                Err(err) => {
-                                    return Err((
-                                        StatusCode::BAD_REQUEST,
-                                        format!("failed to read request body stream: {err}"),
-                                    ));
-                                }
-                            };
-                            if request_body_len.saturating_add(chunk.len()) > body_limit {
-                                return Err((
-                                    StatusCode::PAYLOAD_TOO_LARGE,
-                                    format!("request body exceeds {body_limit} bytes"),
-                                ));
-                            }
-                            request_body_len = request_body_len.saturating_add(chunk.len());
-                            request_body_buffer.append(&chunk).await.map_err(|err| {
-                                (
-                                    StatusCode::BAD_GATEWAY,
-                                    format!("failed to cache request body for oauth replay: {err}"),
-                                )
-                            })?;
-                            if !sticky_key_probe_exhausted
-                                && observed_body_sticky_key.is_none()
-                                && sticky_key_probe.len() < HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
-                            {
-                                let probe_remaining = HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
-                                    .saturating_sub(sticky_key_probe.len());
-                                sticky_key_probe.extend_from_slice(&chunk[..chunk.len().min(probe_remaining)]);
-                                observed_body_sticky_key =
-                                    best_effort_extract_sticky_key_from_request_body_prefix(
-                                        &sticky_key_probe,
-                                    );
-                                observed_body_prompt_cache_key =
-                                    best_effort_extract_prompt_cache_key_from_request_body_prefix(
-                                        &sticky_key_probe,
-                                    );
-                                sticky_key_probe_exhausted =
-                                    observed_body_sticky_key.is_some()
-                                        || sticky_key_probe.len()
-                                            >= HEADER_STICKY_EARLY_STICKY_SCAN_BYTES;
-                            }
-                            if header_sticky_resolution_finished
-                                && observed_body_sticky_key.as_deref() == Some(sticky_key.as_str())
-                                && let Some(terminal_error) =
-                                    pending_header_sticky_terminal_error.clone()
-                            {
-                                let (prompt_cache_binding_constraint, _, conversation_override) =
-                                    load_via_pool_effective_routing(
-                                        state.as_ref(),
-                                        observed_body_prompt_cache_key
-                                            .as_deref()
-                                            .or(header_prompt_cache_key.as_deref()),
-                                        false,
-                                    )
-                                    .await?;
-                                if prompt_cache_binding_constraint.is_none()
-                                    && conversation_override.is_none()
-                                {
-                                    let trace_context = build_via_pool_attempt_trace_context(
-                                        proxy_request_id,
-                                        original_uri.path(),
-                                        Some(sticky_key.clone()),
-                                    );
-                                    terminal_error
-                                        .persist_if_needed(state.as_ref(), Some(&trace_context))
-                                        .await;
-                                    return Err((terminal_error.status, terminal_error.message));
-                                }
-                            }
                         }
                     }
-                };
-                let body_sticky_key =
-                    if let Some(observed_body_sticky_key) = observed_body_sticky_key {
-                        Some(observed_body_sticky_key)
-                    } else {
-                        extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
-                            .await
-                            .or(Some(sticky_key.clone()))
+                    let body_prompt_cache_key =
+                        extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot).await;
+                    let request_contains_encrypted_content =
+                        replay_snapshot_contains_encrypted_content(&request_body_snapshot).await;
+                    let request_image_intent = match request_body_snapshot.to_bytes().await {
+                        Ok(request_body_bytes) => {
+                            serde_json::from_slice::<Value>(&request_body_bytes)
+                                .ok()
+                                .map(|value| {
+                                    infer_request_image_intent(capture_target, Some(&value))
+                                })
+                                .unwrap_or_else(|| infer_request_image_intent(capture_target, None))
+                        }
+                        Err(_) => infer_request_image_intent(capture_target, None),
                     };
-                if !header_sticky_resolution_finished {
-                    if body_sticky_key.as_deref() == Some(sticky_key.as_str()) {
-                        let (resolution, no_available_wait_deadline) =
-                            header_sticky_resolution.await;
-                        header_sticky_wait_deadline = no_available_wait_deadline;
-                        match resolution {
-                            Ok(PoolAccountResolutionWithWait::Resolution(
-                                PoolAccountResolution::Resolved(account),
-                            )) => {
-                                resolved_header_sticky_account = Some(account);
-                            }
-                            Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
-                                let total_timeout = responses_total_timeout.expect(
-                                    "pre-attempt total-timeout expiry requires responses timeout",
-                                );
-                                return Err((
-                                    StatusCode::GATEWAY_TIMEOUT,
-                                    pool_total_timeout_exhausted_message(total_timeout),
-                                ));
-                            }
-                            Ok(PoolAccountResolutionWithWait::Resolution(
-                                PoolAccountResolution::RateLimited,
-                            )) => {
-                                pending_header_sticky_terminal_error =
-                                    Some(ViaPoolResolutionTerminalError::plain(
-                                        StatusCode::TOO_MANY_REQUESTS,
-                                        POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
-                                    ));
-                            }
-                            Ok(PoolAccountResolutionWithWait::Resolution(
-                                PoolAccountResolution::DegradedOnly,
-                            )) => {
-                                pending_header_sticky_terminal_error =
-                                    Some(ViaPoolResolutionTerminalError::plain(
-                                        StatusCode::SERVICE_UNAVAILABLE,
-                                        POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
-                                    ));
-                            }
-                            Ok(PoolAccountResolutionWithWait::Resolution(
-                                PoolAccountResolution::AssignedBlocked(blocked),
-                            )) => {
-                                pending_header_sticky_terminal_error =
-                                    Some(ViaPoolResolutionTerminalError::assigned_blocked(blocked));
-                            }
-                            Ok(PoolAccountResolutionWithWait::Resolution(
-                                PoolAccountResolution::BlockedByPolicy(message),
-                            )) => {
-                                pending_header_sticky_terminal_error =
-                                    Some(ViaPoolResolutionTerminalError::plain(
-                                        StatusCode::SERVICE_UNAVAILABLE,
-                                        message,
-                                    ));
-                            }
-                            Err(err) => {
-                                pending_header_sticky_terminal_error =
-                                    Some(ViaPoolResolutionTerminalError::plain(
-                                        StatusCode::BAD_GATEWAY,
-                                        format!("failed to resolve pool account: {err}"),
-                                    ));
-                            }
-                            Ok(PoolAccountResolutionWithWait::Resolution(
-                                PoolAccountResolution::Unavailable,
-                            ))
-                            | Ok(PoolAccountResolutionWithWait::Resolution(
-                                PoolAccountResolution::NoCandidate,
-                            )) => {}
+                    let _request_compaction_kind = match request_body_snapshot.to_bytes().await {
+                        Ok(request_body_bytes) => {
+                            serde_json::from_slice::<Value>(&request_body_bytes)
+                                .ok()
+                                .and_then(|value| {
+                                    infer_request_compaction_kind(capture_target, Some(&value))
+                                })
                         }
+                        Err(_) => infer_request_compaction_kind(capture_target, None),
+                    };
+                    let (
+                        prompt_cache_binding_constraint,
+                        owner_auto_guard_active,
+                        conversation_override,
+                    ) = load_via_pool_effective_routing(
+                        state.as_ref(),
+                        body_prompt_cache_key
+                            .as_deref()
+                            .or(header_prompt_cache_key.as_deref()),
+                        request_contains_encrypted_content,
+                    )
+                    .await?;
+                    let requested_model =
+                        extract_model_from_replay_snapshot(&request_body_snapshot).await;
+                    if prompt_cache_binding_constraint.is_none()
+                        && conversation_override.is_none()
+                        && body_sticky_key.as_deref() == Some(sticky_key.as_str())
+                        && let Some(terminal_error) = pending_header_sticky_terminal_error
+                    {
+                        let trace_context = build_via_pool_attempt_trace_context(
+                            proxy_request_id,
+                            original_uri.path(),
+                            Some(sticky_key.clone()),
+                        );
+                        terminal_error
+                            .persist_if_needed(state.as_ref(), Some(&trace_context))
+                            .await;
+                        return Err((terminal_error.status, terminal_error.message));
                     }
-                }
-                let body_prompt_cache_key =
-                    extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot).await;
-                let request_contains_encrypted_content =
-                    replay_snapshot_contains_encrypted_content(&request_body_snapshot).await;
-                let request_image_intent = match request_body_snapshot.to_bytes().await {
-                    Ok(request_body_bytes) => serde_json::from_slice::<Value>(&request_body_bytes)
-                        .ok()
-                        .map(|value| infer_request_image_intent(capture_target, Some(&value)))
-                        .unwrap_or_else(|| infer_request_image_intent(capture_target, None)),
-                    Err(_) => infer_request_image_intent(capture_target, None),
-                };
-                let _request_compaction_kind = match request_body_snapshot.to_bytes().await {
-                    Ok(request_body_bytes) => serde_json::from_slice::<Value>(&request_body_bytes)
-                        .ok()
-                        .and_then(|value| {
-                            infer_request_compaction_kind(capture_target, Some(&value))
-                        }),
-                    Err(_) => infer_request_compaction_kind(capture_target, None),
-                };
-                let (
-                    prompt_cache_binding_constraint,
-                    owner_auto_guard_active,
-                    conversation_override,
-                ) = load_via_pool_effective_routing(
-                    state.as_ref(),
-                    body_prompt_cache_key
-                        .as_deref()
-                        .or(header_prompt_cache_key.as_deref()),
-                    request_contains_encrypted_content,
-                )
-                .await?;
-                let requested_model =
-                    extract_model_from_replay_snapshot(&request_body_snapshot).await;
-                if prompt_cache_binding_constraint.is_none()
-                    && conversation_override.is_none()
-                    && body_sticky_key.as_deref() == Some(sticky_key.as_str())
-                    && let Some(terminal_error) = pending_header_sticky_terminal_error
-                {
-                    let trace_context = build_via_pool_attempt_trace_context(
-                        proxy_request_id,
-                        original_uri.path(),
-                        Some(sticky_key.clone()),
-                    );
-                    terminal_error
-                        .persist_if_needed(state.as_ref(), Some(&trace_context))
-                        .await;
-                    return Err((terminal_error.status, terminal_error.message));
-                }
-                let mut no_available_wait_deadline =
-                    header_sticky_wait_deadline.or(*shared_wait_deadline
-                        .lock()
-                        .expect("lock shared header wait deadline"));
-                let initial_account = if prompt_cache_binding_constraint.is_some()
-                    || conversation_override.is_some()
-                {
-                    let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
+                    let mut no_available_wait_deadline =
+                        header_sticky_wait_deadline.or(*shared_wait_deadline
+                            .lock()
+                            .expect("lock shared header wait deadline"));
+                    let initial_account = if prompt_cache_binding_constraint.is_some()
+                        || conversation_override.is_some()
+                    {
+                        let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
                         state.as_ref(),
                         body_sticky_key.as_deref(),
                         requested_model.as_deref(),
@@ -2678,47 +2702,80 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         request_image_intent,
                     )
                     .await;
-                    let (initial_account, updated_no_available_wait_deadline) =
-                        unwrap_via_pool_initial_account(
-                            state.as_ref(),
-                            Some(&build_via_pool_attempt_trace_context(
-                                proxy_request_id,
-                                original_uri.path(),
-                                body_sticky_key.clone(),
-                            )),
-                            resolution,
-                            no_available_wait_deadline,
-                            responses_total_timeout,
-                            owner_auto_guard_active,
-                        )
-                        .await?;
-                    no_available_wait_deadline = updated_no_available_wait_deadline;
-                    initial_account
-                } else if body_sticky_key.as_deref() == Some(sticky_key.as_str()) {
-                    if let Some(account) = resolved_header_sticky_account {
-                        if header_sticky_account_matches_request_requirements(
-                            state.as_ref(),
-                            &account,
-                            requested_model.as_deref(),
-                            request_image_intent,
-                        )
-                        .await?
-                        {
-                            account
-                        } else {
-                            let resolution = resolve_pool_account_for_request_with_wait_and_image_intent(
+                        let (initial_account, updated_no_available_wait_deadline) =
+                            unwrap_via_pool_initial_account(
                                 state.as_ref(),
-                                body_sticky_key.as_deref(),
+                                Some(&build_via_pool_attempt_trace_context(
+                                    proxy_request_id,
+                                    original_uri.path(),
+                                    body_sticky_key.clone(),
+                                )),
+                                resolution,
+                                no_available_wait_deadline,
+                                responses_total_timeout,
+                                owner_auto_guard_active,
+                            )
+                            .await?;
+                        no_available_wait_deadline = updated_no_available_wait_deadline;
+                        initial_account
+                    } else if body_sticky_key.as_deref() == Some(sticky_key.as_str()) {
+                        if let Some(account) = resolved_header_sticky_account {
+                            if header_sticky_account_matches_request_requirements(
+                                state.as_ref(),
+                                &account,
                                 requested_model.as_deref(),
-                                &[],
-                                &HashSet::new(),
-                                None,
-                                true,
-                                &mut no_available_wait_deadline,
-                                pre_attempt_total_timeout_deadline,
                                 request_image_intent,
                             )
-                            .await;
+                            .await?
+                            {
+                                account
+                            } else {
+                                let resolution =
+                                    resolve_pool_account_for_request_with_wait_and_image_intent(
+                                        state.as_ref(),
+                                        body_sticky_key.as_deref(),
+                                        requested_model.as_deref(),
+                                        &[],
+                                        &HashSet::new(),
+                                        None,
+                                        true,
+                                        &mut no_available_wait_deadline,
+                                        pre_attempt_total_timeout_deadline,
+                                        request_image_intent,
+                                    )
+                                    .await;
+                                let (initial_account, updated_no_available_wait_deadline) =
+                                    unwrap_via_pool_initial_account(
+                                        state.as_ref(),
+                                        Some(&build_via_pool_attempt_trace_context(
+                                            proxy_request_id,
+                                            original_uri.path(),
+                                            body_sticky_key.clone(),
+                                        )),
+                                        resolution,
+                                        no_available_wait_deadline,
+                                        responses_total_timeout,
+                                        owner_auto_guard_active,
+                                    )
+                                    .await?;
+                                no_available_wait_deadline = updated_no_available_wait_deadline;
+                                initial_account
+                            }
+                        } else {
+                            let resolution =
+                                resolve_pool_account_for_request_with_wait_and_image_intent(
+                                    state.as_ref(),
+                                    body_sticky_key.as_deref(),
+                                    requested_model.as_deref(),
+                                    &[],
+                                    &HashSet::new(),
+                                    None,
+                                    true,
+                                    &mut no_available_wait_deadline,
+                                    pre_attempt_total_timeout_deadline,
+                                    request_image_intent,
+                                )
+                                .await;
                             let (initial_account, updated_no_available_wait_deadline) =
                                 unwrap_via_pool_initial_account(
                                     state.as_ref(),
@@ -2737,19 +2794,20 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             initial_account
                         }
                     } else {
-                        let resolution = resolve_pool_account_for_request_with_wait_and_image_intent(
-                            state.as_ref(),
-                            body_sticky_key.as_deref(),
-                            requested_model.as_deref(),
-                            &[],
-                            &HashSet::new(),
-                            None,
-                            true,
-                            &mut no_available_wait_deadline,
-                            pre_attempt_total_timeout_deadline,
-                            request_image_intent,
-                        )
-                        .await;
+                        let resolution =
+                            resolve_pool_account_for_request_with_wait_and_image_intent(
+                                state.as_ref(),
+                                body_sticky_key.as_deref(),
+                                requested_model.as_deref(),
+                                &[],
+                                &HashSet::new(),
+                                None,
+                                true,
+                                &mut no_available_wait_deadline,
+                                pre_attempt_total_timeout_deadline,
+                                request_image_intent,
+                            )
+                            .await;
                         let (initial_account, updated_no_available_wait_deadline) =
                             unwrap_via_pool_initial_account(
                                 state.as_ref(),
@@ -2766,110 +2824,79 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             .await?;
                         no_available_wait_deadline = updated_no_available_wait_deadline;
                         initial_account
+                    };
+                    if pre_attempt_total_timeout_exceeded() {
+                        return Err(pre_attempt_total_timeout_error());
                     }
-                } else {
-                    let resolution = resolve_pool_account_for_request_with_wait_and_image_intent(
-                        state.as_ref(),
-                        body_sticky_key.as_deref(),
-                        requested_model.as_deref(),
-                        &[],
-                        &HashSet::new(),
-                        None,
-                        true,
-                        &mut no_available_wait_deadline,
-                        pre_attempt_total_timeout_deadline,
-                        request_image_intent,
+                    (
+                        request_body_snapshot,
+                        body_sticky_key,
+                        initial_account,
+                        no_available_wait_deadline,
+                        prompt_cache_binding_constraint,
+                        body_prompt_cache_key,
+                        conversation_override,
+                        requested_model,
+                        request_contains_encrypted_content,
+                        owner_auto_guard_active,
                     )
-                    .await;
-                    let (initial_account, updated_no_available_wait_deadline) =
-                        unwrap_via_pool_initial_account(
-                            state.as_ref(),
-                            Some(&build_via_pool_attempt_trace_context(
-                                proxy_request_id,
-                                original_uri.path(),
-                                body_sticky_key.clone(),
-                            )),
-                            resolution,
-                            no_available_wait_deadline,
-                            responses_total_timeout,
-                            owner_auto_guard_active,
-                        )
-                        .await?;
-                    no_available_wait_deadline = updated_no_available_wait_deadline;
-                    initial_account
-                };
-                if pre_attempt_total_timeout_exceeded() {
-                    return Err(pre_attempt_total_timeout_error());
-                }
-                (
-                    request_body_snapshot,
-                    body_sticky_key,
-                    initial_account,
-                    no_available_wait_deadline,
-                    prompt_cache_binding_constraint,
-                    body_prompt_cache_key,
-                    conversation_override,
-                    requested_model,
-                    request_contains_encrypted_content,
-                    owner_auto_guard_active,
-                )
-            } else {
-                let mut no_available_wait_deadline = None;
-                let is_json_body = headers
-                    .get(header::CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok())
-                    .is_some_and(|value| {
-                        value.to_ascii_lowercase().starts_with("application/json")
-                    });
-                let replayable_body = spawn_pool_replayable_request_body(
-                    body,
-                    body_limit,
-                    runtime_timeouts.request_read_timeout,
-                    proxy_request_id,
-                );
-                let replay_status_rx = replayable_body.status_rx.clone();
-                let replay_cancel = replayable_body.cancel.clone();
-                let live_body_key_probe = if is_json_body {
-                    let sticky_key_probe_wait_timeout = live_body_sticky_key_probe_wait_timeout(
+                } else {
+                    let mut no_available_wait_deadline = None;
+                    let is_json_body = headers
+                        .get(header::CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|value| {
+                            value.to_ascii_lowercase().starts_with("application/json")
+                        });
+                    let replayable_body = spawn_pool_replayable_request_body(
+                        body,
+                        body_limit,
                         runtime_timeouts.request_read_timeout,
-                        pre_attempt_total_timeout_deadline,
+                        proxy_request_id,
                     );
-                    wait_for_replay_body_sticky_key_probe(
-                        &replayable_body.sticky_key_probe_rx,
-                        sticky_key_probe_wait_timeout,
+                    let replay_status_rx = replayable_body.status_rx.clone();
+                    let replay_cancel = replayable_body.cancel.clone();
+                    let live_body_key_probe = if is_json_body {
+                        let sticky_key_probe_wait_timeout = live_body_sticky_key_probe_wait_timeout(
+                            runtime_timeouts.request_read_timeout,
+                            pre_attempt_total_timeout_deadline,
+                        );
+                        wait_for_replay_body_sticky_key_probe(
+                            &replayable_body.sticky_key_probe_rx,
+                            sticky_key_probe_wait_timeout,
+                        )
+                        .await
+                    } else {
+                        PoolReplayBodyKeyProbe::default()
+                    };
+                    let live_body_sticky_key = live_body_key_probe.sticky_key;
+                    let live_prompt_cache_key = live_body_key_probe
+                        .prompt_cache_key
+                        .or_else(|| header_prompt_cache_key.clone());
+                    let live_requested_model = live_body_key_probe.model;
+                    let live_request_contains_encrypted_content =
+                        live_body_key_probe.contains_encrypted_content;
+                    let live_responses_total_timeout_started_at =
+                        responses_total_timeout_started_at_from_request;
+                    let (
+                        prompt_cache_binding_constraint,
+                        owner_auto_guard_active,
+                        conversation_override,
+                    ) = load_via_pool_effective_routing(
+                        state.as_ref(),
+                        live_prompt_cache_key.as_deref(),
+                        live_request_contains_encrypted_content,
                     )
-                    .await
-                } else {
-                    PoolReplayBodyKeyProbe::default()
-                };
-                let live_body_sticky_key = live_body_key_probe.sticky_key;
-                let live_prompt_cache_key = live_body_key_probe
-                    .prompt_cache_key
-                    .or_else(|| header_prompt_cache_key.clone());
-                let live_requested_model = live_body_key_probe.model;
-                let live_request_contains_encrypted_content =
-                    live_body_key_probe.contains_encrypted_content;
-                let live_responses_total_timeout_started_at =
-                    responses_total_timeout_started_at_from_request;
-                let (
-                    prompt_cache_binding_constraint,
-                    owner_auto_guard_active,
-                    conversation_override,
-                ) = load_via_pool_effective_routing(
-                    state.as_ref(),
-                    live_prompt_cache_key.as_deref(),
-                    live_request_contains_encrypted_content,
-                )
-                .await?;
-                let live_first_requirements_known =
-                    live_first_image_intent_known(capture_target, request_image_intent)
-                        && (live_requested_model.is_some()
-                            || prompt_cache_binding_constraint.is_some());
-                if live_first_requirements_known {
-                    let resolution = if prompt_cache_binding_constraint.is_some()
-                        || conversation_override.is_some()
-                    {
-                        resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
+                    .await?;
+                    let live_first_requirements_known =
+                        live_first_image_intent_known(capture_target, request_image_intent)
+                            && (live_requested_model.is_some()
+                                || prompt_cache_binding_constraint.is_some());
+                    if live_first_requirements_known {
+                        let resolution = if prompt_cache_binding_constraint.is_some()
+                            || conversation_override.is_some()
+                        {
+                            resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
                             state.as_ref(),
                             live_body_sticky_key.as_deref(),
                             live_requested_model.as_deref(),
@@ -2884,356 +2911,367 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             request_image_intent,
                         )
                         .await
-                    } else {
-                        resolve_pool_account_for_request_with_wait_and_image_intent(
-                            state.as_ref(),
-                            live_body_sticky_key.as_deref(),
-                            live_requested_model.as_deref(),
-                            &[],
-                            &HashSet::new(),
-                            None,
-                            true,
-                            &mut no_available_wait_deadline,
-                            pre_attempt_total_timeout_deadline,
-                            request_image_intent,
-                        )
-                        .await
-                    };
-                    let (initial_account, no_available_wait_deadline) =
-                        unwrap_via_pool_initial_account(
-                            state.as_ref(),
-                            Some(&build_via_pool_attempt_trace_context(
-                                proxy_request_id,
-                                original_uri.path(),
-                                live_body_sticky_key.clone(),
-                            )),
-                            resolution,
-                            no_available_wait_deadline,
-                            responses_total_timeout,
-                            owner_auto_guard_active,
-                        )
-                        .await?;
-                    let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
-                        proxy_request_id,
-                        original_uri.path(),
-                        live_body_sticky_key.clone(),
-                    );
-
-                    if pool_account_supports_live_request_body(&initial_account, original_uri) {
-                        let upstream = match send_pool_request_live_first_attempt(
-                            state.clone(),
+                        } else {
+                            resolve_pool_account_for_request_with_wait_and_image_intent(
+                                state.as_ref(),
+                                live_body_sticky_key.as_deref(),
+                                live_requested_model.as_deref(),
+                                &[],
+                                &HashSet::new(),
+                                None,
+                                true,
+                                &mut no_available_wait_deadline,
+                                pre_attempt_total_timeout_deadline,
+                                request_image_intent,
+                            )
+                            .await
+                        };
+                        let (initial_account, no_available_wait_deadline) =
+                            unwrap_via_pool_initial_account(
+                                state.as_ref(),
+                                Some(&build_via_pool_attempt_trace_context(
+                                    proxy_request_id,
+                                    original_uri.path(),
+                                    live_body_sticky_key.clone(),
+                                )),
+                                resolution,
+                                no_available_wait_deadline,
+                                responses_total_timeout,
+                                owner_auto_guard_active,
+                            )
+                            .await?;
+                        let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
                             proxy_request_id,
-                            method.clone(),
-                            original_uri,
-                            &headers,
-                            replayable_body.body,
-                            live_prompt_cache_key.as_deref(),
-                            handshake_timeout,
-                            responses_total_timeout,
-                            live_responses_total_timeout_started_at,
-                            live_body_sticky_key.as_deref(),
-                            initial_account.clone(),
-                            Some(&pool_attempt_trace_context),
-                            &replay_status_rx,
-                        )
-                        .await
-                        {
-                            Ok(upstream) => upstream,
-                            Err(first_error) => continue_or_retry_pool_live_request(
+                            original_uri.path(),
+                            live_body_sticky_key.clone(),
+                        );
+
+                        if pool_account_supports_live_request_body(&initial_account, original_uri) {
+                            let upstream = match send_pool_request_live_first_attempt(
                                 state.clone(),
                                 proxy_request_id,
                                 method.clone(),
                                 original_uri,
                                 &headers,
+                                replayable_body.body,
+                                live_prompt_cache_key.as_deref(),
                                 handshake_timeout,
-                                initial_account,
-                                live_body_sticky_key.clone(),
-                                live_requested_model.clone(),
-                                live_prompt_cache_key.clone(),
-                                prompt_cache_binding_constraint.clone(),
-                                owner_auto_guard_active,
+                                responses_total_timeout,
                                 live_responses_total_timeout_started_at,
-                                no_available_wait_deadline,
+                                live_body_sticky_key.as_deref(),
+                                initial_account.clone(),
+                                Some(&pool_attempt_trace_context),
                                 &replay_status_rx,
-                                &replay_cancel,
-                                runtime_timeouts.request_read_timeout,
-                                first_error,
                             )
                             .await
-                            .map_err(|err| (err.status, err.message))?,
-                        };
-                        let account = upstream.account;
-                        let upstream_attempt_started_at_utc = upstream.attempt_started_at_utc;
-                        let pending_pool_attempt_record = upstream.pending_attempt_record;
-                        let upstream_invoke_id = pending_pool_attempt_record
-                            .as_ref()
-                            .map(|record| record.invoke_id.clone());
-                        let t_upstream_connect_ms = upstream.connect_latency_ms;
-                        let t_upstream_ttfb_ms = upstream.first_byte_latency_ms;
-                        let mut deferred_pool_early_phase_cleanup_guard =
-                            upstream.deferred_early_phase_cleanup_guard;
-                        let live_pool_attempt_activity_lease = upstream.live_attempt_activity_lease;
-                        let upstream_response = upstream.response;
-                        let rewritten_location = normalize_proxy_location_header(
-                            upstream_response.status(),
-                            upstream_response.headers(),
-                            &account.upstream_base_url,
-                        )
-                        .map_err(|err| {
-                            (
-                                StatusCode::BAD_GATEWAY,
-                                format!("failed to process upstream redirect: {err}"),
+                            {
+                                Ok(upstream) => upstream,
+                                Err(first_error) => continue_or_retry_pool_live_request(
+                                    state.clone(),
+                                    proxy_request_id,
+                                    method.clone(),
+                                    original_uri,
+                                    &headers,
+                                    handshake_timeout,
+                                    initial_account,
+                                    live_body_sticky_key.clone(),
+                                    live_requested_model.clone(),
+                                    live_prompt_cache_key.clone(),
+                                    prompt_cache_binding_constraint.clone(),
+                                    owner_auto_guard_active,
+                                    live_responses_total_timeout_started_at,
+                                    no_available_wait_deadline,
+                                    &replay_status_rx,
+                                    &replay_cancel,
+                                    runtime_timeouts.request_read_timeout,
+                                    first_error,
+                                )
+                                .await
+                                .map_err(|err| (err.status, err.message))?,
+                            };
+                            let account = upstream.account;
+                            let upstream_attempt_started_at_utc = upstream.attempt_started_at_utc;
+                            let pending_pool_attempt_record = upstream.pending_attempt_record;
+                            let upstream_invoke_id = pending_pool_attempt_record
+                                .as_ref()
+                                .map(|record| record.invoke_id.clone());
+                            let t_upstream_connect_ms = upstream.connect_latency_ms;
+                            let t_upstream_ttfb_ms = upstream.first_byte_latency_ms;
+                            let mut deferred_pool_early_phase_cleanup_guard =
+                                upstream.deferred_early_phase_cleanup_guard;
+                            let live_pool_attempt_activity_lease =
+                                upstream.live_attempt_activity_lease;
+                            let upstream_response = upstream.response;
+                            let rewritten_location = normalize_proxy_location_header(
+                                upstream_response.status(),
+                                upstream_response.headers(),
+                                &account.upstream_base_url,
                             )
-                        })?;
+                            .map_err(|err| {
+                                (
+                                    StatusCode::BAD_GATEWAY,
+                                    format!("failed to process upstream redirect: {err}"),
+                                )
+                            })?;
 
-                        let upstream_status = upstream_response.status();
-	                        let upstream_request_id = upstream_response
-	                            .headers()
-	                            .get("x-request-id")
-	                            .and_then(|value| value.to_str().ok())
-	                            .map(str::trim)
-	                            .filter(|value| !value.is_empty())
-	                            .map(|value| value.to_string());
-	                        let upstream_content_encoding = upstream_response
-	                            .headers()
-	                            .get(header::CONTENT_ENCODING)
-	                            .and_then(|value| value.to_str().ok())
-	                            .map(str::trim)
-	                            .filter(|value| !value.is_empty())
-	                            .map(|value| value.to_string());
-	                        let upstream_connection_scoped =
-	                            connection_scoped_header_names(upstream_response.headers());
-                        let mut response_builder = Response::builder().status(upstream_status);
-                        for (name, value) in upstream_response.headers() {
-                            if should_forward_proxy_header(name, &upstream_connection_scoped) {
-                                if name == header::LOCATION {
-                                    if let Some(rewritten) = rewritten_location.as_deref() {
-                                        response_builder = response_builder.header(name, rewritten);
+                            let upstream_status = upstream_response.status();
+                            let upstream_request_id = upstream_response
+                                .headers()
+                                .get("x-request-id")
+                                .and_then(|value| value.to_str().ok())
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(|value| value.to_string());
+                            let upstream_content_encoding = upstream_response
+                                .headers()
+                                .get(header::CONTENT_ENCODING)
+                                .and_then(|value| value.to_str().ok())
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(|value| value.to_string());
+                            let upstream_connection_scoped =
+                                connection_scoped_header_names(upstream_response.headers());
+                            let mut response_builder = Response::builder().status(upstream_status);
+                            for (name, value) in upstream_response.headers() {
+                                if should_forward_proxy_header(name, &upstream_connection_scoped) {
+                                    if name == header::LOCATION {
+                                        if let Some(rewritten) = rewritten_location.as_deref() {
+                                            response_builder =
+                                                response_builder.header(name, rewritten);
+                                        }
+                                    } else {
+                                        response_builder = response_builder.header(name, value);
+                                    }
+                                }
+                            }
+
+                            let mut upstream_stream = upstream_response.into_bytes_stream();
+                            let first_chunk = upstream.first_chunk;
+                            let stream_timeout = upstream.stream_timeout;
+                            if let Some(chunk) = first_chunk.as_ref() {
+                                info!(
+                                    proxy_request_id,
+                                    account_id = account.account_id,
+                                    ttfb_ms = t_upstream_ttfb_ms,
+                                    first_chunk_bytes = chunk.len(),
+                                    "pool upstream response first chunk ready"
+                                );
+                            } else {
+                                let pool_route_success =
+                                    pool_route_response_status_is_success(upstream_status);
+                                let route_http_failure_message = (!pool_route_success).then(|| {
+                                    format!(
+                                        "pool upstream responded with {}",
+                                        upstream_status.as_u16()
+                                    )
+                                });
+                                finalize_tracked_pool_attempt(
+                                    state.as_ref(),
+                                    pending_pool_attempt_record.as_ref(),
+                                    if pool_route_success {
+                                        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+                                    } else {
+                                        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+                                    },
+                                    Some(upstream_status),
+                                    None,
+                                    None,
+                                    None,
+                                    route_http_failure_message.as_deref(),
+                                    Some(t_upstream_connect_ms),
+                                    Some(t_upstream_ttfb_ms),
+                                    Some(0.0),
+                                    upstream_request_id.as_deref(),
+                                    "via-pool live-first empty response",
+                                )
+                                .await;
+                                complete_deferred_pool_early_phase_cleanup_guard(
+                                    &mut deferred_pool_early_phase_cleanup_guard,
+                                );
+                                if pool_route_success {
+                                    consume_pool_routing_reservation(
+                                        state.as_ref(),
+                                        &pool_routing_reservation_key,
+                                    );
+                                    if let Err(route_err) =
+                                        record_pool_route_success_with_image_intent(
+                                            &state.pool,
+                                            account.account_id,
+                                            upstream_attempt_started_at_utc,
+                                            live_body_sticky_key.as_deref(),
+                                            upstream_invoke_id.as_deref(),
+                                            request_image_intent,
+                                        )
+                                        .await
+                                    {
+                                        warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
                                     }
                                 } else {
-                                    response_builder = response_builder.header(name, value);
+                                    release_pool_routing_reservation(
+                                        state.as_ref(),
+                                        &pool_routing_reservation_key,
+                                    );
+                                    if let Err(route_err) =
+                                        record_pool_route_http_failure_with_image_intent(
+                                            &state.pool,
+                                            account.account_id,
+                                            &account.kind,
+                                            account.single_account_rotation_enabled
+                                                && account.effective_upstream_429_max_retries()
+                                                    == 0,
+                                            live_body_sticky_key.as_deref(),
+                                            upstream_status,
+                                            route_http_failure_message
+                                                .as_deref()
+                                                .unwrap_or("upstream request failed"),
+                                            upstream_invoke_id.as_deref(),
+                                            request_image_intent,
+                                        )
+                                        .await
+                                    {
+                                        warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+                                    }
                                 }
+                                return response_builder.body(Body::empty()).map_err(|err| {
+                                    (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        format!("failed to build proxy response: {err}"),
+                                    )
+                                });
                             }
-                        }
+                            let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
+                            let state_for_record = state.clone();
+                            let reservation_key_for_record = pool_routing_reservation_key.clone();
+                            let sticky_key_for_record = live_body_sticky_key.clone();
+                            let prompt_cache_key_for_record = live_prompt_cache_key.clone();
+                            let invoke_id_for_record = upstream_invoke_id.clone();
+                            let pending_pool_attempt_record_for_task = pending_pool_attempt_record;
+                            let upstream_request_id_for_task = upstream_request_id;
+                            let upstream_attempt_started_at_utc_for_record =
+                                upstream_attempt_started_at_utc;
+                            let request_contains_encrypted_content_for_task =
+                                live_request_contains_encrypted_content;
+                            let upstream_content_encoding_for_task =
+                                upstream_content_encoding.clone();
+                            let proxy_request_permit_for_task = proxy_request_permit;
+                            tokio::spawn(async move {
+                                let mut deferred_pool_early_phase_cleanup_guard_for_task =
+                                    deferred_pool_early_phase_cleanup_guard;
+                                let _live_pool_attempt_activity_lease_for_task =
+                                    live_pool_attempt_activity_lease;
+                                let mut forwarded_chunks = 0usize;
+                                let mut forwarded_bytes = 0usize;
+                                let stream_started_at = Instant::now();
+                                let mut stream_error_message: Option<String> = None;
+                                let mut downstream_closed = false;
+                                let mut response_parse_buffer =
+                                    BoundedResponseParseBuffer::new(RAW_RESPONSE_PREVIEW_LIMIT);
+                                let mut proxy_request_permit_for_task =
+                                    Some(proxy_request_permit_for_task);
 
-                        let mut upstream_stream = upstream_response.into_bytes_stream();
-                        let first_chunk = upstream.first_chunk;
-                        let stream_timeout = upstream.stream_timeout;
-                        if let Some(chunk) = first_chunk.as_ref() {
-                            info!(
-                                proxy_request_id,
-                                account_id = account.account_id,
-                                ttfb_ms = t_upstream_ttfb_ms,
-                                first_chunk_bytes = chunk.len(),
-                                "pool upstream response first chunk ready"
-                            );
-                        } else {
-                            let pool_route_success =
-                                pool_route_response_status_is_success(upstream_status);
-                            let route_http_failure_message = (!pool_route_success).then(|| {
-                                format!("pool upstream responded with {}", upstream_status.as_u16())
-                            });
-                            finalize_tracked_pool_attempt(
-                                state.as_ref(),
-                                pending_pool_attempt_record.as_ref(),
-                                if pool_route_success {
-                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
-                                } else {
-                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
-                                },
-                                Some(upstream_status),
-                                None,
-                                None,
-                                None,
-                                route_http_failure_message.as_deref(),
-                                Some(t_upstream_connect_ms),
-                                Some(t_upstream_ttfb_ms),
-                                Some(0.0),
-                                upstream_request_id.as_deref(),
-                                "via-pool live-first empty response",
-                            )
-                            .await;
-                            complete_deferred_pool_early_phase_cleanup_guard(
-                                &mut deferred_pool_early_phase_cleanup_guard,
-                            );
-                            if pool_route_success {
-                                consume_pool_routing_reservation(
-                                    state.as_ref(),
-                                    &pool_routing_reservation_key,
-                                );
-                                if let Err(route_err) = record_pool_route_success_with_image_intent(
-                                    &state.pool,
-                                    account.account_id,
-                                    upstream_attempt_started_at_utc,
-                                    live_body_sticky_key.as_deref(),
-                                    upstream_invoke_id.as_deref(),
-                                    request_image_intent,
-                                )
-                                .await
-                                {
-                                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+                                if let Some(chunk) = first_chunk {
+                                    response_parse_buffer.append(&chunk);
+                                    forwarded_chunks = forwarded_chunks.saturating_add(1);
+                                    forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
+                                    if tx.send(Ok(chunk)).await.is_err() {
+                                        downstream_closed = true;
+                                        let _ = proxy_request_permit_for_task.take();
+                                    }
                                 }
-                            } else {
-                                release_pool_routing_reservation(
-                                    state.as_ref(),
-                                    &pool_routing_reservation_key,
-                                );
-                                if let Err(route_err) = record_pool_route_http_failure_with_image_intent(
-                                    &state.pool,
-                                    account.account_id,
-                                    &account.kind,
-                                    account.single_account_rotation_enabled
-                                        && account.effective_upstream_429_max_retries() == 0,
-                                    live_body_sticky_key.as_deref(),
-                                    upstream_status,
-                                    route_http_failure_message
-                                        .as_deref()
-                                        .unwrap_or("upstream request failed"),
-                                    upstream_invoke_id.as_deref(),
-                                    request_image_intent,
-                                )
-                                .await
-                                {
-                                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
-                                }
-                            }
-                            return response_builder.body(Body::empty()).map_err(|err| {
-                                (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!("failed to build proxy response: {err}"),
-                                )
-                            });
-                        }
-                        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
-                        let state_for_record = state.clone();
-                        let reservation_key_for_record = pool_routing_reservation_key.clone();
-                        let sticky_key_for_record = live_body_sticky_key.clone();
-                        let prompt_cache_key_for_record = live_prompt_cache_key.clone();
-                        let invoke_id_for_record = upstream_invoke_id.clone();
-                        let pending_pool_attempt_record_for_task = pending_pool_attempt_record;
-                        let upstream_request_id_for_task = upstream_request_id;
-                        let upstream_attempt_started_at_utc_for_record =
-                            upstream_attempt_started_at_utc;
-                        let request_contains_encrypted_content_for_task =
-                            live_request_contains_encrypted_content;
-                        let upstream_content_encoding_for_task = upstream_content_encoding.clone();
-                        let proxy_request_permit_for_task = proxy_request_permit;
-                        tokio::spawn(async move {
-                            let mut deferred_pool_early_phase_cleanup_guard_for_task =
-                                deferred_pool_early_phase_cleanup_guard;
-                            let _live_pool_attempt_activity_lease_for_task =
-                                live_pool_attempt_activity_lease;
-                            let mut forwarded_chunks = 0usize;
-                            let mut forwarded_bytes = 0usize;
-                            let stream_started_at = Instant::now();
-                            let mut stream_error_message: Option<String> = None;
-                            let mut downstream_closed = false;
-                            let mut response_parse_buffer =
-                                BoundedResponseParseBuffer::new(RAW_RESPONSE_PREVIEW_LIMIT);
-                            let mut proxy_request_permit_for_task =
-                                Some(proxy_request_permit_for_task);
 
-                            if let Some(chunk) = first_chunk {
-                                response_parse_buffer.append(&chunk);
-                                forwarded_chunks = forwarded_chunks.saturating_add(1);
-                                forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
-                                if tx.send(Ok(chunk)).await.is_err() {
-                                    downstream_closed = true;
-                                    let _ = proxy_request_permit_for_task.take();
-                                }
-                            }
-
-                            loop {
-                                if downstream_closed {
-                                    break;
-                                }
-                                let next_chunk = if let Some(stream_timeout) = stream_timeout {
-                                    match timeout(stream_timeout, upstream_stream.next()).await {
-                                        Ok(next_chunk) => next_chunk,
-                                        Err(_) => {
-                                            let message = pool_upstream_timeout_message(
-                                                stream_timeout,
-                                                "waiting for upstream stream completion",
-                                            );
+                                loop {
+                                    if downstream_closed {
+                                        break;
+                                    }
+                                    let next_chunk = if let Some(stream_timeout) = stream_timeout {
+                                        match timeout(stream_timeout, upstream_stream.next()).await
+                                        {
+                                            Ok(next_chunk) => next_chunk,
+                                            Err(_) => {
+                                                let message = pool_upstream_timeout_message(
+                                                    stream_timeout,
+                                                    "waiting for upstream stream completion",
+                                                );
+                                                stream_error_message = Some(message.clone());
+                                                let _ =
+                                                    tx.send(Err(io::Error::other(message))).await;
+                                                break;
+                                            }
+                                        }
+                                    } else {
+                                        upstream_stream.next().await
+                                    };
+                                    let Some(next_chunk) = next_chunk else {
+                                        break;
+                                    };
+                                    match next_chunk {
+                                        Ok(chunk) => {
+                                            response_parse_buffer.append(&chunk);
+                                            forwarded_chunks = forwarded_chunks.saturating_add(1);
+                                            forwarded_bytes =
+                                                forwarded_bytes.saturating_add(chunk.len());
+                                            if tx.send(Ok(chunk)).await.is_err() {
+                                                let _ = proxy_request_permit_for_task.take();
+                                                break;
+                                            }
+                                        }
+                                        Err(err) => {
+                                            let message = format!("upstream stream error: {err}");
                                             stream_error_message = Some(message.clone());
                                             let _ = tx.send(Err(io::Error::other(message))).await;
                                             break;
                                         }
                                     }
-                                } else {
-                                    upstream_stream.next().await
-                                };
-                                let Some(next_chunk) = next_chunk else {
-                                    break;
-                                };
-                                match next_chunk {
-                                    Ok(chunk) => {
-                                        response_parse_buffer.append(&chunk);
-                                        forwarded_chunks =
-                                            forwarded_chunks.saturating_add(1);
-                                        forwarded_bytes =
-                                            forwarded_bytes.saturating_add(chunk.len());
-                                        if tx.send(Ok(chunk)).await.is_err() {
-                                            let _ = proxy_request_permit_for_task.take();
-                                            break;
-                                        }
-                                    }
-                                    Err(err) => {
-                                        let message = format!("upstream stream error: {err}");
-                                        stream_error_message = Some(message.clone());
-                                        let _ = tx.send(Err(io::Error::other(message))).await;
-                                        break;
-                                    }
                                 }
-                            }
-                            drop(proxy_request_permit_for_task.take());
-                            let stream_latency_ms = elapsed_ms(stream_started_at);
+                                drop(proxy_request_permit_for_task.take());
+                                let stream_latency_ms = elapsed_ms(stream_started_at);
 
-                            if let Some(message) = stream_error_message.as_deref() {
-                                release_pool_routing_reservation(
-                                    state_for_record.as_ref(),
-                                    &reservation_key_for_record,
-                                );
-                                if let Err(route_err) = record_pool_route_transport_failure(
-                                    &state_for_record.pool,
-                                    account.account_id,
-                                    sticky_key_for_record.as_deref(),
-                                    message,
-                                    invoke_id_for_record.as_deref(),
-                                )
-                                .await
-                                {
-                                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool stream error");
-                                }
-                            } else if pool_route_response_status_is_success(upstream_status) {
-                                consume_pool_routing_reservation(
-                                    state_for_record.as_ref(),
-                                    &reservation_key_for_record,
-                                );
-                                if let Err(route_err) = record_pool_route_success_with_image_intent(
-                                    &state_for_record.pool,
-                                    account.account_id,
-                                    upstream_attempt_started_at_utc_for_record,
-                                    sticky_key_for_record.as_deref(),
-                                    invoke_id_for_record.as_deref(),
-                                    request_image_intent,
-                                )
-                                .await
-                                {
-                                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
-                                }
-                                let response_contains_encrypted_content = response_parse_buffer
-                                    .into_response_info(
-                                        ProxyCaptureTarget::Responses,
-                                        upstream_content_encoding_for_task.as_deref(),
+                                if let Some(message) = stream_error_message.as_deref() {
+                                    release_pool_routing_reservation(
+                                        state_for_record.as_ref(),
+                                        &reservation_key_for_record,
+                                    );
+                                    if let Err(route_err) = record_pool_route_transport_failure(
+                                        &state_for_record.pool,
+                                        account.account_id,
+                                        sticky_key_for_record.as_deref(),
+                                        message,
+                                        invoke_id_for_record.as_deref(),
                                     )
-                                    .contains_encrypted_content;
-                                if let Some(prompt_cache_key) =
-                                    prompt_cache_key_for_record.as_deref()
-                                    && (request_contains_encrypted_content_for_task
-                                        || response_contains_encrypted_content)
-                                {
-                                    match confirm_prompt_cache_encrypted_session_owner_success_if_enabled(
+                                    .await
+                                    {
+                                        warn!(account_id = account.account_id, error = %route_err, "failed to record pool stream error");
+                                    }
+                                } else if pool_route_response_status_is_success(upstream_status) {
+                                    consume_pool_routing_reservation(
+                                        state_for_record.as_ref(),
+                                        &reservation_key_for_record,
+                                    );
+                                    if let Err(route_err) =
+                                        record_pool_route_success_with_image_intent(
+                                            &state_for_record.pool,
+                                            account.account_id,
+                                            upstream_attempt_started_at_utc_for_record,
+                                            sticky_key_for_record.as_deref(),
+                                            invoke_id_for_record.as_deref(),
+                                            request_image_intent,
+                                        )
+                                        .await
+                                    {
+                                        warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+                                    }
+                                    let response_contains_encrypted_content = response_parse_buffer
+                                        .into_response_info(
+                                            ProxyCaptureTarget::Responses,
+                                            upstream_content_encoding_for_task.as_deref(),
+                                        )
+                                        .contains_encrypted_content;
+                                    if let Some(prompt_cache_key) =
+                                        prompt_cache_key_for_record.as_deref()
+                                        && (request_contains_encrypted_content_for_task
+                                            || response_contains_encrypted_content)
+                                    {
+                                        match confirm_prompt_cache_encrypted_session_owner_success_if_enabled(
                                         state_for_record.as_ref(),
                                         prompt_cache_key,
                                         account.account_id,
@@ -3267,132 +3305,141 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                             );
                                         }
                                     }
+                                    }
+                                } else {
+                                    let route_http_failure_message = format!(
+                                        "pool upstream responded with {}",
+                                        upstream_status.as_u16()
+                                    );
+                                    release_pool_routing_reservation(
+                                        state_for_record.as_ref(),
+                                        &reservation_key_for_record,
+                                    );
+                                    if let Err(route_err) =
+                                        record_pool_route_http_failure_with_image_intent(
+                                            &state_for_record.pool,
+                                            account.account_id,
+                                            &account.kind,
+                                            account.single_account_rotation_enabled
+                                                && account.effective_upstream_429_max_retries()
+                                                    == 0,
+                                            sticky_key_for_record.as_deref(),
+                                            upstream_status,
+                                            &route_http_failure_message,
+                                            invoke_id_for_record.as_deref(),
+                                            request_image_intent,
+                                        )
+                                        .await
+                                    {
+                                        warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+                                    }
                                 }
-                            } else {
-                                let route_http_failure_message =
-                                    format!("pool upstream responded with {}", upstream_status.as_u16());
-                                release_pool_routing_reservation(
+                                finalize_tracked_pool_attempt(
                                     state_for_record.as_ref(),
-                                    &reservation_key_for_record,
-                                );
-                                if let Err(route_err) = record_pool_route_http_failure_with_image_intent(
-                                    &state_for_record.pool,
-                                    account.account_id,
-                                    &account.kind,
-                                    account.single_account_rotation_enabled
-                                        && account.effective_upstream_429_max_retries() == 0,
-                                    sticky_key_for_record.as_deref(),
-                                    upstream_status,
-                                    &route_http_failure_message,
-                                    invoke_id_for_record.as_deref(),
-                                    request_image_intent,
-                                )
-                                .await
-                                {
-                                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
-                                }
-                            }
-                            finalize_tracked_pool_attempt(
-                                state_for_record.as_ref(),
-                                pending_pool_attempt_record_for_task.as_ref(),
-                                if stream_error_message.is_some() {
-                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
-                                } else if !pool_route_response_status_is_success(upstream_status) {
-                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
-                                } else {
-                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
-                                },
-                                Some(upstream_status),
-                                if downstream_closed {
-                                    Some(upstream_status)
-                                } else {
-                                    None
-                                },
-                                stream_error_message
-                                    .as_ref()
-                                    .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-                                stream_error_message
-                                    .as_deref()
-                                    .or_else(|| {
+                                    pending_pool_attempt_record_for_task.as_ref(),
+                                    if stream_error_message.is_some() {
+                                        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+                                    } else if !pool_route_response_status_is_success(
+                                        upstream_status,
+                                    ) {
+                                        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+                                    } else {
+                                        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+                                    },
+                                    Some(upstream_status),
+                                    if downstream_closed {
+                                        Some(upstream_status)
+                                    } else {
+                                        None
+                                    },
+                                    stream_error_message
+                                        .as_ref()
+                                        .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                                    stream_error_message.as_deref().or_else(|| {
                                         (!pool_route_response_status_is_success(upstream_status))
                                             .then_some("upstream HTTP failure")
                                     }),
-                                None,
-                                Some(t_upstream_connect_ms),
-                                Some(t_upstream_ttfb_ms),
-                                Some(stream_latency_ms),
-                                upstream_request_id_for_task.as_deref(),
-                                "via-pool live-first streamed response",
-                            )
-                            .await;
-                            complete_deferred_pool_early_phase_cleanup_guard(
-                                &mut deferred_pool_early_phase_cleanup_guard_for_task,
-                            );
-
-                            info!(
-                                proxy_request_id,
-                                account_id = account.account_id,
-                                t_upstream_connect_ms,
-                                forwarded_chunks,
-                                forwarded_bytes,
-                                elapsed_ms = stream_latency_ms,
-                                "pool upstream response stream completed"
-                            );
-                        });
-
-                        return response_builder
-                            .body(Body::from_stream(ReceiverStream::new(rx)))
-                            .map_err(|err| {
-                                (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!("failed to build proxy response: {err}"),
+                                    None,
+                                    Some(t_upstream_connect_ms),
+                                    Some(t_upstream_ttfb_ms),
+                                    Some(stream_latency_ms),
+                                    upstream_request_id_for_task.as_deref(),
+                                    "via-pool live-first streamed response",
                                 )
-                            });
-                    }
-                }
+                                .await;
+                                complete_deferred_pool_early_phase_cleanup_guard(
+                                    &mut deferred_pool_early_phase_cleanup_guard_for_task,
+                                );
 
-                let request_body_snapshot = wait_for_replay_body_snapshot(
-                    state.as_ref(),
-                    original_uri,
-                    &method,
-                    &replay_status_rx,
-                    &replay_cancel,
-                    runtime_timeouts.request_read_timeout,
-                    live_responses_total_timeout_started_at,
-                )
-                .await?;
-                let body_sticky_key =
-                    extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
-                        .await
-                        .or(live_body_sticky_key);
-                let body_prompt_cache_key =
-                    extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot).await;
-                let requested_model = extract_model_from_replay_snapshot(&request_body_snapshot)
-                    .await
-                    .or(live_requested_model);
-                let request_contains_encrypted_content =
-                    replay_snapshot_contains_encrypted_content(&request_body_snapshot).await;
-                let request_image_intent = match request_body_snapshot.to_bytes().await {
-                    Ok(request_body_bytes) => serde_json::from_slice::<Value>(&request_body_bytes)
-                        .ok()
-                        .map(|value| infer_request_image_intent(capture_target, Some(&value)))
-                        .unwrap_or_else(|| infer_request_image_intent(capture_target, None)),
-                    Err(_) => infer_request_image_intent(capture_target, None),
-                };
-                let (
-                    prompt_cache_binding_constraint,
-                    owner_auto_guard_active,
-                    conversation_override,
-                ) = load_via_pool_effective_routing(
-                    state.as_ref(),
-                    body_prompt_cache_key
-                        .as_deref()
-                        .or(header_prompt_cache_key.as_deref()),
-                    request_contains_encrypted_content,
-                )
-                .await?;
-                let mut no_available_wait_deadline = None;
-                let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
+                                info!(
+                                    proxy_request_id,
+                                    account_id = account.account_id,
+                                    t_upstream_connect_ms,
+                                    forwarded_chunks,
+                                    forwarded_bytes,
+                                    elapsed_ms = stream_latency_ms,
+                                    "pool upstream response stream completed"
+                                );
+                            });
+
+                            return response_builder
+                                .body(Body::from_stream(ReceiverStream::new(rx)))
+                                .map_err(|err| {
+                                    (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        format!("failed to build proxy response: {err}"),
+                                    )
+                                });
+                        }
+                    }
+
+                    let request_body_snapshot = wait_for_replay_body_snapshot(
+                        state.as_ref(),
+                        original_uri,
+                        &method,
+                        &replay_status_rx,
+                        &replay_cancel,
+                        runtime_timeouts.request_read_timeout,
+                        live_responses_total_timeout_started_at,
+                    )
+                    .await?;
+                    let body_sticky_key =
+                        extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
+                            .await
+                            .or(live_body_sticky_key);
+                    let body_prompt_cache_key =
+                        extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot).await;
+                    let requested_model =
+                        extract_model_from_replay_snapshot(&request_body_snapshot)
+                            .await
+                            .or(live_requested_model);
+                    let request_contains_encrypted_content =
+                        replay_snapshot_contains_encrypted_content(&request_body_snapshot).await;
+                    let request_image_intent = match request_body_snapshot.to_bytes().await {
+                        Ok(request_body_bytes) => {
+                            serde_json::from_slice::<Value>(&request_body_bytes)
+                                .ok()
+                                .map(|value| {
+                                    infer_request_image_intent(capture_target, Some(&value))
+                                })
+                                .unwrap_or_else(|| infer_request_image_intent(capture_target, None))
+                        }
+                        Err(_) => infer_request_image_intent(capture_target, None),
+                    };
+                    let (
+                        prompt_cache_binding_constraint,
+                        owner_auto_guard_active,
+                        conversation_override,
+                    ) = load_via_pool_effective_routing(
+                        state.as_ref(),
+                        body_prompt_cache_key
+                            .as_deref()
+                            .or(header_prompt_cache_key.as_deref()),
+                        request_contains_encrypted_content,
+                    )
+                    .await?;
+                    let mut no_available_wait_deadline = None;
+                    let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
                     state.as_ref(),
                     body_sticky_key.as_deref(),
                     requested_model.as_deref(),
@@ -3407,37 +3454,100 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     request_image_intent,
                 )
                 .await;
-                let (initial_account, no_available_wait_deadline) =
-                    unwrap_via_pool_initial_account(
-                        state.as_ref(),
-                        Some(&build_via_pool_attempt_trace_context(
+                    let (initial_account, no_available_wait_deadline) =
+                        unwrap_via_pool_initial_account(
+                            state.as_ref(),
+                            Some(&build_via_pool_attempt_trace_context(
+                                proxy_request_id,
+                                original_uri.path(),
+                                body_sticky_key.clone(),
+                            )),
+                            resolution,
+                            no_available_wait_deadline,
+                            responses_total_timeout,
+                            owner_auto_guard_active,
+                        )
+                        .await?;
+                    let request_body_model =
+                        extract_model_from_replay_snapshot(&request_body_snapshot).await;
+                    let effective_prompt_cache_key = body_prompt_cache_key
+                        .clone()
+                        .or(header_prompt_cache_key.clone());
+                    (
+                        request_body_snapshot,
+                        body_sticky_key,
+                        initial_account,
+                        no_available_wait_deadline,
+                        prompt_cache_binding_constraint,
+                        effective_prompt_cache_key,
+                        conversation_override,
+                        request_body_model,
+                        request_contains_encrypted_content,
+                        owner_auto_guard_active,
+                    )
+                };
+                (
+                    send_pool_request_with_failover_and_binding_constraint(
+                        state.clone(),
+                        proxy_request_id,
+                        method,
+                        original_uri,
+                        &headers,
+                        Some(request_body_snapshot),
+                        handshake_timeout,
+                        Some(build_via_pool_attempt_trace_context(
                             proxy_request_id,
                             original_uri.path(),
                             body_sticky_key.clone(),
                         )),
-                        resolution,
-                        no_available_wait_deadline,
-                        responses_total_timeout,
-                        owner_auto_guard_active,
+                        Some(PoolAttemptRuntimeSnapshotContext {
+                            capture_target: capture_target.unwrap_or(ProxyCaptureTarget::Responses),
+                            request_info: RequestCaptureInfo {
+                                model: request_body_model,
+                                contains_encrypted_content: request_contains_encrypted_content,
+                                image_intent: Some(request_image_intent.as_str().to_string()),
+                                compaction_request_kind: request_compaction_kind,
+                                ..RequestCaptureInfo::default()
+                            },
+                            prompt_cache_key: body_prompt_cache_key.clone(),
+                            owner_auto_guard_active,
+                            t_req_read_ms: 0.0,
+                            t_req_parse_ms: 0.0,
+                        }),
+                        body_sticky_key.as_deref(),
+                        prompt_cache_binding_constraint,
+                        conversation_override,
+                        Some(initial_account),
+                        PoolFailoverProgress {
+                            responses_total_timeout_started_at:
+                                responses_total_timeout_started_at_from_request,
+                            no_available_wait_deadline,
+                            ..PoolFailoverProgress::default()
+                        },
+                        POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
                     )
-                    .await?;
-                let request_body_model =
-                    extract_model_from_replay_snapshot(&request_body_snapshot).await;
-                let effective_prompt_cache_key =
-                    body_prompt_cache_key.clone().or(header_prompt_cache_key.clone());
-                (
-                    request_body_snapshot,
+                    .await
+                    .map_err(|err| (err.status, err.message))?,
                     body_sticky_key,
-                    initial_account,
-                    no_available_wait_deadline,
-                    prompt_cache_binding_constraint,
-                    effective_prompt_cache_key,
-                    conversation_override,
-                    request_body_model,
+                    body_prompt_cache_key,
                     request_contains_encrypted_content,
-                    owner_auto_guard_active,
                 )
+            }
+        } else {
+            let same_account_attempts = if method == Method::GET {
+                1
+            } else {
+                POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS
             };
+            let (prompt_cache_binding_constraint, owner_auto_guard_active, conversation_override) =
+                load_via_pool_effective_routing(
+                    state.as_ref(),
+                    header_prompt_cache_key.as_deref(),
+                    false,
+                )
+                .await?;
+            let header_capture_target = capture_target_for_request(original_uri.path(), &method)
+                .unwrap_or(ProxyCaptureTarget::Responses);
             (
                 send_pool_request_with_failover_and_binding_constraint(
                     state.clone(),
@@ -3445,101 +3555,38 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     method,
                     original_uri,
                     &headers,
-                    Some(request_body_snapshot),
+                    None,
                     handshake_timeout,
                     Some(build_via_pool_attempt_trace_context(
                         proxy_request_id,
                         original_uri.path(),
-                        body_sticky_key.clone(),
+                        header_sticky_key.clone(),
                     )),
                     Some(PoolAttemptRuntimeSnapshotContext {
-                        capture_target: capture_target.unwrap_or(ProxyCaptureTarget::Responses),
-                        request_info: RequestCaptureInfo {
-                            model: request_body_model,
-                            contains_encrypted_content: request_contains_encrypted_content,
-                            image_intent: Some(request_image_intent.as_str().to_string()),
-                            compaction_request_kind: request_compaction_kind,
-                            ..RequestCaptureInfo::default()
-                        },
-                        prompt_cache_key: body_prompt_cache_key.clone(),
+                        capture_target: header_capture_target,
+                        request_info: RequestCaptureInfo::default(),
+                        prompt_cache_key: header_prompt_cache_key.clone(),
                         owner_auto_guard_active,
                         t_req_read_ms: 0.0,
                         t_req_parse_ms: 0.0,
                     }),
-                    body_sticky_key.as_deref(),
+                    header_sticky_key.as_deref(),
                     prompt_cache_binding_constraint,
                     conversation_override,
-                    Some(initial_account),
+                    None,
                     PoolFailoverProgress {
-                        responses_total_timeout_started_at:
-                            responses_total_timeout_started_at_from_request,
-                        no_available_wait_deadline,
+                        responses_total_timeout_started_at,
                         ..PoolFailoverProgress::default()
                     },
-                    POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+                    same_account_attempts,
                 )
                 .await
                 .map_err(|err| (err.status, err.message))?,
-                body_sticky_key,
-                body_prompt_cache_key,
-                request_contains_encrypted_content,
-            )
-        }
-    } else {
-        let same_account_attempts = if method == Method::GET {
-            1
-        } else {
-            POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS
-        };
-        let (prompt_cache_binding_constraint, owner_auto_guard_active, conversation_override) =
-            load_via_pool_effective_routing(
-                state.as_ref(),
-                header_prompt_cache_key.as_deref(),
+                header_sticky_key,
+                header_prompt_cache_key.clone(),
                 false,
             )
-            .await?;
-        let header_capture_target =
-            capture_target_for_request(original_uri.path(), &method)
-                .unwrap_or(ProxyCaptureTarget::Responses);
-        (
-            send_pool_request_with_failover_and_binding_constraint(
-                state.clone(),
-                proxy_request_id,
-                method,
-                original_uri,
-                &headers,
-                None,
-                handshake_timeout,
-                Some(build_via_pool_attempt_trace_context(
-                    proxy_request_id,
-                    original_uri.path(),
-                    header_sticky_key.clone(),
-                )),
-                Some(PoolAttemptRuntimeSnapshotContext {
-                    capture_target: header_capture_target,
-                    request_info: RequestCaptureInfo::default(),
-                    prompt_cache_key: header_prompt_cache_key.clone(),
-                    owner_auto_guard_active,
-                    t_req_read_ms: 0.0,
-                    t_req_parse_ms: 0.0,
-                }),
-                header_sticky_key.as_deref(),
-                prompt_cache_binding_constraint,
-                conversation_override,
-                None,
-                PoolFailoverProgress {
-                    responses_total_timeout_started_at,
-                    ..PoolFailoverProgress::default()
-                },
-                same_account_attempts,
-            )
-            .await
-            .map_err(|err| (err.status, err.message))?,
-            header_sticky_key,
-            header_prompt_cache_key.clone(),
-            false,
-        )
-    };
+        };
 
     let account = upstream.account;
     let upstream_attempt_started_at_utc = upstream.attempt_started_at_utc;
@@ -3909,12 +3956,10 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             stream_error_message
                 .as_ref()
                 .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-            stream_error_message
-                .as_deref()
-                .or_else(|| {
-                    (!pool_route_response_status_is_success(upstream_status))
-                        .then_some("upstream HTTP failure")
-                }),
+            stream_error_message.as_deref().or_else(|| {
+                (!pool_route_response_status_is_success(upstream_status))
+                    .then_some("upstream HTTP failure")
+            }),
             None,
             Some(t_upstream_connect_ms),
             Some(t_upstream_ttfb_ms),

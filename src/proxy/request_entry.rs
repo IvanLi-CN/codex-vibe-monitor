@@ -1,3 +1,5 @@
+use super::*;
+
 pub(crate) async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if state.startup_ready.load(Ordering::Acquire) {
         (StatusCode::OK, "ok")
@@ -303,13 +305,14 @@ pub(crate) async fn proxy_openai_v1_common(
 
 #[derive(Debug)]
 pub(crate) struct ProxyErrorResponse {
-    status: StatusCode,
-    message: String,
-    cvm_id: Option<String>,
-    retry_after_secs: Option<u64>,
+    pub(crate) status: StatusCode,
+    pub(crate) message: String,
+    pub(crate) cvm_id: Option<String>,
+    pub(crate) retry_after_secs: Option<u64>,
 }
 
-pub(crate) const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str = "pool route key missing or invalid";
+pub(crate) const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str =
+    "pool route key missing or invalid";
 pub(crate) fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
     match err.cvm_id {
         Some(cvm_id) => {
@@ -358,9 +361,11 @@ pub(crate) struct AdmittedProxyRuntimeSnapshot {
 
 impl Drop for ProxyRequestConcurrencyPermit {
     fn drop(&mut self) {
-        let _ = self.in_flight.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            Some(current.saturating_sub(1))
-        });
+        let _ = self
+            .in_flight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                Some(current.saturating_sub(1))
+            });
     }
 }
 
@@ -763,8 +768,7 @@ pub(crate) fn build_pool_no_available_account_error(
 
 pub(crate) const PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE: &str =
     "encrypted_session_owner_unavailable";
-pub(crate) const ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE: &str =
-    "encrypted session owner unavailable; automatic routing cannot move this encrypted conversation";
+pub(crate) const ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE: &str = "encrypted session owner unavailable; automatic routing cannot move this encrypted conversation";
 
 pub(crate) fn build_encrypted_session_owner_unavailable_error(
     account: Option<PoolResolvedAccount>,
@@ -824,10 +828,7 @@ pub(crate) fn build_pool_assigned_account_blocked_error(
     }
 }
 
-pub(crate) fn retry_after_secs_for_proxy_error(
-    status: StatusCode,
-    message: &str,
-) -> Option<u64> {
+pub(crate) fn retry_after_secs_for_proxy_error(status: StatusCode, message: &str) -> Option<u64> {
     if status != StatusCode::SERVICE_UNAVAILABLE {
         return None;
     }
@@ -884,7 +885,9 @@ pub(crate) fn pool_upstream_error_preserves_existing_sticky_owner(
         )
 }
 
-pub(crate) fn pool_upstream_error_has_concrete_account_context(err: Option<&PoolUpstreamError>) -> bool {
+pub(crate) fn pool_upstream_error_has_concrete_account_context(
+    err: Option<&PoolUpstreamError>,
+) -> bool {
     err.and_then(|value| value.account.as_ref()).is_some()
 }
 
@@ -987,15 +990,15 @@ pub(crate) struct PendingPoolAttemptRecord {
 
 #[derive(Debug, Default)]
 pub(crate) struct PoolFailoverProgress {
-    excluded_account_ids: Vec<i64>,
-    excluded_upstream_route_keys: HashSet<String>,
-    attempt_count: usize,
-    last_error: Option<PoolUpstreamError>,
-    preserve_sticky_owner_terminal_error: bool,
-    overload_required_upstream_route_key: Option<String>,
-    timeout_route_failover_pending: bool,
-    responses_total_timeout_started_at: Option<Instant>,
-    no_available_wait_deadline: Option<Instant>,
+    pub(crate) excluded_account_ids: Vec<i64>,
+    pub(crate) excluded_upstream_route_keys: HashSet<String>,
+    pub(crate) attempt_count: usize,
+    pub(crate) last_error: Option<PoolUpstreamError>,
+    pub(crate) preserve_sticky_owner_terminal_error: bool,
+    pub(crate) overload_required_upstream_route_key: Option<String>,
+    pub(crate) timeout_route_failover_pending: bool,
+    pub(crate) responses_total_timeout_started_at: Option<Instant>,
+    pub(crate) no_available_wait_deadline: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -1019,8 +1022,8 @@ pub(crate) struct PoolAttemptRuntimeSnapshotContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct InvocationRecoverySelector {
-    invoke_id: String,
-    occurred_at: String,
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
 }
 
 impl InvocationRecoverySelector {
@@ -1041,18 +1044,18 @@ impl From<&PendingPoolAttemptRecord> for InvocationRecoverySelector {
 #[derive(Debug, Clone, FromRow)]
 #[allow(dead_code)]
 pub(crate) struct RecoveredPoolAttemptRow {
-    id: i64,
-    invoke_id: String,
-    occurred_at: String,
-    sticky_key: Option<String>,
-    upstream_account_id: Option<i64>,
+    pub(crate) id: i64,
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
+    pub(crate) sticky_key: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct RecoveredInvocationRow {
-    id: i64,
-    invoke_id: String,
-    occurred_at: String,
+    pub(crate) id: i64,
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1069,11 +1072,14 @@ pub(crate) struct CompactSupportObservation {
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS: &str = "success";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE: &str = "http_failure";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE: &str = "transport_failure";
-pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL: &str = "budget_exhausted_final";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL: &str =
+    "budget_exhausted_final";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING: &str = "connecting";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST: &str = "sending_request";
-pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE: &str = "waiting_first_byte";
-pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE: &str = "streaming_response";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE: &str =
+    "waiting_first_byte";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE: &str =
+    "streaming_response";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED: &str = "completed";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED: &str = "failed";
 pub(crate) const POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE: Duration = Duration::from_secs(30);
@@ -1098,7 +1104,10 @@ impl std::fmt::Debug for PoolEarlyPhaseOrphanCleanupGuard {
 }
 
 impl PoolEarlyPhaseOrphanCleanupGuard {
-    pub(crate) fn new(state: Arc<AppState>, pending_attempt_record: PendingPoolAttemptRecord) -> Self {
+    pub(crate) fn new(
+        state: Arc<AppState>,
+        pending_attempt_record: PendingPoolAttemptRecord,
+    ) -> Self {
         Self {
             state,
             pending_attempt_record,
@@ -1275,9 +1284,7 @@ pub(crate) fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_in
     complete_deferred_pool_early_phase_cleanup_guard(guard);
 }
 
-pub(crate) fn disarm_pool_invocation_cleanup_guard(
-    guard: &mut Option<PoolInvocationCleanupGuard>,
-) {
+pub(crate) fn disarm_pool_invocation_cleanup_guard(guard: &mut Option<PoolInvocationCleanupGuard>) {
     if let Some(guard) = guard.as_mut() {
         guard.disarm();
     }
@@ -1338,13 +1345,16 @@ pub(crate) struct PoolReplayBodyBuffer {
 }
 
 pub(crate) struct PoolReplayableRequestBody {
-    body: reqwest::Body,
-    status_rx: watch::Receiver<PoolReplayBodyStatus>,
-    sticky_key_probe_rx: watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
-    cancel: CancellationToken,
+    pub(crate) body: reqwest::Body,
+    pub(crate) status_rx: watch::Receiver<PoolReplayBodyStatus>,
+    pub(crate) sticky_key_probe_rx: watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
+    pub(crate) cancel: CancellationToken,
 }
 
-pub(crate) fn proxy_forward_response_status_is_success(status: StatusCode, stream_error: bool) -> bool {
+pub(crate) fn proxy_forward_response_status_is_success(
+    status: StatusCode,
+    stream_error: bool,
+) -> bool {
     !stream_error && status != StatusCode::TOO_MANY_REQUESTS && !status.is_server_error()
 }
 
@@ -1362,10 +1372,7 @@ pub(crate) fn proxy_capture_is_pure_downstream_close(
     logical_stream_failure: bool,
     downstream_closed: bool,
 ) -> bool {
-    downstream_closed
-        && status.is_success()
-        && !stream_error
-        && !logical_stream_failure
+    downstream_closed && status.is_success() && !stream_error && !logical_stream_failure
 }
 
 pub(crate) fn proxy_capture_invocation_failure_kind(
@@ -1804,7 +1811,7 @@ pub(crate) enum PoolAccountResolutionWithWait {
 
 pub(crate) const POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS: u8 = 3;
 pub(crate) const OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES: usize = 8 * 1024 * 1024;
-static NEXT_POOL_REPLAY_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(1);
+pub(crate) static NEXT_POOL_REPLAY_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(1);
 
 impl PoolReplayBodyBuffer {
     pub(crate) fn new(proxy_request_id: u64) -> Self {
@@ -2000,7 +2007,10 @@ impl PoolReplayBodySnapshot {
         }
     }
 
-    pub(crate) async fn extract_request_stream_flag(&self, content_encoding: Option<&str>) -> Option<bool> {
+    pub(crate) async fn extract_request_stream_flag(
+        &self,
+        content_encoding: Option<&str>,
+    ) -> Option<bool> {
         #[derive(serde::Deserialize)]
         struct StreamFlagProjection {
             #[serde(default)]
@@ -2029,8 +2039,8 @@ impl PoolReplayBodySnapshot {
                 let path = temp_file.path.clone();
                 let content_encoding = content_encoding.map(str::to_string);
                 tokio::task::spawn_blocking(move || {
-                    let reader = open_decoded_response_reader(&path, content_encoding.as_deref())
-                        .ok()?;
+                    let reader =
+                        open_decoded_response_reader(&path, content_encoding.as_deref()).ok()?;
                     parse_stream_flag_from_reader(std::io::BufReader::new(reader))
                 })
                 .await
@@ -2049,7 +2059,9 @@ pub(crate) struct PreparedPoolRequestBody {
     pub(crate) requested_image_intent: ImageIntent,
 }
 
-pub(crate) fn pool_request_snapshot_preserves_content_length(snapshot: &PoolReplayBodySnapshot) -> bool {
+pub(crate) fn pool_request_snapshot_preserves_content_length(
+    snapshot: &PoolReplayBodySnapshot,
+) -> bool {
     matches!(snapshot, PoolReplayBodySnapshot::File { .. })
 }
 
@@ -2069,7 +2081,7 @@ pub(crate) fn pool_request_snapshot_body_bytes(snapshot: &PoolReplayBodySnapshot
     }
 }
 
-fn request_entry_openai_json_tools_contain_image_generation(value: &Value) -> bool {
+pub(crate) fn request_entry_openai_json_tools_contain_image_generation(value: &Value) -> bool {
     value
         .get("tools")
         .and_then(Value::as_array)
@@ -2082,7 +2094,9 @@ fn request_entry_openai_json_tools_contain_image_generation(value: &Value) -> bo
         })
 }
 
-fn request_entry_openai_json_tool_choice_selects_image_generation(value: &Value) -> bool {
+pub(crate) fn request_entry_openai_json_tool_choice_selects_image_generation(
+    value: &Value,
+) -> bool {
     let Some(tool_choice) = value.get("tool_choice") else {
         return false;
     };
@@ -2110,7 +2124,7 @@ fn request_entry_openai_json_tool_choice_selects_image_generation(value: &Value)
     }
 }
 
-fn rewrite_openai_responses_image_tools(
+pub(crate) fn rewrite_openai_responses_image_tools(
     value: &mut Value,
     rewrite_mode: crate::ImageToolRewriteMode,
     image_intent: crate::ImageIntent,
@@ -2145,9 +2159,7 @@ fn rewrite_openai_responses_image_tools(
             modified
         }
         FillMissing | ForceAdd => {
-            if matches!(rewrite_mode, FillMissing)
-                && image_intent != crate::ImageIntent::Yes
-            {
+            if matches!(rewrite_mode, FillMissing) && image_intent != crate::ImageIntent::Yes {
                 return false;
             }
 
@@ -2194,14 +2206,13 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     let fast_mode_rewrite_required = capture_target
         .is_some_and(|target| target.allows_fast_mode_rewrite())
         && fast_mode_rewrite_mode != TagFastModeRewriteMode::KeepOriginal;
-    let image_tool_rewrite_required = capture_target
-        .is_some_and(|target| {
-            matches!(
-                target,
-                ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
-            )
-        })
-        && image_tool_rewrite_mode != crate::ImageToolRewriteMode::KeepOriginal;
+    let image_tool_rewrite_required = capture_target.is_some_and(|target| {
+        matches!(
+            target,
+            ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
+        )
+    }) && image_tool_rewrite_mode
+        != crate::ImageToolRewriteMode::KeepOriginal;
     let rewrite_required = fast_mode_rewrite_required || image_tool_rewrite_required;
 
     let Some(snapshot) = body.cloned() else {
@@ -2214,24 +2225,32 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     };
 
     if !rewrite_required {
-        let (request_body_for_capture, requested_service_tier, requested_image_intent) = match &snapshot {
-            PoolReplayBodySnapshot::Empty => (Some(Bytes::new()), None, ImageIntent::Unknown),
-            PoolReplayBodySnapshot::Memory(bytes) => {
-                let (requested_service_tier, requested_image_intent) = serde_json::from_slice::<Value>(bytes)
-                    .ok()
-                    .map(|value| {
-                        (
-                            extract_requested_service_tier_from_request_body(&value),
-                            capture_target
-                                .map(|target| infer_image_intent_from_request_body(target, &value))
-                                .unwrap_or(ImageIntent::Unknown),
-                        )
-                    })
-                    .unwrap_or((None, ImageIntent::Unknown));
-                (Some(bytes.clone()), requested_service_tier, requested_image_intent)
-            }
-            PoolReplayBodySnapshot::File { .. } => (None, None, ImageIntent::Unknown),
-        };
+        let (request_body_for_capture, requested_service_tier, requested_image_intent) =
+            match &snapshot {
+                PoolReplayBodySnapshot::Empty => (Some(Bytes::new()), None, ImageIntent::Unknown),
+                PoolReplayBodySnapshot::Memory(bytes) => {
+                    let (requested_service_tier, requested_image_intent) =
+                        serde_json::from_slice::<Value>(bytes)
+                            .ok()
+                            .map(|value| {
+                                (
+                                    extract_requested_service_tier_from_request_body(&value),
+                                    capture_target
+                                        .map(|target| {
+                                            infer_image_intent_from_request_body(target, &value)
+                                        })
+                                        .unwrap_or(ImageIntent::Unknown),
+                                )
+                            })
+                            .unwrap_or((None, ImageIntent::Unknown));
+                    (
+                        Some(bytes.clone()),
+                        requested_service_tier,
+                        requested_image_intent,
+                    )
+                }
+                PoolReplayBodySnapshot::File { .. } => (None, None, ImageIntent::Unknown),
+            };
         return Ok(PreparedPoolRequestBody {
             snapshot,
             request_body_for_capture,
@@ -2430,7 +2449,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
 
             let Some(chunk) = next_chunk else {
                 if !sticky_key_probe_ready {
-                        let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
                         PoolReplayBodyKeyProbe {
                             sticky_key: best_effort_extract_sticky_key_from_request_body_prefix(
                                 &sticky_key_probe,
@@ -2473,9 +2492,10 @@ pub(crate) fn spawn_pool_replayable_request_body(
                         partial_body: Vec::new(),
                     };
                     if !sticky_key_probe_ready {
-                        let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                            PoolReplayBodyKeyProbe::default(),
-                        ));
+                        let _ =
+                            sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                                PoolReplayBodyKeyProbe::default(),
+                            ));
                     }
                     let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
                     let _ = tx.send(Err(io::Error::other(read_error.message))).await;
@@ -2513,7 +2533,8 @@ pub(crate) fn spawn_pool_replayable_request_body(
                 return;
             }
 
-            if !sticky_key_probe_ready && sticky_key_probe.len() < HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
+            if !sticky_key_probe_ready
+                && sticky_key_probe.len() < HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
             {
                 let probe_remaining =
                     HEADER_STICKY_EARLY_STICKY_SCAN_BYTES.saturating_sub(sticky_key_probe.len());
@@ -2537,9 +2558,8 @@ pub(crate) fn spawn_pool_replayable_request_body(
                     || sticky_key_probe.len() >= HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
                 {
                     sticky_key_probe_ready = true;
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                        key_probe,
-                    ));
+                    let _ = sticky_key_probe_tx
+                        .send(PoolReplayBodyStickyKeyProbeStatus::Ready(key_probe));
                 }
             }
 
@@ -2584,7 +2604,9 @@ pub(crate) fn live_body_sticky_key_probe_wait_timeout(
     pre_attempt_total_timeout_deadline: Option<Instant>,
 ) -> Duration {
     match pre_attempt_total_timeout_deadline {
-        Some(deadline) => request_read_timeout.min(deadline.saturating_duration_since(Instant::now())),
+        Some(deadline) => {
+            request_read_timeout.min(deadline.saturating_duration_since(Instant::now()))
+        }
         None => request_read_timeout,
     }
 }

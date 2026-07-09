@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_error() {
     #[derive(Debug, sqlx::FromRow)]
@@ -1395,7 +1398,9 @@ async fn pool_openai_v1_responses_compact_total_timeout_caps_same_account_retry_
         Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
     );
 
-    let attempts = retry_attempts.lock().expect("lock compact retry route attempts");
+    let attempts = retry_attempts
+        .lock()
+        .expect("lock compact retry route attempts");
     assert_eq!(attempts.get("Bearer route-one").copied(), Some(1));
     drop(attempts);
 
@@ -1581,8 +1586,11 @@ async fn pool_openai_v1_responses_retries_after_metadata_prefix_exceeds_preview_
     }
 
     let (upstream_base, attempts, upstream_handle) =
-        spawn_pool_large_metadata_prefixed_response_failed_retry_upstream(&[("Bearer route-one", 1)])
-            .await;
+        spawn_pool_large_metadata_prefixed_response_failed_retry_upstream(&[(
+            "Bearer route-one",
+            1,
+        )])
+        .await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
@@ -1617,14 +1625,15 @@ async fn pool_openai_v1_responses_retries_after_metadata_prefix_exceeds_preview_
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read retryable overloaded large-metadata response");
-    let response_payload: Value =
-        serde_json::from_slice(&body).expect("decode retryable overloaded large-metadata success body");
+    let response_payload: Value = serde_json::from_slice(&body)
+        .expect("decode retryable overloaded large-metadata success body");
     assert_eq!(response_payload["ok"].as_bool(), Some(true));
     assert_eq!(
         response_payload["authorization"].as_str(),
         Some("Bearer route-one"),
     );
-    let body_text = String::from_utf8(body.to_vec()).expect("utf8 retryable overloaded large-metadata body");
+    let body_text =
+        String::from_utf8(body.to_vec()).expect("utf8 retryable overloaded large-metadata body");
     assert!(!body_text.contains("response.failed"));
     assert!(!body_text.contains("server_is_overloaded"));
 
@@ -1642,10 +1651,16 @@ async fn pool_openai_v1_responses_retries_after_metadata_prefix_exceeds_preview_
     .await
     .expect("load overloaded large-metadata retry attempt rows");
     assert_eq!(attempt_rows.len(), 2);
-    assert_eq!(attempt_rows[0].status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
     assert_eq!(attempt_rows[0].distinct_account_index, 1);
     assert_eq!(attempt_rows[0].same_account_retry_index, 1);
-    assert_eq!(attempt_rows[1].status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+    );
     assert_eq!(attempt_rows[1].distinct_account_index, 1);
     assert_eq!(attempt_rows[1].same_account_retry_index, 2);
 
@@ -2167,7 +2182,7 @@ async fn gate_pool_initial_response_stream_preserves_first_forward_event_boundar
 
 #[tokio::test]
 async fn gate_pool_initial_response_stream_retries_overload_after_metadata_prefix_exceeds_preview_limit()
-{
+ {
     let oversized_metadata = less_compressible_test_string(RAW_RESPONSE_PREVIEW_LIMIT + 8 * 1024);
     let created = format!(
         "event: response.created\n\
@@ -2206,7 +2221,9 @@ async fn gate_pool_initial_response_stream_retries_overload_after_metadata_prefi
             .expect("gate oversized metadata initial response stream");
 
     let PoolInitialResponseGateOutcome::RetrySameAccount { .. } = outcome else {
-        panic!("oversized metadata-only prefix should still keep overload retryable before forwarding");
+        panic!(
+            "oversized metadata-only prefix should still keep overload retryable before forwarding"
+        );
     };
 }
 
@@ -2840,7 +2857,8 @@ async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_bloc
         error_message: Option<String>,
     }
 
-    let state = test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid url")).await;
+    let state =
+        test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid url")).await;
     let sticky_account = insert_test_pool_api_key_account_with_options(
         &state,
         "Sticky Missing Binding",
@@ -2912,7 +2930,9 @@ async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_bloc
             http_header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )]),
-        Some(PoolReplayBodySnapshot::Memory(Bytes::from_static(br#"{"input":"hello"}"#))),
+        Some(PoolReplayBodySnapshot::Memory(Bytes::from_static(
+            br#"{"input":"hello"}"#,
+        ))),
         Duration::from_secs(5),
         Some(PoolUpstreamAttemptTraceContext {
             invoke_id: "sticky-preflight-blocked-invoke".to_string(),
@@ -2930,8 +2950,14 @@ async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_bloc
     .await
     .expect_err("sticky preflight block should fail");
 
-    assert_eq!(err.failure_kind, PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED);
-    assert_eq!(err.account.as_ref().map(|account| account.account_id), Some(sticky_account));
+    assert_eq!(
+        err.failure_kind,
+        PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED
+    );
+    assert_eq!(
+        err.account.as_ref().map(|account| account.account_id),
+        Some(sticky_account)
+    );
     assert!(err.message.contains(
         "upstream account group \"sticky-preflight-missing\" has no bound forward proxy nodes"
     ));
@@ -2953,8 +2979,10 @@ async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_bloc
         attempt_rows[0].failure_kind.as_deref(),
         Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED)
     );
-    assert!(attempt_rows[0]
-        .error_message
-        .as_deref()
-        .is_some_and(|message| message.contains("sticky-preflight-missing")));
+    assert!(
+        attempt_rows[0]
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("sticky-preflight-missing"))
+    );
 }

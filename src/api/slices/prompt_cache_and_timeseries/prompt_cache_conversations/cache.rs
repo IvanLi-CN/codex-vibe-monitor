@@ -1,4 +1,11 @@
 use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
 
 pub(crate) async fn fetch_prompt_cache_conversations_cached(
     state: &AppState,
@@ -176,7 +183,9 @@ pub(crate) fn compact_prompt_cache_conversations_response(
     for conversation in &mut response.conversations {
         conversation.upstream_accounts.clear();
         conversation.last24h_requests.clear();
-        conversation.recent_invocations.truncate(recent_invocation_limit);
+        conversation
+            .recent_invocations
+            .truncate(recent_invocation_limit);
     }
     response
 }

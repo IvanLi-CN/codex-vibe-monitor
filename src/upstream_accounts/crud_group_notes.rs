@@ -701,7 +701,10 @@ pub(crate) async fn update_upstream_account_group(
             .transpose()?;
         let policy_image_tool_rewrite_mode = routing_rule
             .image_tool_rewrite_mode_value()
-            .map(|value| normalize_image_tool_rewrite_mode(Some(value)).map(|mode| mode.as_str()))
+            .map(|value| {
+                super::sync::normalize_upstream_image_tool_rewrite_mode(Some(value))
+                    .map(|mode| mode.as_str())
+            })
             .transpose()?;
         let available_models_json = match &routing_rule.available_models {
             OptionalField::Missing | OptionalField::Null => None,

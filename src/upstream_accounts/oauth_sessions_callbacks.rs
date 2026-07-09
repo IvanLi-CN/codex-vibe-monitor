@@ -1,4 +1,5 @@
 use super::*;
+use sqlx::Transaction;
 
 pub(crate) async fn get_pool_routing_settings(
     State(state): State<Arc<AppState>>,
@@ -1484,7 +1485,8 @@ pub(crate) async fn update_upstream_account_inner(
             OptionalField::Missing | OptionalField::Null => None,
         })
         .map(|value| {
-            normalize_image_tool_rewrite_mode(Some(value)).map(|mode| mode.as_str().to_string())
+            super::sync::normalize_upstream_image_tool_rewrite_mode(Some(value))
+                .map(|mode| mode.as_str().to_string())
         })
         .transpose()?;
     // Empty tagIds remains a compatibility no-op. Manual tag mutation is removed,

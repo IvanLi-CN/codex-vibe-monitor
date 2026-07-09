@@ -1,3 +1,12 @@
+use super::*;
+use anyhow::anyhow;
+use chrono::LocalResult;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::FromRow;
+use tokio::sync::{broadcast, watch};
+use tracing::{debug, warn};
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiPoolUpstreamRequestAttempt {
@@ -277,7 +286,7 @@ pub(crate) struct TimeseriesBucketSelection {
     pub(crate) bucket_limited_to_daily: bool,
 }
 
-fn resolve_timeseries_bucket_selection(
+pub(crate) fn resolve_timeseries_bucket_selection(
     params: &TimeseriesQuery,
     range_window: &RangeWindow,
     invocation_max_days: u64,

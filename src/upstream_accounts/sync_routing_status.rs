@@ -1,4 +1,6 @@
-fn intersect_available_models(
+use super::*;
+
+pub(crate) fn intersect_available_models(
     current: impl IntoIterator<Item = String>,
     next: &[String],
 ) -> Vec<String> {
@@ -11,7 +13,7 @@ fn intersect_available_models(
         .collect()
 }
 
-fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingRule {
+pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingRule {
     let mut source_tag_ids = Vec::with_capacity(tags.len());
     let mut source_tag_names = Vec::with_capacity(tags.len());
     let mut allow_cut_out = true;
@@ -29,8 +31,7 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
     let mut available_models: Option<Vec<String>> = None;
     let mut tag_available_models_defined = false;
     let status_change_reasons = default_status_change_reasons();
-    let status_change_reason_field_sources =
-        default_status_change_reason_field_sources("root");
+    let status_change_reason_field_sources = default_status_change_reason_field_sources("root");
     let mut system_denied_models = BTreeSet::new();
 
     for tag in tags {
@@ -129,7 +130,7 @@ pub(crate) fn default_effective_routing_rule() -> EffectiveRoutingRule {
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct RoutingPolicyOverrideRow {
+pub(crate) struct RoutingPolicyOverrideRow {
     id: i64,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
@@ -158,7 +159,7 @@ struct RoutingPolicyOverrideRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct GroupRoutingPolicyOverrideRow {
+pub(crate) struct GroupRoutingPolicyOverrideRow {
     group_name: String,
     concurrency_limit: i64,
     upstream_429_retry_enabled: i64,
@@ -189,7 +190,7 @@ struct GroupRoutingPolicyOverrideRow {
     policy_compact_stream_timeout_secs: Option<i64>,
 }
 
-fn apply_routing_timeout_override(
+pub(crate) fn apply_routing_timeout_override(
     rule: &mut EffectiveRoutingRule,
     source: &str,
     settings: Option<RoutingTimeoutSettings>,
@@ -215,7 +216,7 @@ fn apply_routing_timeout_override(
     }
 }
 
-fn apply_status_change_reason_override(
+pub(crate) fn apply_status_change_reason_override(
     rule: &mut EffectiveRoutingRule,
     source: &str,
     reason_code: &str,
@@ -237,11 +238,13 @@ pub(crate) fn apply_root_routing_timeout_defaults(
     root: &PoolRoutingTimeoutSettingsResolved,
 ) {
     if rule.timeouts.responses_first_byte_timeout_secs.is_none() {
-        rule.timeouts.responses_first_byte_timeout_secs = Some(root.responses_first_byte_timeout.as_secs());
+        rule.timeouts.responses_first_byte_timeout_secs =
+            Some(root.responses_first_byte_timeout.as_secs());
         rule.timeout_field_sources.responses_first_byte_timeout_secs = "root".to_string();
     }
     if rule.timeouts.compact_first_byte_timeout_secs.is_none() {
-        rule.timeouts.compact_first_byte_timeout_secs = Some(root.compact_first_byte_timeout.as_secs());
+        rule.timeouts.compact_first_byte_timeout_secs =
+            Some(root.compact_first_byte_timeout.as_secs());
         rule.timeout_field_sources.compact_first_byte_timeout_secs = "root".to_string();
     }
     if rule.timeouts.responses_stream_timeout_secs.is_none() {
@@ -254,7 +257,7 @@ pub(crate) fn apply_root_routing_timeout_defaults(
     }
 }
 
-fn apply_routing_policy_override(
+pub(crate) fn apply_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     source: &str,
     allow_cut_out: Option<i64>,
@@ -283,14 +286,14 @@ fn apply_routing_policy_override(
     }
     if fast_mode_rewrite_mode.is_some()
         && let Ok(fast_mode_rewrite_mode) =
-        normalize_tag_fast_mode_rewrite_mode(fast_mode_rewrite_mode)
+            normalize_tag_fast_mode_rewrite_mode(fast_mode_rewrite_mode)
     {
         rule.field_sources.fast_mode_rewrite_mode = source.to_string();
         rule.fast_mode_rewrite_mode = fast_mode_rewrite_mode;
     }
     if image_tool_rewrite_mode.is_some()
         && let Ok(image_tool_rewrite_mode) =
-        normalize_image_tool_rewrite_mode(image_tool_rewrite_mode)
+            super::normalize_upstream_image_tool_rewrite_mode(image_tool_rewrite_mode)
     {
         rule.field_sources.image_tool_rewrite_mode = source.to_string();
         rule.image_tool_rewrite_mode = image_tool_rewrite_mode;
@@ -321,7 +324,7 @@ fn apply_routing_policy_override(
     }
 }
 
-async fn load_group_routing_policy_override_map(
+pub(crate) async fn load_group_routing_policy_override_map(
     pool: &Pool<Sqlite>,
     group_names: &[String],
 ) -> Result<HashMap<String, GroupRoutingPolicyOverrideRow>> {
@@ -380,7 +383,7 @@ async fn load_group_routing_policy_override_map(
         .collect())
 }
 
-async fn load_account_routing_policy_override_map(
+pub(crate) async fn load_account_routing_policy_override_map(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
 ) -> Result<HashMap<i64, RoutingPolicyOverrideRow>> {
@@ -433,7 +436,7 @@ async fn load_account_routing_policy_override_map(
     Ok(rows.into_iter().map(|row| (row.id, row)).collect())
 }
 
-fn apply_group_routing_policy_override(
+pub(crate) fn apply_group_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     row: &GroupRoutingPolicyOverrideRow,
 ) {
@@ -542,7 +545,10 @@ fn apply_group_routing_policy_override(
     );
 }
 
-fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &EffectiveRoutingRule) {
+pub(crate) fn apply_tag_layer_routing_policy(
+    rule: &mut EffectiveRoutingRule,
+    tag_rule: &EffectiveRoutingRule,
+) {
     let inherited_image_tool_rewrite_mode = rule.image_tool_rewrite_mode;
     let inherited_image_tool_rewrite_mode_source =
         rule.field_sources.image_tool_rewrite_mode.clone();
@@ -565,11 +571,15 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     } else {
         0
     };
-    rule.available_models = if tag_rule.available_models_defined && inherited_available_models_defined {
-        intersect_available_models(inherited_available_models.clone(), &tag_rule.available_models)
-    } else {
-        tag_rule.available_models.clone()
-    };
+    rule.available_models =
+        if tag_rule.available_models_defined && inherited_available_models_defined {
+            intersect_available_models(
+                inherited_available_models.clone(),
+                &tag_rule.available_models,
+            )
+        } else {
+            tag_rule.available_models.clone()
+        };
     rule.available_models_defined =
         inherited_available_models_defined || tag_rule.available_models_defined;
     rule.system_denied_models = tag_rule.system_denied_models.clone();
@@ -589,7 +599,11 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     } else if !tag_rule.available_models_defined && inherited_available_models_defined {
         rule.field_sources.available_models = inherited_available_models_source;
     }
-    if tag_rule.timeouts.responses_first_byte_timeout_secs.is_none() {
+    if tag_rule
+        .timeouts
+        .responses_first_byte_timeout_secs
+        .is_none()
+    {
         rule.timeouts.responses_first_byte_timeout_secs =
             inherited_timeouts.responses_first_byte_timeout_secs;
         rule.timeout_field_sources.responses_first_byte_timeout_secs =
@@ -608,14 +622,13 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
             inherited_timeout_field_sources.responses_stream_timeout_secs;
     }
     if tag_rule.timeouts.compact_stream_timeout_secs.is_none() {
-        rule.timeouts.compact_stream_timeout_secs =
-            inherited_timeouts.compact_stream_timeout_secs;
+        rule.timeouts.compact_stream_timeout_secs = inherited_timeouts.compact_stream_timeout_secs;
         rule.timeout_field_sources.compact_stream_timeout_secs =
             inherited_timeout_field_sources.compact_stream_timeout_secs;
     }
 }
 
-fn apply_account_routing_policy_override(
+pub(crate) fn apply_account_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     row: &RoutingPolicyOverrideRow,
 ) {
@@ -710,7 +723,7 @@ fn apply_account_routing_policy_override(
     );
 }
 
-fn merge_concurrency_limits(current: i64, next: i64) -> i64 {
+pub(crate) fn merge_concurrency_limits(current: i64, next: i64) -> i64 {
     match (current, next) {
         (0, 0) => 0,
         (0, next) if next > 0 => next,
@@ -719,7 +732,7 @@ fn merge_concurrency_limits(current: i64, next: i64) -> i64 {
     }
 }
 
-fn effective_account_status(row: &UpstreamAccountRow) -> String {
+pub(crate) fn effective_account_status(row: &UpstreamAccountRow) -> String {
     if row.enabled == 0 {
         UPSTREAM_ACCOUNT_STATUS_DISABLED.to_string()
     } else {
@@ -818,7 +831,7 @@ pub(crate) fn derive_upstream_account_health_status(
     UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
 }
 
-fn is_transient_route_failure_error(
+pub(crate) fn is_transient_route_failure_error(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
@@ -928,7 +941,7 @@ pub(crate) fn classify_upstream_account_display_status(
     health_status
 }
 
-fn matches_upstream_account_filters(
+pub(crate) fn matches_upstream_account_filters(
     item: &UpstreamAccountSummary,
     work_status_filters: &[&str],
     enable_status_filters: &[&str],
@@ -943,14 +956,14 @@ fn matches_upstream_account_filters(
         && sync_state_filter.is_none_or(|value| item.sync_state == value)
 }
 
-struct NormalizedUpstreamAccountListFilters {
+pub(crate) struct NormalizedUpstreamAccountListFilters {
     work_status_filters: Vec<&'static str>,
     enable_status_filters: Vec<&'static str>,
     health_status_filters: Vec<&'static str>,
     sync_state_filter: Option<&'static str>,
 }
 
-fn normalize_upstream_account_list_filters(
+pub(crate) fn normalize_upstream_account_list_filters(
     params: &ListUpstreamAccountsQuery,
 ) -> NormalizedUpstreamAccountListFilters {
     let legacy_status_filter =
@@ -975,7 +988,7 @@ fn normalize_upstream_account_list_filters(
     }
 }
 
-fn filter_upstream_account_summaries(
+pub(crate) fn filter_upstream_account_summaries(
     items: Vec<UpstreamAccountSummary>,
     filters: &NormalizedUpstreamAccountListFilters,
 ) -> Vec<UpstreamAccountSummary> {
@@ -993,7 +1006,7 @@ fn filter_upstream_account_summaries(
         .collect()
 }
 
-fn build_upstream_account_list_metrics(
+pub(crate) fn build_upstream_account_list_metrics(
     items: &[UpstreamAccountSummary],
 ) -> UpstreamAccountListMetrics {
     UpstreamAccountListMetrics {
@@ -1020,7 +1033,7 @@ fn build_upstream_account_list_metrics(
     }
 }
 
-fn build_api_key_window(
+pub(crate) fn build_api_key_window(
     limit: Option<f64>,
     unit: Option<&str>,
     window_duration_mins: i64,
@@ -1043,7 +1056,7 @@ fn build_api_key_window(
     })
 }
 
-fn build_window_snapshot(
+pub(crate) fn build_window_snapshot(
     used_percent: Option<f64>,
     window_duration_mins: Option<i64>,
     resets_at: Option<&str>,
@@ -1060,19 +1073,19 @@ fn build_window_snapshot(
     })
 }
 
-struct UpstreamAccountActionPayload<'a> {
-    action: &'a str,
-    source: &'a str,
-    reason_code: Option<&'a str>,
-    reason_message: Option<&'a str>,
-    http_status: Option<StatusCode>,
-    failure_kind: Option<&'a str>,
-    invoke_id: Option<&'a str>,
-    sticky_key: Option<&'a str>,
-    occurred_at: &'a str,
+pub(crate) struct UpstreamAccountActionPayload<'a> {
+    pub(crate) action: &'a str,
+    pub(crate) source: &'a str,
+    pub(crate) reason_code: Option<&'a str>,
+    pub(crate) reason_message: Option<&'a str>,
+    pub(crate) http_status: Option<StatusCode>,
+    pub(crate) failure_kind: Option<&'a str>,
+    pub(crate) invoke_id: Option<&'a str>,
+    pub(crate) sticky_key: Option<&'a str>,
+    pub(crate) occurred_at: &'a str,
 }
 
-fn maintenance_upstream_rejected_failed_at(
+pub(crate) fn maintenance_upstream_rejected_failed_at(
     last_action_source: Option<&str>,
     last_action_reason_code: Option<&str>,
     last_action_at: Option<&str>,
@@ -1101,7 +1114,7 @@ fn maintenance_upstream_rejected_failed_at(
         .or_else(|| last_error_at.and_then(parse_rfc3339_utc))
 }
 
-fn maintenance_sync_rejected_cooldown_until(
+pub(crate) fn maintenance_sync_rejected_cooldown_until(
     source: &str,
     reason_code: &str,
     reason_message: &str,
@@ -1122,7 +1135,7 @@ fn maintenance_sync_rejected_cooldown_until(
     ))
 }
 
-fn sync_cause_action_source(cause: SyncCause) -> &'static str {
+pub(crate) fn sync_cause_action_source(cause: SyncCause) -> &'static str {
     match cause {
         SyncCause::Manual => UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
         SyncCause::Maintenance => UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
@@ -1130,7 +1143,7 @@ fn sync_cause_action_source(cause: SyncCause) -> &'static str {
     }
 }
 
-fn sanitize_account_action_message(message: &str) -> Option<String> {
+pub(crate) fn sanitize_account_action_message(message: &str) -> Option<String> {
     let collapsed = message
         .chars()
         .map(|ch| {
@@ -1151,7 +1164,7 @@ fn sanitize_account_action_message(message: &str) -> Option<String> {
     Some(trimmed.chars().take(240).collect())
 }
 
-fn upstream_account_history_retention_days() -> u64 {
+pub(crate) fn upstream_account_history_retention_days() -> u64 {
     parse_u64_env_var(
         ENV_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
         DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
@@ -1159,7 +1172,7 @@ fn upstream_account_history_retention_days() -> u64 {
     .unwrap_or(DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS)
 }
 
-fn derive_upstream_account_action_result(
+pub(crate) fn derive_upstream_account_action_result(
     action: &str,
     reason_code: Option<&str>,
     reason_message: Option<&str>,
@@ -1184,16 +1197,15 @@ fn derive_upstream_account_action_result(
     "failed"
 }
 
-async fn record_upstream_account_action(
+pub(crate) async fn record_upstream_account_action(
     pool: &Pool<Sqlite>,
     account_id: i64,
     payload: UpstreamAccountActionPayload<'_>,
 ) -> Result<()> {
-    persist_upstream_account_action_with_proxy_snapshot(pool, account_id, payload, None, true)
-        .await
+    persist_upstream_account_action_with_proxy_snapshot(pool, account_id, payload, None, true).await
 }
 
-async fn record_upstream_account_action_with_proxy_snapshot(
+pub(crate) async fn record_upstream_account_action_with_proxy_snapshot(
     pool: &Pool<Sqlite>,
     account_id: i64,
     payload: UpstreamAccountActionPayload<'_>,
@@ -1209,7 +1221,7 @@ async fn record_upstream_account_action_with_proxy_snapshot(
     .await
 }
 
-async fn persist_upstream_account_action_with_proxy_snapshot(
+pub(crate) async fn persist_upstream_account_action_with_proxy_snapshot(
     pool: &Pool<Sqlite>,
     account_id: i64,
     payload: UpstreamAccountActionPayload<'_>,
@@ -1252,7 +1264,11 @@ async fn persist_upstream_account_action_with_proxy_snapshot(
     .bind(payload.source)
     .bind(account_display_name)
     .bind(account_group_name)
-    .bind(proxy_snapshot.as_ref().map(|snapshot| snapshot.proxy_key.as_str()))
+    .bind(
+        proxy_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.proxy_key.as_str()),
+    )
     .bind(
         proxy_snapshot
             .as_ref()
@@ -1361,9 +1377,7 @@ pub(crate) async fn record_account_maintenance_deferred(
 ) -> Result<()> {
     let proxy_snapshot = forward_proxy_key.map(|proxy_key| AccountMaintenanceProxySnapshot {
         proxy_key: proxy_key.to_string(),
-        proxy_display_name: forward_proxy_display_name
-            .unwrap_or(proxy_key)
-            .to_string(),
+        proxy_display_name: forward_proxy_display_name.unwrap_or(proxy_key).to_string(),
         proxy_egress_ip: forward_proxy_egress_ip.map(ToOwned::to_owned),
     });
     record_upstream_account_action_with_proxy_snapshot(
@@ -1487,8 +1501,7 @@ mod account_action_event_tests {
             "JP Edge 01"
         );
         assert_eq!(
-            row.try_get::<String, _>("forward_proxy_egress_ip")
-                .unwrap(),
+            row.try_get::<String, _>("forward_proxy_egress_ip").unwrap(),
             "203.0.113.10"
         );
         assert_eq!(row.try_get::<String, _>("result").unwrap(), "deferred");
@@ -1499,7 +1512,7 @@ mod account_action_event_tests {
     }
 }
 
-fn message_mentions_http_status(message: &str, status: StatusCode) -> bool {
+pub(crate) fn message_mentions_http_status(message: &str, status: StatusCode) -> bool {
     let code = status.as_u16();
     let code_text = code.to_string();
     [
@@ -1514,7 +1527,7 @@ fn message_mentions_http_status(message: &str, status: StatusCode) -> bool {
     .any(|needle| message.contains(needle))
 }
 
-fn extract_status_code_from_error_message(message: &str) -> Option<StatusCode> {
+pub(crate) fn extract_status_code_from_error_message(message: &str) -> Option<StatusCode> {
     [
         StatusCode::UNAUTHORIZED,
         StatusCode::PAYMENT_REQUIRED,
@@ -1529,7 +1542,7 @@ fn extract_status_code_from_error_message(message: &str) -> Option<StatusCode> {
     .find(|status| message_mentions_http_status(message, *status))
 }
 
-fn classify_sync_failure(
+pub(crate) fn classify_sync_failure(
     account_kind: &str,
     error_message: &str,
 ) -> (
@@ -1602,11 +1615,11 @@ pub(crate) async fn account_status_change_reason_is_enabled(
         .status_change_reason_enabled(reason_code))
 }
 
-fn account_reason_is_rate_limited(reason_code: Option<&str>) -> bool {
+pub(crate) fn account_reason_is_rate_limited(reason_code: Option<&str>) -> bool {
     account_reason_is_quota_exhausted(reason_code)
 }
 
-fn account_reason_is_temporary_failure(reason_code: Option<&str>) -> bool {
+pub(crate) fn account_reason_is_temporary_failure(reason_code: Option<&str>) -> bool {
     matches!(
         reason_code,
         Some(
@@ -1617,7 +1630,7 @@ fn account_reason_is_temporary_failure(reason_code: Option<&str>) -> bool {
     )
 }
 
-fn account_reason_is_upstream_rejected(reason_code: Option<&str>) -> bool {
+pub(crate) fn account_reason_is_upstream_rejected(reason_code: Option<&str>) -> bool {
     matches!(
         reason_code,
         Some(
@@ -1628,7 +1641,7 @@ fn account_reason_is_upstream_rejected(reason_code: Option<&str>) -> bool {
     )
 }
 
-fn account_reason_is_maintenance_upstream_rejected(reason_code: Option<&str>) -> bool {
+pub(crate) fn account_reason_is_maintenance_upstream_rejected(reason_code: Option<&str>) -> bool {
     matches!(
         reason_code,
         Some(
@@ -1638,7 +1651,7 @@ fn account_reason_is_maintenance_upstream_rejected(reason_code: Option<&str>) ->
     )
 }
 
-fn account_reason_is_quota_exhausted(reason_code: Option<&str>) -> bool {
+pub(crate) fn account_reason_is_quota_exhausted(reason_code: Option<&str>) -> bool {
     matches!(
         reason_code,
         Some(
@@ -1649,14 +1662,14 @@ fn account_reason_is_quota_exhausted(reason_code: Option<&str>) -> bool {
     )
 }
 
-fn status_preserves_current_route_failure(raw_status: &str) -> bool {
+pub(crate) fn status_preserves_current_route_failure(raw_status: &str) -> bool {
     matches!(
         raw_status.trim().to_ascii_lowercase().as_str(),
         UPSTREAM_ACCOUNT_STATUS_ACTIVE | UPSTREAM_ACCOUNT_STATUS_SYNCING
     )
 }
 
-fn account_reason_overrides_current_route_failure(
+pub(crate) fn account_reason_overrides_current_route_failure(
     raw_status: &str,
     reason_code: Option<&str>,
 ) -> bool {
@@ -1677,11 +1690,11 @@ fn account_reason_overrides_current_route_failure(
         ) && !status_preserves_current_route_failure(raw_status))
 }
 
-fn route_failure_kind_is_rate_limited(failure_kind: Option<&str>) -> bool {
+pub(crate) fn route_failure_kind_is_rate_limited(failure_kind: Option<&str>) -> bool {
     route_failure_kind_is_quota_exhausted(failure_kind)
 }
 
-fn route_failure_kind_is_temporary(failure_kind: Option<&str>) -> bool {
+pub(crate) fn route_failure_kind_is_temporary(failure_kind: Option<&str>) -> bool {
     matches!(
         failure_kind
             .map(str::trim)
@@ -1699,7 +1712,7 @@ fn route_failure_kind_is_temporary(failure_kind: Option<&str>) -> bool {
     )
 }
 
-fn route_failure_kind_is_quota_exhausted(failure_kind: Option<&str>) -> bool {
+pub(crate) fn route_failure_kind_is_quota_exhausted(failure_kind: Option<&str>) -> bool {
     matches!(
         failure_kind
             .map(str::trim)
@@ -1711,7 +1724,7 @@ fn route_failure_kind_is_quota_exhausted(failure_kind: Option<&str>) -> bool {
     )
 }
 
-fn route_failure_kind_is_upstream_rejected(failure_kind: Option<&str>) -> bool {
+pub(crate) fn route_failure_kind_is_upstream_rejected(failure_kind: Option<&str>) -> bool {
     matches!(
         failure_kind
             .map(str::trim)
@@ -1720,7 +1733,9 @@ fn route_failure_kind_is_upstream_rejected(failure_kind: Option<&str>) -> bool {
     )
 }
 
-fn route_failure_kind_is_maintenance_upstream_rejected(failure_kind: Option<&str>) -> bool {
+pub(crate) fn route_failure_kind_is_maintenance_upstream_rejected(
+    failure_kind: Option<&str>,
+) -> bool {
     matches!(
         failure_kind
             .map(str::trim)
@@ -1729,14 +1744,14 @@ fn route_failure_kind_is_maintenance_upstream_rejected(failure_kind: Option<&str
     )
 }
 
-fn route_failure_is_current(
+pub(crate) fn route_failure_is_current(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
 ) -> bool {
     last_error_at.is_some() && last_error_at == last_route_failure_at
 }
 
-fn current_route_failure_is_rate_limited(
+pub(crate) fn current_route_failure_is_rate_limited(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
@@ -1745,7 +1760,7 @@ fn current_route_failure_is_rate_limited(
         && route_failure_kind_is_rate_limited(last_route_failure_kind)
 }
 
-fn current_route_failure_is_temporary(
+pub(crate) fn current_route_failure_is_temporary(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
@@ -1754,7 +1769,7 @@ fn current_route_failure_is_temporary(
         && route_failure_kind_is_temporary(last_route_failure_kind)
 }
 
-fn current_route_failure_is_quota_exhausted(
+pub(crate) fn current_route_failure_is_quota_exhausted(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
@@ -1763,7 +1778,7 @@ fn current_route_failure_is_quota_exhausted(
         && route_failure_kind_is_quota_exhausted(last_route_failure_kind)
 }
 
-fn current_route_failure_is_upstream_rejected(
+pub(crate) fn current_route_failure_is_upstream_rejected(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
@@ -1772,7 +1787,7 @@ fn current_route_failure_is_upstream_rejected(
         && route_failure_kind_is_upstream_rejected(last_route_failure_kind)
 }
 
-fn upstream_account_rate_limit_state_is_current(
+pub(crate) fn upstream_account_rate_limit_state_is_current(
     raw_status: &str,
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
@@ -1788,13 +1803,16 @@ fn upstream_account_rate_limit_state_is_current(
             ))
 }
 
-fn account_has_active_cooldown(cooldown_until: Option<&str>, now: DateTime<Utc>) -> bool {
+pub(crate) fn account_has_active_cooldown(
+    cooldown_until: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
     cooldown_until
         .and_then(parse_rfc3339_utc)
         .is_some_and(|until| until > now)
 }
 
-fn upstream_account_degraded_state_is_current(
+pub(crate) fn upstream_account_degraded_state_is_current(
     raw_status: &str,
     cooldown_until: Option<&str>,
     last_error_at: Option<&str>,
@@ -1830,7 +1848,7 @@ fn upstream_account_degraded_state_is_current(
     false
 }
 
-fn upstream_account_quota_exhausted_state_is_current(
+pub(crate) fn upstream_account_quota_exhausted_state_is_current(
     raw_status: &str,
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
@@ -1846,7 +1864,7 @@ fn upstream_account_quota_exhausted_state_is_current(
             ))
 }
 
-fn upstream_account_upstream_rejected_state_is_current(
+pub(crate) fn upstream_account_upstream_rejected_state_is_current(
     raw_status: &str,
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
@@ -1862,7 +1880,9 @@ fn upstream_account_upstream_rejected_state_is_current(
             ))
 }
 
-fn route_failure_kind_requires_manual_api_key_recovery(failure_kind: Option<&str>) -> bool {
+pub(crate) fn route_failure_kind_requires_manual_api_key_recovery(
+    failure_kind: Option<&str>,
+) -> bool {
     matches!(
         failure_kind
             .map(str::trim)
@@ -1875,14 +1895,18 @@ fn route_failure_kind_requires_manual_api_key_recovery(failure_kind: Option<&str
     )
 }
 
-fn should_clear_route_failure_state_after_sync_success(row: &UpstreamAccountRow) -> bool {
+pub(crate) fn should_clear_route_failure_state_after_sync_success(
+    row: &UpstreamAccountRow,
+) -> bool {
     row.status != UPSTREAM_ACCOUNT_STATUS_ACTIVE
         || route_failure_kind_requires_manual_api_key_recovery(
             row.last_route_failure_kind.as_deref(),
         )
 }
 
-fn account_update_requests_manual_recovery(payload: &UpdateUpstreamAccountRequest) -> bool {
+pub(crate) fn account_update_requests_manual_recovery(
+    payload: &UpdateUpstreamAccountRequest,
+) -> bool {
     payload.enabled == Some(true)
         || payload
             .api_key
@@ -1945,7 +1969,7 @@ pub(crate) async fn set_account_status(
     Ok(())
 }
 
-async fn mark_account_sync_success(
+pub(crate) async fn mark_account_sync_success(
     pool: &Pool<Sqlite>,
     account_id: i64,
     source: &str,
@@ -1954,7 +1978,7 @@ async fn mark_account_sync_success(
     mark_account_sync_success_with_proxy_snapshot(pool, account_id, source, route_state, None).await
 }
 
-async fn mark_account_sync_success_with_proxy_snapshot(
+pub(crate) async fn mark_account_sync_success_with_proxy_snapshot(
     pool: &Pool<Sqlite>,
     account_id: i64,
     source: &str,
@@ -2035,7 +2059,7 @@ async fn mark_account_sync_success_with_proxy_snapshot(
     Ok(())
 }
 
-async fn record_suppressed_sync_status_change_with_proxy_snapshot(
+pub(crate) async fn record_suppressed_sync_status_change_with_proxy_snapshot(
     pool: &Pool<Sqlite>,
     account_id: i64,
     restored_status: &str,
@@ -2082,7 +2106,7 @@ async fn record_suppressed_sync_status_change_with_proxy_snapshot(
     .await
 }
 
-async fn record_account_sync_recovery_blocked(
+pub(crate) async fn record_account_sync_recovery_blocked(
     pool: &Pool<Sqlite>,
     account_id: i64,
     restored_status: &str,
@@ -2151,7 +2175,7 @@ async fn record_account_sync_recovery_blocked(
     Ok(())
 }
 
-async fn record_account_sync_hard_unavailable(
+pub(crate) async fn record_account_sync_hard_unavailable(
     pool: &Pool<Sqlite>,
     account_id: i64,
     restored_status: &str,
@@ -2219,7 +2243,7 @@ async fn record_account_sync_hard_unavailable(
     Ok(())
 }
 
-async fn record_account_sync_failure(
+pub(crate) async fn record_account_sync_failure(
     pool: &Pool<Sqlite>,
     account_id: i64,
     restored_status: &str,
@@ -2249,7 +2273,7 @@ async fn record_account_sync_failure(
     .await
 }
 
-async fn record_account_sync_failure_with_proxy_snapshot(
+pub(crate) async fn record_account_sync_failure_with_proxy_snapshot(
     pool: &Pool<Sqlite>,
     account_id: i64,
     restored_status: &str,
@@ -2343,7 +2367,7 @@ async fn record_account_sync_failure_with_proxy_snapshot(
     Ok(())
 }
 
-async fn record_classified_account_sync_failure(
+pub(crate) async fn record_classified_account_sync_failure(
     pool: &Pool<Sqlite>,
     row: &UpstreamAccountRow,
     restored_status: &str,
@@ -2361,7 +2385,7 @@ async fn record_classified_account_sync_failure(
     .await
 }
 
-async fn record_classified_account_sync_failure_with_proxy_snapshot(
+pub(crate) async fn record_classified_account_sync_failure_with_proxy_snapshot(
     pool: &Pool<Sqlite>,
     row: &UpstreamAccountRow,
     restored_status: &str,

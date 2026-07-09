@@ -1,3 +1,6 @@
+use super::*;
+use serde_json::json;
+
 #[tokio::test]
 async fn resolver_skips_no_new_priority_for_fresh_routing_without_sticky_key() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
@@ -17,13 +20,11 @@ async fn resolver_skips_no_new_priority_for_fresh_routing_without_sticky_key() {
         Some("https://allowed-fresh.example.com/backend-api/codex"),
     )
     .await;
-    sqlx::query(
-        "UPDATE pool_upstream_accounts SET policy_priority_tier = 'no_new' WHERE id = ?1",
-    )
-    .bind(blocked)
-    .execute(&state.pool)
-    .await
-    .expect("block fresh route");
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = 'no_new' WHERE id = ?1")
+        .bind(blocked)
+        .execute(&state.pool)
+        .await
+        .expect("block fresh route");
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
     insert_limit_sample_with_usage(&state.pool, fallback, &now_iso, Some(80.0), Some(20.0)).await;
@@ -56,24 +57,17 @@ async fn resolver_allows_existing_sticky_reuse_for_no_new_priority_account() {
         Some("https://ignored-sticky.example.com/backend-api/codex"),
     )
     .await;
-    sqlx::query(
-        "UPDATE pool_upstream_accounts SET policy_priority_tier = 'no_new' WHERE id = ?1",
-    )
-    .bind(blocked)
-    .execute(&state.pool)
-    .await
-    .expect("block fresh route");
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = 'no_new' WHERE id = ?1")
+        .bind(blocked)
+        .execute(&state.pool)
+        .await
+        .expect("block fresh route");
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
     insert_limit_sample_with_usage(&state.pool, fallback, &now_iso, Some(80.0), Some(20.0)).await;
-    upsert_sticky_route(
-        &state.pool,
-        "blocked-sticky-reuse",
-        blocked,
-        &now_iso,
-    )
-    .await
-    .expect("upsert sticky route");
+    upsert_sticky_route(&state.pool, "blocked-sticky-reuse", blocked, &now_iso)
+        .await
+        .expect("upsert sticky route");
 
     let resolution = resolve_pool_account_for_request(
         &state,
@@ -185,8 +179,8 @@ async fn resolver_does_not_demote_successful_or_non_timeout_route_proxy_history(
 }
 
 #[tokio::test]
-async fn resolver_reuses_sticky_account_when_cut_out_is_forbidden_despite_recent_route_binding_penalty(
-) {
+async fn resolver_reuses_sticky_account_when_cut_out_is_forbidden_despite_recent_route_binding_penalty()
+ {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let sticky_route = "https://sticky-penalized.example.com/backend-api/codex";
     let fallback_route = "https://sticky-fallback.example.com/backend-api/codex";
@@ -207,8 +201,14 @@ async fn resolver_reuses_sticky_account_when_cut_out_is_forbidden_despite_recent
     )
     .await;
     let now_iso = format_utc_iso(Utc::now());
-    insert_limit_sample_with_usage(&state.pool, sticky_account, &now_iso, Some(30.0), Some(30.0))
-        .await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        sticky_account,
+        &now_iso,
+        Some(30.0),
+        Some(30.0),
+    )
+    .await;
     insert_limit_sample_with_usage(
         &state.pool,
         fallback_account,
@@ -217,7 +217,7 @@ async fn resolver_reuses_sticky_account_when_cut_out_is_forbidden_despite_recent
         Some(1.0),
     )
     .await;
-    let lock_tag = insert_tag(
+    let lock_tag = insert_test_tag(
         &state.pool,
         "sticky-penalty-lock",
         &TagRoutingRule {
@@ -269,8 +269,8 @@ async fn resolver_reuses_sticky_account_when_cut_out_is_forbidden_despite_recent
 }
 
 #[tokio::test]
-async fn resolver_preserves_sticky_hard_block_when_cut_out_is_forbidden_despite_recent_route_binding_penalty(
-) {
+async fn resolver_preserves_sticky_hard_block_when_cut_out_is_forbidden_despite_recent_route_binding_penalty()
+ {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let sticky_route = "https://sticky-hard-block.example.com/backend-api/codex";
     let sticky_account = insert_test_pool_api_key_account_with_options(
@@ -291,7 +291,7 @@ async fn resolver_preserves_sticky_hard_block_when_cut_out_is_forbidden_despite_
     .await;
     set_test_account_group_name(&state.pool, sticky_account, Some("sticky-penalty-missing")).await;
     let now_iso = format_utc_iso(Utc::now());
-    let lock_tag = insert_tag(
+    let lock_tag = insert_test_tag(
         &state.pool,
         "sticky-hard-block-lock",
         &TagRoutingRule {
@@ -422,14 +422,9 @@ async fn resolver_non_explicit_sticky_escape_cuts_out_after_two_recent_upstream_
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(&state.pool, unhealthy, &now_iso, Some(1.0), Some(1.0)).await;
     insert_limit_sample_with_usage(&state.pool, healthy, &now_iso, Some(40.0), Some(20.0)).await;
-    upsert_sticky_route(
-        &state.pool,
-        "non-explicit-escaped-key",
-        unhealthy,
-        &now_iso,
-    )
-    .await
-    .expect("seed non-explicit sticky route");
+    upsert_sticky_route(&state.pool, "non-explicit-escaped-key", unhealthy, &now_iso)
+        .await
+        .expect("seed non-explicit sticky route");
     seed_account_upstream_stream_error_attempt(
         &state.pool,
         "non-explicit-stream-error-1",
@@ -511,7 +506,9 @@ async fn resolver_applies_prompt_cache_account_binding_over_sticky_route() {
         Some("prompt-cache-bound-key"),
         &[],
         &HashSet::new(),
-        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(
+            bound,
+        )),
     )
     .await
     .expect("resolve account-bound pool account");
@@ -519,7 +516,10 @@ async fn resolver_applies_prompt_cache_account_binding_over_sticky_route() {
         panic!("expected account-bound account");
     };
     assert_eq!(account.account_id, bound);
-    assert_eq!(account.routing_source, PoolRoutingSelectionSource::FreshAssignment);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::FreshAssignment
+    );
 }
 
 #[tokio::test]
@@ -590,7 +590,10 @@ async fn resolver_prompt_cache_group_binding_reselects_within_group_after_recent
     };
     assert_eq!(account.account_id, healthy);
     assert_eq!(account.group_name.as_deref(), Some(bound_group));
-    assert_eq!(account.routing_source, PoolRoutingSelectionSource::FreshAssignment);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::FreshAssignment
+    );
 }
 
 #[tokio::test]
@@ -612,7 +615,7 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_target_cut_in_pol
         Some("https://forced-no-cut-in.example.com/backend-api/codex"),
     )
     .await;
-    let no_cut_in_tag = insert_tag(
+    let no_cut_in_tag = insert_test_tag(
         &state.pool,
         "prompt-cache-forced-no-cut-in",
         &TagRoutingRule {
@@ -634,16 +637,23 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_target_cut_in_pol
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(&state.pool, sticky, &now_iso, Some(1.0), Some(1.0)).await;
     insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
-    upsert_sticky_route(&state.pool, "prompt-cache-forced-no-cut-in-key", sticky, &now_iso)
-        .await
-        .expect("upsert sticky source");
+    upsert_sticky_route(
+        &state.pool,
+        "prompt-cache-forced-no-cut-in-key",
+        sticky,
+        &now_iso,
+    )
+    .await
+    .expect("upsert sticky source");
 
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-forced-no-cut-in-key"),
         &[],
         &HashSet::new(),
-        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(
+            bound,
+        )),
     )
     .await
     .expect("resolve forced account-bound pool account");
@@ -655,7 +665,7 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_target_cut_in_pol
 
 #[tokio::test]
 async fn resolver_explicit_prompt_cache_account_binding_keeps_operator_override_after_recent_stream_errors()
-{
+ {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let bound_group = test_required_group_name();
     let unhealthy_route = "https://explicit-override-unhealthy.example.com/backend-api/codex";
@@ -742,7 +752,7 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_source_cut_out_po
         Some("https://forced-cut-out-target.example.com/backend-api/codex"),
     )
     .await;
-    let no_cut_out_tag = insert_tag(
+    let no_cut_out_tag = insert_test_tag(
         &state.pool,
         "prompt-cache-source-no-cut-out",
         &TagRoutingRule {
@@ -764,16 +774,23 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_source_cut_out_po
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(&state.pool, sticky, &now_iso, Some(1.0), Some(1.0)).await;
     insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
-    upsert_sticky_route(&state.pool, "prompt-cache-forced-cut-out-key", sticky, &now_iso)
-        .await
-        .expect("upsert sticky source");
+    upsert_sticky_route(
+        &state.pool,
+        "prompt-cache-forced-cut-out-key",
+        sticky,
+        &now_iso,
+    )
+    .await
+    .expect("upsert sticky source");
 
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-forced-cut-out-key"),
         &[],
         &HashSet::new(),
-        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(
+            bound,
+        )),
     )
     .await
     .expect("resolve forced account-bound pool account");
@@ -893,9 +910,7 @@ async fn resolver_blocks_cut_out_when_sticky_route_key_is_excluded_by_failover()
     };
     assert_eq!(blocked.account.account_id, sticky);
     assert!(
-        blocked
-            .message
-            .contains("routing policy forbids it"),
+        blocked.message.contains("routing policy forbids it"),
         "unexpected blocked message: {}",
         blocked.message
     );
@@ -982,13 +997,11 @@ async fn resolver_forced_prompt_cache_account_binding_reuses_blocked_sticky_owne
         Some("https://forced-blocked-sticky-owner.example.com/backend-api/codex"),
     )
     .await;
-    sqlx::query(
-        "UPDATE pool_upstream_accounts SET policy_priority_tier = 'no_new' WHERE id = ?1",
-    )
-    .bind(bound)
-    .execute(&state.pool)
-    .await
-    .expect("set block new conversations");
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = 'no_new' WHERE id = ?1")
+        .bind(bound)
+        .execute(&state.pool)
+        .await
+        .expect("set block new conversations");
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
     upsert_sticky_route(
@@ -1005,7 +1018,9 @@ async fn resolver_forced_prompt_cache_account_binding_reuses_blocked_sticky_owne
         Some("prompt-cache-forced-blocked-sticky-owner-key"),
         &[],
         &HashSet::new(),
-        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(
+            bound,
+        )),
     )
     .await
     .expect("resolve forced blocked sticky owner");
@@ -1042,19 +1057,31 @@ async fn resolver_forced_prompt_cache_account_binding_keeps_concurrency_limit() 
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(&state.pool, sticky, &now_iso, Some(1.0), Some(1.0)).await;
     insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
-    upsert_sticky_route(&state.pool, "prompt-cache-concurrency-source-key", sticky, &now_iso)
-        .await
-        .expect("upsert sticky source");
-    upsert_sticky_route(&state.pool, "prompt-cache-concurrency-active-key", bound, &now_iso)
-        .await
-        .expect("upsert active target sticky");
+    upsert_sticky_route(
+        &state.pool,
+        "prompt-cache-concurrency-source-key",
+        sticky,
+        &now_iso,
+    )
+    .await
+    .expect("upsert sticky source");
+    upsert_sticky_route(
+        &state.pool,
+        "prompt-cache-concurrency-active-key",
+        bound,
+        &now_iso,
+    )
+    .await
+    .expect("upsert active target sticky");
 
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-concurrency-source-key"),
         &[],
         &HashSet::new(),
-        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(
+            bound,
+        )),
     )
     .await
     .expect("resolve forced account-bound pool account");
@@ -1102,7 +1129,9 @@ async fn resolver_forced_prompt_cache_account_binding_keeps_concurrency_limit_af
         Some("prompt-cache-forced-sticky-concurrency-key"),
         &[],
         &HashSet::new(),
-        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(
+            bound,
+        )),
     )
     .await
     .expect("resolve forced account-bound pool account");
@@ -1130,7 +1159,7 @@ async fn resolver_prompt_cache_group_binding_does_not_bypass_cut_in_policy() {
         Some("https://group-no-cut-in.example.com/backend-api/codex"),
     )
     .await;
-    let no_cut_in_tag = insert_tag(
+    let no_cut_in_tag = insert_test_tag(
         &state.pool,
         "prompt-cache-group-no-cut-in",
         &TagRoutingRule {
@@ -1152,9 +1181,14 @@ async fn resolver_prompt_cache_group_binding_does_not_bypass_cut_in_policy() {
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(&state.pool, sticky, &now_iso, Some(1.0), Some(1.0)).await;
     insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
-    upsert_sticky_route(&state.pool, "prompt-cache-group-cut-in-key", sticky, &now_iso)
-        .await
-        .expect("upsert sticky source");
+    upsert_sticky_route(
+        &state.pool,
+        "prompt-cache-group-cut-in-key",
+        sticky,
+        &now_iso,
+    )
+    .await
+    .expect("upsert sticky source");
 
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
@@ -1552,7 +1586,7 @@ async fn resolver_prefers_group_proxy_error_over_excluded_route_cut_in_rejects()
     )
     .await;
     set_test_account_group_name(&state.pool, alternate_blocked, Some("alternate-missing")).await;
-    let no_cut_in_tag = insert_tag(
+    let no_cut_in_tag = insert_test_tag(
         &state.pool,
         "excluded-route-no-cut-in",
         &TagRoutingRule {
@@ -1868,7 +1902,7 @@ async fn resolver_returns_group_proxy_error_for_sticky_account_when_cut_out_is_f
     )
     .await;
     set_test_account_group_name(&state.pool, sticky_account, Some("sticky-missing")).await;
-    let lock_tag = insert_tag(
+    let lock_tag = insert_test_tag(
         &state.pool,
         "sticky-lock",
         &TagRoutingRule {
@@ -1945,7 +1979,7 @@ async fn resolver_returns_ungrouped_error_for_sticky_account_when_cut_out_is_for
     )
     .await;
     set_test_account_group_name(&state.pool, sticky_account, None).await;
-    let lock_tag = insert_tag(
+    let lock_tag = insert_test_tag(
         &state.pool,
         "sticky-ungrouped-lock",
         &TagRoutingRule {
@@ -2031,7 +2065,7 @@ async fn resolver_preserves_sticky_account_when_cut_out_is_forbidden_by_tag_poli
     .execute(&state.pool)
     .await
     .expect("expire sticky account token");
-    let lock_tag = insert_tag(
+    let lock_tag = insert_test_tag(
         &state.pool,
         "sticky-cut-out-forbidden",
         &TagRoutingRule {
@@ -2174,7 +2208,7 @@ async fn resolver_prefers_sticky_cut_in_policy_over_group_proxy_error() {
     )
     .await;
     set_test_account_group_name(&state.pool, blocked_target, Some("sticky-cut-in-missing")).await;
-    let no_cut_in_tag = insert_tag(
+    let no_cut_in_tag = insert_test_tag(
         &state.pool,
         "sticky-no-cut-in",
         &TagRoutingRule {
@@ -2609,7 +2643,10 @@ async fn update_oauth_login_session_normalizes_blank_group_to_default_group() {
         .await
         .expect("load stored login session")
         .expect("stored login session should exist");
-    assert_eq!(stored.group_name.as_deref(), Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME));
+    assert_eq!(
+        stored.group_name.as_deref(),
+        Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME)
+    );
     assert_eq!(stored.group_note, None);
     assert_eq!(stored.note.as_deref(), Some("before clearing group"));
 }

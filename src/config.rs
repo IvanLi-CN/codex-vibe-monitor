@@ -1,26 +1,28 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum ForwardProxyAlgo {
+pub(crate) enum ForwardProxyAlgo {
     V1,
     V2,
 }
 
 impl ForwardProxyAlgo {
-    fn probe_every_requests(self) -> u64 {
+    pub(crate) fn probe_every_requests(self) -> u64 {
         match self {
             Self::V1 => FORWARD_PROXY_PROBE_EVERY_REQUESTS,
             Self::V2 => FORWARD_PROXY_V2_PROBE_EVERY_REQUESTS,
         }
     }
 
-    fn probe_interval_secs(self) -> i64 {
+    pub(crate) fn probe_interval_secs(self) -> i64 {
         match self {
             Self::V1 => FORWARD_PROXY_PROBE_INTERVAL_SECS,
             Self::V2 => FORWARD_PROXY_V2_PROBE_INTERVAL_SECS,
         }
     }
 
-    fn probe_recovery_weight(self) -> f64 {
+    pub(crate) fn probe_recovery_weight(self) -> f64 {
         match self {
             Self::V1 => FORWARD_PROXY_PROBE_RECOVERY_WEIGHT,
             Self::V2 => FORWARD_PROXY_V2_PROBE_RECOVERY_WEIGHT,
@@ -42,7 +44,7 @@ impl FromStr for ForwardProxyAlgo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum RawCompressionCodec {
+pub(crate) enum RawCompressionCodec {
     None,
     Gzip,
 }
@@ -59,7 +61,7 @@ impl FromStr for RawCompressionCodec {
     }
 }
 
-fn resolve_forward_proxy_algo_config(
+pub(crate) fn resolve_forward_proxy_algo_config(
     primary_raw: Option<&str>,
     legacy_raw: Option<&str>,
 ) -> Result<ForwardProxyAlgo> {
@@ -74,7 +76,9 @@ fn resolve_forward_proxy_algo_config(
     }
 }
 
-fn resolve_raw_compression_codec_config(raw: Option<&str>) -> Result<RawCompressionCodec> {
+pub(crate) fn resolve_raw_compression_codec_config(
+    raw: Option<&str>,
+) -> Result<RawCompressionCodec> {
     match raw {
         Some(value) => RawCompressionCodec::from_str(value),
         None => Ok(DEFAULT_PROXY_RAW_COMPRESSION),
@@ -83,7 +87,7 @@ fn resolve_raw_compression_codec_config(raw: Option<&str>) -> Result<RawCompress
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ArchiveBatchLayout {
+pub(crate) enum ArchiveBatchLayout {
     LegacyMonth,
     SegmentV1,
 }
@@ -104,7 +108,7 @@ impl FromStr for ArchiveBatchLayout {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ArchiveSegmentGranularity {
+pub(crate) enum ArchiveSegmentGranularity {
     Day,
 }
 
@@ -123,18 +127,18 @@ impl FromStr for ArchiveSegmentGranularity {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ArchiveFileCodec {
+pub(crate) enum ArchiveFileCodec {
     Gzip,
 }
 
 impl ArchiveFileCodec {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Gzip => ARCHIVE_FILE_CODEC_GZIP,
         }
     }
 
-    fn file_extension(self) -> &'static str {
+    pub(crate) fn file_extension(self) -> &'static str {
         match self {
             Self::Gzip => "gz",
         }
@@ -152,14 +156,14 @@ impl FromStr for ArchiveFileCodec {
     }
 }
 
-fn resolve_archive_batch_layout_config(raw: Option<&str>) -> Result<ArchiveBatchLayout> {
+pub(crate) fn resolve_archive_batch_layout_config(raw: Option<&str>) -> Result<ArchiveBatchLayout> {
     match raw {
         Some(value) => ArchiveBatchLayout::from_str(value),
         None => Ok(DEFAULT_CODEX_INVOCATION_ARCHIVE_LAYOUT),
     }
 }
 
-fn resolve_archive_segment_granularity_config(
+pub(crate) fn resolve_archive_segment_granularity_config(
     raw: Option<&str>,
 ) -> Result<ArchiveSegmentGranularity> {
     match raw {
@@ -168,28 +172,28 @@ fn resolve_archive_segment_granularity_config(
     }
 }
 
-fn resolve_archive_file_codec_config(raw: Option<&str>) -> Result<ArchiveFileCodec> {
+pub(crate) fn resolve_archive_file_codec_config(raw: Option<&str>) -> Result<ArchiveFileCodec> {
     match raw {
         Some(value) => ArchiveFileCodec::from_str(value),
         None => Ok(DEFAULT_INVOCATION_ARCHIVE_CODEC),
     }
 }
 
-fn reject_legacy_env_var(legacy_name: &str, canonical_name: &str) -> Result<()> {
+pub(crate) fn reject_legacy_env_var(legacy_name: &str, canonical_name: &str) -> Result<()> {
     if env::var_os(legacy_name).is_some() {
         bail!("{legacy_name} is not supported; rename it to {canonical_name}");
     }
     Ok(())
 }
 
-fn reject_legacy_env_vars(renames: &[(&str, &str)]) -> Result<()> {
+pub(crate) fn reject_legacy_env_vars(renames: &[(&str, &str)]) -> Result<()> {
     for (legacy_name, canonical_name) in renames {
         reject_legacy_env_var(legacy_name, canonical_name)?;
     }
     Ok(())
 }
 
-fn reject_removed_env_var(name: &str, reason: &str) -> Result<()> {
+pub(crate) fn reject_removed_env_var(name: &str, reason: &str) -> Result<()> {
     if env::var_os(name).is_some() {
         bail!("{name} is not supported; remove it because {reason}");
     }
@@ -202,61 +206,61 @@ fn reject_removed_env_var(name: &str, reason: &str) -> Result<()> {
     about = "Monitor Codex Vibes",
     disable_help_subcommand = true
 )]
-struct CliArgs {
+pub(crate) struct CliArgs {
     #[command(subcommand)]
-    command: Option<CliCommand>,
+    pub(crate) command: Option<CliCommand>,
     /// Override the SQLite database path; falls back to DATABASE_PATH or default.
     #[arg(long, value_name = "PATH")]
-    database_path: Option<PathBuf>,
+    pub(crate) database_path: Option<PathBuf>,
     /// Override the polling interval in seconds.
     #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64))]
-    poll_interval_secs: Option<u64>,
+    pub(crate) poll_interval_secs: Option<u64>,
     /// Override the request timeout in seconds.
     #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64))]
-    request_timeout_secs: Option<u64>,
+    pub(crate) request_timeout_secs: Option<u64>,
     /// Override the maximum number of concurrent polls.
     #[arg(long, value_name = "COUNT", value_parser = clap::value_parser!(usize))]
-    max_parallel_polls: Option<usize>,
+    pub(crate) max_parallel_polls: Option<usize>,
     /// Override the shared connection parallelism for HTTP clients.
     #[arg(long, value_name = "COUNT", value_parser = clap::value_parser!(usize))]
-    shared_connection_parallelism: Option<usize>,
+    pub(crate) shared_connection_parallelism: Option<usize>,
     /// Override the HTTP bind address (ip:port).
     #[arg(long, value_name = "ADDR", value_parser = clap::value_parser!(SocketAddr))]
-    http_bind: Option<SocketAddr>,
+    pub(crate) http_bind: Option<SocketAddr>,
     /// Override the maximum list limit for paged responses.
     #[arg(long, value_name = "COUNT", value_parser = clap::value_parser!(usize))]
-    list_limit_max: Option<usize>,
+    pub(crate) list_limit_max: Option<usize>,
     /// Override the user agent sent to upstream services.
     #[arg(long, value_name = "UA")]
-    user_agent: Option<String>,
+    pub(crate) user_agent: Option<String>,
     /// Override the static directory served by the HTTP server.
     #[arg(long, value_name = "PATH")]
-    static_dir: Option<PathBuf>,
+    pub(crate) static_dir: Option<PathBuf>,
     /// Run one retention/archival maintenance pass and exit.
     #[arg(long, default_value_t = false)]
-    retention_run_once: bool,
+    pub(crate) retention_run_once: bool,
     /// Force retention maintenance to simulate actions without mutating data.
     #[arg(long, default_value_t = false)]
-    retention_dry_run: bool,
+    pub(crate) retention_dry_run: bool,
 }
 
-fn should_recover_pending_pool_attempts_on_startup(cli: &CliArgs) -> bool {
+pub(crate) fn should_recover_pending_pool_attempts_on_startup(cli: &CliArgs) -> bool {
     cli.command.is_none() && !cli.retention_run_once
 }
 
 #[derive(Subcommand, Debug)]
-enum CliCommand {
+pub(crate) enum CliCommand {
     Maintenance(MaintenanceCliArgs),
 }
 
 #[derive(Args, Debug)]
-struct MaintenanceCliArgs {
+pub(crate) struct MaintenanceCliArgs {
     #[command(subcommand)]
-    command: MaintenanceCommand,
+    pub(crate) command: MaintenanceCommand,
 }
 
 #[derive(Subcommand, Debug)]
-enum MaintenanceCommand {
+pub(crate) enum MaintenanceCommand {
     /// Compress cold raw payload backlog without running the full retention pipeline.
     RawCompression(MaintenanceDryRunArgs),
     /// Rebuild codex_invocations archive upstream-activity manifests.
@@ -272,89 +276,88 @@ enum MaintenanceCommand {
 }
 
 #[derive(Args, Debug, Default)]
-struct MaintenanceDryRunArgs {
+pub(crate) struct MaintenanceDryRunArgs {
     #[arg(long, default_value_t = false)]
-    dry_run: bool,
-}
-
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AppConfig {
-    openai_upstream_base_url: Url,
-    database_path: PathBuf,
-    poll_interval: Duration,
-    request_timeout: Duration,
-    pool_upstream_responses_attempt_timeout: Duration,
-    pool_upstream_responses_total_timeout: Duration,
-    openai_proxy_handshake_timeout: Duration,
-    openai_proxy_compact_handshake_timeout: Duration,
-    openai_proxy_request_read_timeout: Duration,
-    openai_proxy_max_request_body_bytes: usize,
-    openai_proxy_websocket_enabled: bool,
-    openai_proxy_upstream_websocket_default_enabled: bool,
-    openai_proxy_encrypted_session_owner_routing_enabled: bool,
-    proxy_enforce_stream_include_usage: bool,
-    proxy_usage_backfill_on_startup: bool,
-    proxy_raw_max_bytes: Option<usize>,
-    proxy_raw_dir: PathBuf,
-    proxy_raw_compression: RawCompressionCodec,
-    proxy_raw_immediate_gzip_bytes: Option<usize>,
-    proxy_raw_hot_secs: u64,
-    xray_binary: String,
-    xray_runtime_dir: PathBuf,
-    forward_proxy_algo: ForwardProxyAlgo,
-    max_parallel_polls: usize,
-    shared_connection_parallelism: usize,
-    http_bind: SocketAddr,
-    cors_allowed_origins: Vec<String>,
-    list_limit_max: usize,
-    user_agent: String,
-    static_dir: Option<PathBuf>,
-    public_origin: Option<String>,
-    retention_enabled: bool,
-    retention_dry_run: bool,
-    retention_interval: Duration,
-    retention_batch_rows: usize,
-    retention_catchup_budget: Duration,
-    archive_dir: PathBuf,
-    codex_invocation_archive_layout: ArchiveBatchLayout,
-    codex_invocation_archive_segment_granularity: ArchiveSegmentGranularity,
-    invocation_archive_codec: ArchiveFileCodec,
-    invocation_success_full_days: u64,
-    invocation_max_days: u64,
-    invocation_archive_ttl_days: u64,
-    forward_proxy_attempts_retention_days: u64,
-    pool_upstream_request_attempts_retention_days: u64,
-    pool_upstream_request_attempts_archive_ttl_days: u64,
-    stats_source_snapshots_retention_days: u64,
-    quota_snapshot_full_days: u64,
-    crs_stats: Option<CrsStatsConfig>,
-    upstream_accounts_oauth_client_id: String,
-    upstream_accounts_oauth_issuer: Url,
-    upstream_accounts_usage_base_url: Url,
-    upstream_accounts_login_session_ttl: Duration,
-    upstream_accounts_sync_interval: Duration,
-    upstream_accounts_refresh_lead_time: Duration,
-    upstream_accounts_history_retention_days: u64,
-    upstream_accounts_kaisoumail: Option<UpstreamAccountsKaisouMailConfig>,
+    pub(crate) dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CrsStatsConfig {
-    base_url: Url,
-    api_id: String,
-    period: String,
-    poll_interval: Duration,
+pub(crate) struct AppConfig {
+    pub(crate) openai_upstream_base_url: Url,
+    pub(crate) database_path: PathBuf,
+    pub(crate) poll_interval: Duration,
+    pub(crate) request_timeout: Duration,
+    pub(crate) pool_upstream_responses_attempt_timeout: Duration,
+    pub(crate) pool_upstream_responses_total_timeout: Duration,
+    pub(crate) openai_proxy_handshake_timeout: Duration,
+    pub(crate) openai_proxy_compact_handshake_timeout: Duration,
+    pub(crate) openai_proxy_request_read_timeout: Duration,
+    pub(crate) openai_proxy_max_request_body_bytes: usize,
+    pub(crate) openai_proxy_websocket_enabled: bool,
+    pub(crate) openai_proxy_upstream_websocket_default_enabled: bool,
+    pub(crate) openai_proxy_encrypted_session_owner_routing_enabled: bool,
+    pub(crate) proxy_enforce_stream_include_usage: bool,
+    pub(crate) proxy_usage_backfill_on_startup: bool,
+    pub(crate) proxy_raw_max_bytes: Option<usize>,
+    pub(crate) proxy_raw_dir: PathBuf,
+    pub(crate) proxy_raw_compression: RawCompressionCodec,
+    pub(crate) proxy_raw_immediate_gzip_bytes: Option<usize>,
+    pub(crate) proxy_raw_hot_secs: u64,
+    pub(crate) xray_binary: String,
+    pub(crate) xray_runtime_dir: PathBuf,
+    pub(crate) forward_proxy_algo: ForwardProxyAlgo,
+    pub(crate) max_parallel_polls: usize,
+    pub(crate) shared_connection_parallelism: usize,
+    pub(crate) http_bind: SocketAddr,
+    pub(crate) cors_allowed_origins: Vec<String>,
+    pub(crate) list_limit_max: usize,
+    pub(crate) user_agent: String,
+    pub(crate) static_dir: Option<PathBuf>,
+    pub(crate) public_origin: Option<String>,
+    pub(crate) retention_enabled: bool,
+    pub(crate) retention_dry_run: bool,
+    pub(crate) retention_interval: Duration,
+    pub(crate) retention_batch_rows: usize,
+    pub(crate) retention_catchup_budget: Duration,
+    pub(crate) archive_dir: PathBuf,
+    pub(crate) codex_invocation_archive_layout: ArchiveBatchLayout,
+    pub(crate) codex_invocation_archive_segment_granularity: ArchiveSegmentGranularity,
+    pub(crate) invocation_archive_codec: ArchiveFileCodec,
+    pub(crate) invocation_success_full_days: u64,
+    pub(crate) invocation_max_days: u64,
+    pub(crate) invocation_archive_ttl_days: u64,
+    pub(crate) forward_proxy_attempts_retention_days: u64,
+    pub(crate) pool_upstream_request_attempts_retention_days: u64,
+    pub(crate) pool_upstream_request_attempts_archive_ttl_days: u64,
+    pub(crate) stats_source_snapshots_retention_days: u64,
+    pub(crate) quota_snapshot_full_days: u64,
+    pub(crate) crs_stats: Option<CrsStatsConfig>,
+    pub(crate) upstream_accounts_oauth_client_id: String,
+    pub(crate) upstream_accounts_oauth_issuer: Url,
+    pub(crate) upstream_accounts_usage_base_url: Url,
+    pub(crate) upstream_accounts_login_session_ttl: Duration,
+    pub(crate) upstream_accounts_sync_interval: Duration,
+    pub(crate) upstream_accounts_refresh_lead_time: Duration,
+    pub(crate) upstream_accounts_history_retention_days: u64,
+    pub(crate) upstream_accounts_kaisoumail: Option<UpstreamAccountsKaisouMailConfig>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CrsStatsConfig {
+    pub(crate) base_url: Url,
+    pub(crate) api_id: String,
+    pub(crate) period: String,
+    pub(crate) poll_interval: Duration,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct UpstreamAccountsKaisouMailConfig {
-    base_url: Url,
+pub(crate) struct UpstreamAccountsKaisouMailConfig {
+    pub(crate) base_url: Url,
     #[serde(skip_serializing)]
-    api_key: String,
+    pub(crate) api_key: String,
 }
 
 impl fmt::Debug for UpstreamAccountsKaisouMailConfig {
@@ -368,7 +371,7 @@ impl fmt::Debug for UpstreamAccountsKaisouMailConfig {
 }
 
 impl AppConfig {
-    fn from_sources(overrides: &CliArgs) -> Result<Self> {
+    pub(crate) fn from_sources(overrides: &CliArgs) -> Result<Self> {
         reject_legacy_env_vars(LEGACY_ENV_RENAMES)?;
         let openai_upstream_base_url = env::var("OPENAI_UPSTREAM_BASE_URL")
             .unwrap_or_else(|_| DEFAULT_OPENAI_UPSTREAM_BASE_URL.to_string());
@@ -473,9 +476,7 @@ impl AppConfig {
         let proxy_raw_immediate_gzip_bytes = match env::var(ENV_PROXY_RAW_IMMEDIATE_GZIP_BYTES) {
             Ok(value) => {
                 let parsed = value.parse::<usize>().with_context(|| {
-                    format!(
-                        "invalid {ENV_PROXY_RAW_IMMEDIATE_GZIP_BYTES}: {value}"
-                    )
+                    format!("invalid {ENV_PROXY_RAW_IMMEDIATE_GZIP_BYTES}: {value}")
                 })?;
                 if parsed == 0 { None } else { Some(parsed) }
             }
@@ -784,26 +785,26 @@ impl AppConfig {
         })
     }
 
-    fn database_url(&self) -> String {
+    pub(crate) fn database_url(&self) -> String {
         format!("sqlite://{}", self.database_path.to_string_lossy())
     }
 
-    fn resolved_proxy_raw_dir(&self) -> PathBuf {
+    pub(crate) fn resolved_proxy_raw_dir(&self) -> PathBuf {
         resolve_path_from_database_parent(&self.database_path, &self.proxy_raw_dir)
     }
 
-    fn proxy_raw_immediate_gzip_threshold(&self) -> Option<usize> {
+    pub(crate) fn proxy_raw_immediate_gzip_threshold(&self) -> Option<usize> {
         (self.proxy_raw_compression == RawCompressionCodec::Gzip)
             .then_some(self.proxy_raw_immediate_gzip_bytes)
             .flatten()
     }
 }
 
-fn normalize_public_origin(raw: &str) -> Result<String> {
+pub(crate) fn normalize_public_origin(raw: &str) -> Result<String> {
     normalize_cors_origin(raw).ok_or_else(|| anyhow!("invalid {ENV_PUBLIC_ORIGIN}: {raw}"))
 }
 
-fn parse_bool_env_var(name: &str, default_value: bool) -> Result<bool> {
+pub(crate) fn parse_bool_env_var(name: &str, default_value: bool) -> Result<bool> {
     match env::var(name) {
         Ok(raw) => parse_bool_string(&raw).ok_or_else(|| anyhow!("invalid {name}: {raw}")),
         Err(env::VarError::NotPresent) => Ok(default_value),
@@ -811,7 +812,7 @@ fn parse_bool_env_var(name: &str, default_value: bool) -> Result<bool> {
     }
 }
 
-fn parse_u64_env_var(name: &str, default_value: u64) -> Result<u64> {
+pub(crate) fn parse_u64_env_var(name: &str, default_value: u64) -> Result<u64> {
     match env::var(name) {
         Ok(raw) => raw
             .parse::<u64>()
@@ -821,7 +822,7 @@ fn parse_u64_env_var(name: &str, default_value: u64) -> Result<u64> {
     }
 }
 
-fn parse_non_zero_u64_env_var(name: &str, default_value: u64) -> Result<u64> {
+pub(crate) fn parse_non_zero_u64_env_var(name: &str, default_value: u64) -> Result<u64> {
     let value = parse_u64_env_var(name, default_value)?;
     if value == 0 {
         bail!("{name} must be greater than 0");
@@ -829,7 +830,7 @@ fn parse_non_zero_u64_env_var(name: &str, default_value: u64) -> Result<u64> {
     Ok(value)
 }
 
-fn parse_usize_env_var(name: &str, default_value: usize) -> Result<usize> {
+pub(crate) fn parse_usize_env_var(name: &str, default_value: usize) -> Result<usize> {
     match env::var(name) {
         Ok(raw) => raw
             .parse::<usize>()
@@ -839,7 +840,7 @@ fn parse_usize_env_var(name: &str, default_value: usize) -> Result<usize> {
     }
 }
 
-fn parse_bool_string(raw: &str) -> Option<bool> {
+pub(crate) fn parse_bool_string(raw: &str) -> Option<bool> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "y" | "on" => Some(true),
         "0" | "false" | "no" | "n" | "off" => Some(false),
