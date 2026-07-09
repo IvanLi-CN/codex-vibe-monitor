@@ -3,9 +3,13 @@ import { useSummary } from '../../hooks/useStats'
 import { useParallelWorkStats } from '../../hooks/useParallelWorkStats'
 import { useTimeseries } from '../../hooks/useTimeseries'
 import { useTranslation } from '../../i18n'
-import type { DashboardActivityResponse } from '../../lib/api'
+import type { DashboardActivityResponse, StatsResponse } from '../../lib/api'
 import { metricAccent } from '../../lib/chartTheme'
-import { recordTodayChartDataCommit } from '../../lib/dashboardPerformanceDiagnostics'
+import {
+  recordTodayChartDataCommit,
+  recordTodaySummarySseCommit,
+} from '../../lib/dashboardPerformanceDiagnostics'
+import { subscribeToSse } from '../../lib/sse'
 import { useTheme } from '../../theme'
 import { DashboardTodayActivityChart } from './DashboardTodayActivityChart'
 import {
@@ -49,6 +53,25 @@ function useScopedSummary(window: string, upstreamAccountId?: number) {
     window,
     upstreamAccountId == null ? undefined : { upstreamAccountId },
   )
+}
+
+function useSummarySseOverlay(window: string, initialSummary: StatsResponse) {
+  const [summary, setSummary] = useState(initialSummary)
+
+  useEffect(() => {
+    setSummary(initialSummary)
+  }, [initialSummary])
+
+  useEffect(() => {
+    const unsubscribe = subscribeToSse((payload) => {
+      if (payload.type !== 'summary' || payload.window !== window) return
+      setSummary(payload.summary)
+      recordTodaySummarySseCommit(window)
+    })
+    return unsubscribe
+  }, [window])
+
+  return summary
 }
 
 function useDashboardTopChartCommittedResponse(
@@ -269,6 +292,7 @@ function DashboardNaturalDayTodaySummaryOverviewSnapshotBacked({
     bucket: '1m',
   })
   const [rateNow, setRateNow] = useState(() => new Date())
+  const liveSummary = useSummarySseOverlay('today', dashboardActivity.summary.stats)
 
   useEffect(() => {
     if (closedNaturalDay) return
@@ -279,12 +303,20 @@ function DashboardNaturalDayTodaySummaryOverviewSnapshotBacked({
     return () => window.clearInterval(timer)
   }, [closedNaturalDay])
 
+  const liveRate = useMemo(
+    () => buildDashboardTodayRateSnapshot(response, {
+      closedNaturalDay,
+      now: rateNow,
+    }),
+    [closedNaturalDay, rateNow, response],
+  )
+
   return (
     <TodayStatsOverview
-      stats={dashboardActivity.summary.stats}
+      stats={liveSummary}
       loading={false}
       error={null}
-      rate={{
+      rate={liveRate ?? {
         tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
         spendRate: dashboardActivity.summary.spendRate ?? 0,
         windowMinutes: dashboardActivity.rateWindow.windowMinutes,

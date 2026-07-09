@@ -20,6 +20,10 @@ const componentState = vi.hoisted(() => ({
   chartRenderCount: 0,
 }))
 
+const sseState = vi.hoisted(() => ({
+  listeners: new Set<(payload: unknown) => void>(),
+}))
+
 vi.mock('../../hooks/useStats', () => ({
   useSummary: hookMocks.useSummary,
 }))
@@ -30,6 +34,14 @@ vi.mock('../../hooks/useTimeseries', () => ({
 
 vi.mock('../../hooks/useParallelWorkStats', () => ({
   useParallelWorkStats: hookMocks.useParallelWorkStats,
+}))
+
+vi.mock('../../lib/sse', () => ({
+  subscribeToSse: (listener: (payload: unknown) => void) => {
+    sseState.listeners.add(listener)
+    return () => sseState.listeners.delete(listener)
+  },
+  subscribeToSseOpen: () => () => {},
 }))
 
 vi.mock('../../theme', () => ({
@@ -253,6 +265,7 @@ afterEach(() => {
   window.localStorage.clear()
   componentState.chartRenderCount = 0
   summaryStore.reset()
+  sseState.listeners.clear()
   vi.clearAllMocks()
 })
 
@@ -416,8 +429,14 @@ function getFirstSeenSummaryWindows() {
   return ordered
 }
 
+function emitSse(payload: unknown) {
+  for (const listener of [...sseState.listeners]) {
+    listener(payload)
+  }
+}
+
 describe('DashboardActivityOverview', () => {
-  it('uses a dashboard activity snapshot for the visible top KPI rate and live counts', () => {
+  it('uses a dashboard activity snapshot for the visible top KPI summary overlay without remounting duplicate today summary fetches', () => {
     installSummaryMocks()
 
     render(
@@ -454,10 +473,33 @@ describe('DashboardActivityOverview', () => {
     )
 
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      'total:21;inProgress:7;retry:1;wait:2500;nonSuccessCost:0.04;nonSuccessTokens:300;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
+      'total:21;inProgress:7;retry:1;wait:2500;nonSuccessCost:0.04;nonSuccessTokens:300;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
     )
     expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).not.toContain(
       'today',
+    )
+
+    act(() => {
+      emitSse({
+        type: 'summary',
+        window: 'today',
+        summary: {
+          totalCount: 34,
+          successCount: 29,
+          failureCount: 3,
+          totalCost: 0.66,
+          totalTokens: 6600,
+          inProgressConversationCount: 9,
+          inProgressRetryConversationCount: 2,
+          inProgressAvgWaitMs: 1100,
+          nonSuccessCost: 0.08,
+          nonSuccessTokens: 420,
+        },
+      })
+    })
+
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
+      'total:34;inProgress:9;retry:2;wait:1100;nonSuccessCost:0.08;nonSuccessTokens:420;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
     )
   })
 
