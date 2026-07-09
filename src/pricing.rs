@@ -70,6 +70,8 @@ pub(crate) async fn save_proxy_model_settings(
     Ok(())
 }
 
+const LATEST_PROXY_PRESET_MODELS_MIGRATION_VERSION: i64 = 2;
+
 pub(crate) async fn ensure_proxy_enabled_models_contains_new_presets(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
@@ -86,7 +88,7 @@ pub(crate) async fn ensure_proxy_enabled_models_contains_new_presets(
     .await
     .context("failed to check proxy preset models migration flag")?
     .unwrap_or(0);
-    if migrated != 0 {
+    if migrated >= LATEST_PROXY_PRESET_MODELS_MIGRATION_VERSION {
         return Ok(());
     }
 
@@ -240,11 +242,12 @@ pub(crate) async fn mark_proxy_preset_models_migrated(pool: &Pool<Sqlite>) -> Re
     sqlx::query(
         r#"
         UPDATE proxy_model_settings
-        SET preset_models_migrated = 1,
+        SET preset_models_migrated = ?1,
             updated_at = datetime('now')
-        WHERE id = ?1
+        WHERE id = ?2
         "#,
     )
+    .bind(LATEST_PROXY_PRESET_MODELS_MIGRATION_VERSION)
     .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
     .execute(pool)
     .await
@@ -430,6 +433,26 @@ pub(crate) fn is_repo_managed_default_pricing_catalog_version(version: &str) -> 
     )
 }
 
+pub(crate) async fn promote_repo_managed_default_pricing_catalog_version(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_meta
+        SET catalog_version = ?1,
+            updated_at = datetime('now')
+        WHERE id = ?2
+          AND catalog_version <> ?1
+        "#,
+    )
+    .bind(DEFAULT_PRICING_CATALOG_VERSION)
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .execute(pool)
+    .await
+    .context("failed to promote repo-managed pricing catalog version")?;
+    Ok(())
+}
+
 pub(crate) async fn normalize_default_pricing_sources(pool: &Pool<Sqlite>) -> Result<()> {
     // Legacy versions used `temporary` for some built-in models; keep the pricing untouched
     // but normalize the metadata so UI and reporting remain consistent.
@@ -483,6 +506,7 @@ pub(crate) async fn seed_default_pricing_catalog_with_legacy_path(
         if is_repo_managed_default_pricing_catalog_version(&version) {
             ensure_pricing_models_present(pool).await?;
             normalize_default_pricing_sources(pool).await?;
+            promote_repo_managed_default_pricing_catalog_version(pool).await?;
         }
         return Ok(());
     }
@@ -527,6 +551,7 @@ pub(crate) async fn seed_default_pricing_catalog_with_legacy_path(
                 if is_repo_managed_default_pricing_catalog_version(&catalog.version) {
                     ensure_pricing_models_present(pool).await?;
                     normalize_default_pricing_sources(pool).await?;
+                    promote_repo_managed_default_pricing_catalog_version(pool).await?;
                 }
                 return Ok(());
             }

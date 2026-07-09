@@ -370,6 +370,7 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_defau
     let catalog = load_pricing_catalog(&pool)
         .await
         .expect("load pricing catalog should succeed");
+    assert_eq!(catalog.version, DEFAULT_PRICING_CATALOG_VERSION);
     assert!(catalog.models.contains_key("gpt-5.4-mini"));
     assert!(catalog.models.contains_key("gpt-5.5"));
     assert!(catalog.models.contains_key("gpt-5.5-pro"));

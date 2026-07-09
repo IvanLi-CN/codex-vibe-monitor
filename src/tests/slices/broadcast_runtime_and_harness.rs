@@ -1586,7 +1586,7 @@ async fn ensure_schema_allows_opting_out_of_new_proxy_models_after_migration() {
         r#"
         UPDATE proxy_model_settings
         SET enabled_preset_models_json = ?1,
-            preset_models_migrated = 1
+            preset_models_migrated = 2
         WHERE id = ?2
         "#,
     )
@@ -1602,6 +1602,70 @@ async fn ensure_schema_allows_opting_out_of_new_proxy_models_after_migration() {
         .await
         .expect("load proxy model settings after opt-out");
     assert_eq!(settings.enabled_preset_models, normalized_legacy_enabled);
+}
+
+#[tokio::test]
+async fn ensure_schema_reruns_proxy_preset_migration_for_previous_migration_version() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let legacy_enabled = LEGACY_PROXY_PRESET_MODEL_IDS
+        .iter()
+        .map(|id| (*id).to_string())
+        .collect::<Vec<_>>();
+    let legacy_enabled_json =
+        serde_json::to_string(&legacy_enabled).expect("serialize legacy enabled list");
+
+    sqlx::query(
+        r#"
+        UPDATE proxy_model_settings
+        SET enabled_preset_models_json = ?1,
+            preset_models_migrated = 1
+        WHERE id = ?2
+        "#,
+    )
+    .bind(legacy_enabled_json)
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .execute(&pool)
+    .await
+    .expect("force previous proxy preset migration version");
+
+    ensure_schema(&pool).await.expect("ensure schema rerun");
+
+    let settings = load_proxy_model_settings(&pool)
+        .await
+        .expect("load proxy model settings after rerun");
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.6-sol".to_string())
+    );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.6-terra".to_string())
+    );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.6-luna".to_string())
+    );
+
+    let migrated = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT preset_models_migrated
+        FROM proxy_model_settings
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .fetch_one(&pool)
+    .await
+    .expect("read migration version");
+    assert_eq!(migrated, 2);
 }
 
 #[tokio::test]
@@ -1647,7 +1711,7 @@ async fn ensure_schema_marks_proxy_preset_models_migrated_when_enabled_list_empt
     .fetch_one(&pool)
     .await
     .expect("read migration flag");
-    assert_eq!(migrated, 1);
+    assert_eq!(migrated, 2);
 }
 
 #[tokio::test]
