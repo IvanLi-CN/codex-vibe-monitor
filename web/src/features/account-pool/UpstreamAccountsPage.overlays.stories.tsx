@@ -255,7 +255,7 @@ function DetailDrawerStorySurface({
 }) {
   return (
     <MemoryRouter initialEntries={['/account-pool/upstream-accounts?upstreamAccountId=101']}>
-      <div className="min-h-screen bg-base-200 p-6 text-base-content">
+      <div className="min-h-screen bg-base-200 p-3 text-base-content min-[769px]:p-6">
         <I18nProvider>
           <SystemNotificationProvider>
             <StorybookUpstreamAccountsMock>

@@ -3026,7 +3026,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                 </Alert>
               ) : null}
               <SegmentedControl
-                className="max-w-full self-start overflow-x-auto"
+                className="w-full flex-wrap justify-start self-stretch min-[769px]:w-auto min-[769px]:self-start"
                 role="tablist"
                 aria-label={t("accountPool.upstreamAccounts.detailTitle")}
               >
