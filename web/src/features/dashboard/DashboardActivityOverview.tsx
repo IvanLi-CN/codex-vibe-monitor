@@ -303,20 +303,12 @@ function DashboardNaturalDayTodaySummaryOverviewSnapshotBacked({
     return () => window.clearInterval(timer)
   }, [closedNaturalDay])
 
-  const liveRate = useMemo(
-    () => buildDashboardTodayRateSnapshot(response, {
-      closedNaturalDay,
-      now: rateNow,
-    }),
-    [closedNaturalDay, rateNow, response],
-  )
-
   return (
     <TodayStatsOverview
       stats={liveSummary}
       loading={false}
       error={null}
-      rate={liveRate ?? {
+      rate={{
         tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
         spendRate: dashboardActivity.summary.spendRate ?? 0,
         windowMinutes: dashboardActivity.rateWindow.windowMinutes,
