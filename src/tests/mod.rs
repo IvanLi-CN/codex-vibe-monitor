@@ -1,8 +1,16 @@
-// Thin backend test-suite entry for reviewability; behavior is preserved via include! slices.
+// Backend test-suite entry grouped by resource profile; behavior is preserved via real modules.
 
 use super::*;
 
-mod slices;
+mod archive_file_io;
+mod lightweight;
+mod stateful_sqlite;
+mod support;
+
+pub(crate) use archive_file_io::*;
+pub(crate) use lightweight::*;
+pub(crate) use stateful_sqlite::*;
+pub(crate) use support::*;
 
 #[cfg(test)]
 async fn resolve_pool_account_for_request(

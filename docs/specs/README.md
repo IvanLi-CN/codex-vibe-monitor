@@ -30,6 +30,7 @@
 | gz5ns | Dashboard 自然日七卡 KPI 语义与布局重构                                   | active    | `gz5ns-dashboard-natural-day-kpi-semantics/SPEC.md`        | `gz5ns-dashboard-natural-day-kpi-semantics/IMPLEMENTATION.md`        | topic anchor: dashboard / natural-day KPI / account detail  |
 | z6ysw | Dashboard 工作区卡片双视图与上游账号活动聚合                              | active    | `z6ysw-dashboard-account-activity-tabs/SPEC.md`            | `z6ysw-dashboard-account-activity-tabs/IMPLEMENTATION.md`            | topic anchor: dashboard / workspace / account activity      |
 | 4tgau | 后端结构残余收口与浅层测试模块化                                          | active    | `4tgau-backend-structure-followup/SPEC.md`                 | `4tgau-backend-structure-followup/IMPLEMENTATION.md`                 | topic anchor: backend structure / module boundaries / tests |
+| q7yt7 | 后端测试资源分层模块化与运行时预算                                        | active    | `q7yt7-backend-test-resource-profiles/SPEC.md`             | `q7yt7-backend-test-resource-profiles/IMPLEMENTATION.md`             | topic anchor: backend tests / ci profiles / runtime budget  |
 
 ## Archived Sources
 
