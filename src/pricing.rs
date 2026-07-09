@@ -599,7 +599,7 @@ pub(crate) fn load_legacy_pricing_catalog(path: &Path) -> Result<Option<PricingC
         .models
         .into_iter()
         .map(|(model, pricing)| {
-            let cache_read_per_1m = pricing.cache_input_per_1m.or(pricing.cache_read_per_1m);
+            let cache_read_per_1m = pricing.cache_read_per_1m.or(pricing.cache_input_per_1m);
             (
                 model,
                 ModelPricing {
@@ -660,9 +660,9 @@ pub(crate) async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingC
 
     let mut models = HashMap::new();
     for row in rows {
-        // Legacy rows may only update cache_input_per_1m; treat it as the read-price alias
-        // when reloading persisted pricing so custom values are not lost during migration.
-        let cache_read_per_1m = row.cache_input_per_1m.or(row.cache_read_per_1m);
+        // Legacy rows may only populate cache_input_per_1m, but explicit read pricing must win
+        // whenever both columns are present.
+        let cache_read_per_1m = row.cache_read_per_1m.or(row.cache_input_per_1m);
         models.insert(
             row.model,
             ModelPricing {

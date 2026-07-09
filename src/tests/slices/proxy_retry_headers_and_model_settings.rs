@@ -101,6 +101,36 @@ async fn pricing_settings_api_mirrors_legacy_cache_input_into_cache_read_respons
 }
 
 #[tokio::test]
+async fn pricing_settings_api_reload_prefers_explicit_cache_read_over_legacy_alias() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET cache_input_per_1m = 0.99,
+            cache_read_per_1m = 0.44
+        WHERE model = 'gpt-5.4'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("prepare conflicting cache pricing row");
+
+    let persisted = load_pricing_catalog(&pool)
+        .await
+        .expect("pricing catalog should load");
+    let model = persisted
+        .models
+        .get("gpt-5.4")
+        .expect("gpt-5.4 should exist");
+    assert_eq!(model.cache_input_per_1m, Some(0.44));
+    assert_eq!(model.cache_read_per_1m, Some(0.44));
+}
+
+#[tokio::test]
 async fn ensure_schema_backfills_cache_read_from_legacy_cache_input_column() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -132,6 +162,59 @@ async fn ensure_schema_backfills_cache_read_from_legacy_cache_input_column() {
     .await
     .expect("load cache_read_per_1m");
     assert_eq!(cache_read, Some(0.42));
+}
+
+#[tokio::test]
+async fn seed_default_pricing_catalog_prefers_explicit_cache_read_from_legacy_file() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+    sqlx::query("DELETE FROM pricing_settings_meta")
+        .execute(&pool)
+        .await
+        .expect("clear pricing meta");
+    sqlx::query("DELETE FROM pricing_settings_models")
+        .execute(&pool)
+        .await
+        .expect("clear pricing models");
+
+    let legacy_path = env::temp_dir().join(format!(
+        "codex-vibe-monitor-pricing-legacy-conflict-{}.json",
+        NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(
+        &legacy_path,
+        r#"{
+  "version": "legacy-custom-v2",
+  "models": {
+"gpt-legacy": {
+  "input_per_1m": 9.9,
+  "output_per_1m": 19.9,
+  "cache_input_per_1m": 0.99,
+  "cache_read_per_1m": 0.44,
+  "reasoning_per_1m": null
+}
+  }
+}"#,
+    )
+    .expect("write conflicting legacy pricing catalog");
+
+    seed_default_pricing_catalog_with_legacy_path(&pool, Some(&legacy_path))
+        .await
+        .expect("seed pricing catalog from legacy file");
+
+    let _ = fs::remove_file(&legacy_path);
+
+    let migrated = load_pricing_catalog(&pool)
+        .await
+        .expect("load migrated pricing catalog");
+    let model = migrated
+        .models
+        .get("gpt-legacy")
+        .expect("legacy model should be migrated");
+    assert_eq!(model.cache_input_per_1m, Some(0.44));
+    assert_eq!(model.cache_read_per_1m, Some(0.44));
 }
 
 #[tokio::test]
@@ -431,6 +514,7 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
         SET input_per_1m = ?1,
             output_per_1m = ?2,
             cache_input_per_1m = ?3,
+            cache_read_per_1m = ?3,
             source = 'custom'
         WHERE model = 'gpt-5.4'
         "#,
@@ -490,6 +574,7 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     assert_eq!(gpt_5_4.input_per_1m, 99.0);
     assert_eq!(gpt_5_4.output_per_1m, 199.0);
     assert_eq!(gpt_5_4.cache_input_per_1m, Some(9.9));
+    assert_eq!(gpt_5_4.cache_read_per_1m, Some(9.9));
     assert_eq!(gpt_5_4.source, "custom");
 
     let gpt_5_4_pro = catalog
