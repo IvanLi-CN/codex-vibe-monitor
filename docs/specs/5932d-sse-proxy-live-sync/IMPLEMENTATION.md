@@ -6,6 +6,7 @@
 - Implementation summary: 已完成
 - Dashboard realtime consumption now separates SSE-fast KPI commits from 5s HTTP/chart reconcile budgets. Working conversations batch visible SSE patches for 1s and throttle head/snapshot reconcile to 5s. `/api/stats/parallel-work` keeps its response schema while supporting ETag / 304 conditional fetches.
 - Current-window summary reconcile now matches the same 5s budget as calendar windows and account-activity reconcile. The dashboard debug diagnostics also split out `current summary refresh/open-resync` and `upstream account activity refresh/open-resync`, so future regressions can distinguish SSE-fast-path churn from HTTP reconcile churn.
+- Dashboard natural-day overview no longer mounts duplicate same-window `useSummary('today' | 'yesterday')` subscriptions on the main page when `dashboardActivity` already carries the visible snapshot. Visible KPI/rate truth now reuses that snapshot directly, while comparison windows still fetch independently.
 - Dashboard working conversations live head/count now read from a write-side `prompt_cache_working_set_live` table that keeps the last 5 minutes of terminal activity plus any current in-flight keys. The public response shape stays unchanged, while the hot read path no longer rebuilds the working set from `codex_invocations` on every request.
 - Working-conversations snapshot count/page now also accept the same `<=5s` bounded-freshness contract. Instead of strict historical recomputation from `codex_invocations`, snapshot aggregates read the live working-set truth directly and keep the existing response fields, cursor shape, and main ordering semantics.
 - Proxy capture request completion no longer waits for terminal `codex_invocations` SQLite persistence before allowing the proxy business flow to finish. It constructs the full terminal record, tombstones/removes the corresponding runtime-store row, broadcasts `records`, and enqueues the terminal record into the SQLite write controller as P1 best-effort observability. Enqueue/flush failures are structured evidence and must not fail an already completed proxy response.
@@ -53,6 +54,7 @@
 - [x] M11: Terminal invocation 记录从代理业务关键路径移入 SQLite write controller；业务响应不等待记录落库，running snapshot 完全退出 DB/batch 路径，terminal 产生的派生写延后到后续 P2 flush。
 - [x] M12: Proxy capture 请求 admit 后立即创建最小内存 running shell record；body parse / attempt start / response-ready 只覆盖补全同一 runtime key。
 - [x] M13: Dashboard 活跃调用统一为 invocation phase counts；working conversation 卡片 totals 改为完整生命周期聚合，Today KPI 与图表拆分“进行中 / 排队中”。
+- [x] M14: Dashboard 主页面 `today` / `yesterday` 自然日总览在已有 `dashboardActivity` snapshot 时复用同窗口 summary truth，不再重复挂载同窗口 `useSummary` 订阅。
 
 ## 2026-06-21 Follow-up
 
@@ -80,3 +82,5 @@
 - `cargo test prompt_cache_conversations_activity_minutes`
 - `cargo test timeseries_point_exports_in_flight_phase_counts_and_compat_total`
 - `cd web && bun run test -- TodayStatsOverview DashboardTodayActivityChart`
+- `cd web && bun run test -- src/pages/Dashboard.test.tsx src/features/dashboard/DashboardActivityOverview.test.tsx`
+- `cd web && bun run build`

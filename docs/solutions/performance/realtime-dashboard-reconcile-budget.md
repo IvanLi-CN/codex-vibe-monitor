@@ -44,6 +44,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - Prefer account-first aggregation for visible account breakdowns: calculate account rows, add an explicit unassigned bucket for traffic without an account, then derive summary rates and live counts by summing the rows. This keeps the visible decomposition able to explain the top number.
 - Keep summary-only activity snapshots genuinely lightweight. A request that omits account rows should read bounded summary/read-model data plus the short active-tail rate window, not build and sort the full account preview/archive row set before dropping it from JSON.
 - When a dashboard card combines a live main value with historical comparison rows, keep the semantic split explicit: the main value can come from a strict real-time read model, while comparison rows can continue to use a stable historical aggregate as long as they remain clearly secondary and do not overwrite the live truth source.
+- If a page-level activity snapshot already includes the visible natural-day summary and rate window, consume that snapshot directly for the main card truth. Fetch only comparison windows separately instead of layering a second same-window summary subscription under the same visible panel.
 - Batch visible local patches separately from head/snapshot reconcile. A 1 second visible patch batch is responsive enough for card updates while avoiding per-record rerenders.
 - Put expensive HTTP reconcile and dense chart data commits behind a separate 5 second budget.
 - For large aggregate endpoints that must keep their JSON shape, add conditional HTTP (`ETag` and `304 Not Modified`) instead of trimming fields.
@@ -63,6 +64,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - Do not delay KPI counters if the SSE payload is already authoritative for the selected window.
 - Do not reuse a long-horizon aggregate endpoint as a shortcut for a real-time KPI when their semantic boundaries differ, even if the payload looks close enough.
 - Do not reuse chart timeseries as the source of a current KPI when the same screen also shows a live breakdown. The chart can legitimately differ because it is trend history; the current KPI should come from the shared activity snapshot.
+- Do not mount both a visible `dashboardActivity` snapshot consumer and a same-window `useSummary(window)` subscription for the same `today` / `yesterday` panel. That duplicates SSE listeners, open-resync, and refresh churn without improving owner-facing truth.
 - Do not simplify chart visuals to solve render pressure; throttle the data commit feeding the chart instead.
 - Keep timer constants exported when tests need to assert cadence without duplicating magic numbers.
 - `304` handling must preserve the previous UI data and clear transient errors; it is a successful no-body response, not a failed fetch.

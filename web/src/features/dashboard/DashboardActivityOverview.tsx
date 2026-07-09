@@ -212,6 +212,121 @@ function DashboardNaturalDayTodaySummaryOverview({
   dashboardActivityLoading?: boolean
   dashboardActivityError?: string | null
 }) {
+  const snapshotActive =
+    upstreamAccountId == null && dashboardActivity?.range === 'today'
+  if (snapshotActive && dashboardActivity != null) {
+    return (
+      <DashboardNaturalDayTodaySummaryOverviewSnapshotBacked
+        response={response}
+        closedNaturalDay={closedNaturalDay}
+        dashboardActivity={dashboardActivity}
+      />
+    )
+  }
+
+  return (
+    <DashboardNaturalDayTodaySummaryOverviewFallback
+      response={response}
+      loading={loading}
+      error={error}
+      closedNaturalDay={closedNaturalDay}
+      upstreamAccountId={upstreamAccountId}
+      dashboardActivity={dashboardActivity}
+      dashboardActivityLoading={dashboardActivityLoading}
+      dashboardActivityError={dashboardActivityError}
+    />
+  )
+}
+
+function DashboardNaturalDayTodaySummaryOverviewSnapshotBacked({
+  response,
+  closedNaturalDay,
+  dashboardActivity,
+}: {
+  response: ReturnType<typeof useTimeseries>['data']
+  closedNaturalDay: boolean
+  dashboardActivity: DashboardActivityResponse
+}) {
+  const {
+    summary: comparisonSummary,
+  } = useScopedSummary('yesterday')
+  const {
+    summary: previous7dSummary,
+  } = useScopedSummary('previous7d')
+  const {
+    data: comparisonTimeseries,
+  } = useTimeseries('yesterday', { bucket: '1m' })
+  const {
+    data: parallelWorkStats,
+  } = useParallelWorkStats({
+    range: 'today',
+    bucket: '1m',
+  })
+  const {
+    data: comparisonParallelWorkStats,
+  } = useParallelWorkStats({
+    range: 'yesterday',
+    bucket: '1m',
+  })
+  const [rateNow, setRateNow] = useState(() => new Date())
+
+  useEffect(() => {
+    if (closedNaturalDay) return
+    setRateNow(new Date())
+    const timer = window.setInterval(() => {
+      setRateNow(new Date())
+    }, LIVE_RATE_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [closedNaturalDay])
+
+  return (
+    <TodayStatsOverview
+      stats={dashboardActivity.summary.stats}
+      loading={false}
+      error={null}
+      rate={{
+        tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
+        spendRate: dashboardActivity.summary.spendRate ?? 0,
+        windowMinutes: dashboardActivity.rateWindow.windowMinutes,
+        available: true,
+      }}
+      rateLoading={false}
+      rateError={null}
+      now={rateNow}
+      timeseries={response}
+      comparisonStats={comparisonSummary}
+      comparisonTimeseries={comparisonTimeseries}
+      previous7dStats={previous7dSummary}
+      parallelWorkStats={parallelWorkStats}
+      comparisonParallelWorkStats={comparisonParallelWorkStats}
+      showInProgressConversations
+      dayKind="today"
+      showSurface={false}
+      showHeader={false}
+      showDayBadge={false}
+    />
+  )
+}
+
+function DashboardNaturalDayTodaySummaryOverviewFallback({
+  response,
+  loading,
+  error,
+  closedNaturalDay,
+  upstreamAccountId,
+  dashboardActivity,
+  dashboardActivityLoading = false,
+  dashboardActivityError = null,
+}: {
+  response: ReturnType<typeof useTimeseries>['data']
+  loading: boolean
+  error: ReturnType<typeof useTimeseries>['error']
+  closedNaturalDay: boolean
+  upstreamAccountId?: number
+  dashboardActivity?: DashboardActivityResponse | null
+  dashboardActivityLoading?: boolean
+  dashboardActivityError?: string | null
+}) {
   const {
     summary,
     isLoading: summaryLoading,
@@ -261,9 +376,8 @@ function DashboardNaturalDayTodaySummaryOverview({
     }),
     [closedNaturalDay, rateNow, response],
   )
-  const snapshotActive =
+  const snapshotRate =
     upstreamAccountId == null && dashboardActivity?.range === 'today'
-  const snapshotRate = snapshotActive
     ? {
         tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
         spendRate: dashboardActivity.summary.spendRate ?? 0,
@@ -274,12 +388,12 @@ function DashboardNaturalDayTodaySummaryOverview({
 
   return (
     <TodayStatsOverview
-      stats={snapshotActive ? dashboardActivity.summary.stats : summary}
-      loading={snapshotActive ? false : summaryLoading || dashboardActivityLoading}
-      error={snapshotActive ? null : summaryError ?? dashboardActivityError}
+      stats={summary}
+      loading={summaryLoading || dashboardActivityLoading}
+      error={summaryError ?? dashboardActivityError}
       rate={snapshotRate ?? rate}
-      rateLoading={snapshotActive ? false : loading || dashboardActivityLoading}
-      rateError={snapshotActive ? null : error ?? dashboardActivityError}
+      rateLoading={loading || dashboardActivityLoading}
+      rateError={error ?? dashboardActivityError}
       now={rateNow}
       timeseries={response}
       comparisonStats={comparisonSummary}
@@ -297,6 +411,109 @@ function DashboardNaturalDayTodaySummaryOverview({
 }
 
 function DashboardNaturalDayYesterdaySummaryOverview({
+  response,
+  loading,
+  error,
+  closedNaturalDay,
+  upstreamAccountId,
+  dashboardActivity,
+  dashboardActivityLoading = false,
+  dashboardActivityError = null,
+}: {
+  response: ReturnType<typeof useTimeseries>['data']
+  loading: boolean
+  error: ReturnType<typeof useTimeseries>['error']
+  closedNaturalDay: boolean
+  upstreamAccountId?: number
+  dashboardActivity?: DashboardActivityResponse | null
+  dashboardActivityLoading?: boolean
+  dashboardActivityError?: string | null
+}) {
+  const snapshotActive =
+    upstreamAccountId == null && dashboardActivity?.range === 'yesterday'
+  if (snapshotActive && dashboardActivity != null) {
+    return (
+      <DashboardNaturalDayYesterdaySummaryOverviewSnapshotBacked
+        response={response}
+        closedNaturalDay={closedNaturalDay}
+        dashboardActivity={dashboardActivity}
+      />
+    )
+  }
+
+  return (
+    <DashboardNaturalDayYesterdaySummaryOverviewFallback
+      response={response}
+      loading={loading}
+      error={error}
+      closedNaturalDay={closedNaturalDay}
+      upstreamAccountId={upstreamAccountId}
+      dashboardActivity={dashboardActivity}
+      dashboardActivityLoading={dashboardActivityLoading}
+      dashboardActivityError={dashboardActivityError}
+    />
+  )
+}
+
+function DashboardNaturalDayYesterdaySummaryOverviewSnapshotBacked({
+  response,
+  closedNaturalDay,
+  dashboardActivity,
+}: {
+  response: ReturnType<typeof useTimeseries>['data']
+  closedNaturalDay: boolean
+  dashboardActivity: DashboardActivityResponse
+}) {
+  const {
+    summary: previous7dSummary,
+  } = useScopedSummary('previous7d')
+  const {
+    data: parallelWorkStats,
+  } = useParallelWorkStats({
+    range: 'yesterday',
+    bucket: '1m',
+  })
+  const [rateNow, setRateNow] = useState(() => new Date())
+
+  useEffect(() => {
+    if (closedNaturalDay) return
+    setRateNow(new Date())
+    const timer = window.setInterval(() => {
+      setRateNow(new Date())
+    }, LIVE_RATE_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [closedNaturalDay])
+
+  return (
+    <TodayStatsOverview
+      stats={dashboardActivity.summary.stats}
+      loading={false}
+      error={null}
+      rate={{
+        tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
+        spendRate: dashboardActivity.summary.spendRate ?? 0,
+        windowMinutes: dashboardActivity.rateWindow.windowMinutes,
+        available: true,
+      }}
+      rateLoading={false}
+      rateError={null}
+      now={rateNow}
+      timeseries={response}
+      comparisonStats={null}
+      comparisonTimeseries={null}
+      previous7dStats={previous7dSummary}
+      parallelWorkStats={parallelWorkStats}
+      comparisonParallelWorkStats={null}
+      showInProgressConversations
+      dayKind="yesterday"
+      showSurface={false}
+      showHeader={false}
+      showDayBadge={false}
+    />
+  )
+}
+
+function DashboardNaturalDayYesterdaySummaryOverviewFallback({
   response,
   loading,
   error,
@@ -348,9 +565,8 @@ function DashboardNaturalDayYesterdaySummaryOverview({
     }),
     [closedNaturalDay, rateNow, response],
   )
-  const snapshotActive =
+  const snapshotRate =
     upstreamAccountId == null && dashboardActivity?.range === 'yesterday'
-  const snapshotRate = snapshotActive
     ? {
         tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
         spendRate: dashboardActivity.summary.spendRate ?? 0,
@@ -361,12 +577,12 @@ function DashboardNaturalDayYesterdaySummaryOverview({
 
   return (
     <TodayStatsOverview
-      stats={snapshotActive ? dashboardActivity.summary.stats : summary}
-      loading={snapshotActive ? false : summaryLoading || dashboardActivityLoading}
-      error={snapshotActive ? null : summaryError ?? dashboardActivityError}
+      stats={summary}
+      loading={summaryLoading || dashboardActivityLoading}
+      error={summaryError ?? dashboardActivityError}
       rate={snapshotRate ?? rate}
-      rateLoading={snapshotActive ? false : loading || dashboardActivityLoading}
-      rateError={snapshotActive ? null : error ?? dashboardActivityError}
+      rateLoading={loading || dashboardActivityLoading}
+      rateError={error ?? dashboardActivityError}
       now={rateNow}
       timeseries={response}
       comparisonStats={null}

@@ -456,6 +456,51 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
       'total:21;inProgress:7;retry:1;wait:2500;nonSuccessCost:0.04;nonSuccessTokens:300;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
     )
+    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).not.toContain(
+      'today',
+    )
+  })
+
+  it('skips the duplicate yesterday summary hook when a snapshot-backed yesterday panel is visible', () => {
+    installSummaryMocks()
+
+    render(
+      <DashboardActivityOverview
+        dashboardActivity={{
+          range: 'yesterday',
+          rangeStart: '2026-07-04T00:00:00Z',
+          rangeEnd: '2026-07-05T00:00:00Z',
+          snapshotId: 1783147200000,
+          rateWindow: {
+            start: '2026-07-04T23:55:00Z',
+            end: '2026-07-05T00:00:00Z',
+            windowMinutes: 5,
+            mode: 'account_active_tail_sum',
+          },
+          summary: {
+            stats: {
+              totalCount: 9,
+              successCount: 8,
+              failureCount: 1,
+              totalCost: 0.18,
+              totalTokens: 1800,
+              inProgressConversationCount: 0,
+              inProgressRetryConversationCount: 0,
+              inProgressAvgWaitMs: 0,
+              nonSuccessCost: 0.02,
+              nonSuccessTokens: 120,
+            },
+            tokensPerMinute: 88,
+            spendRate: 0.09,
+          },
+        }}
+        activeRange="yesterday"
+      />,
+    )
+
+    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).not.toContain(
+      'yesterday',
+    )
   })
 
   it('loads only the active range and keeps per-range metric memory across all five tabs', () => {
