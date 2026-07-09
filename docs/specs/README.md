@@ -30,6 +30,7 @@
 | gz5ns | Dashboard 自然日七卡 KPI 语义与布局重构                                   | active    | `gz5ns-dashboard-natural-day-kpi-semantics/SPEC.md`        | `gz5ns-dashboard-natural-day-kpi-semantics/IMPLEMENTATION.md`        | topic anchor: dashboard / natural-day KPI / account detail  |
 | z6ysw | Dashboard 工作区卡片双视图与上游账号活动聚合                              | active    | `z6ysw-dashboard-account-activity-tabs/SPEC.md`            | `z6ysw-dashboard-account-activity-tabs/IMPLEMENTATION.md`            | topic anchor: dashboard / workspace / account activity      |
 | 4tgau | 后端结构残余收口与浅层测试模块化                                          | active    | `4tgau-backend-structure-followup/SPEC.md`                 | `4tgau-backend-structure-followup/IMPLEMENTATION.md`                 | topic anchor: backend structure / module boundaries / tests |
+| 97dds | GPT-5.6 系列定价、缓存写入计费与模型入口支持                              | active    | `97dds-gpt-5-6-series-pricing-support/SPEC.md`             | `97dds-gpt-5-6-series-pricing-support/IMPLEMENTATION.md`             | topic anchor: pricing / proxy models / cache billing        |
 
 ## Archived Sources
 

@@ -362,6 +362,9 @@ export function StorybookUpstreamAccountsMock({
             encryptedSessionOwnerRoutingEnabled: true,
             defaultHijackEnabled: true,
             models: [
+              'gpt-5.6-sol',
+              'gpt-5.6-terra',
+              'gpt-5.6-luna',
               'gpt-5.5',
               'gpt-5.5-pro',
               'gpt-5.4',
@@ -373,6 +376,9 @@ export function StorybookUpstreamAccountsMock({
               'gpt-5.1-codex-mini',
             ],
             enabledModels: [
+              'gpt-5.6-sol',
+              'gpt-5.6-terra',
+              'gpt-5.6-luna',
               'gpt-5.5',
               'gpt-5.5-pro',
               'gpt-5.4',
@@ -394,10 +400,12 @@ export function StorybookUpstreamAccountsMock({
             catalogVersion: 'storybook-routing-models',
             entries: [
               {
-                model: 'gpt-5.5',
-                inputPer1m: 10,
+                model: 'gpt-5.6-sol',
+                inputPer1m: 5,
                 outputPer1m: 30,
                 cacheInputPer1m: 1,
+                cacheReadPer1m: 1,
+                cacheWritePer1m: 6.25,
                 reasoningPer1m: 0,
                 source: 'storybook',
               },
@@ -406,6 +414,8 @@ export function StorybookUpstreamAccountsMock({
                 inputPer1m: 1,
                 outputPer1m: 4,
                 cacheInputPer1m: 0.2,
+                cacheReadPer1m: 0.2,
+                cacheWritePer1m: null,
                 reasoningPer1m: 0,
                 source: 'storybook',
               },

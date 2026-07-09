@@ -34,8 +34,8 @@ function createSettingsPayload(): SettingsPayload {
       responseBodyLoggingEnabled: true,
       encryptedSessionOwnerRoutingEnabled: false,
       defaultHijackEnabled: false,
-      models: ['gpt-5.5'],
-      enabledModels: ['gpt-5.5'],
+      models: ['gpt-5.6-sol'],
+      enabledModels: ['gpt-5.6-sol'],
     },
     forwardProxy: {
       proxyUrls: ['http://proxy-order.example.com:8080'],

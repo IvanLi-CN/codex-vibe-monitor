@@ -57,6 +57,167 @@ async fn pricing_settings_api_rejects_invalid_payload() {
 }
 
 #[tokio::test]
+async fn pricing_settings_api_mirrors_legacy_cache_input_into_cache_read_response() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(updated) = put_pricing_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(PricingSettingsUpdateRequest {
+            catalog_version: "custom-legacy-cache".to_string(),
+            entries: vec![PricingEntry {
+                model: "gpt-legacy".to_string(),
+                input_per_1m: 9.0,
+                output_per_1m: 19.0,
+                cache_input_per_1m: Some(0.9),
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            }],
+        }),
+    )
+    .await
+    .expect("put pricing settings should succeed");
+
+    assert_eq!(updated.entries.len(), 1);
+    assert_eq!(updated.entries[0].cache_input_per_1m, Some(0.9));
+    assert_eq!(updated.entries[0].cache_read_per_1m, Some(0.9));
+    assert_eq!(updated.entries[0].cache_write_per_1m, None);
+
+    let persisted = load_pricing_catalog(&state.pool)
+        .await
+        .expect("pricing catalog should load");
+    let model = persisted
+        .models
+        .get("gpt-legacy")
+        .expect("legacy model should persist");
+    assert_eq!(model.cache_input_per_1m, Some(0.9));
+    assert_eq!(model.cache_read_per_1m, Some(0.9));
+    assert_eq!(model.cache_write_per_1m, None);
+}
+
+#[tokio::test]
+async fn pricing_settings_api_reload_prefers_explicit_cache_read_over_legacy_alias() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET cache_input_per_1m = 0.99,
+            cache_read_per_1m = 0.44
+        WHERE model = 'gpt-5.4'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("prepare conflicting cache pricing row");
+
+    let persisted = load_pricing_catalog(&pool)
+        .await
+        .expect("pricing catalog should load");
+    let model = persisted
+        .models
+        .get("gpt-5.4")
+        .expect("gpt-5.4 should exist");
+    assert_eq!(model.cache_input_per_1m, Some(0.44));
+    assert_eq!(model.cache_read_per_1m, Some(0.44));
+}
+
+#[tokio::test]
+async fn ensure_schema_backfills_cache_read_from_legacy_cache_input_column() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET cache_input_per_1m = 0.42,
+            cache_read_per_1m = NULL
+        WHERE model = 'gpt-5.4'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("prepare legacy cache pricing row");
+
+    ensure_schema(&pool).await.expect("ensure schema rerun");
+
+    let cache_read = sqlx::query_scalar::<_, Option<f64>>(
+        r#"
+        SELECT cache_read_per_1m
+        FROM pricing_settings_models
+        WHERE model = 'gpt-5.4'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load cache_read_per_1m");
+    assert_eq!(cache_read, Some(0.42));
+}
+
+#[tokio::test]
+async fn seed_default_pricing_catalog_prefers_explicit_cache_read_from_legacy_file() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+    sqlx::query("DELETE FROM pricing_settings_meta")
+        .execute(&pool)
+        .await
+        .expect("clear pricing meta");
+    sqlx::query("DELETE FROM pricing_settings_models")
+        .execute(&pool)
+        .await
+        .expect("clear pricing models");
+
+    let legacy_path = env::temp_dir().join(format!(
+        "codex-vibe-monitor-pricing-legacy-conflict-{}.json",
+        NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(
+        &legacy_path,
+        r#"{
+  "version": "legacy-custom-v2",
+  "models": {
+"gpt-legacy": {
+  "input_per_1m": 9.9,
+  "output_per_1m": 19.9,
+  "cache_input_per_1m": 0.99,
+  "cache_read_per_1m": 0.44,
+  "reasoning_per_1m": null
+}
+  }
+}"#,
+    )
+    .expect("write conflicting legacy pricing catalog");
+
+    seed_default_pricing_catalog_with_legacy_path(&pool, Some(&legacy_path))
+        .await
+        .expect("seed pricing catalog from legacy file");
+
+    let _ = fs::remove_file(&legacy_path);
+
+    let migrated = load_pricing_catalog(&pool)
+        .await
+        .expect("load migrated pricing catalog");
+    let model = migrated
+        .models
+        .get("gpt-legacy")
+        .expect("legacy model should be migrated");
+    assert_eq!(model.cache_input_per_1m, Some(0.44));
+    assert_eq!(model.cache_read_per_1m, Some(0.44));
+}
+
+#[tokio::test]
 async fn seed_default_pricing_catalog_migrates_legacy_file_when_present() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -109,6 +270,8 @@ async fn seed_default_pricing_catalog_migrates_legacy_file_when_present() {
     assert_eq!(model.input_per_1m, 9.9);
     assert_eq!(model.output_per_1m, 19.9);
     assert_eq!(model.cache_input_per_1m, Some(0.99));
+    assert_eq!(model.cache_read_per_1m, Some(0.99));
+    assert_eq!(model.cache_write_per_1m, None);
     assert_eq!(model.source, "custom");
 }
 
@@ -190,7 +353,14 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_defau
     sqlx::query(
         r#"
         DELETE FROM pricing_settings_models
-        WHERE model IN ('gpt-5.4-mini', 'gpt-5.5', 'gpt-5.5-pro')
+        WHERE model IN (
+            'gpt-5.4-mini',
+            'gpt-5.5',
+            'gpt-5.5-pro',
+            'gpt-5.6-sol',
+            'gpt-5.6-terra',
+            'gpt-5.6-luna'
+        )
         "#,
     )
     .execute(&pool)
@@ -200,9 +370,13 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_defau
     let catalog = load_pricing_catalog(&pool)
         .await
         .expect("load pricing catalog should succeed");
+    assert_eq!(catalog.version, DEFAULT_PRICING_CATALOG_VERSION);
     assert!(catalog.models.contains_key("gpt-5.4-mini"));
     assert!(catalog.models.contains_key("gpt-5.5"));
     assert!(catalog.models.contains_key("gpt-5.5-pro"));
+    assert!(catalog.models.contains_key("gpt-5.6-sol"));
+    assert!(catalog.models.contains_key("gpt-5.6-terra"));
+    assert!(catalog.models.contains_key("gpt-5.6-luna"));
 }
 
 #[tokio::test]
@@ -272,7 +446,16 @@ async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom
     sqlx::query(
         r#"
         DELETE FROM pricing_settings_models
-        WHERE model IN ('gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.5-pro')
+        WHERE model IN (
+            'gpt-5.4',
+            'gpt-5.4-pro',
+            'gpt-5.4-mini',
+            'gpt-5.5',
+            'gpt-5.5-pro',
+            'gpt-5.6-sol',
+            'gpt-5.6-terra',
+            'gpt-5.6-luna'
+        )
         "#,
     )
     .execute(&pool)
@@ -287,6 +470,9 @@ async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom
     assert!(!catalog.models.contains_key("gpt-5.4-mini"));
     assert!(!catalog.models.contains_key("gpt-5.5"));
     assert!(!catalog.models.contains_key("gpt-5.5-pro"));
+    assert!(!catalog.models.contains_key("gpt-5.6-sol"));
+    assert!(!catalog.models.contains_key("gpt-5.6-terra"));
+    assert!(!catalog.models.contains_key("gpt-5.6-luna"));
 }
 
 #[tokio::test]
@@ -329,6 +515,7 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
         SET input_per_1m = ?1,
             output_per_1m = ?2,
             cache_input_per_1m = ?3,
+            cache_read_per_1m = ?3,
             source = 'custom'
         WHERE model = 'gpt-5.4'
         "#,
@@ -361,21 +548,25 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
             input_per_1m,
             output_per_1m,
             cache_input_per_1m,
+            cache_read_per_1m,
+            cache_write_per_1m,
             reasoning_per_1m,
             source
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         "#,
     )
-    .bind("gpt-5.5")
+    .bind("gpt-5.6-sol")
     .bind(55.0)
     .bind(155.0)
     .bind(Some(5.5))
+    .bind(Some(5.5))
+    .bind(Some(7.5))
     .bind(Some(1.5))
     .bind("custom")
     .execute(&pool)
     .await
-    .expect("override gpt-5.5 pricing for test");
+    .expect("override gpt-5.6-sol pricing for test");
 
     let catalog = load_pricing_catalog(&pool)
         .await
@@ -384,6 +575,7 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     assert_eq!(gpt_5_4.input_per_1m, 99.0);
     assert_eq!(gpt_5_4.output_per_1m, 199.0);
     assert_eq!(gpt_5_4.cache_input_per_1m, Some(9.9));
+    assert_eq!(gpt_5_4.cache_read_per_1m, Some(9.9));
     assert_eq!(gpt_5_4.source, "custom");
 
     let gpt_5_4_pro = catalog
@@ -395,12 +587,17 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     assert_eq!(gpt_5_4_pro.cache_input_per_1m, None);
     assert_eq!(gpt_5_4_pro.source, "custom");
 
-    let gpt_5_5 = catalog.models.get("gpt-5.5").expect("gpt-5.5 should exist");
-    assert_eq!(gpt_5_5.input_per_1m, 55.0);
-    assert_eq!(gpt_5_5.output_per_1m, 155.0);
-    assert_eq!(gpt_5_5.cache_input_per_1m, Some(5.5));
-    assert_eq!(gpt_5_5.reasoning_per_1m, Some(1.5));
-    assert_eq!(gpt_5_5.source, "custom");
+    let gpt_5_6_sol = catalog
+        .models
+        .get("gpt-5.6-sol")
+        .expect("gpt-5.6-sol should exist");
+    assert_eq!(gpt_5_6_sol.input_per_1m, 55.0);
+    assert_eq!(gpt_5_6_sol.output_per_1m, 155.0);
+    assert_eq!(gpt_5_6_sol.cache_input_per_1m, Some(5.5));
+    assert_eq!(gpt_5_6_sol.cache_read_per_1m, Some(5.5));
+    assert_eq!(gpt_5_6_sol.cache_write_per_1m, Some(7.5));
+    assert_eq!(gpt_5_6_sol.reasoning_per_1m, Some(1.5));
+    assert_eq!(gpt_5_6_sol.source, "custom");
 }
 
 async fn seed_pool_models_route(state: &Arc<AppState>) -> HeaderMap {
@@ -1984,6 +2181,8 @@ async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_withou
                     input_per_1m: 2.0,
                     output_per_1m: 3.0,
                     cache_input_per_1m: Some(0.5),
+                    cache_read_per_1m: Some(0.5),
+                    cache_write_per_1m: None,
                     reasoning_per_1m: Some(7.0),
                     source: "custom".to_string(),
                 },

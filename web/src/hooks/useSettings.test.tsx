@@ -76,8 +76,8 @@ function createSettingsPayload(
       responseBodyLoggingEnabled: true,
       encryptedSessionOwnerRoutingEnabled: false,
       defaultHijackEnabled: false,
-      models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
-      enabledModels: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
+      models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
+      enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
     },
     forwardProxy: createForwardProxySettings(),
     pricing: {
@@ -123,7 +123,7 @@ function text(testId: string) {
 }
 
 function Probe() {
-  const { settings, error, isLoading, saveProxy, saveForwardProxy } = useSettings();
+  const { settings, error, isLoading, saveProxy, saveForwardProxy, savePricing } = useSettings();
 
   return (
     <div>
@@ -143,6 +143,9 @@ function Probe() {
       <div data-testid="proxy-urls">
         {settings?.forwardProxy.proxyUrls.join(",") ?? ""}
       </div>
+      <div data-testid="pricing-models">
+        {settings?.pricing.entries.map((entry) => entry.model).join(",") ?? ""}
+      </div>
       <button
         data-testid="save-proxy"
         disabled={!settings}
@@ -155,7 +158,7 @@ function Probe() {
             requestBodyLoggingEnabled: false,
             responseBodyLoggingEnabled: false,
             encryptedSessionOwnerRoutingEnabled: false,
-            enabledModels: ["gpt-5.5", "gpt-5.5-pro"],
+            enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
           });
         }}
       >
@@ -178,6 +181,40 @@ function Probe() {
       >
         save
       </button>
+      <button
+        data-testid="save-pricing"
+        disabled={!settings}
+        onClick={() => {
+          if (!settings) return;
+          void savePricing({
+            catalogVersion: "openai-standard-2026-07-10",
+            entries: [
+              {
+                model: "gpt-5.6-sol",
+                inputPer1m: 5,
+                outputPer1m: 30,
+                cacheInputPer1m: 0.5,
+                cacheReadPer1m: 0.5,
+                cacheWritePer1m: 6.25,
+                reasoningPer1m: null,
+                source: "official",
+              },
+              {
+                model: "gpt-5.4-mini",
+                inputPer1m: 0.6,
+                outputPer1m: 2.4,
+                cacheInputPer1m: 0.075,
+                cacheReadPer1m: 0.075,
+                cacheWritePer1m: null,
+                reasoningPer1m: null,
+                source: "official",
+              },
+            ],
+          });
+        }}
+      >
+        save pricing
+      </button>
     </div>
   );
 }
@@ -198,13 +235,25 @@ beforeEach(() => {
     responseBodyLoggingEnabled: payload.responseBodyLoggingEnabled,
     encryptedSessionOwnerRoutingEnabled: payload.encryptedSessionOwnerRoutingEnabled,
     defaultHijackEnabled: false,
-    models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
+    models: [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.4",
+      "gpt-5.5",
+      "gpt-5.5-pro",
+    ],
     enabledModels: payload.enabledModels,
   }));
-  apiMocks.updatePricingSettings.mockResolvedValue({
-    catalogVersion: "2026-04-12",
-    entries: [],
-  });
+  apiMocks.updatePricingSettings.mockImplementation(async (payload) => ({
+    catalogVersion: payload.catalogVersion,
+    entries: payload.entries.map((entry) => ({
+      ...entry,
+      cacheInputPer1m: entry.cacheReadPer1m ?? entry.cacheInputPer1m ?? null,
+      cacheReadPer1m: entry.cacheReadPer1m ?? entry.cacheInputPer1m ?? null,
+      cacheWritePer1m: entry.cacheWritePer1m ?? null,
+    })),
+  }));
   apiMocks.updateForwardProxySettings.mockImplementation(async (payload) =>
     createForwardProxySettings({
       proxyUrls: payload.proxyUrls,
@@ -234,12 +283,14 @@ describe("useSettings", () => {
     await flushAsync();
 
     expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(1);
-    expect(text("proxy-enabled-models")).toContain("gpt-5.5");
-    expect(text("proxy-enabled-models")).toContain("gpt-5.5-pro");
+    expect(text("proxy-enabled-models")).toContain("gpt-5.6-sol");
+    expect(text("proxy-enabled-models")).toContain("gpt-5.6-terra");
+    expect(text("proxy-enabled-models")).toContain("gpt-5.6-luna");
     expect(text("proxy-body-logging")).toBe("false/false");
     expect(text("proxy-encrypted-owner-routing")).toBe("false");
     expect(apiMocks.updateProxySettings.mock.calls[0]?.[0]).toMatchObject({
       encryptedSessionOwnerRoutingEnabled: false,
+      enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
     });
     expect(text("error")).toBe("");
 
@@ -249,8 +300,9 @@ describe("useSettings", () => {
 
     expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(2);
     expect(text("error")).toBe("proxy save failed");
-    expect(text("proxy-enabled-models")).toContain("gpt-5.5");
-    expect(text("proxy-enabled-models")).toContain("gpt-5.5-pro");
+    expect(text("proxy-enabled-models")).toContain("gpt-5.6-sol");
+    expect(text("proxy-enabled-models")).toContain("gpt-5.6-terra");
+    expect(text("proxy-enabled-models")).toContain("gpt-5.6-luna");
   });
 
   it("emits the upstream-accounts invalidation event after forward-proxy settings save succeeds", async () => {
@@ -310,5 +362,43 @@ describe("useSettings", () => {
         handleChanged,
       );
     }
+  });
+
+  it("saves pricing settings with mirrored cache read compatibility fields", async () => {
+    render(<Probe />);
+    await flushAsync();
+
+    click("save-pricing");
+    await flushAsync();
+
+    expect(apiMocks.updatePricingSettings).toHaveBeenCalledTimes(1);
+    expect(apiMocks.updatePricingSettings.mock.calls[0]?.[0]).toEqual({
+      catalogVersion: "openai-standard-2026-07-10",
+      entries: [
+        {
+          model: "gpt-5.6-sol",
+          inputPer1m: 5,
+          outputPer1m: 30,
+          cacheInputPer1m: 0.5,
+          cacheReadPer1m: 0.5,
+          cacheWritePer1m: 6.25,
+          reasoningPer1m: null,
+          source: "official",
+        },
+        {
+          model: "gpt-5.4-mini",
+          inputPer1m: 0.6,
+          outputPer1m: 2.4,
+          cacheInputPer1m: 0.075,
+          cacheReadPer1m: 0.075,
+          cacheWritePer1m: null,
+          reasoningPer1m: null,
+          source: "official",
+        },
+      ],
+    });
+    expect(text("pricing-models")).toContain("gpt-5.6-sol");
+    expect(text("pricing-models")).toContain("gpt-5.4-mini");
+    expect(text("error")).toBe("");
   });
 });
