@@ -46,6 +46,7 @@ import {
   UpstreamAccountsTable,
   type UpstreamAccountsTableLabels,
 } from "../../features/account-pool/UpstreamAccountsTable";
+import { useCompactViewport } from "../../hooks/useCompactViewport";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
@@ -157,6 +158,7 @@ function areGroupFilterValuesEqual(left: string[], right: string[]): boolean {
 
 export default function UpstreamAccountsPage() {
   const { t } = useTranslation();
+  const isCompactViewport = useCompactViewport();
   const location = useLocation();
   const locationState = location.state as UpstreamAccountsLocationState | null;
   const navigate = useNavigate();
@@ -1668,8 +1670,27 @@ export default function UpstreamAccountsPage() {
           </div>
         </CardContent>
       </Card>
-    </div>
-  ) : null;
+      </div>
+    ) : null;
+
+  if (isCompactViewport && upstreamAccountId != null) {
+    return (
+      <div className="mx-auto flex w-full max-w-full flex-col gap-6">
+        <SharedUpstreamAccountDetailDrawer
+          open
+          presentation="page"
+          accountId={upstreamAccountId}
+          initialTab={upstreamAccountTab}
+          initialDeleteConfirmOpen={pendingInitialDeleteConfirm}
+          onInitialDeleteConfirmHandled={() =>
+            setPendingInitialDeleteConfirm(false)
+          }
+          onClose={closeUpstreamAccount}
+        />
+        {bulkSyncProgressBubble}
+      </div>
+    );
+  }
 
   return (
     <div className="grid gap-6">
@@ -1685,7 +1706,7 @@ export default function UpstreamAccountsPage() {
                   {t("accountPool.upstreamAccounts.description")}
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
                 <Button
                   type="button"
                   variant="secondary"
@@ -1910,7 +1931,7 @@ export default function UpstreamAccountsPage() {
                     {t("accountPool.upstreamAccounts.listDescription")}
                   </p>
                 </div>
-                <div className="flex items-center justify-start gap-3 lg:justify-end">
+                <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:justify-start lg:justify-end">
                   <SegmentedControl
                     size="compact"
                     role="tablist"
@@ -1957,7 +1978,7 @@ export default function UpstreamAccountsPage() {
                 </div>
               </div>
 
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-12">
+              <div className="grid gap-3 min-[769px]:grid-cols-2 xl:grid-cols-12">
                 <label
                   className={cn(
                     "field min-w-0",
@@ -2506,8 +2527,8 @@ export default function UpstreamAccountsPage() {
           !bulkActionBusy ? setBulkGroupDialogOpen(open) : undefined
         }
       >
-        <DialogContent className="p-0">
-          <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
+        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[769px]:max-h-[calc(100dvh-2rem)]">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 min-[769px]:px-6 min-[769px]:py-5">
             <DialogHeader className="min-w-0 max-w-[28rem]">
               <DialogTitle>
                 {t("accountPool.upstreamAccounts.bulk.groupDialogTitle")}
@@ -2521,7 +2542,7 @@ export default function UpstreamAccountsPage() {
               disabled={Boolean(bulkActionBusy)}
             />
           </div>
-          <div className="space-y-4 px-6 py-6">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5 min-[769px]:px-6 min-[769px]:py-6">
             <label className="field">
               <span className="field-label">
                 {t("accountPool.upstreamAccounts.bulk.groupField")}
@@ -2551,7 +2572,7 @@ export default function UpstreamAccountsPage() {
               />
             </label>
           </div>
-          <DialogFooter className="border-t border-base-300/80 px-6 py-5">
+          <DialogFooter className="shrink-0 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur min-[769px]:px-6 min-[769px]:py-5">
             <Button
               type="button"
               variant="outline"
@@ -2586,8 +2607,8 @@ export default function UpstreamAccountsPage() {
           !bulkActionBusy ? setBulkDeleteDialogOpen(open) : undefined
         }
       >
-        <DialogContent className="p-0">
-          <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
+        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[769px]:max-h-[calc(100dvh-2rem)]">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 min-[769px]:px-6 min-[769px]:py-5">
             <DialogHeader className="min-w-0 max-w-[28rem]">
               <DialogTitle>
                 {t("accountPool.upstreamAccounts.bulk.deleteDialogTitle")}
@@ -2604,7 +2625,7 @@ export default function UpstreamAccountsPage() {
               disabled={Boolean(bulkActionBusy)}
             />
           </div>
-          <DialogFooter className="px-6 py-5">
+          <DialogFooter className="shrink-0 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur min-[769px]:px-6 min-[769px]:py-5">
             <Button
               type="button"
               variant="outline"

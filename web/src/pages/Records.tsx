@@ -10,6 +10,7 @@ import {
 import { SelectField } from "../components/ui/select-field";
 import { InvocationRecordsSummaryCards } from "../features/records/InvocationRecordsSummaryCards";
 import { InvocationRecordsTable } from "../features/records/InvocationRecordsTable";
+import { useCompactViewport } from "../hooks/useCompactViewport";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useInvocationRecords } from "../hooks/useInvocationRecords";
 import { useTranslation } from "../i18n";
@@ -55,6 +56,7 @@ export default function RecordsPage() {
   const requestedRangePreset =
     searchParams.get("rangePreset") === "7d" ? "7d" : null;
   const appliedRequestIdRef = useRef<string | null>(null);
+  const isCompactViewport = useCompactViewport();
   const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
   const {
@@ -306,6 +308,19 @@ export default function RecordsPage() {
     void setSort(sortBy, value);
   };
 
+  if (isCompactViewport && upstreamAccountId != null) {
+    return (
+      <div className="mx-auto flex w-full max-w-full flex-col gap-6">
+        <SharedUpstreamAccountDetailDrawer
+          open
+          presentation="page"
+          accountId={upstreamAccountId}
+          onClose={closeUpstreamAccount}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
       <section
@@ -322,7 +337,7 @@ export default function RecordsPage() {
             <p className="section-description">{t("records.subtitle")}</p>
           </div>
 
-          <div className="rounded-2xl border border-base-300/70 bg-base-100/45 p-4">
+          <div className="p-0 min-[769px]:rounded-2xl min-[769px]:border min-[769px]:border-base-300/70 min-[769px]:bg-base-100/45 min-[769px]:p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="section-heading">
                 <h2 className="section-title text-base">
@@ -332,7 +347,7 @@ export default function RecordsPage() {
                   {t("records.filters.description")}
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
                 <Button
                   type="button"
                   variant="ghost"
@@ -353,7 +368,7 @@ export default function RecordsPage() {
               </div>
             </div>
 
-            <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="mt-4 grid gap-4 min-[769px]:grid-cols-2 xl:grid-cols-4">
               <SelectField
                 className="field"
                 label={t("records.filters.rangePreset")}

@@ -6,6 +6,7 @@ import { InvocationTable } from "../features/invocations/InvocationTable";
 import { PromptCacheConversationTable } from "../features/prompt-cache/PromptCacheConversationTable";
 import { StatsCards } from "../features/stats/StatsCards";
 import { Button } from "../components/ui/button";
+import { useCompactViewport } from "../hooks/useCompactViewport";
 import { useForwardProxyLiveStats } from "../hooks/useForwardProxyLiveStats";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useInvocationStream } from "../hooks/useInvocations";
@@ -128,6 +129,7 @@ function persistPromptCacheSelectionValue(value: string) {
 
 export default function LivePage() {
   const { t } = useTranslation();
+  const isCompactViewport = useCompactViewport();
   const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
   const [limit, setLimit] = useState(50);
@@ -253,6 +255,19 @@ export default function LivePage() {
       return [...preserved, ...visiblePromptCacheKeys];
     });
   };
+
+  if (isCompactViewport && upstreamAccountId != null) {
+    return (
+      <div className="mx-auto flex w-full max-w-full flex-col gap-6">
+        <SharedUpstreamAccountDetailDrawer
+          open
+          presentation="page"
+          accountId={upstreamAccountId}
+          onClose={closeUpstreamAccount}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">

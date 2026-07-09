@@ -131,7 +131,7 @@ type ConversationActivityRange = "today" | "yesterday" | "1d" | "7d" | "history"
 type ConversationActivityMetric = "totalCount" | "totalCost" | "totalTokens";
 type ConversationActivityDragAxis = "pending" | "horizontal" | "vertical" | "free";
 type ConversationBindingDraftKind = PromptCacheConversationBindingKind;
-type PromptCacheConversationDrawerTab = "overview" | "calls" | "settings";
+export type PromptCacheConversationDrawerTab = "overview" | "calls" | "settings";
 type OptionalBooleanDraft = "inherit" | "true" | "false";
 type RewriteModeDraft = "inherit" | PromptCacheConversationRewriteMode;
 type ConversationPolicyField =
@@ -2052,7 +2052,10 @@ export function PromptCacheConversationHistoryDrawer({
   conversationKey,
   conversationLabel,
   disableLiveUpdates = false,
+  initialTab = "overview",
+  presentation = "overlay",
   onClose,
+  onTabChange,
   t,
   onOpenUpstreamAccount,
   historyQueryForConversationKey,
@@ -2062,7 +2065,10 @@ export function PromptCacheConversationHistoryDrawer({
   conversationKey: string | null;
   conversationLabel?: string | null;
   disableLiveUpdates?: boolean;
+  initialTab?: PromptCacheConversationDrawerTab;
+  presentation?: "overlay" | "page";
   onClose: () => void;
+  onTabChange?: (tab: PromptCacheConversationDrawerTab) => void;
   t: (key: string, values?: Record<string, string | number>) => string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   historyQueryForConversationKey?: ConversationHistoryQueryBuilder;
@@ -2124,7 +2130,7 @@ export function PromptCacheConversationHistoryDrawer({
     useState<ConversationPolicyField | null>(null);
   const [bindingOwnerConfirmOpen, setBindingOwnerConfirmOpen] = useState(false);
   const [activeTab, setActiveTab] =
-    useState<PromptCacheConversationDrawerTab>("overview");
+    useState<PromptCacheConversationDrawerTab>(initialTab);
 
   useEffect(() => {
     if (!open) {
@@ -2135,6 +2141,19 @@ export function PromptCacheConversationHistoryDrawer({
   useEffect(() => {
     setBindingOwnerConfirmOpen(false);
   }, [conversationKey]);
+
+  useEffect(() => {
+    if (!open) return;
+    setActiveTab(initialTab);
+  }, [initialTab, open]);
+
+  const handleSelectTab = useCallback(
+    (nextTab: PromptCacheConversationDrawerTab) => {
+      setActiveTab(nextTab);
+      onTabChange?.(nextTab);
+    },
+    [onTabChange],
+  );
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return;
@@ -3311,6 +3330,7 @@ export function PromptCacheConversationHistoryDrawer({
     <>
     <AccountDetailDrawerShell
       open={open}
+      presentation={presentation}
       labelledBy={titleId}
       closeLabel={t("live.conversations.drawer.close")}
       onClose={onClose}
@@ -3359,7 +3379,7 @@ export function PromptCacheConversationHistoryDrawer({
               aria-selected={activeTab === "overview"}
               aria-controls={`${titleId}-panel-overview`}
               id={`${titleId}-tab-overview`}
-              onClick={() => setActiveTab("overview")}
+              onClick={() => handleSelectTab("overview")}
             >
               {t("live.conversations.drawer.tabs.overview")}
             </SegmentedControlItem>
@@ -3369,7 +3389,7 @@ export function PromptCacheConversationHistoryDrawer({
               aria-selected={activeTab === "calls"}
               aria-controls={`${titleId}-panel-calls`}
               id={`${titleId}-tab-calls`}
-              onClick={() => setActiveTab("calls")}
+              onClick={() => handleSelectTab("calls")}
             >
               {t("live.conversations.drawer.tabs.calls")}
             </SegmentedControlItem>
@@ -3379,7 +3399,7 @@ export function PromptCacheConversationHistoryDrawer({
               aria-selected={activeTab === "settings"}
               aria-controls={`${titleId}-panel-settings`}
               id={`${titleId}-tab-settings`}
-              onClick={() => setActiveTab("settings")}
+              onClick={() => handleSelectTab("settings")}
             >
               {t("live.conversations.drawer.tabs.settings")}
             </SegmentedControlItem>
@@ -3447,22 +3467,26 @@ export function PromptCacheConversationHistoryDrawer({
       <DialogContent
         role="alertdialog"
         container={drawerBodyElement}
-        className="space-y-5 p-5 sm:p-6"
+        className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[769px]:max-h-[calc(100dvh-2rem)]"
       >
-        <DialogHeader>
-          <DialogTitle>
-            {t("live.conversations.drawer.binding.ownerConfirm.title")}
-          </DialogTitle>
-          <DialogDescription>
-            {t("live.conversations.drawer.binding.ownerConfirm.description", {
-              owner: bindingOwnerConfirmLabel,
-            })}
-          </DialogDescription>
-        </DialogHeader>
-        <p className="rounded-xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm leading-6 text-base-content/82">
-          {t("live.conversations.drawer.binding.ownerConfirm.risk")}
-        </p>
-        <DialogFooter>
+        <div className="shrink-0 border-b border-base-300/80 px-5 py-4 min-[769px]:px-6">
+          <DialogHeader>
+            <DialogTitle>
+              {t("live.conversations.drawer.binding.ownerConfirm.title")}
+            </DialogTitle>
+            <DialogDescription>
+              {t("live.conversations.drawer.binding.ownerConfirm.description", {
+                owner: bindingOwnerConfirmLabel,
+              })}
+            </DialogDescription>
+          </DialogHeader>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 min-[769px]:px-6">
+          <p className="rounded-xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm leading-6 text-base-content/82">
+            {t("live.conversations.drawer.binding.ownerConfirm.risk")}
+          </p>
+        </div>
+        <DialogFooter className="shrink-0 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur min-[769px]:px-6 min-[769px]:py-4">
           <Button
             type="button"
             variant="ghost"

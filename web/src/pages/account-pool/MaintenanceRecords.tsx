@@ -401,7 +401,76 @@ export default function MaintenanceRecordsPage() {
               <div>{t("accountPool.upstreamAccounts.loadingTitle")}</div>
             </Alert>
           ) : null}
-          <div className={isInitialLoading || isInitialError ? "hidden" : "overflow-x-auto"}>
+          <div className={cn("space-y-3 min-[769px]:hidden", isInitialLoading || isInitialError ? "hidden" : null)}>
+            {events.length === 0 ? (
+              <div className="rounded-xl border border-base-300/80 bg-base-100/72 px-4 py-8 text-center text-sm text-base-content/60">
+                <ListBodyState
+                  variant="empty"
+                  title={t("accountPool.upstreamAccounts.maintenanceEvents.empty")}
+                  testId="maintenance-records-empty"
+                />
+              </div>
+            ) : (
+              events.map((event) => {
+                const occurredAt = formatOccurredAt(event.occurredAt);
+                const eventActionLabel = actionLabel(event.action) ?? event.action;
+                const eventResultLabel = resultLabel(event.result) ?? event.result ?? "-";
+                const accountLabel =
+                  event.accountDisplayName ??
+                  t("accountPool.upstreamAccounts.maintenanceEvents.unknownAccount");
+                const groupLabel =
+                  event.accountGroupName ??
+                  t("accountPool.upstreamAccounts.maintenanceEvents.unknownGroup");
+                const proxyLabel =
+                  event.forwardProxyDisplayName ??
+                  event.forwardProxyKey ??
+                  t("accountPool.upstreamAccounts.maintenanceEvents.unknownProxy");
+                const ipLabel = egressIpLabel(event);
+                const eventDescriptionLabel = descriptionLabel(event);
+
+                return (
+                  <article
+                    key={`mobile-${event.id}`}
+                    className="rounded-xl border border-base-300/80 bg-base-100/72 px-4 py-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-medium text-base-content">{accountLabel}</div>
+                        <div className="mt-1 text-xs text-base-content/65">{groupLabel}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-mono text-sm font-semibold text-base-content">{occurredAt.time}</div>
+                        <div className="mt-1 text-xs text-base-content/60">{occurredAt.date}</div>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Badge variant={actionVariant(event.action)}>{eventActionLabel}</Badge>
+                      <Badge variant={resultVariant(event.result)}>{eventResultLabel}</Badge>
+                    </div>
+                    <dl className="mt-4 grid grid-cols-1 gap-3 text-sm">
+                      <div className="rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2.5">
+                        <dt className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/58">
+                          {t("accountPool.upstreamAccounts.maintenanceEvents.columns.proxy")}
+                        </dt>
+                        <dd className="mt-1 text-base-content/78">{proxyLabel}</dd>
+                      </div>
+                      <div className="rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2.5">
+                        <dt className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/58">
+                          IP
+                        </dt>
+                        <dd className="mt-1 font-mono text-xs text-base-content/72">{ipLabel}</dd>
+                      </div>
+                    </dl>
+                    <div className="mt-4 rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2.5 text-sm leading-6 text-base-content/72">
+                      {eventDescriptionLabel}
+                    </div>
+                  </article>
+                );
+              })
+            )}
+          </div>
+
+          <div className={cn(isInitialLoading || isInitialError ? "hidden" : "hidden overflow-x-auto min-[769px]:block")}>
             <table className="min-w-[60rem] table-fixed divide-y divide-base-300/70 text-sm lg:min-w-full">
               <thead className="bg-base-100/80">
                 <tr className="text-left text-xs font-semibold uppercase tracking-[0.12em] text-base-content/55">
@@ -544,21 +613,21 @@ export default function MaintenanceRecordsPage() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-base-300/70 pt-4 sm:flex-row sm:items-end sm:justify-between">
-          <div className="text-sm text-base-content/70">
-            {t("accountPool.upstreamAccounts.pagination.summary", {
-              page,
-              pageCount,
-              total,
-            })}
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2 rounded-xl border border-base-300/70 bg-base-100/55 px-3 py-2">
+          <div className="flex flex-col gap-3 border-t border-base-300/70 pt-4 sm:flex-row sm:items-end sm:justify-between">
+            <div className="text-sm text-base-content/70">
+              {t("accountPool.upstreamAccounts.pagination.summary", {
+                page,
+                pageCount,
+                total,
+              })}
+            </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-base-300/70 bg-base-100/55 px-3 py-2 sm:justify-start">
               <span className="text-sm font-medium text-base-content/65">
                 {t("accountPool.upstreamAccounts.pagination.pageSize")}
               </span>
               <SelectField
-                className="min-w-[7rem]"
+                className="w-[7rem] min-w-[7rem]"
                 value={String(pageSize)}
                 options={pageSizeOptions}
                 size="sm"

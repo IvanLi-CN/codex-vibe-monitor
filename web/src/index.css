@@ -384,21 +384,39 @@ body {
 
   .drawer-shell {
     @apply text-base-content;
-    border-left: 1px solid var(--app-surface-border);
+    border-top: 1px solid var(--app-surface-border);
     background-color: oklch(var(--color-base-100) / 0.985);
     box-shadow:
-      -32px 0 84px rgba(15, 23, 42, 0.18),
-      -1px 0 0 rgba(148, 163, 184, 0.28);
+      0 -20px 56px rgba(15, 23, 42, 0.16),
+      0 -1px 0 rgba(148, 163, 184, 0.24);
   }
 
   .drawer-header {
     background-color: oklch(var(--color-base-100) / 0.94);
     border-bottom: 1px solid color-mix(in oklab, oklch(var(--color-base-content)) 10%, transparent);
     backdrop-filter: blur(10px);
+    position: sticky;
+    top: 0;
+    z-index: 10;
   }
 
   .drawer-body {
     background-color: transparent;
+    padding-bottom: max(env(safe-area-inset-bottom), 1rem);
+  }
+
+  @media (min-width: 769px) {
+    .drawer-shell {
+      border-top: none;
+      border-left: 1px solid var(--app-surface-border);
+      box-shadow:
+        -32px 0 84px rgba(15, 23, 42, 0.18),
+        -1px 0 0 rgba(148, 163, 184, 0.28);
+    }
+
+    .drawer-body {
+      padding-bottom: 0;
+    }
   }
 
   .section-heading {

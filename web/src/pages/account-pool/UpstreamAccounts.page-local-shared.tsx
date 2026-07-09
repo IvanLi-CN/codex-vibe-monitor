@@ -63,7 +63,10 @@ import { StickyKeyConversationTable } from "../../features/prompt-cache/StickyKe
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useInvocationRecordsRealtime } from "../../hooks/useInvocationRecordsRealtime";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
-import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
+import {
+  useUpstreamAccountDetailRoute,
+  type UpstreamAccountDetailRouteTab,
+} from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroupSettingsDialog";
 import { useUpstreamStickyConversations } from "../../hooks/useUpstreamStickyConversations";
@@ -248,8 +251,7 @@ type OauthRecoveryHint = {
   bodyKey: string;
 };
 
-type AccountDetailTab =
-  "overview" | "records" | "edit" | "routing" | "healthEvents";
+type AccountDetailTab = UpstreamAccountDetailRouteTab;
 
 type AccountRecordsMode = "latest" | "anchored";
 type AccountRecordsLocateError = {
@@ -271,6 +273,7 @@ type SharedUpstreamAccountDetailDrawerProps = {
   accountId: number | null;
   initialTab?: AccountDetailTab;
   initialDeleteConfirmOpen?: boolean;
+  presentation?: "overlay" | "page";
   onInitialDeleteConfirmHandled?: () => void;
   onClose: (options?: SharedUpstreamAccountDetailDrawerCloseOptions) => void;
 };
@@ -688,7 +691,7 @@ export function RoutingSettingsDialog({
       }
     >
       <DialogContent
-        className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden p-0 sm:max-h-[calc(100dvh-4rem)]"
+        className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[769px]:max-h-[calc(100dvh-2rem)]"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
           if (apiKeyWritesEnabled) {
@@ -704,14 +707,14 @@ export function RoutingSettingsDialog({
           if (busy) event.preventDefault();
         }}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 min-[769px]:px-6 min-[769px]:py-5">
           <DialogHeader className="min-w-0 max-w-[28rem]">
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
           <DialogCloseIcon aria-label={closeLabel} disabled={busy} />
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 min-[769px]:px-6 min-[769px]:py-6">
           <div className="space-y-4">
             <div className="space-y-3 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
               <div className="space-y-1">
@@ -883,7 +886,7 @@ export function RoutingSettingsDialog({
             </div>
           </div>
         </div>
-        <DialogFooter className="border-t border-base-300/80 px-6 py-5">
+        <DialogFooter className="shrink-0 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur min-[769px]:px-6 min-[769px]:py-5">
           <Button
             type="button"
             variant="outline"
@@ -924,6 +927,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   accountId,
   initialTab = "overview",
   initialDeleteConfirmOpen = false,
+  presentation = "overlay",
   onInitialDeleteConfirmHandled,
   onClose,
 }: SharedUpstreamAccountDetailDrawerProps) {
@@ -2165,11 +2169,26 @@ function SharedUpstreamAccountDetailDrawerInner({
   const handleDetailDrawerClose = useCallback(() => {
     onClose();
   }, [onClose]);
-  const locateAccountAttempt = useCallback((attemptId: number | null | undefined) => {
-    if (attemptId == null || !Number.isFinite(attemptId)) return;
-    setFocusedAttemptId(attemptId);
-    setDetailTab("records");
-  }, []);
+  const handleSelectDetailTab = useCallback(
+    (nextTab: AccountDetailTab) => {
+      setDetailTab(nextTab);
+      if (accountId != null) {
+        openUpstreamAccount(accountId, {
+          replace: true,
+          tab: nextTab,
+        });
+      }
+    },
+    [accountId, openUpstreamAccount],
+  );
+  const locateAccountAttempt = useCallback(
+    (attemptId: number | null | undefined) => {
+      if (attemptId == null || !Number.isFinite(attemptId)) return;
+      setFocusedAttemptId(attemptId);
+      handleSelectDetailTab("records");
+    },
+    [handleSelectDetailTab],
+  );
   const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType);
   const selectedRecoveryHint = resolveOauthRecoveryHint(
     selectedDetail?.kind ?? selected?.kind ?? "",
@@ -2702,6 +2721,7 @@ function SharedUpstreamAccountDetailDrawerInner({
       {open && accountId != null ? (
         <AccountDetailDrawerShell
           open={open}
+          presentation={presentation}
           labelledBy={detailDrawerTitleId}
           closeLabel={t("accountPool.upstreamAccounts.actions.closeDetails")}
           closeDisabled={isBusyAction(busyAction, "delete", accountId)}
@@ -3017,7 +3037,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-selected={detailTab === "overview"}
                   aria-controls={detailTabIds.overview.panel}
                   aria-pressed={detailTab === "overview"}
-                  onClick={() => setDetailTab("overview")}
+                  onClick={() => handleSelectDetailTab("overview")}
                 >
                   {t("accountPool.upstreamAccounts.detailTabs.overview")}
                 </SegmentedControlItem>
@@ -3030,7 +3050,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-pressed={detailTab === "records"}
                   onClick={() => {
                     setFocusedAttemptId(null);
-                    setDetailTab("records");
+                    handleSelectDetailTab("records");
                   }}
                 >
                   {t("accountPool.upstreamAccounts.detailTabs.records")}
@@ -3042,7 +3062,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-selected={detailTab === "edit"}
                   aria-controls={detailTabIds.edit.panel}
                   aria-pressed={detailTab === "edit"}
-                  onClick={() => setDetailTab("edit")}
+                  onClick={() => handleSelectDetailTab("edit")}
                 >
                   {t("accountPool.upstreamAccounts.detailTabs.edit")}
                 </SegmentedControlItem>
@@ -3053,7 +3073,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-selected={detailTab === "routing"}
                   aria-controls={detailTabIds.routing.panel}
                   aria-pressed={detailTab === "routing"}
-                  onClick={() => setDetailTab("routing")}
+                  onClick={() => handleSelectDetailTab("routing")}
                 >
                   {t("accountPool.upstreamAccounts.detailTabs.routing")}
                 </SegmentedControlItem>
@@ -3064,7 +3084,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-selected={detailTab === "healthEvents"}
                   aria-controls={detailTabIds.healthEvents.panel}
                   aria-pressed={detailTab === "healthEvents"}
-                  onClick={() => setDetailTab("healthEvents")}
+                  onClick={() => handleSelectDetailTab("healthEvents")}
                 >
                   {t("accountPool.upstreamAccounts.detailTabs.healthEvents")}
                 </SegmentedControlItem>
@@ -3761,9 +3781,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                   >
                     <DialogContent
                       container={detailDrawerPortalContainer}
-                      className="!bottom-0 !top-auto flex max-h-[88dvh] w-full !translate-y-0 flex-col overflow-hidden rounded-b-none border-base-300 bg-base-100 p-0 sm:!bottom-auto sm:!top-1/2 sm:w-[min(48rem,calc(100vw-4rem))] sm:!translate-y-[-50%] sm:rounded-[1.25rem]"
+                      className="!bottom-0 !top-auto flex max-h-[calc(100dvh-0.75rem)] w-full !translate-y-0 flex-col overflow-hidden rounded-b-none border-base-300 bg-base-100 p-0 min-[769px]:!bottom-auto min-[769px]:!top-1/2 min-[769px]:max-h-[calc(100dvh-2rem)] min-[769px]:w-[min(48rem,calc(100vw-4rem))] min-[769px]:!translate-y-[-50%] min-[769px]:rounded-[1.25rem]"
                     >
-                      <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 sm:px-6">
+                      <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 min-[769px]:px-6">
                         <DialogHeader className="min-w-0">
                           <DialogTitle className="text-lg">
                             {t(
@@ -3783,7 +3803,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           disabled={accountProxyEditorBusy}
                         />
                       </div>
-                      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 sm:px-6">
+                      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 min-[769px]:px-6">
                         <ForwardProxyBindingSelector
                           selectedKeys={accountProxyDraftKeys}
                           availableProxyNodes={forwardProxyNodes}
@@ -3836,7 +3856,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           scrollRegionClassName="max-h-[min(29rem,58dvh)]"
                         />
                       </div>
-                      <DialogFooter className="flex flex-col-reverse gap-2 border-t border-base-300/80 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+                      <DialogFooter className="border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur min-[769px]:justify-end min-[769px]:px-6">
                         <Button
                           type="button"
                           variant="ghost"

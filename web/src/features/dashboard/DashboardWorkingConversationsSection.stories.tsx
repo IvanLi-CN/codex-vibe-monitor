@@ -2021,6 +2021,8 @@ function DrawerPreviewStory({
   response,
   initialSelection,
   initialConversationKey,
+  initialConversationTab = "overview",
+  conversationPresentation = "overlay",
   historyInvocationsByPromptCacheKey,
   upstreamAccountActivity,
   recentPreviewLimit = 4,
@@ -2032,6 +2034,8 @@ function DrawerPreviewStory({
     slotKind: "current" | "previous";
   };
   initialConversationKey?: string;
+  initialConversationTab?: "overview" | "calls" | "settings";
+  conversationPresentation?: "overlay" | "page";
   historyInvocationsByPromptCacheKey?: Map<
     string,
     PromptCacheConversationInvocationPreview[]
@@ -2373,6 +2377,7 @@ function DrawerPreviewStory({
       />
       <PromptCacheConversationHistoryDrawer
         open={selectedConversation != null}
+        presentation={conversationPresentation}
         conversationKey={selectedConversation?.promptCacheKey ?? null}
         conversationLabel={
           selectedConversation
@@ -2381,6 +2386,7 @@ function DrawerPreviewStory({
               )
             : null
         }
+        initialTab={initialConversationTab}
         onClose={() => setSelectedConversation(null)}
         t={t}
         onOpenUpstreamAccount={(
@@ -3025,6 +3031,49 @@ export const ConversationHistoryDrawerOpen: Story = {
           "Stable opened state for the full retained conversation history drawer, including the production-style activity chart and dark floating tooltip surface.",
       },
     },
+  },
+};
+
+export const ConversationHistoryPageMobile: Story = {
+  args: {
+    activeRange: "today",
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => {
+    const fixtures = buildDashboardHistoryEvidenceFixtures();
+    return (
+      <DrawerPreviewStory
+        response={fixtures.dashboardResponse}
+        historyInvocationsByPromptCacheKey={
+          fixtures.historyInvocationsByPromptCacheKey
+        }
+        initialConversationKey="pck-dashboard-history-realistic"
+        initialConversationTab="settings"
+        conversationPresentation="page"
+        theme="vibe-dark"
+      />
+    );
+  },
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+    docs: {
+      description: {
+        story:
+          "Compact page presentation for the retained conversation history workspace, using the same URL-backed content hierarchy as the desktop drawer.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByText(/对话详情|Conversation details/i),
+    ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("tab", { name: /设置|settings/i }),
+    ).toHaveAttribute("aria-selected", "true");
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
   },
 };
 

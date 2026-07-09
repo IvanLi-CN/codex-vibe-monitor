@@ -69,11 +69,13 @@ const DialogContent = React.forwardRef<
           <DialogPrimitive.Content
             ref={contentRef}
             className={cn(
-              'dialog-surface pointer-events-auto fixed left-1/2 top-1/2 w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2',
-              'rounded-[1.75rem] border outline-none',
+              'dialog-surface pointer-events-auto fixed inset-x-0 bottom-0 top-auto max-h-[min(100dvh-0.5rem,100dvh)] w-full max-w-full translate-x-0 translate-y-0',
+              'rounded-t-[1.75rem] rounded-b-none border border-x-0 border-b-0 px-0 pb-[env(safe-area-inset-bottom)] pt-0 outline-none',
               'data-[state=open]:animate-in data-[state=closed]:animate-out',
               'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
-              'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
+              'data-[state=closed]:slide-out-to-bottom-6 data-[state=open]:slide-in-from-bottom-6',
+              'min-[769px]:left-1/2 min-[769px]:right-auto min-[769px]:top-1/2 min-[769px]:max-h-[calc(100dvh-2rem)] min-[769px]:w-[min(34rem,calc(100vw-2rem))] min-[769px]:-translate-x-1/2 min-[769px]:-translate-y-1/2 min-[769px]:rounded-[1.75rem] min-[769px]:border min-[769px]:px-0 min-[769px]:pb-0',
+              'min-[769px]:data-[state=closed]:slide-out-to-bottom-0 min-[769px]:data-[state=open]:slide-in-from-bottom-0 min-[769px]:data-[state=closed]:zoom-out-95 min-[769px]:data-[state=open]:zoom-in-95',
               className,
             )}
             {...props}
@@ -92,7 +94,12 @@ function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
 }
 
 function DialogFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('flex justify-end gap-3', className)} {...props} />
+  return (
+    <div
+      className={cn('flex flex-col-reverse gap-3 min-[769px]:flex-row min-[769px]:justify-end', className)}
+      {...props}
+    />
+  )
 }
 
 const DialogTitle = React.forwardRef<

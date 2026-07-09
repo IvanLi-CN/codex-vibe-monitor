@@ -110,7 +110,7 @@ describe("useUpstreamAccountDetailRoute", () => {
   });
 
   it("falls back to overview when the query tab is invalid", () => {
-    render("/dashboard?upstreamAccountId=42&upstreamAccountTab=records");
+    render("/dashboard?upstreamAccountId=42&upstreamAccountTab=unexpected");
 
     expect(
       host?.querySelector('[data-testid="route-account-id"]')?.textContent,

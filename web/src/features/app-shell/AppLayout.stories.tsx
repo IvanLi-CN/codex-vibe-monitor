@@ -1,10 +1,11 @@
 import { useLayoutEffect, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, within } from 'storybook/test'
+import { expect, userEvent, within } from 'storybook/test'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './AppLayout'
 import { I18nProvider } from '../../i18n'
 import AccountPoolLayout from '../../pages/account-pool/AccountPoolLayout'
+import SystemLayout from '../../pages/system/SystemLayout'
 
 class MockEventSource implements EventTarget {
   static CONNECTING = 0
@@ -181,16 +182,63 @@ const meta = {
                       />
                     }
                   />
+                  <Route
+                    path="groups"
+                    element={
+                      <MockPage
+                        title="Account groups"
+                        description="Mobile navigation can jump directly into grouped account operations without rendering a second nav row."
+                      />
+                    }
+                  />
+                  <Route
+                    path="maintenance-records"
+                    element={
+                      <MockPage
+                        title="Maintenance timeline"
+                        description="Maintenance history stays reachable from the shared hamburger menu on compact screens."
+                      />
+                    }
+                  />
                 </Route>
-                <Route
-                  path="system"
-                  element={
-                    <MockPage
-                      title="System workspace"
-                      description="The top-level system workspace hosts status, tasks, shared settings, and forward proxy operations."
-                    />
-                  }
-                />
+                <Route path="system" element={<SystemLayout />}>
+                  <Route
+                    path="status"
+                    element={
+                      <MockPage
+                        title="System workspace"
+                        description="The top-level system workspace hosts status, tasks, shared settings, and forward proxy operations."
+                      />
+                    }
+                  />
+                  <Route
+                    path="tasks"
+                    element={
+                      <MockPage
+                        title="Task activity"
+                        description="Task history remains reachable from the compact navigation drawer."
+                      />
+                    }
+                  />
+                  <Route
+                    path="settings"
+                    element={
+                      <MockPage
+                        title="System settings"
+                        description="Shared settings become a first-class compact-navigation destination."
+                      />
+                    }
+                  />
+                  <Route
+                    path="proxy"
+                    element={
+                      <MockPage
+                        title="Proxy operations"
+                        description="Forward proxy maintenance also routes through the unified mobile menu."
+                      />
+                    }
+                  />
+                </Route>
               </Route>
             </Routes>
           </MemoryRouter>
@@ -218,14 +266,34 @@ export const Default: Story = {
   },
 }
 
-export const Mobile: Story = {
+export const MobileNavigationMenu: Story = {
   parameters: {
-    viewport: { defaultViewport: 'mobile1' },
+    viewport: { defaultViewport: 'mobile390' },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(canvas.getByTestId('app-header-inner')).toBeVisible()
-    await expect(canvas.getByTestId('app-header-navigation')).toBeVisible()
-    await expect(canvas.getByRole('button', { name: '切换配色主题' })).toBeVisible()
+    await userEvent.click(canvas.getByRole('button', { name: /打开导航菜单/i }))
+
+    const documentScope = within(canvasElement.ownerDocument.body)
+    await expect(documentScope.getByRole('link', { name: '维护记录' })).toBeVisible()
+    await expect(documentScope.getByRole('link', { name: '状态' })).toBeVisible()
+
+    await userEvent.click(documentScope.getByRole('link', { name: '维护记录' }))
+    await expect(canvas.getByRole('heading', { name: 'Maintenance timeline' })).toBeVisible()
+  },
+}
+
+export const TabletNavigationMenu: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'tablet768' },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: /打开导航菜单/i }))
+
+    const documentScope = within(canvasElement.ownerDocument.body)
+    await expect(documentScope.getByRole('link', { name: '设置' })).toBeVisible()
+    await userEvent.click(documentScope.getByRole('link', { name: '设置' }))
+    await expect(canvas.getByRole('heading', { name: 'System settings' })).toBeVisible()
   },
 }

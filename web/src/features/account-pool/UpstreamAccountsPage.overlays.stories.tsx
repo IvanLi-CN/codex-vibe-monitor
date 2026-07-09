@@ -247,9 +247,11 @@ export const DetailDrawerRecordsEmpty: Story = {
 function DetailDrawerStorySurface({
   initialTab,
   maxWidth = 'none',
+  presentation = 'overlay',
 }: {
-  initialTab: 'records' | 'healthEvents'
+  initialTab: 'overview' | 'records' | 'routing' | 'healthEvents'
   maxWidth?: string
+  presentation?: 'overlay' | 'page'
 }) {
   return (
     <MemoryRouter initialEntries={['/account-pool/upstream-accounts?upstreamAccountId=101']}>
@@ -262,6 +264,7 @@ function DetailDrawerStorySurface({
                   open
                   accountId={101}
                   initialTab={initialTab}
+                  presentation={presentation}
                   onClose={() => {}}
                 />
               </div>
@@ -439,6 +442,42 @@ export const DetailDrawerRecordsSettledWide: Story = {
     await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
     await expect(within(dialog).queryByTestId('upstream-account-records-activity-overview')).not.toBeInTheDocument()
     await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
+  },
+}
+
+export const DetailPageMobile: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'mobile430' },
+  },
+  render: () => (
+    <DetailDrawerStorySurface
+      initialTab="routing"
+      presentation="page"
+      maxWidth="32rem"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/最终生效规则|effective routing rule/i)).toBeInTheDocument()
+    await expect(within(document.body).queryByRole('dialog')).toBeNull()
+  },
+}
+
+export const DetailPageTablet: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'tablet768' },
+  },
+  render: () => (
+    <DetailDrawerStorySurface
+      initialTab="overview"
+      presentation="page"
+      maxWidth="48rem"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
+    await expect(within(document.body).queryByRole('dialog')).toBeNull()
   },
 }
 

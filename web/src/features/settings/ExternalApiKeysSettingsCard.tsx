@@ -169,86 +169,145 @@ export function ExternalApiKeysSettingsCard() {
               {t('settings.externalApiKeys.empty')}
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72">
-              <table className="w-full min-w-[44rem] table-fixed text-sm">
-                <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
-                  <tr>
-                    <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.name')}</th>
-                    <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.prefix')}</th>
-                    <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.status')}</th>
-                    <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.lastUsedAt')}</th>
-                    <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.createdAt')}</th>
-                    <th className="px-4 py-3 text-right font-semibold">{t('settings.externalApiKeys.columns.actions')}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-base-300/65">
-                  {items.map((item, index) => (
-                    <tr
-                      key={item.id}
-                      className={
-                        index % 2 === 0
-                          ? 'bg-base-100/38 transition-colors hover:bg-primary/6'
-                          : 'bg-base-200/22 transition-colors hover:bg-primary/6'
-                      }
-                    >
-                      <td className="px-4 py-3 align-middle">
+            <>
+              <div className="space-y-3 min-[769px]:hidden">
+                {items.map((item) => (
+                  <article key={`mobile-${item.id}`} className="rounded-xl border border-base-300/80 bg-base-100/72 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-2">
                         <div className="font-medium text-base-content">{item.name}</div>
-                      </td>
-                      <td className="px-4 py-3 align-middle">
-                        <code className="rounded-md border border-base-300/70 bg-base-100/70 px-2 py-1 text-xs">
-                          {item.prefix}
-                        </code>
-                      </td>
-                      <td className="px-4 py-3 align-middle">
-                        <Badge variant={statusVariant(item.status)}>
-                          {statusLabel(item.status, t)}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-3 align-middle text-base-content/72">
-                        {formatDateTime(item.lastUsedAt)}
-                      </td>
-                      <td className="px-4 py-3 align-middle text-base-content/72">
-                        {formatDateTime(item.createdAt)}
-                      </td>
-                      <td className="px-4 py-3 align-middle">
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            disabled={isMutating}
-                            onClick={() => setRotateTarget(item)}
-                          >
-                            {t('settings.externalApiKeys.rotate')}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="text-error hover:bg-error/10 hover:text-error"
-                            disabled={isMutating || item.status === 'disabled'}
-                            onClick={() => setDisableTarget(item)}
-                          >
-                            {t('settings.externalApiKeys.disable')}
-                          </Button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant={statusVariant(item.status)}>
+                            {statusLabel(item.status, t)}
+                          </Badge>
+                          <code className="rounded-md border border-base-300/70 bg-base-100/70 px-2 py-1 text-xs">
+                            {item.prefix}
+                          </code>
                         </div>
-                      </td>
+                      </div>
+                    </div>
+                    <dl className="mt-4 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                      <div className="rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2.5">
+                        <dt className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/58">
+                          {t('settings.externalApiKeys.columns.lastUsedAt')}
+                        </dt>
+                        <dd className="mt-1 text-base-content/75">{formatDateTime(item.lastUsedAt)}</dd>
+                      </div>
+                      <div className="rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2.5">
+                        <dt className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/58">
+                          {t('settings.externalApiKeys.columns.createdAt')}
+                        </dt>
+                        <dd className="mt-1 text-base-content/75">{formatDateTime(item.createdAt)}</dd>
+                      </div>
+                    </dl>
+                    <div className="mt-4 flex flex-col gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={isMutating}
+                        onClick={() => setRotateTarget(item)}
+                      >
+                        {t('settings.externalApiKeys.rotate')}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-error hover:bg-error/10 hover:text-error"
+                        disabled={isMutating || item.status === 'disabled'}
+                        onClick={() => setDisableTarget(item)}
+                      >
+                        {t('settings.externalApiKeys.disable')}
+                      </Button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="hidden overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72 min-[769px]:block">
+                <table className="w-full min-w-[44rem] table-fixed text-sm">
+                  <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
+                    <tr>
+                      <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.name')}</th>
+                      <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.prefix')}</th>
+                      <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.status')}</th>
+                      <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.lastUsedAt')}</th>
+                      <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.createdAt')}</th>
+                      <th className="px-4 py-3 text-right font-semibold">{t('settings.externalApiKeys.columns.actions')}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-base-300/65">
+                    {items.map((item, index) => (
+                      <tr
+                        key={item.id}
+                        className={
+                          index % 2 === 0
+                            ? 'bg-base-100/38 transition-colors hover:bg-primary/6'
+                            : 'bg-base-200/22 transition-colors hover:bg-primary/6'
+                        }
+                      >
+                        <td className="px-4 py-3 align-middle">
+                          <div className="font-medium text-base-content">{item.name}</div>
+                        </td>
+                        <td className="px-4 py-3 align-middle">
+                          <code className="rounded-md border border-base-300/70 bg-base-100/70 px-2 py-1 text-xs">
+                            {item.prefix}
+                          </code>
+                        </td>
+                        <td className="px-4 py-3 align-middle">
+                          <Badge variant={statusVariant(item.status)}>
+                            {statusLabel(item.status, t)}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3 align-middle text-base-content/72">
+                          {formatDateTime(item.lastUsedAt)}
+                        </td>
+                        <td className="px-4 py-3 align-middle text-base-content/72">
+                          {formatDateTime(item.createdAt)}
+                        </td>
+                        <td className="px-4 py-3 align-middle">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              disabled={isMutating}
+                              onClick={() => setRotateTarget(item)}
+                            >
+                              {t('settings.externalApiKeys.rotate')}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="text-error hover:bg-error/10 hover:text-error"
+                              disabled={isMutating || item.status === 'disabled'}
+                              onClick={() => setDisableTarget(item)}
+                            >
+                              {t('settings.externalApiKeys.disable')}
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('settings.externalApiKeys.createDialog.title')}</DialogTitle>
-            <DialogDescription>{t('settings.externalApiKeys.createDialog.description')}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
+        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[769px]:max-h-[calc(100dvh-2rem)]">
+          <div className="sticky top-0 z-10 border-b border-base-300/80 bg-base-100/94 px-5 py-4 backdrop-blur">
+            <DialogHeader className="min-w-0">
+              <DialogTitle>{t('settings.externalApiKeys.createDialog.title')}</DialogTitle>
+              <DialogDescription>{t('settings.externalApiKeys.createDialog.description')}</DialogDescription>
+            </DialogHeader>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
             <label htmlFor="external-api-key-name" className="block text-sm font-medium text-base-content/78">
               {t('settings.externalApiKeys.createDialog.nameLabel')}
             </label>
@@ -269,7 +328,7 @@ export function ExternalApiKeysSettingsCard() {
             />
             {createError && <p className="text-sm text-error">{createError}</p>}
           </div>
-          <DialogFooter>
+          <DialogFooter className="sticky bottom-0 z-10 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur">
             <Button type="button" variant="ghost" onClick={() => setCreateOpen(false)}>
               {t('settings.externalApiKeys.cancel')}
             </Button>
@@ -281,16 +340,18 @@ export function ExternalApiKeysSettingsCard() {
       </Dialog>
 
       <Dialog open={rotateTarget != null} onOpenChange={(open) => !open && setRotateTarget(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('settings.externalApiKeys.rotateDialog.title')}</DialogTitle>
-            <DialogDescription>
-              {t('settings.externalApiKeys.rotateDialog.description', {
-                name: rotateTarget?.name ?? '—',
-              })}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[769px]:max-h-[calc(100dvh-2rem)]">
+          <div className="sticky top-0 z-10 border-b border-base-300/80 bg-base-100/94 px-5 py-4 backdrop-blur">
+            <DialogHeader className="min-w-0">
+              <DialogTitle>{t('settings.externalApiKeys.rotateDialog.title')}</DialogTitle>
+              <DialogDescription>
+                {t('settings.externalApiKeys.rotateDialog.description', {
+                  name: rotateTarget?.name ?? '—',
+                })}
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+          <DialogFooter className="sticky bottom-0 z-10 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur">
             <Button type="button" variant="ghost" onClick={() => setRotateTarget(null)}>
               {t('settings.externalApiKeys.cancel')}
             </Button>
@@ -302,16 +363,18 @@ export function ExternalApiKeysSettingsCard() {
       </Dialog>
 
       <Dialog open={disableTarget != null} onOpenChange={(open) => !open && setDisableTarget(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('settings.externalApiKeys.disableDialog.title')}</DialogTitle>
-            <DialogDescription>
-              {t('settings.externalApiKeys.disableDialog.description', {
-                name: disableTarget?.name ?? '—',
-              })}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[769px]:max-h-[calc(100dvh-2rem)]">
+          <div className="sticky top-0 z-10 border-b border-base-300/80 bg-base-100/94 px-5 py-4 backdrop-blur">
+            <DialogHeader className="min-w-0">
+              <DialogTitle>{t('settings.externalApiKeys.disableDialog.title')}</DialogTitle>
+              <DialogDescription>
+                {t('settings.externalApiKeys.disableDialog.description', {
+                  name: disableTarget?.name ?? '—',
+                })}
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+          <DialogFooter className="sticky bottom-0 z-10 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur">
             <Button type="button" variant="ghost" onClick={() => setDisableTarget(null)}>
               {t('settings.externalApiKeys.cancel')}
             </Button>

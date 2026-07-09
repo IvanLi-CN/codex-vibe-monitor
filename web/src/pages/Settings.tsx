@@ -1730,7 +1730,99 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                 />
               </div>
 
-              <div className="overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72">
+              <div className="space-y-3 min-[769px]:hidden">
+                {pricingDraft.entries.map((entry, index) => (
+                  <article key={`mobile-pricing-${index}`} className="rounded-xl border border-base-300/80 bg-base-100/72 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-2">
+                        <div className="text-sm font-semibold text-base-content">
+                          {entry.model || t('settings.pricing.columns.model')}
+                        </div>
+                        <Badge variant={sourceBadgeVariant(entry.source)} className="inline-flex min-w-[5rem] justify-center">
+                          {entry.source}
+                        </Badge>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-2.5 text-error hover:bg-error/10"
+                        onClick={() => handleRemovePricingEntry(index)}
+                      >
+                        {t('settings.pricing.remove')}
+                      </Button>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <label className="block text-xs font-medium text-base-content/68">
+                          {t('settings.pricing.columns.model')}
+                        </label>
+                        <Input
+                          type="text"
+                          className="h-9 px-3"
+                          value={entry.model}
+                          onChange={(event) => handlePricingFieldChange(index, 'model', event.target.value)}
+                          onBlur={() => triggerPricingSave(true)}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="block text-xs font-medium text-base-content/68">
+                          {t('settings.pricing.columns.input')}
+                        </label>
+                        <Input
+                          type="number"
+                          step="any"
+                          className="h-9 px-3"
+                          value={entry.inputPer1m}
+                          onChange={(event) => handlePricingFieldChange(index, 'inputPer1m', event.target.value)}
+                          onBlur={() => triggerPricingSave(true)}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="block text-xs font-medium text-base-content/68">
+                          {t('settings.pricing.columns.output')}
+                        </label>
+                        <Input
+                          type="number"
+                          step="any"
+                          className="h-9 px-3"
+                          value={entry.outputPer1m}
+                          onChange={(event) => handlePricingFieldChange(index, 'outputPer1m', event.target.value)}
+                          onBlur={() => triggerPricingSave(true)}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="block text-xs font-medium text-base-content/68">
+                          {t('settings.pricing.columns.cacheInput')}
+                        </label>
+                        <Input
+                          type="number"
+                          step="any"
+                          className="h-9 px-3"
+                          value={entry.cacheInputPer1m}
+                          onChange={(event) => handlePricingFieldChange(index, 'cacheInputPer1m', event.target.value)}
+                          onBlur={() => triggerPricingSave(true)}
+                        />
+                      </div>
+                      <div className="space-y-2 sm:col-span-2">
+                        <label className="block text-xs font-medium text-base-content/68">
+                          {t('settings.pricing.columns.reasoning')}
+                        </label>
+                        <Input
+                          type="number"
+                          step="any"
+                          className="h-9 px-3"
+                          value={entry.reasoningPer1m}
+                          onChange={(event) => handlePricingFieldChange(index, 'reasoningPer1m', event.target.value)}
+                          onBlur={() => triggerPricingSave(true)}
+                        />
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="hidden overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72 min-[769px]:block">
                 <table className="w-full min-w-[56rem] table-fixed text-sm">
                   <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
                     <tr>
@@ -2137,9 +2229,9 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
             typeof document !== 'undefined' &&
             createPortal(
               // Intentional body-root overlay: this page-level modal should escape local overlay hosts.
-              <div className="fixed inset-0 z-[80] flex items-center justify-center bg-base-content/45 p-4">
-              <div className="w-full max-w-2xl rounded-2xl border border-base-300/75 bg-base-100 shadow-xl">
-                <div className="space-y-1 border-b border-base-300/70 px-5 py-4">
+              <div className="fixed inset-0 z-[80] flex items-end justify-center bg-base-content/45 p-0 min-[769px]:items-center min-[769px]:p-4">
+              <div className="flex max-h-[min(100dvh-0.5rem,100dvh)] w-full flex-col overflow-hidden rounded-t-[1.75rem] rounded-b-none border border-base-300/75 bg-base-100 shadow-xl min-[769px]:max-h-[calc(100dvh-2rem)] min-[769px]:max-w-2xl min-[769px]:rounded-2xl">
+                <div className="sticky top-0 z-10 space-y-1 border-b border-base-300/70 bg-base-100/94 px-5 py-4 backdrop-blur">
                   <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1 space-y-1">
                       <h3 className="text-lg font-semibold">{forwardProxyModalTitle}</h3>
@@ -2239,7 +2331,7 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                     </ol>
                   )}
                 </div>
-                <div className="space-y-4 px-5 py-4">
+                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
                   {(!forwardProxyModalIsBatch || forwardProxyModalStep === 1) && (
                     <div className="space-y-2">
                       <label htmlFor="forward-proxy-modal-input" className="block text-sm font-medium text-base-content/75">
@@ -2445,7 +2537,7 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                     </Alert>
                   )}
                 </div>
-                <div className="flex items-center justify-end gap-2 border-t border-base-300/70 px-5 py-3">
+                <div className="sticky bottom-0 z-10 flex flex-col-reverse gap-2 border-t border-base-300/70 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-3 backdrop-blur min-[769px]:flex-row min-[769px]:items-center min-[769px]:justify-end">
                   <Button type="button" variant="ghost" onClick={closeForwardProxyAddModal}>
                     {t('settings.forwardProxy.modal.cancel')}
                   </Button>

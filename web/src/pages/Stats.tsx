@@ -112,20 +112,22 @@ export default function StatsPage() {
               <h2 className="section-title">{t('stats.title')}</h2>
               <p className="section-description">{t('stats.subtitle')}</p>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
               <SelectField
+                className="w-full sm:w-auto"
                 options={rangeOptions}
                 value={range}
                 onValueChange={(value) => setRange(value as typeof range)}
-                triggerClassName="min-w-[8.5rem]"
+                triggerClassName="w-full sm:min-w-[8.5rem]"
                 data-testid="stats-range-select-trigger"
                 aria-label={t('stats.subtitle')}
               />
               <SelectField
+                className="w-full sm:w-auto"
                 options={bucketOptions}
                 value={effectiveBucket}
                 onValueChange={setBucket}
-                triggerClassName="min-w-[7rem]"
+                triggerClassName="w-full sm:min-w-[7rem]"
                 data-testid="stats-bucket-select-trigger"
                 aria-label={t('stats.trendTitle')}
               />
@@ -193,7 +195,7 @@ export default function StatsPage() {
             </div>
             <SelectField
               label={t('stats.errors.scope.label')}
-              className="w-full max-w-[14rem]"
+              className="w-full min-[769px]:max-w-[14rem]"
               options={scopeOptions}
               value={errorScope}
               onValueChange={(value) => setErrorScope(value as FailureScope)}
