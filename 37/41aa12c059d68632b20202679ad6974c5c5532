@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.24.1",
+  "base_stable_version": "2.24.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-10T17:27:48Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.24.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1370d79efb4be16bba8a5e3baf46f24c37aaf025",
+  "pr_number": 587,
+  "pr_title": "fix: preserve realtime cost breakdowns",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.24.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.24.1",
+  "target_sha": "3741aa12c059d68632b20202679ad6974c5c5532",
+  "type_label": "type:patch"
+}
