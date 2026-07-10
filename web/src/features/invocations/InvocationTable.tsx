@@ -718,12 +718,11 @@ export function InvocationTable({
                 tabIndex={isHighlighted ? -1 : undefined}
                 aria-current={isHighlighted ? "true" : undefined}
                 className={cn(
-                  "rounded-lg border border-base-300/70 px-3 py-3 transition-colors motion-reduce:transition-none",
+                  "rounded-lg border border-base-300/70 px-3 py-3 outline-none transition-colors motion-reduce:transition-none",
                   virtualRow.index % 2 === 0
                     ? "bg-base-100/40"
                     : "bg-base-200/24",
-                  isHighlighted &&
-                    "border-primary/70 bg-primary/10 ring-2 ring-inset ring-primary/55",
+                  isHighlighted && "border-primary/55 bg-primary/10",
                 )}
               >
               <div className="flex items-start justify-between gap-3">
@@ -1100,12 +1099,12 @@ export function InvocationTable({
                       tabIndex={isHighlighted ? -1 : undefined}
                       aria-current={isHighlighted ? "true" : undefined}
                       className={cn(
-                        "transition-colors hover:bg-primary/6 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary motion-reduce:transition-none",
+                        "outline-none transition-colors hover:bg-primary/6 motion-reduce:transition-none",
                         virtualRow.index % 2 === 0
                           ? "bg-base-100/38"
                           : "bg-base-200/22",
                         isHighlighted &&
-                          "bg-primary/10 ring-2 ring-inset ring-primary/55",
+                          "bg-primary/10 ring-1 ring-inset ring-primary/45",
                       )}
                     >
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
