@@ -70,6 +70,58 @@ const STATUS_META: Record<
   pending: { variant: "warning", labelKey: "table.status.pending" },
 };
 
+const INVOCATION_ID_BASE_FONT_SIZE_PX = 10;
+
+function FittedInvocationId({
+  invokeId,
+  className,
+}: {
+  invokeId: string;
+  className?: string;
+}) {
+  const containerRef = useRef<HTMLSpanElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+
+  const fitText = useCallback(() => {
+    const container = containerRef.current;
+    const text = textRef.current;
+    if (!container || !text) return;
+
+    text.style.fontSize = `${INVOCATION_ID_BASE_FONT_SIZE_PX}px`;
+    const availableWidth = container.clientWidth;
+    const requiredWidth = text.scrollWidth;
+    if (availableWidth <= 0 || requiredWidth <= availableWidth) return;
+
+    const fittedSize =
+      INVOCATION_ID_BASE_FONT_SIZE_PX * (availableWidth / requiredWidth) * 0.98;
+    text.style.fontSize = `${Math.max(1, fittedSize)}px`;
+  }, []);
+
+  useLayoutEffect(() => {
+    fitText();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(fitText);
+    if (containerRef.current) observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [fitText, invokeId]);
+
+  return (
+    <span
+      ref={containerRef}
+      className={cn(
+        "block min-w-0 max-w-full overflow-hidden whitespace-nowrap leading-tight",
+        className,
+      )}
+      data-testid="invocation-id"
+      title={invokeId}
+    >
+      <span ref={textRef} className="inline-block whitespace-nowrap">
+        {invokeId}
+      </span>
+    </span>
+  );
+}
+
 function formatStatusLabel(status: string) {
   const normalized = status.trim();
   if (!normalized) return null;
@@ -529,9 +581,7 @@ export function InvocationTable({
           scrollElement.scrollTop
         : containerRect.top + window.scrollY;
       setScrollMargin((current) =>
-        Math.abs(current - nextScrollMargin) > 0.5
-          ? nextScrollMargin
-          : current,
+        Math.abs(current - nextScrollMargin) > 0.5 ? nextScrollMargin : current,
       );
     };
 
@@ -725,209 +775,206 @@ export function InvocationTable({
                   isHighlighted && "border-primary/55 bg-primary/10",
                 )}
               >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold">
-                    {row.occurredTime}
-                  </div>
-                  <div className="truncate text-xs text-base-content/65">
-                    {row.occurredDate}
-                  </div>
-                  {showInvokeId && row.record.invokeId ? (
-                    <div
-                      className="mt-1 whitespace-nowrap font-mono text-[10px] leading-tight text-info select-text"
-                      data-testid="invocation-id"
-                      title={row.record.invokeId}
-                    >
-                      {row.record.invokeId}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold">
+                      {row.occurredTime}
                     </div>
-                  ) : null}
+                    <div className="truncate text-xs text-base-content/65">
+                      {row.occurredDate}
+                    </div>
+                    {showInvokeId && row.record.invokeId ? (
+                      <FittedInvocationId
+                        invokeId={row.record.invokeId}
+                        className="mt-1 font-mono text-info select-text"
+                      />
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                    onClick={handleToggle}
+                    aria-expanded={isExpanded}
+                    aria-controls={listDetailId}
+                    aria-label={
+                      isExpanded ? toggleLabels.hide : toggleLabels.show
+                    }
+                  >
+                    <AppIcon
+                      name={isExpanded ? "chevron-down" : "chevron-right"}
+                      className="h-5 w-5"
+                      aria-hidden
+                    />
+                    <span className="sr-only">
+                      {isExpanded
+                        ? toggleLabels.expanded
+                        : toggleLabels.collapsed}
+                    </span>
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                  onClick={handleToggle}
-                  aria-expanded={isExpanded}
-                  aria-controls={listDetailId}
-                  aria-label={
-                    isExpanded ? toggleLabels.hide : toggleLabels.show
-                  }
-                >
-                  <AppIcon
-                    name={isExpanded ? "chevron-down" : "chevron-right"}
-                    className="h-5 w-5"
-                    aria-hidden
-                  />
-                  <span className="sr-only">
-                    {isExpanded
-                      ? toggleLabels.expanded
-                      : toggleLabels.collapsed}
-                  </span>
-                </button>
-              </div>
 
-              <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
-                {row.livePhase ? (
-                  <InvocationPhaseBadge
-                    phase={row.livePhase}
-                    appearance="inline"
-                    motion="dynamic"
-                  />
-                ) : (
-                  <Badge variant={row.meta.variant}>{row.statusLabel}</Badge>
-                )}
-                <div className="min-w-0 flex-1">
-                  <div data-testid="invocation-account-name">
-                    {renderAccountValue(
-                      row.accountLabel,
-                      row.accountId,
-                      row.accountClickable,
-                      cn(
-                        "text-xs font-medium text-base-content",
-                        row.accountRoutingInProgress &&
-                          INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-                      ),
+                <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
+                  {row.livePhase ? (
+                    <InvocationPhaseBadge
+                      phase={row.livePhase}
+                      appearance="inline"
+                      motion="dynamic"
+                    />
+                  ) : (
+                    <Badge variant={row.meta.variant}>{row.statusLabel}</Badge>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div data-testid="invocation-account-name">
+                      {renderAccountValue(
+                        row.accountLabel,
+                        row.accountId,
+                        row.accountClickable,
+                        cn(
+                          "text-xs font-medium text-base-content",
+                          row.accountRoutingInProgress &&
+                            INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                        ),
+                      )}
+                    </div>
+                    <div
+                      className="min-w-0 truncate text-[11px] text-base-content/70"
+                      title={row.proxyDisplayName}
+                      data-testid="invocation-proxy-name"
+                    >
+                      {row.proxyDisplayName}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-mono text-base-content/70">
+                  <span
+                    title={row.totalLatencyValue}
+                  >{`${t("table.column.totalLatencyShort")} ${row.totalLatencyValue}`}</span>
+                  <span
+                    title={row.firstResponseByteTotalValue}
+                  >{`${t("table.column.firstResponseByteTotalShort")} ${row.firstResponseByteTotalValue}`}</span>
+                  <span
+                    title={row.responseContentEncodingValue}
+                  >{`${t("table.column.httpCompressionShort")} ${row.responseContentEncodingValue}`}</span>
+                </div>
+
+                <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                  <dt className="text-base-content/65">
+                    {t("table.column.model")}
+                  </dt>
+                  <dd className="min-w-0">
+                    {row.modelHasMismatch ? (
+                      renderInvocationModelRoutingSummary({
+                        requestModelValue: row.requestModelValue,
+                        responseModelValue: row.responseModelValue,
+                        hasMismatch: true,
+                        t,
+                        adornments: (
+                          <>
+                            {renderInvocationTransportBadge(row.record)}
+                            {renderFastIndicator(row.fastIndicatorState, t)}
+                          </>
+                        ),
+                      })
+                    ) : (
+                      <div
+                        className="flex items-center justify-end gap-1 text-right"
+                        title={row.modelValue}
+                      >
+                        {renderInvocationModelBadge(row.modelValue, {
+                          t,
+                          hasMismatch: false,
+                          textClassName: "text-right",
+                          testId: "invocation-table-model",
+                        })}
+                        {renderInvocationTransportBadge(row.record)}
+                        {renderFastIndicator(row.fastIndicatorState, t)}
+                      </div>
+                    )}
+                  </dd>
+                  <dt className="text-base-content/65">
+                    {t("table.column.costUsd")}
+                  </dt>
+                  <dd className="truncate text-right font-mono">
+                    {row.costValue}
+                  </dd>
+                  <dt className="text-base-content/65">
+                    {t("table.column.inputTokens")}
+                  </dt>
+                  <dd className="truncate text-right font-mono">
+                    {row.inputTokensValue}
+                  </dd>
+                  <dt className="text-base-content/65">
+                    {t("table.column.cacheInputTokens")}
+                  </dt>
+                  <dd className="truncate text-right font-mono">
+                    {row.cacheInputTokensValue}
+                  </dd>
+                  <dt className="text-base-content/65">
+                    {t("table.column.outputTokens")}
+                  </dt>
+                  <dd className="text-right">
+                    <div className="flex flex-col items-end gap-0.5 leading-tight">
+                      <span className="truncate font-mono">
+                        {row.outputTokensValue}
+                      </span>
+                      <span
+                        className="truncate text-[11px] text-base-content/70"
+                        title={`${t("table.details.reasoningTokens")}: ${row.reasoningTokensValue}`}
+                      >
+                        {row.outputReasoningBreakdownValue}
+                      </span>
+                    </div>
+                  </dd>
+                  <dt className="text-base-content/65">
+                    {t("table.column.totalTokens")}
+                  </dt>
+                  <dd className="truncate text-right font-mono">
+                    {row.totalTokensValue}
+                  </dd>
+                  <dt className="text-base-content/65">
+                    {t("table.column.reasoningEffort")}
+                  </dt>
+                  <dd className="flex justify-end">
+                    {renderReasoningEffortBadge(row.reasoningEffortValue)}
+                  </dd>
+                </dl>
+
+                <div className="mt-3 space-y-1 border-t border-base-300/65 pt-2">
+                  <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                    {t("table.details.endpoint")}
+                  </div>
+                  <div className="flex min-w-0 flex-wrap items-center gap-1">
+                    {renderEndpointSummary(row.endpointDisplay, t, "text-xs")}
+                    {renderImageIntentBadge(
+                      row.imageIntentDisplay,
+                      t,
+                      "h-5 border-transparent bg-base-100/70 px-2 text-[10px] shadow-none",
                     )}
                   </div>
                   <div
-                    className="min-w-0 truncate text-[11px] text-base-content/70"
-                    title={row.proxyDisplayName}
-                    data-testid="invocation-proxy-name"
+                    className="truncate text-xs"
+                    title={row.collapsedErrorSummary || undefined}
                   >
-                    {row.proxyDisplayName}
+                    {row.collapsedErrorSummary || FALLBACK_CELL}
                   </div>
                 </div>
-              </div>
 
-              <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-mono text-base-content/70">
-                <span
-                  title={row.totalLatencyValue}
-                >{`${t("table.column.totalLatencyShort")} ${row.totalLatencyValue}`}</span>
-                <span
-                  title={row.firstResponseByteTotalValue}
-                >{`${t("table.column.firstResponseByteTotalShort")} ${row.firstResponseByteTotalValue}`}</span>
-                <span
-                  title={row.responseContentEncodingValue}
-                >{`${t("table.column.httpCompressionShort")} ${row.responseContentEncodingValue}`}</span>
-              </div>
-
-              <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-                <dt className="text-base-content/65">
-                  {t("table.column.model")}
-                </dt>
-                <dd className="min-w-0">
-                  {row.modelHasMismatch ? (
-                    renderInvocationModelRoutingSummary({
-                      requestModelValue: row.requestModelValue,
-                      responseModelValue: row.responseModelValue,
-                      hasMismatch: true,
-                      t,
-                      adornments: (
-                        <>
-                          {renderInvocationTransportBadge(row.record)}
-                          {renderFastIndicator(row.fastIndicatorState, t)}
-                        </>
-                      ),
-                    })
-                  ) : (
-                    <div
-                      className="flex items-center justify-end gap-1 text-right"
-                      title={row.modelValue}
-                    >
-                      {renderInvocationModelBadge(row.modelValue, {
-                        t,
-                        hasMismatch: false,
-                        textClassName: "text-right",
-                        testId: "invocation-table-model",
-                      })}
-                      {renderInvocationTransportBadge(row.record)}
-                      {renderFastIndicator(row.fastIndicatorState, t)}
-                    </div>
-                  )}
-                </dd>
-                <dt className="text-base-content/65">
-                  {t("table.column.costUsd")}
-                </dt>
-                <dd className="truncate text-right font-mono">
-                  {row.costValue}
-                </dd>
-                <dt className="text-base-content/65">
-                  {t("table.column.inputTokens")}
-                </dt>
-                <dd className="truncate text-right font-mono">
-                  {row.inputTokensValue}
-                </dd>
-                <dt className="text-base-content/65">
-                  {t("table.column.cacheInputTokens")}
-                </dt>
-                <dd className="truncate text-right font-mono">
-                  {row.cacheInputTokensValue}
-                </dd>
-                <dt className="text-base-content/65">
-                  {t("table.column.outputTokens")}
-                </dt>
-                <dd className="text-right">
-                  <div className="flex flex-col items-end gap-0.5 leading-tight">
-                    <span className="truncate font-mono">
-                      {row.outputTokensValue}
-                    </span>
-                    <span
-                      className="truncate text-[11px] text-base-content/70"
-                      title={`${t("table.details.reasoningTokens")}: ${row.reasoningTokensValue}`}
-                    >
-                      {row.outputReasoningBreakdownValue}
-                    </span>
+                {isExpanded && (
+                  <div className="mt-3 rounded-lg border border-base-300/70 bg-base-200/58">
+                    <InvocationExpandedDetails
+                      record={row.record}
+                      detailId={listDetailId}
+                      detailPairs={row.detailPairs}
+                      timingPairs={row.timingPairs}
+                      errorMessage={row.errorMessage}
+                      detailNotice={row.detailNotice}
+                      size="compact"
+                      poolAttemptsState={poolAttemptsState}
+                      t={t}
+                    />
                   </div>
-                </dd>
-                <dt className="text-base-content/65">
-                  {t("table.column.totalTokens")}
-                </dt>
-                <dd className="truncate text-right font-mono">
-                  {row.totalTokensValue}
-                </dd>
-                <dt className="text-base-content/65">
-                  {t("table.column.reasoningEffort")}
-                </dt>
-                <dd className="flex justify-end">
-                  {renderReasoningEffortBadge(row.reasoningEffortValue)}
-                </dd>
-              </dl>
-
-              <div className="mt-3 space-y-1 border-t border-base-300/65 pt-2">
-                <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
-                  {t("table.details.endpoint")}
-                </div>
-                <div className="flex min-w-0 flex-wrap items-center gap-1">
-                  {renderEndpointSummary(row.endpointDisplay, t, "text-xs")}
-                  {renderImageIntentBadge(
-                    row.imageIntentDisplay,
-                    t,
-                    "h-5 border-transparent bg-base-100/70 px-2 text-[10px] shadow-none",
-                  )}
-                </div>
-                <div
-                  className="truncate text-xs"
-                  title={row.collapsedErrorSummary || undefined}
-                >
-                  {row.collapsedErrorSummary || FALLBACK_CELL}
-                </div>
-              </div>
-
-              {isExpanded && (
-                <div className="mt-3 rounded-lg border border-base-300/70 bg-base-200/58">
-                  <InvocationExpandedDetails
-                    record={row.record}
-                    detailId={listDetailId}
-                    detailPairs={row.detailPairs}
-                    timingPairs={row.timingPairs}
-                    errorMessage={row.errorMessage}
-                    detailNotice={row.detailNotice}
-                    size="compact"
-                    poolAttemptsState={poolAttemptsState}
-                    t={t}
-                  />
-                </div>
-              )}
+                )}
               </article>
             );
           })}
@@ -952,9 +999,7 @@ export function InvocationTable({
                 <th
                   className={cn(
                     "px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId
-                      ? "w-[20%] xl:w-[16%]"
-                      : "w-[11%] xl:w-[10%]",
+                    showInvokeId ? "w-[20%] xl:w-[16%]" : "w-[11%] xl:w-[10%]",
                   )}
                 >
                   {t("table.column.time")}
@@ -962,9 +1007,7 @@ export function InvocationTable({
                 <th
                   className={cn(
                     "px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId
-                      ? "w-[16%] xl:w-[15%]"
-                      : "w-[18%] xl:w-[15%]",
+                    showInvokeId ? "w-[16%] xl:w-[15%]" : "w-[18%] xl:w-[15%]",
                   )}
                 >
                   <div className="flex flex-col leading-tight">
@@ -977,9 +1020,7 @@ export function InvocationTable({
                 <th
                   className={cn(
                     "px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId
-                      ? "w-[10%] xl:w-[9%]"
-                      : "w-[13%] xl:w-[12%]",
+                    showInvokeId ? "w-[10%] xl:w-[9%]" : "w-[13%] xl:w-[12%]",
                   )}
                 >
                   <div className="flex flex-col leading-tight">
@@ -992,9 +1033,7 @@ export function InvocationTable({
                 <th
                   className={cn(
                     "px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId
-                      ? "w-[15%] xl:w-[15%]"
-                      : "w-[17%] xl:w-[14%]",
+                    showInvokeId ? "w-[15%] xl:w-[15%]" : "w-[17%] xl:w-[14%]",
                   )}
                 >
                   <div className="flex flex-col leading-tight">
@@ -1007,9 +1046,7 @@ export function InvocationTable({
                 <th
                   className={cn(
                     "px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId
-                      ? "w-[11%] xl:w-[11%]"
-                      : "w-[16%] xl:w-[14%]",
+                    showInvokeId ? "w-[11%] xl:w-[11%]" : "w-[16%] xl:w-[14%]",
                   )}
                 >
                   <div className="flex flex-col leading-tight">
@@ -1022,9 +1059,7 @@ export function InvocationTable({
                 <th
                   className={cn(
                     "px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId
-                      ? "w-[8%] xl:w-[8%]"
-                      : "w-[10%] xl:w-[10%]",
+                    showInvokeId ? "w-[8%] xl:w-[8%]" : "w-[10%] xl:w-[10%]",
                   )}
                 >
                   <div className="flex flex-col leading-tight">
@@ -1053,9 +1088,7 @@ export function InvocationTable({
                 <th
                   className={cn(
                     "px-2 py-2.5 text-right xl:px-3",
-                    showInvokeId
-                      ? "w-[8%] xl:w-[5%]"
-                      : "w-[9%] xl:w-[4%]",
+                    showInvokeId ? "w-[8%] xl:w-[5%]" : "w-[9%] xl:w-[4%]",
                   )}
                 >
                   <span className="sr-only">{toggleLabels.header}</span>
@@ -1065,7 +1098,10 @@ export function InvocationTable({
             <tbody className="divide-y divide-base-300/65">
               {paddingTop > 0 ? (
                 <tr aria-hidden="true">
-                  <td colSpan={isXlUp ? 9 : 8} style={{ height: paddingTop, padding: 0 }} />
+                  <td
+                    colSpan={isXlUp ? 9 : 8}
+                    style={{ height: paddingTop, padding: 0 }}
+                  />
                 </tr>
               ) : null}
               {fallbackVirtualRows.map((virtualRow) => {
@@ -1086,7 +1122,9 @@ export function InvocationTable({
                     <tr
                       ref={(node) => {
                         if (node) {
-                          if (measureRefs.current.get(virtualRow.index) !== node) {
+                          if (
+                            measureRefs.current.get(virtualRow.index) !== node
+                          ) {
                             measureRefs.current.set(virtualRow.index, node);
                             scheduleMeasureElement(node);
                           }
@@ -1116,13 +1154,10 @@ export function InvocationTable({
                             {row.occurredDate}
                           </span>
                           {showInvokeId && row.record.invokeId ? (
-                            <span
-                              className="block whitespace-nowrap font-mono text-[10px] leading-tight text-info select-text"
-                              data-testid="invocation-id"
-                              title={row.record.invokeId}
-                            >
-                              {row.record.invokeId}
-                            </span>
+                            <FittedInvocationId
+                              invokeId={row.record.invokeId}
+                              className="font-mono text-info select-text"
+                            />
                           ) : null}
                         </div>
                       </td>
@@ -1147,9 +1182,7 @@ export function InvocationTable({
                               {row.statusLabel}
                             </span>
                           )}
-                          <div
-                            className="mx-auto flex w-fit max-w-full items-center justify-center overflow-hidden text-center text-[11px] font-semibold leading-none text-base-content"
-                          >
+                          <div className="mx-auto flex w-fit max-w-full items-center justify-center overflow-hidden text-center text-[11px] font-semibold leading-none text-base-content">
                             <span
                               className="inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap leading-none"
                               data-testid="invocation-account-name"
@@ -1309,7 +1342,10 @@ export function InvocationTable({
               })}
               {paddingBottom > 0 ? (
                 <tr aria-hidden="true">
-                  <td colSpan={isXlUp ? 9 : 8} style={{ height: paddingBottom, padding: 0 }} />
+                  <td
+                    colSpan={isXlUp ? 9 : 8}
+                    style={{ height: paddingBottom, padding: 0 }}
+                  />
                 </tr>
               ) : null}
             </tbody>

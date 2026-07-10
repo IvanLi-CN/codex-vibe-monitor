@@ -604,6 +604,7 @@ describe("InvocationTable", () => {
     expect(invokeId?.textContent).toBe("virtual-row-1");
     expect(invokeId?.className).toContain("select-text");
     expect(invokeId?.className).toContain("whitespace-nowrap");
+    expect(invokeId?.className).toContain("overflow-hidden");
     expect(invokeId?.className).not.toContain("truncate");
     expect(invokeId?.className).not.toContain("break-all");
     expect(invokeId?.getAttribute("title")).toBe(invokeId?.textContent);
@@ -649,6 +650,7 @@ describe("InvocationTable", () => {
     expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeNull();
     const invokeId = document.querySelector('[data-testid="invocation-id"]');
     expect(invokeId?.className).toContain("whitespace-nowrap");
+    expect(invokeId?.className).toContain("overflow-hidden");
     expect(invokeId?.className).not.toContain("truncate");
     expect(invokeId?.className).not.toContain("break-all");
     expect(invokeId?.getAttribute("title")).toBe(invokeId?.textContent);

@@ -20,7 +20,7 @@
 - 运行态 V2 识别来自 request body 的 `context_management[type=compaction][compact_threshold]`，终态识别来自响应内实际出现的 compaction item；两者独立写入 payload，不回填历史记录。
 - raw request/response payload 的完整保留合同不作为 SQLite 止血牺牲项；本轮只补充 raw file write 的 `raw_kind`、codec、file bytes、observed bytes、truncated、path 与 elapsed 证据，并继续同步持久化 terminal usage/status/failure/raw metadata。
 - 账号详情调用记录现显示可选择的 `invokeId`；健康与事件的调用 ID 通过 `/api/invocations/locate` 获取目标所在 retained/runtime 分页窗口及短生命周期 `anchorId`，后续页复用冻结 runtime overlay，再由共享虚拟表格定位目标行。
-- 账号详情调用列表使用表面专属列宽完整单行展示 `invokeId`；桌面与移动定位态均采用单层非布局型高亮并抑制默认 outline，其他共享 `InvocationTable` 使用方保持原布局。
+- 账号详情调用列表使用表面专属列宽，并按容器实际宽度自动缩小超长 `invokeId` 字号，以完整单行展示 ID；桌面与移动定位态均采用单层非布局型高亮并抑制默认 outline，其他共享 `InvocationTable` 使用方保持原布局。
 
 ## Migrated Implementation Notes
 

@@ -37,7 +37,7 @@
 - overview tab 顶部账号基础属性从多张独立 `metric-cell` 卡片收敛为单条紧凑元数据带，保留字段与截断 title，但显著减少首屏高度占用。
 - records tab 记录列表改为固定 `50` 条页大小的无限滚动追加：首次进入加载第一页，抽屉滚动接近底部时追加下一页，账号切换、离开 records tab 或关闭抽屉时丢弃旧请求结果。
 - 健康与事件中的调用 ID 通过账号作用域 locator 直接取得目标所在页；前端以虚拟列表 `scrollToIndex` 定位，向顶部/底部接近阈值时才分别加载相邻页，prepend 后保持当前视口锚点。
-- 账号详情通过专用列宽收紧用时、输入与输出列，让调用 ID 在桌面表格与移动列表中保持等宽、单行、完整展示；定位态只保留一层语义边框或 inset ring，并清除默认 outline。
+- 账号详情通过专用列宽收紧用时、输入与输出列，并按容器实际宽度自动缩小超长调用 ID 字号，让调用 ID 在桌面表格与移动列表中保持等宽、单行、完整展示；定位态只保留一层语义边框或 inset ring，并清除默认 outline。
 - 账号详情接口 `get_upstream_account` 默认改为 `includeRecentActions=false`，把 `pool_upstream_account_events` 读取从 overview 首屏热路径中移出；health events tab 再按需补一次 detail hydrate。
 - 前端 `fetchUpstreamAccountDetail(..., { includeRecentActions: true })` 改为把布尔 query 编码成 `includeRecentActions=true`，避免 Axum `Option<bool>` 拒绝 `1` 后让健康与事件 tab 显示 400。
 - `useUpstreamAccounts(...)` 在 `selectedId` 为空时不再自动对 roster 可见行批量触发 `window-usage` hydrate；只有当前选中账号或显式手动 hydrate 才会发 `window-usage` 请求。
