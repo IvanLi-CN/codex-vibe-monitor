@@ -3816,8 +3816,18 @@ pub(crate) async fn load_usage_breakdown_for_range(
     upstream_account_id: Option<i64>,
     range: ExactUtcRange,
 ) -> Result<UsageBreakdownResponse, ApiError> {
-    let mut live_rows =
-        query_live_upstream_account_activity_preview_rows(&state.pool, source_scope, range).await?;
+    let account_metadata_table_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master \
+         WHERE type = 'table' \
+           AND name IN ('pool_upstream_accounts', 'pool_upstream_account_limit_samples')",
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    let mut live_rows = if account_metadata_table_count == 2 {
+        query_live_upstream_account_activity_preview_rows(&state.pool, source_scope, range).await?
+    } else {
+        Vec::new()
+    };
     overlay_runtime_upstream_account_activity_preview_rows(
         state,
         &mut live_rows,

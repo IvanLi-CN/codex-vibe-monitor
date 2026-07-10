@@ -1422,13 +1422,15 @@ pub(crate) async fn query_upstream_account_invocation_preview_rows_from_executor
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, occurred_at, ");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
     let cost_breakdown_columns = if has_cost_breakdown_columns {
         "cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning"
     } else {
         "NULL AS cost_input, NULL AS cost_cache_write, NULL AS cost_cache_read, NULL AS cost_output, NULL AS cost_reasoning"
     };
     query
+        .push(crate::api::INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" AS prompt_cache_key, occurred_at, ")
         .push(crate::api::invocation_display_status_sql())
         .push(" AS status, ")
         .push("NULL AS live_phase, ")
@@ -1452,10 +1454,7 @@ where
         .push(" AS proxy_display_name, ")
         .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
         .push(" AS upstream_account_id, ")
-        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
-        .push(" AS upstream_account_name, ")
-        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL)
-        .push(" AS upstream_account_plan_type, ")
+        .push("NULL AS upstream_account_name, NULL AS upstream_account_plan_type, ")
         .push(crate::api::INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
         .push(" AS response_content_encoding, ")
         .push(crate::api::INVOCATION_TRANSPORT_SQL)
