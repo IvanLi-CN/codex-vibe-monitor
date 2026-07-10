@@ -251,6 +251,7 @@ pub(crate) fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> P
             total_tokens: Some(15),
         },
         cost: Some(0.0123),
+        cost_breakdown: None,
         cost_estimated: true,
         price_version: Some("unit-test".to_string()),
         status: "success".to_string(),

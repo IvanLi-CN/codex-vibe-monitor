@@ -379,6 +379,34 @@ function createUpstreamAccountActivityStoryResponse(
         failureTokens: 350,
         failureCost: 0.22,
         totalCost: 0.72,
+        usageBreakdown: {
+          cacheWriteTokens: 1600,
+          cacheReadTokens: 800,
+          outputTokens: 800,
+          costs: {
+            input: 0.18,
+            cacheWrite: 0.14,
+            cacheRead: 0.06,
+            output: 0.28,
+            reasoning: 0.06,
+          },
+          models: [
+            {
+              model: "gpt-5.6",
+              cacheWriteTokens: 1200,
+              cacheReadTokens: 600,
+              outputTokens: 620,
+              costs: { input: 0.12, cacheWrite: 0.1, cacheRead: 0.04, output: 0.21, reasoning: 0.05 },
+            },
+            {
+              model: "gpt-5.4-mini",
+              cacheWriteTokens: 400,
+              cacheReadTokens: 200,
+              outputTokens: 180,
+              costs: { input: 0.06, cacheWrite: 0.04, cacheRead: 0.02, output: 0.07, reasoning: 0.01 },
+            },
+          ],
+        },
         cacheHitRate: 0.25,
         tokensPerMinute: 640,
         spendRate: 0.12,
@@ -3447,17 +3475,17 @@ export const UpstreamAccountMetricTooltips: Story = {
     await assertMetricTooltip("cost", [
       "成本",
       "0.72",
-      "失败成本",
-      "失败成本比率",
-      "30.6%",
-      "成功/其他成本",
-      "单次均价",
+      "缓存写入",
+      "缓存读取",
+      "推理",
+      "gpt-5.6",
     ]);
     await assertMetricTooltip("token", [
       "Token",
-      "缓存命中率",
-      "成功 Token",
-      "单请求 Token",
+      "缓存写入",
+      "缓存读取",
+      "输出",
+      "gpt-5.6",
     ]);
 
     const finalTrigger = canvasElement.querySelector(

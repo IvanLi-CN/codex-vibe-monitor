@@ -10,7 +10,7 @@
 
 ### Goals
 
-- 为 `codex_invocations`、`forward_proxy_attempts`、`stats_source_snapshots`、`codex_quota_snapshots` 建立按上海自然日 / 自然月切分的冷热分层策略。
+- 为 `codex_invocations`、`forward_proxy_attempts` 与 `codex_quota_snapshots` 建立按上海自然日 / 自然月切分的冷热分层策略。
 - 让 `/api/invocations` 与 `InvocationTable` 在展开详情中明确告知记录当前是 `Full` 还是 `Structured only`，避免误判细节完整性。
 - 通过 `invocation_rollup_daily` 承接被归档删除的调用总量，确保初始 rollout 阶段 `/api/stats` 与 `summary?window=all` 在清理前后 totals 一致；后续在线长期统计主来源已升级为 `#h9r2m` 定义的 hourly rollups。
 - 固化离线归档格式、运维开关、执行顺序与 101 首次 rollout 验证口径，保证维护任务可重试、可核查、可回滚。
@@ -29,14 +29,14 @@
 - SQLite schema 扩展：`codex_invocations.detail_level/detail_pruned_at/detail_prune_reason`、`archive_batches`、`invocation_rollup_daily`。
 - retention/archive 运维配置与 CLI：`XY_RETENTION_*` / `XY_ARCHIVE_DIR` / `--retention-run-once` / `--retention-dry-run`。
 - 调用明细 30/90 天分层、月度 `sqlite.gz` 归档、manifest 校验、主库 purge、raw file 删除与 orphan sweep。
-- `forward_proxy_attempts`、`stats_source_snapshots`、`codex_quota_snapshots` 的在线保留、离线归档与压缩策略。
+- `forward_proxy_attempts` 与 `codex_quota_snapshots` 的在线保留、离线归档与压缩策略。
 - `summary?window=all` / 总量统计的初始 `invocation_rollup_daily` 承接方案，以及后续迁移到 hourly rollups 前的兼容边界。
 - `README.md`、`docs/deployment.md`、`docs/specs/README.md` 与前端 `InvocationTable` 的契约更新。
 
 ### Out of scope
 
 - archived 明细在线搜索、筛选、回放。
-- `stats_source_deltas` 的清理策略调整。
+- 已退役统计源的遗留 SQLite 表不做删除、迁移、读取或归档。
 - 任何依赖 archived 明细的新增 API 或页面。
 
 ## 数据生命周期与保留策略
@@ -51,7 +51,7 @@
 - 离线归档前必须先将待删调用折叠进 `invocation_rollup_daily`，确保长期 totals 不缩水。
 - 运行时不再维护 `raw_expires_at`；历史 archive `sqlite.gz` 中若仍带该列，不作为新版本的在线契约，也不执行离线回写重做。
 
-### `forward_proxy_attempts` / `stats_source_snapshots`
+### `forward_proxy_attempts`
 
 - 主库只保留最近 30 个上海自然日的在线排障明细。
 - 超过窗口的数据走与调用明细一致的“按表、按月、先归档后删除”流程，并登记到 `archive_batches`。
@@ -62,10 +62,9 @@
 - 更老数据在主库内压缩为“每个上海自然日只保留最后一条”；被折叠掉的重复快照先写入离线归档，再从主库删除。
 - 压缩后的日级配额快照长期在线保留，`/api/quota/latest` 行为不变。
 
-### `stats_source_deltas`
+### 退役统计源遗留表
 
-- 长期在线保留，不参与本轮清理。
-- 继续作为 CRS 聚合历史的长期来源。
+- 旧数据库可能带有历史统计快照与增量表；当前服务不读取、不创建、不归档也不删除它们。
 
 ## 对外接口与契约
 
@@ -97,7 +96,6 @@
   - `XY_INVOCATION_SUCCESS_FULL_DAYS`
   - `XY_INVOCATION_MAX_DAYS`
   - `XY_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS`
-  - `XY_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS`
   - `XY_QUOTA_SNAPSHOT_FULL_DAYS`
 - `PROXY_RAW_RETENTION_DAYS` 不再作为公开运行配置；raw file 生命周期由 invocation retention 窗口间接驱动。
 - 新增 CLI：
@@ -116,8 +114,8 @@
 ## 验收标准（Acceptance Criteria）
 
 - 成功调用超过 30 天后，主库在线记录仍可用于结构化排障，但 `detailLevel` 变为 `structured_only`，并明确标出精简时间与原因。
-- 超过 90 天的调用明细、超过 30 天的代理尝试与统计快照，在归档文件与 `archive_batches` 清单成功生成后，才能从主库删除。
-- `summary?window=all` 与总量统计在归档前后完全一致；长期 totals 依赖 `invocation_rollup_daily` 与 `stats_source_deltas`，而不是 archived 明细在线回查。
+- 超过 90 天的调用明细与超过 30 天的代理尝试，在归档文件与 `archive_batches` 清单成功生成后，才能从主库删除。
+- `summary?window=all` 与总量统计在归档前后完全一致；长期 totals 依赖 invocation rollups，而不是 archived 明细在线回查。
 - 给定 `previous7d`、`昨天前 7 天`、账号 usage 等跨自然日 summary 窗口，若其中一部分自然日已在更早的 retention 配置下 materialize 到 hourly rollup / archive，而另一部分仍保留在 live DB，读取结果仍必须与对应日粒度 timeseries totals 一致，不能因为当前 retention cutoff 已覆盖 `window.start` 就漏掉较早那几天。
 - 最近 30 天的 `codex_quota_snapshots` 逐条保留，更老日期只保留每天最后一条在线记录。
 - 前端旧 payload 缺失新字段时仍能稳定渲染，并在展开详情中默认按 `Full` 展示。

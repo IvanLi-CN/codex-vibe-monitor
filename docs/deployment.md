@@ -123,7 +123,7 @@ labels:
 - `RETENTION_BATCH_ROWS`：单批处理上限；用于降低 SQLite 长事务与锁表风险。
 - `ARCHIVE_DIR`：离线 archive 根目录；相对路径会锚定到 `DATABASE_PATH` 同级目录，建议挂载到持久化卷并纳入备份。
 - `INVOCATION_SUCCESS_FULL_DAYS` / `INVOCATION_MAX_DAYS`：调用明细冷热分层窗口；raw file 删除跟随这两档 retention，不再有独立的 raw retention env。
-- `FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS` / `STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS`：代理尝试与统计快照的在线保留窗口。
+- `FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS`：代理尝试的在线保留窗口。
 - `QUOTA_SNAPSHOT_FULL_DAYS`：配额快照全量在线保留窗口；超窗后压缩为“每天最后一条”。
 
 价格配置说明：
@@ -151,7 +151,7 @@ services:
 ```
 
 - `GET /api/quota/latest`：读取数据库里最近一条历史 quota snapshot；本服务不再从外部 XYAI 上游抓取新 quota。
-- `GET /api/stats`、`/api/stats/summary`、`/api/stats/timeseries` 默认合并数据库中的历史 `xy`、当前 `proxy`，以及启用时的 `crs` 来源。
+- `GET /api/stats`、`/api/stats/summary`、`/api/stats/timeseries` 默认聚合数据库中的历史 `xy` 与当前 `proxy` 调用记录。
 - `GET /api/stats/perf` 返回代理链路阶段耗时聚合统计。
 - `/api/invocations` 会额外返回 `detailLevel`、`detailPrunedAt`、`detailPruneReason`，用于标记当前在线记录是否仍保留完整原始细节；`rawExpiresAt` 已移除，不再作为公开响应字段。
 - `GET /api/stats` 与 `GET /api/stats/summary?window=all` 会合并在线明细与 `invocation_rollup_daily`，确保 archive/purge 后 totals 保持一致。
@@ -223,7 +223,7 @@ services:
 - retention 在 prune/archive 前会先执行 raw cold-compress：默认 `>= PROXY_RAW_IMMEDIATE_GZIP_BYTES` 的 raw 在首次落盘时就直接写成 `*.bin.gz`，其余小 payload 仍先保留明文 `*.bin`，并在超过 `PROXY_RAW_HOT_SECS` 后转成 `*.bin.gz`；数据库 raw path / codec 会与真实文件同步，`request_raw_size` / `response_raw_size` 仍表示原始 payload 字节。
 - `codex_invocations` archive 文件按上海自然日切成不可变 segment；若 `ARCHIVE_DIR` 为相对路径，则实际目录形如 `<DATABASE_PATH 同级目录>/<ARCHIVE_DIR 的值>/codex_invocations/YYYY/MM/DD/part-<seq>.sqlite.gz`。
 - `codex_invocations` 成功记录超过 30 个上海自然日后，会先把完整行写入离线 archive，再在主库内精简为 `structured_only`；任意调用超过 90 天后清理主库明细。
-- `forward_proxy_attempts`、`stats_source_snapshots` 只保留近 30 天在线明细；`codex_quota_snapshots` 近 30 天逐条保留，更老日期压缩为每天最后一条。
+- `forward_proxy_attempts` 只保留近 30 天在线明细；`codex_quota_snapshots` 近 30 天逐条保留，更老日期压缩为每天最后一条。旧 CRS 表不会由当前服务读取或维护。
 - 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，而不是在线 UI。orphan sweep 只会清理超过宽限期的未引用文件，以避免误删进行中的请求落盘文件。
 - 运维在宿主机上统一通过容器内脚本搜索 raw：`docker exec ai-codex-vibe-monitor search-raw '<needle>'`。脚本默认按容器内 `DATABASE_PATH + PROXY_RAW_DIR` 解析搜索根目录，同时搜索明文 `*.bin` 和 gzip `*.bin.gz`；若需要正则，改用 `docker exec ai-codex-vibe-monitor search-raw --regex '<pattern>'`，若要扫非默认目录再显式传 `--root`。
 - startup / follow-up maintenance 会在不阻塞 `/health` 的前提下，按固定 batch 与时间预算持续推进 legacy `materialize-historical-rollups`，因此 `historicalRollupBackfill` 默认会自愈；若 backlog 需要立即追平，仍可手工执行 `cargo run -- maintenance materialize-historical-rollups`。

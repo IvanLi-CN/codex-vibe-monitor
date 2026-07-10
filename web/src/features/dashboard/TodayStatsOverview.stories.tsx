@@ -6,12 +6,42 @@ import type { ParallelWorkStatsResponse, StatsResponse, TimeseriesResponse } fro
 import { TodayStatsOverview } from './TodayStatsOverview'
 import type { DashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
 
+const sampleUsageBreakdown = {
+  cacheWriteTokens: 432000,
+  cacheReadTokens: 196000,
+  outputTokens: 214190,
+  costs: {
+    input: 1.96,
+    cacheWrite: 3.24,
+    cacheRead: 0.44,
+    output: 6.12,
+    reasoning: 0.71,
+  },
+  models: [
+    {
+      model: 'gpt-5.6',
+      cacheWriteTokens: 321000,
+      cacheReadTokens: 144000,
+      outputTokens: 154190,
+      costs: { input: 1.34, cacheWrite: 2.41, cacheRead: 0.29, output: 4.58, reasoning: 0.53 },
+    },
+    {
+      model: 'gpt-5.4-mini',
+      cacheWriteTokens: 111000,
+      cacheReadTokens: 52000,
+      outputTokens: 60000,
+      costs: { input: 0.62, cacheWrite: 0.83, cacheRead: 0.15, output: 1.54, reasoning: 0.18 },
+    },
+  ],
+}
+
 const sampleStats: StatsResponse = {
   totalCount: 2184,
   successCount: 2149,
   failureCount: 35,
   totalCost: 12.47,
   totalTokens: 842190,
+  usageBreakdown: sampleUsageBreakdown,
   inProgressConversationCount: 11,
   inProgressRetryConversationCount: 4,
   inProgressAvgWaitMs: 1850,
@@ -226,6 +256,73 @@ export const Populated: Story = {
     await expect(canvas.getByTestId('today-stats-secondary-spend-rate-per-conversation')).toHaveTextContent(
       '$0.01',
     )
+  },
+}
+
+export const UsageBreakdownDetails: Story = {
+  args: {
+    stats: sampleStats,
+    rate: sampleRate,
+    ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
+    loading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: 'mobile1' },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByTestId('today-stats-label-total-cost'))
+    await waitFor(() => {
+      const tooltip = within(document.body).getByRole('tooltip')
+      expect(tooltip).toHaveTextContent(/Cache write|缓存写入/)
+      expect(tooltip).toHaveTextContent('gpt-5.6')
+    })
+    await userEvent.click(canvas.getByTestId('today-stats-label-total-tokens'))
+    await waitFor(() => {
+      const tooltip = within(document.body).getByRole('tooltip')
+      expect(tooltip).toHaveTextContent(/Cache read|缓存读取/)
+      expect(tooltip).toHaveTextContent(/Output|输出/)
+    })
+  },
+}
+
+export const HistoricalCostBreakdownUnavailable: Story = {
+  args: {
+    stats: {
+      ...sampleStats,
+      usageBreakdown: {
+        cacheWriteTokens: sampleUsageBreakdown.cacheWriteTokens,
+        cacheReadTokens: sampleUsageBreakdown.cacheReadTokens,
+        outputTokens: sampleUsageBreakdown.outputTokens,
+        models: sampleUsageBreakdown.models.map((model) => ({
+          model: model.model,
+          cacheWriteTokens: model.cacheWriteTokens,
+          cacheReadTokens: model.cacheReadTokens,
+          outputTokens: model.outputTokens,
+        })),
+      },
+    },
+    rate: sampleRate,
+    ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
+    loading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: 'mobile1' },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByTestId('today-stats-label-total-cost'))
+    await waitFor(() => {
+      expect(within(document.body).getByRole('tooltip')).toHaveTextContent(
+        /Historical cost breakdown unavailable|历史成本分项未提供/,
+      )
+    })
   },
 }
 

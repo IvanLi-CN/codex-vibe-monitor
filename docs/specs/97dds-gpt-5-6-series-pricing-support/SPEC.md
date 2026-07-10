@@ -13,13 +13,13 @@ The project needs a compatible upgrade that preserves existing user-defined pric
 - Add first-class support for `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` across the default pricing catalog, proxy preset models, Settings model lists, and `/v1/models` hijack payloads.
 - Upgrade the pricing contract to support explicit cache read and cache write unit prices with a compatibility bridge for legacy `cacheInputPer1m`.
 - Make `estimate_proxy_cost` bill GPT-5.6 cached tokens with read pricing and uncached prompt tokens with write pricing while keeping legacy-model semantics unchanged.
+- Persist the exact input, cache-write, cache-read, output, and reasoning cost buckets for new proxy records, then expose a derived cache-write Token count together with model-level usage and cost breakdowns.
 - Replace the remaining `unsupported_model:gpt-5.5` UI special-case with generic `unsupported_model:<model>` handling so newer unsupported models behave correctly without new hardcoding.
 
 ## Non-goals
 
 - Do not add online pricing sync or import the full `sub2api` pricing payload.
 - Do not invent a generic `gpt-5.6` placeholder model id.
-- Do not expose derived `cacheWriteTokens` as if it were an upstream usage truth field in records, dashboard, or timeseries pages.
 - Do not change legacy model pricing rules except where schema plumbing is required for backward compatibility.
 
 ## Requirements
@@ -34,6 +34,10 @@ The project needs a compatible upgrade that preserves existing user-defined pric
 - SQLite persistence must preserve existing pricing rows and backfill read pricing from legacy data without overwriting user-defined values.
 - Model resolution must match exact ids first and also map `gpt-5.6-sol|terra|luna-YYYY-MM-DD` to their base model pricing rows.
 - Settings pricing UI must split cached pricing into separate cache read and cache write columns and clearly label the contract as estimation metadata rather than runtime token truth.
+- New invocation rows must persist exact cost buckets. Historical rows must continue to expose their total cost while reporting unavailable cost buckets rather than being repriced.
+- `cacheWriteTokens` must be derived as `max(inputTokens - cacheInputTokens, 0)`; `cacheInputTokens` remains the upstream cache-read count.
+- Dashboard summary and upstream-account activity APIs must return total and model-level usage breakdowns. Cost breakdowns include input, cache write, cache read, output, and non-zero reasoning cost.
+- Dashboard and account-card cost/Token labels must provide keyboard-accessible detail panels; records, live cards, and dashboard call previews must display `CW` and `C` together.
 
 ## Interface Contract
 
@@ -77,6 +81,9 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - Given a legacy model entry that only has cached-input pricing, when cost is estimated, then existing legacy tests continue to use the pre-upgrade uncached-input semantics.
 - Given default proxy model settings, when repo-managed defaults are normalized, then the GPT-5.6 model ids appear in preset lists and are appended only for legacy default enabled-model lists.
 - Given account tags containing `unsupported_model:gpt-5.6-sol`, when the roster and routing UI render, then the tag behaves like other system unsupported-model tags without GPT-5.5-specific special casing.
+- Given a new GPT-5.6 invocation, when its usage is persisted, then its cost buckets sum to `cost`, cache write Token count is non-negative, and the total/model usage breakdowns remain reconcilable.
+- Given a historical invocation without persisted cost buckets, when it appears in a detail panel, then Token derivation remains visible and cost detail says it is unavailable.
+- Given a dashboard or upstream-account cost/Token label, when it is hovered, focused, or clicked, then total and sorted model detail is readable on desktop and mobile.
 
 ## Visual Evidence
 

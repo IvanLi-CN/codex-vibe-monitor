@@ -330,9 +330,7 @@ pub(crate) struct AppConfig {
     pub(crate) forward_proxy_attempts_retention_days: u64,
     pub(crate) pool_upstream_request_attempts_retention_days: u64,
     pub(crate) pool_upstream_request_attempts_archive_ttl_days: u64,
-    pub(crate) stats_source_snapshots_retention_days: u64,
     pub(crate) quota_snapshot_full_days: u64,
-    pub(crate) crs_stats: Option<CrsStatsConfig>,
     pub(crate) upstream_accounts_oauth_client_id: String,
     pub(crate) upstream_accounts_oauth_issuer: Url,
     pub(crate) upstream_accounts_usage_base_url: Url,
@@ -341,15 +339,6 @@ pub(crate) struct AppConfig {
     pub(crate) upstream_accounts_refresh_lead_time: Duration,
     pub(crate) upstream_accounts_history_retention_days: u64,
     pub(crate) upstream_accounts_kaisoumail: Option<UpstreamAccountsKaisouMailConfig>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CrsStatsConfig {
-    pub(crate) base_url: Url,
-    pub(crate) api_id: String,
-    pub(crate) period: String,
-    pub(crate) poll_interval: Duration,
 }
 
 #[derive(Clone, Serialize)]
@@ -613,10 +602,6 @@ impl AppConfig {
             ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
             DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
         )?;
-        let stats_source_snapshots_retention_days = parse_u64_env_var(
-            ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
-            DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
-        )?;
         let quota_snapshot_full_days = parse_u64_env_var(
             ENV_QUOTA_SNAPSHOT_FULL_DAYS,
             DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
@@ -693,36 +678,6 @@ impl AppConfig {
             }
         };
 
-        let crs_stats_base_url = env::var("CRS_STATS_BASE_URL").ok();
-        let crs_stats_api_id = env::var("CRS_STATS_API_ID").ok();
-        if crs_stats_base_url.is_some() ^ crs_stats_api_id.is_some() {
-            return Err(anyhow!(
-                "CRS_STATS_BASE_URL and CRS_STATS_API_ID must be set together"
-            ));
-        }
-
-        let crs_stats_period = env::var("CRS_STATS_PERIOD")
-            .ok()
-            .unwrap_or_else(|| "daily".to_string());
-        if crs_stats_period != "daily" {
-            return Err(anyhow!("CRS_STATS_PERIOD only supports 'daily' for now"));
-        }
-
-        let crs_stats_poll_interval = env::var("CRS_STATS_POLL_INTERVAL_SECS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(Duration::from_secs)
-            .unwrap_or(poll_interval);
-        let crs_stats = match (crs_stats_base_url, crs_stats_api_id) {
-            (Some(url), Some(api_id)) => Some(CrsStatsConfig {
-                base_url: Url::parse(&url).context("invalid CRS_STATS_BASE_URL")?,
-                api_id,
-                period: crs_stats_period,
-                poll_interval: crs_stats_poll_interval,
-            }),
-            _ => None,
-        };
-
         Ok(Self {
             openai_upstream_base_url: Url::parse(&openai_upstream_base_url)
                 .context("invalid OPENAI_UPSTREAM_BASE_URL")?,
@@ -771,9 +726,7 @@ impl AppConfig {
             forward_proxy_attempts_retention_days,
             pool_upstream_request_attempts_retention_days,
             pool_upstream_request_attempts_archive_ttl_days,
-            stats_source_snapshots_retention_days,
             quota_snapshot_full_days,
-            crs_stats,
             upstream_accounts_oauth_client_id,
             upstream_accounts_oauth_issuer,
             upstream_accounts_usage_base_url,

@@ -1,5 +1,5 @@
 import type { ParallelWorkStatsResponse, StatsResponse, TimeseriesResponse } from '../../lib/api'
-import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useTranslation } from '../../i18n'
 import { cn } from '../../lib/utils'
 import { getBrowserTimeZone } from '../../lib/timeZone'
@@ -23,6 +23,7 @@ import { AppIcon, type AppIconName } from '../shared/AppIcon'
 import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
 import { Tooltip } from '../../components/ui/tooltip'
+import { UsageBreakdownTooltip } from './UsageBreakdownTooltip'
 import type { DashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
 import { parseDateInput, resolveClosedNaturalDayEnd } from './dashboardNaturalDayWindow'
 import { buildDashboardResponseTimeSnapshot } from './dashboardResponseTimeSnapshot'
@@ -98,6 +99,7 @@ interface MetricTileProps {
   mainAsideItem?: MetricTileMetaItem | null
   secondaryItems?: MetricTileSecondaryItem[]
   className?: string
+  metricTooltipContent?: ReactNode
 }
 
 function MetricTile({
@@ -120,6 +122,7 @@ function MetricTile({
   mainAsideItem,
   secondaryItems = [],
   className,
+  metricTooltipContent,
 }: MetricTileProps) {
   const handleLabelKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
     if (event.key !== 'Enter' && event.key !== ' ') return
@@ -220,7 +223,8 @@ function MetricTile({
       <div className="flex min-w-0 items-start justify-between gap-3">
         <Tooltip
           className="min-w-0 flex-1"
-          content={description}
+          content={metricTooltipContent ?? description}
+          contentClassName={metricTooltipContent ? 'w-[min(22rem,calc(100vw-1rem))] px-3.5 py-3' : undefined}
           clickToOpen
           side="bottom"
           sideOffset={8}
@@ -603,6 +607,19 @@ export function TodayStatsOverview({
   const successComparisonRatio = isToday
     ? ratioOfCurrentToBaseline(successCount, sameProgressUsage.successCount ?? comparisonStats?.successCount)
     : null
+  const usageBreakdownLabels = locale === 'zh'
+    ? {
+        total: '总计', cacheWrite: '缓存写入', cacheRead: '缓存读取', output: '输出',
+        input: '输入', reasoning: '推理', unavailable: '历史成本分项未提供', unknownModel: '未标识模型',
+      }
+    : {
+        total: 'Total', cacheWrite: 'Cache write', cacheRead: 'Cache read', output: 'Output',
+        input: 'Input', reasoning: 'Reasoning', unavailable: 'Historical cost breakdown unavailable', unknownModel: 'Unidentified model',
+      }
+  const formatBreakdownNumber = (value: number) => new Intl.NumberFormat(localeTag).format(value)
+  const formatBreakdownCurrency = (value: number) => new Intl.NumberFormat(localeTag, {
+    style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4,
+  }).format(value)
 
   const content = (
     <>
@@ -869,6 +886,17 @@ export function TodayStatsOverview({
             iconName="currency-usd"
             displaySpec={buildCurrencyAmountValueSpec(totalCost, localeTag)}
             valueTestId="today-stats-value-total-cost"
+            labelTestId="today-stats-label-total-cost"
+            metricTooltipContent={
+              <UsageBreakdownTooltip
+                title={costLabel}
+                breakdown={stats?.usageBreakdown}
+                kind="cost"
+                formatNumber={formatBreakdownNumber}
+                formatCurrency={formatBreakdownCurrency}
+                labels={usageBreakdownLabels}
+              />
+            }
             topRightItem={{
               label: comparisonLabel,
               valueSpec: buildPercentValueSpec(totalCostDelta, localeTag, { signDisplay: 'exceptZero' }),
@@ -899,6 +927,16 @@ export function TodayStatsOverview({
             iconName="database-outline"
             toneClass="text-secondary"
             valueTestId="today-stats-value-total-tokens"
+            metricTooltipContent={
+              <UsageBreakdownTooltip
+                title={tokensLabel}
+                breakdown={stats?.usageBreakdown}
+                kind="tokens"
+                formatNumber={formatBreakdownNumber}
+                formatCurrency={formatBreakdownCurrency}
+                labels={usageBreakdownLabels}
+              />
+            }
             topRightItem={{
               label: comparisonLabel,
               valueSpec: buildPercentValueSpec(totalTokensDelta, localeTag, { signDisplay: 'exceptZero' }),

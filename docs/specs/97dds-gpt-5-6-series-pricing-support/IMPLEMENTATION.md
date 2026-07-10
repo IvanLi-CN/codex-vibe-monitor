@@ -2,7 +2,7 @@
 
 ## Current State
 
-- Status: completed
+- Status: in progress
 - Canonical spec: `docs/specs/97dds-gpt-5-6-series-pricing-support/SPEC.md`
 
 ## Delivery Checklist
@@ -14,7 +14,10 @@
 - [x] Add GPT-5.6 models to proxy presets, settings model lists, and `/v1/models` hijack payloads.
 - [x] Split the Settings pricing UI into cache read and cache write columns and keep legacy payload ingestion coverage.
 - [x] Generalize unsupported-model UI rendering away from the `gpt-5.5` special-case.
-- [x] Run Rust and web validation, capture visual evidence, and update this file with the final verification set.
+- [x] Persist cost buckets, derive cache-write Token counts, and expose total/model usage breakdown APIs.
+- [x] Add accessible dashboard and upstream-account breakdown panels plus `CW` invocation labels.
+- [x] Retire CRS runtime configuration, polling, aggregation, retention, and API reads while keeping old SQLite tables untouched.
+- [ ] Run Rust and web validation, capture visual evidence, and update this file with the final verification set.
 
 ## Verification
 

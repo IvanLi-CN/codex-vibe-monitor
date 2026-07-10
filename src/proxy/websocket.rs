@@ -2000,14 +2000,16 @@ pub(crate) async fn persist_ws_usage_event(
             event.service_tier.as_deref(),
             Some(account),
         );
-    let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
-        &state.pricing_catalog,
-        model,
-        &event.usage,
-        billing_service_tier.as_deref(),
-        pricing_mode,
-    )
-    .await;
+    let (cost_breakdown, cost_estimated, price_version) =
+        estimate_proxy_cost_breakdown_from_shared_catalog(
+            &state.pricing_catalog,
+            model,
+            &event.usage,
+            billing_service_tier.as_deref(),
+            pricing_mode,
+        )
+        .await;
+    let cost = cost_breakdown.map(ProxyCostBreakdown::total);
     let occurred_at = shanghai_now_string();
     let response_id = event.response_id.as_deref();
     let invoke_id = response_id
@@ -2115,6 +2117,7 @@ pub(crate) async fn persist_ws_usage_event(
             model: event.model,
             usage: event.usage,
             cost,
+            cost_breakdown,
             cost_estimated,
             price_version,
             status: if is_failed_terminal_event {

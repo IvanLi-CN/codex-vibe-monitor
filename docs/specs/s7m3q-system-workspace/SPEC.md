@@ -100,7 +100,6 @@
 
 - MUST 默认展示系统后台任务执行记录，而不是账号池维护事件。
 - 首版任务类型至少覆盖：
-  - `scheduler_poll`
   - `retention_archive`
   - `startup_backfill`
   - `forward_proxy_subscription_refresh`

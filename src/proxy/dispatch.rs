@@ -370,6 +370,7 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
         model: request_info.model.clone(),
         usage,
         cost,
+        cost_breakdown: None,
         cost_estimated,
         price_version,
         status: if status.is_server_error() {
@@ -610,6 +611,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 model: None,
                 usage,
                 cost,
+                cost_breakdown: None,
                 cost_estimated,
                 price_version,
                 status: if read_err.status.is_server_error() {
@@ -780,6 +782,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 model: None,
                 usage,
                 cost,
+                cost_breakdown: None,
                 cost_estimated,
                 price_version,
                 status: "http_502".to_string(),
@@ -1183,6 +1186,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     model: request_info.model,
                     usage,
                     cost,
+                    cost_breakdown: None,
                     cost_estimated,
                     price_version,
                     status: if err.status.is_server_error() {
@@ -1418,6 +1422,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     model: request_info.model,
                     usage,
                     cost,
+                    cost_breakdown: None,
                     cost_estimated,
                     price_version,
                     status: if err.status.is_server_error() {
@@ -1593,6 +1598,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 model: request_info.model,
                 usage,
                 cost,
+                cost_breakdown: None,
                 cost_estimated,
                 price_version,
                 status: "http_502".to_string(),
@@ -2627,14 +2633,16 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 response_info.service_tier.as_deref(),
                 pool_account_for_task.as_ref(),
             );
-        let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
-            &state_for_task.pricing_catalog,
-            response_info.model.as_deref(),
-            &response_info.usage,
-            billing_service_tier.as_deref(),
-            pricing_mode,
-        )
-        .await;
+        let (cost_breakdown, cost_estimated, price_version) =
+            estimate_proxy_cost_breakdown_from_shared_catalog(
+                &state_for_task.pricing_catalog,
+                response_info.model.as_deref(),
+                &response_info.usage,
+                billing_service_tier.as_deref(),
+                pricing_mode,
+            )
+            .await;
+        let cost = cost_breakdown.map(ProxyCostBreakdown::total);
         let request_chain_metadata_for_payload = (had_stream_error
             || had_logical_stream_failure
             || pure_downstream_closed
@@ -2781,6 +2789,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             model: response_info.model,
             usage: response_info.usage,
             cost,
+            cost_breakdown,
             cost_estimated,
             price_version,
             status,

@@ -271,30 +271,30 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     )
     .await;
 
-    let scheduler_handle = begin_system_task_run(
+    let startup_handle = begin_system_task_run(
         &state.pool,
-        SystemTaskKind::SchedulerPoll,
-        "interval",
-        Some("scheduler cycle".to_string()),
+        SystemTaskKind::StartupBackfill,
+        "startup",
+        Some("startup cycle".to_string()),
     )
     .await
-    .expect("insert scheduler task");
+    .expect("insert startup task");
     tokio::time::sleep(Duration::from_millis(5)).await;
     finish_system_task_run(
         &state.pool,
-        &scheduler_handle,
+        &startup_handle,
         SystemTaskStatus::Success,
-        Some("scheduler ok".to_string()),
+        Some("startup ok".to_string()),
         None,
     )
     .await;
     sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
         .bind("2026-06-22 08:45:00")
         .bind("2026-06-22 08:45:01")
-        .bind(scheduler_handle.id)
+        .bind(startup_handle.id)
         .execute(&state.pool)
         .await
-        .expect("pin scheduler task timestamps");
+        .expect("pin startup task timestamps");
 
     let retention_handle = begin_system_task_run(
         &state.pool,
@@ -370,7 +370,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     assert_eq!(all.page_size, 10);
     assert_eq!(all.items.len(), 2);
     assert_eq!(all.items[0].task_kind, "retention_archive");
-    assert_eq!(all.items[1].task_kind, "scheduler_poll");
+    assert_eq!(all.items[1].task_kind, "startup_backfill");
 
     let paged = list_system_task_runs(
         State(state.clone()),
@@ -392,7 +392,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     assert_eq!(paged.page, 2);
     assert_eq!(paged.page_size, 1);
     assert_eq!(paged.items.len(), 1);
-    assert_eq!(paged.items[0].task_kind, "scheduler_poll");
+    assert_eq!(paged.items[0].task_kind, "startup_backfill");
 
     let ranged = list_system_task_runs(
         State(state.clone()),

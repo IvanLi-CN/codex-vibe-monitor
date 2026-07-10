@@ -1545,143 +1545,6 @@ pub(crate) async fn sweep_orphan_proxy_raw_files(
 mod hourly_rollup_archive_support;
 pub(crate) use hourly_rollup_archive_support::*;
 
-pub(crate) async fn schedule_poll(
-    state: Arc<AppState>,
-    cancel: &CancellationToken,
-) -> Result<Option<JoinHandle<()>>> {
-    let permit = tokio::select! {
-        _ = cancel.cancelled() => return Ok(None),
-        permit = state.semaphore.clone().acquire_owned() => {
-            permit.context("failed to acquire scheduler permit")?
-        }
-    };
-    if cancel.is_cancelled() {
-        return Ok(None);
-    }
-
-    let in_flight = state
-        .config
-        .max_parallel_polls
-        .saturating_sub(state.semaphore.available_permits());
-    let force_new_connection = in_flight > state.config.shared_connection_parallelism;
-    let state_clone = state.clone();
-    let system_task_run = begin_system_task_run(
-        &state.pool,
-        SystemTaskKind::SchedulerPoll,
-        "interval",
-        Some(summarize_scheduler_poll_outcome(
-            state.as_ref(),
-            force_new_connection,
-        )),
-    )
-    .await
-    .ok();
-
-    let handle = tokio::spawn(async move {
-        let collect_broadcast_state = state_clone.broadcaster.receiver_count() > 0;
-        let fut = fetch_and_store(&state_clone, force_new_connection, collect_broadcast_state);
-        match timeout(state_clone.config.request_timeout, fut).await {
-            Ok(Ok(publish)) => {
-                let PublishResult {
-                    mut summaries,
-                    mut quota_snapshot,
-                    collected_broadcast_state,
-                } = publish;
-
-                let receiver_count = state_clone.broadcaster.receiver_count();
-                if should_collect_late_broadcast_state(receiver_count, collected_broadcast_state) {
-                    match collect_broadcast_state_snapshots(
-                        &state_clone.pool,
-                        state_clone.config.crs_stats.as_ref(),
-                        state_clone.config.invocation_max_days,
-                    )
-                    .await
-                    {
-                        Ok((latest_summaries, latest_quota_snapshot)) => {
-                            summaries = latest_summaries;
-                            quota_snapshot = latest_quota_snapshot;
-                        }
-                        Err(err) => {
-                            warn!(?err, "failed to collect late-subscriber broadcast state");
-                        }
-                    }
-                }
-
-                for summary in summaries {
-                    if let Err(err) = broadcast_summary_if_changed(
-                        &state_clone.broadcaster,
-                        state_clone.broadcast_state_cache.as_ref(),
-                        &summary.window,
-                        summary.summary,
-                    )
-                    .await
-                    {
-                        warn!(?err, "failed to broadcast summary payload");
-                    }
-                }
-
-                if let Some(snapshot) = quota_snapshot
-                    && let Err(err) = broadcast_quota_if_changed(
-                        &state_clone.broadcaster,
-                        state_clone.broadcast_state_cache.as_ref(),
-                        snapshot,
-                    )
-                    .await
-                {
-                    warn!(?err, "failed to broadcast quota snapshot");
-                }
-
-                if let Some(run) = system_task_run.as_ref() {
-                    finish_system_task_run_batched(
-                        state_clone.as_ref(),
-                        run,
-                        SystemTaskStatus::Success,
-                        Some(summarize_scheduler_poll_outcome(
-                            state_clone.as_ref(),
-                            force_new_connection,
-                        )),
-                        None,
-                    )
-                    .await;
-                }
-            }
-            Ok(Err(err)) => {
-                if let Some(run) = system_task_run.as_ref() {
-                    finish_system_task_run_batched(
-                        state_clone.as_ref(),
-                        run,
-                        SystemTaskStatus::Failed,
-                        Some("scheduler poll failed".to_string()),
-                        Some(err.to_string()),
-                    )
-                    .await;
-                }
-                warn!(?err, "poll execution failed");
-            }
-            Err(_) => {
-                if let Some(run) = system_task_run.as_ref() {
-                    finish_system_task_run_batched(
-                        state_clone.as_ref(),
-                        run,
-                        SystemTaskStatus::Failed,
-                        Some("scheduler poll timed out".to_string()),
-                        Some(format!(
-                            "timeout_secs={}",
-                            state_clone.config.request_timeout.as_secs()
-                        )),
-                    )
-                    .await;
-                }
-                warn!("scheduler fetch timed out");
-            }
-        }
-
-        drop(permit);
-    });
-
-    Ok(Some(handle))
-}
-
 pub(crate) fn build_health_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/health", get(health_check))
@@ -2136,76 +1999,9 @@ pub(crate) async fn shutdown_listener() {
     }
 }
 
-pub(crate) struct PublishResult {
-    pub(crate) summaries: Vec<SummaryPublish>,
-    pub(crate) quota_snapshot: Option<QuotaSnapshotResponse>,
-    pub(crate) collected_broadcast_state: bool,
-}
-
 pub(crate) struct SummaryPublish {
     pub(crate) window: String,
     pub(crate) summary: StatsResponse,
-}
-
-pub(crate) fn should_collect_late_broadcast_state(
-    receiver_count: usize,
-    collected_broadcast_state: bool,
-) -> bool {
-    receiver_count > 0 && !collected_broadcast_state
-}
-
-pub(crate) async fn collect_broadcast_state_snapshots(
-    pool: &Pool<Sqlite>,
-    relay: Option<&CrsStatsConfig>,
-    invocation_max_days: u64,
-) -> Result<(Vec<SummaryPublish>, Option<QuotaSnapshotResponse>)> {
-    Ok((
-        collect_summary_snapshots(pool, relay, invocation_max_days).await?,
-        QuotaSnapshotResponse::fetch_latest(pool).await?,
-    ))
-}
-
-pub(crate) async fn fetch_and_store(
-    state: &AppState,
-    force_new_connection: bool,
-    collect_broadcast_state: bool,
-) -> Result<PublishResult> {
-    let client = state
-        .http_clients
-        .client_for_parallelism(force_new_connection)?;
-    let relay_config = state.config.crs_stats.clone();
-
-    if let Some(relay) = relay_config.as_ref()
-        && should_poll_crs_stats(&state.pool, relay).await?
-    {
-        match fetch_crs_stats(&client, relay).await {
-            Ok(payload) => {
-                if let Err(err) = persist_crs_stats(&state.pool, relay, payload).await {
-                    warn!(?err, "failed to persist crs stats");
-                }
-            }
-            Err(err) => {
-                warn!(?err, "failed to fetch crs stats");
-            }
-        }
-    }
-
-    let (summaries, quota_payload) = if collect_broadcast_state {
-        collect_broadcast_state_snapshots(
-            &state.pool,
-            relay_config.as_ref(),
-            state.config.invocation_max_days,
-        )
-        .await?
-    } else {
-        (Vec::new(), None)
-    };
-
-    Ok(PublishResult {
-        summaries,
-        quota_snapshot: quota_payload,
-        collected_broadcast_state: collect_broadcast_state,
-    })
 }
 
 pub(crate) struct SummaryBroadcastSpec {
@@ -2240,7 +2036,6 @@ pub(crate) fn summary_broadcast_specs() -> Vec<SummaryBroadcastSpec> {
 
 pub(crate) async fn collect_summary_snapshots(
     pool: &Pool<Sqlite>,
-    relay: Option<&CrsStatsConfig>,
     invocation_max_days: u64,
 ) -> Result<Vec<SummaryPublish>> {
     let mut summaries = Vec::new();
@@ -2283,7 +2078,7 @@ pub(crate) async fn collect_summary_snapshots(
                 if let Some(existing) = &cached_all {
                     existing.clone()
                 } else {
-                    let stats = query_combined_totals(pool, relay, StatsFilter::All, source_scope)
+                    let stats = query_combined_totals(pool, StatsFilter::All, source_scope)
                         .await?
                         .into_response();
                     cached_all = Some(stats.clone());
@@ -2294,7 +2089,6 @@ pub(crate) async fn collect_summary_snapshots(
                 let start = now - duration;
                 query_hourly_backed_summary_since_with_config(
                     pool,
-                    relay,
                     invocation_max_days,
                     start,
                     source_scope,
@@ -2315,327 +2109,6 @@ pub(crate) async fn collect_summary_snapshots(
     Ok(summaries)
 }
 
-pub(crate) async fn should_poll_crs_stats(
-    pool: &Pool<Sqlite>,
-    relay: &CrsStatsConfig,
-) -> Result<bool> {
-    let last_epoch = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT captured_at_epoch
-        FROM stats_source_snapshots
-        WHERE source = ?1 AND period = ?2 AND model IS NULL
-        ORDER BY captured_at_epoch DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(SOURCE_CRS)
-    .bind(&relay.period)
-    .fetch_optional(pool)
-    .await?;
-
-    let now_epoch = Utc::now().timestamp();
-    Ok(match last_epoch {
-        Some(last) => now_epoch.saturating_sub(last) >= relay.poll_interval.as_secs() as i64,
-        None => true,
-    })
-}
-
-pub(crate) async fn fetch_crs_stats(
-    client: &Client,
-    relay: &CrsStatsConfig,
-) -> Result<CrsStatsResponse> {
-    let url = relay
-        .base_url
-        .join("apiStats/api/user-model-stats")
-        .context("failed to join crs stats endpoint")?;
-    let payload = json!({
-        "apiId": relay.api_id,
-        "period": relay.period,
-    });
-
-    let response = client
-        .post(url)
-        .json(&payload)
-        .send()
-        .await
-        .context("failed to send crs stats request")?
-        .error_for_status()
-        .context("crs stats request returned error status")?;
-
-    let payload: CrsStatsResponse = response
-        .json()
-        .await
-        .context("failed to decode crs stats JSON")?;
-
-    if !payload.success {
-        return Err(anyhow!("crs stats responded with success=false"));
-    }
-
-    Ok(payload)
-}
-
-pub(crate) fn aggregate_crs_totals(models: &[CrsModelStats]) -> CrsTotals {
-    let mut totals = CrsTotals::default();
-    for model in models {
-        totals.total_count += model.requests;
-        totals.total_tokens += model.all_tokens;
-        totals.total_cost += model.costs.total;
-        totals.input_tokens += model.input_tokens;
-        totals.output_tokens += model.output_tokens;
-        totals.cache_create_tokens += model.cache_create_tokens;
-        totals.cache_read_tokens += model.cache_read_tokens;
-        totals.cost_input += model.costs.input;
-        totals.cost_output += model.costs.output;
-        totals.cost_cache_write += model.costs.cache_write;
-        totals.cost_cache_read += model.costs.cache_read;
-    }
-    totals
-}
-
-#[derive(Debug, FromRow)]
-pub(crate) struct CrsMaxRow {
-    max_requests: Option<i64>,
-    max_all_tokens: Option<i64>,
-    max_cost_total: Option<f64>,
-}
-
-pub(crate) fn compute_crs_delta(
-    stats_date: &str,
-    now_utc: DateTime<Utc>,
-    totals: CrsTotals,
-    prev: CrsMaxRow,
-) -> StatsTotals {
-    let max_requests = prev.max_requests.unwrap_or(0);
-    let max_tokens = prev.max_all_tokens.unwrap_or(0);
-    let max_cost = prev.max_cost_total.unwrap_or(0.0);
-
-    if totals.total_count < max_requests {
-        if totals.total_count == 0 {
-            let local = now_utc.with_timezone(&Shanghai);
-            error!(
-                stats_date,
-                now = %local.to_rfc3339(),
-                current = totals.total_count,
-                previous_max = max_requests,
-                "crs stats reset to zero outside day boundary"
-            );
-        } else {
-            warn!(
-                stats_date,
-                current = totals.total_count,
-                previous_max = max_requests,
-                "crs stats total decreased; keeping daily max"
-            );
-        }
-    }
-
-    let delta_count = if totals.total_count > max_requests {
-        totals.total_count - max_requests
-    } else {
-        0
-    };
-    let delta_tokens = if totals.total_tokens > max_tokens {
-        totals.total_tokens - max_tokens
-    } else {
-        0
-    };
-    let delta_cost = if totals.total_cost > max_cost {
-        totals.total_cost - max_cost
-    } else {
-        0.0
-    };
-
-    StatsTotals {
-        total_count: delta_count,
-        success_count: delta_count,
-        failure_count: 0,
-        total_tokens: delta_tokens,
-        total_cost: delta_cost,
-        non_success_cost: 0.0,
-    }
-}
-
-pub(crate) async fn persist_crs_stats(
-    pool: &Pool<Sqlite>,
-    relay: &CrsStatsConfig,
-    payload: CrsStatsResponse,
-) -> Result<Option<StatsTotals>> {
-    let now_utc = Utc::now();
-    let captured_at = format_naive(now_utc.naive_utc());
-    let captured_at_epoch = now_utc.timestamp();
-    let stats_date = now_utc
-        .with_timezone(&Shanghai)
-        .date_naive()
-        .format("%Y-%m-%d")
-        .to_string();
-
-    let period = if payload.period.is_empty() {
-        relay.period.clone()
-    } else {
-        payload.period.clone()
-    };
-
-    if period != relay.period {
-        warn!(
-            expected = %relay.period,
-            actual = %period,
-            "crs stats period mismatch; using response period"
-        );
-    }
-
-    let totals = aggregate_crs_totals(&payload.data);
-    let raw_response = serde_json::to_string(&payload)?;
-
-    let mut tx = pool.begin().await?;
-    let prev = sqlx::query_as::<_, CrsMaxRow>(
-        r#"
-        SELECT
-            MAX(requests) AS max_requests,
-            MAX(all_tokens) AS max_all_tokens,
-            MAX(cost_total) AS max_cost_total
-        FROM stats_source_snapshots
-        WHERE source = ?1 AND period = ?2 AND stats_date = ?3 AND model IS NULL
-        "#,
-    )
-    .bind(SOURCE_CRS)
-    .bind(&period)
-    .bind(&stats_date)
-    .fetch_one(&mut *tx)
-    .await?;
-
-    for model in &payload.data {
-        sqlx::query(
-            r#"
-            INSERT OR IGNORE INTO stats_source_snapshots (
-                source,
-                period,
-                stats_date,
-                model,
-                requests,
-                input_tokens,
-                output_tokens,
-                cache_create_tokens,
-                cache_read_tokens,
-                all_tokens,
-                cost_input,
-                cost_output,
-                cost_cache_write,
-                cost_cache_read,
-                cost_total,
-                raw_response,
-                captured_at,
-                captured_at_epoch
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
-            "#,
-        )
-        .bind(SOURCE_CRS)
-        .bind(&period)
-        .bind(&stats_date)
-        .bind(&model.model)
-        .bind(model.requests)
-        .bind(model.input_tokens)
-        .bind(model.output_tokens)
-        .bind(model.cache_create_tokens)
-        .bind(model.cache_read_tokens)
-        .bind(model.all_tokens)
-        .bind(model.costs.input)
-        .bind(model.costs.output)
-        .bind(model.costs.cache_write)
-        .bind(model.costs.cache_read)
-        .bind(model.costs.total)
-        .bind(Option::<String>::None)
-        .bind(&captured_at)
-        .bind(captured_at_epoch)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    sqlx::query(
-        r#"
-        INSERT OR IGNORE INTO stats_source_snapshots (
-            source,
-            period,
-            stats_date,
-            model,
-            requests,
-            input_tokens,
-            output_tokens,
-            cache_create_tokens,
-            cache_read_tokens,
-            all_tokens,
-            cost_input,
-            cost_output,
-            cost_cache_write,
-            cost_cache_read,
-            cost_total,
-            raw_response,
-            captured_at,
-            captured_at_epoch
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
-        "#,
-    )
-    .bind(SOURCE_CRS)
-    .bind(&period)
-    .bind(&stats_date)
-    .bind(Option::<String>::None)
-    .bind(totals.total_count)
-    .bind(totals.input_tokens)
-    .bind(totals.output_tokens)
-    .bind(totals.cache_create_tokens)
-    .bind(totals.cache_read_tokens)
-    .bind(totals.total_tokens)
-    .bind(totals.cost_input)
-    .bind(totals.cost_output)
-    .bind(totals.cost_cache_write)
-    .bind(totals.cost_cache_read)
-    .bind(totals.total_cost)
-    .bind(raw_response)
-    .bind(&captured_at)
-    .bind(captured_at_epoch)
-    .execute(&mut *tx)
-    .await?;
-
-    let delta = compute_crs_delta(&stats_date, now_utc, totals, prev);
-    let has_delta = delta.total_count > 0 || delta.total_tokens > 0 || delta.total_cost > 0.0;
-    if has_delta {
-        sqlx::query(
-            r#"
-            INSERT OR IGNORE INTO stats_source_deltas (
-                source,
-                period,
-                stats_date,
-                captured_at,
-                captured_at_epoch,
-                total_count,
-                success_count,
-                failure_count,
-                total_tokens,
-                total_cost
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            "#,
-        )
-        .bind(SOURCE_CRS)
-        .bind(&period)
-        .bind(&stats_date)
-        .bind(&captured_at)
-        .bind(captured_at_epoch)
-        .bind(delta.total_count)
-        .bind(delta.success_count)
-        .bind(delta.failure_count)
-        .bind(delta.total_tokens)
-        .bind(delta.total_cost)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    tx.commit().await?;
-
-    Ok(if has_delta { Some(delta) } else { None })
-}
-
 pub(crate) fn codex_invocations_create_sql(table_name: &str) -> String {
     format!(
         r#"
@@ -2651,6 +2124,11 @@ pub(crate) fn codex_invocations_create_sql(table_name: &str) -> String {
             reasoning_tokens INTEGER,
             total_tokens INTEGER,
             cost REAL,
+            cost_input REAL,
+            cost_cache_write REAL,
+            cost_cache_read REAL,
+            cost_output REAL,
+            cost_reasoning REAL,
             status TEXT,
             error_message TEXT,
             failure_kind TEXT,
@@ -2800,6 +2278,11 @@ pub(crate) async fn ensure_codex_invocations_archive_schema(
     for (column, ty) in [
         ("request_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
         ("response_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
+        ("cost_input", "REAL"),
+        ("cost_cache_write", "REAL"),
+        ("cost_cache_read", "REAL"),
+        ("cost_output", "REAL"),
+        ("cost_reasoning", "REAL"),
     ] {
         if !archive_columns.contains(column) {
             let statement =

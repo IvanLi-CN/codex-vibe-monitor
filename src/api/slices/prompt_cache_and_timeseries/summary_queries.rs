@@ -1,22 +1,18 @@
 use super::*;
 use anyhow::anyhow;
 use chrono::LocalResult;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::FromRow;
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, warn};
 
 pub(crate) async fn query_hourly_backed_summary_since_with_config(
     pool: &Pool<Sqlite>,
-    relay: Option<&CrsStatsConfig>,
     invocation_max_days: u64,
     start: DateTime<Utc>,
     source_scope: InvocationSourceScope,
 ) -> Result<StatsTotals, ApiError> {
     query_hourly_backed_summary_range_with_config(
         pool,
-        relay,
         invocation_max_days,
         start,
         Utc::now(),
@@ -27,7 +23,6 @@ pub(crate) async fn query_hourly_backed_summary_since_with_config(
 
 pub(crate) async fn query_hourly_backed_summary_range_with_config(
     pool: &Pool<Sqlite>,
-    relay: Option<&CrsStatsConfig>,
     invocation_max_days: u64,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -116,19 +111,7 @@ pub(crate) async fn query_hourly_backed_summary_range_with_config(
             add_invocation_record_to_summary_totals(&mut totals, record);
         }
     }
-    let relay_totals =
-        if let Some(effective_range) = effective_range_for_hourly_rollup_plan(&range_plan)? {
-            query_crs_totals(
-                pool,
-                relay,
-                &StatsFilter::Range(effective_range.start, effective_range.end),
-                source_scope,
-            )
-            .await?
-        } else {
-            StatsTotals::default()
-        };
-    Ok(totals.add(relay_totals))
+    Ok(totals)
 }
 
 pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
@@ -271,7 +254,6 @@ pub(crate) async fn query_hourly_backed_summary_since(
 ) -> Result<StatsTotals, ApiError> {
     query_hourly_backed_summary_since_with_config(
         &state.pool,
-        state.config.crs_stats.as_ref(),
         state.config.invocation_max_days,
         start,
         source_scope,
@@ -288,7 +270,6 @@ pub(crate) async fn query_hourly_backed_summary_range(
 ) -> Result<StatsTotals, ApiError> {
     query_hourly_backed_summary_range_with_config(
         &state.pool,
-        state.config.crs_stats.as_ref(),
         state.config.invocation_max_days,
         start,
         end,

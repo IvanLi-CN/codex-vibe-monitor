@@ -2122,33 +2122,38 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
             reasoning_tokens = ?7,
             total_tokens = ?8,
             cost = ?9,
-            cost_estimated = ?10,
-            price_version = ?11,
-            status = ?12,
-            error_message = ?13,
-            failure_kind = ?14,
-            failure_class = ?15,
-            is_actionable = ?16,
-            payload = ?17,
-            raw_response = ?18,
-            request_raw_path = ?19,
-            request_raw_codec = ?20,
-            request_raw_size = ?21,
-            request_raw_truncated = ?22,
-            request_raw_truncated_reason = ?23,
-            response_raw_path = ?24,
-            response_raw_codec = ?25,
-            response_raw_size = ?26,
-            response_raw_truncated = ?27,
-            response_raw_truncated_reason = ?28,
-            t_total_ms = ?29,
-            t_req_read_ms = ?30,
-            t_req_parse_ms = ?31,
-            t_upstream_connect_ms = ?32,
-            t_upstream_ttfb_ms = ?33,
-            t_upstream_stream_ms = ?34,
-            t_resp_parse_ms = ?35,
-            t_persist_ms = ?36
+            cost_input = ?10,
+            cost_cache_write = ?11,
+            cost_cache_read = ?12,
+            cost_output = ?13,
+            cost_reasoning = ?14,
+            cost_estimated = ?15,
+            price_version = ?16,
+            status = ?17,
+            error_message = ?18,
+            failure_kind = ?19,
+            failure_class = ?20,
+            is_actionable = ?21,
+            payload = ?22,
+            raw_response = ?23,
+            request_raw_path = ?24,
+            request_raw_codec = ?25,
+            request_raw_size = ?26,
+            request_raw_truncated = ?27,
+            request_raw_truncated_reason = ?28,
+            response_raw_path = ?29,
+            response_raw_codec = ?30,
+            response_raw_size = ?31,
+            response_raw_truncated = ?32,
+            response_raw_truncated_reason = ?33,
+            t_total_ms = ?34,
+            t_req_read_ms = ?35,
+            t_req_parse_ms = ?36,
+            t_upstream_connect_ms = ?37,
+            t_upstream_ttfb_ms = ?38,
+            t_upstream_stream_ms = ?39,
+            t_resp_parse_ms = ?40,
+            t_persist_ms = ?41
         WHERE id = ?1
           AND (
                 LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
@@ -2168,6 +2173,11 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
     .bind(record.usage.reasoning_tokens)
     .bind(record.usage.total_tokens)
     .bind(record.cost)
+    .bind(record.cost_breakdown.map(|value| value.input))
+    .bind(record.cost_breakdown.map(|value| value.cache_write))
+    .bind(record.cost_breakdown.map(|value| value.cache_read))
+    .bind(record.cost_breakdown.map(|value| value.output))
+    .bind(record.cost_breakdown.map(|value| value.reasoning))
     .bind(record.cost_estimated as i64)
     .bind(record.price_version.as_deref())
     .bind(&record.status)
@@ -2232,6 +2242,14 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         reasoning_effort: payload_text(payload, "reasoningEffort"),
         total_tokens: record.usage.total_tokens,
         cost: record.cost,
+        cost_input: record.cost_breakdown.map(|value| value.input),
+        cost_cache_write: record.cost_breakdown.map(|value| value.cache_write),
+        cost_cache_read: record.cost_breakdown.map(|value| value.cache_read),
+        cost_output: record.cost_breakdown.map(|value| value.output),
+        cost_reasoning: record.cost_breakdown.map(|value| value.reasoning),
+        cache_write_tokens: record.usage.input_tokens.map(|input| {
+            input.saturating_sub(record.usage.cache_input_tokens.unwrap_or_default().max(0))
+        }),
         status: Some(record.status.clone()),
         live_phase: None,
         error_message: record.error_message.clone(),
@@ -2333,9 +2351,15 @@ pub(crate) async fn load_persisted_api_invocation_tx(
             cache_input_tokens,
             reasoning_tokens,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort,
-            total_tokens,
-            cost,
-            status,
+        total_tokens,
+        cost,
+        cost_input,
+        cost_cache_write,
+        cost_cache_read,
+        cost_output,
+        cost_reasoning,
+        MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0) AS cache_write_tokens,
+        status,
             error_message,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.downstreamStatusCode') END AS downstream_status_code,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint,
@@ -2840,6 +2864,11 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
                 reasoning_tokens,
                 total_tokens,
                 cost,
+                cost_input,
+                cost_cache_write,
+                cost_cache_read,
+                cost_output,
+                cost_reasoning,
                 cost_estimated,
                 price_version,
                 status,
@@ -2872,7 +2901,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
             VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
                 ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
-                ?37, ?38
+                ?37, ?38, ?39, ?40, ?41, ?42, ?43
             )
             "#,
         )
@@ -2886,6 +2915,11 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
         .bind(record.usage.reasoning_tokens)
         .bind(record.usage.total_tokens)
         .bind(record.cost)
+        .bind(record.cost_breakdown.map(|value| value.input))
+        .bind(record.cost_breakdown.map(|value| value.cache_write))
+        .bind(record.cost_breakdown.map(|value| value.cache_read))
+        .bind(record.cost_breakdown.map(|value| value.output))
+        .bind(record.cost_breakdown.map(|value| value.reasoning))
         .bind(record.cost_estimated as i64)
         .bind(record.price_version.as_deref())
         .bind(&record.status)
@@ -3077,6 +3111,7 @@ pub(crate) fn build_running_proxy_capture_record(
         model: request_info.model.clone(),
         usage: ParsedUsage::default(),
         cost: None,
+        cost_breakdown: None,
         cost_estimated: false,
         price_version: None,
         status: "running".to_string(),

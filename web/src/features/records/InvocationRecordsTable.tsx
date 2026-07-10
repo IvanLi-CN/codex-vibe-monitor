@@ -74,6 +74,7 @@ interface InvocationRecordsRowViewModel {
   >["fastIndicatorState"];
   costValue: string;
   inputTokensValue: string;
+  cacheWriteTokensValue: string;
   cacheInputTokensValue: string;
   outputTokensValue: string;
   outputReasoningBreakdownValue: string;
@@ -277,7 +278,7 @@ function renderFocusSummary(
           <dt className="text-base-content/60">
             {t("records.table.token.inputCache")}
           </dt>
-          <dd className="truncate text-right font-mono">{`${row.inputTokensValue} / ${row.cacheInputTokensValue}`}</dd>
+          <dd className="truncate text-right font-mono">{`IN ${row.inputTokensValue} / CW ${row.cacheWriteTokensValue} / C ${row.cacheInputTokensValue}`}</dd>
           <dt className="text-base-content/60">
             {t("records.table.token.outputReasoning")}
           </dt>
@@ -813,9 +814,10 @@ export function InvocationRecordsTable({
         return (
           <>
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">
-              <div>{row.inputTokensValue}</div>
-              <div className="text-base-content/60">
-                {row.cacheInputTokensValue}
+              <div aria-label={`Input tokens: ${row.inputTokensValue}`}>IN {row.inputTokensValue}</div>
+              <div title="Cache write tokens" aria-label={`Cache write tokens: ${row.cacheWriteTokensValue}`}>CW {row.cacheWriteTokensValue}</div>
+              <div className="text-base-content/60" title="Cache read tokens" aria-label={`Cache read tokens: ${row.cacheInputTokensValue}`}>
+                C {row.cacheInputTokensValue}
               </div>
             </td>
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">
@@ -903,7 +905,7 @@ export function InvocationRecordsTable({
           <>
             <div className="flex items-center justify-between gap-3">
               <dt>{t("records.table.token.inputCache")}</dt>
-              <dd className="font-mono">{`${row.inputTokensValue} / ${row.cacheInputTokensValue}`}</dd>
+              <dd className="font-mono">{`IN ${row.inputTokensValue} / CW ${row.cacheWriteTokensValue} / C ${row.cacheInputTokensValue}`}</dd>
             </div>
             <div className="flex items-center justify-between gap-3">
               <dt>{t("records.table.token.outputReasoning")}</dt>

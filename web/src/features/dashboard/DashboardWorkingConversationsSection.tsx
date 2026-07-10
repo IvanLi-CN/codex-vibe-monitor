@@ -54,6 +54,7 @@ import {
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
+import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
 import {
   FALLBACK_CELL,
   INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
@@ -1140,6 +1141,7 @@ function AccountHeroMetric({
   iconName,
   hint,
   detailSections,
+  tooltipContent,
   metricKey,
   children,
 }: {
@@ -1149,6 +1151,7 @@ function AccountHeroMetric({
   iconName: AppIconName;
   hint?: string;
   detailSections?: AccountMetricDetailSection[];
+  tooltipContent?: ReactNode;
   metricKey?: string;
   children?: ReactNode;
 }) {
@@ -1198,7 +1201,7 @@ function AccountHeroMetric({
       data-motion-surface
       className={cn(
         "h-full w-full rounded-[0.85rem] px-3 py-2.5 transition-colors duration-200",
-        detailSections?.length ? "cursor-help focus-within:outline-none" : null,
+        (detailSections?.length || tooltipContent) ? "cursor-help focus-within:outline-none" : null,
         toneSurfaceClassName,
       )}
     >
@@ -1241,7 +1244,7 @@ function AccountHeroMetric({
     </div>
   );
 
-  if (!detailSections?.length) return card;
+  if (!detailSections?.length && !tooltipContent) return card;
 
   return (
     <Tooltip
@@ -1252,12 +1255,7 @@ function AccountHeroMetric({
       className="h-full w-full rounded-[0.85rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
       contentClassName="w-[min(21rem,calc(100vw-1rem))] px-3.5 py-3"
       content={
-        <AccountMetricDetailTooltip
-          label={label}
-          value={value}
-          valueClassName={valueClassName}
-          sections={detailSections}
-        />
+        tooltipContent ?? <AccountMetricDetailTooltip label={label} value={value} valueClassName={valueClassName} sections={detailSections ?? []} />
       }
       triggerProps={{
         tabIndex: 0,
@@ -1850,7 +1848,9 @@ function AccountRecentInvocationRow({
       <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74">
         <span>IN {viewModel.inputTokensValue}</span>
         <span className="text-base-content/28">·</span>
-        <span>C {viewModel.cacheInputTokensValue}</span>
+        <span title="Cache write tokens" aria-label={`Cache write tokens: ${viewModel.cacheWriteTokensValue}`}>CW {viewModel.cacheWriteTokensValue}</span>
+        <span className="text-base-content/28">·</span>
+        <span title="Cache read tokens" aria-label={`Cache read tokens: ${viewModel.cacheInputTokensValue}`}>C {viewModel.cacheInputTokensValue}</span>
         <span className="text-base-content/28">·</span>
         <span>O {viewModel.outputTokensValue}</span>
         <span className="text-base-content/28">·</span>
@@ -2324,12 +2324,14 @@ function InvocationSlot({
 
         <InvocationMetaLine
           label={lineLabels.usage}
-          title={`${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`}
+          title={`${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · Cache write: ${viewModel.cacheWriteTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`}
           value={
             <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
               <span>IN {viewModel.inputTokensValue}</span>
               <span className="text-base-content/28">·</span>
-              <span>C {viewModel.cacheInputTokensValue}</span>
+              <span title="Cache write tokens" aria-label={`Cache write tokens: ${viewModel.cacheWriteTokensValue}`}>CW {viewModel.cacheWriteTokensValue}</span>
+              <span className="text-base-content/28">·</span>
+              <span title="Cache read tokens" aria-label={`Cache read tokens: ${viewModel.cacheInputTokensValue}`}>C {viewModel.cacheInputTokensValue}</span>
               <span className="text-base-content/28">·</span>
               <span>O {viewModel.outputTokensValue}</span>
               <span className="text-base-content/28">·</span>
@@ -2759,6 +2761,17 @@ function DashboardUpstreamAccountActivityCard({
     localeTag,
     0,
   );
+  const usageBreakdownLabels = locale === "zh"
+    ? {
+        total: "总计", cacheWrite: "缓存写入", cacheRead: "缓存读取", output: "输出",
+        input: "输入", reasoning: "推理", unavailable: "历史成本分项未提供", unknownModel: "未标识模型",
+      }
+    : {
+        total: "Total", cacheWrite: "Cache write", cacheRead: "Cache read", output: "Output",
+        input: "Input", reasoning: "Reasoning", unavailable: "Historical cost breakdown unavailable", unknownModel: "Unidentified model",
+      };
+  const formatBreakdownNumber = (value: number) => formatAccountNumberValue(value, localeTag, 0);
+  const formatBreakdownCurrency = (value: number) => formatAccountCurrencyValue(value, localeTag, 4);
   const latencyDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
     const firstByteMs = finiteNumber(
       account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs,
@@ -3203,6 +3216,16 @@ function DashboardUpstreamAccountActivityCard({
             iconName="currency-usd"
             metricKey="cost"
             detailSections={costDetailSections}
+            tooltipContent={
+              <UsageBreakdownTooltip
+                title={locale === "zh" ? "成本" : "Cost"}
+                breakdown={account.usageBreakdown}
+                kind="cost"
+                formatNumber={formatBreakdownNumber}
+                formatCurrency={formatBreakdownCurrency}
+                labels={usageBreakdownLabels}
+              />
+            }
           >
             <AccountSegmentList
               segments={costSummarySegments}
@@ -3217,6 +3240,16 @@ function DashboardUpstreamAccountActivityCard({
             iconName="database-outline"
             metricKey="token"
             detailSections={tokenDetailSections}
+            tooltipContent={
+              <UsageBreakdownTooltip
+                title="Token"
+                breakdown={account.usageBreakdown}
+                kind="tokens"
+                formatNumber={formatBreakdownNumber}
+                formatCurrency={formatBreakdownCurrency}
+                labels={usageBreakdownLabels}
+              />
+            }
           >
             <AccountSegmentList
               segments={tokenSummarySegments}

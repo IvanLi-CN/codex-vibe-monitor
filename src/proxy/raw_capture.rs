@@ -244,6 +244,17 @@ pub(crate) async fn estimate_proxy_cost_from_shared_catalog(
     estimate_proxy_cost(&guard, model, usage, billing_service_tier, pricing_mode)
 }
 
+pub(crate) async fn estimate_proxy_cost_breakdown_from_shared_catalog(
+    catalog: &Arc<RwLock<PricingCatalog>>,
+    model: Option<&str>,
+    usage: &ParsedUsage,
+    billing_service_tier: Option<&str>,
+    pricing_mode: ProxyPricingMode,
+) -> (Option<ProxyCostBreakdown>, bool, Option<String>) {
+    let guard = catalog.read().await;
+    estimate_proxy_cost_breakdown(&guard, model, usage, billing_service_tier, pricing_mode)
+}
+
 pub(crate) fn has_billable_usage(usage: &ParsedUsage) -> bool {
     usage.input_tokens.unwrap_or(0).max(0) > 0
         || usage.output_tokens.unwrap_or(0).max(0) > 0
@@ -358,6 +369,22 @@ pub(crate) fn estimate_proxy_cost(
     billing_service_tier: Option<&str>,
     pricing_mode: ProxyPricingMode,
 ) -> (Option<f64>, bool, Option<String>) {
+    let (breakdown, estimated, price_version) =
+        estimate_proxy_cost_breakdown(catalog, model, usage, billing_service_tier, pricing_mode);
+    (
+        breakdown.map(ProxyCostBreakdown::total),
+        estimated,
+        price_version,
+    )
+}
+
+pub(crate) fn estimate_proxy_cost_breakdown(
+    catalog: &PricingCatalog,
+    model: Option<&str>,
+    usage: &ParsedUsage,
+    billing_service_tier: Option<&str>,
+    pricing_mode: ProxyPricingMode,
+) -> (Option<ProxyCostBreakdown>, bool, Option<String>) {
     let price_version = Some(proxy_price_version(&catalog.version, pricing_mode));
     let Some(model) = model else {
         return (None, false, price_version);
@@ -388,47 +415,49 @@ pub(crate) fn estimate_proxy_cost(
     };
     let non_cached_input_tokens = input_tokens.saturating_sub(billable_cache_tokens);
 
-    let mut input_cost = if pricing.has_explicit_cache_pricing_split() {
+    let mut breakdown = if pricing.has_explicit_cache_pricing_split() {
         let cache_write_price = pricing
             .cache_write_per_1m
             .expect("explicit cache split requires write pricing");
-        let non_cached_input_cost =
-            (non_cached_input_tokens as f64 / 1_000_000.0) * cache_write_price;
-        let cache_input_cost = cache_read_price
-            .map(|cache_price| (billable_cache_tokens as f64 / 1_000_000.0) * cache_price)
-            .unwrap_or(0.0);
-        non_cached_input_cost + cache_input_cost
+        ProxyCostBreakdown {
+            cache_write: (non_cached_input_tokens as f64 / 1_000_000.0) * cache_write_price,
+            cache_read: cache_read_price
+                .map(|cache_price| (billable_cache_tokens as f64 / 1_000_000.0) * cache_price)
+                .unwrap_or(0.0),
+            ..ProxyCostBreakdown::default()
+        }
     } else {
-        let non_cached_input_cost =
-            (non_cached_input_tokens as f64 / 1_000_000.0) * pricing.input_per_1m;
-        let cache_input_cost = cache_read_price
-            .map(|cache_price| (billable_cache_tokens as f64 / 1_000_000.0) * cache_price)
-            .unwrap_or(0.0);
-        non_cached_input_cost + cache_input_cost
+        ProxyCostBreakdown {
+            input: (non_cached_input_tokens as f64 / 1_000_000.0) * pricing.input_per_1m,
+            cache_read: cache_read_price
+                .map(|cache_price| (billable_cache_tokens as f64 / 1_000_000.0) * cache_price)
+                .unwrap_or(0.0),
+            ..ProxyCostBreakdown::default()
+        }
     };
-
-    let mut output_cost = (output_tokens / 1_000_000.0) * pricing.output_per_1m;
-
-    let mut reasoning_cost = pricing
+    breakdown.output = (output_tokens / 1_000_000.0) * pricing.output_per_1m;
+    breakdown.reasoning = pricing
         .reasoning_per_1m
         .map(|reasoning_price| (reasoning_tokens / 1_000_000.0) * reasoning_price)
         .unwrap_or(0.0);
 
     if apply_long_context_surcharge {
-        input_cost *= 2.0;
-        output_cost *= 1.5;
-        reasoning_cost *= 1.5;
+        breakdown.input *= 2.0;
+        breakdown.cache_write *= 2.0;
+        breakdown.cache_read *= 2.0;
+        breakdown.output *= 1.5;
+        breakdown.reasoning *= 1.5;
     }
 
     if apply_priority_billing_multiplier {
-        input_cost *= 2.0;
-        output_cost *= 2.0;
-        reasoning_cost *= 2.0;
+        breakdown.input *= 2.0;
+        breakdown.cache_write *= 2.0;
+        breakdown.cache_read *= 2.0;
+        breakdown.output *= 2.0;
+        breakdown.reasoning *= 2.0;
     }
 
-    let cost = input_cost + output_cost + reasoning_cost;
-
-    (Some(cost), true, price_version)
+    (Some(breakdown), true, price_version)
 }
 
 pub(crate) async fn store_raw_payload_file(
@@ -539,7 +568,6 @@ pub(crate) async fn broadcast_proxy_capture_follow_up(
     _hourly_rollup_sync_lock: &Mutex<()>,
     broadcaster: &broadcast::Sender<BroadcastPayload>,
     broadcast_state_cache: &Mutex<BroadcastStateCache>,
-    relay_config: Option<&CrsStatsConfig>,
     invocation_max_days: u64,
     mode: ProxyCaptureFollowUpBroadcastMode,
     invoke_id: &str,
@@ -550,7 +578,7 @@ pub(crate) async fn broadcast_proxy_capture_follow_up(
         return;
     }
 
-    match collect_summary_snapshots(pool, relay_config, invocation_max_days).await {
+    match collect_summary_snapshots(pool, invocation_max_days).await {
         Ok(summaries) => {
             for summary in summaries {
                 if let Err(err) = broadcast_summary_if_changed(
@@ -623,7 +651,6 @@ pub(crate) struct SummaryQuotaBroadcastIdleContext<'a> {
     pub(crate) hourly_rollup_sync_lock: &'a Mutex<()>,
     pub(crate) broadcaster: &'a broadcast::Sender<BroadcastPayload>,
     pub(crate) broadcast_state_cache: &'a Mutex<BroadcastStateCache>,
-    pub(crate) relay_config: Option<&'a CrsStatsConfig>,
     pub(crate) invocation_max_days: u64,
     pub(crate) invoke_id: &'a str,
 }
@@ -651,7 +678,6 @@ pub(crate) async fn finish_summary_quota_broadcast_idle(
             ctx.hourly_rollup_sync_lock,
             ctx.broadcaster,
             ctx.broadcast_state_cache,
-            ctx.relay_config,
             ctx.invocation_max_days,
             ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
             ctx.invoke_id,
@@ -679,7 +705,6 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
             state.hourly_rollup_sync_lock.as_ref(),
             &state.broadcaster,
             state.broadcast_state_cache.as_ref(),
-            state.config.crs_stats.as_ref(),
             state.config.invocation_max_days,
             ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
             invoke_id,
@@ -705,7 +730,6 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
             state.hourly_rollup_sync_lock.as_ref(),
             &state.broadcaster,
             state.broadcast_state_cache.as_ref(),
-            state.config.crs_stats.as_ref(),
             state.config.invocation_max_days,
             ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
             invoke_id,
@@ -727,7 +751,6 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
     let hourly_rollup_sync_lock = state.hourly_rollup_sync_lock.clone();
     let broadcaster = state.broadcaster.clone();
     let broadcast_state_cache = state.broadcast_state_cache.clone();
-    let relay_config = state.config.crs_stats.clone();
     let invocation_max_days = state.config.invocation_max_days;
     let shutdown = state.shutdown.clone();
     let broadcast_handle_slot = state.proxy_summary_quota_broadcast_handle.clone();
@@ -747,7 +770,6 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                         hourly_rollup_sync_lock.as_ref(),
                         &broadcaster,
                         broadcast_state_cache.as_ref(),
-                        relay_config.as_ref(),
                         invocation_max_days,
                         ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
                         &invoke_id,
@@ -772,7 +794,6 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                         hourly_rollup_sync_lock: hourly_rollup_sync_lock.as_ref(),
                         broadcaster: &broadcaster,
                         broadcast_state_cache: broadcast_state_cache.as_ref(),
-                        relay_config: relay_config.as_ref(),
                         invocation_max_days,
                         invoke_id: &invoke_id,
                     },
@@ -793,7 +814,6 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                         hourly_rollup_sync_lock.as_ref(),
                         &broadcaster,
                         broadcast_state_cache.as_ref(),
-                        relay_config.as_ref(),
                         invocation_max_days,
                         ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
                         &invoke_id,
@@ -811,7 +831,6 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                     hourly_rollup_sync_lock.as_ref(),
                     &broadcaster,
                     broadcast_state_cache.as_ref(),
-                    relay_config.as_ref(),
                     invocation_max_days,
                     ProxyCaptureFollowUpBroadcastMode::ActiveSubscribers,
                     &invoke_id,
@@ -866,7 +885,6 @@ pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_enqueue(
     let hourly_rollup_sync_lock = state.hourly_rollup_sync_lock.clone();
     let broadcaster = state.broadcaster.clone();
     let broadcast_state_cache = state.broadcast_state_cache.clone();
-    let relay_config = state.config.crs_stats.clone();
     let invocation_max_days = state.config.invocation_max_days;
     let shutdown = state.shutdown.clone();
     let invoke_id = invoke_id.to_string();
@@ -888,7 +906,6 @@ pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_enqueue(
             hourly_rollup_sync_lock.as_ref(),
             &broadcaster,
             broadcast_state_cache.as_ref(),
-            relay_config.as_ref(),
             invocation_max_days,
             mode,
             &invoke_id,
@@ -1072,6 +1089,11 @@ pub(crate) async fn persist_proxy_capture_record_core(
                 reasoning_tokens,
                 total_tokens,
                 cost,
+                cost_input,
+                cost_cache_write,
+                cost_cache_read,
+                cost_output,
+                cost_reasoning,
                 cost_estimated,
                 price_version,
                 status,
@@ -1104,7 +1126,7 @@ pub(crate) async fn persist_proxy_capture_record_core(
             VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
                 ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
-                ?37, ?38
+                ?37, ?38, ?39, ?40, ?41, ?42, ?43
             )
             "#,
         )
@@ -1118,6 +1140,11 @@ pub(crate) async fn persist_proxy_capture_record_core(
         .bind(record.usage.reasoning_tokens)
         .bind(record.usage.total_tokens)
         .bind(record.cost)
+        .bind(record.cost_breakdown.map(|value| value.input))
+        .bind(record.cost_breakdown.map(|value| value.cache_write))
+        .bind(record.cost_breakdown.map(|value| value.cache_read))
+        .bind(record.cost_breakdown.map(|value| value.output))
+        .bind(record.cost_breakdown.map(|value| value.reasoning))
         .bind(record.cost_estimated as i64)
         .bind(record.price_version.as_deref())
         .bind(&record.status)

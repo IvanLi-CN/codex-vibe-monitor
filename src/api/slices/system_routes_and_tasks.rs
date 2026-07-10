@@ -623,7 +623,7 @@ pub(crate) fn summarize_retention_run_for_system_task(
         summary.orphan_raw_files_removed
     );
     let detail = format!(
-        "dry_run={} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} forward_proxy_attempt_rows_archived={} pool_attempt_rows_archived={} snapshot_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} orphan_raw_files_removed={}",
+        "dry_run={} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} forward_proxy_attempt_rows_archived={} pool_attempt_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} orphan_raw_files_removed={}",
         summary.dry_run,
         summary.raw_files_compression_candidates,
         summary.raw_files_compressed,
@@ -633,7 +633,6 @@ pub(crate) fn summarize_retention_run_for_system_task(
         summary.invocation_rows_archived,
         summary.forward_proxy_attempt_rows_archived,
         summary.pool_upstream_request_attempt_rows_archived,
-        summary.stats_source_snapshot_rows_archived,
         summary.quota_snapshot_rows_archived,
         summary.archive_batches_touched,
         summary.archive_batches_deleted,
@@ -641,21 +640,4 @@ pub(crate) fn summarize_retention_run_for_system_task(
         summary.orphan_raw_files_removed
     );
     (brief, detail)
-}
-
-pub(crate) fn summarize_scheduler_poll_outcome(
-    state: &AppState,
-    force_new_connection: bool,
-) -> String {
-    let in_flight = state
-        .config
-        .max_parallel_polls
-        .saturating_sub(state.semaphore.available_permits());
-    format!(
-        "in_flight={} force_new_connection={} listeners={} proxy_requests_in_flight={}",
-        in_flight,
-        force_new_connection,
-        state.broadcaster.receiver_count(),
-        state.proxy_request_in_flight.load(Ordering::Relaxed)
-    )
 }

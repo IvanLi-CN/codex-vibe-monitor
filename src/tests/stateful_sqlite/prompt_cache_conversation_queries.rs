@@ -419,16 +419,16 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     .expect("augment preview-06 extras");
     insert_row(
         &state.pool,
-        "preview-crs-hidden",
+        "preview-secondary-source",
         now - ChronoDuration::hours(1),
-        SOURCE_CRS,
+        SOURCE_XY,
         "pck-preview",
         "success",
         999,
         9.99,
-        "CRS Hidden",
+        "Secondary Source",
         Some(404),
-        Some("CRS Hidden"),
+        Some("Secondary Source"),
         "/v1/responses",
         "gpt-5.4",
     )
@@ -469,7 +469,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             .map(|item| item.invoke_id.as_str())
             .collect::<Vec<_>>(),
         vec![
-            "preview-crs-hidden",
+            "preview-secondary-source",
             "preview-06",
             "preview-05",
             "preview-04",
@@ -481,13 +481,19 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     assert_eq!(latest.status, "success");
     assert_eq!(latest.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(latest.total_tokens, 999);
-    assert_eq!(latest.proxy_display_name.as_deref(), Some("CRS Hidden"));
+    assert_eq!(
+        latest.proxy_display_name.as_deref(),
+        Some("Secondary Source")
+    );
     assert_eq!(latest.upstream_account_id, Some(404));
-    assert_eq!(latest.upstream_account_name.as_deref(), Some("CRS Hidden"));
+    assert_eq!(
+        latest.upstream_account_name.as_deref(),
+        Some("Secondary Source")
+    );
     assert_eq!(latest.endpoint.as_deref(), Some("/v1/responses"));
     assert_eq!(latest.failure_class.as_deref(), Some("none"));
     assert_eq!(latest.route_mode.as_deref(), Some("pool"));
-    assert_eq!(latest.source.as_deref(), Some(SOURCE_CRS));
+    assert_eq!(latest.source.as_deref(), Some(SOURCE_XY));
 
     let id_only = conversation
         .recent_invocations
@@ -692,7 +698,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     assert!(
         proxy_only_rows
             .iter()
-            .all(|item| item.invoke_id != "preview-crs-hidden")
+            .all(|item| item.invoke_id != "preview-secondary-source")
     );
     let proxy_enriched_row = proxy_only_rows
         .iter()

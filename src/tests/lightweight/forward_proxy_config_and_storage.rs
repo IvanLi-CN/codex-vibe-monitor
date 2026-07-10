@@ -711,6 +711,7 @@ async fn persist_proxy_capture_runtime_record_preserves_downstream_closed_as_cli
             model: Some("gpt-5.4".to_string()),
             usage: ParsedUsage::default(),
             cost: None,
+            cost_breakdown: None,
             cost_estimated: false,
             price_version: None,
             status: "failed".to_string(),
@@ -785,6 +786,7 @@ async fn persist_proxy_capture_record_preserves_downstream_closed_as_client_abor
             model: Some("gpt-5.4".to_string()),
             usage: ParsedUsage::default(),
             cost: None,
+            cost_breakdown: None,
             cost_estimated: false,
             price_version: None,
             status: "failed".to_string(),
@@ -858,6 +860,7 @@ async fn persist_proxy_capture_record_omits_response_preview_and_raw_path_when_d
             model: Some("gpt-5.4".to_string()),
             usage: ParsedUsage::default(),
             cost: None,
+            cost_breakdown: None,
             cost_estimated: false,
             price_version: None,
             status: "success".to_string(),
@@ -1365,7 +1368,6 @@ fn app_config_from_sources_reads_renamed_public_envs() {
             ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
             Some("30"),
         ),
-        (ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS, Some("33")),
         (ENV_QUOTA_SNAPSHOT_FULL_DAYS, Some("34")),
         (ENV_PROXY_RAW_COMPRESSION, Some("none")),
         (ENV_PROXY_RAW_IMMEDIATE_GZIP_BYTES, Some("2097152")),
@@ -1421,7 +1423,6 @@ fn app_config_from_sources_reads_renamed_public_envs() {
         config.pool_upstream_responses_attempt_timeout,
         Duration::from_secs(DEFAULT_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS)
     );
-    assert_eq!(config.stats_source_snapshots_retention_days, 33);
     assert_eq!(config.quota_snapshot_full_days, 34);
     assert_eq!(config.proxy_raw_compression, RawCompressionCodec::None);
     assert_eq!(config.proxy_raw_immediate_gzip_bytes, Some(2 * 1024 * 1024));
@@ -1766,9 +1767,7 @@ pub(crate) fn test_config() -> AppConfig {
             DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS,
         pool_upstream_request_attempts_archive_ttl_days:
             DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
-        stats_source_snapshots_retention_days: DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
         quota_snapshot_full_days: DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
-        crs_stats: None,
         upstream_accounts_oauth_client_id: DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID.to_string(),
         upstream_accounts_oauth_issuer: Url::parse(DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_ISSUER)
             .expect("valid oauth issuer"),
@@ -2589,64 +2588,6 @@ pub(crate) async fn insert_retention_pool_upstream_request_attempt(
     .execute(pool)
     .await
     .expect("insert retention pool attempt");
-}
-
-pub(crate) async fn insert_stats_source_snapshot_row(
-    pool: &SqlitePool,
-    captured_at: &str,
-    stats_date: &str,
-) {
-    sqlx::query(
-        r#"
-        INSERT INTO stats_source_snapshots (
-            source,
-            period,
-            stats_date,
-            model,
-            requests,
-            input_tokens,
-            output_tokens,
-            cache_create_tokens,
-            cache_read_tokens,
-            all_tokens,
-            cost_input,
-            cost_output,
-            cost_cache_write,
-            cost_cache_read,
-            cost_total,
-            raw_response,
-            captured_at,
-            captured_at_epoch
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
-        "#,
-    )
-    .bind(SOURCE_CRS)
-    .bind("daily")
-    .bind(stats_date)
-    .bind(Some("gpt-5.2"))
-    .bind(4_i64)
-    .bind(10_i64)
-    .bind(6_i64)
-    .bind(0_i64)
-    .bind(0_i64)
-    .bind(16_i64)
-    .bind(0.1_f64)
-    .bind(0.2_f64)
-    .bind(0.0_f64)
-    .bind(0.0_f64)
-    .bind(0.3_f64)
-    .bind("{}")
-    .bind(captured_at)
-    .bind(
-        parse_utc_naive(captured_at)
-            .expect("valid utc naive")
-            .and_utc()
-            .timestamp(),
-    )
-    .execute(pool)
-    .await
-    .expect("insert stats source snapshot row");
 }
 
 #[tokio::test]

@@ -1496,31 +1496,6 @@ async fn proxy_capture_persist_and_broadcast_skips_follow_up_without_subscribers
 }
 
 #[tokio::test]
-async fn fetch_and_store_skips_summary_and_quota_collection_when_broadcast_state_disabled() {
-    let state = test_state_with_openai_base(
-        Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
-    )
-    .await;
-    let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
-    seed_quota_snapshot(&state.pool, &now_local).await;
-
-    let publish = fetch_and_store(state.as_ref(), false, false)
-        .await
-        .expect("fetch_and_store should succeed");
-
-    assert!(publish.summaries.is_empty());
-    assert!(publish.quota_snapshot.is_none());
-    assert!(!publish.collected_broadcast_state);
-}
-
-#[test]
-fn should_collect_late_broadcast_state_when_subscribers_arrive_mid_poll() {
-    assert!(should_collect_late_broadcast_state(1, false));
-    assert!(!should_collect_late_broadcast_state(0, false));
-    assert!(!should_collect_late_broadcast_state(1, true));
-}
-
-#[tokio::test]
 async fn broadcast_summary_if_changed_skips_duplicate_payloads() {
     let state = test_state_with_openai_base(
         Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
@@ -1533,6 +1508,7 @@ async fn broadcast_summary_if_changed_skips_duplicate_payloads() {
         failure_count: 0,
         total_cost: 0.5,
         total_tokens: 42,
+        usage_breakdown: None,
         in_progress_conversation_count: Some(3),
         in_progress_retry_conversation_count: Some(0),
         in_progress_avg_wait_ms: None,

@@ -918,63 +918,6 @@ async fn retention_prune_preserves_upstream_account_id_for_archive_manifest() {
 }
 
 #[tokio::test]
-async fn retention_archives_forward_proxy_attempts_and_stats_snapshots() {
-    let (pool, config, temp_dir) = retention_test_pool_and_config("retention-timestamped").await;
-    let old_attempt = Utc::now() - ChronoDuration::days(35);
-    let recent_attempt = Utc::now() - ChronoDuration::days(1);
-    seed_forward_proxy_attempt_at(&pool, "proxy-old", old_attempt, true).await;
-    seed_forward_proxy_attempt_at(&pool, "proxy-new", recent_attempt, true).await;
-
-    let old_captured_at = utc_naive_from_shanghai_local_days_ago(35, 8, 0, 0);
-    let recent_captured_at = utc_naive_from_shanghai_local_days_ago(1, 8, 0, 0);
-    insert_stats_source_snapshot_row(&pool, &old_captured_at, &old_captured_at[..10]).await;
-    insert_stats_source_snapshot_row(&pool, &recent_captured_at, &recent_captured_at[..10]).await;
-
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
-        .await
-        .expect("run timestamped retention");
-    assert_eq!(summary.forward_proxy_attempt_rows_archived, 1);
-    assert_eq!(summary.stats_source_snapshot_rows_archived, 1);
-
-    let remaining_old_attempts: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM forward_proxy_attempts WHERE occurred_at < ?1")
-            .bind(shanghai_utc_cutoff_string(
-                config.forward_proxy_attempts_retention_days,
-            ))
-            .fetch_one(&pool)
-            .await
-            .expect("count old forward proxy attempts");
-    assert_eq!(remaining_old_attempts, 0);
-
-    let remaining_old_snapshots: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM stats_source_snapshots WHERE captured_at < ?1")
-            .bind(shanghai_utc_cutoff_string(
-                config.stats_source_snapshots_retention_days,
-            ))
-            .fetch_one(&pool)
-            .await
-            .expect("count old stats snapshots");
-    assert_eq!(remaining_old_snapshots, 0);
-
-    let datasets: HashSet<String> = sqlx::query_scalar(
-        r#"
-        SELECT dataset
-        FROM archive_batches
-        WHERE dataset IN ('forward_proxy_attempts', 'stats_source_snapshots')
-        "#,
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("load timestamped archive batch datasets")
-    .into_iter()
-    .collect();
-    assert!(datasets.contains("forward_proxy_attempts"));
-    assert!(datasets.contains("stats_source_snapshots"));
-
-    cleanup_temp_test_dir(&temp_dir);
-}
-
-#[tokio::test]
 async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-materialize-prune").await;
