@@ -65,7 +65,10 @@ function useSummarySseOverlay(window: string, initialSummary: StatsResponse) {
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== 'summary' || payload.window !== window) return
-      setSummary(payload.summary)
+      setSummary((current) => ({
+        ...payload.summary,
+        usageBreakdown: payload.summary.usageBreakdown ?? current.usageBreakdown,
+      }))
       recordTodaySummarySseCommit(window)
     })
     return unsubscribe

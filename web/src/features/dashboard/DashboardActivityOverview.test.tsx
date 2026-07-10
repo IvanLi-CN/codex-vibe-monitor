@@ -91,6 +91,7 @@ vi.mock('./TodayStatsOverview', () => ({
       inProgressAvgWaitMs?: number
       nonSuccessCost?: number
       nonSuccessTokens?: number
+      usageBreakdown?: { total?: { cacheWriteTokens?: number } }
     } | null
     showSurface?: boolean
     showHeader?: boolean
@@ -103,7 +104,7 @@ vi.mock('./TodayStatsOverview', () => ({
     showInProgressConversations?: boolean
   }) => (
     <div data-testid="today-stats-overview-mock">
-      {`total:${stats?.totalCount ?? 'null'};inProgress:${stats?.inProgressConversationCount ?? 'null'};retry:${stats?.inProgressRetryConversationCount ?? 'null'};wait:${stats?.inProgressAvgWaitMs ?? 'null'};nonSuccessCost:${stats?.nonSuccessCost ?? 'null'};nonSuccessTokens:${stats?.nonSuccessTokens ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};spendRate:${rate?.spendRate ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'};parallelAvg:${parallelWorkStats?.current?.avgCount ?? 'null'};parallelError:${parallelWorkError ?? 'null'};showInProgress:${String(showInProgressConversations)}`}
+      {`total:${stats?.totalCount ?? 'null'};cacheWrite:${stats?.usageBreakdown?.total?.cacheWriteTokens ?? 'null'};inProgress:${stats?.inProgressConversationCount ?? 'null'};retry:${stats?.inProgressRetryConversationCount ?? 'null'};wait:${stats?.inProgressAvgWaitMs ?? 'null'};nonSuccessCost:${stats?.nonSuccessCost ?? 'null'};nonSuccessTokens:${stats?.nonSuccessTokens ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};spendRate:${rate?.spendRate ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'};parallelAvg:${parallelWorkStats?.current?.avgCount ?? 'null'};parallelError:${parallelWorkError ?? 'null'};showInProgress:${String(showInProgressConversations)}`}
     </div>
   ),
 }))
@@ -459,6 +460,10 @@ describe('DashboardActivityOverview', () => {
               failureCount: 2,
               totalCost: 0.42,
               totalTokens: 4200,
+              usageBreakdown: {
+                total: { cacheWriteTokens: 3200 },
+                models: [],
+              },
               inProgressConversationCount: 7,
               inProgressRetryConversationCount: 1,
               inProgressAvgWaitMs: 2500,
@@ -473,7 +478,7 @@ describe('DashboardActivityOverview', () => {
     )
 
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      'total:21;inProgress:7;retry:1;wait:2500;nonSuccessCost:0.04;nonSuccessTokens:300;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
+      'total:21;cacheWrite:3200;inProgress:7;retry:1;wait:2500;nonSuccessCost:0.04;nonSuccessTokens:300;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
     )
     expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).not.toContain(
       'today',
@@ -499,7 +504,7 @@ describe('DashboardActivityOverview', () => {
     })
 
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      'total:34;inProgress:9;retry:2;wait:1100;nonSuccessCost:0.08;nonSuccessTokens:420;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
+      'total:34;cacheWrite:3200;inProgress:9;retry:2;wait:1100;nonSuccessCost:0.08;nonSuccessTokens:420;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
     )
   })
 
@@ -558,7 +563,7 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull()
     expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      'total:12;inProgress:11;retry:3;wait:1700;nonSuccessCost:0.12;nonSuccessTokens:256;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
+      'total:12;cacheWrite:null;inProgress:11;retry:3;wait:1700;nonSuccessCost:0.12;nonSuccessTokens:256;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
     )
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalCount',
