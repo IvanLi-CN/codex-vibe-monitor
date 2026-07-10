@@ -595,15 +595,21 @@ describe("InvocationTable", () => {
     const records = [createInvocationRecord(0)];
     await renderInteractiveTable(records);
     expect(document.querySelector('[data-testid="invocation-id"]')).toBeNull();
+    expect(document.querySelector("thead th")?.className).toContain(
+      "xl:w-[10%]",
+    );
 
     await renderInteractiveTable(records, { showInvokeId: true });
     const invokeId = document.querySelector('[data-testid="invocation-id"]');
     expect(invokeId?.textContent).toBe("virtual-row-1");
     expect(invokeId?.className).toContain("select-text");
     expect(invokeId?.className).toContain("whitespace-nowrap");
-    expect(invokeId?.className).toContain("truncate");
+    expect(invokeId?.className).not.toContain("truncate");
     expect(invokeId?.className).not.toContain("break-all");
     expect(invokeId?.getAttribute("title")).toBe(invokeId?.textContent);
+    expect(document.querySelector("thead th")?.className).toContain(
+      "xl:w-[16%]",
+    );
   });
 
   it("virtualizes large desktop datasets without mounting every row", async () => {
@@ -643,7 +649,7 @@ describe("InvocationTable", () => {
     expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeNull();
     const invokeId = document.querySelector('[data-testid="invocation-id"]');
     expect(invokeId?.className).toContain("whitespace-nowrap");
-    expect(invokeId?.className).toContain("truncate");
+    expect(invokeId?.className).not.toContain("truncate");
     expect(invokeId?.className).not.toContain("break-all");
     expect(invokeId?.getAttribute("title")).toBe(invokeId?.textContent);
   });

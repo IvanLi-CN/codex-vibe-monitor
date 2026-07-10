@@ -736,7 +736,7 @@ export function InvocationTable({
                   </div>
                   {showInvokeId && row.record.invokeId ? (
                     <div
-                      className="mt-1 block max-w-full truncate whitespace-nowrap font-mono text-[11px] leading-tight text-info select-text"
+                      className="mt-1 whitespace-nowrap font-mono text-[10px] leading-tight text-info select-text"
                       data-testid="invocation-id"
                       title={row.record.invokeId}
                     >
@@ -950,10 +950,24 @@ export function InvocationTable({
           <table className="w-full table-fixed border-separate border-spacing-0 text-sm">
             <thead className="bg-base-200/65 text-[11px] uppercase tracking-[0.08em] text-base-content/70">
               <tr>
-                <th className="w-[11%] px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:w-[10%] xl:px-3">
+                <th
+                  className={cn(
+                    "px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:px-3",
+                    showInvokeId
+                      ? "w-[20%] xl:w-[16%]"
+                      : "w-[11%] xl:w-[10%]",
+                  )}
+                >
                   {t("table.column.time")}
                 </th>
-                <th className="w-[18%] px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:w-[15%] xl:px-3">
+                <th
+                  className={cn(
+                    "px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:px-3",
+                    showInvokeId
+                      ? "w-[16%] xl:w-[15%]"
+                      : "w-[18%] xl:w-[15%]",
+                  )}
+                >
                   <div className="flex flex-col leading-tight">
                     <span>{t("table.column.account")}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -961,7 +975,14 @@ export function InvocationTable({
                     </span>
                   </div>
                 </th>
-                <th className="w-[13%] px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:w-[12%] xl:px-3">
+                <th
+                  className={cn(
+                    "px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:px-3",
+                    showInvokeId
+                      ? "w-[10%] xl:w-[9%]"
+                      : "w-[13%] xl:w-[12%]",
+                  )}
+                >
                   <div className="flex flex-col leading-tight">
                     <span>{t("table.column.latency")}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -969,7 +990,14 @@ export function InvocationTable({
                     </span>
                   </div>
                 </th>
-                <th className="w-[17%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[14%] xl:px-3">
+                <th
+                  className={cn(
+                    "px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3",
+                    showInvokeId
+                      ? "w-[15%] xl:w-[15%]"
+                      : "w-[17%] xl:w-[14%]",
+                  )}
+                >
                   <div className="flex flex-col leading-tight">
                     <span>{t("table.column.model")}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -977,7 +1005,14 @@ export function InvocationTable({
                     </span>
                   </div>
                 </th>
-                <th className="w-[16%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[14%] xl:px-3">
+                <th
+                  className={cn(
+                    "px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3",
+                    showInvokeId
+                      ? "w-[11%] xl:w-[11%]"
+                      : "w-[16%] xl:w-[14%]",
+                  )}
+                >
                   <div className="flex flex-col leading-tight">
                     <span>{t("table.column.inputTokens")}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -985,7 +1020,14 @@ export function InvocationTable({
                     </span>
                   </div>
                 </th>
-                <th className="w-[10%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[10%] xl:px-3">
+                <th
+                  className={cn(
+                    "px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3",
+                    showInvokeId
+                      ? "w-[8%] xl:w-[8%]"
+                      : "w-[10%] xl:w-[10%]",
+                  )}
+                >
                   <div className="flex flex-col leading-tight">
                     <span>{t("table.column.outputTokens")}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -1009,7 +1051,14 @@ export function InvocationTable({
                     </span>
                   </div>
                 </th>
-                <th className="w-[9%] px-2 py-2.5 text-right xl:w-[4%] xl:px-3">
+                <th
+                  className={cn(
+                    "px-2 py-2.5 text-right xl:px-3",
+                    showInvokeId
+                      ? "w-[8%] xl:w-[5%]"
+                      : "w-[9%] xl:w-[4%]",
+                  )}
+                >
                   <span className="sr-only">{toggleLabels.header}</span>
                 </th>
               </tr>
@@ -1069,7 +1118,7 @@ export function InvocationTable({
                           </span>
                           {showInvokeId && row.record.invokeId ? (
                             <span
-                              className="block max-w-full truncate whitespace-nowrap font-mono text-[10px] leading-tight text-info select-text"
+                              className="block whitespace-nowrap font-mono text-[10px] leading-tight text-info select-text"
                               data-testid="invocation-id"
                               title={row.record.invokeId}
                             >
