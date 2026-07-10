@@ -6,6 +6,7 @@
 
 - Demo is a distinct build-time runtime selected by `VITE_APP_RUNTIME`, not a route-level switch.
 - GitHub Pages hosts docs, Storybook and the demo as separate static surfaces in one assembled artifact.
+- 2026-07-10: PR #582 merged the demo runtime and Pages delivery as `main@80a248cc891f74111f9d403c9d915a1f340a72d5`, then published `v2.22.0`.
 
 ## Key Reasons / Replacements
 

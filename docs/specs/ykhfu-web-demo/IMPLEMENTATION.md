@@ -4,9 +4,9 @@
 
 ## Current Status
 
-- Implementation: 已完成，待 PR convergence
+- Implementation: 已完成并发布
 - Lifecycle: active
-- Catalog note: Browser-only demo runtime and Pages delivery are introduced together; live runtime remains backend-bound and does not initialize MSW.
+- Catalog note: Browser-only demo runtime and Pages delivery shipped in `v2.22.0`; live runtime remains backend-bound and does not initialize MSW.
 
 ## Coverage / rollout summary
 
@@ -17,14 +17,17 @@
 - Pages assembly 把 `web/demo-dist/` 放入 `/demo/`。demo API/SSE、MSW worker 和 public branding assets 全部使用 `VITE_DEPLOY_BASE` 的 repo-subpath，避免 Pages worker scope 外溢到站点根 API。
 - `Records Overlay E2E` 在保留原 live Vite regression 的同时运行 demo route matrix、Inspector sharing/SSE 与 simulated external-key write。
 - `SPEC.md` 的 `## Visual Evidence` 保存 Dashboard operational、账号池 attention 与 Records network-failure 的桌面和移动 mock-only 证据，绑定 `8b0aa929b9738fd0d535784e4b89c75ce54e28ae`。
+- PR #582 已合并为 `main@80a248cc891f74111f9d403c9d915a1f340a72d5`，并发布为 `v2.22.0`。
 
 ## Remaining Gaps
 
-- PR 和远端 convergence 尚未开始。
+- None
 
 ## Related Changes
 
-- Local verification: `bun run lint`, `bun run test`, `bun run test-storybook`, `bun run demo:build`, `bun run storybook:build`, Pages assembly smoke, route matrix E2E and Records Overlay E2E.
+- PR #582: `feat(web): add mock-only product demo`
+- Release: `v2.22.0`
+- Verification: `bun run lint`, `bun run test`, `bun run test-storybook`, `bun run demo:build`, `bun run storybook:build`, Pages assembly smoke, route matrix E2E and Records Overlay E2E.
 
 ## References
 
