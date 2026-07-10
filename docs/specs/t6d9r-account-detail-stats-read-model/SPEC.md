@@ -131,47 +131,38 @@ PR: include
 
 - 详情抽屉概览页活动总览（mock Storybook；账号活动总览已归属概览页，记录页不再承载统计图表）
 
-PR: include
 ![账号详情概览页活动总览](./assets/detail-drawer-overview-activity-overview.png)
 
 - 详情抽屉 records tab 表格本体（mock Storybook；records tab 移除外层 records 卡片、标题说明与记录数量选择，只保留调用表格）
 
-PR: include
 ![账号详情调用记录表格本体](./assets/detail-drawer-records-bare-table.png)
 
 - 详情抽屉 records tab 无限滚动（mock Storybook；固定页大小加载后滚动追加下一页，保留记录表格本体）
 
-PR: include
 ![账号详情调用记录无限滚动](./assets/detail-drawer-records-infinite-scroll.png)
 
 - 详情抽屉记录页默认态（mock Storybook，记录页 tab 已选中；右上角请求日志证明此时只读取详情与账号 stats，不再额外预取 roster `/api/pool/upstream-accounts` 或 sticky `/sticky-keys`）
 
-PR: include
 ![账号详情记录页请求收口](./assets/detail-drawer-records-request-gating.png)
 
 - 详情抽屉路由页按需加载（mock Storybook，从记录页切到路由页后才触发 roster、sticky keys 与 window usage 的受控请求）
 
-PR: include
 ![账号详情路由页按需加载](./assets/detail-drawer-routing-request-gating.png)
 
 - 详情抽屉 records tab 稳定态（mock Storybook；记录列表已进入 settled state，records tab 只保留调用表格本体，不再承载账号活动总览）
 
-PR: include
 ![账号详情记录页实时推送稳定态](./assets/detail-drawer-records-live-sync-stable.png)
 
 - 详情抽屉 records tab 宽屏放宽态（mock Storybook；共享抽屉桌面宽度提升到 `90rem` 后，记录表格横向空间更充足，不再被旧的 `60rem` 壳层过早压缩）
 
-PR: include
 ![账号详情记录页宽屏放宽态](./assets/detail-drawer-records-settled-wide.png)
 
 - 详情抽屉概览页活动总览窄宽度 token 标签稳定态（mock Storybook；总 token 指标标题从 `今日 Tokens` 缩短为 `今日 Token`，并保持单行显示，不再在窄卡片里被拆成两行）
 
-PR: include
 ![账号详情记录页 token 标签单行态](./assets/detail-drawer-records-token-label-nowrap.png)
 
 - 全站列表 body 初始错误态（mock Storybook；首屏无已有数据时，错误信息和重试入口展示在列表 body 内，而不是漂在列表外层）
 
-PR: include
 ![列表 body 初始错误态](./assets/list-body-state-initial-error.png)
 
 ## 参考

@@ -241,7 +241,6 @@
   state: endpoint badge matrix with remote compaction V2 semantics
   evidence_note: verifies `Compact` remains bound to `/v1/responses/compact`, while `/v1/responses` can surface `远程压缩V2` without overwriting the raw endpoint path.
   image:
-  PR: include
   ![Invocation endpoint badge states](./assets/invocation-endpoint-remote-v2-storybook.png)
 
 - source_type: storybook_canvas
@@ -249,7 +248,6 @@
   state: mixed endpoint + image badge matrix
   evidence_note: verifies `imageIntent=yes|direct_image` renders an independent `图片工具` badge that can coexist with `远程压缩V2`, while legacy rows without `imageIntent` stay badge-free.
   image:
-  PR: include
   ![Invocation image tool badge states](./assets/invocation-endpoint-image-signals-storybook.png)
 
 - source_type: storybook_canvas
@@ -257,7 +255,6 @@
   state: dashboard image badge preview
   evidence_note: verifies Dashboard current/previous invocation slots mirror Records image-badge semantics and keep endpoint/path semantics unchanged.
   image:
-  PR: include
   ![Dashboard image tool badge preview](./assets/dashboard-image-signals-storybook.png)
 
 - source_type: storybook_canvas
@@ -265,7 +262,6 @@
   state: request/response model mismatch
   evidence_note: verifies the primary model badge follows the response model and adds the routed-model indicator only when normalized request/response models differ.
   image:
-  PR: include
   ![Invocation routed model mismatch](./assets/invocation-model-routing-mismatch.png)
 
 - source_type: storybook_canvas
@@ -273,7 +269,6 @@
   state: expanded invocation detail with routed model summary
   evidence_note: verifies the expanded Records detail presents quick-triage cards, shows routed models as a visual chain, keeps endpoint information in the routing/model detail section, and preserves timing and pool-attempt boundaries.
   image:
-  PR: include
   ![Invocation expanded detail routing evidence](./assets/invocation-detail-expanded-routing-pr.png)
 
 - source_type: storybook_canvas
@@ -281,7 +276,6 @@
   state: legacy response-model fallback
   evidence_note: verifies legacy records without `requestModel`/`responseModel` still render the historical `model` value as the response-model display while request model degrades to `—`.
   image:
-  PR: include
   ![Legacy response model fallback](./assets/invocation-model-routing-legacy.png)
 
 - source_type: storybook_canvas
@@ -289,7 +283,6 @@
   state: dashboard running pool account routing states
   evidence_note: verifies Dashboard working conversation slots show the concrete upstream account as breathing primary text while the request is running, keep the no-account fallback as `号池路由中`, and leave terminal account text static.
   image:
-  PR: include
   ![Dashboard pool routing account states](./assets/pool-routing-account-dashboard-storybook.png)
 
 - source_type: storybook_canvas
@@ -297,7 +290,6 @@
   state: invocation table running pool account routing states
   evidence_note: verifies the live invocation table renders the running concrete upstream account as blue text, preserves the no-account pool-routing fallback, and keeps terminal accounts as ordinary clickable account labels without changing row layout.
   image:
-  PR: include
   ![Invocation table pool routing account states](./assets/pool-routing-account-table-storybook.png)
 
 - source_type: storybook_canvas
@@ -305,7 +297,6 @@
   state: expanded records detail running pool account routing
   evidence_note: verifies the shared expanded invocation detail also consumes the running-account routing state, including account identity cards and request detail fields, without overlapping timing, model, or pool-attempt diagnostics.
   image:
-  PR: include
   ![Invocation detail pool routing account states](./assets/pool-routing-account-detail-storybook.png)
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
