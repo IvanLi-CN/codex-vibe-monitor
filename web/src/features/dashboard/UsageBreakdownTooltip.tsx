@@ -17,6 +17,7 @@ export interface UsageBreakdownTooltipProps {
     input: string
     reasoning: string
     unavailable: string
+    tokenUnavailable: string
     unknownModel: string
   }
 }
@@ -161,10 +162,12 @@ function TokenBreakdownTable({
       modelLabel={labels.model}
       modelWidth="32%"
       columns={columns}
-      rows={[
-        rowFor(labels.total, breakdown ?? { cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 }),
-        ...models.map((model) => rowFor(modelLabel(model.model, labels.unknownModel), model)),
-      ]}
+      rows={breakdown
+        ? [
+            rowFor(labels.total, breakdown),
+            ...models.map((model) => rowFor(modelLabel(model.model, labels.unknownModel), model)),
+          ]
+        : [{ label: labels.total, unavailable: labels.tokenUnavailable }]}
     />
   )
 }
