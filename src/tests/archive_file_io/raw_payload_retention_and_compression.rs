@@ -4844,7 +4844,7 @@ async fn complete_deferred_pool_early_phase_cleanup_guard_marks_terminal_and_dis
 }
 
 #[tokio::test]
-async fn complete_deferred_pool_early_phase_cleanup_guard_removes_synthetic_runtime_snapshot() {
+async fn attempt_completion_preserves_synthetic_runtime_until_request_cleanup() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -4862,6 +4862,18 @@ async fn complete_deferred_pool_early_phase_cleanup_guard_removes_synthetic_runt
     persist_and_broadcast_proxy_capture_runtime_snapshot(state.as_ref(), running_record)
         .await
         .expect("store synthetic pool runtime snapshot");
+    let ordinary_invoke_id = "ordinary-4201";
+    let ordinary_record = build_admitted_proxy_capture_runtime_snapshot(
+        ordinary_invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        None,
+        None,
+        Some("pck-ordinary-4201"),
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(state.as_ref(), ordinary_record)
+        .await
+        .expect("store ordinary runtime snapshot");
     let pending = PendingPoolAttemptRecord {
         attempt_id: Some(44),
         invoke_id: invoke_id.to_string(),
@@ -4882,12 +4894,24 @@ async fn complete_deferred_pool_early_phase_cleanup_guard_removes_synthetic_runt
         compact_support_status: None,
         compact_support_reason: None,
     };
-    let mut guard = Some(PoolEarlyPhaseOrphanCleanupGuard::new(
+    let mut attempt_guard = Some(PoolEarlyPhaseOrphanCleanupGuard::new(
         state.clone(),
         pending,
     ));
+    let request_guard = PoolViaRuntimeSnapshotCleanupGuard::new(state.clone(), 4201);
 
-    complete_deferred_pool_early_phase_cleanup_guard(&mut guard);
+    complete_deferred_pool_early_phase_cleanup_guard(&mut attempt_guard);
+
+    assert!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .iter()
+            .any(|record| record.invoke_id == invoke_id && record.occurred_at == occurred_at),
+        "one completed upstream attempt must not remove request-scoped runtime visibility"
+    );
+
+    drop(request_guard);
 
     assert!(
         state
@@ -4896,6 +4920,14 @@ async fn complete_deferred_pool_early_phase_cleanup_guard_removes_synthetic_runt
             .iter()
             .all(|record| record.invoke_id != invoke_id || record.occurred_at != occurred_at),
         "completed synthetic pool attempts must release their runtime snapshot"
+    );
+    assert!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .iter()
+            .any(|record| record.invoke_id == ordinary_invoke_id),
+        "request-scoped synthetic cleanup must preserve ordinary invocation runtime"
     );
 }
 

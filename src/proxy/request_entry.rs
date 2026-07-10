@@ -1095,6 +1095,34 @@ pub(crate) struct PoolEarlyPhaseOrphanCleanupGuard {
     pub(crate) armed: bool,
 }
 
+pub(crate) struct PoolViaRuntimeSnapshotCleanupGuard {
+    state: Arc<AppState>,
+    invoke_id: String,
+}
+
+impl PoolViaRuntimeSnapshotCleanupGuard {
+    pub(crate) fn new(state: Arc<AppState>, proxy_request_id: u64) -> Self {
+        Self {
+            state,
+            invoke_id: format!("{POOL_VIA_INVOKE_ID_PREFIX}{proxy_request_id}"),
+        }
+    }
+}
+
+impl Drop for PoolViaRuntimeSnapshotCleanupGuard {
+    fn drop(&mut self) {
+        let removed_count = self
+            .state
+            .proxy_runtime_invocations
+            .remove_non_terminal_by_invoke_id(&self.invoke_id);
+        debug!(
+            invoke_id = %self.invoke_id,
+            removed_count,
+            "request-scoped via-pool runtime snapshots cleaned up"
+        );
+    }
+}
+
 impl std::fmt::Debug for PoolEarlyPhaseOrphanCleanupGuard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PoolEarlyPhaseOrphanCleanupGuard")
@@ -1271,18 +1299,6 @@ pub(crate) fn complete_deferred_pool_early_phase_cleanup_guard(
 ) {
     if let Some(guard) = guard.as_mut() {
         guard.mark_terminal_outcome_observed();
-        if guard
-            .pending_attempt_record
-            .invoke_id
-            .starts_with(POOL_VIA_INVOKE_ID_PREFIX)
-        {
-            remove_proxy_runtime_snapshot_by_key(
-                guard.state.as_ref(),
-                &guard.pending_attempt_record.invoke_id,
-                &guard.pending_attempt_record.occurred_at,
-                "completed_synthetic_pool_attempt",
-            );
-        }
     }
     disarm_pool_early_phase_cleanup_guard(guard);
 }
