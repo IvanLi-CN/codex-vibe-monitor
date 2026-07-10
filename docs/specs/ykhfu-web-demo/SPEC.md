@@ -107,6 +107,27 @@
 
 ## Visual Evidence
 
+- Evidence source: `ui_demo` mock-only runtime at `VITE_APP_RUNTIME=demo`; no login, real backend, account, secret or external service was used.
+- Bound source revision: `7785fe936739699c60da601a2690b148ecc40b17`.
+- Viewports: desktop `1440x1000`; mobile `390x844`. Chrome Control and its DevTools viewport endpoint were unavailable, so the isolated local renderer used the same leased demo origin for the final responsive captures.
+- Edge whitespace normalization: checked; retained the original bounds because the gradient page edge did not provide an unambiguous removable border.
+
+### Desktop
+
+![Dashboard operational desktop](./assets/dashboard-operational-desktop.png)
+
+![Account pool attention desktop](./assets/account-pool-attention-desktop.png)
+
+![Records network failure desktop](./assets/records-network-failure-desktop.png)
+
+### Mobile
+
+![Dashboard operational mobile](./assets/dashboard-operational-mobile.png)
+
+![Account pool attention mobile](./assets/account-pool-attention-mobile.png)
+
+![Records network failure mobile](./assets/records-network-failure-mobile.png)
+
 ## Related PRs
 
 - None

@@ -13,12 +13,13 @@
 - `web/src/main.tsx` 在 demo render 前启动 worker；worker 初始化或未知 runtime 失败时显示受控错误面，并对非 asset 未处理请求 fail closed。
 - `web/src/demo/` 提供 deterministic seed、HTTP/SSE handlers、内存 mutation、四个 scene，以及桌面 Inspector 与移动 drawer。
 - `web/src/demo/DemoInspector.stories.tsx` 提供 autodocs state entry 与 scene switch play coverage。
+- `AppLayout` 补充移动端的紧凑导航布局与 Storybook mobile state，确保 demo 的 390px 页面证据保持可导航。
 - Pages assembly 把 `web/demo-dist/` 放入 `/demo/`，并用 `VITE_DEPLOY_BASE` 生成 repo-subpath assets 和 worker URL。
 - `Records Overlay E2E` 在保留原 live Vite regression 的同时运行 demo route matrix、Inspector sharing/SSE 与 simulated external-key write。
+- `SPEC.md` 的 `## Visual Evidence` 保存 Dashboard operational、账号池 attention 与 Records network-failure 的桌面和移动 mock-only 证据，绑定 `7785fe936739699c60da601a2690b148ecc40b17`。
 
 ## Remaining Gaps
 
-- 视觉证据会在最终 HEAD 生成后记录在 `SPEC.md` 的 `## Visual Evidence`。
 - PR 和远端 convergence 尚未开始。
 
 ## Related Changes
