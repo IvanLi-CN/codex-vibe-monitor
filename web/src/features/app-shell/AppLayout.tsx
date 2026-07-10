@@ -232,7 +232,7 @@ export function AppLayout() {
           <div className="flex min-w-0 flex-1 items-center gap-2.5 sm:gap-3">
             <button
               type="button"
-              className="control-pill min-[769px]:hidden"
+              className="control-pill min-[1024px]:hidden"
               onClick={() => setMobileNavOpen(true)}
               aria-label={t('app.nav.openMenu')}
               aria-expanded={mobileNavOpen}
@@ -244,15 +244,15 @@ export function AppLayout() {
             <HeaderBrandMark
               alt={t('app.logoAlt')}
               state={headerBrandMarkState}
-              className="h-9 w-9 min-[769px]:h-10 min-[769px]:w-10"
-              markClassName="h-9 w-9 min-[769px]:h-10 min-[769px]:w-10"
+              className="h-9 w-9 min-[1024px]:h-10 min-[1024px]:w-10"
+              markClassName="h-9 w-9 min-[1024px]:h-10 min-[1024px]:w-10"
               data-testid="app-header-logo-mark"
             />
             <div className="min-w-0">
-              <span className="hidden truncate text-lg font-semibold tracking-tight min-[769px]:block min-[769px]:text-xl">
+              <span className="hidden truncate text-lg font-semibold tracking-tight min-[1024px]:block min-[1024px]:text-xl">
                 {t('app.brand')}
               </span>
-              <div className="min-[769px]:hidden">
+              <div className="min-[1024px]:hidden">
                 {mobileContextEyebrow ? (
                   <p className="truncate text-[10px] font-semibold uppercase tracking-[0.18em] text-primary/72">
                     {mobileContextEyebrow}
@@ -264,7 +264,7 @@ export function AppLayout() {
           </div>
 
           <nav className="flex shrink-0 items-center gap-2 sm:gap-3">
-            <div className="hidden overflow-x-auto no-scrollbar min-[769px]:block">
+            <div className="hidden overflow-x-auto no-scrollbar min-[1024px]:block">
               <SegmentedControl size="nav" className="min-w-max" aria-label={t('app.brand')}>
                 {desktopNavItems.map((item) => (
                   <NavLink
@@ -346,7 +346,7 @@ export function AppLayout() {
         </div>
       </header>
       {mobileNavOpen ? (
-        <div className="fixed inset-0 z-[85] min-[769px]:hidden">
+        <div className="fixed inset-0 z-[85] min-[1024px]:hidden">
           <button
             type="button"
             aria-label={t('app.nav.closeMenu')}

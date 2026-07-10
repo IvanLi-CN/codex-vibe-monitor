@@ -170,7 +170,7 @@ export function ExternalApiKeysSettingsCard() {
             </div>
           ) : (
             <>
-              <div className="space-y-3 min-[769px]:hidden">
+              <div className="space-y-3 min-[1024px]:hidden">
                 {items.map((item) => (
                   <article key={`mobile-${item.id}`} className="rounded-xl border border-base-300/80 bg-base-100/72 p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -225,7 +225,7 @@ export function ExternalApiKeysSettingsCard() {
                 ))}
               </div>
 
-              <div className="hidden overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72 min-[769px]:block">
+              <div className="hidden overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72 min-[1024px]:block">
                 <table className="w-full min-w-[44rem] table-fixed text-sm">
                   <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
                     <tr>
@@ -300,7 +300,7 @@ export function ExternalApiKeysSettingsCard() {
       </Card>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[769px]:max-h-[calc(100dvh-2rem)]">
+        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[1024px]:max-h-[calc(100dvh-2rem)]">
           <div className="sticky top-0 z-10 border-b border-base-300/80 bg-base-100/94 px-5 py-4 backdrop-blur">
             <DialogHeader className="min-w-0">
               <DialogTitle>{t('settings.externalApiKeys.createDialog.title')}</DialogTitle>
@@ -340,7 +340,7 @@ export function ExternalApiKeysSettingsCard() {
       </Dialog>
 
       <Dialog open={rotateTarget != null} onOpenChange={(open) => !open && setRotateTarget(null)}>
-        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[769px]:max-h-[calc(100dvh-2rem)]">
+        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[1024px]:max-h-[calc(100dvh-2rem)]">
           <div className="sticky top-0 z-10 border-b border-base-300/80 bg-base-100/94 px-5 py-4 backdrop-blur">
             <DialogHeader className="min-w-0">
               <DialogTitle>{t('settings.externalApiKeys.rotateDialog.title')}</DialogTitle>
@@ -363,7 +363,7 @@ export function ExternalApiKeysSettingsCard() {
       </Dialog>
 
       <Dialog open={disableTarget != null} onOpenChange={(open) => !open && setDisableTarget(null)}>
-        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[769px]:max-h-[calc(100dvh-2rem)]">
+        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[1024px]:max-h-[calc(100dvh-2rem)]">
           <div className="sticky top-0 z-10 border-b border-base-300/80 bg-base-100/94 px-5 py-4 backdrop-blur">
             <DialogHeader className="min-w-0">
               <DialogTitle>{t('settings.externalApiKeys.disableDialog.title')}</DialogTitle>

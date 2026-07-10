@@ -2186,7 +2186,7 @@ export function DuplicateAccountDetailDialog({
       open={open}
       onOpenChange={(nextOpen: boolean) => !nextOpen && onClose()}
     >
-      <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[769px]:max-h-[calc(100dvh-2rem)] sm:max-w-[38rem]">
+      <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[1024px]:max-h-[calc(100dvh-2rem)] min-[1024px]:w-[min(38rem,calc(100vw-2rem))]">
         <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/70 px-5 py-4">
           <DialogHeader className="min-w-0">
             <DialogTitle className="truncate">

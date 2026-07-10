@@ -1730,7 +1730,7 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                 />
               </div>
 
-              <div className="space-y-3 min-[769px]:hidden">
+              <div className="space-y-3 min-[1024px]:hidden">
                 {pricingDraft.entries.map((entry, index) => (
                   <article key={`mobile-pricing-${index}`} className="rounded-xl border border-base-300/80 bg-base-100/72 p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -1822,7 +1822,7 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                 ))}
               </div>
 
-              <div className="hidden overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72 min-[769px]:block">
+              <div className="hidden overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72 min-[1024px]:block">
                 <table className="w-full min-w-[56rem] table-fixed text-sm">
                   <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
                     <tr>
@@ -2229,8 +2229,8 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
             typeof document !== 'undefined' &&
             createPortal(
               // Intentional body-root overlay: this page-level modal should escape local overlay hosts.
-              <div className="fixed inset-0 z-[80] flex items-end justify-center bg-base-content/45 p-0 min-[769px]:items-center min-[769px]:p-4">
-              <div className="flex max-h-[min(100dvh-0.5rem,100dvh)] w-full flex-col overflow-hidden rounded-t-[1.75rem] rounded-b-none border border-base-300/75 bg-base-100 shadow-xl min-[769px]:max-h-[calc(100dvh-2rem)] min-[769px]:max-w-2xl min-[769px]:rounded-2xl">
+              <div className="fixed inset-0 z-[80] flex items-end justify-center bg-base-content/45 p-0 min-[1024px]:items-center min-[1024px]:p-4">
+              <div className="flex max-h-[min(100dvh-0.5rem,100dvh)] w-full flex-col overflow-hidden rounded-t-[1.75rem] rounded-b-none border border-base-300/75 bg-base-100 shadow-xl min-[1024px]:max-h-[calc(100dvh-2rem)] min-[1024px]:max-w-2xl min-[1024px]:rounded-2xl">
                 <div className="sticky top-0 z-10 space-y-1 border-b border-base-300/70 bg-base-100/94 px-5 py-4 backdrop-blur">
                   <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1 space-y-1">
@@ -2537,7 +2537,7 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                     </Alert>
                   )}
                 </div>
-                <div className="sticky bottom-0 z-10 flex flex-col-reverse gap-2 border-t border-base-300/70 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-3 backdrop-blur min-[769px]:flex-row min-[769px]:items-center min-[769px]:justify-end">
+                <div className="sticky bottom-0 z-10 flex flex-col-reverse gap-2 border-t border-base-300/70 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-3 backdrop-blur min-[1024px]:flex-row min-[1024px]:items-center min-[1024px]:justify-end">
                   <Button type="button" variant="ghost" onClick={closeForwardProxyAddModal}>
                     {t('settings.forwardProxy.modal.cancel')}
                   </Button>
