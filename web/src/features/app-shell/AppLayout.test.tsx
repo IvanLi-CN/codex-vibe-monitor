@@ -211,12 +211,15 @@ describe('AppLayout', () => {
     })
 
     const navGroup = host?.querySelector('nav .segmented-control')
+    const navigation = host?.querySelector('[data-testid="app-header-navigation"]')
     const dashboardLink = host?.querySelector('a[href="/dashboard"]')
     const systemLink = host?.querySelector('a[href="/system"]')
     const logoMark = host?.querySelector('[data-testid="app-header-logo-mark"]')
     const logoImage = host?.querySelector('img[src="/brand-mark.svg"][alt="product icon"]')
 
     expect(navGroup).not.toBeNull()
+    expect(navigation?.className).toContain('order-3')
+    expect(navigation?.className).toContain('w-full')
     expect(dashboardLink?.className).toContain('segmented-control-item')
     expect(dashboardLink?.className).toContain('segmented-control-item--active')
     expect(systemLink?.className).toContain('segmented-control-item')

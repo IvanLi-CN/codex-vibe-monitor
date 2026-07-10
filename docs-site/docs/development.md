@@ -23,6 +23,7 @@ description: Codex Vibe Monitor 的仓库结构、本地命令与验收面。
 
 - Backend：`127.0.0.1:8080`
 - App dev：`127.0.0.1:60080`
+- Web Demo dev：由端口租约决定，默认建议 `127.0.0.1:60083`
 - docs-site：`127.0.0.1:60081`
 - Storybook：`127.0.0.1:60082`
 
@@ -48,6 +49,8 @@ bun run lint
 bun run dev -- --host 127.0.0.1 --port 60080
 bun run test
 bun run build
+bun run demo:dev -- --host 127.0.0.1 --port 60083
+bun run demo:build
 bun run storybook
 bun run storybook:build -- --quiet
 ```
@@ -64,6 +67,7 @@ bun run build
 ## 验收面
 
 - 运行时应用：后端 + Vite dev server，用来验证真实 API、SSE 和状态联动
+- Web Demo：`VITE_APP_RUNTIME=demo` 启动的纯前端 mock-only 全路由预览面；不会连接后端，也不保存 OAuth、API Key 或其他敏感输入
 - Storybook：页面、组件和 mock 数据下的 UI 验收面
 - docs-site：面向自部署用户与开发协作者的 public docs
 
@@ -71,13 +75,14 @@ bun run build
 
 1. `cargo run` 启动后端
 2. `cd web && bun run dev -- --host 127.0.0.1 --port 60080` 启动前端
-3. 如果在改页面或组件，再额外启动 `cd web && bun run storybook`
-4. 如果在改 public docs，再额外启动 `cd docs-site && bun run dev`
+3. 如果要复核完整路由和写入回显，再额外启动 `cd web && bun run demo:dev -- --host 127.0.0.1 --port <leased-port>`
+4. 如果在改页面或组件，再额外启动 `cd web && bun run storybook`
+5. 如果在改 public docs，再额外启动 `cd docs-site && bun run dev`
 
 ## CI 与发布面
 
 - `CI PR` / `CI Main` 会覆盖前后端检查、构建产物和文档链路 smoke
-- `Docs Pages` 负责 docs-site + Storybook 的组装与 GitHub Pages 发布
+- `Docs Pages` 负责 docs-site + Storybook + `/demo/` 的组装与 GitHub Pages 发布
 - `Release` 负责容器镜像与版本发布
 
 ## 继续阅读

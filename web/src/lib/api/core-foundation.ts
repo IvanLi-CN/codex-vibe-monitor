@@ -11,7 +11,10 @@ import type {
 } from "./core-upstream";
 import { normalizeEffectiveRoutingRule } from "./core-upstream";
 
-const rawBase = import.meta.env.VITE_API_BASE_URL ?? "";
+const rawBase =
+  import.meta.env.VITE_APP_RUNTIME === "demo"
+    ? import.meta.env.BASE_URL
+    : import.meta.env.VITE_API_BASE_URL ?? "";
 const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;

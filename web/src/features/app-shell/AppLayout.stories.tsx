@@ -217,3 +217,15 @@ export const Default: Story = {
     await expect(canvas.getByRole('link', { name: '号池' })).toHaveAttribute('aria-current', 'page')
   },
 }
+
+export const Mobile: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'mobile1' },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByTestId('app-header-inner')).toBeVisible()
+    await expect(canvas.getByTestId('app-header-navigation')).toBeVisible()
+    await expect(canvas.getByRole('button', { name: '切换配色主题' })).toBeVisible()
+  },
+}

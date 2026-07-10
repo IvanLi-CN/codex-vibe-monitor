@@ -129,11 +129,12 @@ cd docs-site
 bun run build
 cd ../web
 bun run storybook:build
+VITE_DEPLOY_BASE=/demo/ bun run demo:build
 cd ..
-bash .github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-static .tmp/pages-site
+bash .github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-static web/demo-dist .tmp/pages-site
 ```
 
-这一步会把 public docs 放在站点根目录，并把 Storybook 静态站嵌到 `.tmp/pages-site/storybook/`。
+这一步会把 public docs 放在站点根目录，并把 Storybook 与 mock-only Web Demo 分别嵌到 `.tmp/pages-site/storybook/` 和 `.tmp/pages-site/demo/`。
 
 ## 下一步
 
@@ -141,4 +142,5 @@ bash .github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-st
 - 想知道第一次部署应该真正决定哪些参数：看 [配置与运行](/config)
 - 想开始改代码：看 [开发](/development)
 - 想先核对页面和组件状态：看 [Storybook](/storybook.html)
+- 想体验完整路由且不连接真实服务：打开 [Web Demo](/demo/)
 - 卡在“服务能开但不好用”：看 [排障](/troubleshooting)

@@ -32,6 +32,7 @@
 | 4tgau | 后端结构残余收口与浅层测试模块化                                          | active    | `4tgau-backend-structure-followup/SPEC.md`                 | `4tgau-backend-structure-followup/IMPLEMENTATION.md`                 | topic anchor: backend structure / module boundaries / tests |
 | q7yt7 | 后端测试资源分层模块化与运行时预算                                        | active    | `q7yt7-backend-test-resource-profiles/SPEC.md`             | `q7yt7-backend-test-resource-profiles/IMPLEMENTATION.md`             | topic anchor: backend tests / ci profiles / runtime budget  |
 | 97dds | GPT-5.6 系列定价、缓存写入计费与模型入口支持                              | active    | `97dds-gpt-5-6-series-pricing-support/SPEC.md`             | `97dds-gpt-5-6-series-pricing-support/IMPLEMENTATION.md`             | topic anchor: pricing / proxy models / cache billing        |
+| ykhfu | 全产品路由 Web Demo                                                       | active    | `ykhfu-web-demo/SPEC.md`                                   | `ykhfu-web-demo/IMPLEMENTATION.md`                                   | topic anchor: mock runtime / Pages / UI evidence            |
 
 ## Archived Sources
 
