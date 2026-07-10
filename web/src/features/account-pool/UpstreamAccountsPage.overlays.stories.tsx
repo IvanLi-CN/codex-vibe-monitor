@@ -182,7 +182,7 @@ function DetailDrawerStorySurface({
   initialTab,
   maxWidth = 'none',
 }: {
-  initialTab: 'records'
+  initialTab: 'records' | 'healthEvents'
   maxWidth?: string
 }) {
   return (
@@ -231,6 +231,83 @@ export const DetailDrawerRecordsSettled: Story = {
     await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
     await expect(within(dialog).queryByTestId('upstream-account-records-activity-overview')).not.toBeInTheDocument()
     await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
+  },
+}
+
+export const DetailDrawerInvocationLocate: Story = {
+  render: () => <DetailDrawerStorySurface initialTab="healthEvents" />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Codex Pro - Tokyo/i,
+    })
+    const invokeButton = await within(dialog).findByRole('button', {
+      name: 'inv_story_pool_failover_001',
+    })
+    await userEvent.click(invokeButton)
+    await expect(
+      within(dialog).getByRole('tab', { name: /调用记录|records/i }),
+    ).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() => {
+      expect(
+        dialog.querySelector(
+          '[data-invoke-id="inv_story_pool_failover_001"]',
+        ),
+      ).toBeInTheDocument()
+    })
+    await expect(
+      within(dialog).getByRole('button', {
+        name: /返回最新记录|return to latest records/i,
+      }),
+    ).toBeInTheDocument()
+  },
+}
+
+export const DetailDrawerInvocationLocateReturnLatest: Story = {
+  render: () => <DetailDrawerStorySurface initialTab="healthEvents" />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Codex Pro - Tokyo/i,
+    })
+    await userEvent.click(
+      await within(dialog).findByRole('button', {
+        name: 'inv_story_pool_failover_001',
+      }),
+    )
+    await userEvent.click(
+      await within(dialog).findByRole('button', {
+        name: /返回最新记录|return to latest records/i,
+      }),
+    )
+    await waitFor(() => {
+      expect(
+        within(dialog).queryByRole('button', {
+          name: /返回最新记录|return to latest records/i,
+        }),
+      ).not.toBeInTheDocument()
+    })
+  },
+}
+
+export const DetailDrawerInvocationLocateNotFound: Story = {
+  render: () => <DetailDrawerStorySurface initialTab="healthEvents" />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Codex Pro - Tokyo/i,
+    })
+    await userEvent.click(
+      await within(dialog).findByRole('button', {
+        name: 'inv_story_pool_failover_001',
+      }),
+    )
+    const alert = await within(dialog).findByRole('alert')
+    await expect(alert).toHaveTextContent('inv_story_pool_failover_001')
+    await expect(alert).toHaveFocus()
+    await expect(
+      within(dialog).getByRole('tab', { name: /调用记录|records/i }),
+    ).toHaveAttribute('aria-selected', 'true')
   },
 }
 

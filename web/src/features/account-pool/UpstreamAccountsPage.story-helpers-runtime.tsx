@@ -1069,6 +1069,47 @@ export function StorybookUpstreamAccountsMock({
         return jsonResponse(clone(detail))
       }
 
+      if (path === '/api/invocations/locate' && method === 'GET') {
+        const requestedAccountId = Number(
+          parsedUrl.searchParams.get('upstreamAccountId') || 0,
+        )
+        const requestId = parsedUrl.searchParams.get('requestId')?.trim() || ''
+        if (storyId?.endsWith('--detail-drawer-invocation-locate-not-found')) {
+          return jsonResponse(
+            {
+              code: 'invocation_not_found',
+              message: 'invocation record not found',
+              requestId,
+            },
+            404,
+          )
+        }
+        const records = buildStickyInvocationRecords(
+          requestedAccountId > 0 ? requestedAccountId : 101,
+        )
+        const target = {
+          ...(records[0] ?? {}),
+          id: 910_001,
+          invokeId: requestId,
+          upstreamAccountId: requestedAccountId || 101,
+        }
+        const targetIndex = Math.min(3, records.length)
+        return jsonResponse({
+          anchorId: 'storybook-anchor-001',
+          snapshotId: 17,
+          total: 121,
+          page: 2,
+          pageSize: 50,
+          records: [
+            ...records.slice(0, targetIndex),
+            target,
+            ...records.slice(targetIndex + 1, 8),
+          ],
+          targetIndex,
+          targetAbsoluteIndex: 50 + targetIndex,
+        })
+      }
+
       if (path === '/api/invocations' && method === 'GET') {
         const requestedAccountId = Number(parsedUrl.searchParams.get('upstreamAccountId') || 0)
         const stickyKey = parsedUrl.searchParams.get('stickyKey')?.trim() || ''

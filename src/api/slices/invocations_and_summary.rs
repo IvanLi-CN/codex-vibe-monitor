@@ -4,6 +4,8 @@ use chrono::LocalResult;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::FromRow;
+use std::sync::Mutex as StdMutex;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, warn};
 
@@ -48,6 +50,76 @@ pub(crate) const INVOCATION_RESPONSE_BODY_PREVIEW_CHAR_LIMIT: usize = 2_000;
 pub(crate) const INVOCATION_LIVE_PHASE_QUEUED: &str = "queued";
 pub(crate) const INVOCATION_LIVE_PHASE_REQUESTING: &str = "requesting";
 pub(crate) const INVOCATION_LIVE_PHASE_RESPONDING: &str = "responding";
+const INVOCATION_ANCHOR_TTL: Duration = Duration::from_secs(30 * 60);
+const INVOCATION_ANCHOR_CACHE_LIMIT: usize = 32;
+
+#[derive(Clone)]
+struct InvocationAnchorSnapshot {
+    snapshot_id: i64,
+    upstream_account_id: i64,
+    runtime_records: Vec<ApiInvocation>,
+    expires_at: Instant,
+}
+
+static INVOCATION_ANCHOR_SNAPSHOTS: once_cell::sync::Lazy<
+    StdMutex<HashMap<String, InvocationAnchorSnapshot>>,
+> = once_cell::sync::Lazy::new(|| StdMutex::new(HashMap::new()));
+
+fn store_invocation_anchor_snapshot(
+    snapshot_id: i64,
+    upstream_account_id: i64,
+    runtime_records: Vec<ApiInvocation>,
+) -> String {
+    let anchor_id = nanoid::nanoid!(16);
+    let now = Instant::now();
+    let mut snapshots = INVOCATION_ANCHOR_SNAPSHOTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshots.retain(|_, snapshot| snapshot.expires_at > now);
+    if snapshots.len() >= INVOCATION_ANCHOR_CACHE_LIMIT {
+        if let Some(oldest_id) = snapshots
+            .iter()
+            .min_by_key(|(_, snapshot)| snapshot.expires_at)
+            .map(|(id, _)| id.clone())
+        {
+            snapshots.remove(&oldest_id);
+        }
+    }
+    snapshots.insert(
+        anchor_id.clone(),
+        InvocationAnchorSnapshot {
+            snapshot_id,
+            upstream_account_id,
+            runtime_records,
+            expires_at: now + INVOCATION_ANCHOR_TTL,
+        },
+    );
+    anchor_id
+}
+
+fn load_invocation_anchor_runtime_records(
+    params: &ListQuery,
+) -> Result<Option<Vec<ApiInvocation>>, ApiError> {
+    let Some(anchor_id) = normalize_query_text(params.anchor_id.as_deref()) else {
+        return Ok(None);
+    };
+    let now = Instant::now();
+    let mut snapshots = INVOCATION_ANCHOR_SNAPSHOTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshots.retain(|_, snapshot| snapshot.expires_at > now);
+    let snapshot = snapshots
+        .get(&anchor_id)
+        .ok_or_else(|| ApiError::bad_request(anyhow!("invocation anchor expired or not found")))?;
+    if params.snapshot_id != Some(snapshot.snapshot_id)
+        || params.upstream_account_id != Some(snapshot.upstream_account_id)
+    {
+        return Err(ApiError::bad_request(anyhow!(
+            "invocation anchor does not match snapshot or account"
+        )));
+    }
+    Ok(Some(snapshot.runtime_records.clone()))
+}
 
 // Legacy records can carry `failure_class=none` or NULL while still representing failures.
 // Keep classification consistent with `resolve_failure_classification` without requiring a
@@ -1196,6 +1268,58 @@ pub(crate) async fn query_current_runtime_db_keys(
         .collect())
 }
 
+async fn count_stale_runtime_db_rows_before_target(
+    pool: &Pool<Sqlite>,
+    stale_keys: &HashSet<(String, String)>,
+    target_occurred_at: &str,
+    target_id: i64,
+    snapshot_id: i64,
+) -> Result<i64, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct CountRow {
+        total: i64,
+    }
+
+    let mut count = stale_keys
+        .iter()
+        .filter(|(_, occurred_at)| occurred_at.as_str() > target_occurred_at)
+        .count() as i64;
+    let equal_time_keys = stale_keys
+        .iter()
+        .filter(|(_, occurred_at)| occurred_at.as_str() == target_occurred_at)
+        .collect::<Vec<_>>();
+    for chunk in equal_time_keys.chunks(100) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT COUNT(*) AS total FROM codex_invocations WHERE id <= ",
+        );
+        query
+            .push_bind(snapshot_id)
+            .push(" AND id > ")
+            .push_bind(target_id)
+            .push(" AND occurred_at = ")
+            .push_bind(target_occurred_at.to_string())
+            .push(" AND (");
+        for (index, (invoke_id, occurred_at)) in chunk.iter().enumerate() {
+            if index > 0 {
+                query.push(" OR ");
+            }
+            query
+                .push("(invoke_id = ")
+                .push_bind(invoke_id)
+                .push(" AND occurred_at = ")
+                .push_bind(occurred_at)
+                .push(")");
+        }
+        query.push(")");
+        count += query
+            .build_query_as::<CountRow>()
+            .fetch_one(pool)
+            .await?
+            .total;
+    }
+    Ok(count)
+}
+
 pub(crate) async fn query_terminal_db_keys_for_runtime_records(
     pool: &Pool<Sqlite>,
     runtime_records: &[ApiInvocation],
@@ -1856,12 +1980,23 @@ pub(crate) async fn list_invocations(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<ListResponse>, ApiError> {
+    let runtime_overlay = load_invocation_anchor_runtime_records(&params)?;
+    list_invocations_with_runtime_overlay(state, params, runtime_overlay).await
+}
+
+async fn list_invocations_with_runtime_overlay(
+    state: Arc<AppState>,
+    params: ListQuery,
+    runtime_overlay_override: Option<Vec<ApiInvocation>>,
+) -> Result<Json<ListResponse>, ApiError> {
     let request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let runtime_overlay_records = if should_overlay_runtime_records(&request) {
-        runtime_overlay_snapshot(state.as_ref())
-    } else {
-        Vec::new()
+    let runtime_overlay_records = match runtime_overlay_override {
+        Some(records) => records,
+        None if should_overlay_runtime_records(&request) => {
+            runtime_overlay_snapshot(state.as_ref())
+        }
+        None => Vec::new(),
     };
     if is_legacy_invocation_stream_query(&params) {
         let db_terminal_keys = if runtime_overlay_records.is_empty() {
@@ -2054,6 +2189,246 @@ pub(crate) async fn list_invocations(
         page_size: request.page_size,
         records,
     }))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocateInvocationResponse {
+    pub(crate) anchor_id: String,
+    pub(crate) snapshot_id: i64,
+    pub(crate) total: i64,
+    pub(crate) page: i64,
+    pub(crate) page_size: i64,
+    pub(crate) records: Vec<ApiInvocation>,
+    pub(crate) target_index: usize,
+    pub(crate) target_absolute_index: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct InvocationLocateRow {
+    id: i64,
+    occurred_at: String,
+}
+
+pub(crate) async fn locate_invocation_page(
+    state: Arc<AppState>,
+    params: &LocateInvocationQuery,
+) -> Result<Option<LocateInvocationResponse>, ApiError> {
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ApiError::bad_request(anyhow!("requestId is required")));
+    }
+    if params.upstream_account_id <= 0 {
+        return Err(ApiError::bad_request(anyhow!(
+            "upstreamAccountId must be positive"
+        )));
+    }
+
+    let page_size = params
+        .page_size
+        .unwrap_or(50)
+        .clamp(1, state.config.list_limit_max as i64);
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+    let base_filters = InvocationRecordsFilters {
+        upstream_account_id: Some(params.upstream_account_id),
+        ..Default::default()
+    };
+    let runtime_records = runtime_overlay_snapshot(state.as_ref());
+    let runtime_target = runtime_records.iter().find(|record| {
+        runtime_text_equals(Some(record.invoke_id.as_str()), request_id)
+            && runtime_record_matches_filters(record, &base_filters, source_scope)
+    });
+
+    let mut target_query =
+        QueryBuilder::<Sqlite>::new("SELECT id, occurred_at FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters(
+        &mut target_query,
+        &base_filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    target_query
+        .push(" AND invoke_id = ")
+        .push_bind(request_id.to_string())
+        .push(" ORDER BY occurred_at DESC, id DESC LIMIT 1");
+    let db_target = target_query
+        .build_query_as::<InvocationLocateRow>()
+        .fetch_optional(&state.pool)
+        .await?;
+
+    let (target_occurred_at, target_id) = if let Some(row) = db_target.as_ref() {
+        (row.occurred_at.as_str(), row.id)
+    } else if let Some(record) = runtime_target {
+        (record.occurred_at.as_str(), record.id)
+    } else {
+        return Ok(None);
+    };
+
+    #[derive(Debug, FromRow)]
+    struct CountRow {
+        total: i64,
+    }
+
+    let mut rank_query =
+        QueryBuilder::<Sqlite>::new("SELECT COUNT(*) AS total FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters(
+        &mut rank_query,
+        &base_filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    rank_query
+        .push(" AND (occurred_at > ")
+        .push_bind(target_occurred_at.to_string())
+        .push(" OR (occurred_at = ")
+        .push_bind(target_occurred_at.to_string())
+        .push(" AND id > ")
+        .push_bind(target_id)
+        .push("))");
+    let db_rank = rank_query
+        .build_query_as::<CountRow>()
+        .fetch_one(&state.pool)
+        .await?
+        .total;
+
+    let db_terminal_keys = if runtime_records.is_empty() {
+        HashSet::new()
+    } else {
+        query_terminal_db_keys_for_runtime_records(
+            &state.pool,
+            &runtime_records,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?
+    };
+    let db_runtime_keys = if runtime_records.is_empty() {
+        HashSet::new()
+    } else {
+        query_current_runtime_db_keys(
+            &state.pool,
+            &base_filters,
+            source_scope,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?
+    };
+    let anchor_runtime_records = runtime_records
+        .iter()
+        .filter(|record| {
+            let key = (record.invoke_id.clone(), record.occurred_at.clone());
+            db_runtime_keys.contains(&key)
+                || runtime_record_matches_filters(record, &base_filters, source_scope)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let runtime_by_key = runtime_records
+        .iter()
+        .map(|record| {
+            (
+                (record.invoke_id.clone(), record.occurred_at.clone()),
+                record,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let stale_db_runtime_keys = db_runtime_keys
+        .iter()
+        .filter(|key| {
+            runtime_by_key.get(*key).is_some_and(|record| {
+                !runtime_record_matches_filters(record, &base_filters, source_scope)
+            })
+        })
+        .cloned()
+        .collect::<HashSet<_>>();
+    let stale_db_runtime_before_target = count_stale_runtime_db_rows_before_target(
+        &state.pool,
+        &stale_db_runtime_keys,
+        target_occurred_at,
+        target_id,
+        snapshot_id,
+    )
+    .await?;
+    let runtime_new_before_target = runtime_records
+        .iter()
+        .filter(|record| {
+            let key = (record.invoke_id.clone(), record.occurred_at.clone());
+            !db_runtime_keys.contains(&key)
+                && !db_terminal_keys.contains(&key)
+                && runtime_record_matches_filters(record, &base_filters, source_scope)
+                && (record.occurred_at.as_str() > target_occurred_at
+                    || (record.occurred_at.as_str() == target_occurred_at && record.id > target_id))
+        })
+        .count() as i64;
+    let target_absolute_index = db_rank
+        .saturating_sub(stale_db_runtime_before_target)
+        .saturating_add(runtime_new_before_target);
+    let target_page = target_absolute_index / page_size + 1;
+
+    // A concurrent runtime transition can shift the page boundary by one. Probe only adjacent
+    // windows when necessary; the response still contains exactly one relevant page.
+    let candidate_pages = [
+        target_page,
+        target_page.saturating_sub(1).max(1),
+        target_page.saturating_add(1),
+    ];
+    for page in candidate_pages {
+        let Json(response) = list_invocations_with_runtime_overlay(
+            state.clone(),
+            ListQuery {
+                page: Some(page),
+                page_size: Some(page_size),
+                snapshot_id: Some(snapshot_id),
+                sort_by: Some("occurredAt".to_string()),
+                sort_order: Some("desc".to_string()),
+                upstream_account_id: Some(params.upstream_account_id),
+                ..Default::default()
+            },
+            Some(anchor_runtime_records.clone()),
+        )
+        .await?;
+        if let Some(target_index) = response
+            .records
+            .iter()
+            .position(|record| runtime_text_equals(Some(record.invoke_id.as_str()), request_id))
+        {
+            let anchor_id = store_invocation_anchor_snapshot(
+                snapshot_id,
+                params.upstream_account_id,
+                anchor_runtime_records.clone(),
+            );
+            return Ok(Some(LocateInvocationResponse {
+                anchor_id,
+                snapshot_id: response.snapshot_id,
+                total: response.total,
+                page: response.page,
+                page_size: response.page_size,
+                records: response.records,
+                target_index,
+                target_absolute_index: (response.page - 1) * response.page_size
+                    + target_index as i64,
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+pub(crate) async fn locate_invocation(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<LocateInvocationQuery>,
+) -> Result<axum::response::Response, ApiError> {
+    match locate_invocation_page(state, &params).await? {
+        Some(response) => Ok(Json(response).into_response()),
+        None => Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "code": "invocation_not_found",
+                "message": "invocation record not found",
+                "requestId": params.request_id.trim(),
+            })),
+        )
+            .into_response()),
+    }
 }
 
 pub(crate) async fn fetch_invocation_pool_attempts(

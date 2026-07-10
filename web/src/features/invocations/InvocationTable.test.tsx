@@ -591,6 +591,17 @@ describe("getReasoningEffortTone", () => {
 });
 
 describe("InvocationTable", () => {
+  it("shows selectable invoke IDs only when explicitly enabled", async () => {
+    const records = [createInvocationRecord(0)];
+    await renderInteractiveTable(records);
+    expect(document.querySelector('[data-testid="invocation-id"]')).toBeNull();
+
+    await renderInteractiveTable(records, { showInvokeId: true });
+    const invokeId = document.querySelector('[data-testid="invocation-id"]');
+    expect(invokeId?.textContent).toBe("virtual-row-1");
+    expect(invokeId?.className).toContain("select-text");
+  });
+
   it("virtualizes large desktop datasets without mounting every row", async () => {
     await renderInteractiveTable(
       Array.from({ length: 1_000 }, (_, index) => createInvocationRecord(index)),

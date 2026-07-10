@@ -865,6 +865,21 @@ const baseTranslations = {
       "Loaded {{loaded}} / {{total}} retained records",
     "accountPool.upstreamAccounts.records.allLoaded":
       "All {{count}} retained records loaded",
+    "accountPool.upstreamAccounts.records.locating":
+      "Locating the selected invocation...",
+    "accountPool.upstreamAccounts.records.locateUnavailable":
+      "The location request did not complete; live updates remain paused.",
+    "accountPool.upstreamAccounts.records.located":
+      "Showing the frozen history window around {{invokeId}}.",
+    "accountPool.upstreamAccounts.records.returnLatest":
+      "Return to latest records",
+    "accountPool.upstreamAccounts.records.locateNotFound":
+      "Invocation {{invokeId}} was not found in retained records.",
+    "accountPool.upstreamAccounts.records.locateFailed":
+      "Could not locate invocation {{invokeId}}.",
+    "accountPool.upstreamAccounts.records.retryLocate": "Retry",
+    "accountPool.upstreamAccounts.records.anchoredLoaded":
+      "Loaded {{loaded}} of {{total}} retained records around the selected invocation",
     "accountPool.upstreamAccounts.effectiveRule.title":
       "Effective routing rule",
     "accountPool.upstreamAccounts.effectiveRule.description":
@@ -3372,6 +3387,19 @@ const baseTranslations = {
       "已加载 {{loaded}} / {{total}} 条保留调用记录",
     "accountPool.upstreamAccounts.records.allLoaded":
       "已加载全部 {{count}} 条保留调用记录",
+    "accountPool.upstreamAccounts.records.locating": "正在定位所选调用...",
+    "accountPool.upstreamAccounts.records.locateUnavailable":
+      "定位请求未完成；实时更新仍保持暂停。",
+    "accountPool.upstreamAccounts.records.located":
+      "正在查看调用 {{invokeId}} 所在的冻结历史窗口。",
+    "accountPool.upstreamAccounts.records.returnLatest": "返回最新记录",
+    "accountPool.upstreamAccounts.records.locateNotFound":
+      "未找到调用记录 {{invokeId}}，该记录可能已被清理。",
+    "accountPool.upstreamAccounts.records.locateFailed":
+      "无法定位调用记录 {{invokeId}}。",
+    "accountPool.upstreamAccounts.records.retryLocate": "重试",
+    "accountPool.upstreamAccounts.records.anchoredLoaded":
+      "已加载目标调用附近 {{loaded}} / {{total}} 条保留记录",
     "accountPool.upstreamAccounts.effectiveRule.title": "最终生效规则",
     "accountPool.upstreamAccounts.effectiveRule.description":
       "这里展示的是当前账号最终参与路由判定的规则，账号级覆盖会最后生效。",

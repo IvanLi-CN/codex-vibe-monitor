@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -74,7 +75,11 @@ import type {
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
-import { fetchInvocationRecords } from "../../lib/api";
+import {
+  ApiRequestError,
+  fetchInvocationRecordLocation,
+  fetchInvocationRecords,
+} from "../../lib/api";
 import { invocationStableKey } from "../../lib/invocation";
 import type {
   StatusChangeReasonCode,
@@ -243,6 +248,12 @@ type OauthRecoveryHint = {
 
 type AccountDetailTab =
   "overview" | "records" | "edit" | "routing" | "healthEvents";
+
+type AccountRecordsMode = "latest" | "anchored";
+type AccountRecordsLocateError = {
+  invokeId: string;
+  kind: "notFound" | "request";
+};
 
 const ACCOUNT_DETAIL_TABS_REQUIRING_ROSTER_CONTEXT = new Set<AccountDetailTab>([
   "edit",
@@ -968,13 +979,23 @@ function SharedUpstreamAccountDetailDrawerInner({
   ] = useState(DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE);
   const [expandedStickyKeys, setExpandedStickyKeys] = useState<string[]>([]);
   const [accountRecords, setAccountRecords] = useState<ApiInvocation[]>([]);
+  const [accountRecordsMode, setAccountRecordsMode] =
+    useState<AccountRecordsMode>("latest");
+  const [accountRecordsFirstPage, setAccountRecordsFirstPage] = useState(0);
   const [accountRecordsPage, setAccountRecordsPage] = useState(0);
   const [accountRecordsTotal, setAccountRecordsTotal] = useState(0);
+  const [accountRecordsHasNewer, setAccountRecordsHasNewer] = useState(false);
   const [accountRecordsHasMore, setAccountRecordsHasMore] = useState(false);
   const [accountRecordsLoading, setAccountRecordsLoading] = useState(false);
   const [accountRecordsError, setAccountRecordsError] = useState<string | null>(
     null,
   );
+  const [accountRecordsLocateError, setAccountRecordsLocateError] =
+    useState<AccountRecordsLocateError | null>(null);
+  const [accountRecordsScrollTarget, setAccountRecordsScrollTarget] = useState<{
+    invokeId: string;
+    version: number;
+  } | null>(null);
   const [detailDrawerBodyElement, setDetailDrawerBodyElement] =
     useState<HTMLDivElement | null>(null);
   const [groupDraftNotes, setGroupDraftNotes] = useState<
@@ -1013,8 +1034,18 @@ function SharedUpstreamAccountDetailDrawerInner({
   const routeAccountIdRef = useRef<number | null>(accountId);
   const drawerOpenRef = useRef(open);
   const accountRecordsRequestSeqRef = useRef(0);
+  const accountRecordsModeRef = useRef<AccountRecordsMode>("latest");
   const accountRecordsSnapshotIdRef = useRef<number | null>(null);
+  const accountRecordsAnchorIdRef = useRef<string | null>(null);
   const accountRecordsRef = useRef<ApiInvocation[]>([]);
+  const accountRecordsPrependScrollRef = useRef<{
+    requestSeq: number;
+    scrollHeight: number;
+    scrollTop: number;
+  } | null>(null);
+  const detailDrawerBodyElementRef = useRef<HTMLDivElement | null>(null);
+  const accountRecordsLocateAlertRef = useRef<HTMLDivElement | null>(null);
+  const accountRecordsAnchorScrollGuardUntilRef = useRef(0);
   const draftSessionKeyRef = useRef<string | null>(null);
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
@@ -1059,9 +1090,9 @@ function SharedUpstreamAccountDetailDrawerInner({
   drawerOpenRef.current = open;
   activeDraftSessionKeyRef.current = activeDraftSessionKey;
 
-  useEffect(() => {
-    accountRecordsRef.current = accountRecords;
-  }, [accountRecords]);
+  accountRecordsRef.current = accountRecords;
+  accountRecordsModeRef.current = accountRecordsMode;
+  detailDrawerBodyElementRef.current = detailDrawerBodyElement;
 
   useEffect(() => {
     if (open && accountId != null) {
@@ -1687,7 +1718,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   const loadAccountRecordsPage = useCallback(
     (
       page: number,
-      mode: "replace" | "append",
+      mode: "replace" | "append" | "prepend",
       pageSize = ACCOUNT_RECORD_PAGE_SIZE,
     ): void => {
       const requestSeq = accountRecordsRequestSeqRef.current + 1;
@@ -1696,6 +1727,14 @@ function SharedUpstreamAccountDetailDrawerInner({
         return;
       }
 
+      const recordsScrollElement = detailDrawerBodyElementRef.current;
+      if (mode === "prepend" && recordsScrollElement) {
+        accountRecordsPrependScrollRef.current = {
+          requestSeq,
+          scrollHeight: recordsScrollElement.scrollHeight,
+          scrollTop: recordsScrollElement.scrollTop,
+        };
+      }
       setAccountRecordsLoading(true);
       setAccountRecordsError(null);
       void fetchInvocationRecords({
@@ -1703,14 +1742,23 @@ function SharedUpstreamAccountDetailDrawerInner({
         page,
         pageSize,
         snapshotId:
-          mode === "append"
-            ? (accountRecordsSnapshotIdRef.current ?? undefined)
-            : undefined,
+          mode === "replace"
+            ? undefined
+            : (accountRecordsSnapshotIdRef.current ?? undefined),
+        anchorId:
+          mode === "replace"
+            ? undefined
+            : (accountRecordsAnchorIdRef.current ?? undefined),
         sortBy: "occurredAt",
         sortOrder: "desc",
       })
         .then((response) => {
-          if (requestSeq !== accountRecordsRequestSeqRef.current) return;
+          if (requestSeq !== accountRecordsRequestSeqRef.current) {
+            if (accountRecordsPrependScrollRef.current?.requestSeq === requestSeq) {
+              accountRecordsPrependScrollRef.current = null;
+            }
+            return;
+          }
           const responseSnapshotId =
             typeof response.snapshotId === "number" &&
             Number.isFinite(response.snapshotId)
@@ -1738,31 +1786,29 @@ function SharedUpstreamAccountDetailDrawerInner({
             const seen = new Set(
               current.map((record) => invocationStableKey(record)),
             );
-            const next = [...current];
-            response.records.forEach((record) => {
+            const incoming = response.records.filter((record) => {
               const key = invocationStableKey(record);
-              if (!seen.has(key)) {
-                seen.add(key);
-                next.push(record);
-              }
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
             });
-            return next;
+            if (mode === "prepend") return [...incoming, ...current];
+            return [...current, ...incoming];
           });
-          const loadedPage =
-            mode === "replace"
-              ? response.records.length > 0
-                ? Math.ceil(response.records.length / ACCOUNT_RECORD_PAGE_SIZE)
-                : 0
-              : responsePage;
-          const loadedCount =
-            mode === "replace"
-              ? response.records.length
-              : responsePage * responsePageSize;
-          setAccountRecordsPage(loadedPage);
+          if (mode !== "prepend") setAccountRecordsPage(responsePage);
+          if (mode !== "append") setAccountRecordsFirstPage(responsePage);
           setAccountRecordsTotal(responseTotal);
-          setAccountRecordsHasMore(loadedCount < responseTotal);
+          setAccountRecordsHasNewer(responsePage > 1 || mode === "append");
+          if (mode !== "prepend") {
+            setAccountRecordsHasMore(
+              responsePage * responsePageSize < responseTotal,
+            );
+          }
         })
         .catch((error) => {
+          if (accountRecordsPrependScrollRef.current?.requestSeq === requestSeq) {
+            accountRecordsPrependScrollRef.current = null;
+          }
           if (requestSeq !== accountRecordsRequestSeqRef.current) return;
           setAccountRecordsError(
             error instanceof Error ? error.message : String(error),
@@ -1778,6 +1824,13 @@ function SharedUpstreamAccountDetailDrawerInner({
   );
 
   const reloadAccountRecords = useCallback((): void => {
+    setAccountRecordsMode("latest");
+    setAccountRecordsLocateError(null);
+    setAccountRecordsScrollTarget(null);
+    accountRecordsAnchorScrollGuardUntilRef.current = 0;
+    accountRecordsPrependScrollRef.current = null;
+    accountRecordsSnapshotIdRef.current = null;
+    accountRecordsAnchorIdRef.current = null;
     loadAccountRecordsPage(1, "replace");
   }, [loadAccountRecordsPage]);
 
@@ -1802,10 +1855,113 @@ function SharedUpstreamAccountDetailDrawerInner({
     loadAccountRecordsPage,
   ]);
 
-  useEffect(() => {
-    const requestSeq = accountRecordsRequestSeqRef.current + 1;
-    accountRecordsRequestSeqRef.current = requestSeq;
+  const loadNewerAccountRecords = useCallback((): void => {
+    if (
+      accountRecordsMode !== "anchored" ||
+      accountRecordsLoading ||
+      !accountRecordsHasNewer ||
+      accountRecordsFirstPage <= 1
+    ) {
+      return;
+    }
+    loadAccountRecordsPage(accountRecordsFirstPage - 1, "prepend");
+  }, [
+    accountRecordsFirstPage,
+    accountRecordsHasNewer,
+    accountRecordsLoading,
+    accountRecordsMode,
+    loadAccountRecordsPage,
+  ]);
 
+  const locateAccountRecord = useCallback(
+    (invokeId: string): void => {
+      const normalizedInvokeId = invokeId.trim();
+      if (!normalizedInvokeId || accountId == null) return;
+      const requestSeq = accountRecordsRequestSeqRef.current + 1;
+      accountRecordsRequestSeqRef.current = requestSeq;
+      setDetailTab("records");
+      setAccountRecordsMode("anchored");
+      setAccountRecordsLoading(true);
+      setAccountRecords([]);
+      setAccountRecordsFirstPage(0);
+      setAccountRecordsPage(0);
+      setAccountRecordsTotal(0);
+      setAccountRecordsHasNewer(false);
+      setAccountRecordsHasMore(false);
+      accountRecordsSnapshotIdRef.current = null;
+      accountRecordsAnchorIdRef.current = null;
+      accountRecordsPrependScrollRef.current = null;
+      setAccountRecordsError(null);
+      setAccountRecordsLocateError(null);
+      setAccountRecordsScrollTarget(null);
+
+      void fetchInvocationRecordLocation({
+        requestId: normalizedInvokeId,
+        upstreamAccountId: accountId,
+        pageSize: ACCOUNT_RECORD_PAGE_SIZE,
+      })
+        .then((response) => {
+          if (requestSeq !== accountRecordsRequestSeqRef.current) return;
+          accountRecordsSnapshotIdRef.current = response.snapshotId;
+          accountRecordsAnchorIdRef.current = response.anchorId;
+          setAccountRecords(response.records);
+          setAccountRecordsFirstPage(response.page);
+          setAccountRecordsPage(response.page);
+          setAccountRecordsTotal(response.total);
+          setAccountRecordsHasNewer(response.page > 1);
+          setAccountRecordsHasMore(
+            response.page * response.pageSize < response.total,
+          );
+          setAccountRecordsScrollTarget({
+            invokeId: normalizedInvokeId,
+            version: requestSeq,
+          });
+          accountRecordsAnchorScrollGuardUntilRef.current = Date.now() + 1_000;
+        })
+        .catch((error) => {
+          if (requestSeq !== accountRecordsRequestSeqRef.current) return;
+          setAccountRecords([]);
+          setAccountRecordsFirstPage(0);
+          setAccountRecordsPage(0);
+          setAccountRecordsTotal(0);
+          setAccountRecordsHasNewer(false);
+          setAccountRecordsHasMore(false);
+          setAccountRecordsLocateError({
+            invokeId: normalizedInvokeId,
+            kind:
+              error instanceof ApiRequestError && error.status === 404
+                ? "notFound"
+                : "request",
+          });
+        })
+        .finally(() => {
+          if (requestSeq === accountRecordsRequestSeqRef.current) {
+            setAccountRecordsLoading(false);
+          }
+        });
+    },
+    [accountId],
+  );
+
+  useLayoutEffect(() => {
+    const pending = accountRecordsPrependScrollRef.current;
+    if (!pending || !detailDrawerBodyElement) return;
+    accountRecordsPrependScrollRef.current = null;
+    detailDrawerBodyElement.scrollTop =
+      pending.scrollTop +
+      (detailDrawerBodyElement.scrollHeight - pending.scrollHeight);
+  }, [accountRecords, detailDrawerBodyElement]);
+
+  useLayoutEffect(() => {
+    if (!accountRecordsLocateError) return;
+    accountRecordsLocateAlertRef.current?.focus();
+    const timeout = window.setTimeout(() => {
+      accountRecordsLocateAlertRef.current?.focus();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [accountRecordsLocateError]);
+
+  useEffect(() => {
     const previous = previousAccountRecordsContextRef.current;
     const next = {
       open,
@@ -1835,13 +1991,33 @@ function SharedUpstreamAccountDetailDrawerInner({
       previous?.open &&
       previous.accountId === accountId &&
       previous.detailTab !== "records";
-    if (leftRecordsSurface || switchedAccounts || enteredRecordsTab) {
+    if (
+      leftRecordsSurface ||
+      switchedAccounts ||
+      (enteredRecordsTab && accountRecordsModeRef.current === "latest")
+    ) {
+      accountRecordsRequestSeqRef.current += 1;
+    }
+    const shouldResetRecords =
+      leftRecordsSurface ||
+      switchedAccounts ||
+      (enteredRecordsTab && accountRecordsModeRef.current === "latest");
+    if (shouldResetRecords) {
       setAccountRecords([]);
+      setAccountRecordsFirstPage(0);
       setAccountRecordsPage(0);
       setAccountRecordsTotal(0);
+      setAccountRecordsHasNewer(false);
       setAccountRecordsHasMore(false);
       accountRecordsSnapshotIdRef.current = null;
+      accountRecordsAnchorIdRef.current = null;
+      accountRecordsPrependScrollRef.current = null;
       setAccountRecordsError(null);
+      setAccountRecordsLocateError(null);
+      setAccountRecordsScrollTarget(null);
+      if (leftRecordsSurface || switchedAccounts) {
+        setAccountRecordsMode("latest");
+      }
       setAccountRecordsLoading(!leftRecordsSurface);
     }
 
@@ -1849,8 +2025,15 @@ function SharedUpstreamAccountDetailDrawerInner({
       return;
     }
 
-    void reloadAccountRecords();
-  }, [accountId, detailTab, open, reloadAccountRecords]);
+    if (accountRecordsModeRef.current === "latest") {
+      void reloadAccountRecords();
+    }
+  }, [
+    accountId,
+    detailTab,
+    open,
+    reloadAccountRecords,
+  ]);
 
   useEffect(() => {
     if (!open || accountId == null || detailTab !== "records") return;
@@ -1858,6 +2041,12 @@ function SharedUpstreamAccountDetailDrawerInner({
     if (!scrollTarget) return;
     const handleScroll = () => {
       if (scrollTarget.scrollHeight <= scrollTarget.clientHeight) return;
+      if (
+        scrollTarget.scrollTop < 260 &&
+        Date.now() >= accountRecordsAnchorScrollGuardUntilRef.current
+      ) {
+        loadNewerAccountRecords();
+      }
       const remaining =
         scrollTarget.scrollHeight -
         scrollTarget.scrollTop -
@@ -1876,13 +2065,24 @@ function SharedUpstreamAccountDetailDrawerInner({
     detailDrawerBodyElement,
     detailTab,
     loadMoreAccountRecords,
+    loadNewerAccountRecords,
     open,
   ]);
 
   useInvocationRecordsRealtime({
-    enabled: Boolean(open && accountId != null && detailTab === "records"),
+    enabled: Boolean(
+      open &&
+        accountId != null &&
+        detailTab === "records" &&
+        accountRecordsMode === "latest",
+    ),
     isHydrated:
-      Boolean(open && accountId != null && detailTab === "records") &&
+      Boolean(
+        open &&
+          accountId != null &&
+          detailTab === "records" &&
+          accountRecordsMode === "latest",
+      ) &&
       !accountRecordsLoading,
     filters: accountId == null ? undefined : { upstreamAccountId: accountId },
     sortBy: "occurredAt",
@@ -2774,7 +2974,7 @@ function SharedUpstreamAccountDetailDrawerInner({
               <div>{detailError}</div>
             </Alert>
           ) : selectedDetail ? (
-            <div className="grid gap-5">
+            <div className="grid min-w-0 gap-5">
               {visibleAccountActionError ? (
                 <Alert variant="error">
                   <AppIcon
@@ -2786,7 +2986,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                 </Alert>
               ) : null}
               <SegmentedControl
-                className="self-start"
+                className="max-w-full self-start overflow-x-auto"
                 role="tablist"
                 aria-label={t("accountPool.upstreamAccounts.detailTitle")}
               >
@@ -3037,8 +3237,77 @@ function SharedUpstreamAccountDetailDrawerInner({
                   id={detailTabIds.records.panel}
                   role="tabpanel"
                   aria-labelledby={detailTabIds.records.tab}
-                  className="flex flex-col gap-3"
+                  className="flex min-w-0 flex-col gap-3"
                 >
+                  {accountRecordsMode === "anchored" ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-info/35 bg-info/8 px-3 py-2 text-sm">
+                      <span className="text-base-content/72">
+                        {accountRecordsLocateError
+                          ? t(
+                              "accountPool.upstreamAccounts.records.locateUnavailable",
+                            )
+                          : accountRecordsScrollTarget
+                          ? t(
+                              "accountPool.upstreamAccounts.records.located",
+                              {
+                                invokeId: accountRecordsScrollTarget.invokeId,
+                              },
+                            )
+                          : t(
+                              "accountPool.upstreamAccounts.records.locating",
+                            )}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={reloadAccountRecords}
+                      >
+                        <AppIcon
+                          name="refresh"
+                          className="mr-2 h-4 w-4"
+                          aria-hidden
+                        />
+                        {t(
+                          "accountPool.upstreamAccounts.records.returnLatest",
+                        )}
+                      </Button>
+                    </div>
+                  ) : null}
+                  {accountRecordsLocateError ? (
+                    <Alert
+                      ref={accountRecordsLocateAlertRef}
+                      role="alert"
+                      tabIndex={-1}
+                      variant="warning"
+                      className="justify-between gap-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warning"
+                    >
+                      <span className="min-w-0 break-words">
+                        {t(
+                          accountRecordsLocateError.kind === "notFound"
+                            ? "accountPool.upstreamAccounts.records.locateNotFound"
+                            : "accountPool.upstreamAccounts.records.locateFailed",
+                          { invokeId: accountRecordsLocateError.invokeId },
+                        )}
+                      </span>
+                      {accountRecordsLocateError.kind === "request" ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            locateAccountRecord(
+                              accountRecordsLocateError.invokeId,
+                            )
+                          }
+                        >
+                          {t(
+                            "accountPool.upstreamAccounts.records.retryLocate",
+                          )}
+                        </Button>
+                      ) : null}
+                    </Alert>
+                  ) : null}
                   <InvocationTable
                     records={accountRecords}
                     isLoading={
@@ -3048,6 +3317,8 @@ function SharedUpstreamAccountDetailDrawerInner({
                     emptyLabel={t("accountPool.upstreamAccounts.records.empty")}
                     onOpenUpstreamAccount={handleOpenRelatedUpstreamAccount}
                     scrollElement={detailDrawerBodyElement}
+                    showInvokeId
+                    scrollTarget={accountRecordsScrollTarget}
                   />
                   {accountRecords.length > 0 ? (
                     <div
@@ -3059,6 +3330,16 @@ function SharedUpstreamAccountDetailDrawerInner({
                           <Spinner size="sm" />
                           {t(
                             "accountPool.upstreamAccounts.records.loadingMore",
+                          )}
+                        </span>
+                      ) : accountRecordsMode === "anchored" ? (
+                        <span>
+                          {t(
+                            "accountPool.upstreamAccounts.records.anchoredLoaded",
+                            {
+                              loaded: accountRecords.length,
+                              total: accountRecordsTotal,
+                            },
                           )}
                         </span>
                       ) : accountRecordsHasMore ? (
@@ -4076,8 +4357,21 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 "accountPool.upstreamAccounts.latestAction.fields.invokeId",
                               )}
                               value={
-                                selectedDetail.lastActionInvokeId ??
-                                t("accountPool.upstreamAccounts.unavailable")
+                                selectedDetail.lastActionInvokeId ? (
+                                  <button
+                                    type="button"
+                                    className="select-text break-all font-mono text-info underline decoration-info/35 underline-offset-4 transition hover:decoration-info focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                                    onClick={() =>
+                                      locateAccountRecord(
+                                        selectedDetail.lastActionInvokeId ?? "",
+                                      )
+                                    }
+                                  >
+                                    {selectedDetail.lastActionInvokeId}
+                                  </button>
+                                ) : (
+                                  t("accountPool.upstreamAccounts.unavailable")
+                                )
                               }
                             />
                             <div className="metric-cell md:col-span-2 xl:col-span-3">
@@ -4166,12 +4460,18 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 </p>
                               ) : null}
                               {actionEvent.invokeId ? (
-                                <p className="mt-2 text-xs text-base-content/55">
+                                <button
+                                  type="button"
+                                  className="mt-2 block select-text break-all font-mono text-xs text-info underline decoration-info/35 underline-offset-4 transition hover:decoration-info focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                                  onClick={() =>
+                                    locateAccountRecord(actionEvent.invokeId ?? "")
+                                  }
+                                >
                                   {t(
                                     "accountPool.upstreamAccounts.latestAction.fields.invokeId",
                                   )}
                                   : {actionEvent.invokeId}
-                                </p>
+                                </button>
                               ) : null}
                             </div>
                           ))}

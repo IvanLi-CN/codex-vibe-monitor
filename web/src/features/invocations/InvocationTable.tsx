@@ -48,6 +48,8 @@ interface InvocationTableProps {
   emptyLabel?: string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   scrollElement?: HTMLElement | null;
+  showInvokeId?: boolean;
+  scrollTarget?: { invokeId: string; version: number } | null;
 }
 
 type StatusMeta = {
@@ -162,6 +164,8 @@ export function InvocationTable({
   emptyLabel,
   onOpenUpstreamAccount,
   scrollElement,
+  showInvokeId = false,
+  scrollTarget,
 }: InvocationTableProps) {
   const { t, locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -188,7 +192,13 @@ export function InvocationTable({
   const [containerElement, setContainerElement] =
     useState<HTMLDivElement | null>(null);
   const [scrollMargin, setScrollMargin] = useState(0);
+  const [highlightedInvokeId, setHighlightedInvokeId] = useState<string | null>(
+    null,
+  );
   const measureRefs = useRef(new Map<number, HTMLElement>());
+  const handledScrollTargetVersionRef = useRef<number | null>(null);
+  const highlightTimeoutRef = useRef<number | null>(null);
+  const focusFrameRefs = useRef<number[]>([]);
 
   const toggleLabels = useMemo(() => {
     if (locale === "zh") {
@@ -559,6 +569,68 @@ export function InvocationTable({
     if (element) rowVirtualizer.measureElement(element);
   }, [expandedId, rowVirtualizer, rows]);
 
+  useLayoutEffect(() => {
+    if (
+      !scrollTarget ||
+      handledScrollTargetVersionRef.current === scrollTarget.version
+    ) {
+      return;
+    }
+    const targetIndex = rows.findIndex(
+      (row) => row.record.invokeId === scrollTarget.invokeId,
+    );
+    if (targetIndex < 0) return;
+
+    handledScrollTargetVersionRef.current = scrollTarget.version;
+    rowVirtualizer.scrollToIndex(targetIndex, { align: "center" });
+    setHighlightedInvokeId(scrollTarget.invokeId);
+
+    focusFrameRefs.current.forEach((frame) =>
+      window.cancelAnimationFrame(frame),
+    );
+    focusFrameRefs.current = [];
+    const firstFrame = window.requestAnimationFrame(() => {
+      const secondFrame = window.requestAnimationFrame(() => {
+        measureRefs.current.get(targetIndex)?.focus({ preventScroll: true });
+      });
+      focusFrameRefs.current.push(secondFrame);
+    });
+    focusFrameRefs.current.push(firstFrame);
+    if (highlightTimeoutRef.current != null) {
+      window.clearTimeout(highlightTimeoutRef.current);
+    }
+    highlightTimeoutRef.current = window.setTimeout(() => {
+      setHighlightedInvokeId((current) =>
+        current === scrollTarget.invokeId ? null : current,
+      );
+      highlightTimeoutRef.current = null;
+    }, 2_000);
+  }, [rowVirtualizer, rows, scrollTarget]);
+
+  useEffect(
+    () => () => {
+      focusFrameRefs.current.forEach((frame) =>
+        window.cancelAnimationFrame(frame),
+      );
+      if (highlightTimeoutRef.current != null) {
+        window.clearTimeout(highlightTimeoutRef.current);
+      }
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    if (!highlightedInvokeId) return;
+    const targetIndex = rows.findIndex(
+      (row) => row.record.invokeId === highlightedInvokeId,
+    );
+    if (targetIndex < 0) return;
+    const frame = window.requestAnimationFrame(() => {
+      measureRefs.current.get(targetIndex)?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [highlightedInvokeId, rows]);
+
   useEffect(() => {
     if (!hasInFlightRows) return;
     setNowMs(Date.now());
@@ -620,6 +692,7 @@ export function InvocationTable({
             if (!row) return null;
             const listDetailId = `invocation-list-details-${invocationStableDomKey(row.rowKey)}`;
             const isExpanded = expandedId === row.rowKey;
+            const isHighlighted = highlightedInvokeId === row.record.invokeId;
             const handleToggle = () => {
               setExpandedId((current) =>
                 current === row.rowKey ? null : row.rowKey,
@@ -640,8 +713,18 @@ export function InvocationTable({
                   }
                 }}
                 data-index={virtualRow.index}
+                data-invoke-id={row.record.invokeId ?? undefined}
                 data-testid="invocation-list-item"
-                className={`rounded-xl border border-base-300/70 px-3 py-3 ${virtualRow.index % 2 === 0 ? "bg-base-100/40" : "bg-base-200/24"}`}
+                tabIndex={isHighlighted ? -1 : undefined}
+                aria-current={isHighlighted ? "true" : undefined}
+                className={cn(
+                  "rounded-lg border border-base-300/70 px-3 py-3 transition-colors motion-reduce:transition-none",
+                  virtualRow.index % 2 === 0
+                    ? "bg-base-100/40"
+                    : "bg-base-200/24",
+                  isHighlighted &&
+                    "border-primary/70 bg-primary/10 ring-2 ring-inset ring-primary/55",
+                )}
               >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
@@ -651,6 +734,14 @@ export function InvocationTable({
                   <div className="truncate text-xs text-base-content/65">
                     {row.occurredDate}
                   </div>
+                  {showInvokeId && row.record.invokeId ? (
+                    <div
+                      className="mt-1 select-text break-all font-mono text-[11px] leading-tight text-info"
+                      data-testid="invocation-id"
+                    >
+                      {row.record.invokeId}
+                    </div>
+                  ) : null}
                 </div>
                 <button
                   type="button"
@@ -933,6 +1024,8 @@ export function InvocationTable({
                 if (!row) return null;
                 const tableDetailId = `invocation-table-details-${invocationStableDomKey(row.rowKey)}`;
                 const isExpanded = expandedId === row.rowKey;
+                const isHighlighted =
+                  highlightedInvokeId === row.record.invokeId;
                 const handleToggle = () => {
                   setExpandedId((current) =>
                     current === row.rowKey ? null : row.rowKey,
@@ -953,7 +1046,17 @@ export function InvocationTable({
                         }
                       }}
                       data-index={virtualRow.index}
-                      className={`${virtualRow.index % 2 === 0 ? "bg-base-100/38" : "bg-base-200/22"} hover:bg-primary/6`}
+                      data-invoke-id={row.record.invokeId ?? undefined}
+                      tabIndex={isHighlighted ? -1 : undefined}
+                      aria-current={isHighlighted ? "true" : undefined}
+                      className={cn(
+                        "transition-colors hover:bg-primary/6 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary motion-reduce:transition-none",
+                        virtualRow.index % 2 === 0
+                          ? "bg-base-100/38"
+                          : "bg-base-200/22",
+                        isHighlighted &&
+                          "bg-primary/10 ring-2 ring-inset ring-primary/55",
+                      )}
                     >
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
                         <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
@@ -963,6 +1066,14 @@ export function InvocationTable({
                           <span className="truncate whitespace-nowrap text-base-content/70">
                             {row.occurredDate}
                           </span>
+                          {showInvokeId && row.record.invokeId ? (
+                            <span
+                              className="select-text break-all font-mono text-[10px] leading-tight text-info"
+                              data-testid="invocation-id"
+                            >
+                              {row.record.invokeId}
+                            </span>
+                          ) : null}
                         </div>
                       </td>
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">

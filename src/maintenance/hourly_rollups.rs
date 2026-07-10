@@ -1597,6 +1597,7 @@ pub(crate) fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc
 pub(crate) fn build_invocation_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/api/invocations", get(list_invocations))
+        .route("/api/invocations/locate", get(locate_invocation))
         .route(
             "/api/invocations/:invoke_id/pool-attempts",
             get(fetch_invocation_pool_attempts),

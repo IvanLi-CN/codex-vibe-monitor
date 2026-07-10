@@ -491,6 +491,7 @@ export interface InvocationRecordsQuery {
   page?: number;
   pageSize?: number;
   snapshotId?: number;
+  anchorId?: string;
   sortBy?: InvocationSortBy;
   sortOrder?: InvocationSortOrder;
   rangePreset?: InvocationRangePreset;
@@ -544,6 +545,20 @@ export interface InvocationRecordsResponse extends ListResponse {
   total: number;
   page: number;
   pageSize: number;
+}
+
+export interface InvocationRecordLocationResponse
+  extends InvocationRecordsResponse {
+  anchorId: string;
+  targetIndex: number;
+  targetAbsoluteIndex: number;
+}
+
+export interface InvocationRecordLocationQuery {
+  requestId: string;
+  upstreamAccountId: number;
+  pageSize?: number;
+  signal?: AbortSignal;
 }
 
 export interface InvocationRecordsSummaryResponse extends StatsResponse {
@@ -900,6 +915,7 @@ function appendInvocationRecordsQuery(
   if (query.pageSize != null) search.set("pageSize", String(query.pageSize));
   if (query.snapshotId != null)
     search.set("snapshotId", String(query.snapshotId));
+  if (query.anchorId) search.set("anchorId", query.anchorId);
   if (query.sortBy) search.set("sortBy", query.sortBy);
   if (query.sortOrder) search.set("sortOrder", query.sortOrder);
   if (query.rangePreset) search.set("rangePreset", query.rangePreset);
@@ -946,6 +962,20 @@ export async function fetchInvocationRecords(query: InvocationRecordsQuery) {
   appendInvocationRecordsQuery(search, query);
   return fetchJson<InvocationRecordsResponse>(
     `/api/invocations?${search.toString()}`,
+    { signal: query.signal },
+  );
+}
+
+export async function fetchInvocationRecordLocation(
+  query: InvocationRecordLocationQuery,
+) {
+  const search = new URLSearchParams({
+    requestId: query.requestId,
+    upstreamAccountId: String(query.upstreamAccountId),
+    pageSize: String(query.pageSize ?? 50),
+  });
+  return fetchJson<InvocationRecordLocationResponse>(
+    `/api/invocations/locate?${search.toString()}`,
     { signal: query.signal },
   );
 }

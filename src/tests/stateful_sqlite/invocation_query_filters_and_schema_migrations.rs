@@ -86,6 +86,117 @@ async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_meta
 }
 
 #[tokio::test]
+async fn locate_invocation_returns_account_scoped_anchor_pages() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for index in 0..121 {
+        let invoke_id = format!("locate-{index:03}");
+        let occurred_at = format!("2026-03-10 08:{:02}:{:02}", index / 60, index % 60);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, 'success', ?4, '{}')
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(r#"{"upstreamAccountId":17,"upstreamAccountName":"anchor-account"}"#)
+        .execute(&state.pool)
+        .await
+        .expect("insert locator seed row");
+    }
+
+    for (request_id, expected_page, expected_index, expected_absolute_index) in [
+        ("locate-120", 1, 0, 0),
+        ("locate-060", 2, 10, 60),
+        ("locate-000", 3, 20, 120),
+    ] {
+        let response = locate_invocation_page(
+            state.clone(),
+            &LocateInvocationQuery {
+                request_id: request_id.to_string(),
+                upstream_account_id: 17,
+                page_size: Some(50),
+            },
+        )
+        .await
+        .expect("locator query should succeed")
+        .expect("target should exist");
+
+        assert_eq!(response.page, expected_page);
+        assert_eq!(response.page_size, 50);
+        assert_eq!(response.target_index, expected_index);
+        assert_eq!(response.target_absolute_index, expected_absolute_index);
+        assert_eq!(response.records[expected_index].invoke_id, request_id);
+        assert!(response.records.len() <= 50);
+    }
+
+    let account_mismatch = locate_invocation_page(
+        state.clone(),
+        &LocateInvocationQuery {
+            request_id: "locate-060".to_string(),
+            upstream_account_id: 18,
+            page_size: Some(50),
+        },
+    )
+    .await
+    .expect("account-scoped miss should not fail");
+    assert!(account_mismatch.is_none());
+
+    let anchored = locate_invocation_page(
+        state.clone(),
+        &LocateInvocationQuery {
+            request_id: "locate-060".to_string(),
+            upstream_account_id: 17,
+            page_size: Some(50),
+        },
+    )
+    .await
+    .expect("anchor should resolve")
+    .expect("anchor should exist");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response
+        )
+        VALUES ('locate-newer', '2026-03-10 09:00:00', ?1, 'success', ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(r#"{"upstreamAccountId":17,"upstreamAccountName":"anchor-account"}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert post-snapshot row");
+    let Json(snapshot_page) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            upstream_account_id: Some(17),
+            page: Some(anchored.page),
+            page_size: Some(anchored.page_size),
+            snapshot_id: Some(anchored.snapshot_id),
+            sort_by: Some("occurredAt".to_string()),
+            sort_order: Some("desc".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("snapshot page should remain readable");
+    assert_eq!(snapshot_page.total, 121);
+    assert!(
+        snapshot_page
+            .records
+            .iter()
+            .all(|record| record.invoke_id != "locate-newer")
+    );
+}
+
+#[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_nonstream_usage_survives_response_raw_truncation() {
     #[derive(sqlx::FromRow)]

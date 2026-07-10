@@ -4074,3 +4074,177 @@ fn same_origin_settings_write_allows_matching_origin_without_explicit_host_port(
     );
     assert!(is_same_origin_settings_write(&headers));
 }
+
+#[tokio::test]
+async fn locate_invocation_finds_runtime_only_account_record() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let invoke_id = "locate-runtime-only";
+    let record = build_running_proxy_capture_record(
+        invoke_id,
+        "2026-03-17 18:13:34",
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        None,
+        None,
+        None,
+        true,
+        Some(17),
+        Some("pool-account-17"),
+        Some("api_key_codex"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, record)
+        .await
+        .expect("runtime snapshot should be available");
+
+    let response = locate_invocation_page(
+        state.clone(),
+        &LocateInvocationQuery {
+            request_id: invoke_id.to_string(),
+            upstream_account_id: 17,
+            page_size: Some(50),
+        },
+    )
+    .await
+    .expect("runtime locator should succeed")
+    .expect("runtime target should exist");
+    assert_eq!(response.target_absolute_index, 0);
+    assert_eq!(response.target_index, 0);
+    assert_eq!(response.records[0].invoke_id, invoke_id);
+    assert_eq!(response.records[0].id, 0);
+
+    let Json(anchored_page) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            upstream_account_id: Some(17),
+            page: Some(response.page),
+            page_size: Some(response.page_size),
+            snapshot_id: Some(response.snapshot_id),
+            anchor_id: Some(response.anchor_id),
+            sort_by: Some("occurredAt".to_string()),
+            sort_order: Some("desc".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("anchored pagination should preserve the frozen runtime overlay");
+    assert!(
+        anchored_page
+            .records
+            .iter()
+            .any(|record| record.invoke_id == invoke_id)
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, 'running', ?4, '{}')
+        "#,
+    )
+    .bind("locate-stale-account")
+    .bind("2026-03-17 18:16:00")
+    .bind(SOURCE_PROXY)
+    .bind(r#"{"upstreamAccountId":17,"upstreamAccountName":"pool-account-17"}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert stale account DB row");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, 'success', ?4, '{}')
+        "#,
+    )
+    .bind("locate-stable-target")
+    .bind("2026-03-17 18:15:00")
+    .bind(SOURCE_PROXY)
+    .bind(r#"{"upstreamAccountId":17,"upstreamAccountName":"pool-account-17"}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert stable locator target");
+    let moved_runtime_record = build_running_proxy_capture_record(
+        "locate-stale-account",
+        "2026-03-17 18:16:00",
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        None,
+        None,
+        None,
+        true,
+        Some(18),
+        Some("pool-account-18"),
+        Some("api_key_codex"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, moved_runtime_record)
+        .await
+        .expect("moved runtime snapshot should be available");
+
+    let stable_response = locate_invocation_page(
+        state.clone(),
+        &LocateInvocationQuery {
+            request_id: "locate-stable-target".to_string(),
+            upstream_account_id: 17,
+            page_size: Some(50),
+        },
+    )
+    .await
+    .expect("stable target locator should succeed")
+    .expect("stable target should exist");
+    assert!(
+        stable_response
+            .records
+            .iter()
+            .all(|record| record.invoke_id != "locate-stale-account")
+    );
+    let Json(stable_anchor_page) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            upstream_account_id: Some(17),
+            page: Some(stable_response.page),
+            page_size: Some(stable_response.page_size),
+            snapshot_id: Some(stable_response.snapshot_id),
+            anchor_id: Some(stable_response.anchor_id),
+            sort_by: Some("occurredAt".to_string()),
+            sort_order: Some("desc".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("stable anchor page should preserve stale-row suppression");
+    assert!(
+        stable_anchor_page
+            .records
+            .iter()
+            .all(|record| record.invoke_id != "locate-stale-account")
+    );
+}
