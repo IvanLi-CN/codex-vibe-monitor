@@ -402,6 +402,14 @@ async fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stre
     .expect("streaming via-pool request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .iter()
+            .any(|record| record.invoke_id == "pool-via-1003"),
+        "via-pool runtime snapshot should remain visible while the response is streaming"
+    );
     assert_eq!(
         state
             .proxy_request_in_flight
@@ -417,13 +425,35 @@ async fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stre
         body,
         Bytes::from_static(br#"{"phase":"streaming","done":true}"#)
     );
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let synthetic_runtime_removed = state
+                .proxy_runtime_invocations
+                .snapshot()
+                .iter()
+                .all(|record| record.invoke_id != "pool-via-1003");
+            if synthetic_runtime_removed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("completed via-pool runtime snapshot should become terminal");
     assert_eq!(
         state
             .proxy_request_in_flight
             .load(std::sync::atomic::Ordering::Acquire),
         0,
         "in-flight tracking should release after downstream streaming completes"
+    );
+    assert!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .iter()
+            .all(|record| record.invoke_id != "pool-via-1003"),
+        "completed via-pool requests must remove synthetic runtime snapshots"
     );
 
     upstream_handle.abort();

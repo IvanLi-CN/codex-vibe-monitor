@@ -50,6 +50,7 @@
 - 已实现：新增 `GET /api/stats/dashboard-activity` 活动快照读路径；请求开始时固定 `rangeEnd`，一次读取 runtime overlay，并返回 summary-only 或 summary + accounts 两种形态。
 - 已实现：Dashboard 顶部当前 `TPM / 消费速率 / 进行中调用` 改读 `dashboard-activity.summary`；账号 tab 打开后升级为 `includeAccounts=true`，顶部 KPI 与账号卡片共享同一个 `snapshotId/rangeEnd` 响应。
 - 已实现：`dashboard-activity.summary` 的 `tokensPerMinute`、`spendRate` 与 in-progress 调用数由账号聚合结果求和得到；无账号流量进入 `unassigned` 聚合项，避免顶部数字无法由同屏明细解释。
+- 已实现：via-pool 流在响应消费期间保留 `pool-via-*` synthetic runtime snapshot，既有 early-phase cleanup guard 在成功、失败、下游断开或任务取消后的 attempt 终态收口中清除残留非终态 snapshot；普通 invocation runtime 与短暂终态 overlay 仍由其原有终态持久化路径负责，不受 synthetic cleanup 影响。
 - 已实现：timeseries 继续只服务趋势图与兼容回退，不再作为 Dashboard 顶部当前速率类 KPI 的事实来源。
 
 ## Remaining Gaps
@@ -60,6 +61,8 @@
 
 - `src/api/slices/invocations_and_summary.rs`
 - `src/api/slices/settings_models_and_cache.rs`
+- `src/proxy/request_entry.rs`
+- `src/proxy/route_selection.rs`
 - `src/maintenance/hourly_rollups.rs`
 - `web/src/pages/Dashboard.tsx`
 - `web/src/features/dashboard/DashboardActivityOverview.tsx`

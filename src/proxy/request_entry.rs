@@ -1082,6 +1082,7 @@ pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE: &str =
     "streaming_response";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED: &str = "completed";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED: &str = "failed";
+pub(crate) const POOL_VIA_INVOKE_ID_PREFIX: &str = "pool-via-";
 pub(crate) const POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE: Duration = Duration::from_secs(30);
 pub(crate) const POOL_ATTEMPT_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
 pub(crate) const PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
@@ -1270,6 +1271,18 @@ pub(crate) fn complete_deferred_pool_early_phase_cleanup_guard(
 ) {
     if let Some(guard) = guard.as_mut() {
         guard.mark_terminal_outcome_observed();
+        if guard
+            .pending_attempt_record
+            .invoke_id
+            .starts_with(POOL_VIA_INVOKE_ID_PREFIX)
+        {
+            remove_proxy_runtime_snapshot_by_key(
+                guard.state.as_ref(),
+                &guard.pending_attempt_record.invoke_id,
+                &guard.pending_attempt_record.occurred_at,
+                "completed_synthetic_pool_attempt",
+            );
+        }
     }
     disarm_pool_early_phase_cleanup_guard(guard);
 }

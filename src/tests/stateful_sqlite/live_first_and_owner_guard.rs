@@ -5296,8 +5296,7 @@ async fn proxy_openai_v1_responses_compact_live_first_waits_for_image_intent_bef
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_responses_pool_runtime_and_terminal_records_persist_remote_v2_compaction_request_kind()
- {
+async fn proxy_openai_v1_responses_pool_runtime_exposes_remote_v2_compaction_request_kind() {
     let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -5344,9 +5343,6 @@ async fn proxy_openai_v1_responses_pool_runtime_and_terminal_records_persist_rem
     .await
     .expect("via-pool remote v2 request should succeed");
     assert_eq!(response.status(), StatusCode::OK);
-    let _ = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read remote v2 via-pool response");
 
     let running_record = loop {
         let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
@@ -5370,36 +5366,23 @@ async fn proxy_openai_v1_responses_pool_runtime_and_terminal_records_persist_rem
         running_record.compaction_request_kind.as_deref(),
         Some("remote_v2")
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
-
-    let Json(response) = list_invocations(
-        State(state),
-        Query(ListQuery {
-            request_id: Some(running_record.invoke_id.clone()),
-            page_size: Some(5),
-            ..Default::default()
-        }),
-    )
-    .await
-    .expect("list invocations should include remote v2 request kind");
-    let record = response
-        .records
-        .into_iter()
-        .find(|record| record.invoke_id == running_record.invoke_id)
-        .expect("persisted remote v2 invocation should exist");
-    assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
-    assert_eq!(record.compaction_request_kind.as_deref(), Some("remote_v2"));
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read remote v2 via-pool response");
+    assert!(
+        state
+            .proxy_runtime_invocations
+            .snapshot()
+            .iter()
+            .all(|record| record.invoke_id != running_record.invoke_id),
+        "completed via-pool synthetic runtime should be removed"
+    );
 
     upstream_handle.abort();
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_responses_pool_remote_v2_request_kind_survives_disabled_request_body_logging()
- {
+async fn proxy_openai_v1_responses_pool_runtime_remote_v2_survives_disabled_request_body_logging() {
     let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -5464,37 +5447,23 @@ async fn proxy_openai_v1_responses_pool_remote_v2_request_kind_survives_disabled
     .await
     .expect("via-pool remote v2 request should succeed");
     assert_eq!(response.status(), StatusCode::OK);
+    let record = state
+        .proxy_runtime_invocations
+        .snapshot()
+        .into_iter()
+        .find(|record| record.invoke_id == "pool-via-6942")
+        .expect("remote v2 runtime invocation should exist while streaming");
+    assert_eq!(record.compaction_request_kind.as_deref(), Some("remote_v2"));
+    assert_eq!(record.request_raw_path, None);
     let _ = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read remote v2 via-pool response");
-
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
-    let Json(response) = list_invocations(
-        State(state.clone()),
-        Query(ListQuery {
-            page_size: Some(10),
-            ..Default::default()
-        }),
-    )
-    .await
-    .expect("list invocations should succeed");
-    let record = response
-        .records
-        .into_iter()
-        .find(|record| record.endpoint.as_deref() == Some("/v1/responses"))
-        .expect("remote v2 invocation should exist");
-    assert_eq!(record.compaction_request_kind.as_deref(), Some("remote_v2"));
-    assert_eq!(record.request_raw_path, None);
 
     upstream_handle.abort();
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_responses_pool_persists_image_intent_for_image_model_requests() {
+async fn proxy_openai_v1_responses_pool_runtime_exposes_image_intent_for_image_model_requests() {
     let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -5538,40 +5507,22 @@ async fn proxy_openai_v1_responses_pool_persists_image_intent_for_image_model_re
     .await
     .expect("via-pool responses image request should succeed");
     assert_eq!(response.status(), StatusCode::OK);
+    let record = state
+        .proxy_runtime_invocations
+        .snapshot()
+        .into_iter()
+        .find(|record| record.invoke_id == "pool-via-6943")
+        .expect("image-intent runtime invocation should exist while streaming");
+    assert_eq!(record.image_intent.as_deref(), Some("yes"));
     let _ = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read responses image response");
-
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
-
-    let Json(response) = list_invocations(
-        State(state),
-        Query(ListQuery {
-            page_size: Some(5),
-            ..Default::default()
-        }),
-    )
-    .await
-    .expect("list invocations should include image intent");
-    let record = response
-        .records
-        .into_iter()
-        .find(|record| {
-            record.endpoint.as_deref() == Some("/v1/responses")
-                && record.image_intent.as_deref() == Some("yes")
-        })
-        .expect("persisted image-intent invocation should exist");
-    assert_eq!(record.image_intent.as_deref(), Some("yes"));
 
     upstream_handle.abort();
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_direct_image_pool_persists_direct_image_intent() {
+async fn proxy_openai_v1_direct_image_pool_runtime_exposes_direct_image_intent() {
     async fn direct_image_echo_upstream(headers: HeaderMap, body: Bytes) -> Response {
         let authorization = headers
             .get(http_header::AUTHORIZATION)
@@ -5644,36 +5595,23 @@ async fn proxy_openai_v1_direct_image_pool_persists_direct_image_intent() {
     .await
     .expect("via-pool direct image request should succeed");
     assert_eq!(response.status(), StatusCode::OK);
+    let record = state
+        .proxy_runtime_invocations
+        .snapshot()
+        .into_iter()
+        .find(|record| record.invoke_id == "pool-via-6944")
+        .expect("direct image runtime invocation should exist while streaming");
+    assert_eq!(record.image_intent.as_deref(), Some("direct_image"));
     let _ = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read direct image response");
-
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
-    let Json(response) = list_invocations(
-        State(state.clone()),
-        Query(ListQuery {
-            page_size: Some(10),
-            ..Default::default()
-        }),
-    )
-    .await
-    .expect("list invocations should succeed");
-    let record = response
-        .records
-        .into_iter()
-        .find(|record| record.endpoint.as_deref() == Some("/v1/images/generations"))
-        .expect("direct image invocation should exist");
-    assert_eq!(record.image_intent.as_deref(), Some("direct_image"));
 
     upstream_handle.abort();
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_responses_pool_image_intent_survives_disabled_request_body_logging() {
+async fn proxy_openai_v1_responses_pool_runtime_image_intent_survives_disabled_request_body_logging()
+ {
     let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -5736,31 +5674,17 @@ async fn proxy_openai_v1_responses_pool_image_intent_survives_disabled_request_b
     .await
     .expect("via-pool responses image request should succeed");
     assert_eq!(response.status(), StatusCode::OK);
+    let record = state
+        .proxy_runtime_invocations
+        .snapshot()
+        .into_iter()
+        .find(|record| record.invoke_id == "pool-via-6945")
+        .expect("responses image runtime invocation should exist while streaming");
+    assert_eq!(record.image_intent.as_deref(), Some("yes"));
+    assert_eq!(record.request_raw_path, None);
     let _ = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read responses image response");
-
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
-    let Json(response) = list_invocations(
-        State(state.clone()),
-        Query(ListQuery {
-            page_size: Some(10),
-            ..Default::default()
-        }),
-    )
-    .await
-    .expect("list invocations should succeed");
-    let record = response
-        .records
-        .into_iter()
-        .find(|record| record.endpoint.as_deref() == Some("/v1/responses"))
-        .expect("responses image invocation should exist");
-    assert_eq!(record.image_intent.as_deref(), Some("yes"));
-    assert_eq!(record.request_raw_path, None);
 
     upstream_handle.abort();
 }

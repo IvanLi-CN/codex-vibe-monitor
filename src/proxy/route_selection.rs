@@ -306,7 +306,7 @@ pub(crate) fn build_via_pool_attempt_trace_context(
     sticky_key: Option<String>,
 ) -> PoolUpstreamAttemptTraceContext {
     PoolUpstreamAttemptTraceContext {
-        invoke_id: format!("pool-via-{proxy_request_id}"),
+        invoke_id: format!("{POOL_VIA_INVOKE_ID_PREFIX}{proxy_request_id}"),
         occurred_at: shanghai_now_string(),
         endpoint: endpoint.to_string(),
         sticky_key,
