@@ -28,6 +28,7 @@
 - Live 展开详情与 Dashboard 调用详情抽屉必须共用同一套调用详情组件，并按“快速排障”组织信息：请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示。
 - 新 HTTP proxy invocation 的 `invokeId` 必须使用 10 位 NanoID 风格短格式，去掉历史 `proxy-...` 前缀、内部 counter 与时间戳尾巴；历史 `proxy-...` 记录继续兼容查询和展示。
 - 账号详情调用记录必须显示可选择的 `invokeId`；健康与事件中的调用 ID 必须能通过后端锚点定位窗口跳转到对应调用记录，不允许前端逐页扫描历史记录。
+- 账号详情调用记录中的 `invokeId` 必须使用等宽字体单行完整展示，不得换行或截断；该表面可使用专用列宽回收用时、输入与输出列空间，但不得改变其他共享调用列表的默认布局。
 - 号池调用处于 `running` / `pending` 且已携带 `upstreamAccountName` 或 `upstreamAccountId` 时，所有共享 invocation 展示面必须用当前上游账号替代“号池路由中”fallback，并以蓝色呼吸文本表达正在路由中。
 
 ### Non-goals
@@ -191,6 +192,7 @@
 - Given 新 HTTP proxy invocation 被创建，When 查询 `/api/invocations`、接收 SSE `records` 或打开 Live/Dashboard 详情，Then `invokeId` 为 10 位短 ID，且不含 `proxy`、连字符、时间戳或内部 counter。
 - Given 历史 `proxy-9061-1783013997090` 记录存在，When 用户过滤、查询、展示或打开详情，Then 仍按完整历史 `invokeId` 兼容处理，不迁移、不回填。
 - Given 健康与事件中的账号事件带有 `invokeId`，When 用户点击调用 ID，Then 账号详情立即进入调用记录 tab，后端只返回目标所在页，虚拟列表居中聚焦并短暂高亮目标行。
+- Given 账号详情展示调用记录，When 桌面表格或移动列表渲染完整 `invokeId` 并聚焦定位目标，Then ID 保持单行完整可见，页面无横向溢出，目标行只显示一层不改变布局的短暂高亮且不叠加浏览器默认 outline。
 - Given 目标调用已被 retention 清理或不属于当前账号，When 锚点定位返回 `404`，Then 调用记录 tab 保持打开并显示包含调用 ID 的可聚焦错误提示。
 - Given 号池调用仍处于 `running` 或 `pending` 且已有 `upstreamAccountName`，When Live、Records、Dashboard working conversations 或 Dashboard 调用详情抽屉渲染该 invocation，Then 账号位置显示该账号名并使用蓝色呼吸文本，不显示“号池路由中”。
 - Given 号池运行态调用没有 `upstreamAccountName` 或 `upstreamAccountId`，When owner-facing 调用界面渲染，Then 继续显示既有“号池路由中”fallback，且不伪造账号、不启用呼吸状态。
