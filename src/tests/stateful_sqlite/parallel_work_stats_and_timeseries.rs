@@ -10854,6 +10854,75 @@ async fn summary_reports_invocation_based_in_progress_counts() {
 }
 
 #[tokio::test]
+async fn ranged_summary_exposes_model_usage_and_exact_cost_breakdown() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, model, status,
+            input_tokens, cache_input_tokens, output_tokens, reasoning_tokens, total_tokens,
+            cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+        "#,
+    )
+    .bind(449_i64)
+    .bind("summary-usage-breakdown")
+    .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("gpt-5.6")
+    .bind("success")
+    .bind(100_i64)
+    .bind(40_i64)
+    .bind(25_i64)
+    .bind(5_i64)
+    .bind(125_i64)
+    .bind(0.50_f64)
+    .bind(0.06_f64)
+    .bind(0.14_f64)
+    .bind(0.04_f64)
+    .bind(0.21_f64)
+    .bind(0.05_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert ranged summary usage row");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch today usage breakdown");
+
+    let breakdown = summary
+        .usage_breakdown
+        .expect("today summary should include usage breakdown");
+    assert_eq!(breakdown.cache_write_tokens, 60);
+    assert_eq!(breakdown.cache_read_tokens, 40);
+    assert_eq!(breakdown.output_tokens, 25);
+    let costs = breakdown.costs.expect("exact costs should be available");
+    assert_f64_close(costs.input, 0.06);
+    assert_f64_close(costs.cache_write, 0.14);
+    assert_f64_close(costs.cache_read, 0.04);
+    assert_f64_close(costs.output, 0.21);
+    assert_f64_close(costs.reasoning, 0.05);
+    assert_eq!(breakdown.models.len(), 1);
+    assert_eq!(breakdown.models[0].model, "gpt-5.6");
+}
+
+#[tokio::test]
 async fn empty_summary_response_keeps_live_in_progress_conversation_count() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

@@ -3810,6 +3810,44 @@ pub(crate) fn overlay_runtime_upstream_account_activity_preview_rows(
     }
 }
 
+pub(crate) async fn load_usage_breakdown_for_range(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    range: ExactUtcRange,
+) -> Result<UsageBreakdownResponse, ApiError> {
+    let mut live_rows =
+        query_live_upstream_account_activity_preview_rows(&state.pool, source_scope, range).await?;
+    overlay_runtime_upstream_account_activity_preview_rows(
+        state,
+        &mut live_rows,
+        source_scope,
+        range,
+    );
+    let live_ids = live_rows.iter().map(|row| row.id).collect::<HashSet<_>>();
+    let mut rows = live_rows;
+    if range.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        rows.extend(
+            crate::stats::query_completed_invocation_archive_preview_rows(
+                &state.pool,
+                source_scope,
+                range,
+                Some(&live_ids),
+            )
+            .await?,
+        );
+    }
+
+    let mut usage_breakdown = UsageBreakdownAccumulator::default();
+    for row in rows {
+        if upstream_account_id.is_none_or(|account_id| row.upstream_account_id == Some(account_id))
+        {
+            usage_breakdown.add_row(&row);
+        }
+    }
+    Ok(usage_breakdown.into_response())
+}
+
 pub(crate) async fn query_upstream_account_activity_meta(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
@@ -5007,6 +5045,17 @@ pub(crate) async fn fetch_summary(
     let mut response = totals.into_response();
     response.non_success_cost = Some(totals.non_success_cost);
     let range = summary_window_range(&window, reporting_tz, now)?;
+    if let Some((start, end)) = range {
+        response.usage_breakdown = Some(
+            load_usage_breakdown_for_range(
+                state.as_ref(),
+                source_scope,
+                upstream_account_id,
+                ExactUtcRange { start, end },
+            )
+            .await?,
+        );
+    }
     let policy = summary_live_augmentation_policy(&window, range, now);
     let augmentation = load_summary_live_augmentation(
         state.as_ref(),
