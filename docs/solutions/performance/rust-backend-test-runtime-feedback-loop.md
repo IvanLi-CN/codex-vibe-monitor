@@ -11,6 +11,7 @@
 - 先用 `cargo test --no-run` 生成热缓存 test binary，再直接运行 `target/debug/deps/<bin> <filter> --format=terse`，用 `/usr/bin/time -p` 测单测和全套运行时。
 - CI 总时长优化要以 `CI Main` 里 3 个 backend required jobs 的最慢 wall time 为主指标：`Backend Tests (Lightweight)`、`Backend Tests (Stateful SQLite)`、`Backend Tests (Archive / File I/O)`。
 - backend runner 应固定用 resource-profile filter 跑 `cargo nextest run --locked --all-features --no-fail-fast -E ...`，不要再把整个后端测试树塞回单个 required check。
+- 当完整 stateful SQLite suite 的隔离性已由多档并发全量验证后，可为该 profile 固定一个保守的 `--test-threads` 上限。当前 1048 个 stateful 用例在 4、6、8 threads 下均通过，6 threads 在保留余量的同时将本地热执行降到约 102s。
 - 对只验证 DB 行为、不验证主库文件路径的测试，优先使用唯一命名的 in-memory SQLite，保留 `AppConfig.database_path`、archive/raw 目录形状即可。
 - 文件 SQLite fixture 要限制测试连接池大小；默认 pool 在全套并发下会把每个测试放大成多连接竞争。
 - 如果测试只需要“已 materialized archive metadata”或“缺失 replay marker”状态，直接构造窄表状态，不要为了 setup 跑完整 retention/archive pipeline。
@@ -34,5 +35,6 @@ bash .github/scripts/run-backend-tests.sh --profile archive-file-io
 - 不要只报告局部单测变快；PR 要同时报告 split 后各 GitHub backend job 总时长、各 profile runner wall time，以及 top offenders 变化。
 - 切换到 nextest 前先修掉并发暴露的测试竞态；真实时间窗口断言要以行为结果为主，毫秒上限只作为防挂死保护。
 - 不要为了速度把所有文件 SQLite 测试切成 in-memory；archive writer/reader、relative path、真实 write-lock 行为需要文件 DB。
+- 先验证 4、6、8 等候选并发档位的完整 profile；选择能明显缩短 critical path 的最小档位，而不是直接采用最快的本机结果。
 - 单跑很快但全套出现 60s warning，通常是并发资源放大；先看 `sys` time 和 SQLite pool 数量，再决定是否下沉 fixture。
 - 直接构造窄状态时要保留被测语义，例如 materialized archive 需要 `historical_rollups_materialized_at` 和必要 replay marker 状态，否则测试会误触发 archive 文件读取。
