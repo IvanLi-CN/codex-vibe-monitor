@@ -21,6 +21,14 @@ describe('demo MSW handlers', () => {
     expect(payload.summary.stats.totalCount).toBe(12_846)
   })
 
+  it('accepts Pages-scoped API paths so requests remain inside the demo worker scope', async () => {
+    const response = await fetch('http://demo.invalid/codex-vibe-monitor/demo/api/stats/dashboard-activity?range=today')
+    const payload = await response.json() as { summary: { stats: { totalCount: number } } }
+
+    expect(response.ok).toBe(true)
+    expect(payload.summary.stats.totalCount).toBe(12_846)
+  })
+
   it('does not retain sensitive settings input', async () => {
     const response = await fetch('http://demo.invalid/api/settings/proxy', {
       method: 'PUT',

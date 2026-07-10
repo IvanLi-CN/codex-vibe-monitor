@@ -5,6 +5,11 @@ function json(payload: unknown, init?: ResponseInit) {
   return HttpResponse.json(payload as JsonBodyType, init)
 }
 
+function apiPathname(pathname: string) {
+  const apiIndex = pathname.indexOf('/api/')
+  return apiIndex === -1 ? pathname : pathname.slice(apiIndex)
+}
+
 export function demoSummary() {
   const empty = demoModel.snapshot.scene === 'empty'
   const attention = demoModel.snapshot.scene === 'attention'
@@ -119,7 +124,7 @@ function systemStatus() {
 
 async function handleRequest(request: Request) {
   const url = new URL(request.url)
-  const { pathname } = url
+  const pathname = apiPathname(url.pathname)
   if (demoModel.snapshot.scene === 'network-failure') return HttpResponse.error()
 
   if (pathname === '/api/version') return json({ backend: 'demo', frontend: 'demo' })

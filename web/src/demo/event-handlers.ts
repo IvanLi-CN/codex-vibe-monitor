@@ -4,7 +4,7 @@ import { demoModel } from './model'
 import { demoSummary } from './handlers'
 
 export const eventHandlers = [
-  sse('/events', ({ client }) => {
+  sse(/\/events$/, ({ client }) => {
     if (demoModel.snapshot.scene === 'network-failure') {
       client.error()
       return

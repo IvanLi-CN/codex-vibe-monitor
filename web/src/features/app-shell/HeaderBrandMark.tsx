@@ -72,7 +72,7 @@ export function HeaderBrandMark({
         aria-hidden
       />
       <img
-        src="/brand-mark.svg"
+        src={`${import.meta.env.BASE_URL}brand-mark.svg`}
         alt={alt}
         className={cn(
           'header-brand-mark__image relative z-20 h-10 w-10 transform-gpu transition-[transform,opacity,filter] duration-500 ease-[cubic-bezier(0.25,1,0.5,1)] motion-reduce:transition-none',
