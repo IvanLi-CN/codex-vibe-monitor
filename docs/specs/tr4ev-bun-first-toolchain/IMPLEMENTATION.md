@@ -37,7 +37,7 @@
 ### Quality checks
 
 - `codex --sandbox read-only -a never review --base origin/main`
-- PR required checks 保持为 `Validate PR labels`、`Lint & Format Check`、`Backend Tests`、`Build Artifacts`、`Review Policy Gate`
+- PR required checks 当前为 `Validate PR labels`、`Lint & Format Check`、`Front-end Tests`、`Records Overlay E2E`、`Backend Tests (Lightweight)`、`Backend Tests (Stateful SQLite)`、`Backend Tests (Archive / File I/O)`、`Build Artifacts`、`Review Policy Gate`
 - quality-gates contract fixtures、release snapshot helper、Docker smoke retry helper 与 live workflows 的 runner / action ref 基线保持一致
 
 ## 实现里程碑（Milestones / Delivery checklist）
