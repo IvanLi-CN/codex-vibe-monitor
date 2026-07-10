@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.24.0",
+  "base_stable_version": "2.23.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-10T16:46:25Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.24.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c07831944847b3a57bf78e900d7bbbef16dd8b73",
+  "pr_number": 585,
+  "pr_title": "feat(account-pool): locate invocation records",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.24.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.24.0",
+  "target_sha": "b6156f3897f5488697c2e54a6ebf1eacc0168198",
+  "type_label": "type:minor"
+}
