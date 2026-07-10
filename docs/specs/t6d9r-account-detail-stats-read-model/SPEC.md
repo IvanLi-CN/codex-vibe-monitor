@@ -121,7 +121,7 @@ PR: include
 PR: include
 ![账号详情调用 ID 未找到态](./assets/detail-drawer-invocation-locate-not-found.png)
 
-- 账号详情调用 ID 移动端定位态（mock Storybook；完整 ID 在卡片内安全换行，抽屉无横向溢出）
+- 账号详情调用 ID 移动端定位态（mock Storybook；ID 保持单行并在空间不足时省略，抽屉无横向溢出）
 
 PR: include
 ![账号详情调用 ID 移动端定位态](./assets/detail-drawer-invocation-locate-mobile.png)

@@ -263,6 +263,13 @@ export const DetailDrawerInvocationLocate: Story = {
   },
 }
 
+export const DetailDrawerInvocationLocateMobile: Story = {
+  ...DetailDrawerInvocationLocate,
+  parameters: {
+    viewport: { defaultViewport: 'mobile390' },
+  },
+}
+
 export const DetailDrawerInvocationLocateReturnLatest: Story = {
   render: () => <DetailDrawerStorySurface initialTab="healthEvents" />,
   play: async ({ canvasElement }) => {

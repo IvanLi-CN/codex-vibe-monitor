@@ -600,6 +600,10 @@ describe("InvocationTable", () => {
     const invokeId = document.querySelector('[data-testid="invocation-id"]');
     expect(invokeId?.textContent).toBe("virtual-row-1");
     expect(invokeId?.className).toContain("select-text");
+    expect(invokeId?.className).toContain("whitespace-nowrap");
+    expect(invokeId?.className).toContain("truncate");
+    expect(invokeId?.className).not.toContain("break-all");
+    expect(invokeId?.getAttribute("title")).toBe(invokeId?.textContent);
   });
 
   it("virtualizes large desktop datasets without mounting every row", async () => {
@@ -629,6 +633,7 @@ describe("InvocationTable", () => {
 
     await renderInteractiveTable(
       Array.from({ length: 20 }, (_, index) => createInvocationRecord(index)),
+      { showInvokeId: true },
     );
 
     expect(document.querySelector('[data-testid="invocation-list"]')).toBeTruthy();
@@ -636,6 +641,11 @@ describe("InvocationTable", () => {
       document.querySelectorAll('[data-testid="invocation-list-item"]').length,
     ).toBeGreaterThan(0);
     expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeNull();
+    const invokeId = document.querySelector('[data-testid="invocation-id"]');
+    expect(invokeId?.className).toContain("whitespace-nowrap");
+    expect(invokeId?.className).toContain("truncate");
+    expect(invokeId?.className).not.toContain("break-all");
+    expect(invokeId?.getAttribute("title")).toBe(invokeId?.textContent);
   });
 
   it("renders the WS transport badge for websocket records", () => {

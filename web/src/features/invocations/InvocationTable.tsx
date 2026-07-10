@@ -736,8 +736,9 @@ export function InvocationTable({
                   </div>
                   {showInvokeId && row.record.invokeId ? (
                     <div
-                      className="mt-1 select-text break-all font-mono text-[11px] leading-tight text-info"
+                      className="mt-1 block max-w-full truncate whitespace-nowrap font-mono text-[11px] leading-tight text-info select-text"
                       data-testid="invocation-id"
+                      title={row.record.invokeId}
                     >
                       {row.record.invokeId}
                     </div>
@@ -1068,8 +1069,9 @@ export function InvocationTable({
                           </span>
                           {showInvokeId && row.record.invokeId ? (
                             <span
-                              className="select-text break-all font-mono text-[10px] leading-tight text-info"
+                              className="block max-w-full truncate whitespace-nowrap font-mono text-[10px] leading-tight text-info select-text"
                               data-testid="invocation-id"
+                              title={row.record.invokeId}
                             >
                               {row.record.invokeId}
                             </span>
