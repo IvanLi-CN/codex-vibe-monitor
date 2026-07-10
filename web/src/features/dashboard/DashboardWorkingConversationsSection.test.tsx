@@ -255,6 +255,7 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
             cacheRead: 0.06,
             output: 0.28,
             reasoning: 0.06,
+            unknown: 0,
           },
           models: [
             {
@@ -262,14 +263,14 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
               cacheWriteTokens: 1200,
               cacheReadTokens: 600,
               outputTokens: 620,
-              costs: { input: 0.12, cacheWrite: 0.1, cacheRead: 0.04, output: 0.21, reasoning: 0.05 },
+              costs: { input: 0.12, cacheWrite: 0.1, cacheRead: 0.04, output: 0.21, reasoning: 0.05, unknown: 0 },
             },
             {
               model: "gpt-5.4-mini",
               cacheWriteTokens: 400,
               cacheReadTokens: 200,
               outputTokens: 180,
-              costs: { input: 0.06, cacheWrite: 0.04, cacheRead: 0.02, output: 0.07, reasoning: 0.01 },
+              costs: { input: 0.06, cacheWrite: 0.04, cacheRead: 0.02, output: 0.07, reasoning: 0.01, unknown: 0 },
             },
           ],
         },

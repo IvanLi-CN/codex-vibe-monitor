@@ -16,6 +16,7 @@
 - [x] Generalize unsupported-model UI rendering away from the `gpt-5.5` special-case.
 - [x] Persist cost buckets, derive cache-write Token counts, and expose total/model usage breakdown APIs.
 - [x] Add accessible dashboard and upstream-account breakdown panels plus `CW` invocation labels.
+- [x] Preserve exact realtime cost buckets in mixed ranges and reconcile historical total costs through a dynamic `unknown` bucket.
 - [x] Retire CRS runtime configuration, polling, aggregation, retention, and API reads while keeping old SQLite tables untouched.
 - [x] Run Rust and web validation, capture visual evidence, and update this file with the final verification set.
 
@@ -23,10 +24,11 @@
 
 - `cargo fmt --check`
 - `cargo check`
-- `cargo test` (1512 passed; two unrelated timeout-sensitive tests passed on exact rerun)
+- `cargo test` (1517 passed, 45 ignored)
 - `cargo test estimate_proxy_cost_breakdown_uses_explicit_gpt_5_6_sol_cache_read_and_write_prices`
+- `cargo test ranged_summary_`
 - `cd web && bun run test`
 - `cd web && bun run test-storybook`
 - `cd web && bun run build`
 - `cd web && bun run lint`
-- Storybook evidence is stored under this spec's `assets/` directory for Settings pricing, desktop account cost detail, and mobile dashboard Token detail.
+- Storybook evidence is stored under this spec's `assets/` directory for Settings pricing, account cost detail, mobile Token detail, and mixed realtime/historical cost detail on desktop and mobile.

@@ -16,6 +16,7 @@ export interface UsageBreakdownTooltipProps {
     output: string
     input: string
     reasoning: string
+    unknown: string
     unavailable: string
     tokenUnavailable: string
     unknownModel: string
@@ -49,16 +50,17 @@ function BreakdownTable({
   modelLabel: string
   modelWidth: string
 }) {
+  const dense = columns.length > 5
   return (
-    <table className="w-full table-fixed border-collapse text-[10px] leading-4 sm:text-[11px]">
+    <table className={`w-full table-fixed border-collapse ${dense ? 'text-[8px] leading-3 sm:text-[10px] sm:leading-4' : 'text-[10px] leading-4 sm:text-[11px]'}`}>
       <caption className="sr-only">{title}</caption>
-      <thead className="border-y border-base-300/50 bg-base-200/45 text-[9px] font-semibold text-base-content/58 sm:text-[10px]">
+      <thead className={`border-y border-base-300/50 bg-base-200/45 font-semibold text-base-content/58 ${dense ? 'text-[8px] sm:text-[9px]' : 'text-[9px] sm:text-[10px]'}`}>
         <tr>
           <th scope="col" className="px-1.5 py-1.5 text-left font-semibold" style={{ width: modelWidth }}>
             {modelColumnLabel}
           </th>
           {columns.map((column) => (
-            <th key={column.label} scope="col" className="px-1 py-1.5 text-right font-semibold break-words">
+            <th key={column.label} scope="col" className={`${dense ? 'px-0.5' : 'px-1'} border-l border-base-300/30 py-1.5 text-right font-semibold break-words`}>
               {column.label}
             </th>
           ))}
@@ -76,7 +78,7 @@ function BreakdownTable({
               </td>
             ) : (
               row.values?.map((value, columnIndex) => (
-                <td key={`${row.label}:${columnIndex}`} className="px-1 py-1.5 text-right font-mono font-semibold text-base-content tabular-nums whitespace-nowrap">
+                <td key={`${row.label}:${columnIndex}`} className={`${dense ? 'px-0.5' : 'px-1'} border-l border-base-300/30 py-1.5 text-right font-mono font-semibold text-base-content tabular-nums whitespace-nowrap`}>
                   {value}
                 </td>
               ))
@@ -105,6 +107,9 @@ function CostBreakdownTable({
     { label: labels.cacheRead, key: 'cacheRead' },
     { label: labels.output, key: 'output' },
     { label: labels.reasoning, key: 'reasoning' },
+    ...((breakdown?.costs?.unknown ?? 0) !== 0 || models.some((model) => (model.costs?.unknown ?? 0) !== 0)
+      ? [{ label: labels.unknown, key: 'unknown' as const }]
+      : []),
   ] as const
   const rowFor = (label: string, costs: UsageBreakdown['costs']): BreakdownTableRow => {
     if (!costs) return { label, unavailable: labels.unavailable }
@@ -118,7 +123,7 @@ function CostBreakdownTable({
     <BreakdownTable
       title={title}
       modelLabel={labels.model}
-      modelWidth="22%"
+      modelWidth={columns.length === 6 ? "20%" : "22%"}
       columns={columns}
       rows={[
         rowFor(labels.total, breakdown?.costs),
@@ -190,10 +195,10 @@ export function UsageBreakdownTooltip({
     .sort((left, right) => {
       const leftValue = kind === 'tokens'
         ? left.cacheWriteTokens + left.cacheReadTokens + left.outputTokens
-        : (left.costs?.input ?? 0) + (left.costs?.cacheWrite ?? 0) + (left.costs?.cacheRead ?? 0) + (left.costs?.output ?? 0) + (left.costs?.reasoning ?? 0)
+        : (left.costs?.input ?? 0) + (left.costs?.cacheWrite ?? 0) + (left.costs?.cacheRead ?? 0) + (left.costs?.output ?? 0) + (left.costs?.reasoning ?? 0) + (left.costs?.unknown ?? 0)
       const rightValue = kind === 'tokens'
         ? right.cacheWriteTokens + right.cacheReadTokens + right.outputTokens
-        : (right.costs?.input ?? 0) + (right.costs?.cacheWrite ?? 0) + (right.costs?.cacheRead ?? 0) + (right.costs?.output ?? 0) + (right.costs?.reasoning ?? 0)
+        : (right.costs?.input ?? 0) + (right.costs?.cacheWrite ?? 0) + (right.costs?.cacheRead ?? 0) + (right.costs?.output ?? 0) + (right.costs?.reasoning ?? 0) + (right.costs?.unknown ?? 0)
       return rightValue - leftValue || left.model.localeCompare(right.model)
     })
 

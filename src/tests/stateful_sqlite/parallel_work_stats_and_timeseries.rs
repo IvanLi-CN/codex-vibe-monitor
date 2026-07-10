@@ -10918,8 +10918,210 @@ async fn ranged_summary_exposes_model_usage_and_exact_cost_breakdown() {
     assert_f64_close(costs.cache_read, 0.04);
     assert_f64_close(costs.output, 0.21);
     assert_f64_close(costs.reasoning, 0.05);
+    assert_f64_close(costs.unknown, 0.0);
+    assert_f64_close(
+        costs.input
+            + costs.cache_write
+            + costs.cache_read
+            + costs.output
+            + costs.reasoning
+            + costs.unknown,
+        summary.total_cost,
+    );
     assert_eq!(breakdown.models.len(), 1);
     assert_eq!(breakdown.models[0].model, "gpt-5.6");
+}
+
+#[tokio::test]
+async fn ranged_summary_keeps_exact_costs_when_historical_cost_is_mixed_in() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    for (
+        id,
+        invoke_id,
+        model,
+        cost,
+        cost_input,
+        cost_cache_write,
+        cost_cache_read,
+        cost_output,
+        cost_reasoning,
+    ) in [
+        (
+            450_i64,
+            "summary-exact-cost",
+            "gpt-5.6",
+            Some(0.50_f64),
+            Some(0.06_f64),
+            Some(0.14_f64),
+            Some(0.04_f64),
+            Some(0.21_f64),
+            Some(0.05_f64),
+        ),
+        (
+            451_i64,
+            "summary-historical-cost",
+            "gpt-5.4",
+            Some(0.30_f64),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        (
+            452_i64,
+            "summary-missing-total-cost",
+            "gpt-no-cost",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, model, status,
+                input_tokens, cache_input_tokens, output_tokens, reasoning_tokens, total_tokens,
+                cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(&occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind("success")
+        .bind(100_i64)
+        .bind(40_i64)
+        .bind(25_i64)
+        .bind(5_i64)
+        .bind(125_i64)
+        .bind(cost)
+        .bind(cost_input)
+        .bind(cost_cache_write)
+        .bind(cost_cache_read)
+        .bind(cost_output)
+        .bind(cost_reasoning)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert mixed ranged summary usage row");
+    }
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch mixed today usage breakdown");
+
+    let breakdown = summary
+        .usage_breakdown
+        .expect("today summary should include usage breakdown");
+    let costs = breakdown
+        .costs
+        .expect("historical costs must not hide exact realtime cost buckets");
+    assert_f64_close(costs.input, 0.06);
+    assert_f64_close(costs.cache_write, 0.14);
+    assert_f64_close(costs.cache_read, 0.04);
+    assert_f64_close(costs.output, 0.21);
+    assert_f64_close(costs.reasoning, 0.05);
+    assert_f64_close(costs.unknown, 0.30);
+    assert_f64_close(
+        costs.input
+            + costs.cache_write
+            + costs.cache_read
+            + costs.output
+            + costs.reasoning
+            + costs.unknown,
+        summary.total_cost,
+    );
+
+    let exact_model = breakdown
+        .models
+        .iter()
+        .find(|model| model.model == "gpt-5.6")
+        .expect("exact model usage");
+    let exact_model_costs = exact_model.costs.as_ref().expect("exact model costs");
+    assert_f64_close(exact_model_costs.unknown, 0.0);
+    assert_f64_close(
+        exact_model_costs.input
+            + exact_model_costs.cache_write
+            + exact_model_costs.cache_read
+            + exact_model_costs.output
+            + exact_model_costs.reasoning
+            + exact_model_costs.unknown,
+        0.50,
+    );
+
+    let historical_model = breakdown
+        .models
+        .iter()
+        .find(|model| model.model == "gpt-5.4")
+        .expect("historical model usage");
+    let historical_model_costs = historical_model
+        .costs
+        .as_ref()
+        .expect("historical total cost should be represented as unknown");
+    assert_f64_close(historical_model_costs.input, 0.0);
+    assert_f64_close(historical_model_costs.unknown, 0.30);
+
+    let missing_cost_model = breakdown
+        .models
+        .iter()
+        .find(|model| model.model == "gpt-no-cost")
+        .expect("missing cost model usage");
+    assert!(
+        missing_cost_model.costs.is_none(),
+        "a missing total cost must not fabricate unknown cost"
+    );
+
+    sqlx::query(
+        "DELETE FROM codex_invocations WHERE invoke_id IN ('summary-exact-cost', 'summary-missing-total-cost')",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("leave only the historical cost row");
+
+    let Json(historical_summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch historical-only today usage breakdown");
+    let historical_costs = historical_summary
+        .usage_breakdown
+        .expect("historical summary usage breakdown")
+        .costs
+        .expect("known historical total cost should remain available");
+    assert_f64_close(historical_costs.input, 0.0);
+    assert_f64_close(historical_costs.cache_write, 0.0);
+    assert_f64_close(historical_costs.cache_read, 0.0);
+    assert_f64_close(historical_costs.output, 0.0);
+    assert_f64_close(historical_costs.reasoning, 0.0);
+    assert_f64_close(historical_costs.unknown, 0.30);
+    assert_f64_close(historical_summary.total_cost, 0.30);
 }
 
 #[tokio::test]

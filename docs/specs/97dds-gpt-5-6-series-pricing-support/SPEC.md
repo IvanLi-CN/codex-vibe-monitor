@@ -34,9 +34,9 @@ The project needs a compatible upgrade that preserves existing user-defined pric
 - SQLite persistence must preserve existing pricing rows and backfill read pricing from legacy data without overwriting user-defined values.
 - Model resolution must match exact ids first and also map `gpt-5.6-sol|terra|luna-YYYY-MM-DD` to their base model pricing rows.
 - Settings pricing UI must split cached pricing into separate cache read and cache write columns and clearly label the contract as estimation metadata rather than runtime token truth.
-- New invocation rows must persist exact cost buckets. Historical rows must continue to expose their total cost while reporting unavailable cost buckets rather than being repriced.
+- New invocation rows must persist exact cost buckets. Historical rows with a known total cost must contribute that full amount to `unknown` instead of being repriced or invalidating exact realtime buckets; rows without a total cost do not fabricate an unknown amount.
 - `cacheWriteTokens` must be derived as `max(inputTokens - cacheInputTokens, 0)`; `cacheInputTokens` remains the upstream cache-read count.
-- Dashboard summary and upstream-account activity APIs must return total and model-level usage breakdowns. Cost breakdowns include input, cache write, cache read, output, and non-zero reasoning cost.
+- Dashboard summary and upstream-account activity APIs must return total and model-level usage breakdowns. Cost breakdowns include input, cache write, cache read, output, reasoning, and unknown cost, and every returned cost row must reconcile to its total.
 - Dashboard and account-card cost/Token labels must provide keyboard-accessible detail panels; records, live cards, and dashboard call previews must display `CW` and `C` together.
 
 ## Interface Contract
@@ -82,7 +82,9 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - Given default proxy model settings, when repo-managed defaults are normalized, then the GPT-5.6 model ids appear in preset lists and are appended only for legacy default enabled-model lists.
 - Given account tags containing `unsupported_model:gpt-5.6-sol`, when the roster and routing UI render, then the tag behaves like other system unsupported-model tags without GPT-5.5-specific special casing.
 - Given a new GPT-5.6 invocation, when its usage is persisted, then its cost buckets sum to `cost`, cache write Token count is non-negative, and the total/model usage breakdowns remain reconcilable.
-- Given a historical invocation without persisted cost buckets, when it appears in a detail panel, then Token derivation remains visible and cost detail says it is unavailable.
+- Given a historical invocation without persisted cost buckets but with a known total cost, when it appears with exact realtime records, then Token derivation and exact cost buckets remain visible while the historical total is shown in `unknown`.
+- Given a record without a total cost, when usage is aggregated, then it contributes no fabricated unknown cost.
+- Given an exact-only range, when cost detail is rendered, then the `unknown` value is zero and the UI keeps the five known cost columns.
 - Given a dashboard or upstream-account cost/Token label, when it is hovered, focused, or clicked, then total and sorted model detail is readable on desktop and mobile.
 
 ## Visual Evidence
@@ -126,6 +128,34 @@ PR: include
 - story_id_or_title: Dashboard/TodayStatsOverview Usage Breakdown Details
 - state: Token detail open
 - evidence_note: Verifies the Token detail remains a single readable four-column table on a narrow viewport, with total and model rows visible without an internal scrollbar.
+
+PR: include
+![Mixed realtime and historical cost breakdown on desktop](./assets/dashboard-mixed-cost-unknown-desktop.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: browser-viewport
+- requested_viewport: 1440x900
+- viewport_strategy: devtools-emulate with story-bound desktop viewport
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: Dashboard/TodayStatsOverview Mixed Cost Breakdown Unknown Desktop
+- state: mixed exact and historical cost detail open
+- evidence_note: Verifies exact input, cache-write, cache-read, output, and reasoning amounts remain visible while historical total cost is reconciled in the dynamic unknown column.
+
+PR: include
+![Mixed realtime and historical cost breakdown on mobile](./assets/dashboard-mixed-cost-unknown-mobile.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: browser-viewport
+- requested_viewport: 390x844
+- viewport_strategy: devtools-emulate with story-bound mobile viewport
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: Dashboard/TodayStatsOverview Mixed Cost Breakdown Unknown Mobile
+- state: mixed exact and historical cost detail open
+- evidence_note: Verifies the dynamic six-column cost table remains legible on a narrow viewport with explicit cell dividers and no internal scrollbar.
 
 ## References
 
