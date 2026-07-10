@@ -632,6 +632,7 @@ export interface UsageCostBreakdown {
   cacheRead: number;
   output: number;
   reasoning: number;
+  unknown: number;
 }
 
 export interface UsageBreakdownModel {
@@ -1605,6 +1606,7 @@ function normalizeUsageCostBreakdown(raw: unknown): UsageCostBreakdown | null {
     cacheRead: cacheRead ?? 0,
     output: output ?? 0,
     reasoning: reasoning ?? 0,
+    unknown: normalizeFiniteNumber(payload.unknown) ?? 0,
   }
 }
 

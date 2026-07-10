@@ -16,6 +16,7 @@ const sampleUsageBreakdown = {
     cacheRead: 0.44,
     output: 6.12,
     reasoning: 0.71,
+    unknown: 0,
   },
   models: [
     {
@@ -23,16 +24,50 @@ const sampleUsageBreakdown = {
       cacheWriteTokens: 321000,
       cacheReadTokens: 144000,
       outputTokens: 154190,
-      costs: { input: 1.34, cacheWrite: 2.41, cacheRead: 0.29, output: 4.58, reasoning: 0.53 },
+      costs: { input: 1.34, cacheWrite: 2.41, cacheRead: 0.29, output: 4.58, reasoning: 0.53, unknown: 0 },
     },
     {
       model: 'gpt-5.4-mini',
       cacheWriteTokens: 111000,
       cacheReadTokens: 52000,
       outputTokens: 60000,
-      costs: { input: 0.62, cacheWrite: 0.83, cacheRead: 0.15, output: 1.54, reasoning: 0.18 },
+      costs: { input: 0.62, cacheWrite: 0.83, cacheRead: 0.15, output: 1.54, reasoning: 0.18, unknown: 0 },
     },
   ],
+}
+
+const mixedUsageBreakdown = {
+  ...sampleUsageBreakdown,
+  costs: {
+    input: 1.34,
+    cacheWrite: 2.41,
+    cacheRead: 0.29,
+    output: 4.58,
+    reasoning: 0.53,
+    unknown: 3.32,
+  },
+  models: sampleUsageBreakdown.models.map((model) => model.model === 'gpt-5.4-mini'
+    ? {
+        ...model,
+        costs: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 3.32 },
+      }
+    : model),
+}
+
+const historicalUsageBreakdown = {
+  ...sampleUsageBreakdown,
+  costs: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 12.47 },
+  models: sampleUsageBreakdown.models.map((model) => ({
+    ...model,
+    costs: {
+      input: 0,
+      cacheWrite: 0,
+      cacheRead: 0,
+      output: 0,
+      reasoning: 0,
+      unknown: model.model === 'gpt-5.6' ? 9.15 : 3.32,
+    },
+  })),
 }
 
 const sampleStats: StatsResponse = {
@@ -281,6 +316,7 @@ export const UsageBreakdownDetails: Story = {
       expect(tooltip).toHaveTextContent('gpt-5.6')
       const panel = within(tooltip).getByTestId('usage-breakdown-tooltip-cost')
       expect(within(panel).getAllByRole('table')).toHaveLength(1)
+      expect(within(panel).queryByRole('columnheader', { name: /Unknown|未知/i })).not.toBeInTheDocument()
       expect(panel).not.toHaveClass('overflow-y-auto')
     })
     await userEvent.click(canvas.getByTestId('today-stats-label-total-tokens'))
@@ -295,7 +331,69 @@ export const UsageBreakdownDetails: Story = {
   },
 }
 
-export const HistoricalCostBreakdownUnavailable: Story = {
+export const MixedCostBreakdownUnknownMobile: Story = {
+  args: {
+    stats: {
+      ...sampleStats,
+      usageBreakdown: mixedUsageBreakdown,
+    },
+    rate: sampleRate,
+    ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
+    loading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: 'mobile1' },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByTestId('today-stats-label-total-cost'))
+    await waitFor(() => {
+      const tooltip = within(document.body).getByRole('tooltip')
+      const panel = within(tooltip).getByTestId('usage-breakdown-tooltip-cost')
+      expect(within(panel).getByRole('columnheader', { name: /Unknown|未知/i })).toBeInTheDocument()
+      expect(within(panel).getByRole('rowheader', { name: 'gpt-5.6' })).toBeInTheDocument()
+      expect(within(panel).getByRole('rowheader', { name: 'gpt-5.4-mini' })).toBeInTheDocument()
+      expect(within(panel).getAllByRole('table')).toHaveLength(1)
+      expect(panel).not.toHaveClass('overflow-y-auto')
+    })
+  },
+}
+
+export const MixedCostBreakdownUnknownDesktop: Story = {
+  ...MixedCostBreakdownUnknownMobile,
+  parameters: {
+    viewport: { defaultViewport: 'desktop1440' },
+  },
+}
+
+export const PureHistoricalCostBreakdown: Story = {
+  args: {
+    stats: {
+      ...sampleStats,
+      usageBreakdown: historicalUsageBreakdown,
+    },
+    rate: sampleRate,
+    ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
+    loading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByTestId('today-stats-label-total-cost'))
+    await waitFor(() => {
+      const tooltip = within(document.body).getByRole('tooltip')
+      expect(tooltip).toHaveTextContent(/Unknown|未知/i)
+      expect(tooltip).not.toHaveTextContent(/Cost breakdown unavailable|成本分项未提供/i)
+    })
+  },
+}
+
+export const MissingTotalCostBreakdownUnavailable: Story = {
   args: {
     stats: {
       ...sampleStats,
@@ -326,7 +424,7 @@ export const HistoricalCostBreakdownUnavailable: Story = {
     await userEvent.click(canvas.getByTestId('today-stats-label-total-cost'))
     await waitFor(() => {
       expect(within(document.body).getByRole('tooltip')).toHaveTextContent(
-        /Historical cost breakdown unavailable|历史成本分项未提供/,
+        /Cost breakdown unavailable|成本分项未提供/,
       )
     })
   },

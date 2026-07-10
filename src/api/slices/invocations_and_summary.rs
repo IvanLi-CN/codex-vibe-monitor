@@ -3624,11 +3624,37 @@ pub(crate) struct UsageBreakdownAccumulator {
     cache_read_tokens: i64,
     output_tokens: i64,
     costs: UsageCostBreakdownResponse,
-    cost_breakdown_unavailable: bool,
+    has_cost: bool,
     models: HashMap<String, UsageBreakdownAccumulator>,
 }
 
 impl UsageBreakdownAccumulator {
+    fn add_cost_row(&mut self, total_cost: Option<f64>, costs: [Option<f64>; 5]) {
+        let Some(total_cost) = total_cost else {
+            return;
+        };
+        self.has_cost = true;
+        if costs.iter().all(Option::is_some) {
+            self.costs.input += costs[0].unwrap_or_default();
+            self.costs.cache_write += costs[1].unwrap_or_default();
+            self.costs.cache_read += costs[2].unwrap_or_default();
+            self.costs.output += costs[3].unwrap_or_default();
+            self.costs.reasoning += costs[4].unwrap_or_default();
+        } else {
+            self.costs.unknown += total_cost;
+        }
+    }
+
+    fn merge_costs(&mut self, costs: &UsageCostBreakdownResponse) {
+        self.has_cost = true;
+        self.costs.input += costs.input;
+        self.costs.cache_write += costs.cache_write;
+        self.costs.cache_read += costs.cache_read;
+        self.costs.output += costs.output;
+        self.costs.reasoning += costs.reasoning;
+        self.costs.unknown += costs.unknown;
+    }
+
     fn add_row(&mut self, row: &UpstreamAccountInvocationPreviewRow) {
         let cache_read_tokens = row.cache_input_tokens.unwrap_or_default().max(0);
         let cache_write_tokens = row
@@ -3647,15 +3673,7 @@ impl UsageBreakdownAccumulator {
             row.cost_output,
             row.cost_reasoning,
         ];
-        if costs.iter().all(Option::is_some) {
-            self.costs.input += costs[0].unwrap_or_default();
-            self.costs.cache_write += costs[1].unwrap_or_default();
-            self.costs.cache_read += costs[2].unwrap_or_default();
-            self.costs.output += costs[3].unwrap_or_default();
-            self.costs.reasoning += costs[4].unwrap_or_default();
-        } else if row.cost.is_some() {
-            self.cost_breakdown_unavailable = true;
-        }
+        self.add_cost_row(row.cost, costs);
 
         let model = row
             .response_model
@@ -3669,15 +3687,7 @@ impl UsageBreakdownAccumulator {
         model_entry.cache_write_tokens += cache_write_tokens;
         model_entry.cache_read_tokens += cache_read_tokens;
         model_entry.output_tokens += row.output_tokens.unwrap_or_default().max(0);
-        if costs.iter().all(Option::is_some) {
-            model_entry.costs.input += costs[0].unwrap_or_default();
-            model_entry.costs.cache_write += costs[1].unwrap_or_default();
-            model_entry.costs.cache_read += costs[2].unwrap_or_default();
-            model_entry.costs.output += costs[3].unwrap_or_default();
-            model_entry.costs.reasoning += costs[4].unwrap_or_default();
-        } else if row.cost.is_some() {
-            model_entry.cost_breakdown_unavailable = true;
-        }
+        model_entry.add_cost_row(row.cost, costs);
     }
 
     fn merge_response(&mut self, response: &UsageBreakdownResponse) {
@@ -3685,13 +3695,7 @@ impl UsageBreakdownAccumulator {
         self.cache_read_tokens += response.cache_read_tokens;
         self.output_tokens += response.output_tokens;
         if let Some(costs) = &response.costs {
-            self.costs.input += costs.input;
-            self.costs.cache_write += costs.cache_write;
-            self.costs.cache_read += costs.cache_read;
-            self.costs.output += costs.output;
-            self.costs.reasoning += costs.reasoning;
-        } else {
-            self.cost_breakdown_unavailable = true;
+            self.merge_costs(costs);
         }
         for model in &response.models {
             let entry = self.models.entry(model.model.clone()).or_default();
@@ -3699,13 +3703,7 @@ impl UsageBreakdownAccumulator {
             entry.cache_read_tokens += model.cache_read_tokens;
             entry.output_tokens += model.output_tokens;
             if let Some(costs) = &model.costs {
-                entry.costs.input += costs.input;
-                entry.costs.cache_write += costs.cache_write;
-                entry.costs.cache_read += costs.cache_read;
-                entry.costs.output += costs.output;
-                entry.costs.reasoning += costs.reasoning;
-            } else {
-                entry.cost_breakdown_unavailable = true;
+                entry.merge_costs(costs);
             }
         }
     }
@@ -3723,13 +3721,14 @@ impl UsageBreakdownAccumulator {
                     || entry.costs.cache_read != 0.0
                     || entry.costs.output != 0.0
                     || entry.costs.reasoning != 0.0
-                    || entry.cost_breakdown_unavailable;
+                    || entry.costs.unknown != 0.0
+                    || entry.has_cost;
                 has_usage.then_some(UsageBreakdownModelResponse {
                     model,
                     cache_write_tokens: entry.cache_write_tokens,
                     cache_read_tokens: entry.cache_read_tokens,
                     output_tokens: entry.output_tokens,
-                    costs: (!entry.cost_breakdown_unavailable).then_some(entry.costs),
+                    costs: entry.has_cost.then_some(entry.costs),
                 })
             })
             .collect::<Vec<_>>();
@@ -3738,7 +3737,7 @@ impl UsageBreakdownAccumulator {
             cache_write_tokens: self.cache_write_tokens,
             cache_read_tokens: self.cache_read_tokens,
             output_tokens: self.output_tokens,
-            costs: (!self.cost_breakdown_unavailable).then_some(self.costs),
+            costs: self.has_cost.then_some(self.costs),
             models,
         }
     }

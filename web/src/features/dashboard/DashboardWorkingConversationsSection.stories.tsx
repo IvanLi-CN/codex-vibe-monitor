@@ -384,11 +384,12 @@ function createUpstreamAccountActivityStoryResponse(
           cacheReadTokens: 800,
           outputTokens: 800,
           costs: {
-            input: 0.18,
-            cacheWrite: 0.14,
-            cacheRead: 0.06,
-            output: 0.28,
-            reasoning: 0.06,
+            input: 0.12,
+            cacheWrite: 0.1,
+            cacheRead: 0.04,
+            output: 0.21,
+            reasoning: 0.05,
+            unknown: 0.2,
           },
           models: [
             {
@@ -396,14 +397,14 @@ function createUpstreamAccountActivityStoryResponse(
               cacheWriteTokens: 1200,
               cacheReadTokens: 600,
               outputTokens: 620,
-              costs: { input: 0.12, cacheWrite: 0.1, cacheRead: 0.04, output: 0.21, reasoning: 0.05 },
+              costs: { input: 0.12, cacheWrite: 0.1, cacheRead: 0.04, output: 0.21, reasoning: 0.05, unknown: 0 },
             },
             {
               model: "gpt-5.4-mini",
               cacheWriteTokens: 400,
               cacheReadTokens: 200,
               outputTokens: 180,
-              costs: { input: 0.06, cacheWrite: 0.04, cacheRead: 0.02, output: 0.07, reasoning: 0.01 },
+              costs: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0.2 },
             },
           ],
         },
@@ -3478,6 +3479,7 @@ export const UpstreamAccountMetricTooltips: Story = {
       "缓存写入",
       "缓存读取",
       "推理",
+      "未知",
       "gpt-5.6",
     ]);
     await assertMetricTooltip("token", [

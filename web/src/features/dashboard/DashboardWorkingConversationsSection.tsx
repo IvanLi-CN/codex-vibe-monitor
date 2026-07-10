@@ -2766,11 +2766,11 @@ function DashboardUpstreamAccountActivityCard({
   const usageBreakdownLabels = locale === "zh"
     ? {
         total: "总计", cacheWrite: "缓存写入", cacheRead: "缓存读取", output: "输出",
-        model: "模型", input: "输入", reasoning: "推理", unavailable: "历史成本分项未提供", tokenUnavailable: "Token 分项未提供", unknownModel: "未标识模型",
+        model: "模型", input: "输入", reasoning: "推理", unknown: "未知", unavailable: "成本分项未提供", tokenUnavailable: "Token 分项未提供", unknownModel: "未标识模型",
       }
     : {
         total: "Total", cacheWrite: "Cache write", cacheRead: "Cache read", output: "Output",
-        model: "Model", input: "Input", reasoning: "Reasoning", unavailable: "Historical cost breakdown unavailable", tokenUnavailable: "Token breakdown unavailable", unknownModel: "Unidentified model",
+        model: "Model", input: "Input", reasoning: "Reasoning", unknown: "Unknown", unavailable: "Cost breakdown unavailable", tokenUnavailable: "Token breakdown unavailable", unknownModel: "Unidentified model",
       };
   const formatBreakdownNumber = (value: number) => formatAccountNumberValue(value, localeTag, 0);
   const formatBreakdownCurrency = (value: number) => formatAccountCurrencyValue(value, localeTag, 4);

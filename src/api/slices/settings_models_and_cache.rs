@@ -98,6 +98,7 @@ pub(crate) struct UsageCostBreakdownResponse {
     pub(crate) cache_read: f64,
     pub(crate) output: f64,
     pub(crate) reasoning: f64,
+    pub(crate) unknown: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
