@@ -12,6 +12,7 @@
 - CI 总时长优化要以 `CI Main` 里 3 个 backend required jobs 的最慢 wall time 为主指标：`Backend Tests (Lightweight)`、`Backend Tests (Stateful SQLite)`、`Backend Tests (Archive / File I/O)`。
 - backend runner 应固定用 resource-profile filter 跑 `cargo nextest run --locked --all-features --no-fail-fast -E ...`，不要再把整个后端测试树塞回单个 required check。
 - 当完整 stateful SQLite suite 的隔离性已由多档并发全量验证后，可为该 profile 固定一个保守的 `--test-threads` 上限。当前 1048 个 stateful 用例在 4、6、8 threads 下均通过，6 threads 在保留余量的同时将本地热执行降到约 102s。
+- `CI Main` run `29074132864` 验证了该选择：lightweight、stateful SQLite、archive / file I/O 分别为 `3m10s`、`6m00s`、`4m50s`，最慢 job 比 `6m30s` 预算低 `30s`。
 - 对只验证 DB 行为、不验证主库文件路径的测试，优先使用唯一命名的 in-memory SQLite，保留 `AppConfig.database_path`、archive/raw 目录形状即可。
 - 文件 SQLite fixture 要限制测试连接池大小；默认 pool 在全套并发下会把每个测试放大成多连接竞争。
 - 如果测试只需要“已 materialized archive metadata”或“缺失 replay marker”状态，直接构造窄表状态，不要为了 setup 跑完整 retention/archive pipeline。

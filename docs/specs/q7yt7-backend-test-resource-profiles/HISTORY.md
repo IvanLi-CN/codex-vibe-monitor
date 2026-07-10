@@ -14,6 +14,7 @@
 - 2026-07-09：实际打开 stacked PR 后发现 `CI PR` 只对 `base=main` 触发，无法为 PR2 提供服务端 CI 证据；因此放开 `CI PR` 的 `pull_request` base 过滤，同时保留 `Label Gate` / `Review Policy` 与 live rules 对齐检查继续只绑定 `main`。
 - 2026-07-09：修复后的本地热缓存测量显示三个 profile wall time 分别约为 `3.83s`、`66.97s`、`29.14s`，拆分后 critical path 远低于 `6m30s` 预算。
 - 2026-07-10：PR #576 合并后的 CI Main 实测 Stateful SQLite job 为 `6m45s`，比预算高 `15s`；完整 1048 个 stateful 用例在本地 4、6、8 threads 下均通过，采用保守的 6-thread runner 上限收敛预算。
+- 2026-07-10：PR #579 的 CI Main run `29074132864` 实测三路 backend job 为 `3m10s`、`6m00s`、`4m50s`；Stateful SQLite 最慢 job 比 `6m30s` 预算低 `30s`，runtime budget 完成收口。
 
 ## Key Reasons / Replacements
 
