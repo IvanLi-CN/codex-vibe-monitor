@@ -48,6 +48,7 @@ fi
 run_profile() {
   local selected_profile="$1"
   local filter_expr=""
+  local test_threads=""
 
   case "$selected_profile" in
     lightweight)
@@ -55,6 +56,8 @@ run_profile() {
       ;;
     stateful-sqlite)
       filter_expr='test(/^(tests|upstream_accounts::tests)::stateful_sqlite::/)'
+      # Stateful tests use isolated in-memory SQLite pools and benefit from bounded I/O concurrency.
+      test_threads="6"
       ;;
     archive-file-io)
       filter_expr='test(/^(tests|upstream_accounts::tests)::archive_file_io::/)'
@@ -69,7 +72,12 @@ run_profile() {
   local profile_start_epoch
   profile_start_epoch="$(date +%s)"
   echo "backend_test_profile=$selected_profile"
-  cargo nextest run --locked --all-features --no-fail-fast -E "$filter_expr"
+  if [[ -n "$test_threads" ]]; then
+    echo "backend_test_profile_test_threads_${selected_profile//-/_}=$test_threads"
+    cargo nextest run --locked --all-features --no-fail-fast --test-threads "$test_threads" -E "$filter_expr"
+  else
+    cargo nextest run --locked --all-features --no-fail-fast -E "$filter_expr"
+  fi
   local profile_end_epoch
   profile_end_epoch="$(date +%s)"
   echo "backend_test_profile_seconds_${selected_profile//-/_}=$((profile_end_epoch - profile_start_epoch))"
