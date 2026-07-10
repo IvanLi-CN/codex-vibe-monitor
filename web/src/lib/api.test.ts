@@ -3,6 +3,7 @@ import {
   DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS,
   createForwardProxyNodesLatencyTestEventSource,
   createOauthMailboxSession,
+  fetchInvocationRecordLocation,
   fetchInvocationRecords,
   fetchForwardProxyLiveStats,
   fetchForwardProxyBindingNodes,
@@ -1645,12 +1646,45 @@ describe("account pool frontend API helpers", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("adds stickyKey and upstreamAccountId to invocation records query parameters", async () => {
+  it("encodes the account-scoped invocation locator query", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      expect(url).toContain("/api/invocations/locate?");
+      expect(url).toContain("requestId=invoke-anchor");
+      expect(url).toContain("upstreamAccountId=42");
+      expect(url).toContain("pageSize=50");
+      return new Response(
+        JSON.stringify({
+          anchorId: "anchor-test-001",
+          snapshotId: 7,
+          total: 1,
+          page: 1,
+          pageSize: 50,
+          records: [],
+          targetIndex: 0,
+          targetAbsoluteIndex: 0,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchInvocationRecordLocation({
+      requestId: "invoke-anchor",
+      upstreamAccountId: 42,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds anchor, snapshot, sticky key, and account to invocation records queries", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       expect(url).toContain("/api/invocations?");
       expect(url).toContain("stickyKey=sticky-001");
       expect(url).toContain("upstreamAccountId=42");
+      expect(url).toContain("snapshotId=7");
+      expect(url).toContain("anchorId=anchor-test-001");
       return new Response(
         JSON.stringify({
           snapshotId: 7,
@@ -1667,6 +1701,8 @@ describe("account pool frontend API helpers", () => {
     await fetchInvocationRecords({
       stickyKey: "sticky-001",
       upstreamAccountId: 42,
+      snapshotId: 7,
+      anchorId: "anchor-test-001",
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);

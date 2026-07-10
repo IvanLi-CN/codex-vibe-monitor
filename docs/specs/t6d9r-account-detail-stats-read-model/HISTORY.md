@@ -25,3 +25,6 @@
 - 2026-07-03: overview 顶部账号基础属性从独立卡片网格压缩为单条元数据带，优先把首屏空间留给使用率窗口与账号活动总览。
 - 2026-07-03: running runtime snapshot 从 batch writer 占位落库继续降级为进程内 runtime store。账号详情和 account activity 的 in-flight 展示通过 HTTP overlay 共享同一内存态，terminal DB 事实仍是最高优先级。
 - 2026-07-03: terminal invocation 记录进入 SQLite write controller 后，账号详情 records/current 读面接受短暂最终一致窗口；SSE 与 runtime-store tombstone 继续避免 open-resync 闪断，DB terminal 行一旦落库仍覆盖内存态。
+- 2026-07-10: 账号详情 records tab 增加后端锚点窗口与双向惰性分页；历史定位冻结 snapshot 并暂停 SSE，避免前端逐页扫描与实时插入改变目标索引。
+- 2026-07-10: 双向历史窗口改为携带 `snapshotId + anchorId`，由后端复现定位时的 runtime overlay，确保 prepend/append 与初始锚点采用同一稳定分页序列。
+- 2026-07-10: 调用 ID 改为单行完整展示，并用账号详情专用列宽回收用时、输入与输出列空间；定位高亮收敛为不改变布局的单层视觉状态，避免默认焦点轮廓叠加。

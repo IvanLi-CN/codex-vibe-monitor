@@ -41,6 +41,7 @@ import type {
   EffectiveRoutingRule,
   TagSummary,
 } from "../../lib/api";
+import { ApiRequestError } from "../../lib/api";
 
 type UpstreamAccountsHookValue = ReturnType<
   typeof import("../../hooks/useUpstreamAccounts").useUpstreamAccounts
@@ -65,6 +66,7 @@ const hookMocks = vi.hoisted(() => ({
 const apiMocks = vi.hoisted(() => ({
   createBulkUpstreamAccountSyncJobEventSource: vi.fn(),
   fetchUpstreamAccountActionEvents: vi.fn(),
+  fetchInvocationRecordLocation: vi.fn(),
   fetchInvocationRecords: vi.fn(),
 }));
 const sseMocks = vi.hoisted(() => ({
@@ -73,6 +75,7 @@ const sseMocks = vi.hoisted(() => ({
 }));
 const virtualizerMocks = vi.hoisted(() => ({
   visibleIndexes: null as number[] | null,
+  scrollToIndex: vi.fn(),
 }));
 const storage = new Map<string, string>();
 
@@ -111,6 +114,7 @@ vi.mock("../../lib/api", async () => {
     createBulkUpstreamAccountSyncJobEventSource:
       apiMocks.createBulkUpstreamAccountSyncJobEventSource,
     fetchUpstreamAccountActionEvents: apiMocks.fetchUpstreamAccountActionEvents,
+    fetchInvocationRecordLocation: apiMocks.fetchInvocationRecordLocation,
     fetchInvocationRecords: apiMocks.fetchInvocationRecords,
   };
 });
@@ -188,6 +192,7 @@ vi.mock("@tanstack/react-virtual", () => ({
       measure: () => undefined,
       getVirtualItems: () => items,
       getTotalSize: () => sizes.reduce((sum, size) => sum + size, 0),
+      scrollToIndex: virtualizerMocks.scrollToIndex,
     };
   },
   useWindowVirtualizer: ({
@@ -230,6 +235,7 @@ vi.mock("@tanstack/react-virtual", () => ({
       measure: () => undefined,
       getVirtualItems: () => items,
       getTotalSize: () => sizes.reduce((sum, size) => sum + size, 0),
+      scrollToIndex: virtualizerMocks.scrollToIndex,
     };
   },
 }));
@@ -388,6 +394,7 @@ describe("UpstreamAccountsPage detail route tab query", () => {
 
 beforeEach(() => {
   virtualizerMocks.visibleIndexes = null;
+  virtualizerMocks.scrollToIndex.mockReset();
   storage.clear();
   storage.set(LOCALE_STORAGE_KEY, "en");
   vi.mocked(window.localStorage.getItem).mockImplementation(
@@ -424,6 +431,7 @@ beforeEach(() => {
     pageSize: 50,
     records: [],
   });
+  apiMocks.fetchInvocationRecordLocation.mockReset();
   sseMocks.onMessage = null;
   sseMocks.onOpen = null;
   hookMocks.useUpstreamStickyConversations.mockReturnValue({
@@ -2447,6 +2455,138 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       silent: true,
       includeRecentActions: true,
     });
+  });
+
+  it("locates a health event invocation in the records tab", async () => {
+    mockAccountsPage();
+    apiMocks.fetchInvocationRecordLocation.mockResolvedValue({
+      anchorId: "anchor-test-001",
+      snapshotId: 91,
+      total: 121,
+      page: 2,
+      pageSize: 50,
+      targetIndex: 0,
+      targetAbsoluteIndex: 50,
+      records: [
+        {
+          id: 51,
+          invokeId: "invk_action_001",
+          occurredAt: "2026-03-16T02:06:00.000Z",
+          createdAt: "2026-03-16T02:06:00.000Z",
+          status: "failed",
+          model: "gpt-5.4",
+          upstreamAccountId: 5,
+          upstreamAccountName: "Existing OAuth",
+          routeMode: "pool",
+        },
+      ],
+    });
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="healthEvents"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    const invokeButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("invk_action_001"),
+    );
+    expect(invokeButton).toBeTruthy();
+    act(() => {
+      invokeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchInvocationRecordLocation).toHaveBeenCalledWith({
+      requestId: "invk_action_001",
+      upstreamAccountId: 5,
+      pageSize: 50,
+    });
+    const recordsTab = Array.from(
+      document.body.querySelectorAll('button[role="tab"]'),
+    ).find((button) => /调用记录|records/i.test(button.textContent ?? ""));
+    expect(recordsTab?.getAttribute("aria-selected")).toBe("true");
+    await waitForAssertion(() => {
+      expect(
+        document.body.querySelector('[data-testid="invocation-id"]')
+          ?.textContent,
+      ).toBe("invk_action_001");
+    });
+    expect(virtualizerMocks.scrollToIndex).toHaveBeenCalledWith(0, {
+      align: "center",
+    });
+    expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
+    expect(document.body.textContent).toMatch(
+      /Return to latest records|返回最新记录/,
+    );
+  });
+
+  it("keeps the records tab open and focuses a not-found locator alert", async () => {
+    mockAccountsPage();
+    apiMocks.fetchInvocationRecordLocation.mockRejectedValue(
+      new ApiRequestError(404, "invocation_not_found"),
+    );
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="healthEvents"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    const invokeButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("invk_action_001"),
+    );
+    act(() => {
+      invokeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    await waitForAssertion(() => {
+      expect(document.body.querySelector('[role="alert"]')?.textContent).toContain(
+        "invk_action_001",
+      );
+    });
+    const alert = document.body.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("invk_action_001");
+    await waitForAssertion(() => {
+      expect(alert).toBe(document.activeElement);
+    });
+    const recordsTab = Array.from(
+      document.body.querySelectorAll('button[role="tab"]'),
+    ).find((button) => /调用记录|records/i.test(button.textContent ?? ""));
+    expect(recordsTab?.getAttribute("aria-selected")).toBe("true");
   });
 
   it("clears a stale records error after an SSE-open retry succeeds", async () => {

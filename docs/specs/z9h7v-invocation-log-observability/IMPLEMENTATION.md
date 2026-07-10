@@ -19,6 +19,8 @@
 - 本次修复是 future-only：不改 SQLite schema，不对历史 invocation 回填 `imageIntent` 或 `compactionRequestKind`。
 - 运行态 V2 识别来自 request body 的 `context_management[type=compaction][compact_threshold]`，终态识别来自响应内实际出现的 compaction item；两者独立写入 payload，不回填历史记录。
 - raw request/response payload 的完整保留合同不作为 SQLite 止血牺牲项；本轮只补充 raw file write 的 `raw_kind`、codec、file bytes、observed bytes、truncated、path 与 elapsed 证据，并继续同步持久化 terminal usage/status/failure/raw metadata。
+- 账号详情调用记录现显示可选择的 `invokeId`；健康与事件的调用 ID 通过 `/api/invocations/locate` 获取目标所在 retained/runtime 分页窗口及短生命周期 `anchorId`，后续页复用冻结 runtime overlay，再由共享虚拟表格定位目标行。
+- 账号详情调用列表使用表面专属列宽，并按容器实际宽度自动缩小超长 `invokeId` 字号，以完整单行展示 ID；桌面与移动定位态均采用单层非布局型高亮并抑制默认 outline，其他共享 `InvocationTable` 使用方保持原布局。
 
 ## Migrated Implementation Notes
 
@@ -76,3 +78,4 @@
 - [x] M14: 重组共享调用详情组件的信息架构与视觉层级，补齐成功、运行中、异常、号池终态、长字段、light/dark 与窄屏 Storybook 证据。
 - [x] M15: 保留完整 raw payload 合同，为 raw 文件写入与 terminal raw metadata 写入补齐低开销耗时证据。
 - [x] M16: 为运行态号池调用补齐当前上游账号呼吸提示，并覆盖 Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉的共享账号展示路径。
+- [x] M17: 为账号详情补齐调用 ID 展示、账号作用域锚点分页、虚拟滚动定位与结构化未找到反馈。

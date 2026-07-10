@@ -1,5 +1,6 @@
 export {
   fetchInvocations,
+  fetchInvocationRecordLocation,
   fetchInvocationRecords,
   fetchInvocationRecordsSummary,
   fetchInvocationRecordsNewCount,

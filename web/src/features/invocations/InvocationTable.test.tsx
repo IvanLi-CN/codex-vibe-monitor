@@ -591,6 +591,28 @@ describe("getReasoningEffortTone", () => {
 });
 
 describe("InvocationTable", () => {
+  it("shows selectable invoke IDs only when explicitly enabled", async () => {
+    const records = [createInvocationRecord(0)];
+    await renderInteractiveTable(records);
+    expect(document.querySelector('[data-testid="invocation-id"]')).toBeNull();
+    expect(document.querySelector("thead th")?.className).toContain(
+      "xl:w-[10%]",
+    );
+
+    await renderInteractiveTable(records, { showInvokeId: true });
+    const invokeId = document.querySelector('[data-testid="invocation-id"]');
+    expect(invokeId?.textContent).toBe("virtual-row-1");
+    expect(invokeId?.className).toContain("select-text");
+    expect(invokeId?.className).toContain("whitespace-nowrap");
+    expect(invokeId?.className).toContain("overflow-hidden");
+    expect(invokeId?.className).not.toContain("truncate");
+    expect(invokeId?.className).not.toContain("break-all");
+    expect(invokeId?.getAttribute("title")).toBe(invokeId?.textContent);
+    expect(document.querySelector("thead th")?.className).toContain(
+      "xl:w-[16%]",
+    );
+  });
+
   it("virtualizes large desktop datasets without mounting every row", async () => {
     await renderInteractiveTable(
       Array.from({ length: 1_000 }, (_, index) => createInvocationRecord(index)),
@@ -618,6 +640,7 @@ describe("InvocationTable", () => {
 
     await renderInteractiveTable(
       Array.from({ length: 20 }, (_, index) => createInvocationRecord(index)),
+      { showInvokeId: true },
     );
 
     expect(document.querySelector('[data-testid="invocation-list"]')).toBeTruthy();
@@ -625,6 +648,47 @@ describe("InvocationTable", () => {
       document.querySelectorAll('[data-testid="invocation-list-item"]').length,
     ).toBeGreaterThan(0);
     expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeNull();
+    const invokeId = document.querySelector('[data-testid="invocation-id"]');
+    expect(invokeId?.className).toContain("whitespace-nowrap");
+    expect(invokeId?.className).toContain("overflow-hidden");
+    expect(invokeId?.className).not.toContain("truncate");
+    expect(invokeId?.className).not.toContain("break-all");
+    expect(invokeId?.getAttribute("title")).toBe(invokeId?.textContent);
+  });
+
+  it("uses one clean highlight layer for a located desktop row", async () => {
+    const records = [createInvocationRecord(0)];
+    await renderInteractiveTable(records, {
+      scrollTarget: { invokeId: "virtual-row-1", version: 1 },
+    });
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('[aria-current="true"]')).toBeTruthy();
+    });
+    const highlightedRow = document.querySelector('[aria-current="true"]');
+    expect(highlightedRow?.className).toContain("outline-none");
+    expect(highlightedRow?.className).toContain("ring-1");
+    expect(highlightedRow?.className).not.toContain("ring-2");
+  });
+
+  it("uses a single border highlight for a located mobile card", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 500,
+    });
+    const records = [createInvocationRecord(0)];
+    await renderInteractiveTable(records, {
+      scrollTarget: { invokeId: "virtual-row-1", version: 1 },
+    });
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('[aria-current="true"]')).toBeTruthy();
+    });
+    const highlightedCard = document.querySelector('[aria-current="true"]');
+    expect(highlightedCard?.className).toContain("outline-none");
+    expect(highlightedCard?.className).toContain("border-primary/55");
+    expect(highlightedCard?.className).not.toContain("ring-");
   });
 
   it("renders the WS transport badge for websocket records", () => {

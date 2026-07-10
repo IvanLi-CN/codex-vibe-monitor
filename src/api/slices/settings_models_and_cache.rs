@@ -1405,6 +1405,7 @@ pub(crate) struct ListQuery {
     pub(crate) page: Option<i64>,
     pub(crate) page_size: Option<i64>,
     pub(crate) snapshot_id: Option<i64>,
+    pub(crate) anchor_id: Option<String>,
     pub(crate) sort_by: Option<String>,
     pub(crate) sort_order: Option<String>,
     #[allow(dead_code)]
@@ -1433,6 +1434,14 @@ pub(crate) struct ListQuery {
     pub(crate) max_total_ms: Option<f64>,
     pub(crate) suggest_field: Option<String>,
     pub(crate) suggest_query: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocateInvocationQuery {
+    pub(crate) request_id: String,
+    pub(crate) upstream_account_id: i64,
+    pub(crate) page_size: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

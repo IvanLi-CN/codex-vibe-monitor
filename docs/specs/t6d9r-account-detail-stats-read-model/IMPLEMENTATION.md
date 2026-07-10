@@ -14,6 +14,7 @@
 - Note: 账号详情抽屉默认不再额外预取 roster / sticky conversation 统计；只有 `edit` / `routing` 这类真正依赖上下文的 tab 才会触发对应重查询。
 - Note: 账号详情默认 `overview` 首屏已改为不再同步读取 `recentActions`；健康与事件 tab 才通过显式 follow-up detail hydrate 拉取事件流。
 - Note: 账号活动总览现在归属 overview tab；records tab 只承载调用表格本体，并通过固定页大小的滚动追加加载保留调用记录。
+- Note: records tab 支持后端锚点页启动的双向按需加载；锚点模式冻结快照并暂停 SSE，返回最新记录后恢复既有实时窗口。
 - Note: 概览页活动总览新增的 `nonSuccessCost` 已重新回到 read-model-first 主路径；live augmentation 只保留 `nonSuccessTokens` 与 in-progress 字段，闭区间 summary / timeseries 默认不再回退到 live raw 重算。
 
 ## 落地内容
@@ -35,6 +36,8 @@
 - 账号活动总览从 records tab 迁移到 overview tab；records tab 移除外层 records card、标题说明与记录数量选择，改为直接显示调用表格。
 - overview tab 顶部账号基础属性从多张独立 `metric-cell` 卡片收敛为单条紧凑元数据带，保留字段与截断 title，但显著减少首屏高度占用。
 - records tab 记录列表改为固定 `50` 条页大小的无限滚动追加：首次进入加载第一页，抽屉滚动接近底部时追加下一页，账号切换、离开 records tab 或关闭抽屉时丢弃旧请求结果。
+- 健康与事件中的调用 ID 通过账号作用域 locator 直接取得目标所在页；前端以虚拟列表 `scrollToIndex` 定位，向顶部/底部接近阈值时才分别加载相邻页，prepend 后保持当前视口锚点。
+- 账号详情通过专用列宽收紧用时、输入与输出列，并按容器实际宽度自动缩小超长调用 ID 字号，让调用 ID 在桌面表格与移动列表中保持等宽、单行、完整展示；定位态只保留一层语义边框或 inset ring，并清除默认 outline。
 - 账号详情接口 `get_upstream_account` 默认改为 `includeRecentActions=false`，把 `pool_upstream_account_events` 读取从 overview 首屏热路径中移出；health events tab 再按需补一次 detail hydrate。
 - 前端 `fetchUpstreamAccountDetail(..., { includeRecentActions: true })` 改为把布尔 query 编码成 `includeRecentActions=true`，避免 Axum `Option<bool>` 拒绝 `1` 后让健康与事件 tab 显示 400。
 - `useUpstreamAccounts(...)` 在 `selectedId` 为空时不再自动对 roster 可见行批量触发 `window-usage` hydrate；只有当前选中账号或显式手动 hydrate 才会发 `window-usage` 请求。
@@ -76,7 +79,9 @@
 - `cd web && bun x vitest run --project=unit src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/lib/api.test.ts`
 - `cd web && bun x vitest run --project=unit src/lib/api.test.ts src/features/shared/ListBodyState.test.tsx src/features/invocations/InvocationTable.test.tsx src/features/records/InvocationRecordsTable.test.tsx src/features/account-pool/UpstreamAccountsTable.test.tsx src/features/account-pool/UpstreamAccountsGroupedRoster.test.tsx src/pages/account-pool/Groups.test.tsx src/pages/system/SystemTasksPage.test.tsx src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`
 - `cd web && bun run test-storybook`
+- `cd web && bun x vitest run --project=unit src/lib/api.test.ts src/features/invocations/InvocationTable.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`
 - `cd web && bun run build-storybook`
+- `cargo test locate_invocation_`
 
 ## Visual Evidence
 
@@ -88,6 +93,9 @@
 - `assets/detail-drawer-overview-activity-overview.png`
 - `assets/detail-drawer-records-bare-table.png`
 - `assets/detail-drawer-records-infinite-scroll.png`
+- `assets/detail-drawer-invocation-locate-success.png`
+- `assets/detail-drawer-invocation-locate-not-found.png`
+- `assets/detail-drawer-invocation-locate-mobile.png`
 
 ## 2026-06-21 Records Live Follow-up
 

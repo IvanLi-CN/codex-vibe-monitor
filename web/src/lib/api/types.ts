@@ -11,6 +11,8 @@ export type {
   InvocationNetworkSummary,
   InvocationExceptionSummary,
   InvocationRecordsResponse,
+  InvocationRecordLocationQuery,
+  InvocationRecordLocationResponse,
   InvocationRecordsSummaryResponse,
   InvocationRecordsNewCountResponse,
   InvocationSuggestionItem,

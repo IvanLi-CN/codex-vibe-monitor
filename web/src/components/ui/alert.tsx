@@ -19,8 +19,17 @@ const alertVariants = cva('flex items-start gap-2 rounded-xl border px-4 py-3 te
 
 export interface AlertProps extends React.HTMLAttributes<HTMLDivElement>, VariantProps<typeof alertVariants> {}
 
-function Alert({ className, variant, ...props }: AlertProps) {
-  return <div className={cn(alertVariants({ variant }), className)} role="status" {...props} />
-}
+const Alert = React.forwardRef<HTMLDivElement, AlertProps>(
+  ({ className, variant, ...props }, ref) => (
+    <div
+      ref={ref}
+      className={cn(alertVariants({ variant }), className)}
+      role="status"
+      {...props}
+    />
+  ),
+)
+
+Alert.displayName = 'Alert'
 
 export { Alert }

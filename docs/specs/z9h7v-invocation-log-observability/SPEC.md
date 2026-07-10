@@ -27,6 +27,8 @@
 - Records 与 Dashboard 两个 owner-facing 列表同时显示独立“图片工具”徽标，避免同一条 invocation 在不同列表面出现语义漂移。
 - Live 展开详情与 Dashboard 调用详情抽屉必须共用同一套调用详情组件，并按“快速排障”组织信息：请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示。
 - 新 HTTP proxy invocation 的 `invokeId` 必须使用 10 位 NanoID 风格短格式，去掉历史 `proxy-...` 前缀、内部 counter 与时间戳尾巴；历史 `proxy-...` 记录继续兼容查询和展示。
+- 账号详情调用记录必须显示可选择的 `invokeId`；健康与事件中的调用 ID 必须能通过后端锚点定位窗口跳转到对应调用记录，不允许前端逐页扫描历史记录。
+- 账号详情调用记录中的 `invokeId` 必须使用等宽字体单行完整展示，不得换行或截断；该表面可使用专用列宽回收用时、输入与输出列空间，但不得改变其他共享调用列表的默认布局。
 - 号池调用处于 `running` / `pending` 且已携带 `upstreamAccountName` 或 `upstreamAccountId` 时，所有共享 invocation 展示面必须用当前上游账号替代“号池路由中”fallback，并以蓝色呼吸文本表达正在路由中。
 
 ### Non-goals
@@ -83,6 +85,8 @@
 - 运行态号池账号提示只在 `routeMode=pool`、状态为 `running` / `pending`、且存在非空账号名或有限数值账号 ID 时成立；显示值只允许为账号名或 `账号 #<id>`，不得添加“路由中”前缀。
 - 运行态号池账号提示必须复用现有账号点击路径；存在账号 ID 时，Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉中的账号文本仍可打开上游账号详情。
 - 运行态号池账号提示必须是 text-only 蓝色语义状态，动画周期在 1500-2200ms 内；`prefers-reduced-motion: reduce` 下关闭呼吸动画但保留蓝色文本。
+- `GET /api/invocations/locate` 必须按 `upstreamAccountId + requestId` 在 retained live records 与当前 runtime overlay 中精确定位，固定采用 `occurredAt DESC, id DESC`，返回目标所在的单个分页窗口、稳定 `snapshotId`、短生命周期 `anchorId`、`targetIndex` 与 `targetAbsoluteIndex`。
+- 锚点定位未命中时必须返回结构化 `404`；不得为了定位查询 archive，也不得返回或预加载目标页之外的调用记录。
 
 ### SHOULD
 
@@ -152,6 +156,12 @@
 
 - `tReqReadMs?`、`tReqParseMs?`、`tUpstreamConnectMs?`、`tUpstreamTtfbMs?`、`tUpstreamStreamMs?`、`tRespParseMs?`、`tPersistMs?`、`tTotalMs?`
 
+### `GET /api/invocations/locate` 锚点分页
+
+- Query: `requestId: string`、`upstreamAccountId: number`、`pageSize?: number`（默认 `50`）。
+- Response: 沿用 `snapshotId`、`total`、`page`、`pageSize`、`records`，并增加 `anchorId: string`、`targetIndex: number` 与 `targetAbsoluteIndex: number`。
+- 后续双向分页继续调用 `GET /api/invocations`，携带定位响应的 `snapshotId`、`anchorId`、相邻 `page`、相同 `pageSize` 与 `upstreamAccountId`；服务端用 `anchorId` 复现定位时冻结的 runtime overlay，令所有页边界一致。
+
 ## 验收标准（Acceptance Criteria）
 
 - Given 请求携带 `x-forwarded-for` 与 `metadata.prompt_cache_key`，When 请求完成并查询 `/api/invocations`，Then 返回 `requesterIp`、`promptCacheKey`、`cacheInputTokens` 与阶段耗时字段。
@@ -181,6 +191,9 @@
 - Given 调用详情包含长 `invokeId`、`promptCacheKey`、endpoint、IPv6 或错误消息，When 页面在桌面和窄屏渲染，Then 文本在容器内换行或截断，不造成横向滚动或相邻内容遮挡。
 - Given 新 HTTP proxy invocation 被创建，When 查询 `/api/invocations`、接收 SSE `records` 或打开 Live/Dashboard 详情，Then `invokeId` 为 10 位短 ID，且不含 `proxy`、连字符、时间戳或内部 counter。
 - Given 历史 `proxy-9061-1783013997090` 记录存在，When 用户过滤、查询、展示或打开详情，Then 仍按完整历史 `invokeId` 兼容处理，不迁移、不回填。
+- Given 健康与事件中的账号事件带有 `invokeId`，When 用户点击调用 ID，Then 账号详情立即进入调用记录 tab，后端只返回目标所在页，虚拟列表居中聚焦并短暂高亮目标行。
+- Given 账号详情展示调用记录，When 桌面表格或移动列表渲染完整 `invokeId` 并聚焦定位目标，Then ID 保持单行完整可见，页面无横向溢出，目标行只显示一层不改变布局的短暂高亮且不叠加浏览器默认 outline。
+- Given 目标调用已被 retention 清理或不属于当前账号，When 锚点定位返回 `404`，Then 调用记录 tab 保持打开并显示包含调用 ID 的可聚焦错误提示。
 - Given 号池调用仍处于 `running` 或 `pending` 且已有 `upstreamAccountName`，When Live、Records、Dashboard working conversations 或 Dashboard 调用详情抽屉渲染该 invocation，Then 账号位置显示该账号名并使用蓝色呼吸文本，不显示“号池路由中”。
 - Given 号池运行态调用没有 `upstreamAccountName` 或 `upstreamAccountId`，When owner-facing 调用界面渲染，Then 继续显示既有“号池路由中”fallback，且不伪造账号、不启用呼吸状态。
 - Given 号池调用已进入成功或失败等终态，When owner-facing 调用界面渲染其账号字段，Then 保持普通账号显示与点击行为，不启用运行态呼吸状态。
@@ -228,7 +241,6 @@
   state: endpoint badge matrix with remote compaction V2 semantics
   evidence_note: verifies `Compact` remains bound to `/v1/responses/compact`, while `/v1/responses` can surface `远程压缩V2` without overwriting the raw endpoint path.
   image:
-  PR: include
   ![Invocation endpoint badge states](./assets/invocation-endpoint-remote-v2-storybook.png)
 
 - source_type: storybook_canvas
@@ -236,7 +248,6 @@
   state: mixed endpoint + image badge matrix
   evidence_note: verifies `imageIntent=yes|direct_image` renders an independent `图片工具` badge that can coexist with `远程压缩V2`, while legacy rows without `imageIntent` stay badge-free.
   image:
-  PR: include
   ![Invocation image tool badge states](./assets/invocation-endpoint-image-signals-storybook.png)
 
 - source_type: storybook_canvas
@@ -244,7 +255,6 @@
   state: dashboard image badge preview
   evidence_note: verifies Dashboard current/previous invocation slots mirror Records image-badge semantics and keep endpoint/path semantics unchanged.
   image:
-  PR: include
   ![Dashboard image tool badge preview](./assets/dashboard-image-signals-storybook.png)
 
 - source_type: storybook_canvas
@@ -252,7 +262,6 @@
   state: request/response model mismatch
   evidence_note: verifies the primary model badge follows the response model and adds the routed-model indicator only when normalized request/response models differ.
   image:
-  PR: include
   ![Invocation routed model mismatch](./assets/invocation-model-routing-mismatch.png)
 
 - source_type: storybook_canvas
@@ -260,7 +269,6 @@
   state: expanded invocation detail with routed model summary
   evidence_note: verifies the expanded Records detail presents quick-triage cards, shows routed models as a visual chain, keeps endpoint information in the routing/model detail section, and preserves timing and pool-attempt boundaries.
   image:
-  PR: include
   ![Invocation expanded detail routing evidence](./assets/invocation-detail-expanded-routing-pr.png)
 
 - source_type: storybook_canvas
@@ -268,7 +276,6 @@
   state: legacy response-model fallback
   evidence_note: verifies legacy records without `requestModel`/`responseModel` still render the historical `model` value as the response-model display while request model degrades to `—`.
   image:
-  PR: include
   ![Legacy response model fallback](./assets/invocation-model-routing-legacy.png)
 
 - source_type: storybook_canvas
@@ -276,7 +283,6 @@
   state: dashboard running pool account routing states
   evidence_note: verifies Dashboard working conversation slots show the concrete upstream account as breathing primary text while the request is running, keep the no-account fallback as `号池路由中`, and leave terminal account text static.
   image:
-  PR: include
   ![Dashboard pool routing account states](./assets/pool-routing-account-dashboard-storybook.png)
 
 - source_type: storybook_canvas
@@ -284,7 +290,6 @@
   state: invocation table running pool account routing states
   evidence_note: verifies the live invocation table renders the running concrete upstream account as blue text, preserves the no-account pool-routing fallback, and keeps terminal accounts as ordinary clickable account labels without changing row layout.
   image:
-  PR: include
   ![Invocation table pool routing account states](./assets/pool-routing-account-table-storybook.png)
 
 - source_type: storybook_canvas
@@ -292,7 +297,6 @@
   state: expanded records detail running pool account routing
   evidence_note: verifies the shared expanded invocation detail also consumes the running-account routing state, including account identity cards and request detail fields, without overlapping timing, model, or pool-attempt diagnostics.
   image:
-  PR: include
   ![Invocation detail pool routing account states](./assets/pool-routing-account-detail-storybook.png)
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
