@@ -22,4 +22,4 @@ Proxy usage responses expose cache-read Token counts but not a separate cache-wr
 
 - Invocation surfaces use `CW` for cache-write billing Tokens and `C` for cache-read Tokens, with accessible full labels.
 - Dashboard and upstream-account metric labels open the same detail through hover, keyboard focus, and click.
-- Narrow layouts constrain the popover width and keep the detail body scrollable instead of truncating values.
+- Breakdown panels use one semantic horizontal table with totals first and one model per row; responsive widths keep the table readable without an internal scrollbar.

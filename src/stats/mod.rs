@@ -1417,11 +1417,17 @@ pub(crate) async fn query_upstream_account_invocation_preview_rows_from_executor
     executor: E,
     range: ExactUtcRange,
     source_scope: InvocationSourceScope,
+    has_cost_breakdown_columns: bool,
 ) -> Result<Vec<crate::api::UpstreamAccountInvocationPreviewRow>>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, occurred_at, ");
+    let cost_breakdown_columns = if has_cost_breakdown_columns {
+        "cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning"
+    } else {
+        "NULL AS cost_input, NULL AS cost_cache_write, NULL AS cost_cache_read, NULL AS cost_output, NULL AS cost_reasoning"
+    };
     query
         .push(crate::api::invocation_display_status_sql())
         .push(" AS status, ")
@@ -1433,7 +1439,9 @@ where
         .push(crate::api::INVOCATION_REQUEST_MODEL_SQL)
         .push(" AS request_model, ")
         .push(crate::api::INVOCATION_RESPONSE_MODEL_SQL)
-        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, NULL AS cost_input, NULL AS cost_cache_write, NULL AS cost_cache_read, NULL AS cost_output, NULL AS cost_reasoning, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
+        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, ")
+        .push(cost_breakdown_columns)
+        .push(", source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
         .push(crate::api::INVOCATION_REASONING_EFFORT_SQL)
         .push(" AS reasoning_effort, error_message, ")
         .push(crate::api::INVOCATION_FAILURE_KIND_SQL)
@@ -1515,10 +1523,13 @@ pub(crate) async fn query_completed_invocation_archive_preview_rows(
         else {
             continue;
         };
+        let has_cost_breakdown_columns =
+            sqlite_table_has_column(&archive_pool, "codex_invocations", "cost_input").await?;
         let rows = query_upstream_account_invocation_preview_rows_from_executor(
             &archive_pool,
             range,
             source_scope,
+            has_cost_breakdown_columns,
         )
         .await?
         .into_iter()

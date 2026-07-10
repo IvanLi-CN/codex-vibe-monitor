@@ -4308,6 +4308,16 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         start: range_window.start,
         end: range_window.end,
     };
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    if !include_accounts && range.start < retention_cutoff {
+        return load_dashboard_activity_summary_only_snapshot(
+            state,
+            range_name,
+            source_scope,
+            range,
+        )
+        .await;
+    }
     let mut live_rows =
         query_live_upstream_account_activity_preview_rows(&state.pool, source_scope, range).await?;
     overlay_runtime_upstream_account_activity_preview_rows(
@@ -4317,7 +4327,6 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         range,
     );
     let live_ids = live_rows.iter().map(|row| row.id).collect::<HashSet<_>>();
-    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut combined_rows = live_rows;
     if range.start < retention_cutoff {
         combined_rows.extend(
