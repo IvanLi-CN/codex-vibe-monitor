@@ -130,7 +130,7 @@
 
 ## Related PRs
 
-- None
+- [#582 feat(web): add mock-only product demo](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/582)
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
