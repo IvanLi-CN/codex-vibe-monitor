@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react'
 import type { UsageBreakdown } from '../../lib/api'
 
 export type UsageBreakdownKind = 'cost' | 'tokens'
@@ -11,6 +10,7 @@ export interface UsageBreakdownTooltipProps {
   formatCurrency: (value: number) => string
   labels: {
     total: string
+    model: string
     cacheWrite: string
     cacheRead: string
     output: string
@@ -21,66 +21,151 @@ export interface UsageBreakdownTooltipProps {
   }
 }
 
-function hasCostValue(value: number | undefined) {
-  return value != null && Number.isFinite(value) && value !== 0
+interface BreakdownTableRow {
+  label: string
+  values?: string[]
+  unavailable?: string
+}
+
+interface BreakdownTableColumn {
+  label: string
 }
 
 function modelLabel(model: string, unknownModel: string) {
   return model === 'unknown' ? unknownModel : model
 }
 
-function CostRows({
-  costs,
-  formatCurrency,
-  labels,
-}: Pick<UsageBreakdownTooltipProps, 'formatCurrency' | 'labels'> & {
-  costs: UsageBreakdown['costs']
+function BreakdownTable({
+  title,
+  columns,
+  rows,
+  modelLabel: modelColumnLabel,
+  modelWidth,
+}: {
+  title: string
+  columns: readonly BreakdownTableColumn[]
+  rows: readonly BreakdownTableRow[]
+  modelLabel: string
+  modelWidth: string
 }) {
-  if (!costs) {
-    return <div className="text-[11px] leading-4 text-base-content/62">{labels.unavailable}</div>
-  }
-  const rows = [
-    [labels.input, costs.input] as [string, number],
-    [labels.cacheWrite, costs.cacheWrite] as [string, number],
-    [labels.cacheRead, costs.cacheRead] as [string, number],
-    [labels.output, costs.output] as [string, number],
-    [labels.reasoning, costs.reasoning] as [string, number],
-  ].filter(([, value]) => hasCostValue(value))
-  if (!rows.length) {
-    return <div className="text-[11px] leading-4 text-base-content/62">{formatCurrency(0)}</div>
-  }
   return (
-    <div className="space-y-1">
-      {rows.map(([label, value]) => (
-        <div key={String(label)} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 text-[11px] leading-4">
-          <span className="min-w-0 truncate text-base-content/68">{label}</span>
-          <span className="font-mono font-semibold text-base-content">{formatCurrency(value)}</span>
-        </div>
-      ))}
-    </div>
+    <table className="w-full table-fixed border-collapse text-[10px] leading-4 sm:text-[11px]">
+      <caption className="sr-only">{title}</caption>
+      <thead className="border-y border-base-300/50 bg-base-200/45 text-[9px] font-semibold text-base-content/58 sm:text-[10px]">
+        <tr>
+          <th scope="col" className="px-1.5 py-1.5 text-left font-semibold" style={{ width: modelWidth }}>
+            {modelColumnLabel}
+          </th>
+          {columns.map((column) => (
+            <th key={column.label} scope="col" className="px-1 py-1.5 text-right font-semibold break-words">
+              {column.label}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row, rowIndex) => (
+          <tr key={row.label} className={rowIndex === 0 ? 'border-b border-base-300/50 bg-base-100/45' : 'border-b border-base-300/30 last:border-b-0'}>
+            <th scope="row" className="px-1.5 py-1.5 text-left font-medium text-base-content/76 break-all">
+              {row.label}
+            </th>
+            {row.unavailable ? (
+              <td colSpan={columns.length} className="px-1.5 py-1.5 text-left text-base-content/62">
+                {row.unavailable}
+              </td>
+            ) : (
+              row.values?.map((value, columnIndex) => (
+                <td key={`${row.label}:${columnIndex}`} className="px-1 py-1.5 text-right font-mono font-semibold text-base-content tabular-nums whitespace-nowrap">
+                  {value}
+                </td>
+              ))
+            )}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   )
 }
 
-function TokenRows({
-  item,
+function CostBreakdownTable({
+  title,
+  breakdown,
+  models,
+  formatCurrency,
+  labels,
+}: Pick<UsageBreakdownTooltipProps, 'formatCurrency' | 'labels'> & {
+  title: string
+  breakdown?: UsageBreakdown | null
+  models: UsageBreakdown['models']
+}) {
+  const columns = [
+    { label: labels.input, key: 'input' },
+    { label: labels.cacheWrite, key: 'cacheWrite' },
+    { label: labels.cacheRead, key: 'cacheRead' },
+    { label: labels.output, key: 'output' },
+    { label: labels.reasoning, key: 'reasoning' },
+  ] as const
+  const rowFor = (label: string, costs: UsageBreakdown['costs']): BreakdownTableRow => {
+    if (!costs) return { label, unavailable: labels.unavailable }
+    return {
+      label,
+      values: columns.map(({ key }) => costs[key] === 0 ? '-' : formatCurrency(costs[key])),
+    }
+  }
+
+  return (
+    <BreakdownTable
+      title={title}
+      modelLabel={labels.model}
+      modelWidth="22%"
+      columns={columns}
+      rows={[
+        rowFor(labels.total, breakdown?.costs),
+        ...models.map((model) => rowFor(modelLabel(model.model, labels.unknownModel), model.costs)),
+      ]}
+    />
+  )
+}
+
+function TokenBreakdownTable({
+  title,
+  breakdown,
+  models,
   formatNumber,
   labels,
 }: Pick<UsageBreakdownTooltipProps, 'formatNumber' | 'labels'> & {
-  item: Pick<UsageBreakdown, 'cacheWriteTokens' | 'cacheReadTokens' | 'outputTokens'>
+  title: string
+  breakdown?: UsageBreakdown | null
+  models: UsageBreakdown['models']
 }) {
+  const columns = [
+    { label: labels.cacheWrite },
+    { label: labels.cacheRead },
+    { label: labels.output },
+  ]
+  const rowFor = (
+    label: string,
+    item: Pick<UsageBreakdown, 'cacheWriteTokens' | 'cacheReadTokens' | 'outputTokens'>,
+  ): BreakdownTableRow => ({
+    label,
+    values: [
+      formatNumber(item.cacheWriteTokens),
+      formatNumber(item.cacheReadTokens),
+      formatNumber(item.outputTokens),
+    ],
+  })
+
   return (
-    <div className="space-y-1">
-      {[
-        [labels.cacheWrite, item.cacheWriteTokens],
-        [labels.cacheRead, item.cacheReadTokens],
-        [labels.output, item.outputTokens],
-      ].map(([label, value]) => (
-        <div key={String(label)} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 text-[11px] leading-4">
-          <span className="min-w-0 truncate text-base-content/68">{label}</span>
-          <span className="font-mono font-semibold text-base-content">{formatNumber(Number(value))}</span>
-        </div>
-      ))}
-    </div>
+    <BreakdownTable
+      title={title}
+      modelLabel={labels.model}
+      modelWidth="32%"
+      columns={columns}
+      rows={[
+        rowFor(labels.total, breakdown ?? { cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 }),
+        ...models.map((model) => rowFor(modelLabel(model.model, labels.unknownModel), model)),
+      ]}
+    />
   )
 }
 
@@ -109,33 +194,14 @@ export function UsageBreakdownTooltip({
       return rightValue - leftValue || left.model.localeCompare(right.model)
     })
 
-  const totalRows: ReactNode = kind === 'tokens'
-    ? <TokenRows item={breakdown ?? { cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 }} formatNumber={formatNumber} labels={labels} />
-    : <CostRows costs={breakdown?.costs} formatCurrency={formatCurrency} labels={labels} />
-
   return (
-    <div data-testid={`usage-breakdown-tooltip-${kind}`} className="max-h-[min(24rem,calc(100vh-4rem))] space-y-3 overflow-y-auto">
-      <div className="border-b border-base-300/45 pb-2">
-        <div className="text-[11px] font-semibold leading-4 text-base-content/72">{title}</div>
-        <div className="mt-1 text-[10px] font-semibold leading-4 text-base-content/52">{labels.total}</div>
-        <div className="mt-1.5">{totalRows}</div>
-      </div>
-      {models.length ? (
-        <div className="space-y-3">
-          {models.map((model) => (
-            <div key={model.model} className="space-y-1.5">
-              <div className="truncate font-mono text-[10px] font-semibold leading-4 text-base-content/62" title={modelLabel(model.model, labels.unknownModel)}>
-                {modelLabel(model.model, labels.unknownModel)}
-              </div>
-              {kind === 'tokens' ? (
-                <TokenRows item={model} formatNumber={formatNumber} labels={labels} />
-              ) : (
-                <CostRows costs={model.costs} formatCurrency={formatCurrency} labels={labels} />
-              )}
-            </div>
-          ))}
-        </div>
-      ) : null}
+    <div data-testid={`usage-breakdown-tooltip-${kind}`} className="space-y-1.5">
+      <div className="px-0.5 text-[11px] font-semibold leading-4 text-base-content/72">{title}</div>
+      {kind === 'tokens' ? (
+        <TokenBreakdownTable title={title} breakdown={breakdown} models={models} formatNumber={formatNumber} labels={labels} />
+      ) : (
+        <CostBreakdownTable title={title} breakdown={breakdown} models={models} formatCurrency={formatCurrency} labels={labels} />
+      )}
     </div>
   )
 }

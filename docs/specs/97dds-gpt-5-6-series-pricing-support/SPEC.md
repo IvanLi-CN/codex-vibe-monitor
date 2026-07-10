@@ -96,10 +96,36 @@ PR: include
 - requested_viewport: desktop1660
 - viewport_strategy: storybook-viewport
 - sensitive_exclusion: N/A
-- submission_gate: pending-owner-approval
+- submission_gate: approved
 - story_id_or_title: Settings/SettingsPage Default
 - state: default pricing contract editor
 - evidence_note: Verifies the Settings pricing table exposes separate cache read and cache write columns, includes the GPT-5.6 trio, and labels the table as estimation contract metadata rather than runtime token truth.
+
+![Upstream account cost breakdown table](./assets/account-cost-breakdown-desktop.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: story canvas
+- requested_viewport: desktop default
+- viewport_strategy: storybook-viewport
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: Dashboard/WorkingConversationsSection Upstream Account Metric Tooltips
+- state: cost detail open
+- evidence_note: Verifies the cost detail uses one horizontal table with a total row followed by model rows, exposes all five billing buckets, and has no internal scrollbar.
+
+![Dashboard Token breakdown table on mobile](./assets/dashboard-token-breakdown-mobile.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: full story canvas
+- requested_viewport: 390x844
+- viewport_strategy: browser-resize-fallback because the direct Storybook iframe does not apply manager viewport parameters
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: Dashboard/TodayStatsOverview Usage Breakdown Details
+- state: Token detail open
+- evidence_note: Verifies the Token detail remains a single readable four-column table on a narrow viewport, with total and model rows visible without an internal scrollbar.
 
 ## References
 

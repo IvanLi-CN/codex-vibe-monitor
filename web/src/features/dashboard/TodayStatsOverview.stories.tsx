@@ -279,12 +279,18 @@ export const UsageBreakdownDetails: Story = {
       const tooltip = within(document.body).getByRole('tooltip')
       expect(tooltip).toHaveTextContent(/Cache write|缓存写入/)
       expect(tooltip).toHaveTextContent('gpt-5.6')
+      const panel = within(tooltip).getByTestId('usage-breakdown-tooltip-cost')
+      expect(within(panel).getAllByRole('table')).toHaveLength(1)
+      expect(panel).not.toHaveClass('overflow-y-auto')
     })
     await userEvent.click(canvas.getByTestId('today-stats-label-total-tokens'))
     await waitFor(() => {
       const tooltip = within(document.body).getByRole('tooltip')
       expect(tooltip).toHaveTextContent(/Cache read|缓存读取/)
       expect(tooltip).toHaveTextContent(/Output|输出/)
+      const panel = within(tooltip).getByTestId('usage-breakdown-tooltip-tokens')
+      expect(within(panel).getAllByRole('table')).toHaveLength(1)
+      expect(panel).not.toHaveClass('overflow-y-auto')
     })
   },
 }

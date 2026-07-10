@@ -224,7 +224,9 @@ function MetricTile({
         <Tooltip
           className="min-w-0 flex-1"
           content={metricTooltipContent ?? description}
-          contentClassName={metricTooltipContent ? 'w-[min(22rem,calc(100vw-1rem))] px-3.5 py-3' : undefined}
+          contentClassName={metricTooltipContent
+            ? 'max-w-[min(42rem,calc(100vw-1rem))] w-[min(42rem,calc(100vw-1rem))] px-3.5 py-3'
+            : undefined}
           clickToOpen
           side="bottom"
           sideOffset={8}
@@ -610,11 +612,11 @@ export function TodayStatsOverview({
   const usageBreakdownLabels = locale === 'zh'
     ? {
         total: '总计', cacheWrite: '缓存写入', cacheRead: '缓存读取', output: '输出',
-        input: '输入', reasoning: '推理', unavailable: '历史成本分项未提供', unknownModel: '未标识模型',
+        model: '模型', input: '输入', reasoning: '推理', unavailable: '历史成本分项未提供', unknownModel: '未标识模型',
       }
     : {
         total: 'Total', cacheWrite: 'Cache write', cacheRead: 'Cache read', output: 'Output',
-        input: 'Input', reasoning: 'Reasoning', unavailable: 'Historical cost breakdown unavailable', unknownModel: 'Unidentified model',
+        model: 'Model', input: 'Input', reasoning: 'Reasoning', unavailable: 'Historical cost breakdown unavailable', unknownModel: 'Unidentified model',
       }
   const formatBreakdownNumber = (value: number) => new Intl.NumberFormat(localeTag).format(value)
   const formatBreakdownCurrency = (value: number) => new Intl.NumberFormat(localeTag, {
