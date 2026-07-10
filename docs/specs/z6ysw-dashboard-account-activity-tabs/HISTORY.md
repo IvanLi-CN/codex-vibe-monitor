@@ -35,6 +35,7 @@
 - 2026-07-08：Dashboard 上游账号卡标题区移除本地 `#<upstreamAccountId>` 编号，只保留齿轮作为账号路由入口；账号名和异常/策略/实时指标已经足够承载当前扫描任务，内部主键不再作为常驻视觉元素。
 - 2026-07-08：Dashboard 上游账号优先级快捷入口收敛为纯 `priorityTier` 四态轮换；`禁新` 直接写 `priorityTier=no_new`，不再写独立新对话允许/禁止字段。
 - 2026-07-08：Dashboard 工作区对话卡片与上游账号 recent 行的长错误摘要统一冻结为“单行省略 + 共享 tooltip 完整披露”；错误文案不得再撑宽卡片或 row，且交互不再依赖浏览器原生 `title`。
+- 2026-07-10：生产诊断确认活动总览“进行中调用”虚高来自已终结但未清理的 `pool-via-*` synthetic runtime snapshot；修复锁定在既有 cleanup guard 的生命周期终态收口，不增加查询端年龄过滤，以免掩盖生命周期泄漏或误排除真实长时请求。
 
 ## Key Reasons / Replacements
 

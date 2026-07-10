@@ -1082,6 +1082,7 @@ pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE: &str =
     "streaming_response";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED: &str = "completed";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED: &str = "failed";
+pub(crate) const POOL_VIA_INVOKE_ID_PREFIX: &str = "pool-via-";
 pub(crate) const POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE: Duration = Duration::from_secs(30);
 pub(crate) const POOL_ATTEMPT_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
 pub(crate) const PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
@@ -1092,6 +1093,34 @@ pub(crate) struct PoolEarlyPhaseOrphanCleanupGuard {
     pub(crate) first_byte_observed: bool,
     pub(crate) terminal_outcome_observed: bool,
     pub(crate) armed: bool,
+}
+
+pub(crate) struct PoolViaRuntimeSnapshotCleanupGuard {
+    state: Arc<AppState>,
+    invoke_id: String,
+}
+
+impl PoolViaRuntimeSnapshotCleanupGuard {
+    pub(crate) fn new(state: Arc<AppState>, proxy_request_id: u64) -> Self {
+        Self {
+            state,
+            invoke_id: format!("{POOL_VIA_INVOKE_ID_PREFIX}{proxy_request_id}"),
+        }
+    }
+}
+
+impl Drop for PoolViaRuntimeSnapshotCleanupGuard {
+    fn drop(&mut self) {
+        let removed_count = self
+            .state
+            .proxy_runtime_invocations
+            .remove_non_terminal_by_invoke_id(&self.invoke_id);
+        debug!(
+            invoke_id = %self.invoke_id,
+            removed_count,
+            "request-scoped via-pool runtime snapshots cleaned up"
+        );
+    }
 }
 
 impl std::fmt::Debug for PoolEarlyPhaseOrphanCleanupGuard {

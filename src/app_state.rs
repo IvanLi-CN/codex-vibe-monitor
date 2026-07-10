@@ -226,6 +226,28 @@ impl ProxyRuntimeInvocationStore {
         removed
     }
 
+    pub(crate) fn remove_non_terminal_by_invoke_id(&self, invoke_id: &str) -> usize {
+        let Ok(mut guard) = self.inner.lock() else {
+            return 0;
+        };
+        let keys = guard
+            .records
+            .iter()
+            .filter(|(key, entry)| {
+                key.invoke_id == invoke_id && !runtime_store_record_is_terminal(&entry.record)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let removed_count = keys
+            .into_iter()
+            .filter(|key| guard.records.remove(key).is_some())
+            .count();
+        if removed_count > 0 {
+            let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
+        }
+        removed_count
+    }
+
     pub(crate) fn remove_persisted_terminal_overlay(
         &self,
         invoke_id: &str,

@@ -306,7 +306,7 @@ pub(crate) fn build_via_pool_attempt_trace_context(
     sticky_key: Option<String>,
 ) -> PoolUpstreamAttemptTraceContext {
     PoolUpstreamAttemptTraceContext {
-        invoke_id: format!("pool-via-{proxy_request_id}"),
+        invoke_id: format!("{POOL_VIA_INVOKE_ID_PREFIX}{proxy_request_id}"),
         occurred_at: shanghai_now_string(),
         endpoint: endpoint.to_string(),
         sticky_key,
@@ -1977,6 +1977,10 @@ pub(crate) async fn proxy_openai_v1_via_pool(
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
 ) -> Result<Response, (StatusCode, String)> {
     let request_started_at = Instant::now();
+    let mut runtime_snapshot_cleanup_guard = Some(PoolViaRuntimeSnapshotCleanupGuard::new(
+        state.clone(),
+        proxy_request_id,
+    ));
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let capture_target = capture_target_for_request(original_uri.path(), &method);
@@ -3154,7 +3158,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             let upstream_content_encoding_for_task =
                                 upstream_content_encoding.clone();
                             let proxy_request_permit_for_task = proxy_request_permit;
+                            let runtime_snapshot_cleanup_guard_for_task =
+                                runtime_snapshot_cleanup_guard.take();
                             tokio::spawn(async move {
+                                let _runtime_snapshot_cleanup_guard_for_task =
+                                    runtime_snapshot_cleanup_guard_for_task;
                                 let mut deferred_pool_early_phase_cleanup_guard_for_task =
                                     deferred_pool_early_phase_cleanup_guard;
                                 let _live_pool_attempt_activity_lease_for_task =
@@ -3770,7 +3778,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
     let request_contains_encrypted_content_for_task = request_contains_encrypted_content;
     let upstream_content_encoding_for_task = upstream_content_encoding.clone();
     let proxy_request_permit_for_task = proxy_request_permit;
+    let runtime_snapshot_cleanup_guard_for_task = runtime_snapshot_cleanup_guard.take();
     tokio::spawn(async move {
+        let _runtime_snapshot_cleanup_guard_for_task = runtime_snapshot_cleanup_guard_for_task;
         let mut deferred_pool_early_phase_cleanup_guard_for_task =
             deferred_pool_early_phase_cleanup_guard;
         let _live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease;
