@@ -199,31 +199,22 @@ export function AppLayout() {
   return (
     <div className="app-shell min-h-screen flex flex-col text-base-content">
       <header className="sticky top-0 z-50 border-b border-base-300/75 bg-base-100/80 backdrop-blur-md">
-        <div className="app-shell-boundary flex items-center gap-2 px-4 py-2" data-testid="app-header-inner">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
+        <div
+          className="app-shell-boundary flex flex-wrap items-center gap-2 px-3 py-2 sm:flex-nowrap sm:px-4"
+          data-testid="app-header-inner"
+        >
+          <div className="order-1 flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
             <HeaderBrandMark
               alt={t('app.logoAlt')}
               state={headerBrandMarkState}
               data-testid="app-header-logo-mark"
             />
-            <span className="truncate text-lg font-semibold tracking-tight sm:text-xl">{t('app.brand')}</span>
+            <span className="hidden truncate text-lg font-semibold tracking-tight sm:inline sm:text-xl">
+              {t('app.brand')}
+            </span>
           </div>
 
-          <nav className="flex shrink-0 items-center gap-2 sm:gap-3">
-            <div className="max-w-[40vw] overflow-x-auto no-scrollbar sm:max-w-none">
-              <SegmentedControl size="nav" className="min-w-max" aria-label={t('app.brand')}>
-                {navItems.map((item) => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    className={({ isActive }) => segmentedControlItemVariants({ size: 'nav', active: isActive })}
-                  >
-                    {t(item.labelKey)}
-                  </NavLink>
-                ))}
-              </SegmentedControl>
-            </div>
-
+          <div className="order-2 flex shrink-0 items-center gap-2 sm:order-3 sm:gap-3">
             <button
               type="button"
               className="control-pill"
@@ -245,7 +236,7 @@ export function AppLayout() {
             >
               <button
                 type="button"
-                className="control-pill min-w-[6.75rem] justify-between"
+                className="control-pill min-w-0 justify-between sm:min-w-[6.75rem]"
                 aria-haspopup="listbox"
                 aria-expanded={languageMenuOpen}
                 aria-label={t('app.language.switcherAria')}
@@ -283,6 +274,24 @@ export function AppLayout() {
                 ))}
               </ul>
             </div>
+          </div>
+
+          <nav
+            className="order-3 w-full overflow-x-auto no-scrollbar sm:order-2 sm:w-auto sm:max-w-[40vw]"
+            aria-label={t('app.brand')}
+            data-testid="app-header-navigation"
+          >
+            <SegmentedControl size="compact" className="min-w-max" aria-label={t('app.brand')}>
+              {navItems.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={({ isActive }) => segmentedControlItemVariants({ size: 'compact', active: isActive })}
+                >
+                  {t(item.labelKey)}
+                </NavLink>
+              ))}
+            </SegmentedControl>
           </nav>
         </div>
       </header>
