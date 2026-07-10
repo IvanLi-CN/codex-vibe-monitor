@@ -16,7 +16,7 @@
 - `AppLayout` 补充移动端的紧凑导航布局与 Storybook mobile state，确保 demo 的 390px 页面证据保持可导航。
 - Pages assembly 把 `web/demo-dist/` 放入 `/demo/`，并用 `VITE_DEPLOY_BASE` 生成 repo-subpath assets 和 worker URL。
 - `Records Overlay E2E` 在保留原 live Vite regression 的同时运行 demo route matrix、Inspector sharing/SSE 与 simulated external-key write。
-- `SPEC.md` 的 `## Visual Evidence` 保存 Dashboard operational、账号池 attention 与 Records network-failure 的桌面和移动 mock-only 证据，绑定 `7785fe936739699c60da601a2690b148ecc40b17`。
+- `SPEC.md` 的 `## Visual Evidence` 保存 Dashboard operational、账号池 attention 与 Records network-failure 的桌面和移动 mock-only 证据，绑定 `e21edfc51bdb78fd7940574237883da02bfdd3a3`。
 
 ## Remaining Gaps
 
