@@ -4,9 +4,9 @@
 
 ## Current Status
 
-- Implementation: 运行时预算收口中（测试树、profile-aware runner 与三路 required checks 已随 PR #576 发布为 `v2.21.1`；Stateful SQLite job 仍需压回预算）
+- Implementation: 已完成（测试树、profile-aware runner、三路 required checks 与 Stateful SQLite runtime budget 已完成服务端验证）
 - Lifecycle: active
-- Catalog note: 双 PR 主体已完成；预算偏差由独立的 runner-only follow-up 收口
+- Catalog note: 双 PR 主体与 runner-only runtime follow-up 均已完成
 
 ## Coverage / rollout summary
 
@@ -31,6 +31,11 @@
   - `stateful_sqlite`: `6m45s`
   - `archive_file_io`: `4m27s`
 - Stateful SQLite 的 `6m45s` 比 `6m30s` 目标高 `15s`。完整本地 profile 在 4、6、8 nextest threads 下都通过；热执行时间分别为 `155.979s`、`102.461s`、`89.940s`。follow-up 固定为 6 threads，避免使用 8 threads 的更高资源放大。
+- PR #579 已合并为 `main@8ceeb9bb097ea1f33e4ece9765d82a6b643d5652`。其 CI Main run `29074132864` 验证了 6-thread runner：
+  - `lightweight`: `3m10s`
+  - `stateful_sqlite`: `6m00s`
+  - `archive_file_io`: `4m50s`
+- 最慢的 Stateful SQLite job 为 `6m00s`，比 `6m30s` 预算低 `30s`，完成 runtime budget 收口。
 - 本地 profile wall time（2026-07-09，热缓存）：
   - `lightweight`: 281 tests, `real 3.83s`
   - `stateful_sqlite`: 1040 tests, `real 66.97s`
@@ -42,12 +47,12 @@
 
 ## Remaining Gaps
 
-- 待补充：6-thread stateful runner follow-up 的 PR/CI Main 证据，确认最慢 backend required job 回到 `<= 6m30s`。
+- 本轮范围内无剩余缺口；后续运行时优化应作为独立主题，以新的 CI Main 基线重新评估。
 
 ## Related Changes
 
 - PR #576: `refactor: modularize backend test trees by resource profile`
-- Follow-up branch: `th/ci-stateful-test-budget`
+- PR #579: `perf(ci): bound stateful test concurrency`
 
 ## References
 
