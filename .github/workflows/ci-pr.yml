@@ -244,13 +244,19 @@ jobs:
           cd docs-site
           DOCS_BASE="${DOCS_BASE}" bun run build
 
+      - name: Build Web Demo static site
+        working-directory: web
+        run: VITE_DEPLOY_BASE="${DOCS_BASE}demo/" bun run demo:build
+
       - name: Assemble public docs site smoke check
         shell: bash
         run: |
           set -euo pipefail
-          bash ./.github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-static .tmp/pages-site
+          bash ./.github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-static web/demo-dist .tmp/pages-site
           test -f .tmp/pages-site/index.html
           test -f .tmp/pages-site/storybook/index.html
+          test -f .tmp/pages-site/demo/index.html
+          test -f .tmp/pages-site/demo/mockServiceWorker.js
           test -f .tmp/pages-site/storybook.html
           grep -q "${DOCS_BASE}storybook.html" .tmp/pages-site/index.html
 
@@ -322,9 +328,29 @@ jobs:
           cat /tmp/codex-vibe-monitor-vite.log || true
           exit 1
 
-      - name: Run records overlay Playwright regression
+      - name: Start mock-only Web Demo server
         working-directory: web
-        run: bun run test:e2e -- records-filter-overlay.spec.ts
+        run: |
+          bun run demo:dev -- --host 127.0.0.1 --port 60083 > /tmp/codex-vibe-monitor-demo.log 2>&1 &
+          echo $! > /tmp/codex-vibe-monitor-demo.pid
+
+      - name: Wait for Web Demo readiness
+        run: |
+          for _ in {1..60}; do
+            if curl -fsS http://127.0.0.1:60083/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Web Demo server failed to start within 60 seconds."
+          cat /tmp/codex-vibe-monitor-demo.log || true
+          exit 1
+
+      - name: Run records overlay and Web Demo Playwright regression
+        working-directory: web
+        run: |
+          bun run test:e2e -- records-filter-overlay.spec.ts
+          E2E_BASE_URL=http://127.0.0.1:60083 bun run test:e2e -- demo-runtime.spec.ts
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -341,6 +367,9 @@ jobs:
         run: |
           if [ -f /tmp/codex-vibe-monitor-vite.pid ]; then
             kill "$(cat /tmp/codex-vibe-monitor-vite.pid)" || true
+          fi
+          if [ -f /tmp/codex-vibe-monitor-demo.pid ]; then
+            kill "$(cat /tmp/codex-vibe-monitor-demo.pid)" || true
           fi
 
   backend-tests-lightweight:

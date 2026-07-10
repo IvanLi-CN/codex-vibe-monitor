@@ -113,6 +113,7 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 
 - React + Vite 应用
 - Storybook 页面 / 组件证据
+- Web Demo：mock-only 全产品路由预览
 - public docs 站点 `docs-site/`
 - 内部 UI 规范 `docs/ui/`
 - Rust + Vitest + Storybook build 验证链路
@@ -177,6 +178,13 @@ cd web
 bun run storybook
 ```
 
+Web Demo：
+
+```bash
+cd web
+bun run demo:dev -- --host 127.0.0.1 --port <leased-port>
+```
+
 public docs：
 
 ```bash
@@ -191,6 +199,7 @@ bun run dev
 - App dev: `http://127.0.0.1:60080`
 - docs-site: `http://127.0.0.1:60081`
 - Storybook: `http://127.0.0.1:60082`
+- Web Demo: 使用当前 worktree 的租约端口
 
 ## Worktree bootstrap
 
@@ -310,6 +319,7 @@ bun install
 bun run lint
 bun run test
 bun run build
+bun run demo:build
 bun run storybook
 bun run storybook:build
 ```

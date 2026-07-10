@@ -95,9 +95,47 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  build-demo:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Compute DOCS_BASE
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY##*/}"
+          if [[ "${repo}" == "${owner}.github.io" ]]; then
+            echo "DOCS_BASE=/" >> "$GITHUB_ENV"
+          else
+            echo "DOCS_BASE=/${repo}/" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Web Demo dependencies
+        run: bun install --cwd web --frozen-lockfile
+
+      - name: Build Web Demo
+        working-directory: web
+        run: VITE_DEPLOY_BASE="${DOCS_BASE}demo/" bun run demo:build
+
+      - name: Upload Web Demo artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-demo-build
+          path: web/demo-dist
+          retention-days: 1
+          if-no-files-found: error
+
   assemble-pages:
     runs-on: ubuntu-24.04
-    needs: [build-docs, build-storybook]
+    needs: [build-docs, build-storybook, build-demo]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -114,11 +152,17 @@ jobs:
           name: storybook-static-build
           path: .tmp/storybook-static
 
+      - name: Download Web Demo artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: web-demo-build
+          path: .tmp/web-demo
+
       - name: Assemble Pages site
         shell: bash
         run: |
           set -euo pipefail
-          bash ./.github/scripts/assemble-pages-site.sh .tmp/docs-site .tmp/storybook-static .tmp/pages-site
+          bash ./.github/scripts/assemble-pages-site.sh .tmp/docs-site .tmp/storybook-static .tmp/web-demo .tmp/pages-site
 
       - name: Smoke check assembled site
         shell: bash
@@ -126,6 +170,8 @@ jobs:
           set -euo pipefail
           test -f .tmp/pages-site/index.html
           test -f .tmp/pages-site/storybook/index.html
+          test -f .tmp/pages-site/demo/index.html
+          test -f .tmp/pages-site/demo/mockServiceWorker.js
           test -f .tmp/pages-site/storybook.html
           grep -q '/storybook.html' .tmp/pages-site/index.html
           grep -q '正在跳转到 Storybook' .tmp/pages-site/storybook.html

@@ -33,6 +33,7 @@ export default defineConfig({
       { text: '快速开始', link: '/quick-start' },
       { text: '自部署', link: '/deployment' },
       { text: '开发', link: '/development' },
+      { text: 'Web Demo', link: '/demo/' },
       { text: 'Storybook', link: '/storybook.html' },
       { text: 'GitHub', link: 'https://github.com/IvanLi-CN/codex-vibe-monitor' },
     ],
@@ -54,6 +55,7 @@ export default defineConfig({
           text: '预览与源码',
           items: [
             { text: 'Storybook 入口', link: '/storybook.html' },
+            { text: 'Web Demo', link: '/demo/' },
             { text: 'GitHub 仓库', link: 'https://github.com/IvanLi-CN/codex-vibe-monitor' },
           ],
         },
