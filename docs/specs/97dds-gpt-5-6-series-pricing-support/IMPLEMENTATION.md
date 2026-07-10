@@ -14,16 +14,19 @@
 - [x] Add GPT-5.6 models to proxy presets, settings model lists, and `/v1/models` hijack payloads.
 - [x] Split the Settings pricing UI into cache read and cache write columns and keep legacy payload ingestion coverage.
 - [x] Generalize unsupported-model UI rendering away from the `gpt-5.5` special-case.
+- [x] Persist cost buckets, derive cache-write Token counts, and expose total/model usage breakdown APIs.
+- [x] Add accessible dashboard and upstream-account breakdown panels plus `CW` invocation labels.
+- [x] Retire CRS runtime configuration, polling, aggregation, retention, and API reads while keeping old SQLite tables untouched.
 - [x] Run Rust and web validation, capture visual evidence, and update this file with the final verification set.
 
 ## Verification
 
-- `cargo check --quiet`
-- `cargo test --quiet seed_default_pricing_catalog_`
-- `cargo test --quiet ensure_schema_allows_opting_out_of_new_proxy_models_after_migration`
-- `cargo test --quiet estimate_proxy_cost_`
-- `cargo test --quiet pricing_settings_api_`
-- `cargo test --quiet proxy_openai_v1_models_`
+- `cargo fmt --check`
+- `cargo check`
+- `cargo test` (1512 passed; two unrelated timeout-sensitive tests passed on exact rerun)
+- `cargo test estimate_proxy_cost_breakdown_uses_explicit_gpt_5_6_sol_cache_read_and_write_prices`
 - `cd web && bun run test`
 - `cd web && bun run test-storybook`
-- Storybook local evidence captured from `Settings/SettingsPage` default story and stored at `docs/specs/97dds-gpt-5-6-series-pricing-support/assets/settings-pricing-cache-read-write-storybook.png`
+- `cd web && bun run build`
+- `cd web && bun run lint`
+- Storybook evidence is stored under this spec's `assets/` directory for Settings pricing, desktop account cost detail, and mobile dashboard Token detail.

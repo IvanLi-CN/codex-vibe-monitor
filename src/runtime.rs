@@ -401,53 +401,6 @@ where
         .await;
     }
 
-    let scheduler_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
-        if state.config.crs_stats.is_some() {
-            Some(spawn_scheduler(state.clone(), cancel.clone()))
-        } else {
-            info!("crs stats relay is disabled; scheduler will not start");
-            None
-        }
-    })
-    .await;
-    let scheduler_shutdown_requested = match scheduler_stage {
-        StartupStageOutcome::SkippedByShutdown => {
-            return drain_runtime_after_pending_shutdown(
-                state,
-                shutdown_watcher,
-                server_handle,
-                poller_handle,
-                upstream_accounts_handle,
-                forward_proxy_handle,
-                pool_orphan_recovery_handle,
-                retention_handle,
-                startup_backfill_handle,
-            )
-            .await;
-        }
-        StartupStageOutcome::Completed {
-            result,
-            shutdown_requested,
-        } => {
-            poller_handle = result;
-            shutdown_requested
-        }
-    };
-    if scheduler_shutdown_requested {
-        return drain_runtime_after_pending_shutdown(
-            state,
-            shutdown_watcher,
-            server_handle,
-            poller_handle,
-            upstream_accounts_handle,
-            forward_proxy_handle,
-            pool_orphan_recovery_handle,
-            retention_handle,
-            startup_backfill_handle,
-        )
-        .await;
-    }
-
     let upstream_accounts_stage =
         run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
             Some(spawn_upstream_account_maintenance(
@@ -756,13 +709,6 @@ pub(crate) fn begin_runtime_shutdown(cancel: &CancellationToken) {
     }
 }
 
-pub(crate) async fn drain_scheduler_inflight(mut inflight: Vec<JoinHandle<()>>) {
-    inflight.retain(|handle| !handle.is_finished());
-    for handle in inflight {
-        let _ = handle.await;
-    }
-}
-
 pub(crate) async fn drain_runtime_after_shutdown(
     state: Arc<AppState>,
     server_handle: Option<JoinHandle<()>>,
@@ -874,53 +820,6 @@ pub(crate) fn log_startup_phase(phase: &'static str, started_at: Instant) {
         elapsed_ms = started_at.elapsed().as_millis() as u64,
         "startup phase finished"
     );
-}
-
-pub(crate) fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut inflight: Vec<JoinHandle<()>> = Vec::new();
-        if cancel.is_cancelled() {
-            info!("scheduler startup skipped because shutdown is already in progress");
-            return;
-        }
-        match schedule_poll(state.clone(), &cancel).await {
-            Ok(Some(handle)) => inflight.push(handle),
-            Ok(None) => {
-                info!("scheduler startup skipped because shutdown is already in progress");
-                return;
-            }
-            Err(err) => warn!(?err, "initial poll failed"),
-        }
-
-        let mut ticker = interval(state.config.poll_interval);
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    info!("scheduler received shutdown; waiting for in-flight polls");
-                    drain_scheduler_inflight(inflight).await;
-                    break;
-                }
-                _ = ticker.tick() => {
-                    match schedule_poll(state.clone(), &cancel).await {
-                        Ok(Some(handle)) => {
-                            inflight.push(handle);
-                            inflight.retain(|handle| !handle.is_finished());
-                        }
-                        Ok(None) => {
-                            info!("scheduler received shutdown while waiting to start a new poll; waiting for in-flight polls");
-                            drain_scheduler_inflight(inflight).await;
-                            break;
-                        }
-                        Err(err) => {
-                            warn!(?err, "scheduled poll failed");
-                        }
-                    }
-                }
-            }
-        }
-    })
 }
 
 pub(crate) fn spawn_forward_proxy_maintenance(

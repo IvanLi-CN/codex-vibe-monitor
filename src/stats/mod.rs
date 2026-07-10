@@ -1417,12 +1417,20 @@ pub(crate) async fn query_upstream_account_invocation_preview_rows_from_executor
     executor: E,
     range: ExactUtcRange,
     source_scope: InvocationSourceScope,
+    has_cost_breakdown_columns: bool,
 ) -> Result<Vec<crate::api::UpstreamAccountInvocationPreviewRow>>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, occurred_at, ");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
+    let cost_breakdown_columns = if has_cost_breakdown_columns {
+        "cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning"
+    } else {
+        "NULL AS cost_input, NULL AS cost_cache_write, NULL AS cost_cache_read, NULL AS cost_output, NULL AS cost_reasoning"
+    };
     query
+        .push(crate::api::INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" AS prompt_cache_key, occurred_at, ")
         .push(crate::api::invocation_display_status_sql())
         .push(" AS status, ")
         .push("NULL AS live_phase, ")
@@ -1433,7 +1441,9 @@ where
         .push(crate::api::INVOCATION_REQUEST_MODEL_SQL)
         .push(" AS request_model, ")
         .push(crate::api::INVOCATION_RESPONSE_MODEL_SQL)
-        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
+        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, ")
+        .push(cost_breakdown_columns)
+        .push(", source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
         .push(crate::api::INVOCATION_REASONING_EFFORT_SQL)
         .push(" AS reasoning_effort, error_message, ")
         .push(crate::api::INVOCATION_FAILURE_KIND_SQL)
@@ -1444,10 +1454,7 @@ where
         .push(" AS proxy_display_name, ")
         .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
         .push(" AS upstream_account_id, ")
-        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
-        .push(" AS upstream_account_name, ")
-        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL)
-        .push(" AS upstream_account_plan_type, ")
+        .push("NULL AS upstream_account_name, NULL AS upstream_account_plan_type, ")
         .push(crate::api::INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
         .push(" AS response_content_encoding, ")
         .push(crate::api::INVOCATION_TRANSPORT_SQL)
@@ -1515,10 +1522,13 @@ pub(crate) async fn query_completed_invocation_archive_preview_rows(
         else {
             continue;
         };
+        let has_cost_breakdown_columns =
+            sqlite_table_has_column(&archive_pool, "codex_invocations", "cost_input").await?;
         let rows = query_upstream_account_invocation_preview_rows_from_executor(
             &archive_pool,
             range,
             source_scope,
+            has_cost_breakdown_columns,
         )
         .await?
         .into_iter()
@@ -4404,157 +4414,18 @@ pub(crate) async fn query_proxy_perf_stage_hourly_rollup_range(
     .map_err(Into::into)
 }
 
-pub(crate) async fn query_crs_totals(
-    pool: &Pool<Sqlite>,
-    relay: Option<&CrsStatsConfig>,
-    filter: &StatsFilter,
-    source_scope: InvocationSourceScope,
-) -> Result<StatsTotals> {
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        return Ok(StatsTotals::default());
-    }
-    let relay = match relay {
-        Some(relay) => relay,
-        None => return Ok(StatsTotals::default()),
-    };
-    let mut query = String::from(
-        r#"
-        SELECT
-            COALESCE(SUM(total_count), 0) AS total_count,
-            COALESCE(SUM(success_count), 0) AS success_count,
-            COALESCE(SUM(failure_count), 0) AS failure_count,
-            COALESCE(SUM(total_cost), 0.0) AS total_cost,
-            COALESCE(SUM(total_tokens), 0) AS total_tokens,
-            0.0 AS non_success_cost
-        FROM stats_source_deltas
-        WHERE source = ?1 AND period = ?2
-        "#,
-    );
-
-    let mut binds: Vec<i64> = Vec::new();
-    match filter {
-        StatsFilter::Since(start) => {
-            query.push_str(" AND captured_at_epoch >= ?3");
-            binds.push(start.timestamp());
-        }
-        StatsFilter::Range(start, end) => {
-            query.push_str(" AND captured_at_epoch >= ?3 AND captured_at_epoch < ?4");
-            binds.push(start.timestamp());
-            binds.push(exclusive_epoch_upper_bound(*end));
-        }
-        StatsFilter::RecentLimit(_) => {
-            return Ok(StatsTotals::default());
-        }
-        StatsFilter::All => {}
-    }
-
-    let mut sql = sqlx::query_as::<_, StatsRow>(&query)
-        .bind(SOURCE_CRS)
-        .bind(&relay.period);
-
-    for epoch in binds {
-        sql = sql.bind(epoch);
-    }
-
-    let row = sql.fetch_one(pool).await?;
-    Ok(StatsTotals::from(row))
-}
-
 pub(crate) async fn query_combined_totals(
     pool: &Pool<Sqlite>,
-    relay: Option<&CrsStatsConfig>,
     filter: StatsFilter,
     source_scope: InvocationSourceScope,
 ) -> Result<StatsTotals> {
-    let base = query_invocation_totals(pool, filter.clone(), source_scope).await?;
-    let relay_totals = query_crs_totals(pool, relay, &filter, source_scope).await?;
-    Ok(base.add(relay_totals))
+    query_invocation_totals(pool, filter, source_scope).await
 }
 
 pub(crate) async fn resolve_default_source_scope(
     _pool: &Pool<Sqlite>,
 ) -> Result<InvocationSourceScope> {
     Ok(InvocationSourceScope::All)
-}
-
-pub(crate) async fn query_crs_deltas(
-    pool: &Pool<Sqlite>,
-    relay: &CrsStatsConfig,
-    start_epoch: i64,
-    end_epoch_exclusive: i64,
-) -> Result<Vec<StatsDeltaRecord>> {
-    sqlx::query_as::<_, StatsDeltaRecord>(
-        r#"
-        SELECT
-            captured_at_epoch,
-            total_count,
-            success_count,
-            failure_count,
-            total_tokens,
-            total_cost
-        FROM stats_source_deltas
-        WHERE source = ?1
-          AND period = ?2
-          AND captured_at_epoch >= ?3
-          AND captured_at_epoch < ?4
-        ORDER BY captured_at_epoch ASC
-        "#,
-    )
-    .bind(SOURCE_CRS)
-    .bind(&relay.period)
-    .bind(start_epoch)
-    .bind(end_epoch_exclusive)
-    .fetch_all(pool)
-    .await
-    .map_err(Into::into)
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CrsStatsResponse {
-    pub(crate) success: bool,
-    #[serde(default)]
-    pub(crate) data: Vec<CrsModelStats>,
-    #[serde(default)]
-    pub(crate) period: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CrsModelStats {
-    pub(crate) model: String,
-    pub(crate) requests: i64,
-    pub(crate) input_tokens: i64,
-    pub(crate) output_tokens: i64,
-    pub(crate) cache_create_tokens: i64,
-    pub(crate) cache_read_tokens: i64,
-    pub(crate) all_tokens: i64,
-    pub(crate) costs: CrsCosts,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CrsCosts {
-    pub(crate) input: f64,
-    pub(crate) output: f64,
-    pub(crate) cache_write: f64,
-    pub(crate) cache_read: f64,
-    pub(crate) total: f64,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct CrsTotals {
-    pub(crate) total_count: i64,
-    pub(crate) total_tokens: i64,
-    pub(crate) total_cost: f64,
-    pub(crate) input_tokens: i64,
-    pub(crate) output_tokens: i64,
-    pub(crate) cache_create_tokens: i64,
-    pub(crate) cache_read_tokens: i64,
-    pub(crate) cost_input: f64,
-    pub(crate) cost_output: f64,
-    pub(crate) cost_cache_write: f64,
-    pub(crate) cost_cache_read: f64,
 }
 
 #[derive(Debug)]

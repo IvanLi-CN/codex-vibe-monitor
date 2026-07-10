@@ -8425,14 +8425,9 @@ async fn all_time_summary_repair_does_not_advance_shared_live_cursor_without_hou
 
     run_background_invocation_summary_rollup_repair(&state.pool).await;
 
-    let totals = query_combined_totals(
-        &state.pool,
-        state.config.crs_stats.as_ref(),
-        StatsFilter::All,
-        InvocationSourceScope::All,
-    )
-    .await
-    .expect("query all-time totals through summary repair path");
+    let totals = query_combined_totals(&state.pool, StatsFilter::All, InvocationSourceScope::All)
+        .await
+        .expect("query all-time totals through summary repair path");
 
     assert_eq!(totals.total_count, 2);
     assert_eq!(totals.success_count, 2);
@@ -9364,222 +9359,6 @@ async fn timeseries_hourly_recent_non_hour_aligned_timezones_fall_back_to_raw_ro
 }
 
 #[tokio::test]
-async fn timeseries_hourly_backed_includes_crs_deltas() {
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.crs_stats = Some(CrsStatsConfig {
-        base_url: Url::parse("https://crs.example.com/").expect("valid crs base url"),
-        api_id: "test-api".to_string(),
-        period: "daily".to_string(),
-        poll_interval: Duration::from_secs(3600),
-    });
-    let state = test_state_from_config(config, true).await;
-    let captured_at = Utc::now() - ChronoDuration::minutes(30);
-    let stats_date = captured_at
-        .with_timezone(&Shanghai)
-        .date_naive()
-        .to_string();
-
-    sqlx::query(
-        r#"
-        INSERT INTO stats_source_deltas (
-            source,
-            period,
-            stats_date,
-            captured_at,
-            captured_at_epoch,
-            total_count,
-            success_count,
-            failure_count,
-            total_tokens,
-            total_cost
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-        "#,
-    )
-    .bind(SOURCE_CRS)
-    .bind("daily")
-    .bind(&stats_date)
-    .bind(format_utc_iso(captured_at))
-    .bind(captured_at.timestamp())
-    .bind(3_i64)
-    .bind(2_i64)
-    .bind(1_i64)
-    .bind(300_i64)
-    .bind(0.9_f64)
-    .execute(&state.pool)
-    .await
-    .expect("insert crs delta");
-
-    let Json(response) = fetch_timeseries(
-        State(state),
-        Query(TimeseriesQuery {
-            range: "1d".to_string(),
-            bucket: Some("1h".to_string()),
-            settlement_hour: None,
-            time_zone: Some("UTC".to_string()),
-            upstream_account_id: None,
-        }),
-    )
-    .await
-    .expect("fetch hourly-backed timeseries with crs deltas");
-
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.total_count)
-            .sum::<i64>(),
-        3
-    );
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.success_count)
-            .sum::<i64>(),
-        2
-    );
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.failure_count)
-            .sum::<i64>(),
-        1
-    );
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.total_tokens)
-            .sum::<i64>(),
-        300
-    );
-    assert_f64_close(
-        response
-            .points
-            .iter()
-            .map(|point| point.total_cost)
-            .sum::<f64>(),
-        0.9,
-    );
-    assert_f64_close(
-        response
-            .points
-            .iter()
-            .map(|point| point.non_success_cost)
-            .sum::<f64>(),
-        0.0,
-    );
-}
-
-#[tokio::test]
-async fn timeseries_minute_backed_keeps_crs_cost_out_of_non_success_cost() {
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.crs_stats = Some(CrsStatsConfig {
-        base_url: Url::parse("https://crs.example.com/").expect("valid crs base url"),
-        api_id: "test-api".to_string(),
-        period: "daily".to_string(),
-        poll_interval: Duration::from_secs(3600),
-    });
-    let state = test_state_from_config(config, true).await;
-    let captured_at = Utc::now() - ChronoDuration::minutes(30);
-    let stats_date = captured_at
-        .with_timezone(&Shanghai)
-        .date_naive()
-        .to_string();
-
-    sqlx::query(
-        r#"
-        INSERT INTO stats_source_deltas (
-            source,
-            period,
-            stats_date,
-            captured_at,
-            captured_at_epoch,
-            total_count,
-            success_count,
-            failure_count,
-            total_tokens,
-            total_cost
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-        "#,
-    )
-    .bind(SOURCE_CRS)
-    .bind("daily")
-    .bind(&stats_date)
-    .bind(format_utc_iso(captured_at))
-    .bind(captured_at.timestamp())
-    .bind(4_i64)
-    .bind(4_i64)
-    .bind(0_i64)
-    .bind(480_i64)
-    .bind(1.2_f64)
-    .execute(&state.pool)
-    .await
-    .expect("insert crs delta");
-
-    let Json(response) = fetch_timeseries(
-        State(state),
-        Query(TimeseriesQuery {
-            range: "1d".to_string(),
-            bucket: Some("1m".to_string()),
-            settlement_hour: None,
-            time_zone: Some("UTC".to_string()),
-            upstream_account_id: None,
-        }),
-    )
-    .await
-    .expect("fetch minute-backed timeseries with crs deltas");
-
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.total_count)
-            .sum::<i64>(),
-        4
-    );
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.success_count)
-            .sum::<i64>(),
-        4
-    );
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.failure_count)
-            .sum::<i64>(),
-        0
-    );
-    assert_f64_close(
-        response
-            .points
-            .iter()
-            .map(|point| point.total_cost)
-            .sum::<f64>(),
-        1.2,
-    );
-    assert_f64_close(
-        response
-            .points
-            .iter()
-            .map(|point| point.non_success_cost)
-            .sum::<f64>(),
-        0.0,
-    );
-}
-
-#[tokio::test]
 async fn timeseries_hourly_backed_ignores_missing_exact_archive_batch() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -10165,13 +9944,9 @@ async fn collect_summary_snapshots_uses_hourly_backed_duration_windows() {
     )
     .await;
 
-    let summaries = collect_summary_snapshots(
-        &state.pool,
-        state.config.crs_stats.as_ref(),
-        state.config.invocation_max_days,
-    )
-    .await
-    .expect("collect summary snapshots");
+    let summaries = collect_summary_snapshots(&state.pool, state.config.invocation_max_days)
+        .await
+        .expect("collect summary snapshots");
 
     let month = summaries
         .iter()
@@ -10430,227 +10205,6 @@ async fn hourly_backed_summary_replays_pre_cutoff_full_hour_live_rows_after_roll
     assert_eq!(totals.failure_count, 0);
     assert_eq!(totals.total_tokens, 12);
     assert_f64_close(totals.total_cost, 0.12);
-}
-
-#[tokio::test]
-async fn hourly_backed_summary_trims_crs_totals_to_effective_proxy_range() {
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.invocation_max_days = 0;
-    config.crs_stats = Some(CrsStatsConfig {
-        base_url: Url::parse("https://crs.example.com/").expect("valid crs base url"),
-        api_id: "test-api".to_string(),
-        period: "daily".to_string(),
-        poll_interval: Duration::from_secs(3600),
-    });
-    let state = test_state_from_config(config, true).await;
-
-    let pre_cutoff_local = start_of_local_day(Utc::now(), Shanghai)
-        .with_timezone(&Shanghai)
-        .naive_local()
-        - ChronoDuration::minutes(15);
-    let captured_at = local_naive_to_utc(pre_cutoff_local, Shanghai);
-    let stats_date = captured_at
-        .with_timezone(&Shanghai)
-        .date_naive()
-        .to_string();
-    sqlx::query(
-        r#"
-        INSERT INTO stats_source_deltas (
-            source,
-            period,
-            stats_date,
-            captured_at,
-            captured_at_epoch,
-            total_count,
-            success_count,
-            failure_count,
-            total_tokens,
-            total_cost
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-        "#,
-    )
-    .bind(SOURCE_CRS)
-    .bind("daily")
-    .bind(&stats_date)
-    .bind(format_utc_iso(captured_at))
-    .bind(captured_at.timestamp())
-    .bind(3_i64)
-    .bind(2_i64)
-    .bind(1_i64)
-    .bind(300_i64)
-    .bind(0.9_f64)
-    .execute(&state.pool)
-    .await
-    .expect("insert pre-cutoff crs delta");
-
-    let start = local_naive_to_utc(pre_cutoff_local - ChronoDuration::minutes(15), Shanghai);
-    let totals =
-        query_hourly_backed_summary_since(state.as_ref(), start, InvocationSourceScope::All)
-            .await
-            .expect("load summary totals across retention cutoff with crs");
-
-    assert_eq!(totals.total_count, 0);
-    assert_eq!(totals.success_count, 0);
-    assert_eq!(totals.failure_count, 0);
-    assert_eq!(totals.total_tokens, 0);
-    assert_f64_close(totals.total_cost, 0.0);
-}
-
-#[tokio::test]
-async fn hourly_timeseries_trims_crs_deltas_to_effective_proxy_range() {
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.invocation_max_days = 0;
-    config.crs_stats = Some(CrsStatsConfig {
-        base_url: Url::parse("https://crs.example.com/").expect("valid crs base url"),
-        api_id: "test-api".to_string(),
-        period: "daily".to_string(),
-        poll_interval: Duration::from_secs(3600),
-    });
-    let state = test_state_from_config(config, true).await;
-
-    let cutoff_local = start_of_local_day(Utc::now(), Shanghai)
-        .with_timezone(&Shanghai)
-        .naive_local();
-    let pre_cutoff_captured_at =
-        local_naive_to_utc(cutoff_local - ChronoDuration::minutes(15), Shanghai);
-    let post_cutoff_captured_at =
-        local_naive_to_utc(cutoff_local + ChronoDuration::minutes(5), Shanghai);
-    for (captured_at, total_count, success_count, failure_count, total_tokens, total_cost) in [
-        (
-            pre_cutoff_captured_at,
-            3_i64,
-            2_i64,
-            1_i64,
-            300_i64,
-            0.9_f64,
-        ),
-        (
-            post_cutoff_captured_at,
-            2_i64,
-            2_i64,
-            0_i64,
-            200_i64,
-            0.4_f64,
-        ),
-    ] {
-        let stats_date = captured_at
-            .with_timezone(&Shanghai)
-            .date_naive()
-            .to_string();
-        sqlx::query(
-            r#"
-            INSERT INTO stats_source_deltas (
-                source,
-                period,
-                stats_date,
-                captured_at,
-                captured_at_epoch,
-                total_count,
-                success_count,
-                failure_count,
-                total_tokens,
-                total_cost
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            "#,
-        )
-        .bind(SOURCE_CRS)
-        .bind("daily")
-        .bind(&stats_date)
-        .bind(format_utc_iso(captured_at))
-        .bind(captured_at.timestamp())
-        .bind(total_count)
-        .bind(success_count)
-        .bind(failure_count)
-        .bind(total_tokens)
-        .bind(total_cost)
-        .execute(&state.pool)
-        .await
-        .expect("insert crs delta around retention cutoff");
-    }
-
-    let start = local_naive_to_utc(cutoff_local - ChronoDuration::minutes(30), Shanghai);
-    let end = local_naive_to_utc(cutoff_local + ChronoDuration::minutes(10), Shanghai);
-    let Json(response) = fetch_timeseries_from_hourly_rollups(
-        state.clone(),
-        TimeseriesQuery {
-            range: "ignored".to_string(),
-            bucket: Some("1h".to_string()),
-            settlement_hour: None,
-            time_zone: Some("Asia/Shanghai".to_string()),
-            upstream_account_id: None,
-        },
-        Shanghai,
-        InvocationSourceScope::All,
-        RangeWindow {
-            start,
-            end,
-            display_end: end,
-            duration: end - start,
-        },
-        TimeseriesBucketSelection {
-            bucket_seconds: 3_600,
-            effective_bucket: "1h".to_string(),
-            available_buckets: vec!["1h".to_string()],
-            bucket_limited_to_daily: false,
-        },
-    )
-    .await
-    .expect("fetch hourly-backed timeseries with crs trim across retention cutoff");
-
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.total_count)
-            .sum::<i64>(),
-        2
-    );
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.success_count)
-            .sum::<i64>(),
-        2
-    );
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.failure_count)
-            .sum::<i64>(),
-        0
-    );
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.total_tokens)
-            .sum::<i64>(),
-        200
-    );
-    assert_f64_close(
-        response
-            .points
-            .iter()
-            .map(|point| point.total_cost)
-            .sum::<f64>(),
-        0.4,
-    );
-    assert_f64_close(
-        response
-            .points
-            .iter()
-            .map(|point| point.non_success_cost)
-            .sum::<f64>(),
-        0.0,
-    );
 }
 
 #[tokio::test]
@@ -11008,7 +10562,6 @@ async fn combined_totals_ignore_null_status_for_success_failure_counts() {
 
     let totals = query_combined_totals(
         &state.pool,
-        None,
         StatsFilter::All,
         InvocationSourceScope::ProxyOnly,
     )
@@ -11298,6 +10851,75 @@ async fn summary_reports_invocation_based_in_progress_counts() {
     assert_eq!(summary_phase_counts.queued, 2);
     assert_eq!(summary_phase_counts.requesting, 1);
     assert_eq!(summary_phase_counts.responding, 1);
+}
+
+#[tokio::test]
+async fn ranged_summary_exposes_model_usage_and_exact_cost_breakdown() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, model, status,
+            input_tokens, cache_input_tokens, output_tokens, reasoning_tokens, total_tokens,
+            cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+        "#,
+    )
+    .bind(449_i64)
+    .bind("summary-usage-breakdown")
+    .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("gpt-5.6")
+    .bind("success")
+    .bind(100_i64)
+    .bind(40_i64)
+    .bind(25_i64)
+    .bind(5_i64)
+    .bind(125_i64)
+    .bind(0.50_f64)
+    .bind(0.06_f64)
+    .bind(0.14_f64)
+    .bind(0.04_f64)
+    .bind(0.21_f64)
+    .bind(0.05_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert ranged summary usage row");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch today usage breakdown");
+
+    let breakdown = summary
+        .usage_breakdown
+        .expect("today summary should include usage breakdown");
+    assert_eq!(breakdown.cache_write_tokens, 60);
+    assert_eq!(breakdown.cache_read_tokens, 40);
+    assert_eq!(breakdown.output_tokens, 25);
+    let costs = breakdown.costs.expect("exact costs should be available");
+    assert_f64_close(costs.input, 0.06);
+    assert_f64_close(costs.cache_write, 0.14);
+    assert_f64_close(costs.cache_read, 0.04);
+    assert_f64_close(costs.output, 0.21);
+    assert_f64_close(costs.reasoning, 0.05);
+    assert_eq!(breakdown.models.len(), 1);
+    assert_eq!(breakdown.models[0].model, "gpt-5.6");
 }
 
 #[tokio::test]
@@ -12412,6 +12034,12 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         reasoning_effort: None,
         total_tokens: Some(9_999_i64),
         cost: Some(9.99_f64),
+        cost_input: None,
+        cost_cache_write: None,
+        cost_cache_read: None,
+        cost_output: None,
+        cost_reasoning: None,
+        cache_write_tokens: Some(10_i64),
         status: Some("running".to_string()),
         live_phase: None,
         error_message: None,
@@ -12806,6 +12434,12 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
             reasoning_effort: None,
             total_tokens: Some(0_i64),
             cost: Some(0.0_f64),
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            cache_write_tokens: Some(0_i64),
             status: Some("running".to_string()),
             live_phase: None,
             error_message: None,
@@ -13337,7 +12971,6 @@ async fn combined_totals_count_legacy_null_status_failures_when_error_metadata_e
 
     let totals = query_combined_totals(
         &state.pool,
-        None,
         StatsFilter::All,
         InvocationSourceScope::ProxyOnly,
     )
@@ -13395,7 +13028,6 @@ async fn combined_totals_count_legacy_null_status_failures_when_only_downstream_
 
     let totals = query_combined_totals(
         &state.pool,
-        None,
         StatsFilter::All,
         InvocationSourceScope::ProxyOnly,
     )
@@ -13446,7 +13078,6 @@ async fn combined_totals_treat_legacy_http_200_without_error_as_success() {
 
     let totals = query_combined_totals(
         &state.pool,
-        None,
         StatsFilter::All,
         InvocationSourceScope::ProxyOnly,
     )
@@ -13504,7 +13135,6 @@ async fn combined_totals_count_legacy_http_200_failures_when_only_downstream_err
 
     let totals = query_combined_totals(
         &state.pool,
-        None,
         StatsFilter::All,
         InvocationSourceScope::ProxyOnly,
     )

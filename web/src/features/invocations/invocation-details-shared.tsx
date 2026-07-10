@@ -65,6 +65,7 @@ export interface InvocationDetailViewModel {
   fastIndicatorState: FastIndicatorState;
   costValue: string;
   inputTokensValue: string;
+  cacheWriteTokensValue: string;
   cacheInputTokensValue: string;
   outputTokensValue: string;
   outputReasoningBreakdownValue: string;
@@ -729,6 +730,14 @@ export function buildInvocationDetailViewModel({
     record.reasoningTokens,
     numberFormatter,
   );
+  const cacheWriteTokensValue = formatOptionalNumber(
+    record.cacheWriteTokens ?? (
+      record.inputTokens == null
+        ? undefined
+        : Math.max(0, record.inputTokens - (record.cacheInputTokens ?? 0))
+    ),
+    numberFormatter,
+  );
   const outputReasoningBreakdownValue = `${t("table.column.reasoningTokensShort")} ${reasoningTokensValue}`;
   const totalLatencyValue =
     normalizedStatus === "running" || normalizedStatus === "pending"
@@ -1063,6 +1072,7 @@ export function buildInvocationDetailViewModel({
         ? currencyFormatter.format(record.cost)
         : FALLBACK_CELL,
     inputTokensValue: formatOptionalNumber(record.inputTokens, numberFormatter),
+    cacheWriteTokensValue,
     cacheInputTokensValue: formatOptionalNumber(
       record.cacheInputTokens,
       numberFormatter,

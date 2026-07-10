@@ -963,6 +963,34 @@ describe('TodayStatsOverview', () => {
     expect(tooltip?.textContent).toContain('active tail inside the latest 5-minute window')
   })
 
+  it('keeps the field description tooltip when a summary has no usage breakdown', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 42,
+          successCount: 40,
+          failureCount: 2,
+          totalCost: 1.48,
+          totalTokens: 9000,
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    const tokenTitle = [...(host?.querySelectorAll('[role="button"]') ?? [])]
+      .find((element) => element.textContent === 'Today Token')
+    expect(tokenTitle).toBeInstanceOf(HTMLElement)
+
+    act(() => {
+      tokenTitle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const tooltip = document.body.querySelector('[role="tooltip"]')
+    expect(tooltip?.textContent).toContain('Total tokens in the selected day.')
+    expect(tooltip?.textContent).not.toContain('Cache write')
+  })
+
   it('shows unavailable placeholders for rate tiles when timeseries loading fails', () => {
     render(
       <TodayStatsOverview

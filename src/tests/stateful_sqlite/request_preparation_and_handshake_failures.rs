@@ -912,7 +912,7 @@ fn estimate_proxy_cost_keeps_full_input_when_cache_price_missing() {
 }
 
 #[test]
-fn estimate_proxy_cost_uses_explicit_gpt_5_6_sol_cache_read_and_write_prices() {
+fn estimate_proxy_cost_breakdown_uses_explicit_gpt_5_6_sol_cache_read_and_write_prices() {
     let catalog = PricingCatalog {
         version: "unit-test".to_string(),
         models: HashMap::from([(
@@ -936,7 +936,7 @@ fn estimate_proxy_cost_uses_explicit_gpt_5_6_sol_cache_read_and_write_prices() {
         total_tokens: Some(1_200),
     };
 
-    let (cost, estimated, price_version) = estimate_proxy_cost(
+    let (breakdown, estimated, price_version) = estimate_proxy_cost_breakdown(
         &catalog,
         Some("gpt-5.6-sol"),
         &usage,
@@ -945,8 +945,13 @@ fn estimate_proxy_cost_uses_explicit_gpt_5_6_sol_cache_read_and_write_prices() {
     );
 
     let expected = ((600.0 * 6.25) + (400.0 * 0.5) + (200.0 * 30.0)) / 1_000_000.0;
-    let computed = cost.expect("cost should be present");
-    assert!((computed - expected).abs() < 1e-12);
+    let computed = breakdown.expect("cost breakdown should be present");
+    assert_eq!(computed.input, 0.0);
+    assert!((computed.cache_write - (600.0 * 6.25 / 1_000_000.0)).abs() < 1e-12);
+    assert!((computed.cache_read - (400.0 * 0.5 / 1_000_000.0)).abs() < 1e-12);
+    assert!((computed.output - (200.0 * 30.0 / 1_000_000.0)).abs() < 1e-12);
+    assert_eq!(computed.reasoning, 0.0);
+    assert!((computed.total() - expected).abs() < 1e-12);
     assert!(estimated);
     assert_eq!(price_version.as_deref(), Some("unit-test@response-tier"));
 }

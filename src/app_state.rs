@@ -786,7 +786,6 @@ pub(crate) struct SettingsResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SystemTaskKind {
-    SchedulerPoll,
     RetentionArchive,
     StartupBackfill,
     ForwardProxySubscriptionRefresh,
@@ -795,7 +794,6 @@ pub(crate) enum SystemTaskKind {
 impl SystemTaskKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::SchedulerPoll => "scheduler_poll",
             Self::RetentionArchive => "retention_archive",
             Self::StartupBackfill => "startup_backfill",
             Self::ForwardProxySubscriptionRefresh => "forward_proxy_subscription_refresh",

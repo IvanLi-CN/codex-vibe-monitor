@@ -1948,6 +1948,18 @@ pub(crate) struct ApiInvocation {
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) total_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_input: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_cache_write: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_cache_read: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_output: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_reasoning: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cache_write_tokens: Option<i64>,
     pub(crate) status: Option<String>,
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]

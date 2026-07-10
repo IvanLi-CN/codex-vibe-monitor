@@ -12,7 +12,6 @@ pub(crate) struct RetentionRunSummary {
     pub(crate) invocation_rows_archived: usize,
     pub(crate) forward_proxy_attempt_rows_archived: usize,
     pub(crate) pool_upstream_request_attempt_rows_archived: usize,
-    pub(crate) stats_source_snapshot_rows_archived: usize,
     pub(crate) quota_snapshot_rows_archived: usize,
     pub(crate) archive_batches_touched: usize,
     pub(crate) archive_batches_deleted: usize,
@@ -28,7 +27,6 @@ impl RetentionRunSummary {
             || self.invocation_rows_archived > 0
             || self.forward_proxy_attempt_rows_archived > 0
             || self.pool_upstream_request_attempt_rows_archived > 0
-            || self.stats_source_snapshot_rows_archived > 0
             || self.quota_snapshot_rows_archived > 0
             || self.archive_batches_deleted > 0
             || self.raw_files_removed > 0
@@ -443,11 +441,10 @@ pub(crate) struct DryRunBatchCount {
     pub(crate) row_count: i64,
 }
 
-pub(crate) const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_codec, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
+pub(crate) const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_codec, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
 pub(crate) const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
     "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, group_name_snapshot, proxy_binding_key_snapshot, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, phase, http_status, downstream_http_status, failure_kind, error_message, downstream_error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, compact_support_status, compact_support_reason, created_at";
-pub(crate) const STATS_SOURCE_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, source, period, stats_date, model, requests, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, all_tokens, cost_input, cost_output, cost_cache_write, cost_cache_read, cost_total, raw_response, captured_at, captured_at_epoch, created_at";
 pub(crate) const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, captured_at, amount_limit, used_amount, remaining_amount, period, period_reset_time, expire_time, is_active, total_cost, total_requests, total_tokens, last_request_time, billing_type, remaining_count, used_count, sub_type_name";
 
 pub(crate) const CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL: &str = r#"
@@ -463,6 +460,11 @@ CREATE TABLE IF NOT EXISTS archive_db.codex_invocations (
     reasoning_tokens INTEGER,
     total_tokens INTEGER,
     cost REAL,
+    cost_input REAL,
+    cost_cache_write REAL,
+    cost_cache_read REAL,
+    cost_output REAL,
+    cost_reasoning REAL,
     status TEXT,
     error_message TEXT,
     failure_kind TEXT,
@@ -545,32 +547,6 @@ CREATE TABLE IF NOT EXISTS archive_db.pool_upstream_request_attempts (
 )
 "#;
 
-pub(crate) const STATS_SOURCE_SNAPSHOTS_ARCHIVE_CREATE_SQL: &str = r#"
-CREATE TABLE IF NOT EXISTS archive_db.stats_source_snapshots (
-    id INTEGER PRIMARY KEY,
-    source TEXT NOT NULL,
-    period TEXT NOT NULL,
-    stats_date TEXT NOT NULL,
-    model TEXT,
-    requests INTEGER NOT NULL,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    cache_create_tokens INTEGER,
-    cache_read_tokens INTEGER,
-    all_tokens INTEGER,
-    cost_input REAL,
-    cost_output REAL,
-    cost_cache_write REAL,
-    cost_cache_read REAL,
-    cost_total REAL,
-    raw_response TEXT,
-    captured_at TEXT NOT NULL,
-    captured_at_epoch INTEGER NOT NULL,
-    created_at TEXT NOT NULL,
-    UNIQUE(source, period, stats_date, model, captured_at_epoch)
-)
-"#;
-
 pub(crate) const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_CREATE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS archive_db.codex_quota_snapshots (
     id INTEGER PRIMARY KEY,
@@ -609,11 +585,6 @@ pub(crate) fn archive_table_spec(dataset: &'static str) -> ArchiveTableSpec {
             dataset,
             columns: POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS,
             create_sql: POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL,
-        },
-        "stats_source_snapshots" => ArchiveTableSpec {
-            dataset,
-            columns: STATS_SOURCE_SNAPSHOTS_ARCHIVE_COLUMNS,
-            create_sql: STATS_SOURCE_SNAPSHOTS_ARCHIVE_CREATE_SQL,
         },
         "codex_quota_snapshots" => ArchiveTableSpec {
             dataset,
@@ -864,22 +835,6 @@ pub(crate) async fn run_data_retention_maintenance(
     .await?;
     summary.pool_upstream_request_attempt_rows_archived += pool_attempt_archive.0;
     summary.archive_batches_touched += pool_attempt_archive.1;
-
-    if should_stop_data_retention_maintenance(shutdown) {
-        return Ok(summary);
-    }
-
-    let snapshot_archive = archive_timestamped_dataset(
-        pool,
-        config,
-        archive_table_spec("stats_source_snapshots"),
-        "SELECT id, captured_at AS timestamp_value FROM stats_source_snapshots WHERE captured_at < ?1 ORDER BY captured_at ASC, id ASC LIMIT ?2",
-        shanghai_utc_cutoff_string(config.stats_source_snapshots_retention_days),
-        dry_run,
-    )
-    .await?;
-    summary.stats_source_snapshot_rows_archived += snapshot_archive.0;
-    summary.archive_batches_touched += snapshot_archive.1;
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
@@ -1784,16 +1739,6 @@ pub(crate) async fn archive_timestamped_dataset(
                        COUNT(*) AS row_count
                 FROM pool_upstream_request_attempts
                 WHERE occurred_at < ?1
-                GROUP BY 1
-                ORDER BY 1
-                "#
-            }
-            "stats_source_snapshots" => {
-                r#"
-                SELECT strftime('%Y-%m', datetime(captured_at, '+8 hours')) AS month_key,
-                       COUNT(*) AS row_count
-                FROM stats_source_snapshots
-                WHERE captured_at < ?1
                 GROUP BY 1
                 ORDER BY 1
                 "#

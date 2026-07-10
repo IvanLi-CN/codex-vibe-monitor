@@ -831,7 +831,7 @@ async fn proxy_only_working_conversation_live_aggregate_keeps_mixed_source_proxy
 
     for (invoke_id, source, seconds_ago, total_tokens, cost) in [
         ("mixed-proxy", SOURCE_PROXY, 30_i64, 120_i64, 0.12_f64),
-        ("mixed-crs", SOURCE_CRS, 20_i64, 220_i64, 0.22_f64),
+        ("mixed-secondary", SOURCE_XY, 20_i64, 220_i64, 0.22_f64),
     ] {
         sqlx::query(
             r#"
@@ -1658,13 +1658,13 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
     )
     .await;
 
-    let before = query_combined_totals(&pool, None, StatsFilter::All, InvocationSourceScope::All)
+    let before = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
         .await
         .expect("query totals before retention");
     let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run retention archive");
-    let after = query_combined_totals(&pool, None, StatsFilter::All, InvocationSourceScope::All)
+    let after = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
         .await
         .expect("query totals after retention");
 

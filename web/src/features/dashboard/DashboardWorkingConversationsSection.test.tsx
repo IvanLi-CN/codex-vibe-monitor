@@ -245,6 +245,34 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         failureTokens: 350,
         failureCost: 0.22,
         totalCost: 0.72,
+        usageBreakdown: {
+          cacheWriteTokens: 1600,
+          cacheReadTokens: 800,
+          outputTokens: 800,
+          costs: {
+            input: 0.18,
+            cacheWrite: 0.14,
+            cacheRead: 0.06,
+            output: 0.28,
+            reasoning: 0.06,
+          },
+          models: [
+            {
+              model: "gpt-5.6",
+              cacheWriteTokens: 1200,
+              cacheReadTokens: 600,
+              outputTokens: 620,
+              costs: { input: 0.12, cacheWrite: 0.1, cacheRead: 0.04, output: 0.21, reasoning: 0.05 },
+            },
+            {
+              model: "gpt-5.4-mini",
+              cacheWriteTokens: 400,
+              cacheReadTokens: 200,
+              outputTokens: 180,
+              costs: { input: 0.06, cacheWrite: 0.04, cacheRead: 0.02, output: 0.07, reasoning: 0.01 },
+            },
+          ],
+        },
         cacheHitRate: 0.25,
         tokensPerMinute: 640,
         spendRate: 0.12,
@@ -936,14 +964,11 @@ describe("DashboardWorkingConversationsSection", () => {
     await waitFor(() => {
       const tooltipText = document.body.textContent ?? "";
       expect(tooltipText).toContain("成本");
-      expect(tooltipText).toContain("0.72");
-      expect(tooltipText).toContain("失败成本");
-      expect(tooltipText).toContain("$0.22");
-      expect(tooltipText).toContain("失败成本比率");
-      expect(tooltipText).toContain("30.6%");
-      expect(tooltipText).toContain("成功/其他成本");
-      expect(tooltipText).toContain("$0.50");
-      expect(tooltipText).toContain("单次均价");
+      expect(tooltipText).toContain("缓存写入");
+      expect(tooltipText).toContain("缓存读取");
+      expect(tooltipText).toContain("推理");
+      expect(tooltipText).toContain("gpt-5.6");
+      expect(tooltipText).toContain("$0.28");
     });
 
     const tokenTrigger = host?.querySelector(
@@ -961,14 +986,10 @@ describe("DashboardWorkingConversationsSection", () => {
       const tooltipText = document.body.textContent ?? "";
       expect(tooltipText).toContain("Token");
       expect(tooltipText).toContain("3,200");
-      expect(tooltipText).toContain("缓存命中率");
-      expect(tooltipText).toContain("25%");
-      expect(tooltipText).toContain("失败 Token");
-      expect(tooltipText).toContain("350");
-      expect(tooltipText).toContain("成功 Token");
-      expect(tooltipText).toContain("2,800");
-      expect(tooltipText).toContain("单请求 Token");
-      expect(tooltipText).toContain("400");
+      expect(tooltipText).toContain("缓存写入");
+      expect(tooltipText).toContain("缓存读取");
+      expect(tooltipText).toContain("输出");
+      expect(tooltipText).toContain("gpt-5.6");
     });
 
     const requestTrigger = host?.querySelector(
@@ -1052,30 +1073,6 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(costBreakdown?.textContent).toContain("$0.00");
     expect(costBreakdown?.textContent).toContain("0%");
 
-    const costTrigger = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-metric-card"][data-metric="cost"]',
-    );
-    if (!(costTrigger instanceof HTMLElement)) {
-      throw new Error("missing cost metric trigger");
-    }
-
-    act(() => {
-      fireEvent.click(costTrigger);
-    });
-
-    await waitFor(() => {
-      const tooltip = Array.from(
-        document.body.querySelectorAll(
-          '[data-testid="dashboard-upstream-account-metric-tooltip"]',
-        ),
-      ).find((node) => node.textContent?.includes("失败成本"));
-      const tooltipText = tooltip?.textContent ?? "";
-      expect(tooltipText).toContain("失败成本");
-      expect(tooltipText).toContain("$0.00");
-      expect(tooltipText).toContain("失败成本比率");
-      expect(tooltipText).toContain("0%");
-      expect(tooltipText).not.toContain("25%");
-    });
   });
 
   it("passes the dynamic recent preview limit into upstream account activity", () => {

@@ -1103,6 +1103,11 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("reasoning_tokens", "INTEGER"),
         ("total_tokens", "INTEGER"),
         ("cost", "REAL"),
+        ("cost_input", "REAL"),
+        ("cost_cache_write", "REAL"),
+        ("cost_cache_read", "REAL"),
+        ("cost_output", "REAL"),
+        ("cost_reasoning", "REAL"),
         ("status", "TEXT"),
         ("error_message", "TEXT"),
         ("failure_kind", "TEXT"),
@@ -1660,80 +1665,6 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_quota_snapshots_captured_at")?;
-
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS stats_source_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            period TEXT NOT NULL,
-            stats_date TEXT NOT NULL,
-            model TEXT,
-            requests INTEGER NOT NULL,
-            input_tokens INTEGER,
-            output_tokens INTEGER,
-            cache_create_tokens INTEGER,
-            cache_read_tokens INTEGER,
-            all_tokens INTEGER,
-            cost_input REAL,
-            cost_output REAL,
-            cost_cache_write REAL,
-            cost_cache_read REAL,
-            cost_total REAL,
-            raw_response TEXT,
-            captured_at TEXT NOT NULL,
-            captured_at_epoch INTEGER NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(source, period, stats_date, model, captured_at_epoch)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure stats_source_snapshots table existence")?;
-
-    sqlx::query(
-        r#"
-        CREATE INDEX IF NOT EXISTS idx_stats_source_snapshots_date
-        ON stats_source_snapshots (source, period, stats_date, captured_at_epoch)
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure index idx_stats_source_snapshots_date")?;
-
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS stats_source_deltas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            period TEXT NOT NULL,
-            stats_date TEXT NOT NULL,
-            captured_at TEXT NOT NULL,
-            captured_at_epoch INTEGER NOT NULL,
-            total_count INTEGER NOT NULL,
-            success_count INTEGER NOT NULL,
-            failure_count INTEGER NOT NULL,
-            total_tokens INTEGER NOT NULL,
-            total_cost REAL NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(source, period, stats_date, captured_at_epoch)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure stats_source_deltas table existence")?;
-
-    sqlx::query(
-        r#"
-        CREATE INDEX IF NOT EXISTS idx_stats_source_deltas_epoch
-        ON stats_source_deltas (source, period, captured_at_epoch)
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure index idx_stats_source_deltas_epoch")?;
 
     sqlx::query(
         r#"

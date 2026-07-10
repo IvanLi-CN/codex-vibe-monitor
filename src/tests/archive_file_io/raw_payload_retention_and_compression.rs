@@ -854,43 +854,6 @@ async fn retention_archives_rows_with_compressed_raw_payload_files() {
     cleanup_temp_test_dir(&temp_dir);
 }
 
-async fn spawn_test_crs_stats_server(
-    release_request: Arc<Notify>,
-    request_count: Arc<AtomicUsize>,
-) -> (String, JoinHandle<()>) {
-    let app = Router::new().route(
-        "/apiStats/api/user-model-stats",
-        post(move || {
-            let release_request = release_request.clone();
-            let request_count = request_count.clone();
-            async move {
-                request_count.fetch_add(1, Ordering::SeqCst);
-                release_request.notified().await;
-                (
-                    StatusCode::OK,
-                    Json(json!({
-                        "success": true,
-                        "period": "daily",
-                        "data": [],
-                    })),
-                )
-            }
-        }),
-    );
-
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind crs stats test server");
-    let addr = listener.local_addr().expect("crs stats test server addr");
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .expect("crs stats test server should run");
-    });
-
-    (format!("http://{addr}/"), handle)
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn terminate_child_process_prefers_sigterm_when_process_exits_cleanly() {
@@ -1373,107 +1336,6 @@ async fn imported_oauth_validation_job_delete_removes_completed_job() {
 }
 
 #[tokio::test]
-async fn run_runtime_until_shutdown_waits_for_inflight_scheduler_poll() {
-    let release_request = Arc::new(Notify::new());
-    let request_count = Arc::new(AtomicUsize::new(0));
-    let (crs_base, crs_handle) =
-        spawn_test_crs_stats_server(release_request.clone(), request_count.clone()).await;
-
-    let mut config = test_config();
-    config.crs_stats = Some(CrsStatsConfig {
-        base_url: Url::parse(&crs_base).expect("valid crs base url"),
-        api_id: "test-api".to_string(),
-        period: "daily".to_string(),
-        poll_interval: Duration::from_secs(3600),
-    });
-    config.request_timeout = Duration::from_secs(5);
-    config.poll_interval = Duration::from_millis(25);
-    config.max_parallel_polls = 1;
-    let state = test_state_from_config(config, false).await;
-
-    let shutdown = Arc::new(Notify::new());
-    let shutdown_for_runtime = shutdown.clone();
-    let state_for_runtime = state.clone();
-    let runtime_handle = tokio::spawn(async move {
-        run_runtime_until_shutdown(state_for_runtime, Instant::now(), async move {
-            shutdown_for_runtime.notified().await;
-        })
-        .await
-    });
-
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while request_count.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("scheduler should start an in-flight poll");
-    shutdown.notify_waiters();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    assert!(
-        !runtime_handle.is_finished(),
-        "runtime should wait for the in-flight scheduler poll to finish"
-    );
-    assert_eq!(request_count.load(Ordering::SeqCst), 1);
-
-    release_request.notify_waiters();
-    runtime_handle
-        .await
-        .expect("runtime task should join")
-        .expect("runtime should shutdown cleanly");
-
-    assert!(state.shutdown.is_cancelled());
-    assert_eq!(request_count.load(Ordering::SeqCst), 1);
-    crs_handle.abort();
-}
-
-#[tokio::test]
-async fn scheduler_does_not_start_a_new_poll_after_shutdown_while_waiting_for_permit() {
-    let release_request = Arc::new(Notify::new());
-    let request_count = Arc::new(AtomicUsize::new(0));
-    let (crs_base, crs_handle) =
-        spawn_test_crs_stats_server(release_request.clone(), request_count.clone()).await;
-
-    let mut config = test_config();
-    config.crs_stats = Some(CrsStatsConfig {
-        base_url: Url::parse(&crs_base).expect("valid crs base url"),
-        api_id: "test-api".to_string(),
-        period: "daily".to_string(),
-        poll_interval: Duration::from_secs(3600),
-    });
-    config.request_timeout = Duration::from_secs(5);
-    config.poll_interval = Duration::from_millis(25);
-    config.max_parallel_polls = 1;
-    let state = test_state_from_config(config, false).await;
-
-    let scheduler_handle = spawn_scheduler(state.clone(), state.shutdown.clone());
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while request_count.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("scheduler should start its initial poll");
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    state.shutdown.cancel();
-    release_request.notify_waiters();
-
-    tokio::time::timeout(Duration::from_secs(2), scheduler_handle)
-        .await
-        .expect("scheduler should drain promptly after shutdown")
-        .expect("scheduler task should join cleanly");
-
-    assert_eq!(
-        request_count.load(Ordering::SeqCst),
-        1,
-        "shutdown should prevent a queued follow-up poll from starting once the permit is released"
-    );
-    crs_handle.abort();
-}
-
-#[tokio::test]
 async fn drain_runtime_after_shutdown_waits_for_summary_quota_broadcast_workers() {
     let state = test_state_from_config(test_config(), false).await;
     let (started_tx_a, started_rx_a) = tokio::sync::oneshot::channel();
@@ -1558,35 +1420,6 @@ async fn run_runtime_until_shutdown_exits_when_shutdown_token_is_cancelled_direc
     .expect("runtime should exit cleanly after direct shutdown token cancellation");
 
     assert!(state.shutdown.is_cancelled());
-}
-
-#[tokio::test]
-async fn run_runtime_until_shutdown_skips_startup_work_when_shutdown_is_already_requested() {
-    let request_count = Arc::new(AtomicUsize::new(0));
-    let release_request = Arc::new(Notify::new());
-    let (crs_base, crs_handle) =
-        spawn_test_crs_stats_server(release_request.clone(), request_count.clone()).await;
-
-    let mut config = test_config();
-    config.crs_stats = Some(CrsStatsConfig {
-        base_url: Url::parse(&crs_base).expect("valid crs base url"),
-        api_id: "test-api".to_string(),
-        period: "daily".to_string(),
-        poll_interval: Duration::from_secs(3600),
-    });
-    config.request_timeout = Duration::from_secs(5);
-    config.poll_interval = Duration::from_millis(25);
-    config.max_parallel_polls = 1;
-    let state = test_state_from_config(config, false).await;
-
-    run_runtime_until_shutdown(state.clone(), Instant::now(), async {})
-        .await
-        .expect("runtime should exit cleanly when shutdown is already requested");
-
-    assert!(state.shutdown.is_cancelled());
-    assert_eq!(request_count.load(Ordering::SeqCst), 0);
-    release_request.notify_waiters();
-    crs_handle.abort();
 }
 
 #[tokio::test]
@@ -1896,7 +1729,6 @@ async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_
             hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.as_ref(),
             broadcaster: &state.broadcaster,
             broadcast_state_cache: state.broadcast_state_cache.as_ref(),
-            relay_config: state.config.crs_stats.as_ref(),
             invocation_max_days: state.config.invocation_max_days,
             invoke_id: "idle-shutdown-tail",
         },

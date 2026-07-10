@@ -73,6 +73,8 @@ pub(crate) struct StatsResponse {
     pub(crate) total_cost: f64,
     pub(crate) total_tokens: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) usage_breakdown: Option<UsageBreakdownResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_conversation_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_retry_conversation_count: Option<i64>,
@@ -86,6 +88,38 @@ pub(crate) struct StatsResponse {
     pub(crate) non_success_tokens: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) maintenance: Option<StatsMaintenanceResponse>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsageCostBreakdownResponse {
+    pub(crate) input: f64,
+    pub(crate) cache_write: f64,
+    pub(crate) cache_read: f64,
+    pub(crate) output: f64,
+    pub(crate) reasoning: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsageBreakdownModelResponse {
+    pub(crate) model: String,
+    pub(crate) cache_write_tokens: i64,
+    pub(crate) cache_read_tokens: i64,
+    pub(crate) output_tokens: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) costs: Option<UsageCostBreakdownResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsageBreakdownResponse {
+    pub(crate) cache_write_tokens: i64,
+    pub(crate) cache_read_tokens: i64,
+    pub(crate) output_tokens: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) costs: Option<UsageCostBreakdownResponse>,
+    pub(crate) models: Vec<UsageBreakdownModelResponse>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -192,6 +226,7 @@ impl StatsTotals {
             failure_count: self.failure_count,
             total_cost: self.total_cost,
             total_tokens: self.total_tokens,
+            usage_breakdown: None,
             in_progress_conversation_count: None,
             in_progress_retry_conversation_count: None,
             in_progress_avg_wait_ms: None,
@@ -884,6 +919,21 @@ pub(crate) struct ParsedUsage {
     pub(crate) total_tokens: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ProxyCostBreakdown {
+    pub(crate) input: f64,
+    pub(crate) cache_write: f64,
+    pub(crate) cache_read: f64,
+    pub(crate) output: f64,
+    pub(crate) reasoning: f64,
+}
+
+impl ProxyCostBreakdown {
+    pub(crate) fn total(self) -> f64 {
+        self.input + self.cache_write + self.cache_read + self.output + self.reasoning
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RawPayloadMeta {
     pub(crate) path: Option<String>,
@@ -955,6 +1005,7 @@ pub(crate) struct ProxyCaptureRecord {
     pub(crate) model: Option<String>,
     pub(crate) usage: ParsedUsage,
     pub(crate) cost: Option<f64>,
+    pub(crate) cost_breakdown: Option<ProxyCostBreakdown>,
     pub(crate) cost_estimated: bool,
     pub(crate) price_version: Option<String>,
     pub(crate) status: String,
@@ -1270,6 +1321,11 @@ pub(crate) struct UpstreamAccountInvocationPreviewRow {
     pub(crate) response_model: Option<String>,
     pub(crate) total_tokens: i64,
     pub(crate) cost: Option<f64>,
+    pub(crate) cost_input: Option<f64>,
+    pub(crate) cost_cache_write: Option<f64>,
+    pub(crate) cost_cache_read: Option<f64>,
+    pub(crate) cost_output: Option<f64>,
+    pub(crate) cost_reasoning: Option<f64>,
     pub(crate) source: Option<String>,
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
@@ -1538,6 +1594,7 @@ pub(crate) struct DashboardActivityAccountResponse {
     #[serde(skip)]
     pub(crate) non_success_cost: f64,
     pub(crate) total_cost: f64,
+    pub(crate) usage_breakdown: UsageBreakdownResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_hit_rate: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1594,6 +1651,7 @@ pub(crate) struct UpstreamAccountActivityAccountResponse {
     pub(crate) failure_tokens: i64,
     pub(crate) failure_cost: f64,
     pub(crate) total_cost: f64,
+    pub(crate) usage_breakdown: UsageBreakdownResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_hit_rate: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]

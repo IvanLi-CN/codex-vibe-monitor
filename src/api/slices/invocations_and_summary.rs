@@ -2528,13 +2528,7 @@ pub(crate) async fn fetch_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StatsResponse>, ApiError> {
     let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let totals = query_combined_totals(
-        &state.pool,
-        state.config.crs_stats.as_ref(),
-        StatsFilter::All,
-        source_scope,
-    )
-    .await?;
+    let totals = query_combined_totals(&state.pool, StatsFilter::All, source_scope).await?;
     let mut response = totals.into_response();
     response.non_success_cost = Some(totals.non_success_cost);
     let augmentation = load_summary_live_augmentation(
@@ -3152,6 +3146,7 @@ pub(crate) async fn build_empty_summary_response(
         failure_count: 0,
         total_cost: 0.0,
         total_tokens: 0,
+        usage_breakdown: None,
         in_progress_conversation_count: None,
         in_progress_retry_conversation_count: None,
         in_progress_avg_wait_ms: None,
@@ -3245,6 +3240,133 @@ pub(crate) struct UpstreamAccountActivityAccumulator {
     last_occurred_at_epoch_ms: i64,
     rate_usage_events: Vec<UpstreamAccountRateUsageEvent>,
     recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
+    usage_breakdown: UsageBreakdownAccumulator,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct UsageBreakdownAccumulator {
+    cache_write_tokens: i64,
+    cache_read_tokens: i64,
+    output_tokens: i64,
+    costs: UsageCostBreakdownResponse,
+    cost_breakdown_unavailable: bool,
+    models: HashMap<String, UsageBreakdownAccumulator>,
+}
+
+impl UsageBreakdownAccumulator {
+    fn add_row(&mut self, row: &UpstreamAccountInvocationPreviewRow) {
+        let cache_read_tokens = row.cache_input_tokens.unwrap_or_default().max(0);
+        let cache_write_tokens = row
+            .input_tokens
+            .unwrap_or_default()
+            .max(0)
+            .saturating_sub(cache_read_tokens);
+        self.cache_write_tokens += cache_write_tokens;
+        self.cache_read_tokens += cache_read_tokens;
+        self.output_tokens += row.output_tokens.unwrap_or_default().max(0);
+
+        let costs = [
+            row.cost_input,
+            row.cost_cache_write,
+            row.cost_cache_read,
+            row.cost_output,
+            row.cost_reasoning,
+        ];
+        if costs.iter().all(Option::is_some) {
+            self.costs.input += costs[0].unwrap_or_default();
+            self.costs.cache_write += costs[1].unwrap_or_default();
+            self.costs.cache_read += costs[2].unwrap_or_default();
+            self.costs.output += costs[3].unwrap_or_default();
+            self.costs.reasoning += costs[4].unwrap_or_default();
+        } else if row.cost.is_some() {
+            self.cost_breakdown_unavailable = true;
+        }
+
+        let model = row
+            .response_model
+            .as_deref()
+            .or(row.model.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown")
+            .to_string();
+        let model_entry = self.models.entry(model).or_default();
+        model_entry.cache_write_tokens += cache_write_tokens;
+        model_entry.cache_read_tokens += cache_read_tokens;
+        model_entry.output_tokens += row.output_tokens.unwrap_or_default().max(0);
+        if costs.iter().all(Option::is_some) {
+            model_entry.costs.input += costs[0].unwrap_or_default();
+            model_entry.costs.cache_write += costs[1].unwrap_or_default();
+            model_entry.costs.cache_read += costs[2].unwrap_or_default();
+            model_entry.costs.output += costs[3].unwrap_or_default();
+            model_entry.costs.reasoning += costs[4].unwrap_or_default();
+        } else if row.cost.is_some() {
+            model_entry.cost_breakdown_unavailable = true;
+        }
+    }
+
+    fn merge_response(&mut self, response: &UsageBreakdownResponse) {
+        self.cache_write_tokens += response.cache_write_tokens;
+        self.cache_read_tokens += response.cache_read_tokens;
+        self.output_tokens += response.output_tokens;
+        if let Some(costs) = &response.costs {
+            self.costs.input += costs.input;
+            self.costs.cache_write += costs.cache_write;
+            self.costs.cache_read += costs.cache_read;
+            self.costs.output += costs.output;
+            self.costs.reasoning += costs.reasoning;
+        } else {
+            self.cost_breakdown_unavailable = true;
+        }
+        for model in &response.models {
+            let entry = self.models.entry(model.model.clone()).or_default();
+            entry.cache_write_tokens += model.cache_write_tokens;
+            entry.cache_read_tokens += model.cache_read_tokens;
+            entry.output_tokens += model.output_tokens;
+            if let Some(costs) = &model.costs {
+                entry.costs.input += costs.input;
+                entry.costs.cache_write += costs.cache_write;
+                entry.costs.cache_read += costs.cache_read;
+                entry.costs.output += costs.output;
+                entry.costs.reasoning += costs.reasoning;
+            } else {
+                entry.cost_breakdown_unavailable = true;
+            }
+        }
+    }
+
+    fn into_response(self) -> UsageBreakdownResponse {
+        let mut models = self
+            .models
+            .into_iter()
+            .filter_map(|(model, entry)| {
+                let has_usage = entry.cache_write_tokens > 0
+                    || entry.cache_read_tokens > 0
+                    || entry.output_tokens > 0
+                    || entry.costs.input != 0.0
+                    || entry.costs.cache_write != 0.0
+                    || entry.costs.cache_read != 0.0
+                    || entry.costs.output != 0.0
+                    || entry.costs.reasoning != 0.0
+                    || entry.cost_breakdown_unavailable;
+                has_usage.then_some(UsageBreakdownModelResponse {
+                    model,
+                    cache_write_tokens: entry.cache_write_tokens,
+                    cache_read_tokens: entry.cache_read_tokens,
+                    output_tokens: entry.output_tokens,
+                    costs: (!entry.cost_breakdown_unavailable).then_some(entry.costs),
+                })
+            })
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| left.model.cmp(&right.model));
+        UsageBreakdownResponse {
+            cache_write_tokens: self.cache_write_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            output_tokens: self.output_tokens,
+            costs: (!self.cost_breakdown_unavailable).then_some(self.costs),
+            models,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3504,7 +3626,7 @@ pub(crate) async fn query_live_upstream_account_activity_preview_rows(
         .push(INVOCATION_REQUEST_MODEL_SQL)
         .push(" AS request_model, ")
         .push(INVOCATION_RESPONSE_MODEL_SQL)
-        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
+        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
         .push(INVOCATION_REASONING_EFFORT_SQL)
         .push(" AS reasoning_effort, error_message, ")
         .push(INVOCATION_FAILURE_KIND_SQL)
@@ -3600,6 +3722,11 @@ pub(crate) fn runtime_upstream_account_activity_preview_row(
         response_model: record.response_model,
         total_tokens: record.total_tokens.unwrap_or_default(),
         cost: record.cost,
+        cost_input: record.cost_input,
+        cost_cache_write: record.cost_cache_write,
+        cost_cache_read: record.cost_cache_read,
+        cost_output: record.cost_output,
+        cost_reasoning: record.cost_reasoning,
         source: Some(record.source),
         input_tokens: record.input_tokens,
         output_tokens: record.output_tokens,
@@ -3681,6 +3808,54 @@ pub(crate) fn overlay_runtime_upstream_account_activity_preview_rows(
             "overlayed memory runtime invocation rows into upstream account activity"
         );
     }
+}
+
+pub(crate) async fn load_usage_breakdown_for_range(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    range: ExactUtcRange,
+) -> Result<UsageBreakdownResponse, ApiError> {
+    let account_metadata_table_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master \
+         WHERE type = 'table' \
+           AND name IN ('pool_upstream_accounts', 'pool_upstream_account_limit_samples')",
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    let mut live_rows = if account_metadata_table_count == 2 {
+        query_live_upstream_account_activity_preview_rows(&state.pool, source_scope, range).await?
+    } else {
+        Vec::new()
+    };
+    overlay_runtime_upstream_account_activity_preview_rows(
+        state,
+        &mut live_rows,
+        source_scope,
+        range,
+    );
+    let live_ids = live_rows.iter().map(|row| row.id).collect::<HashSet<_>>();
+    let mut rows = live_rows;
+    if range.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        rows.extend(
+            crate::stats::query_completed_invocation_archive_preview_rows(
+                &state.pool,
+                source_scope,
+                range,
+                Some(&live_ids),
+            )
+            .await?,
+        );
+    }
+
+    let mut usage_breakdown = UsageBreakdownAccumulator::default();
+    for row in rows {
+        if upstream_account_id.is_none_or(|account_id| row.upstream_account_id == Some(account_id))
+        {
+            usage_breakdown.add_row(&row);
+        }
+    }
+    Ok(usage_breakdown.into_response())
 }
 
 pub(crate) async fn query_upstream_account_activity_meta(
@@ -3922,12 +4097,17 @@ pub(crate) fn build_dashboard_activity_summary(
         .map(|account| account.in_progress_wait_sample_count)
         .sum::<i64>();
 
+    let mut usage_breakdown = UsageBreakdownAccumulator::default();
+    for account in accounts {
+        usage_breakdown.merge_response(&account.usage_breakdown);
+    }
     let stats = StatsResponse {
         total_count: accounts.iter().map(|account| account.request_count).sum(),
         success_count: accounts.iter().map(|account| account.success_count).sum(),
         failure_count: accounts.iter().map(|account| account.failure_count).sum(),
         total_cost: accounts.iter().map(|account| account.total_cost).sum(),
         total_tokens: accounts.iter().map(|account| account.total_tokens).sum(),
+        usage_breakdown: Some(usage_breakdown.into_response()),
         in_progress_conversation_count: include_live_counts.then(|| {
             accounts
                 .iter()
@@ -4176,7 +4356,8 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         start: range_window.start,
         end: range_window.end,
     };
-    if !include_accounts {
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    if !include_accounts && range.start < retention_cutoff {
         return load_dashboard_activity_summary_only_snapshot(
             state,
             range_name,
@@ -4185,7 +4366,6 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         )
         .await;
     }
-
     let mut live_rows =
         query_live_upstream_account_activity_preview_rows(&state.pool, source_scope, range).await?;
     overlay_runtime_upstream_account_activity_preview_rows(
@@ -4195,7 +4375,6 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         range,
     );
     let live_ids = live_rows.iter().map(|row| row.id).collect::<HashSet<_>>();
-    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut combined_rows = live_rows;
     if range.start < retention_cutoff {
         combined_rows.extend(
@@ -4261,6 +4440,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         entry.total_tokens += row.total_tokens.max(0);
         entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default().max(0);
         entry.total_cost += row.cost.unwrap_or_default();
+        entry.usage_breakdown.add_row(&row);
         if is_success {
             entry.success_count += 1;
             entry.success_tokens += row.total_tokens.max(0);
@@ -4426,6 +4606,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 failure_cost: aggregate.failure_cost,
                 non_success_cost: aggregate.non_success_cost,
                 total_cost: aggregate.total_cost,
+                usage_breakdown: aggregate.usage_breakdown.clone().into_response(),
                 cache_hit_rate: (aggregate.total_tokens > 0)
                     .then_some(aggregate.cache_input_tokens as f64 / aggregate.total_tokens as f64),
                 tokens_per_minute,
@@ -4528,6 +4709,7 @@ pub(crate) fn dashboard_account_to_upstream_account(
         failure_tokens: account.failure_tokens,
         failure_cost: account.failure_cost,
         total_cost: account.total_cost,
+        usage_breakdown: account.usage_breakdown,
         cache_hit_rate: account.cache_hit_rate,
         tokens_per_minute: account.tokens_per_minute,
         spend_rate: account.spend_rate,
@@ -4788,13 +4970,7 @@ pub(crate) async fn fetch_summary(
                 )
                 .await?
             } else {
-                query_combined_totals(
-                    &state.pool,
-                    state.config.crs_stats.as_ref(),
-                    StatsFilter::All,
-                    source_scope,
-                )
-                .await?
+                query_combined_totals(&state.pool, StatsFilter::All, source_scope).await?
             }
         }
         SummaryWindow::Current(limit) => {
@@ -4809,13 +4985,8 @@ pub(crate) async fn fetch_summary(
                     .await?,
                 )
             } else {
-                query_combined_totals(
-                    &state.pool,
-                    state.config.crs_stats.as_ref(),
-                    StatsFilter::RecentLimit(limit),
-                    source_scope,
-                )
-                .await?
+                query_combined_totals(&state.pool, StatsFilter::RecentLimit(limit), source_scope)
+                    .await?
             }
         }
         SummaryWindow::Duration(duration) => {
@@ -4884,6 +5055,17 @@ pub(crate) async fn fetch_summary(
     let mut response = totals.into_response();
     response.non_success_cost = Some(totals.non_success_cost);
     let range = summary_window_range(&window, reporting_tz, now)?;
+    if let Some((start, end)) = range {
+        response.usage_breakdown = Some(
+            load_usage_breakdown_for_range(
+                state.as_ref(),
+                source_scope,
+                upstream_account_id,
+                ExactUtcRange { start, end },
+            )
+            .await?,
+        );
+    }
     let policy = summary_live_augmentation_policy(&window, range, now);
     let augmentation = load_summary_live_augmentation(
         state.as_ref(),

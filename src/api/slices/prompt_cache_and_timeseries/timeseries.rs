@@ -145,31 +145,6 @@ pub(crate) async fn fetch_timeseries(
         }
     }
 
-    let relay_deltas = if source_scope == InvocationSourceScope::All
-        && let Some(relay) = state.config.crs_stats.as_ref()
-    {
-        query_crs_deltas(
-            &state.pool,
-            relay,
-            start_epoch,
-            crate::stats::exclusive_epoch_upper_bound(end_dt),
-        )
-        .await?
-    } else {
-        Vec::new()
-    };
-
-    for delta in relay_deltas {
-        let bucket_epoch =
-            align_reporting_bucket_epoch(delta.captured_at_epoch, bucket_seconds, reporting_tz)?;
-        let entry = aggregates.entry(bucket_epoch).or_default();
-        entry.total_count += delta.total_count;
-        entry.success_count += delta.success_count;
-        entry.failure_count += delta.failure_count;
-        entry.total_tokens += delta.total_tokens;
-        entry.total_cost += delta.total_cost;
-    }
-
     // Fill every bucket that intersects the requested range using reporting-timezone
     // boundaries rather than fixed UTC-duration strides. This keeps DST transition
     // days aligned to local clock buckets.
@@ -1337,31 +1312,6 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         }
     }
 
-    let relay_deltas = if source_scope == InvocationSourceScope::All
-        && let Some(relay) = state.config.crs_stats.as_ref()
-        && let Some(effective_range) = effective_range_for_hourly_rollup_plan(&range_plan)?
-    {
-        query_crs_deltas(
-            &state.pool,
-            relay,
-            effective_range.start.timestamp(),
-            crate::stats::exclusive_epoch_upper_bound(effective_range.end),
-        )
-        .await?
-    } else {
-        Vec::new()
-    };
-    for delta in relay_deltas {
-        let bucket_epoch =
-            align_reporting_bucket_epoch(delta.captured_at_epoch, bucket_seconds, reporting_tz)?;
-        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-            entry.total_count += delta.total_count;
-            entry.success_count += delta.success_count;
-            entry.failure_count += delta.failure_count;
-            entry.total_tokens += delta.total_tokens;
-            entry.total_cost += delta.total_cost;
-        }
-    }
     overlay_runtime_timeseries_in_flight(
         state.as_ref(),
         &mut aggregates,

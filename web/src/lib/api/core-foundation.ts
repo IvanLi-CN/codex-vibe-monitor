@@ -343,10 +343,16 @@ export interface ApiInvocation {
   inputTokens?: number;
   outputTokens?: number;
   cacheInputTokens?: number;
+  cacheWriteTokens?: number;
   reasoningTokens?: number;
   reasoningEffort?: string;
   totalTokens?: number;
   cost?: number;
+  costInput?: number | null;
+  costCacheWrite?: number | null;
+  costCacheRead?: number | null;
+  costOutput?: number | null;
+  costReasoning?: number | null;
   status?: string;
   livePhase?: InvocationLivePhase | null;
   errorMessage?: string;
@@ -595,6 +601,7 @@ export interface StatsResponse {
   failureCount: number;
   totalCost: number;
   totalTokens: number;
+  usageBreakdown?: UsageBreakdown | null;
   inProgressConversationCount?: number | null;
   inProgressRetryConversationCount?: number | null;
   inProgressAvgWaitMs?: number | null;
@@ -602,6 +609,30 @@ export interface StatsResponse {
   nonSuccessCost?: number | null;
   nonSuccessTokens?: number | null;
   maintenance?: StatsMaintenanceResponse;
+}
+
+export interface UsageCostBreakdown {
+  input: number;
+  cacheWrite: number;
+  cacheRead: number;
+  output: number;
+  reasoning: number;
+}
+
+export interface UsageBreakdownModel {
+  model: string;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  costs?: UsageCostBreakdown | null;
+}
+
+export interface UsageBreakdown {
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  costs?: UsageCostBreakdown | null;
+  models: UsageBreakdownModel[];
 }
 
 export interface UpstreamAccountActivityAccount {
@@ -629,6 +660,7 @@ export interface UpstreamAccountActivityAccount {
   failureTokens: number;
   failureCost: number;
   totalCost: number;
+  usageBreakdown: UsageBreakdown;
   cacheHitRate?: number | null;
   tokensPerMinute?: number | null;
   spendRate?: number | null;
@@ -1208,6 +1240,12 @@ export interface PromptCacheConversationInvocationPreview {
   inputTokens?: ApiInvocation["inputTokens"];
   outputTokens?: ApiInvocation["outputTokens"];
   cacheInputTokens?: ApiInvocation["cacheInputTokens"];
+  cacheWriteTokens?: ApiInvocation["cacheWriteTokens"];
+  costInput?: ApiInvocation["costInput"];
+  costCacheWrite?: ApiInvocation["costCacheWrite"];
+  costCacheRead?: ApiInvocation["costCacheRead"];
+  costOutput?: ApiInvocation["costOutput"];
+  costReasoning?: ApiInvocation["costReasoning"];
   reasoningTokens?: ApiInvocation["reasoningTokens"];
   reasoningEffort?: ApiInvocation["reasoningEffort"];
   errorMessage?: ApiInvocation["errorMessage"];
@@ -1520,6 +1558,50 @@ function normalizeInvocationPhaseCounts(value: unknown): InvocationPhaseCounts |
     requesting: Math.max(0, normalizeFiniteNumber(payload.requesting) ?? 0),
     responding: Math.max(0, normalizeFiniteNumber(payload.responding) ?? 0),
   };
+}
+
+function normalizeUsageCostBreakdown(raw: unknown): UsageCostBreakdown | null {
+  if (!raw || typeof raw !== 'object') return null
+  const payload = raw as Record<string, unknown>
+  const input = normalizeFiniteNumber(payload.input)
+  const cacheWrite = normalizeFiniteNumber(payload.cacheWrite)
+  const cacheRead = normalizeFiniteNumber(payload.cacheRead)
+  const output = normalizeFiniteNumber(payload.output)
+  const reasoning = normalizeFiniteNumber(payload.reasoning)
+  if ([input, cacheWrite, cacheRead, output, reasoning].some((value) => value == null)) return null
+  return {
+    input: input ?? 0,
+    cacheWrite: cacheWrite ?? 0,
+    cacheRead: cacheRead ?? 0,
+    output: output ?? 0,
+    reasoning: reasoning ?? 0,
+  }
+}
+
+function normalizeUsageBreakdown(raw: unknown): UsageBreakdown | null {
+  if (!raw || typeof raw !== 'object') return null
+  const payload = raw as Record<string, unknown>
+  const models = Array.isArray(payload.models)
+    ? payload.models.flatMap((rawModel) => {
+        const model = (rawModel ?? {}) as Record<string, unknown>
+        const name = typeof model.model === 'string' ? model.model.trim() : ''
+        if (!name) return []
+        return [{
+          model: name,
+          cacheWriteTokens: normalizeFiniteNumber(model.cacheWriteTokens) ?? 0,
+          cacheReadTokens: normalizeFiniteNumber(model.cacheReadTokens) ?? 0,
+          outputTokens: normalizeFiniteNumber(model.outputTokens) ?? 0,
+          costs: normalizeUsageCostBreakdown(model.costs),
+        }]
+      })
+    : []
+  return {
+    cacheWriteTokens: normalizeFiniteNumber(payload.cacheWriteTokens) ?? 0,
+    cacheReadTokens: normalizeFiniteNumber(payload.cacheReadTokens) ?? 0,
+    outputTokens: normalizeFiniteNumber(payload.outputTokens) ?? 0,
+    costs: normalizeUsageCostBreakdown(payload.costs),
+    models,
+  }
 }
 
 function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
@@ -2234,7 +2316,13 @@ function normalizePromptCacheConversationInvocationPreview(
     inputTokens: normalizeFiniteNumber(payload.inputTokens),
     outputTokens: normalizeFiniteNumber(payload.outputTokens),
     cacheInputTokens: normalizeFiniteNumber(payload.cacheInputTokens),
+    cacheWriteTokens: normalizeFiniteNumber(payload.cacheWriteTokens),
     reasoningTokens: normalizeFiniteNumber(payload.reasoningTokens),
+    costInput: normalizeFiniteNumber(payload.costInput),
+    costCacheWrite: normalizeFiniteNumber(payload.costCacheWrite),
+    costCacheRead: normalizeFiniteNumber(payload.costCacheRead),
+    costOutput: normalizeFiniteNumber(payload.costOutput),
+    costReasoning: normalizeFiniteNumber(payload.costReasoning),
     reasoningEffort:
       typeof payload.reasoningEffort === "string" &&
       payload.reasoningEffort.trim()
@@ -2793,6 +2881,13 @@ function normalizeUpstreamAccountActivityAccount(
     failureTokens: normalizeFiniteNumber(payload.failureTokens) ?? 0,
     failureCost: normalizeFiniteNumber(payload.failureCost) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
+    usageBreakdown: normalizeUsageBreakdown(payload.usageBreakdown) ?? {
+      cacheWriteTokens: 0,
+      cacheReadTokens: 0,
+      outputTokens: 0,
+      costs: null,
+      models: [],
+    },
     cacheHitRate: normalizeFiniteNumber(payload.cacheHitRate),
     tokensPerMinute: normalizeFiniteNumber(payload.tokensPerMinute),
     spendRate: normalizeFiniteNumber(payload.spendRate),
@@ -2823,6 +2918,7 @@ function normalizeStatsResponse(raw: unknown): StatsResponse {
     failureCount: normalizeFiniteNumber(payload.failureCount) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
+    usageBreakdown: normalizeUsageBreakdown(payload.usageBreakdown),
     inProgressConversationCount: normalizeFiniteNumber(
       payload.inProgressConversationCount,
     ),
