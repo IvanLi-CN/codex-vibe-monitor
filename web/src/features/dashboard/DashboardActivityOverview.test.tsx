@@ -6,9 +6,8 @@ import {
   ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX,
   DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
 } from './dashboardActivityRange'
-import {
-  DashboardActivityOverview,
-} from './DashboardActivityOverview'
+import { DashboardActivityOverview } from './DashboardActivityOverview'
+import { mergeSummarySseOverlay } from './dashboardSummarySseOverlay'
 
 const hookMocks = vi.hoisted(() => ({
   useSummary: vi.fn(),
@@ -437,6 +436,34 @@ function emitSse(payload: unknown) {
 }
 
 describe('DashboardActivityOverview', () => {
+  it('keeps billing totals and their breakdown on the same snapshot when summary SSE omits detail', () => {
+    const current = {
+      totalCount: 21,
+      successCount: 18,
+      failureCount: 2,
+      totalCost: 0.42,
+      totalTokens: 4200,
+      usageBreakdown: {
+        total: { cacheWriteTokens: 3200, cacheReadTokens: 500, outputTokens: 500 },
+        models: [],
+      },
+    }
+    const incoming = {
+      totalCount: 34,
+      successCount: 29,
+      failureCount: 3,
+      totalCost: 0.66,
+      totalTokens: 6600,
+    }
+
+    expect(mergeSummarySseOverlay(current, incoming)).toMatchObject({
+      totalCount: 34,
+      totalCost: 0.42,
+      totalTokens: 4200,
+      usageBreakdown: current.usageBreakdown,
+    })
+  })
+
   it('uses a dashboard activity snapshot for the visible top KPI summary overlay without remounting duplicate today summary fetches', () => {
     installSummaryMocks()
 

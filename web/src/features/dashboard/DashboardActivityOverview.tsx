@@ -22,6 +22,7 @@ import { Last24hTenMinuteHeatmap, type MetricKey } from './Last24hTenMinuteHeatm
 import { StatsCards } from '../stats/StatsCards'
 import { TodayStatsOverview } from './TodayStatsOverview'
 import { buildDashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
+import { mergeSummarySseOverlay } from './dashboardSummarySseOverlay'
 import { SegmentedControl, SegmentedControlItem } from '../../components/ui/segmented-control'
 import { UsageCalendar } from './UsageCalendar'
 import { WeeklyHourlyHeatmap } from './WeeklyHourlyHeatmap'
@@ -65,10 +66,7 @@ function useSummarySseOverlay(window: string, initialSummary: StatsResponse) {
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== 'summary' || payload.window !== window) return
-      setSummary((current) => ({
-        ...payload.summary,
-        usageBreakdown: payload.summary.usageBreakdown ?? current.usageBreakdown,
-      }))
+      setSummary((current) => mergeSummarySseOverlay(current, payload.summary))
       recordTodaySummarySseCommit(window)
     })
     return unsubscribe
