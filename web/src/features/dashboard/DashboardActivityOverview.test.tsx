@@ -7,7 +7,6 @@ import {
   DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
 } from './dashboardActivityRange'
 import { DashboardActivityOverview } from './DashboardActivityOverview'
-import { mergeSummarySseOverlay } from './dashboardSummarySseOverlay'
 
 const hookMocks = vi.hoisted(() => ({
   useSummary: vi.fn(),
@@ -436,34 +435,6 @@ function emitSse(payload: unknown) {
 }
 
 describe('DashboardActivityOverview', () => {
-  it('keeps billing totals and their breakdown on the same snapshot when summary SSE omits detail', () => {
-    const current = {
-      totalCount: 21,
-      successCount: 18,
-      failureCount: 2,
-      totalCost: 0.42,
-      totalTokens: 4200,
-      usageBreakdown: {
-        total: { cacheWriteTokens: 3200, cacheReadTokens: 500, outputTokens: 500 },
-        models: [],
-      },
-    }
-    const incoming = {
-      totalCount: 34,
-      successCount: 29,
-      failureCount: 3,
-      totalCost: 0.66,
-      totalTokens: 6600,
-    }
-
-    expect(mergeSummarySseOverlay(current, incoming)).toMatchObject({
-      totalCount: 34,
-      totalCost: 0.42,
-      totalTokens: 4200,
-      usageBreakdown: current.usageBreakdown,
-    })
-  })
-
   it('uses a dashboard activity snapshot for the visible top KPI summary overlay without remounting duplicate today summary fetches', () => {
     installSummaryMocks()
 
@@ -531,7 +502,7 @@ describe('DashboardActivityOverview', () => {
     })
 
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      'total:34;cacheWrite:3200;inProgress:9;retry:2;wait:1100;nonSuccessCost:0.08;nonSuccessTokens:420;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
+      'total:21;cacheWrite:3200;inProgress:7;retry:1;wait:2500;nonSuccessCost:0.04;nonSuccessTokens:300;surface:false;header:false;badge:false;tpm:1234;spendRate:0.45;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
     )
   })
 

@@ -3,13 +3,9 @@ import { useSummary } from '../../hooks/useStats'
 import { useParallelWorkStats } from '../../hooks/useParallelWorkStats'
 import { useTimeseries } from '../../hooks/useTimeseries'
 import { useTranslation } from '../../i18n'
-import type { DashboardActivityResponse, StatsResponse } from '../../lib/api'
+import type { DashboardActivityResponse } from '../../lib/api'
 import { metricAccent } from '../../lib/chartTheme'
-import {
-  recordTodayChartDataCommit,
-  recordTodaySummarySseCommit,
-} from '../../lib/dashboardPerformanceDiagnostics'
-import { subscribeToSse } from '../../lib/sse'
+import { recordTodayChartDataCommit } from '../../lib/dashboardPerformanceDiagnostics'
 import { useTheme } from '../../theme'
 import { DashboardTodayActivityChart } from './DashboardTodayActivityChart'
 import {
@@ -22,7 +18,6 @@ import { Last24hTenMinuteHeatmap, type MetricKey } from './Last24hTenMinuteHeatm
 import { StatsCards } from '../stats/StatsCards'
 import { TodayStatsOverview } from './TodayStatsOverview'
 import { buildDashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
-import { mergeSummarySseOverlay } from './dashboardSummarySseOverlay'
 import { SegmentedControl, SegmentedControlItem } from '../../components/ui/segmented-control'
 import { UsageCalendar } from './UsageCalendar'
 import { WeeklyHourlyHeatmap } from './WeeklyHourlyHeatmap'
@@ -54,25 +49,6 @@ function useScopedSummary(window: string, upstreamAccountId?: number) {
     window,
     upstreamAccountId == null ? undefined : { upstreamAccountId },
   )
-}
-
-function useSummarySseOverlay(window: string, initialSummary: StatsResponse) {
-  const [summary, setSummary] = useState(initialSummary)
-
-  useEffect(() => {
-    setSummary(initialSummary)
-  }, [initialSummary])
-
-  useEffect(() => {
-    const unsubscribe = subscribeToSse((payload) => {
-      if (payload.type !== 'summary' || payload.window !== window) return
-      setSummary((current) => mergeSummarySseOverlay(current, payload.summary))
-      recordTodaySummarySseCommit(window)
-    })
-    return unsubscribe
-  }, [window])
-
-  return summary
 }
 
 function useDashboardTopChartCommittedResponse(
@@ -293,8 +269,6 @@ function DashboardNaturalDayTodaySummaryOverviewSnapshotBacked({
     bucket: '1m',
   })
   const [rateNow, setRateNow] = useState(() => new Date())
-  const liveSummary = useSummarySseOverlay('today', dashboardActivity.summary.stats)
-
   useEffect(() => {
     if (closedNaturalDay) return
     setRateNow(new Date())
@@ -306,7 +280,7 @@ function DashboardNaturalDayTodaySummaryOverviewSnapshotBacked({
 
   return (
     <TodayStatsOverview
-      stats={liveSummary}
+      stats={dashboardActivity.summary.stats}
       loading={false}
       error={null}
       rate={{
