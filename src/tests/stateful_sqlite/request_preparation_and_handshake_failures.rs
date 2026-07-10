@@ -842,6 +842,8 @@ fn estimate_proxy_cost_subtracts_cached_tokens_from_base_input_rate() {
                 input_per_1m: 1.0,
                 output_per_1m: 2.0,
                 cache_input_per_1m: Some(0.5),
+                cache_read_per_1m: Some(0.5),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "custom".to_string(),
             },
@@ -880,6 +882,8 @@ fn estimate_proxy_cost_keeps_full_input_when_cache_price_missing() {
                 input_per_1m: 1.0,
                 output_per_1m: 2.0,
                 cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "custom".to_string(),
             },
@@ -908,6 +912,124 @@ fn estimate_proxy_cost_keeps_full_input_when_cache_price_missing() {
 }
 
 #[test]
+fn estimate_proxy_cost_uses_explicit_gpt_5_6_sol_cache_read_and_write_prices() {
+    let catalog = PricingCatalog {
+        version: "unit-test".to_string(),
+        models: HashMap::from([(
+            "gpt-5.6-sol".to_string(),
+            ModelPricing {
+                input_per_1m: 5.0,
+                output_per_1m: 30.0,
+                cache_input_per_1m: Some(0.5),
+                cache_read_per_1m: Some(0.5),
+                cache_write_per_1m: Some(6.25),
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(200),
+        cache_input_tokens: Some(400),
+        reasoning_tokens: None,
+        total_tokens: Some(1_200),
+    };
+
+    let (cost, estimated, price_version) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.6-sol"),
+        &usage,
+        Some("default"),
+        ProxyPricingMode::ResponseTier,
+    );
+
+    let expected = ((600.0 * 6.25) + (400.0 * 0.5) + (200.0 * 30.0)) / 1_000_000.0;
+    let computed = cost.expect("cost should be present");
+    assert!((computed - expected).abs() < 1e-12);
+    assert!(estimated);
+    assert_eq!(price_version.as_deref(), Some("unit-test@response-tier"));
+}
+
+#[test]
+fn estimate_proxy_cost_falls_back_to_dated_gpt_5_6_terra_base_pricing() {
+    let catalog = PricingCatalog {
+        version: "unit-test".to_string(),
+        models: HashMap::from([(
+            "gpt-5.6-terra".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: Some(0.25),
+                cache_read_per_1m: Some(0.25),
+                cache_write_per_1m: Some(3.125),
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(200),
+        cache_input_tokens: Some(400),
+        reasoning_tokens: None,
+        total_tokens: Some(1_200),
+    };
+
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.6-terra-2026-07-08"),
+        &usage,
+        Some("default"),
+        ProxyPricingMode::ResponseTier,
+    );
+
+    let expected = ((600.0 * 3.125) + (400.0 * 0.25) + (200.0 * 15.0)) / 1_000_000.0;
+    let computed = cost.expect("cost should be present");
+    assert!((computed - expected).abs() < 1e-12);
+    assert!(estimated);
+}
+
+#[test]
+fn estimate_proxy_cost_falls_back_to_dated_gpt_5_6_luna_base_pricing() {
+    let catalog = PricingCatalog {
+        version: "unit-test".to_string(),
+        models: HashMap::from([(
+            "gpt-5.6-luna".to_string(),
+            ModelPricing {
+                input_per_1m: 1.0,
+                output_per_1m: 6.0,
+                cache_input_per_1m: Some(0.1),
+                cache_read_per_1m: Some(0.1),
+                cache_write_per_1m: Some(1.25),
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(200),
+        cache_input_tokens: Some(400),
+        reasoning_tokens: None,
+        total_tokens: Some(1_200),
+    };
+
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.6-luna-2026-07-08"),
+        &usage,
+        Some("default"),
+        ProxyPricingMode::ResponseTier,
+    );
+
+    let expected = ((600.0 * 1.25) + (400.0 * 0.1) + (200.0 * 6.0)) / 1_000_000.0;
+    let computed = cost.expect("cost should be present");
+    assert!((computed - expected).abs() < 1e-12);
+    assert!(estimated);
+}
+
+#[test]
 fn estimate_proxy_cost_falls_back_to_dated_model_base_pricing() {
     let catalog = PricingCatalog {
         version: "unit-test".to_string(),
@@ -917,6 +1039,8 @@ fn estimate_proxy_cost_falls_back_to_dated_model_base_pricing() {
                 input_per_1m: 2.0,
                 output_per_1m: 3.0,
                 cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "custom".to_string(),
             },
@@ -954,6 +1078,8 @@ fn estimate_proxy_cost_prefers_exact_model_over_dated_model_base_pricing() {
                     input_per_1m: 1.0,
                     output_per_1m: 1.0,
                     cache_input_per_1m: None,
+                    cache_read_per_1m: None,
+                    cache_write_per_1m: None,
                     reasoning_per_1m: None,
                     source: "custom".to_string(),
                 },
@@ -964,6 +1090,8 @@ fn estimate_proxy_cost_prefers_exact_model_over_dated_model_base_pricing() {
                     input_per_1m: 4.0,
                     output_per_1m: 5.0,
                     cache_input_per_1m: None,
+                    cache_read_per_1m: None,
+                    cache_write_per_1m: None,
                     reasoning_per_1m: None,
                     source: "custom".to_string(),
                 },
@@ -1001,6 +1129,8 @@ fn estimate_proxy_cost_does_not_apply_gpt_5_4_long_context_surcharge_at_threshol
                 input_per_1m: 2.5,
                 output_per_1m: 15.0,
                 cache_input_per_1m: Some(0.25),
+                cache_read_per_1m: Some(0.25),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "custom".to_string(),
             },
@@ -1038,6 +1168,8 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_above_threshold() 
                 input_per_1m: 2.5,
                 output_per_1m: 15.0,
                 cache_input_per_1m: Some(0.25),
+                cache_read_per_1m: Some(0.25),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "custom".to_string(),
             },
@@ -1077,6 +1209,8 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_to_reasoning_cost(
                 input_per_1m: 2.5,
                 output_per_1m: 15.0,
                 cache_input_per_1m: Some(0.25),
+                cache_read_per_1m: Some(0.25),
+                cache_write_per_1m: None,
                 reasoning_per_1m: Some(20.0),
                 source: "custom".to_string(),
             },
@@ -1117,6 +1251,8 @@ fn estimate_proxy_cost_applies_gpt_5_4_pro_long_context_surcharge_above_threshol
                 input_per_1m: 30.0,
                 output_per_1m: 180.0,
                 cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "custom".to_string(),
             },
@@ -1156,6 +1292,8 @@ fn estimate_proxy_cost_applies_gpt_5_4_pro_long_context_surcharge_for_dated_mode
                 input_per_1m: 30.0,
                 output_per_1m: 180.0,
                 cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
                 reasoning_per_1m: Some(90.0),
                 source: "custom".to_string(),
             },
@@ -1196,6 +1334,8 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_for_dated_model_su
                 input_per_1m: 2.5,
                 output_per_1m: 15.0,
                 cache_input_per_1m: Some(0.25),
+                cache_read_per_1m: Some(0.25),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "custom".to_string(),
             },
@@ -1235,6 +1375,8 @@ fn estimate_proxy_cost_does_not_apply_gpt_5_4_long_context_surcharge_for_other_m
                 input_per_1m: 2.5,
                 output_per_1m: 15.0,
                 cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "custom".to_string(),
             },
@@ -1272,6 +1414,8 @@ fn estimate_proxy_cost_applies_requested_tier_priority_multiplier_and_price_vers
                 input_per_1m: 2.5,
                 output_per_1m: 15.0,
                 cache_input_per_1m: Some(0.25),
+                cache_read_per_1m: Some(0.25),
+                cache_write_per_1m: None,
                 reasoning_per_1m: Some(20.0),
                 source: "custom".to_string(),
             },

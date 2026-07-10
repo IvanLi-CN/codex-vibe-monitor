@@ -324,7 +324,14 @@ pub(crate) fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> Stri
         mix_fvn1a(&mut hash, &pricing.input_per_1m.to_bits().to_le_bytes());
         mix_fvn1a(&mut hash, &pricing.output_per_1m.to_bits().to_le_bytes());
 
-        match pricing.cache_input_per_1m {
+        match pricing.effective_cache_read_per_1m() {
+            Some(value) => {
+                mix_fvn1a(&mut hash, &[1]);
+                mix_fvn1a(&mut hash, &value.to_bits().to_le_bytes());
+            }
+            None => mix_fvn1a(&mut hash, &[0]),
+        }
+        match pricing.cache_write_per_1m {
             Some(value) => {
                 mix_fvn1a(&mut hash, &[1]);
                 mix_fvn1a(&mut hash, &value.to_bits().to_le_bytes());
@@ -373,20 +380,32 @@ pub(crate) fn estimate_proxy_cost(
         .as_deref()
         .is_some_and(|tier| tier == PRIORITY_SERVICE_TIER);
 
-    let billable_cache_tokens = if pricing.cache_input_per_1m.is_some() {
+    let cache_read_price = pricing.effective_cache_read_per_1m();
+    let billable_cache_tokens = if cache_read_price.is_some() {
         cache_input_tokens
     } else {
         0
     };
     let non_cached_input_tokens = input_tokens.saturating_sub(billable_cache_tokens);
 
-    let non_cached_input_cost =
-        (non_cached_input_tokens as f64 / 1_000_000.0) * pricing.input_per_1m;
-    let cache_input_cost = pricing
-        .cache_input_per_1m
-        .map(|cache_price| (billable_cache_tokens as f64 / 1_000_000.0) * cache_price)
-        .unwrap_or(0.0);
-    let mut input_cost = non_cached_input_cost + cache_input_cost;
+    let mut input_cost = if pricing.has_explicit_cache_pricing_split() {
+        let cache_write_price = pricing
+            .cache_write_per_1m
+            .expect("explicit cache split requires write pricing");
+        let non_cached_input_cost =
+            (non_cached_input_tokens as f64 / 1_000_000.0) * cache_write_price;
+        let cache_input_cost = cache_read_price
+            .map(|cache_price| (billable_cache_tokens as f64 / 1_000_000.0) * cache_price)
+            .unwrap_or(0.0);
+        non_cached_input_cost + cache_input_cost
+    } else {
+        let non_cached_input_cost =
+            (non_cached_input_tokens as f64 / 1_000_000.0) * pricing.input_per_1m;
+        let cache_input_cost = cache_read_price
+            .map(|cache_price| (billable_cache_tokens as f64 / 1_000_000.0) * cache_price)
+            .unwrap_or(0.0);
+        non_cached_input_cost + cache_input_cost
+    };
 
     let mut output_cost = (output_tokens / 1_000_000.0) * pricing.output_per_1m;
 

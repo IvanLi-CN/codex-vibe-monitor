@@ -38,6 +38,28 @@ pub(crate) fn ensure_schema_lock(pool: &Pool<Sqlite>) -> std::sync::Arc<tokio::s
     lock
 }
 
+async fn ensure_nullable_real_column(
+    pool: &Pool<Sqlite>,
+    table_name: &str,
+    column_name: &str,
+) -> Result<()> {
+    let pragma = format!("PRAGMA table_info('{table_name}')");
+    let columns = sqlx::query(&pragma)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+
+    if columns.contains(column_name) {
+        return Ok(());
+    }
+
+    let statement = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} REAL");
+    sqlx::query(&statement).execute(pool).await?;
+    Ok(())
+}
+
 pub(crate) fn invocation_in_progress_live_prompt_cache_key_expr(subject: &str) -> String {
     format!(
         "CASE WHEN json_valid({subject}.payload) THEN TRIM(CAST(json_extract({subject}.payload, '$.promptCacheKey') AS TEXT)) END"
@@ -2800,6 +2822,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             input_per_1m REAL NOT NULL,
             output_per_1m REAL NOT NULL,
             cache_input_per_1m REAL,
+            cache_read_per_1m REAL,
+            cache_write_per_1m REAL,
             reasoning_per_1m REAL,
             source TEXT NOT NULL DEFAULT 'custom',
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -2809,6 +2833,24 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure pricing_settings_models table existence")?;
+
+    ensure_nullable_real_column(pool, "pricing_settings_models", "cache_read_per_1m")
+        .await
+        .context("failed to ensure pricing_settings_models.cache_read_per_1m")?;
+    ensure_nullable_real_column(pool, "pricing_settings_models", "cache_write_per_1m")
+        .await
+        .context("failed to ensure pricing_settings_models.cache_write_per_1m")?;
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET cache_read_per_1m = cache_input_per_1m
+        WHERE cache_read_per_1m IS NULL
+          AND cache_input_per_1m IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill pricing_settings_models.cache_read_per_1m")?;
 
     sqlx::query(
         r#"

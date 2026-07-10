@@ -423,9 +423,23 @@ pub(crate) struct ModelPricing {
     #[serde(default)]
     pub(crate) cache_input_per_1m: Option<f64>,
     #[serde(default)]
+    pub(crate) cache_read_per_1m: Option<f64>,
+    #[serde(default)]
+    pub(crate) cache_write_per_1m: Option<f64>,
+    #[serde(default)]
     pub(crate) reasoning_per_1m: Option<f64>,
     #[serde(default = "default_pricing_source_custom")]
     pub(crate) source: String,
+}
+
+impl ModelPricing {
+    pub(crate) fn effective_cache_read_per_1m(&self) -> Option<f64> {
+        self.cache_read_per_1m.or(self.cache_input_per_1m)
+    }
+
+    pub(crate) fn has_explicit_cache_pricing_split(&self) -> bool {
+        self.cache_read_per_1m.is_some() && self.cache_write_per_1m.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -436,6 +450,10 @@ pub(crate) struct PricingEntry {
     pub(crate) output_per_1m: f64,
     #[serde(default)]
     pub(crate) cache_input_per_1m: Option<f64>,
+    #[serde(default)]
+    pub(crate) cache_read_per_1m: Option<f64>,
+    #[serde(default)]
+    pub(crate) cache_write_per_1m: Option<f64>,
     #[serde(default)]
     pub(crate) reasoning_per_1m: Option<f64>,
     #[serde(default = "default_pricing_source_custom")]
@@ -485,6 +503,22 @@ impl PricingSettingsUpdateRequest {
                     format!("invalid cacheInputPer1m for model: {model_id}"),
                 ));
             }
+            if let Some(cache) = entry.cache_read_per_1m
+                && (!cache.is_finite() || cache < 0.0)
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid cacheReadPer1m for model: {model_id}"),
+                ));
+            }
+            if let Some(cache) = entry.cache_write_per_1m
+                && (!cache.is_finite() || cache < 0.0)
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid cacheWritePer1m for model: {model_id}"),
+                ));
+            }
             if let Some(reasoning) = entry.reasoning_per_1m
                 && (!reasoning.is_finite() || reasoning < 0.0)
             {
@@ -494,12 +528,15 @@ impl PricingSettingsUpdateRequest {
                 ));
             }
 
+            let cache_read_per_1m = entry.cache_read_per_1m.or(entry.cache_input_per_1m);
             let inserted = models.insert(
                 model_id.to_string(),
                 ModelPricing {
                     input_per_1m: entry.input_per_1m,
                     output_per_1m: entry.output_per_1m,
-                    cache_input_per_1m: entry.cache_input_per_1m,
+                    cache_input_per_1m: cache_read_per_1m,
+                    cache_read_per_1m,
+                    cache_write_per_1m: entry.cache_write_per_1m,
                     reasoning_per_1m: entry.reasoning_per_1m,
                     source: normalize_pricing_source(entry.source),
                 },
@@ -527,13 +564,18 @@ impl PricingSettingsResponse {
         let mut entries = catalog
             .models
             .iter()
-            .map(|(model, pricing)| PricingEntry {
-                model: model.clone(),
-                input_per_1m: pricing.input_per_1m,
-                output_per_1m: pricing.output_per_1m,
-                cache_input_per_1m: pricing.cache_input_per_1m,
-                reasoning_per_1m: pricing.reasoning_per_1m,
-                source: pricing.source.clone(),
+            .map(|(model, pricing)| {
+                let cache_read_per_1m = pricing.effective_cache_read_per_1m();
+                PricingEntry {
+                    model: model.clone(),
+                    input_per_1m: pricing.input_per_1m,
+                    output_per_1m: pricing.output_per_1m,
+                    cache_input_per_1m: cache_read_per_1m,
+                    cache_read_per_1m,
+                    cache_write_per_1m: pricing.cache_write_per_1m,
+                    reasoning_per_1m: pricing.reasoning_per_1m,
+                    source: pricing.source.clone(),
+                }
             })
             .collect::<Vec<_>>();
         entries.sort_by(|a, b| a.model.cmp(&b.model));

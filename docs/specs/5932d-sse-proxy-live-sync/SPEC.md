@@ -64,6 +64,7 @@
 - Dashboard `today` summary:
   - SSE `summary` payload 是 KPI 数字的快速路径，匹配窗口时直接提交并保持 ≤1s 可见。
   - `records` payload 只触发 HTTP reconcile，不作为 KPI 快速路径；calendar-window HTTP reconcile 必须节流到不超过每 5 秒一次。
+  - 当主 Dashboard 已经持有当前可见 `today` / `yesterday` 的 `dashboardActivity` snapshot 时，自然日总览卡片必须直接复用该 snapshot 里的同窗口 summary / rate truth，不得再为同一窗口额外挂载第二条 `useSummary(window)` 订阅；仅比较窗口（如 `yesterday`、`previous7d`）允许继续独立读取。
 - Dashboard 顶部 `today`/`yesterday` 1 分钟粒度活动图：
   - 继续使用既有 Recharts 图表、tooltip、1 分钟 bucket 与交互结构。
   - `today` 图表接收的 timeseries response 允许高频到达，但提交给图表渲染的数据快照必须独立节流到不超过每 5 秒一次。
@@ -118,6 +119,7 @@
 - Given 命中 `INSERT OR IGNORE` 未插入，When 请求完成，Then 不重复发送 `records` 事件。
 - Given SSE 发生断线并恢复，When 连接 open，Then 前端列表通过静默回源补齐，且与后端一致。
 - Given Dashboard 收到 `today` 的 SSE `summary`，When payload 匹配当前窗口，Then KPI 数字不等待 HTTP reconcile 即可提交。
+- Given Dashboard 当前可见 `today` 或 `yesterday` 面板已经持有同窗口 `dashboardActivity` snapshot，When 活动总览渲染，Then 同窗口 KPI / rate 直接来自该 snapshot，且不再触发额外的同窗口 `useSummary` 订阅或回源。
 - Given Dashboard 高频收到 `records`，When 需要更新 calendar-window summary、顶部 today 图表或 working conversation head，Then 对应 HTTP / chart commit 不超过每 5 秒一次。
 - Given working conversations 高频收到同一秒内多条 `records`，When 这些 records 命中已加载会话，Then 本地可见 patch 合并为 1 秒批次提交。
 - Given 一个 `pending` 或 `running` 调用 started 超过 5 分钟，When 查询 Dashboard 当前 summary、account activity 或 working conversations，Then 该调用仍计入 active phase counts 并出现在当前卡片列表。

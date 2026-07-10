@@ -70,6 +70,8 @@ pub(crate) async fn save_proxy_model_settings(
     Ok(())
 }
 
+const LATEST_PROXY_PRESET_MODELS_MIGRATION_VERSION: i64 = 2;
+
 pub(crate) async fn ensure_proxy_enabled_models_contains_new_presets(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
@@ -86,7 +88,7 @@ pub(crate) async fn ensure_proxy_enabled_models_contains_new_presets(
     .await
     .context("failed to check proxy preset models migration flag")?
     .unwrap_or(0);
-    if migrated != 0 {
+    if migrated >= LATEST_PROXY_PRESET_MODELS_MIGRATION_VERSION {
         return Ok(());
     }
 
@@ -109,8 +111,15 @@ pub(crate) async fn ensure_proxy_enabled_models_contains_new_presets(
             .map(|id| (*id).to_string())
             .collect::<Vec<_>>(),
     );
+    let oldest_legacy_default = normalize_enabled_preset_models(
+        OLDEST_LEGACY_PROXY_PRESET_MODEL_IDS
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect::<Vec<_>>(),
+    );
     if settings.enabled_preset_models != legacy_default
         && settings.enabled_preset_models != previous_default
+        && settings.enabled_preset_models != oldest_legacy_default
     {
         // Respect user customizations: only auto-append when the enabled list matches
         // a repo-managed default preset list exactly.
@@ -119,7 +128,15 @@ pub(crate) async fn ensure_proxy_enabled_models_contains_new_presets(
     }
 
     let mut changed = false;
-    for required in ["gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro"] {
+    for required in [
+        "gpt-5.4",
+        "gpt-5.4-pro",
+        "gpt-5.5",
+        "gpt-5.5-pro",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ] {
         if !settings
             .enabled_preset_models
             .iter()
@@ -225,11 +242,12 @@ pub(crate) async fn mark_proxy_preset_models_migrated(pool: &Pool<Sqlite>) -> Re
     sqlx::query(
         r#"
         UPDATE proxy_model_settings
-        SET preset_models_migrated = 1,
+        SET preset_models_migrated = ?1,
             updated_at = datetime('now')
-        WHERE id = ?1
+        WHERE id = ?2
         "#,
     )
+    .bind(LATEST_PROXY_PRESET_MODELS_MIGRATION_VERSION)
     .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
     .execute(pool)
     .await
@@ -248,6 +266,8 @@ pub(crate) struct PricingSettingsModelRow {
     input_per_1m: f64,
     output_per_1m: f64,
     cache_input_per_1m: Option<f64>,
+    cache_read_per_1m: Option<f64>,
+    cache_write_per_1m: Option<f64>,
     reasoning_per_1m: Option<f64>,
     source: String,
 }
@@ -264,16 +284,20 @@ pub(crate) async fn ensure_pricing_model_present(
             input_per_1m,
             output_per_1m,
             cache_input_per_1m,
+            cache_read_per_1m,
+            cache_write_per_1m,
             reasoning_per_1m,
             source
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         "#,
     )
     .bind(model)
     .bind(pricing.input_per_1m)
     .bind(pricing.output_per_1m)
-    .bind(pricing.cache_input_per_1m)
+    .bind(pricing.effective_cache_read_per_1m())
+    .bind(pricing.effective_cache_read_per_1m())
+    .bind(pricing.cache_write_per_1m)
     .bind(pricing.reasoning_per_1m)
     .bind(pricing.source)
     .execute(pool)
@@ -291,6 +315,8 @@ pub(crate) async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result
             input_per_1m: 2.5,
             output_per_1m: 15.0,
             cache_input_per_1m: Some(0.25),
+            cache_read_per_1m: Some(0.25),
+            cache_write_per_1m: None,
             reasoning_per_1m: None,
             source: "official".to_string(),
         },
@@ -303,6 +329,8 @@ pub(crate) async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result
             input_per_1m: 30.0,
             output_per_1m: 180.0,
             cache_input_per_1m: None,
+            cache_read_per_1m: None,
+            cache_write_per_1m: None,
             reasoning_per_1m: None,
             source: "official".to_string(),
         },
@@ -315,6 +343,8 @@ pub(crate) async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result
             input_per_1m: 0.75,
             output_per_1m: 4.5,
             cache_input_per_1m: Some(0.075),
+            cache_read_per_1m: Some(0.075),
+            cache_write_per_1m: None,
             reasoning_per_1m: None,
             source: "official".to_string(),
         },
@@ -327,6 +357,8 @@ pub(crate) async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result
             input_per_1m: 5.0,
             output_per_1m: 30.0,
             cache_input_per_1m: Some(0.5),
+            cache_read_per_1m: Some(0.5),
+            cache_write_per_1m: None,
             reasoning_per_1m: None,
             source: "official".to_string(),
         },
@@ -339,6 +371,50 @@ pub(crate) async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result
             input_per_1m: 30.0,
             output_per_1m: 180.0,
             cache_input_per_1m: None,
+            cache_read_per_1m: None,
+            cache_write_per_1m: None,
+            reasoning_per_1m: None,
+            source: "official".to_string(),
+        },
+    )
+    .await?;
+    ensure_pricing_model_present(
+        pool,
+        "gpt-5.6-sol",
+        ModelPricing {
+            input_per_1m: 5.0,
+            output_per_1m: 30.0,
+            cache_input_per_1m: Some(0.5),
+            cache_read_per_1m: Some(0.5),
+            cache_write_per_1m: Some(6.25),
+            reasoning_per_1m: None,
+            source: "official".to_string(),
+        },
+    )
+    .await?;
+    ensure_pricing_model_present(
+        pool,
+        "gpt-5.6-terra",
+        ModelPricing {
+            input_per_1m: 2.5,
+            output_per_1m: 15.0,
+            cache_input_per_1m: Some(0.25),
+            cache_read_per_1m: Some(0.25),
+            cache_write_per_1m: Some(3.125),
+            reasoning_per_1m: None,
+            source: "official".to_string(),
+        },
+    )
+    .await?;
+    ensure_pricing_model_present(
+        pool,
+        "gpt-5.6-luna",
+        ModelPricing {
+            input_per_1m: 1.0,
+            output_per_1m: 6.0,
+            cache_input_per_1m: Some(0.10),
+            cache_read_per_1m: Some(0.10),
+            cache_write_per_1m: Some(1.25),
             reasoning_per_1m: None,
             source: "official".to_string(),
         },
@@ -353,7 +429,28 @@ pub(crate) fn is_repo_managed_default_pricing_catalog_version(version: &str) -> 
         DEFAULT_PRICING_CATALOG_VERSION
             | PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION
             | LEGACY_DEFAULT_PRICING_CATALOG_VERSION
+            | OLDEST_LEGACY_DEFAULT_PRICING_CATALOG_VERSION
     )
+}
+
+pub(crate) async fn promote_repo_managed_default_pricing_catalog_version(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_meta
+        SET catalog_version = ?1,
+            updated_at = datetime('now')
+        WHERE id = ?2
+          AND catalog_version <> ?1
+        "#,
+    )
+    .bind(DEFAULT_PRICING_CATALOG_VERSION)
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .execute(pool)
+    .await
+    .context("failed to promote repo-managed pricing catalog version")?;
+    Ok(())
 }
 
 pub(crate) async fn normalize_default_pricing_sources(pool: &Pool<Sqlite>) -> Result<()> {
@@ -409,6 +506,7 @@ pub(crate) async fn seed_default_pricing_catalog_with_legacy_path(
         if is_repo_managed_default_pricing_catalog_version(&version) {
             ensure_pricing_models_present(pool).await?;
             normalize_default_pricing_sources(pool).await?;
+            promote_repo_managed_default_pricing_catalog_version(pool).await?;
         }
         return Ok(());
     }
@@ -453,6 +551,7 @@ pub(crate) async fn seed_default_pricing_catalog_with_legacy_path(
                 if is_repo_managed_default_pricing_catalog_version(&catalog.version) {
                     ensure_pricing_models_present(pool).await?;
                     normalize_default_pricing_sources(pool).await?;
+                    promote_repo_managed_default_pricing_catalog_version(pool).await?;
                 }
                 return Ok(());
             }
@@ -488,6 +587,10 @@ pub(crate) struct LegacyModelPricing {
     #[serde(default)]
     cache_input_per_1m: Option<f64>,
     #[serde(default)]
+    cache_read_per_1m: Option<f64>,
+    #[serde(default)]
+    cache_write_per_1m: Option<f64>,
+    #[serde(default)]
     reasoning_per_1m: Option<f64>,
     #[serde(default)]
     source: Option<String>,
@@ -521,12 +624,15 @@ pub(crate) fn load_legacy_pricing_catalog(path: &Path) -> Result<Option<PricingC
         .models
         .into_iter()
         .map(|(model, pricing)| {
+            let cache_read_per_1m = pricing.cache_read_per_1m.or(pricing.cache_input_per_1m);
             (
                 model,
                 ModelPricing {
                     input_per_1m: pricing.input_per_1m,
                     output_per_1m: pricing.output_per_1m,
-                    cache_input_per_1m: pricing.cache_input_per_1m,
+                    cache_input_per_1m: cache_read_per_1m,
+                    cache_read_per_1m,
+                    cache_write_per_1m: pricing.cache_write_per_1m,
                     reasoning_per_1m: pricing.reasoning_per_1m,
                     source: pricing
                         .source
@@ -561,7 +667,15 @@ pub(crate) async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingC
 
     let rows = sqlx::query_as::<_, PricingSettingsModelRow>(
         r#"
-        SELECT model, input_per_1m, output_per_1m, cache_input_per_1m, reasoning_per_1m, source
+        SELECT
+            model,
+            input_per_1m,
+            output_per_1m,
+            cache_input_per_1m,
+            cache_read_per_1m,
+            cache_write_per_1m,
+            reasoning_per_1m,
+            source
         FROM pricing_settings_models
         "#,
     )
@@ -571,12 +685,17 @@ pub(crate) async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingC
 
     let mut models = HashMap::new();
     for row in rows {
+        // Legacy rows may only populate cache_input_per_1m, but explicit read pricing must win
+        // whenever both columns are present.
+        let cache_read_per_1m = row.cache_read_per_1m.or(row.cache_input_per_1m);
         models.insert(
             row.model,
             ModelPricing {
                 input_per_1m: row.input_per_1m,
                 output_per_1m: row.output_per_1m,
-                cache_input_per_1m: row.cache_input_per_1m,
+                cache_input_per_1m: cache_read_per_1m,
+                cache_read_per_1m,
+                cache_write_per_1m: row.cache_write_per_1m,
                 reasoning_per_1m: row.reasoning_per_1m,
                 source: normalize_pricing_source(row.source),
             },
@@ -613,17 +732,21 @@ pub(crate) async fn save_pricing_catalog(
                 input_per_1m,
                 output_per_1m,
                 cache_input_per_1m,
+                cache_read_per_1m,
+                cache_write_per_1m,
                 reasoning_per_1m,
                 source,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
             "#,
         )
         .bind(model)
         .bind(pricing.input_per_1m)
         .bind(pricing.output_per_1m)
-        .bind(pricing.cache_input_per_1m)
+        .bind(pricing.effective_cache_read_per_1m())
+        .bind(pricing.effective_cache_read_per_1m())
+        .bind(pricing.cache_write_per_1m)
         .bind(pricing.reasoning_per_1m)
         .bind(&pricing.source)
         .execute(&mut *tx)
@@ -660,6 +783,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 1.75,
                 output_per_1m: 14.0,
                 cache_input_per_1m: Some(0.175),
+                cache_read_per_1m: Some(0.175),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -670,6 +795,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 1.75,
                 output_per_1m: 14.0,
                 cache_input_per_1m: Some(0.175),
+                cache_read_per_1m: Some(0.175),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -680,6 +807,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 1.25,
                 output_per_1m: 10.0,
                 cache_input_per_1m: Some(0.125),
+                cache_read_per_1m: Some(0.125),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -690,6 +819,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 0.25,
                 output_per_1m: 2.0,
                 cache_input_per_1m: Some(0.025),
+                cache_read_per_1m: Some(0.025),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -700,6 +831,44 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 1.75,
                 output_per_1m: 14.0,
                 cache_input_per_1m: Some(0.175),
+                cache_read_per_1m: Some(0.175),
+                cache_write_per_1m: None,
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.6-sol",
+            ModelPricing {
+                input_per_1m: 5.0,
+                output_per_1m: 30.0,
+                cache_input_per_1m: Some(0.5),
+                cache_read_per_1m: Some(0.5),
+                cache_write_per_1m: Some(6.25),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.6-terra",
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: Some(0.25),
+                cache_read_per_1m: Some(0.25),
+                cache_write_per_1m: Some(3.125),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.6-luna",
+            ModelPricing {
+                input_per_1m: 1.0,
+                output_per_1m: 6.0,
+                cache_input_per_1m: Some(0.10),
+                cache_read_per_1m: Some(0.10),
+                cache_write_per_1m: Some(1.25),
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -710,6 +879,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 2.5,
                 output_per_1m: 15.0,
                 cache_input_per_1m: Some(0.25),
+                cache_read_per_1m: Some(0.25),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -720,6 +891,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 0.75,
                 output_per_1m: 4.5,
                 cache_input_per_1m: Some(0.075),
+                cache_read_per_1m: Some(0.075),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -730,6 +903,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 5.0,
                 output_per_1m: 30.0,
                 cache_input_per_1m: Some(0.5),
+                cache_read_per_1m: Some(0.5),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -740,6 +915,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 1.25,
                 output_per_1m: 10.0,
                 cache_input_per_1m: Some(0.125),
+                cache_read_per_1m: Some(0.125),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -750,6 +927,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 0.25,
                 output_per_1m: 2.0,
                 cache_input_per_1m: Some(0.025),
+                cache_read_per_1m: Some(0.025),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -760,6 +939,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 0.05,
                 output_per_1m: 0.4,
                 cache_input_per_1m: Some(0.005),
+                cache_read_per_1m: Some(0.005),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -770,6 +951,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 1.75,
                 output_per_1m: 14.0,
                 cache_input_per_1m: Some(0.175),
+                cache_read_per_1m: Some(0.175),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -780,6 +963,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 1.25,
                 output_per_1m: 10.0,
                 cache_input_per_1m: Some(0.125),
+                cache_read_per_1m: Some(0.125),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -790,6 +975,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 1.25,
                 output_per_1m: 10.0,
                 cache_input_per_1m: Some(0.125),
+                cache_read_per_1m: Some(0.125),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -800,6 +987,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 1.25,
                 output_per_1m: 10.0,
                 cache_input_per_1m: Some(0.125),
+                cache_read_per_1m: Some(0.125),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -810,6 +999,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 1.25,
                 output_per_1m: 10.0,
                 cache_input_per_1m: Some(0.125),
+                cache_read_per_1m: Some(0.125),
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -820,6 +1011,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 21.0,
                 output_per_1m: 168.0,
                 cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -830,6 +1023,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 30.0,
                 output_per_1m: 180.0,
                 cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -840,6 +1035,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 30.0,
                 output_per_1m: 180.0,
                 cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },
@@ -850,6 +1047,8 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 input_per_1m: 15.0,
                 output_per_1m: 120.0,
                 cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
                 reasoning_per_1m: None,
                 source: "official".to_string(),
             },

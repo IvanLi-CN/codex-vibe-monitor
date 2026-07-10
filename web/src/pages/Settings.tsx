@@ -35,7 +35,8 @@ type PricingDraftEntry = {
   model: string
   inputPer1m: string
   outputPer1m: string
-  cacheInputPer1m: string
+  cacheReadPer1m: string
+  cacheWritePer1m: string
   reasoningPer1m: string
   source: string
 }
@@ -117,7 +118,11 @@ function toPricingDraft(pricing: PricingSettings): PricingDraft {
       model: entry.model,
       inputPer1m: String(entry.inputPer1m),
       outputPer1m: String(entry.outputPer1m),
-      cacheInputPer1m: entry.cacheInputPer1m == null ? '' : String(entry.cacheInputPer1m),
+      cacheReadPer1m:
+        (entry.cacheReadPer1m ?? entry.cacheInputPer1m) == null
+          ? ''
+          : String(entry.cacheReadPer1m ?? entry.cacheInputPer1m),
+      cacheWritePer1m: entry.cacheWritePer1m == null ? '' : String(entry.cacheWritePer1m),
       reasoningPer1m: entry.reasoningPer1m == null ? '' : String(entry.reasoningPer1m),
       source: entry.source,
     })),
@@ -163,19 +168,25 @@ function parsePricingDraft(draft: PricingDraft): { value?: PricingSettings; erro
 
     const inputPer1m = parsePricingValue(rawEntry.inputPer1m, false)
     const outputPer1m = parsePricingValue(rawEntry.outputPer1m, false)
-    const cacheInputPer1m = parsePricingValue(rawEntry.cacheInputPer1m, true)
+    const cacheReadPer1m = parsePricingValue(rawEntry.cacheReadPer1m, true)
+    const cacheWritePer1m = parsePricingValue(rawEntry.cacheWritePer1m, true)
     const reasoningPer1m = parsePricingValue(rawEntry.reasoningPer1m, true)
 
     if (inputPer1m == null || outputPer1m == null) {
       return { error: 'settings.pricing.errors.numberInvalid' }
     }
-    if (cacheInputPer1m === undefined || reasoningPer1m === undefined) {
+    if (
+      cacheReadPer1m === undefined ||
+      cacheWritePer1m === undefined ||
+      reasoningPer1m === undefined
+    ) {
       return { error: 'settings.pricing.errors.numberInvalid' }
     }
     if (
       inputPer1m < 0 ||
       outputPer1m < 0 ||
-      (cacheInputPer1m != null && cacheInputPer1m < 0) ||
+      (cacheReadPer1m != null && cacheReadPer1m < 0) ||
+      (cacheWritePer1m != null && cacheWritePer1m < 0) ||
       (reasoningPer1m != null && reasoningPer1m < 0)
     ) {
       return { error: 'settings.pricing.errors.numberNegative' }
@@ -185,7 +196,9 @@ function parsePricingDraft(draft: PricingDraft): { value?: PricingSettings; erro
       model,
       inputPer1m,
       outputPer1m,
-      cacheInputPer1m,
+      cacheInputPer1m: cacheReadPer1m,
+      cacheReadPer1m,
+      cacheWritePer1m,
       reasoningPer1m,
       source: rawEntry.source || 'custom',
     })
@@ -694,7 +707,8 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
             model: '',
             inputPer1m: '0',
             outputPer1m: '0',
-            cacheInputPer1m: '',
+            cacheReadPer1m: '',
+            cacheWritePer1m: '',
             reasoningPer1m: '',
             source: 'custom',
           },
@@ -1723,7 +1737,8 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                       <th className={cn('w-44', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.model')}</th>
                       <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.input')}</th>
                       <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.output')}</th>
-                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.cacheInput')}</th>
+                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.cacheRead')}</th>
+                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.cacheWrite')}</th>
                       <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.reasoning')}</th>
                       <th className={cn('w-28 whitespace-nowrap', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.source')}</th>
                       <th className={cn('w-24 whitespace-nowrap text-right', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.actions')}</th>
@@ -1773,8 +1788,18 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                             type="number"
                             step="any"
                             className="h-9 px-3"
-                            value={entry.cacheInputPer1m}
-                            onChange={(event) => handlePricingFieldChange(index, 'cacheInputPer1m', event.target.value)}
+                            value={entry.cacheReadPer1m}
+                            onChange={(event) => handlePricingFieldChange(index, 'cacheReadPer1m', event.target.value)}
+                            onBlur={() => triggerPricingSave(true)}
+                          />
+                        </td>
+                        <td className={pricingTableBodyCellClass}>
+                          <Input
+                            type="number"
+                            step="any"
+                            className="h-9 px-3"
+                            value={entry.cacheWritePer1m}
+                            onChange={(event) => handlePricingFieldChange(index, 'cacheWritePer1m', event.target.value)}
                             onBlur={() => triggerPricingSave(true)}
                           />
                         </td>

@@ -19,18 +19,32 @@ const STORYBOOK_SETTINGS_STORAGE_PREFIX = 'storybook.settings-page.mock'
 
 const DEFAULT_PRICING_ENTRIES: PricingEntry[] = [
   {
-    model: 'gpt-5.5',
+    model: 'gpt-5.6-sol',
     inputPer1m: 5.0,
     outputPer1m: 30.0,
     cacheInputPer1m: 0.5,
+    cacheReadPer1m: 0.5,
+    cacheWritePer1m: 6.25,
     reasoningPer1m: null,
     source: 'official',
   },
   {
-    model: 'gpt-5.5-pro',
-    inputPer1m: 30.0,
-    outputPer1m: 180.0,
+    model: 'gpt-5.6-terra',
+    inputPer1m: 2.5,
+    outputPer1m: 15.0,
+    cacheInputPer1m: 0.25,
+    cacheReadPer1m: 0.25,
+    cacheWritePer1m: 3.125,
+    reasoningPer1m: null,
+    source: 'official',
+  },
+  {
+    model: 'gpt-5.6-luna',
+    inputPer1m: 1.0,
+    outputPer1m: 6.0,
     cacheInputPer1m: null,
+    cacheReadPer1m: 0.1,
+    cacheWritePer1m: 1.25,
     reasoningPer1m: null,
     source: 'official',
   },
@@ -39,6 +53,8 @@ const DEFAULT_PRICING_ENTRIES: PricingEntry[] = [
     inputPer1m: 0.75,
     outputPer1m: 4.5,
     cacheInputPer1m: 0.075,
+    cacheReadPer1m: 0.075,
+    cacheWritePer1m: null,
     reasoningPer1m: null,
     source: 'official',
   },
@@ -56,6 +72,9 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   encryptedSessionOwnerRoutingEnabled: false,
   defaultHijackEnabled: false,
   models: [
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
     'gpt-5.5',
     'gpt-5.5-pro',
     'gpt-5.4',
@@ -67,6 +86,9 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
     'gpt-5.1-codex-mini',
   ],
   enabledModels: [
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
     'gpt-5.5',
     'gpt-5.5-pro',
     'gpt-5.4',
@@ -215,7 +237,7 @@ function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayloa
   forwardProxy.nodes = buildNodesFromSettings(forwardProxy)
 
   const pricing: PricingSettings = {
-    catalogVersion: overrides?.pricing?.catalogVersion ?? 'openai-standard-2026-04-25',
+    catalogVersion: overrides?.pricing?.catalogVersion ?? 'openai-standard-2026-07-10',
     entries: overrides?.pricing?.entries ? [...overrides.pricing.entries] : DEFAULT_PRICING_ENTRIES,
   }
 
