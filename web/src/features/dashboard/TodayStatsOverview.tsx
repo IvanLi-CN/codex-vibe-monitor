@@ -889,16 +889,16 @@ export function TodayStatsOverview({
             displaySpec={buildCurrencyAmountValueSpec(totalCost, localeTag)}
             valueTestId="today-stats-value-total-cost"
             labelTestId="today-stats-label-total-cost"
-            metricTooltipContent={
+            metricTooltipContent={stats?.usageBreakdown ? (
               <UsageBreakdownTooltip
                 title={costLabel}
-                breakdown={stats?.usageBreakdown}
+                breakdown={stats.usageBreakdown}
                 kind="cost"
                 formatNumber={formatBreakdownNumber}
                 formatCurrency={formatBreakdownCurrency}
                 labels={usageBreakdownLabels}
               />
-            }
+            ) : undefined}
             topRightItem={{
               label: comparisonLabel,
               valueSpec: buildPercentValueSpec(totalCostDelta, localeTag, { signDisplay: 'exceptZero' }),
@@ -929,16 +929,16 @@ export function TodayStatsOverview({
             iconName="database-outline"
             toneClass="text-secondary"
             valueTestId="today-stats-value-total-tokens"
-            metricTooltipContent={
+            metricTooltipContent={stats?.usageBreakdown ? (
               <UsageBreakdownTooltip
                 title={tokensLabel}
-                breakdown={stats?.usageBreakdown}
+                breakdown={stats.usageBreakdown}
                 kind="tokens"
                 formatNumber={formatBreakdownNumber}
                 formatCurrency={formatBreakdownCurrency}
                 labels={usageBreakdownLabels}
               />
-            }
+            ) : undefined}
             topRightItem={{
               label: comparisonLabel,
               valueSpec: buildPercentValueSpec(totalTokensDelta, localeTag, { signDisplay: 'exceptZero' }),
