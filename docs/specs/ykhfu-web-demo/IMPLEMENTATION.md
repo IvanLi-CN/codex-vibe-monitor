@@ -14,9 +14,9 @@
 - `web/src/demo/` 提供 deterministic seed、HTTP/SSE handlers、内存 mutation、四个 scene，以及桌面 Inspector 与移动 drawer。
 - `web/src/demo/DemoInspector.stories.tsx` 提供 autodocs state entry 与 scene switch play coverage。
 - `AppLayout` 补充移动端的紧凑导航布局与 Storybook mobile state，确保 demo 的 390px 页面证据保持可导航。
-- Pages assembly 把 `web/demo-dist/` 放入 `/demo/`，并用 `VITE_DEPLOY_BASE` 生成 repo-subpath assets 和 worker URL。
+- Pages assembly 把 `web/demo-dist/` 放入 `/demo/`。demo API/SSE、MSW worker 和 public branding assets 全部使用 `VITE_DEPLOY_BASE` 的 repo-subpath，避免 Pages worker scope 外溢到站点根 API。
 - `Records Overlay E2E` 在保留原 live Vite regression 的同时运行 demo route matrix、Inspector sharing/SSE 与 simulated external-key write。
-- `SPEC.md` 的 `## Visual Evidence` 保存 Dashboard operational、账号池 attention 与 Records network-failure 的桌面和移动 mock-only 证据，绑定 `e21edfc51bdb78fd7940574237883da02bfdd3a3`。
+- `SPEC.md` 的 `## Visual Evidence` 保存 Dashboard operational、账号池 attention 与 Records network-failure 的桌面和移动 mock-only 证据，绑定 `8b0aa929b9738fd0d535784e4b89c75ce54e28ae`。
 
 ## Remaining Gaps
 

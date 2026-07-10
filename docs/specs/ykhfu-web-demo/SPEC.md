@@ -108,8 +108,8 @@
 ## Visual Evidence
 
 - Evidence source: `ui_demo` mock-only runtime at `VITE_APP_RUNTIME=demo`; no login, real backend, account, secret or external service was used.
-- Bound source revision: `e21edfc51bdb78fd7940574237883da02bfdd3a3`.
-- Viewports: desktop `1440x1000`; mobile `390x844`. Chrome Control and its DevTools viewport endpoint were unavailable, so the isolated local renderer used the same leased demo origin for the final responsive captures.
+- Bound source revision: `8b0aa929b9738fd0d535784e4b89c75ce54e28ae`.
+- Viewports: desktop `1440x1000`; mobile `390x844`. Chrome Control and its DevTools viewport endpoint were unavailable, so the isolated local renderer used the assembled Pages demo at its repository subpath for the final responsive captures.
 - Edge whitespace normalization: checked; retained the original bounds because the gradient page edge did not provide an unambiguous removable border.
 
 ### Desktop
