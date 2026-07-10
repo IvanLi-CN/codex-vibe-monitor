@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.23.0",
+  "base_stable_version": "2.22.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-10T14:27:31Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.23.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "202fcc7240e7e4a0df76c514b62315ddce83fefd",
+  "pr_number": 583,
+  "pr_title": "feat: add cache billing breakdowns and retire CRS",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.23.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.23.0",
+  "target_sha": "9589853641e9dc6a3cf8bd6eb381684c4f5d8c8b",
+  "type_label": "type:minor"
+}
