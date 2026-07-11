@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: in progress
+- Implementation: completed locally
 - Lifecycle: active
 - Branch: `th/mobile-adapt-navigation`
 - Base: `origin/main@2381798fffb05288bacfb007ab9ef0901a040019`
@@ -18,11 +18,18 @@
 - 关键表格在窄屏改为可扫描的 card/list，筛选与子导航收敛为窄屏结构。
 - App shell、账号详情、Dashboard、Settings 和 Prompt Cache 的 Storybook 移动状态已更新。
 
-## Pending Verification
+## Verification
 
-- 在最终 rebase SHA 上运行 typecheck、Vitest、Storybook tests/build、Web Demo build。
-- 使用 mock-only Web Demo 采集 `320 / 390 / 430 / 768` 纵向证据并写回 `SPEC.md`。
-- 完成 fast-flow review、PR、CI 与 merge-ready 收口。
+- `bun run lint` passed.
+- `bun run build` and `bun run demo:build` passed.
+- Unit Vitest report: 276 suites and 1191 tests passed.
+- `bun run test-storybook` passed: 4 files and 6 tests, with 52 unsupported browser-only stories skipped by the configured project.
+- `bun run build-storybook` passed.
+- Web Demo evidence covers `320 / 390 / 430 / 768` vertical viewports and is bound to `15089c374ffab1dd0669aae78de3279148140cdb`.
+
+## Remaining Delivery Steps
+
+- Complete fast-flow review, PR creation, CI convergence, and merge-ready closure.
 
 ## References
 

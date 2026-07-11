@@ -90,7 +90,45 @@
 
 ## Visual Evidence
 
-待最终 Web Demo 构建、移动视口截图和 owner 验收后记录。
+- source_type: `ui_demo`
+  target_program: mock-only Web Demo (`VITE_APP_RUNTIME=demo`)
+  source_revision: `15089c374ffab1dd0669aae78de3279148140cdb`
+  sensitive_exclusion: demo fixtures only; no production account, secret, or backend request
+  capture_scope: browser viewport
+
+### `320x568` Dashboard
+
+验证最窄纵向视口的顶栏、活动筛选与 KPI 卡片保持单列可读，主体未出现横向溢出。
+
+![Web Demo Dashboard 320](./assets/web-demo-dashboard-mobile320.png)
+
+### `390x844` Navigation And Sheet
+
+验证统一汉堡菜单包含一级路由及 Account Pool / System 子路由，当前页状态明确。
+
+![Web Demo mobile navigation](./assets/web-demo-navigation-mobile390.png)
+
+验证 External API Key 创建不再居中显示，而是以带安全区底部操作区的 sheet 呈现。
+
+![Web Demo external API key bottom sheet](./assets/web-demo-external-api-key-sheet-mobile390.png)
+
+### `390x844` Prompt Cache Page
+
+验证 `promptCacheConversationKey=demo-conversation-a&promptCacheConversationTab=calls` 可恢复会话 calls tab，并呈现为独立页面而不是 drawer。
+
+![Web Demo Prompt Cache mobile page](./assets/web-demo-prompt-cache-page-mobile390.png)
+
+### `430x932` Account Detail Page
+
+验证 `upstreamAccountId=101` 在紧凑视口呈现为全宽账号详情页面，保留 tab 与返回动作。
+
+![Web Demo upstream account detail mobile page](./assets/web-demo-account-detail-mobile430.png)
+
+### `768x1024` Tablet Navigation
+
+验证纵向平板仍使用统一汉堡菜单，且 System 子路由在同一层级中可切换。
+
+![Web Demo tablet navigation](./assets/web-demo-navigation-tablet768.png)
 
 ## 风险 / 开放问题 / 假设
 
