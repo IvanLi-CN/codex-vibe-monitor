@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.26.0",
+  "base_stable_version": "2.25.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-11T20:51:16Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.26.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "14f9b5bbce4033376eaf88213acdf9353fd1cdfa",
+  "pr_number": 591,
+  "pr_title": "feat(account-pool): add upstream attempt observability",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.26.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.26.0",
+  "target_sha": "901eda1bb054c8d4ce0331d61fa9d608b363c27c",
+  "type_label": "type:minor"
+}
