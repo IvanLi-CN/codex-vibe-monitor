@@ -332,6 +332,7 @@ const detailRichRecentActions = [
     httpStatus: 429,
     failureKind: 'upstream_http_429_quota_exhausted',
     invokeId: 'inv_story_pool_failover_001',
+    attemptId: 9001,
     stickyKey: '019ce3a1-6787-7910-b0fd-c246d6f6a901',
     createdAt: '2026-03-17T12:22:00.000Z',
   },

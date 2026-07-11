@@ -1688,6 +1688,14 @@ pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<App
             get(list_upstream_account_action_events),
         )
         .route(
+            "/api/pool/upstream-accounts/:account_id/call-attempts/locate",
+            get(locate_upstream_account_attempt),
+        )
+        .route(
+            "/api/pool/upstream-accounts/:account_id/call-attempts",
+            get(list_upstream_account_attempts),
+        )
+        .route(
             "/api/pool/upstream-accounts/window-usage",
             post(get_upstream_account_window_usage),
         )

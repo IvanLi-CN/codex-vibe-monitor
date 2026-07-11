@@ -364,7 +364,9 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
 
   const resetDraft = useCallback(() => {
     const defaults = createDefaultInvocationRecordsDraft()
-    setDraft({ ...defaults, ...createDefaultCustomRange() })
+    const next = { ...defaults, ...createDefaultCustomRange() }
+    draftRef.current = next
+    setDraft(next)
   }, [])
 
   useEffect(() => {
@@ -576,7 +578,9 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       isRecordsLoading,
       isSummaryLoading,
       updateDraft: <K extends keyof InvocationRecordsDraftFilters>(key: K, value: InvocationRecordsDraftFilters[K]) => {
-        setDraft((current) => ({ ...current, [key]: value }))
+        const next = { ...draftRef.current, [key]: value }
+        draftRef.current = next
+        setDraft(next)
       },
       resetDraft,
       setFocus,

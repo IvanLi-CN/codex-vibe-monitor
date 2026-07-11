@@ -18,9 +18,11 @@ import {
   fetchDashboardActivity,
   fetchUpstreamAccountDetail,
   fetchUpstreamAccountActivity,
+  fetchUpstreamAccountAttempts,
   fetchUpstreamAccounts,
   fetchUpstreamAccountWindowUsage,
   fetchUpstreamStickyConversations,
+  locateUpstreamAccountAttempt,
   normalizeForwardProxyLatencyTestStreamEvent,
   refreshForwardProxySubscriptions,
   updateOauthLoginSession,
@@ -309,6 +311,34 @@ describe("fetchUpstreamAccountActivity", () => {
       upstream429RetryEnabled: true,
       upstream429MaxRetries: 2,
     });
+  });
+});
+
+describe("upstream account attempts", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses distinct pagination and exact-location contracts", async () => {
+    const requestedUrls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        requestedUrls.push(String(input));
+        return new Response(
+          JSON.stringify({ items: [], total: 0, page: 1, pageSize: 25 }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    await fetchUpstreamAccountAttempts(42, { page: 3, pageSize: 25 });
+    await locateUpstreamAccountAttempt(42, 9102, { pageSize: 25 });
+
+    expect(requestedUrls).toEqual([
+      "/api/pool/upstream-accounts/42/call-attempts?page=3&pageSize=25",
+      "/api/pool/upstream-accounts/42/call-attempts/locate?attemptId=9102&pageSize=25",
+    ]);
   });
 });
 

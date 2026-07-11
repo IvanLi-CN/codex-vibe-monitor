@@ -25,6 +25,163 @@ pub(crate) async fn list_upstream_account_action_events(
     list_upstream_account_action_events_from_params(state, params).await
 }
 
+pub(crate) async fn list_upstream_account_attempts(
+    State(state): State<Arc<AppState>>,
+    AxumPath(account_id): AxumPath<i64>,
+    Query(params): Query<ListUpstreamAccountAttemptsQuery>,
+) -> Result<Json<UpstreamAccountAttemptListResponse>, (StatusCode, String)> {
+    let page = normalize_upstream_account_list_page(params.page);
+    let page_size = normalize_upstream_account_list_page_size(params.page_size);
+    let response = load_upstream_account_attempt_page(&state.pool, account_id, page, page_size)
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(Json(response))
+}
+
+pub(crate) async fn locate_upstream_account_attempt(
+    State(state): State<Arc<AppState>>,
+    AxumPath(account_id): AxumPath<i64>,
+    Query(params): Query<LocateUpstreamAccountAttemptQuery>,
+) -> Result<Json<UpstreamAccountAttemptListResponse>, (StatusCode, String)> {
+    let page_size = normalize_upstream_account_list_page_size(params.page_size);
+    let cutoff = shanghai_local_cutoff_string(7);
+    let target_occurred_at = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT occurred_at
+        FROM pool_upstream_request_attempts
+        WHERE id = ?1
+          AND upstream_account_id = ?2
+          AND occurred_at >= ?3
+        "#,
+    )
+    .bind(params.attempt_id)
+    .bind(account_id)
+    .bind(&cutoff)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal_error_tuple)?
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            "upstream account attempt was not found".to_string(),
+        )
+    })?;
+    let newer_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_request_attempts
+        WHERE upstream_account_id = ?1
+          AND occurred_at >= ?2
+          AND (occurred_at > ?3 OR (occurred_at = ?3 AND id > ?4))
+        "#,
+    )
+    .bind(account_id)
+    .bind(&cutoff)
+    .bind(&target_occurred_at)
+    .bind(params.attempt_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(internal_error_tuple)?
+    .max(0) as usize;
+    let page = newer_count / page_size + 1;
+    let response = load_upstream_account_attempt_page(&state.pool, account_id, page, page_size)
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(Json(response))
+}
+
+async fn load_upstream_account_attempt_page(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    page: usize,
+    page_size: usize,
+) -> Result<UpstreamAccountAttemptListResponse> {
+    const ATTEMPT_RETENTION_DAYS: u64 = 7;
+    let cutoff = shanghai_local_cutoff_string(ATTEMPT_RETENTION_DAYS);
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_request_attempts
+        WHERE upstream_account_id = ?1 AND occurred_at >= ?2
+        "#,
+    )
+    .bind(account_id)
+    .bind(&cutoff)
+    .fetch_one(pool)
+    .await?
+    .max(0) as usize;
+    let offset = page.saturating_sub(1).saturating_mul(page_size);
+    let items = sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(
+        r#"
+        SELECT
+            attempts.id,
+            attempts.invoke_id,
+            attempts.occurred_at,
+            attempts.endpoint,
+            attempts.sticky_key,
+            attempts.upstream_account_id,
+            accounts.display_name AS upstream_account_name,
+            attempts.upstream_route_key,
+            attempts.proxy_binding_key_snapshot,
+            attempts.attempt_index,
+            attempts.distinct_account_index,
+            attempts.same_account_retry_index,
+            attempts.requester_ip,
+            COALESCE(
+                inv.request_model,
+                inv.model,
+                inv.response_model
+            ) AS model,
+            COALESCE(inv.request_model, inv.model) AS request_model,
+            inv.response_model,
+            attempts.started_at,
+            attempts.finished_at,
+            attempts.status,
+            COALESCE(
+                attempts.phase,
+                CASE
+                    WHEN attempts.status = 'pending' THEN 'sending_request'
+                    WHEN attempts.status = 'success' THEN 'completed'
+                    ELSE 'failed'
+                END
+            ) AS phase,
+            attempts.http_status,
+            attempts.downstream_http_status,
+            attempts.failure_kind,
+            attempts.error_message,
+            attempts.downstream_error_message,
+            attempts.connect_latency_ms,
+            attempts.first_byte_latency_ms,
+            attempts.stream_latency_ms,
+            attempts.upstream_request_id,
+            attempts.compact_support_status,
+            attempts.compact_support_reason,
+            attempts.created_at
+        FROM pool_upstream_request_attempts AS attempts
+        LEFT JOIN pool_upstream_accounts AS accounts
+            ON accounts.id = attempts.upstream_account_id
+        LEFT JOIN codex_invocations AS inv
+            ON inv.invoke_id = attempts.invoke_id
+           AND inv.occurred_at = attempts.occurred_at
+        WHERE attempts.upstream_account_id = ?1 AND attempts.occurred_at >= ?2
+        ORDER BY attempts.occurred_at DESC, attempts.id DESC
+        LIMIT ?3 OFFSET ?4
+        "#,
+    )
+    .bind(account_id)
+    .bind(&cutoff)
+    .bind(page_size as i64)
+    .bind(offset as i64)
+    .fetch_all(pool)
+    .await?;
+    Ok(UpstreamAccountAttemptListResponse {
+        items,
+        total,
+        page,
+        page_size,
+    })
+}
+
 pub(crate) async fn list_upstream_accounts_from_params(
     state: Arc<AppState>,
     params: ListUpstreamAccountsQuery,
@@ -212,6 +369,7 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
             event.http_status,
             event.failure_kind,
             event.invoke_id,
+            event.attempt_id,
             event.sticky_key,
             event.created_at
         FROM pool_upstream_account_events event

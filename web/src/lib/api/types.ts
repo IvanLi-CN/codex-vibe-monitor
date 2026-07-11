@@ -6,6 +6,7 @@ export type {
   InvocationPhaseCounts,
   ListResponse,
   ApiPoolUpstreamRequestAttempt,
+  UpstreamAccountAttemptListResponse,
   InvocationRecordsQuery,
   InvocationTokenSummary,
   InvocationNetworkSummary,

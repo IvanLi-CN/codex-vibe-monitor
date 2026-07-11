@@ -3105,6 +3105,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
                 event.http_status,
                 event.failure_kind,
                 event.invoke_id,
+                event.attempt_id,
                 event.sticky_key,
                 event.created_at
             FROM pool_upstream_account_events event

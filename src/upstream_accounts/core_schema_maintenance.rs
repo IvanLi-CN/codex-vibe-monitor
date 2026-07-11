@@ -467,6 +467,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             http_status INTEGER,
             failure_kind TEXT,
             invoke_id TEXT,
+            attempt_id INTEGER,
             sticky_key TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY(account_id) REFERENCES pool_upstream_accounts(id) ON DELETE CASCADE
@@ -525,6 +526,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_account_events", "result_description")
         .await
         .context("failed to ensure pool_upstream_account_events.result_description")?;
+    ensure_nullable_integer_column(pool, "pool_upstream_account_events", "attempt_id")
+        .await
+        .context("failed to ensure pool_upstream_account_events.attempt_id")?;
 
     sqlx::query(
         r#"
