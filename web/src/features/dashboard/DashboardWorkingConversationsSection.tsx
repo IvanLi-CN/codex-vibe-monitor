@@ -117,7 +117,7 @@ export interface DashboardWorkingConversationSelection {
 }
 
 const ACCOUNT_CARD_CLASS_NAME =
-  "flex h-full w-full max-w-full flex-col rounded-[1rem] border border-[rgba(148,163,184,0.32)] bg-base-100/72 p-4 shadow-[0_6px_12px_rgba(15,23,42,0.07)] desktop1660:min-h-[31.5rem]";
+  "flex h-full min-w-0 w-full max-w-full flex-col overflow-hidden rounded-[1rem] border border-[rgba(148,163,184,0.32)] bg-base-100/72 p-4 shadow-[0_6px_12px_rgba(15,23,42,0.07)] desktop1660:min-h-[31.5rem]";
 
 const ACCOUNT_CARD_INNER_BORDER_CLASS_NAME = "border-[rgba(148,163,184,0.22)]";
 const ACCOUNT_CARD_INNER_RING_CLASS_NAME = "ring-[rgba(148,163,184,0.22)]";
@@ -140,10 +140,10 @@ type StatusMeta = {
 };
 
 const CARD_CLASS_NAME =
-  "relative overflow-hidden rounded-[1.1rem] p-2.5 sm:p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_28px_rgba(2,6,23,0.18)] transition-shadow duration-200 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_20px_34px_rgba(2,6,23,0.22)] focus-within:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_0_1px_rgba(56,189,248,0.2),0_20px_34px_rgba(2,6,23,0.22)]";
+  "relative min-w-0 overflow-hidden rounded-[1.1rem] p-2.5 sm:p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_28px_rgba(2,6,23,0.18)] transition-shadow duration-200 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_20px_34px_rgba(2,6,23,0.22)] focus-within:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_0_1px_rgba(56,189,248,0.2),0_20px_34px_rgba(2,6,23,0.22)]";
 
 const SLOT_CLASS_NAME =
-  "flex flex-col overflow-hidden rounded-[0.95rem] px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
+  "flex min-w-0 flex-col overflow-hidden rounded-[0.95rem] px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 
 const CARD_SURFACE_CLASS_NAME = "working-conversation-card-surface";
 
@@ -1731,7 +1731,7 @@ function AccountRecentInvocationRow({
       data-testid="dashboard-upstream-account-recent-row"
       data-motion-surface
       className={cn(
-        "w-full rounded-[0.85rem] border bg-base-100/58 px-3.5 py-2.5 text-left transition-colors duration-200 hover:bg-base-100/72 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+        "min-w-0 w-full max-w-full rounded-[0.85rem] border bg-base-100/58 px-3.5 py-2.5 text-left transition-colors duration-200 hover:bg-base-100/72 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
         ACCOUNT_CARD_INNER_BORDER_CLASS_NAME,
       )}
       onClick={handleOpenInvocation}
@@ -3841,7 +3841,7 @@ export function DashboardWorkingConversationsSection({
             {upstreamAccounts.length > 0 ? (
               <div
                 data-testid="dashboard-upstream-account-grid"
-                className="grid grid-cols-1 gap-4 desktop1660:grid-cols-2"
+                className="grid grid-cols-1 gap-4 desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]"
               >
                 {upstreamAccountRows.flat().map((account) => (
                   <DashboardUpstreamAccountActivityCard

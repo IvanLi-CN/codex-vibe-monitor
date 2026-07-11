@@ -4185,6 +4185,19 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error("missing recent row for tooltip test");
     }
 
+    const accountGrid = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-grid"]',
+    );
+    const accountCard = recentRow.closest(
+      '[data-testid="dashboard-upstream-account-card"]',
+    );
+    if (
+      !(accountGrid instanceof HTMLElement) ||
+      !(accountCard instanceof HTMLElement)
+    ) {
+      throw new Error("missing account layout shrink chain");
+    }
+
     const errorSummary = recentRow.querySelector(
       '[data-testid="invocation-error-summary"]',
     );
@@ -4206,6 +4219,13 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(errorText.className).toContain("whitespace-nowrap");
     expect(errorTrigger.getAttribute("tabindex")).toBe("0");
     expect(errorTrigger.getAttribute("aria-label")).toBe(LONG_ERROR_SUMMARY);
+    expect(accountGrid.className).toContain(
+      "desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]",
+    );
+    expect(accountCard.className).toContain("min-w-0");
+    expect(recentRow.className).toContain("min-w-0");
+    expect(errorTrigger.className).toContain("w-full");
+    expect(errorTrigger.className).toContain("overflow-hidden");
 
     await act(async () => {
       errorTrigger.focus();
