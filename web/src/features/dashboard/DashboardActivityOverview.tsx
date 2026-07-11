@@ -864,11 +864,15 @@ export function DashboardActivityOverview({
     <section className={className} data-testid={testId}>
       <div className="surface-panel-body gap-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex max-w-full flex-wrap items-center gap-3">
             <div className="section-heading">
               <h2 className="section-title">{title ?? t('dashboard.activityOverview.title')}</h2>
             </div>
-            <SegmentedControl role="tablist" aria-label={t('dashboard.activityOverview.rangeToggleAria')}>
+            <SegmentedControl
+              className="max-w-full flex-wrap"
+              role="tablist"
+              aria-label={t('dashboard.activityOverview.rangeToggleAria')}
+            >
               {rangeOptions.map((option) => {
                 const active = option.key === activeRange
                 return (

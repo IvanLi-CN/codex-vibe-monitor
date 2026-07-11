@@ -36,7 +36,7 @@ The project needs a compatible upgrade that preserves existing user-defined pric
 - Settings pricing UI must split cached pricing into separate cache read and cache write columns and clearly label the contract as estimation metadata rather than runtime token truth.
 - New invocation rows must persist exact cost buckets. Historical rows with a known total cost must contribute that full amount to `unknown` instead of being repriced or invalidating exact realtime buckets; rows without a total cost do not fabricate an unknown amount.
 - `cacheWriteTokens` must be derived as `max(inputTokens - cacheInputTokens, 0)`; `cacheInputTokens` remains the upstream cache-read count.
-- Dashboard summary and upstream-account activity APIs must return total and model-level usage breakdowns. Cost breakdowns include input, cache write, cache read, output, reasoning, and unknown cost, and every returned cost row must reconcile to its total.
+- Dashboard summary and upstream-account activity APIs must return total and model-plus-reasoning-effort usage breakdowns. Cost breakdowns include input, cache write, cache read, output, reasoning, and unknown cost, and every returned cost row must reconcile to its total.
 - Dashboard and account-card cost/Token labels must provide keyboard-accessible detail panels; records, live cards, and dashboard call previews must display `CW` and `C` together.
 
 ## Interface Contract
@@ -85,6 +85,9 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - Given a historical invocation without persisted cost buckets but with a known total cost, when it appears with exact realtime records, then Token derivation and exact cost buckets remain visible while the historical total is shown in `unknown`.
 - Given a record without a total cost, when usage is aggregated, then it contributes no fabricated unknown cost.
 - Given an exact-only range, when cost detail is rendered, then the `unknown` value is zero and the UI keeps the five known cost columns.
+- Given calls for the same model with different recorded reasoning efforts, when usage is aggregated, then each model-plus-effort pair is returned separately while the total remains reconciled across all pairs.
+- Given a missing or blank recorded reasoning effort, when its model row is rendered, then it is labelled as unspecified without inferring a model default.
+- Given a Token detail panel, when cache-read Token usage is rendered, then its column is labelled as cache-hit Tokens while the cost panel retains the cache-read billing label.
 - Given a dashboard or upstream-account cost/Token label, when it is hovered, focused, or clicked, then total and sorted model detail is readable on desktop and mobile.
 
 ## Visual Evidence
@@ -156,6 +159,34 @@ PR: include
 - story_id_or_title: Dashboard/TodayStatsOverview Mixed Cost Breakdown Unknown Mobile
 - state: mixed exact and historical cost detail open
 - evidence_note: Verifies the dynamic six-column cost table remains legible on a narrow viewport with explicit cell dividers and no internal scrollbar.
+
+PR: include
+![Dashboard model and reasoning Token breakdown on desktop](./assets/dashboard-model-reasoning-breakdown-desktop.png)
+
+- source_type: ui_demo
+- target_program: mock-only Web Demo
+- capture_scope: browser viewport
+- requested_viewport: 1440x900
+- viewport_strategy: browser viewport capability
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: `/#/dashboard?demoScene=operational&demoTheme=dark`
+- state: Dashboard Token detail open with high, medium, and unspecified reasoning-effort rows
+- evidence_note: Verifies model-plus-effort rows use a two-line first cell, the Token table calls `cacheReadTokens` cache-hit Tokens, and the full table renders without an internal scrollbar.
+
+PR: include
+![Dashboard model and reasoning Token breakdown on mobile](./assets/dashboard-model-reasoning-breakdown-mobile.png)
+
+- source_type: ui_demo
+- target_program: mock-only Web Demo
+- capture_scope: browser viewport
+- requested_viewport: 390x844
+- viewport_strategy: browser viewport capability
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: `/#/dashboard?demoScene=operational&demoTheme=dark`
+- state: Upstream-account Token detail open with high and medium reasoning-effort rows
+- evidence_note: Verifies the narrow layout preserves all Token columns and model-plus-effort rows without an internal or page-level horizontal scrollbar.
 
 ## References
 

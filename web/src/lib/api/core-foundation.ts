@@ -637,6 +637,7 @@ export interface UsageCostBreakdown {
 
 export interface UsageBreakdownModel {
   model: string;
+  reasoningEffort?: string | null;
   cacheWriteTokens: number;
   cacheReadTokens: number;
   outputTokens: number;
@@ -1620,6 +1621,9 @@ function normalizeUsageBreakdown(raw: unknown): UsageBreakdown | null {
         if (!name) return []
         return [{
           model: name,
+          reasoningEffort: typeof model.reasoningEffort === 'string' && model.reasoningEffort.trim()
+            ? model.reasoningEffort.trim()
+            : null,
           cacheWriteTokens: normalizeFiniteNumber(model.cacheWriteTokens) ?? 0,
           cacheReadTokens: normalizeFiniteNumber(model.cacheReadTokens) ?? 0,
           outputTokens: normalizeFiniteNumber(model.outputTokens) ?? 0,

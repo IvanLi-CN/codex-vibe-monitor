@@ -1,4 +1,5 @@
-import type { UsageBreakdown } from '../../lib/api'
+import type { ReactNode } from 'react'
+import type { UsageBreakdown, UsageBreakdownModel } from '../../lib/api'
 
 export type UsageBreakdownKind = 'cost' | 'tokens'
 
@@ -13,6 +14,7 @@ export interface UsageBreakdownTooltipProps {
     model: string
     cacheWrite: string
     cacheRead: string
+    cacheHitTokens: string
     output: string
     input: string
     reasoning: string
@@ -20,11 +22,20 @@ export interface UsageBreakdownTooltipProps {
     unavailable: string
     tokenUnavailable: string
     unknownModel: string
+    reasoningEffort: string
+    unspecifiedEffort: string
+    effortNone: string
+    effortMinimal: string
+    effortLow: string
+    effortMedium: string
+    effortHigh: string
+    effortXhigh: string
   }
 }
 
 interface BreakdownTableRow {
-  label: string
+  key: string
+  label: ReactNode
   values?: string[]
   unavailable?: string
 }
@@ -35,6 +46,36 @@ interface BreakdownTableColumn {
 
 function modelLabel(model: string, unknownModel: string) {
   return model === 'unknown' ? unknownModel : model
+}
+
+function effortLabel(effort: string | null | undefined, labels: UsageBreakdownTooltipProps['labels']) {
+  const normalized = effort?.trim().toLowerCase()
+  if (!normalized) return labels.unspecifiedEffort
+  return {
+    none: labels.effortNone,
+    minimal: labels.effortMinimal,
+    low: labels.effortLow,
+    medium: labels.effortMedium,
+    high: labels.effortHigh,
+    xhigh: labels.effortXhigh,
+  }[normalized] ?? effort?.trim() ?? labels.unspecifiedEffort
+}
+
+function groupKey(model: UsageBreakdownModel) {
+  return `${model.model}\u0000${model.reasoningEffort?.trim() ?? ''}`
+}
+
+function groupLabel(model: UsageBreakdownModel, labels: UsageBreakdownTooltipProps['labels']) {
+  const modelName = modelLabel(model.model, labels.unknownModel)
+  const effort = effortLabel(model.reasoningEffort, labels)
+  return (
+    <span className="flex min-w-0 flex-col gap-0.5" aria-label={`${modelName}, ${labels.reasoningEffort}: ${effort}`}>
+      <span className="break-all font-medium text-base-content/80">{modelName}</span>
+      <span className="break-words text-[9px] font-normal leading-3 text-base-content/58 sm:text-[10px]">
+        {labels.reasoningEffort}: {effort}
+      </span>
+    </span>
+  )
 }
 
 function BreakdownTable({
@@ -68,7 +109,7 @@ function BreakdownTable({
       </thead>
       <tbody>
         {rows.map((row, rowIndex) => (
-          <tr key={row.label} className={rowIndex === 0 ? 'border-b border-base-300/50 bg-base-100/45' : 'border-b border-base-300/30 last:border-b-0'}>
+          <tr key={row.key} className={rowIndex === 0 ? 'border-b border-base-300/50 bg-base-100/45' : 'border-b border-base-300/30 last:border-b-0'}>
             <th scope="row" className="px-1.5 py-1.5 text-left font-medium text-base-content/76 break-all">
               {row.label}
             </th>
@@ -78,7 +119,7 @@ function BreakdownTable({
               </td>
             ) : (
               row.values?.map((value, columnIndex) => (
-                <td key={`${row.label}:${columnIndex}`} className={`${dense ? 'px-0.5' : 'px-1'} border-l border-base-300/30 py-1.5 text-right font-mono font-semibold text-base-content tabular-nums whitespace-nowrap`}>
+                <td key={`${row.key}:${columnIndex}`} className={`${dense ? 'px-0.5' : 'px-1'} border-l border-base-300/30 py-1.5 text-right font-mono font-semibold text-base-content tabular-nums whitespace-nowrap`}>
                   {value}
                 </td>
               ))
@@ -111,9 +152,10 @@ function CostBreakdownTable({
       ? [{ label: labels.unknown, key: 'unknown' as const }]
       : []),
   ] as const
-  const rowFor = (label: string, costs: UsageBreakdown['costs']): BreakdownTableRow => {
-    if (!costs) return { label, unavailable: labels.unavailable }
+  const rowFor = (key: string, label: ReactNode, costs: UsageBreakdown['costs']): BreakdownTableRow => {
+    if (!costs) return { key, label, unavailable: labels.unavailable }
     return {
+      key,
       label,
       values: columns.map(({ key }) => costs[key] === 0 ? '-' : formatCurrency(costs[key])),
     }
@@ -126,8 +168,8 @@ function CostBreakdownTable({
       modelWidth={columns.length === 6 ? "20%" : "22%"}
       columns={columns}
       rows={[
-        rowFor(labels.total, breakdown?.costs),
-        ...models.map((model) => rowFor(modelLabel(model.model, labels.unknownModel), model.costs)),
+        rowFor('total', labels.total, breakdown?.costs),
+        ...models.map((model) => rowFor(groupKey(model), groupLabel(model, labels), model.costs)),
       ]}
     />
   )
@@ -146,13 +188,15 @@ function TokenBreakdownTable({
 }) {
   const columns = [
     { label: labels.cacheWrite },
-    { label: labels.cacheRead },
+    { label: labels.cacheHitTokens },
     { label: labels.output },
   ]
   const rowFor = (
-    label: string,
+    key: string,
+    label: ReactNode,
     item: Pick<UsageBreakdown, 'cacheWriteTokens' | 'cacheReadTokens' | 'outputTokens'>,
   ): BreakdownTableRow => ({
+    key,
     label,
     values: [
       formatNumber(item.cacheWriteTokens),
@@ -169,10 +213,10 @@ function TokenBreakdownTable({
       columns={columns}
       rows={breakdown
         ? [
-            rowFor(labels.total, breakdown),
-            ...models.map((model) => rowFor(modelLabel(model.model, labels.unknownModel), model)),
+            rowFor('total', labels.total, breakdown),
+            ...models.map((model) => rowFor(groupKey(model), groupLabel(model, labels), model)),
           ]
-        : [{ label: labels.total, unavailable: labels.tokenUnavailable }]}
+        : [{ key: 'total', label: labels.total, unavailable: labels.tokenUnavailable }]}
     />
   )
 }
@@ -199,7 +243,7 @@ export function UsageBreakdownTooltip({
       const rightValue = kind === 'tokens'
         ? right.cacheWriteTokens + right.cacheReadTokens + right.outputTokens
         : (right.costs?.input ?? 0) + (right.costs?.cacheWrite ?? 0) + (right.costs?.cacheRead ?? 0) + (right.costs?.output ?? 0) + (right.costs?.reasoning ?? 0) + (right.costs?.unknown ?? 0)
-      return rightValue - leftValue || left.model.localeCompare(right.model)
+      return rightValue - leftValue || left.model.localeCompare(right.model) || groupKey(left).localeCompare(groupKey(right))
     })
 
   return (

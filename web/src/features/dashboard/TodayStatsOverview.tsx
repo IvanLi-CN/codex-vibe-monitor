@@ -240,7 +240,7 @@ function MetricTile({
             data-testid={labelTestId}
             className={cn(
               'block min-w-0 max-w-full cursor-help overflow-hidden text-ellipsis whitespace-nowrap text-left text-xs font-semibold tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-              preserveLabelCase ? 'normal-case' : 'uppercase',
+              preserveLabelCase ? 'normal-case tracking-normal' : 'uppercase',
             )}
           >
             {label}
@@ -611,12 +611,14 @@ export function TodayStatsOverview({
     : null
   const usageBreakdownLabels = locale === 'zh'
     ? {
-        total: '总计', cacheWrite: '缓存写入', cacheRead: '缓存读取', output: '输出',
+        total: '总计', cacheWrite: '缓存写入', cacheRead: '缓存读取', cacheHitTokens: '缓存命中 Token', output: '输出',
         model: '模型', input: '输入', reasoning: '推理', unknown: '未知', unavailable: '成本分项未提供', tokenUnavailable: 'Token 分项未提供', unknownModel: '未标识模型',
+        reasoningEffort: '思考等级', unspecifiedEffort: '未指定', effortNone: '无', effortMinimal: '最小', effortLow: '低', effortMedium: '中', effortHigh: '高', effortXhigh: '极高',
       }
     : {
-        total: 'Total', cacheWrite: 'Cache write', cacheRead: 'Cache read', output: 'Output',
+        total: 'Total', cacheWrite: 'Cache write', cacheRead: 'Cache read', cacheHitTokens: 'Cache hit tokens', output: 'Output',
         model: 'Model', input: 'Input', reasoning: 'Reasoning', unknown: 'Unknown', unavailable: 'Cost breakdown unavailable', tokenUnavailable: 'Token breakdown unavailable', unknownModel: 'Unidentified model',
+        reasoningEffort: 'Reasoning effort', unspecifiedEffort: 'Unspecified', effortNone: 'None', effortMinimal: 'Minimal', effortLow: 'Low', effortMedium: 'Medium', effortHigh: 'High', effortXhigh: 'XHigh',
       }
   const formatBreakdownNumber = (value: number) => new Intl.NumberFormat(localeTag).format(value)
   const formatBreakdownCurrency = (value: number) => new Intl.NumberFormat(localeTag, {
