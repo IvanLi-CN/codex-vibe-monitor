@@ -50,10 +50,15 @@ export function UpstreamAccountAttemptTimeline({
   const [error, setError] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const timeFormatter = useMemo(
+  const dateFormatter = useMemo(
     () => new Intl.DateTimeFormat(localeTag, {
       month: "2-digit",
       day: "2-digit",
+    }),
+    [localeTag],
+  );
+  const timeFormatter = useMemo(
+    () => new Intl.DateTimeFormat(localeTag, {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
@@ -147,9 +152,7 @@ export function UpstreamAccountAttemptTimeline({
           <tbody className="divide-y divide-base-300/70">
             {response.items.map((attempt: ApiPoolUpstreamRequestAttempt) => {
               const attemptTime = new Date(attempt.occurredAt);
-              const timeLabel = Number.isNaN(attemptTime.valueOf())
-                ? attempt.occurredAt
-                : timeFormatter.format(attemptTime);
+              const hasValidTime = !Number.isNaN(attemptTime.valueOf());
               const rowFocused = attempt.id === focusedAttemptId;
               return (
                 <tr
@@ -158,8 +161,13 @@ export function UpstreamAccountAttemptTimeline({
                   data-testid={`account-attempt-record-${attempt.id}`}
                   className={rowFocused ? "bg-info/10" : "hover:bg-base-200/35"}
                 >
-                  <td className="whitespace-nowrap px-3 py-3 align-top font-mono text-xs tabular-nums text-base-content/70">
-                    {timeLabel}
+                  <td className="px-3 py-3 align-top font-mono text-xs tabular-nums text-base-content/70">
+                    {hasValidTime ? (
+                      <time dateTime={attempt.occurredAt}>
+                        <span className="block whitespace-nowrap">{dateFormatter.format(attemptTime)}</span>
+                        <span className="block whitespace-nowrap">{timeFormatter.format(attemptTime)}</span>
+                      </time>
+                    ) : attempt.occurredAt}
                   </td>
                   <td className="whitespace-nowrap px-3 py-3 align-top font-mono text-xs">
                     <Link
