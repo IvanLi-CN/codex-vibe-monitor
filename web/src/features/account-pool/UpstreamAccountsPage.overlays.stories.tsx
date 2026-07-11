@@ -178,6 +178,26 @@ export const DetailDrawerRecordsPopulated: Story = {
   },
 }
 
+export const DetailDrawerEventLocatesAttempt: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={detailRouteEntry(101)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await findTokyoDetailDialog(documentScope)
+    await userEvent.click(within(dialog).getByRole('tab', { name: /健康与事件|health & events/i }))
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: /调用 ID.*inv_story_pool_failover_001|invoke id.*inv_story_pool_failover_001/i }),
+    )
+    const recordsTable = await within(dialog).findByTestId('upstream-account-call-records-table')
+    const disclosure = within(recordsTable).getByTestId('account-attempt-evidence-9001')
+    await expect(disclosure).toHaveAttribute('open')
+    await expect(within(disclosure).getByText('upstream-story-500')).toBeInTheDocument()
+  },
+}
+
 export const DetailDrawerRecordsMobile: Story = {
   ...DetailDrawerRecordsPopulated,
   parameters: {

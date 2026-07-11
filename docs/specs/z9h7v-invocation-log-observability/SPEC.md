@@ -245,6 +245,20 @@
   ![Mobile upstream account call records](./assets/upstream-account-attempt-timeline-mobile-storybook.png)
 
 - source_type: storybook_canvas
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawerEventLocatesAttempt
+  state: event-located upstream attempt with diagnostics expanded
+  evidence_note: verifies an account event opens the exact upstream attempt, highlights the failed row, and expands the full-width diagnostics evidence without manual disclosure interaction.
+  requested_viewport: 1440x1024
+  viewport_strategy: storybook-viewport
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only account and request data
+  submission_gate: approved
+  image:
+  ![Event-located upstream attempt](./assets/upstream-account-event-locate-storybook.png)
+
+- source_type: storybook_canvas
   story_id_or_title: Settings/SettingsPage/Default
   state: proxy body logging toggles
   evidence_note: verifies the Settings page adds independent request body logging and response body logging switches with retention helper copy in the existing proxy settings card.

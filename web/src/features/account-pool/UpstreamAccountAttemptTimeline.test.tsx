@@ -24,17 +24,19 @@ const fetchBindingNodesMock = vi.mocked(fetchForwardProxyBindingNodes);
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-function renderTimeline() {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  root = createRoot(host);
+function renderTimeline(focusedAttemptId: number | null = null) {
+  if (!host) {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+  }
+  if (!root) root = createRoot(host);
   act(() => {
     root?.render(
       <MemoryRouter>
         <I18nProvider>
           <UpstreamAccountAttemptTimeline
             accountId={101}
-            focusedAttemptId={null}
+            focusedAttemptId={focusedAttemptId}
           />
         </I18nProvider>
       </MemoryRouter>,
@@ -200,5 +202,48 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(table?.querySelector("th")?.parentElement?.textContent).not.toMatch(
       /阶段|phase/i,
     );
+  });
+
+  it("opens the exact attempt diagnostics when event navigation focuses it", async () => {
+    const focusedAttempt = {
+      id: 3,
+      invokeId: "POOLFOCUSED",
+      occurredAt: "2026-07-11T12:00:00.000Z",
+      endpoint: "/v1/responses",
+      upstreamAccountId: 101,
+      requestModel: "gpt-5.4",
+      proxyBindingKeySnapshot: "jp-edge-01",
+      attemptIndex: 1,
+      distinctAccountIndex: 0,
+      sameAccountRetryIndex: 0,
+      status: "http_failure",
+      phase: "failed",
+      httpStatus: 500,
+      errorMessage: "focused failure details",
+      createdAt: "2026-07-11T12:00:00.000Z",
+    };
+    fetchAttemptsMock.mockResolvedValue({
+      items: [focusedAttempt],
+      total: 1,
+      page: 1,
+      pageSize: 50,
+    });
+    vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue({
+      items: [focusedAttempt],
+      total: 1,
+      page: 1,
+      pageSize: 50,
+    });
+
+    renderTimeline();
+    await flushAsync();
+    renderTimeline(3);
+    await flushAsync();
+
+    const disclosures = host?.querySelectorAll<HTMLDetailsElement>(
+      '[data-testid="account-attempt-evidence-3"]',
+    );
+    expect(disclosures).toHaveLength(2);
+    expect(Array.from(disclosures ?? []).every((disclosure) => disclosure.open)).toBe(true);
   });
 });

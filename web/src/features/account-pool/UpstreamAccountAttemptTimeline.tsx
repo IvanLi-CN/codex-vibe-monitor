@@ -215,14 +215,17 @@ function AttemptEvidenceDisclosure({
   attempt,
   proxy,
   includeTimings,
+  isFocused,
   t,
 }: {
   attempt: ApiPoolUpstreamRequestAttempt;
   proxy: ReturnType<typeof formatProxyBinding>;
   includeTimings: boolean;
+  isFocused: boolean;
   t: Translator;
 }) {
   const [copied, setCopied] = useState(false);
+  const [isOpen, setIsOpen] = useState(isFocused);
   const errorMessage = attempt.errorMessage?.trim() || "";
   const downstreamDiffers =
     attempt.downstreamHttpStatus != null &&
@@ -238,10 +241,15 @@ function AttemptEvidenceDisclosure({
       setCopied(false);
     }
   };
+  useEffect(() => {
+    if (isFocused) setIsOpen(true);
+  }, [isFocused]);
   return (
     <details
       className="group overflow-hidden rounded-md border border-base-300/70 text-xs"
       data-testid={`account-attempt-evidence-${attempt.id}`}
+      onToggle={(event) => setIsOpen(event.currentTarget.open)}
+      open={isOpen}
     >
       <summary className="flex min-h-11 cursor-pointer list-none select-none items-center gap-2 px-3 py-2 font-medium text-info focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary [&::-webkit-details-marker]:hidden">
         <AppIcon
@@ -643,6 +651,7 @@ export function UpstreamAccountAttemptTimeline({
                         <AttemptEvidenceDisclosure
                           attempt={attempt}
                           includeTimings={false}
+                          isFocused={attempt.id === focusedAttemptId}
                           proxy={proxy}
                           t={t}
                         />
@@ -727,6 +736,7 @@ export function UpstreamAccountAttemptTimeline({
                         <AttemptEvidenceDisclosure
                           attempt={attempt}
                           includeTimings
+                          isFocused={attempt.id === focusedAttemptId}
                           proxy={proxy}
                           t={t}
                         />
