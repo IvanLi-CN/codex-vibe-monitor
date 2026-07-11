@@ -105,7 +105,7 @@ export const DetailDrawer: Story = {
     await expect(within(dialog).getByText(/user_tokyo/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/5 小时窗口|5h window/i)).toBeInTheDocument()
     await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
-    await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
+    await userEvent.click(within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i }))
     await expect(within(dialog).queryByTestId('upstream-account-records-activity-overview')).not.toBeInTheDocument()
     await expect(within(dialog).getByTestId('upstream-account-call-records')).toBeInTheDocument()
     await expect(within(dialog).queryByRole('combobox', { name: /记录数量|rows/i })).not.toBeInTheDocument()
@@ -155,7 +155,7 @@ export const DetailDrawerRecordsPopulated: Story = {
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
     const dialog = await findTokyoDetailDialog(documentScope)
-    await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
+    await userEvent.click(within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i }))
     await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
     await expect(within(dialog).queryByTestId('upstream-account-records-activity-overview')).not.toBeInTheDocument()
     await expect(within(dialog).queryByRole('combobox', { name: /记录数量|rows/i })).not.toBeInTheDocument()
@@ -165,7 +165,47 @@ export const DetailDrawerRecordsPopulated: Story = {
     await expect(within(dialog).getByText(/连接 186 ms|Connect 186 ms/i)).toBeInTheDocument()
     await expect(within(dialog).getByTestId('upstream-account-call-records-table')).toBeInTheDocument()
     await expect(within(dialog).getByRole('columnheader', { name: /错误|error/i })).toBeInTheDocument()
+    await expect(within(dialog).getByText(/上游 HTTP 500|upstream http 500/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText('JP Edge 01')).toBeInTheDocument()
     await expect(within(dialog).getByText(/upstream_response_failed/i)).toBeInTheDocument()
+    const desktopAttempts = within(dialog).getByTestId('upstream-account-call-records-table')
+    await userEvent.click(
+      within(within(desktopAttempts).getByTestId('account-attempt-evidence-9001')).getByText(/诊断详情|diagnostics/i),
+    )
+    await expect(within(dialog).getByText('upstream-story-500')).toBeInTheDocument()
+    await expect(within(dialog).getByText('route-tokyo-primary')).toBeInTheDocument()
+    await expect(within(dialog).getByText('502')).toBeInTheDocument()
+  },
+}
+
+export const DetailDrawerRecordsMobile: Story = {
+  ...DetailDrawerRecordsPopulated,
+  parameters: {
+    viewport: { defaultViewport: 'mobile390' },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await findTokyoDetailDialog(documentScope)
+    await userEvent.click(within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i }))
+    await expect(within(dialog).getByTestId('upstream-account-call-records-mobile-table')).toBeInTheDocument()
+    await expect(within(dialog).getByText(/上游 HTTP 500|upstream http 500/i)).toBeInTheDocument()
+    const mobileAttempts = within(dialog).getByTestId('upstream-account-call-records-mobile-table')
+    await userEvent.click(
+      within(within(mobileAttempts).getByTestId('account-attempt-evidence-9001')).getByText(/诊断详情|diagnostics/i),
+    )
+    await expect(within(dialog).getByText('JP Edge 01')).toBeInTheDocument()
+    await expect(within(dialog).getByText(/连接 186 ms|connect 186 ms/i)).toBeInTheDocument()
+  },
+}
+
+export const DetailDrawerRecordsPendingMobile: Story = {
+  ...DetailDrawerRecordsMobile,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await findTokyoDetailDialog(documentScope)
+    await userEvent.click(within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i }))
+    await expect(within(dialog).getByText(/正在处理中|pending/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/等待首字节|waiting for first byte/i)).toBeInTheDocument()
   },
 }
 
@@ -178,7 +218,7 @@ export const DetailDrawerRecordsEmpty: Story = {
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
     const dialog = await findTokyoDetailDialog(documentScope)
-    await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
+    await userEvent.click(within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i }))
     await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
     await expect(within(dialog).getByText(/这个上游账号暂时还没有保留的调用记录|No retained call records/i)).toBeInTheDocument()
   },
@@ -220,7 +260,7 @@ export const DetailDrawerRecordsLoading: Story = {
     const dialog = await documentScope.findByRole('dialog', {
       name: /Codex Pro - Tokyo/i,
     })
-    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i })).toHaveAttribute('aria-selected', 'true')
     await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
     await expect(within(dialog).getByTestId('invocation-table-loading')).toBeInTheDocument()
   },
@@ -233,7 +273,7 @@ export const DetailDrawerRecordsSettled: Story = {
     const dialog = await documentScope.findByRole('dialog', {
       name: /Codex Pro - Tokyo/i,
     })
-    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i })).toHaveAttribute('aria-selected', 'true')
     await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
     await expect(within(dialog).queryByTestId('upstream-account-records-activity-overview')).not.toBeInTheDocument()
     await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
@@ -252,7 +292,7 @@ export const DetailDrawerInvocationLocate: Story = {
     })
     await userEvent.click(invokeButton)
     await expect(
-      within(dialog).getByRole('tab', { name: /调用记录|records/i }),
+      within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i }),
     ).toHaveAttribute('aria-selected', 'true')
     await waitFor(() => {
       expect(
@@ -319,7 +359,7 @@ export const DetailDrawerInvocationLocateNotFound: Story = {
     await expect(alert).toHaveTextContent('inv_story_pool_failover_001')
     await expect(alert).toHaveFocus()
     await expect(
-      within(dialog).getByRole('tab', { name: /调用记录|records/i }),
+      within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i }),
     ).toHaveAttribute('aria-selected', 'true')
   },
 }
@@ -372,7 +412,7 @@ export const DetailDrawerRecordsSettledWide: Story = {
     const dialog = await documentScope.findByRole('dialog', {
       name: /Codex Pro - Tokyo/i,
     })
-    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute(
+    await expect(within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i })).toHaveAttribute(
       'aria-selected',
       'true',
     )
@@ -395,7 +435,7 @@ export const DetailDrawerRecordsOverflowDarkNarrow: Story = {
     const dialog = await documentScope.findByRole('dialog', {
       name: /Codex Pro - Tokyo/i,
     })
-    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i })).toHaveAttribute('aria-selected', 'true')
     await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
     await expect(within(dialog).queryByText('今日 Token')).not.toBeInTheDocument()
     await expect(within(dialog).queryByRole('combobox', { name: /记录数量|rows/i })).not.toBeInTheDocument()
@@ -417,7 +457,7 @@ export const DetailDrawerRecordsLoadingDarkNarrow: Story = {
     const dialog = await documentScope.findByRole('dialog', {
       name: /Codex Pro - Tokyo/i,
     })
-    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i })).toHaveAttribute('aria-selected', 'true')
     await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
     await expect(within(dialog).getByTestId('invocation-table-loading')).toBeInTheDocument()
     await expect(within(dialog).queryByText(/并行对话|parallel/i)).not.toBeInTheDocument()
@@ -434,7 +474,7 @@ export const DetailDrawerRecordsInfinite: Story = {
     const dialog = await documentScope.findByRole('dialog', {
       name: /Codex Pro - Tokyo/i,
     })
-    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).getByRole('tab', { name: /上游调用|upstream calls/i })).toHaveAttribute('aria-selected', 'true')
     await waitFor(() => {
       expect(within(dialog).getByText(/已加载 50 \/|Loaded 50 \//i)).toBeInTheDocument()
     })

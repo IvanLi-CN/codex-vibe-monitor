@@ -29,6 +29,8 @@
 - 新 HTTP proxy invocation 的 `invokeId` 必须使用 10 位 NanoID 风格短格式，去掉历史 `proxy-...` 前缀、内部 counter 与时间戳尾巴；历史 `proxy-...` 记录继续兼容查询和展示。
 - 账号详情“上游调用尝试”必须按真实 `pool_upstream_request_attempts` 行展示请求、重试、失败与成功；概览统计继续采用最终调用口径。
 - 账号上游调用记录必须采用表格展示；每行仅表达一次真实上游调用，直接列出时间、调用 ID、请求模型与响应模型、结果/HTTP 状态、代理、连接/首字节/流式延迟和错误。不得显示 endpoint、重试序号、最终 invocation 的 tokens/费用或其他非本次调用字段。
+- 结果列的 HTTP 值必须明确标记为上游 HTTP；仅当与上游不同才在当前记录下方的全宽诊断展开区显示下游 HTTP。错误主列显示失败分类与两行摘要；失败或状态不一致时以紧凑元数据带展示完整错误、复制命令、上游请求 ID、路由键与代理绑定键，不得挤在错误列角落或为正常成功行额外占用高度。
+- 桌面保留完整诊断表；窄屏仍采用表格，首屏优先时间、调用/模型、结果和错误摘要，代理、三段延迟与完整错误证据收进可展开区。代理优先显示解析后的节点名，不能解析时显示截短绑定键并保留完整值提示。
 - 新产生的路由调用事件必须携带精确 `attemptId`，健康与事件只能用该 ID 定位同账号的尝试；缺少 `attemptId` 的历史事件必须明确不可定位，不做 `invokeId` 模糊跳转。
 - 尝试列表与定位只查询主库最近 7 天，按 `occurredAt DESC, id DESC` 稳定分页，不读取 archive。
 - 尝试详情必须提供到 `/records?requestId=...` 的全局调用总览入口，并自动展开该最终调用的完整尝试链。
@@ -205,6 +207,8 @@
 - Given 历史 `proxy-9061-1783013997090` 记录存在，When 用户过滤、查询、展示或打开详情，Then 仍按完整历史 `invokeId` 兼容处理，不迁移、不回填。
 - Given 健康与事件带有当前账号的 `attemptId`，When 用户点击调用 ID，Then 账号详情立即进入上游调用尝试 tab，后端只返回该尝试所在页，目标记录展开诊断并短暂高亮。
 - Given 账号详情展示上游调用，When 表格渲染，Then 每行直接显示时间、调用 ID、请求模型与响应模型、状态/HTTP、代理、三段延迟与错误；不得显示 endpoint、重试序号、tokens、费用或最终调用汇总。
+- Given 上游 HTTP 为 500 且下游 HTTP 为 502，When 账号上游调用表渲染，Then 主列显示“上游 HTTP 500”，其下的全宽“诊断详情”展开区显示下游 HTTP 502、上游请求 ID、路由键与完整可复制错误。
+- Given 账号上游调用表在 `mobile390` 渲染，When 用户查看失败行，Then 表格首屏显示时间、调用/模型、结果与错误摘要；展开同一行证据后可见代理、三段延迟和完整错误信息。
 - Given 历史事件缺少 `attemptId` 或目标尝试已被 7 天 retention 清理，When 用户查看事件，Then 界面明确不可定位或显示结构化未找到提示，且不以 `invokeId` 模糊匹配。
 - Given 号池调用仍处于 `running` 或 `pending` 且已有 `upstreamAccountName`，When Live、Records、Dashboard working conversations 或 Dashboard 调用详情抽屉渲染该 invocation，Then 账号位置显示该账号名并使用蓝色呼吸文本，不显示“号池路由中”。
 - Given 号池运行态调用没有 `upstreamAccountName` 或 `upstreamAccountId`，When owner-facing 调用界面渲染，Then 继续显示既有“号池路由中”fallback，且不伪造账号、不启用呼吸状态。
@@ -219,9 +223,16 @@
 - source_type: storybook_canvas
   story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawer
   state: upstream call-record table
-  evidence_note: verifies the account drawer renders independent failed and successful upstream calls as table rows, with request and response models, result, proxy, phase timing and error displayed inline without endpoint, retry ordinals or final-invocation usage fields.
+  evidence_note: verifies the account drawer renders independent failed and successful upstream calls as table rows, labels upstream HTTP explicitly, resolves the proxy name, and exposes full error evidence in a full-width diagnostics row without endpoint, retry ordinals or final-invocation usage fields.
   image:
   ![Upstream account call records](./assets/upstream-account-attempt-timeline-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawerRecordsMobile
+  state: mobile upstream-call table with expanded failure evidence
+  evidence_note: verifies the mobile table keeps time, call/model, result and error summary in the first row while the full-width diagnostics row exposes proxy, timings, route evidence and full error text without duplicating the model mapping.
+  image:
+  ![Mobile upstream account call records](./assets/upstream-account-attempt-timeline-mobile-storybook.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Settings/SettingsPage/Default
