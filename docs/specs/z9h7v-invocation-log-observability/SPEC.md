@@ -224,6 +224,11 @@
   story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawer
   state: upstream call-record table
   evidence_note: verifies the account drawer renders independent failed and successful upstream calls as table rows, labels upstream HTTP explicitly, resolves the proxy name, and exposes full error evidence in a full-width diagnostics row without endpoint, retry ordinals or final-invocation usage fields.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only account and request data
+  submission_gate: approved
   image:
   ![Upstream account call records](./assets/upstream-account-attempt-timeline-storybook.png)
 
@@ -231,6 +236,11 @@
   story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawerRecordsMobile
   state: mobile upstream-call table with expanded failure evidence
   evidence_note: verifies the mobile table keeps time, call/model, result and error summary in the first row while the full-width diagnostics row exposes proxy, timings, route evidence and full error text without duplicating the model mapping.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only account and request data
+  submission_gate: approved
   image:
   ![Mobile upstream account call records](./assets/upstream-account-attempt-timeline-mobile-storybook.png)
 
