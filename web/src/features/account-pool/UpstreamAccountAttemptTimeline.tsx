@@ -163,8 +163,9 @@ export function UpstreamAccountAttemptTimeline({
                   </td>
                   <td className="px-3 py-3 align-top font-mono text-xs">
                     <Link
-                      className="break-all text-info underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                      className="block max-w-full truncate whitespace-nowrap text-info underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                       to={`/records?requestId=${encodeURIComponent(attempt.invokeId)}&rangePreset=7d`}
+                      title={attempt.invokeId}
                     >
                       {attempt.invokeId}
                     </Link>
