@@ -22,6 +22,12 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[sqlx(default)]
     pub(crate) upstream_account_name: Option<String>,
     #[sqlx(default)]
+    pub(crate) model: Option<String>,
+    #[sqlx(default)]
+    pub(crate) total_tokens: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) cost: Option<f64>,
+    #[sqlx(default)]
     pub(crate) upstream_route_key: Option<String>,
     #[sqlx(default)]
     pub(crate) proxy_binding_key_snapshot: Option<String>,

@@ -28,6 +28,7 @@
 - Live 展开详情与 Dashboard 调用详情抽屉必须共用同一套调用详情组件，并按“快速排障”组织信息：请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示。
 - 新 HTTP proxy invocation 的 `invokeId` 必须使用 10 位 NanoID 风格短格式，去掉历史 `proxy-...` 前缀、内部 counter 与时间戳尾巴；历史 `proxy-...` 记录继续兼容查询和展示。
 - 账号详情“上游调用尝试”必须按真实 `pool_upstream_request_attempts` 行展示请求、重试、失败与成功；概览统计继续采用最终调用口径。
+- 每条账号上游调用记录首屏必须直接展示调用 ID、模型、endpoint、结果/HTTP 状态、重试位置、代理绑定、连接/首字节/流式延迟、tokens 与费用；失败分类、请求方 IP、粘滞键、上游 route/request ID 与错误文本可折叠为诊断信息。
 - 新产生的路由调用事件必须携带精确 `attemptId`，健康与事件只能用该 ID 定位同账号的尝试；缺少 `attemptId` 的历史事件必须明确不可定位，不做 `invokeId` 模糊跳转。
 - 尝试列表与定位只查询主库最近 7 天，按 `occurredAt DESC, id DESC` 稳定分页，不读取 archive。
 - 尝试详情必须提供到 `/records?requestId=...` 的全局调用总览入口，并自动展开该最终调用的完整尝试链。
@@ -142,6 +143,7 @@
 - `pool_upstream_account_events.attempt_id` 为可空精确关联；只为新产生且调用链路已拿到尝试主键的路由事件写入，不回填历史事件。
 - `GET /api/pool/upstream-accounts/{accountId}/call-attempts` Query: `page?: number`、`pageSize?: number`；Response: `items`、`total`、`page`、`pageSize`。
 - `GET /api/pool/upstream-accounts/{accountId}/call-attempts/locate` Query: `attemptId: number`、`pageSize?: number`；目标必须属于当前账号且处于 7 天主库窗口内。
+- 尝试对象额外返回最终 invocation 的 `model?: string | null`、`totalTokens?: number | null` 与 `cost?: number | null`；模型按 `response_model ?? request_model ?? model` 投影，缺少匹配 invocation 时保持空值。
 
 ### `GET /api/settings` / `PUT /api/settings/proxy` 新增字段
 
@@ -201,9 +203,10 @@
 - Given 调用详情包含长 `invokeId`、`promptCacheKey`、endpoint、IPv6 或错误消息，When 页面在桌面和窄屏渲染，Then 文本在容器内换行或截断，不造成横向滚动或相邻内容遮挡。
 - Given 新 HTTP proxy invocation 被创建，When 查询 `/api/invocations`、接收 SSE `records` 或打开 Live/Dashboard 详情，Then `invokeId` 为 10 位短 ID，且不含 `proxy`、连字符、时间戳或内部 counter。
 - Given 历史 `proxy-9061-1783013997090` 记录存在，When 用户过滤、查询、展示或打开详情，Then 仍按完整历史 `invokeId` 兼容处理，不迁移、不回填。
-- Given 健康与事件中的账号事件带有 `invokeId`，When 用户点击调用 ID，Then 账号详情立即进入调用记录 tab，后端只返回目标所在页，虚拟列表居中聚焦并短暂高亮目标行。
-- Given 账号详情展示调用记录，When 桌面表格或移动列表渲染完整 `invokeId` 并聚焦定位目标，Then ID 保持单行完整可见，页面无横向溢出，目标行只显示一层不改变布局的短暂高亮且不叠加浏览器默认 outline。
-- Given 目标调用已被 retention 清理或不属于当前账号，When 锚点定位返回 `404`，Then 调用记录 tab 保持打开并显示包含调用 ID 的可聚焦错误提示。
+- Given 健康与事件带有当前账号的 `attemptId`，When 用户点击调用 ID，Then 账号详情立即进入上游调用尝试 tab，后端只返回该尝试所在页，目标记录展开诊断并短暂高亮。
+- Given 账号详情展示上游调用尝试，When 桌面或移动列表渲染，Then 调用 ID、模型、endpoint、状态、重试位置、代理绑定、三段延迟、tokens 与费用在首屏可见；长值在容器内换行，不造成横向溢出。
+- Given 用户需要错误上下文，When 展开一条调用记录的诊断信息，Then 可见失败分类、下游 HTTP、请求方 IP、粘滞键、上游 route/request ID 与错误文本。
+- Given 历史事件缺少 `attemptId` 或目标尝试已被 7 天 retention 清理，When 用户查看事件，Then 界面明确不可定位或显示结构化未找到提示，且不以 `invokeId` 模糊匹配。
 - Given 号池调用仍处于 `running` 或 `pending` 且已有 `upstreamAccountName`，When Live、Records、Dashboard working conversations 或 Dashboard 调用详情抽屉渲染该 invocation，Then 账号位置显示该账号名并使用蓝色呼吸文本，不显示“号池路由中”。
 - Given 号池运行态调用没有 `upstreamAccountName` 或 `upstreamAccountId`，When owner-facing 调用界面渲染，Then 继续显示既有“号池路由中”fallback，且不伪造账号、不启用呼吸状态。
 - Given 号池调用已进入成功或失败等终态，When owner-facing 调用界面渲染其账号字段，Then 保持普通账号显示与点击行为，不启用运行态呼吸状态。
@@ -216,10 +219,10 @@
 
 - source_type: storybook_canvas
   story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawer
-  state: upstream attempt retry timeline
-  evidence_note: verifies the account drawer renders independent failed and successful upstream attempts for one final call, keeps retry indices separate, and provides the Records global-overview link.
+  state: upstream call records with inline triage fields and expandable diagnostics
+  evidence_note: verifies the account drawer renders independent failed and successful upstream calls for one final invocation, keeps retry positions separate, shows model, proxy, timing, token and cost fields before expansion, and provides the Records global-overview link.
   image:
-  ![Upstream account attempt timeline](./assets/upstream-account-attempt-timeline-storybook.png)
+  ![Upstream account call records](./assets/upstream-account-attempt-timeline-storybook.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Settings/SettingsPage/Default

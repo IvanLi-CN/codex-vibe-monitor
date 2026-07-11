@@ -127,6 +127,13 @@ async fn load_upstream_account_attempt_page(
             attempts.distinct_account_index,
             attempts.same_account_retry_index,
             attempts.requester_ip,
+            COALESCE(
+                inv.response_model,
+                inv.request_model,
+                inv.model
+            ) AS model,
+            inv.total_tokens,
+            inv.cost,
             attempts.started_at,
             attempts.finished_at,
             attempts.status,
@@ -153,6 +160,9 @@ async fn load_upstream_account_attempt_page(
         FROM pool_upstream_request_attempts AS attempts
         LEFT JOIN pool_upstream_accounts AS accounts
             ON accounts.id = attempts.upstream_account_id
+        LEFT JOIN codex_invocations AS inv
+            ON inv.invoke_id = attempts.invoke_id
+           AND inv.occurred_at = attempts.occurred_at
         WHERE attempts.upstream_account_id = ?1 AND attempts.occurred_at >= ?2
         ORDER BY attempts.occurred_at DESC, attempts.id DESC
         LIMIT ?3 OFFSET ?4
