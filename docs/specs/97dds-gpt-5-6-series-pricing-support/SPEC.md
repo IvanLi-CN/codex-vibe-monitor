@@ -174,6 +174,7 @@ PR: include
 - state: Dashboard Token detail open with high, medium, and unspecified reasoning-effort rows
 - evidence_note: Verifies model-plus-effort rows use a two-line first cell, the Token table calls `cacheReadTokens` cache-hit Tokens, and the full table renders without an internal scrollbar.
 
+PR: include
 ![Dashboard model and reasoning Token breakdown on mobile](./assets/dashboard-model-reasoning-breakdown-mobile.png)
 
 - source_type: ui_demo
