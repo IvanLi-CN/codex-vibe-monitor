@@ -131,11 +131,11 @@ export function UpstreamAccountAttemptTimeline({
         </span>
       </div>
       <div className="overflow-x-auto rounded-lg border border-base-300/70 bg-base-100/65">
-        <table className="min-w-[1080px] w-full table-fixed border-collapse text-left text-sm" data-testid="upstream-account-call-records-table">
+        <table className="min-w-full w-max border-collapse text-left text-sm" data-testid="upstream-account-call-records-table">
           <thead className="border-b border-base-300/70 bg-base-200/55 text-xs font-medium text-base-content/65">
             <tr>
               <th className="w-36 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.time")}</th>
-              <th className="w-48 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.call")}</th>
+              <th className="whitespace-nowrap px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.call")}</th>
               <th className="w-32 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.model")}</th>
               <th className="w-36 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.endpoint")}</th>
               <th className="w-36 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.result")}</th>
@@ -161,9 +161,9 @@ export function UpstreamAccountAttemptTimeline({
                   <td className="whitespace-nowrap px-3 py-3 align-top font-mono text-xs tabular-nums text-base-content/70">
                     {timeLabel}
                   </td>
-                  <td className="px-3 py-3 align-top font-mono text-xs">
+                  <td className="whitespace-nowrap px-3 py-3 align-top font-mono text-xs">
                     <Link
-                      className="block max-w-full truncate whitespace-nowrap text-info underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                      className="inline-block whitespace-nowrap text-info underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                       to={`/records?requestId=${encodeURIComponent(attempt.invokeId)}&rangePreset=7d`}
                       title={attempt.invokeId}
                     >
