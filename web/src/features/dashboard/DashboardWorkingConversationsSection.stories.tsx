@@ -394,6 +394,7 @@ function createUpstreamAccountActivityStoryResponse(
           models: [
             {
               model: "gpt-5.6",
+              reasoningEffort: "high",
               cacheWriteTokens: 1200,
               cacheReadTokens: 600,
               outputTokens: 620,
@@ -401,6 +402,7 @@ function createUpstreamAccountActivityStoryResponse(
             },
             {
               model: "gpt-5.4-mini",
+              reasoningEffort: null,
               cacheWriteTokens: 400,
               cacheReadTokens: 200,
               outputTokens: 180,
@@ -3485,7 +3487,7 @@ export const UpstreamAccountMetricTooltips: Story = {
     await assertMetricTooltip("token", [
       "Token",
       "缓存写入",
-      "缓存读取",
+      "缓存命中 Token",
       "输出",
       "gpt-5.6",
     ]);

@@ -21,10 +21,19 @@ const sampleUsageBreakdown = {
   models: [
     {
       model: 'gpt-5.6',
-      cacheWriteTokens: 321000,
-      cacheReadTokens: 144000,
-      outputTokens: 154190,
-      costs: { input: 1.34, cacheWrite: 2.41, cacheRead: 0.29, output: 4.58, reasoning: 0.53, unknown: 0 },
+      reasoningEffort: 'high',
+      cacheWriteTokens: 200000,
+      cacheReadTokens: 90000,
+      outputTokens: 100000,
+      costs: { input: 0.84, cacheWrite: 1.5, cacheRead: 0.18, output: 2.9, reasoning: 0.34, unknown: 0 },
+    },
+    {
+      model: 'gpt-5.6',
+      reasoningEffort: 'medium',
+      cacheWriteTokens: 121000,
+      cacheReadTokens: 54000,
+      outputTokens: 54190,
+      costs: { input: 0.5, cacheWrite: 0.91, cacheRead: 0.11, output: 1.68, reasoning: 0.19, unknown: 0 },
     },
     {
       model: 'gpt-5.4-mini',
@@ -65,7 +74,7 @@ const historicalUsageBreakdown = {
       cacheRead: 0,
       output: 0,
       reasoning: 0,
-      unknown: model.model === 'gpt-5.6' ? 9.15 : 3.32,
+      unknown: model.model === 'gpt-5.6' ? (model.reasoningEffort === 'high' ? 5.76 : 3.39) : 3.32,
     },
   })),
 }
@@ -305,7 +314,7 @@ export const UsageBreakdownDetails: Story = {
     error: null,
   },
   parameters: {
-    viewport: { defaultViewport: 'mobile1' },
+    viewport: { defaultViewport: 'mobile390' },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
@@ -322,11 +331,57 @@ export const UsageBreakdownDetails: Story = {
     await userEvent.click(canvas.getByTestId('today-stats-label-total-tokens'))
     await waitFor(() => {
       const tooltip = within(document.body).getByRole('tooltip')
-      expect(tooltip).toHaveTextContent(/Cache read|缓存读取/)
+      expect(tooltip).toHaveTextContent(/Cache hit tokens|缓存命中 Token/)
+      expect(tooltip).toHaveTextContent(/Reasoning effort|思考等级/)
+      expect(tooltip).toHaveTextContent(/Unspecified|未指定/)
       expect(tooltip).toHaveTextContent(/Output|输出/)
       const panel = within(tooltip).getByTestId('usage-breakdown-tooltip-tokens')
       expect(within(panel).getAllByRole('table')).toHaveLength(1)
       expect(panel).not.toHaveClass('overflow-y-auto')
+    })
+  },
+}
+
+export const ModelReasoningBreakdownMobile: Story = {
+  ...UsageBreakdownDetails,
+}
+
+export const ModelReasoningBreakdownDesktop: Story = {
+  ...UsageBreakdownDetails,
+  parameters: {
+    viewport: { defaultViewport: 'desktop1440' },
+  },
+}
+
+export const UnrecognizedReasoningEffort: Story = {
+  args: {
+    stats: {
+      ...sampleStats,
+      usageBreakdown: {
+        ...sampleUsageBreakdown,
+        models: sampleUsageBreakdown.models.map((model) => model.model === 'gpt-5.4-mini'
+          ? { ...model, reasoningEffort: 'adaptive-experimental' }
+          : model),
+      },
+    },
+    rate: sampleRate,
+    ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
+    loading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: 'mobile390' },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByTestId('today-stats-label-total-tokens'))
+    await waitFor(() => {
+      const panel = within(document.body)
+        .getByRole('tooltip')
+        .querySelector('[data-testid="usage-breakdown-tooltip-tokens"]')
+      expect(panel).toHaveTextContent('adaptive-experimental')
     })
   },
 }
@@ -345,7 +400,7 @@ export const MixedCostBreakdownUnknownMobile: Story = {
     error: null,
   },
   parameters: {
-    viewport: { defaultViewport: 'mobile1' },
+    viewport: { defaultViewport: 'mobile390' },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
@@ -354,8 +409,9 @@ export const MixedCostBreakdownUnknownMobile: Story = {
       const tooltip = within(document.body).getByRole('tooltip')
       const panel = within(tooltip).getByTestId('usage-breakdown-tooltip-cost')
       expect(within(panel).getByRole('columnheader', { name: /Unknown|未知/i })).toBeInTheDocument()
-      expect(within(panel).getByRole('rowheader', { name: 'gpt-5.6' })).toBeInTheDocument()
-      expect(within(panel).getByRole('rowheader', { name: 'gpt-5.4-mini' })).toBeInTheDocument()
+      expect(within(panel).getByRole('rowheader', { name: /gpt-5\.6.*(?:High|高)/i })).toBeInTheDocument()
+      expect(within(panel).getByRole('rowheader', { name: /gpt-5\.6.*(?:Medium|中)/i })).toBeInTheDocument()
+      expect(within(panel).getByRole('rowheader', { name: /gpt-5\.4-mini.*(?:Unspecified|未指定)/i })).toBeInTheDocument()
       expect(within(panel).getAllByRole('table')).toHaveLength(1)
       expect(panel).not.toHaveClass('overflow-y-auto')
     })
@@ -417,7 +473,7 @@ export const MissingTotalCostBreakdownUnavailable: Story = {
     error: null,
   },
   parameters: {
-    viewport: { defaultViewport: 'mobile1' },
+    viewport: { defaultViewport: 'mobile390' },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)

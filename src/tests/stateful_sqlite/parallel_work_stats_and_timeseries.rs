@@ -10933,6 +10933,158 @@ async fn ranged_summary_exposes_model_usage_and_exact_cost_breakdown() {
 }
 
 #[tokio::test]
+async fn ranged_summary_groups_model_usage_by_reasoning_effort() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    for (id, invoke_id, reasoning_effort, input_tokens, cache_input_tokens, output_tokens, cost) in [
+        (
+            460_i64,
+            "summary-effort-high",
+            Some("high"),
+            100_i64,
+            40_i64,
+            25_i64,
+            0.50_f64,
+        ),
+        (
+            461_i64,
+            "summary-effort-medium",
+            Some("  medium  "),
+            80_i64,
+            30_i64,
+            20_i64,
+            0.40_f64,
+        ),
+        (
+            462_i64,
+            "summary-effort-unspecified",
+            None,
+            60_i64,
+            20_i64,
+            15_i64,
+            0.30_f64,
+        ),
+        (
+            463_i64,
+            "summary-effort-blank",
+            Some("   "),
+            50_i64,
+            10_i64,
+            10_i64,
+            0.20_f64,
+        ),
+    ] {
+        let payload = reasoning_effort
+            .map(|value| json!({ "reasoningEffort": value }).to_string())
+            .unwrap_or_else(|| "{}".to_string());
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, model, status,
+                input_tokens, cache_input_tokens, output_tokens, reasoning_tokens, total_tokens,
+                cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning,
+                payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, 0.01, 0.02, 0.03, 0.04, ?12, ?13, '{}')
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(&occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("gpt-5.6")
+        .bind("success")
+        .bind(input_tokens)
+        .bind(cache_input_tokens)
+        .bind(output_tokens)
+        .bind(input_tokens + output_tokens)
+        .bind(cost)
+        .bind(cost - 0.10)
+        .bind(payload)
+        .execute(&state.pool)
+        .await
+        .expect("insert reasoning effort usage row");
+    }
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch reasoning effort usage breakdown");
+
+    let breakdown = summary.usage_breakdown.expect("usage breakdown");
+    assert_eq!(breakdown.cache_write_tokens, 190);
+    assert_eq!(breakdown.cache_read_tokens, 100);
+    assert_eq!(breakdown.output_tokens, 70);
+    assert_eq!(breakdown.models.len(), 3);
+    let costs = breakdown.costs.as_ref().expect("exact cost breakdown");
+    assert_f64_close(costs.input, 0.04);
+    assert_f64_close(costs.cache_write, 0.08);
+    assert_f64_close(costs.cache_read, 0.12);
+    assert_f64_close(costs.output, 0.16);
+    assert_f64_close(costs.reasoning, 1.00);
+    assert_f64_close(costs.unknown, 0.00);
+    assert_f64_close(
+        costs.input
+            + costs.cache_write
+            + costs.cache_read
+            + costs.output
+            + costs.reasoning
+            + costs.unknown,
+        summary.total_cost,
+    );
+
+    let find_effort = |effort: Option<&str>| {
+        breakdown
+            .models
+            .iter()
+            .find(|item| item.model == "gpt-5.6" && item.reasoning_effort.as_deref() == effort)
+            .expect("model and reasoning effort group")
+    };
+    assert_eq!(find_effort(Some("high")).cache_write_tokens, 60);
+    assert_eq!(find_effort(Some("high")).cache_read_tokens, 40);
+    assert_f64_close(
+        find_effort(Some("high"))
+            .costs
+            .as_ref()
+            .expect("high effort costs")
+            .reasoning,
+        0.40,
+    );
+    assert_eq!(find_effort(Some("medium")).cache_write_tokens, 50);
+    assert_eq!(find_effort(Some("medium")).cache_read_tokens, 30);
+    assert_f64_close(
+        find_effort(Some("medium"))
+            .costs
+            .as_ref()
+            .expect("medium effort costs")
+            .reasoning,
+        0.30,
+    );
+    assert_eq!(find_effort(None).cache_write_tokens, 80);
+    assert_eq!(find_effort(None).cache_read_tokens, 30);
+    let unspecified_costs = find_effort(None)
+        .costs
+        .as_ref()
+        .expect("unspecified effort costs");
+    assert_f64_close(unspecified_costs.input, 0.02);
+    assert_f64_close(unspecified_costs.cache_write, 0.04);
+    assert_f64_close(unspecified_costs.cache_read, 0.06);
+    assert_f64_close(unspecified_costs.output, 0.08);
+    assert_f64_close(unspecified_costs.reasoning, 0.30);
+}
+
+#[tokio::test]
 async fn ranged_summary_keeps_exact_costs_when_historical_cost_is_mixed_in() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

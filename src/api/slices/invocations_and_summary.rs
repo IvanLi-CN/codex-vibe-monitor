@@ -3618,6 +3618,12 @@ pub(crate) struct UpstreamAccountActivityAccumulator {
     usage_breakdown: UsageBreakdownAccumulator,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct UsageBreakdownGroupKey {
+    model: String,
+    reasoning_effort: Option<String>,
+}
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct UsageBreakdownAccumulator {
     cache_write_tokens: i64,
@@ -3625,7 +3631,7 @@ pub(crate) struct UsageBreakdownAccumulator {
     output_tokens: i64,
     costs: UsageCostBreakdownResponse,
     has_cost: bool,
-    models: HashMap<String, UsageBreakdownAccumulator>,
+    models: HashMap<UsageBreakdownGroupKey, UsageBreakdownAccumulator>,
 }
 
 impl UsageBreakdownAccumulator {
@@ -3683,7 +3689,19 @@ impl UsageBreakdownAccumulator {
             .filter(|value| !value.is_empty())
             .unwrap_or("unknown")
             .to_string();
-        let model_entry = self.models.entry(model).or_default();
+        let reasoning_effort = row
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let model_entry = self
+            .models
+            .entry(UsageBreakdownGroupKey {
+                model,
+                reasoning_effort,
+            })
+            .or_default();
         model_entry.cache_write_tokens += cache_write_tokens;
         model_entry.cache_read_tokens += cache_read_tokens;
         model_entry.output_tokens += row.output_tokens.unwrap_or_default().max(0);
@@ -3698,7 +3716,13 @@ impl UsageBreakdownAccumulator {
             self.merge_costs(costs);
         }
         for model in &response.models {
-            let entry = self.models.entry(model.model.clone()).or_default();
+            let entry = self
+                .models
+                .entry(UsageBreakdownGroupKey {
+                    model: model.model.clone(),
+                    reasoning_effort: model.reasoning_effort.clone(),
+                })
+                .or_default();
             entry.cache_write_tokens += model.cache_write_tokens;
             entry.cache_read_tokens += model.cache_read_tokens;
             entry.output_tokens += model.output_tokens;
@@ -3712,7 +3736,7 @@ impl UsageBreakdownAccumulator {
         let mut models = self
             .models
             .into_iter()
-            .filter_map(|(model, entry)| {
+            .filter_map(|(group, entry)| {
                 let has_usage = entry.cache_write_tokens > 0
                     || entry.cache_read_tokens > 0
                     || entry.output_tokens > 0
@@ -3724,7 +3748,8 @@ impl UsageBreakdownAccumulator {
                     || entry.costs.unknown != 0.0
                     || entry.has_cost;
                 has_usage.then_some(UsageBreakdownModelResponse {
-                    model,
+                    model: group.model,
+                    reasoning_effort: group.reasoning_effort,
                     cache_write_tokens: entry.cache_write_tokens,
                     cache_read_tokens: entry.cache_read_tokens,
                     output_tokens: entry.output_tokens,
@@ -3732,7 +3757,11 @@ impl UsageBreakdownAccumulator {
                 })
             })
             .collect::<Vec<_>>();
-        models.sort_by(|left, right| left.model.cmp(&right.model));
+        models.sort_by(|left, right| {
+            left.model
+                .cmp(&right.model)
+                .then_with(|| left.reasoning_effort.cmp(&right.reasoning_effort))
+        });
         UsageBreakdownResponse {
             cache_write_tokens: self.cache_write_tokens,
             cache_read_tokens: self.cache_read_tokens,

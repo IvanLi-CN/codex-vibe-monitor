@@ -13,16 +13,16 @@ Proxy usage responses expose cache-read Token counts but not a separate cache-wr
 
 ## Aggregation Contract
 
-- Token detail presents cache write, cache read, and output so the categories do not overlap.
+- Token detail presents cache write, cache-hit Tokens (the upstream cache-read count), and output so the categories do not overlap.
 - Cost detail presents input, cache write, cache read, output, reasoning, and a dynamic unknown amount.
 - A record contributes either all five exact buckets or its full known total to `unknown`; partial buckets are not mixed with unknown for the same record.
 - Total and model rows reconcile as `input + cache write + cache read + output + reasoning + unknown = total cost` within floating-point tolerance.
-- Totals and model rows share one accumulator. Model names fall back to `unknown` so every contribution remains auditable.
-- Detail panels list totals first, then useful model rows sorted by the panel metric descending.
+- Totals and model-plus-reasoning-effort rows share one accumulator. Model names fall back to `unknown`; missing or blank effort stays unspecified and is never inferred from model defaults.
+- Detail panels list totals first, then useful model-plus-effort rows sorted by the panel metric descending.
 
 ## UI Contract
 
 - Invocation surfaces use `CW` for cache-write billing Tokens and `C` for cache-read Tokens, with accessible full labels.
 - Dashboard and upstream-account metric labels open the same detail through hover, keyboard focus, and click.
-- Breakdown panels use one semantic horizontal table with totals first and one model per row; responsive widths keep the table readable without an internal scrollbar.
+- Breakdown panels use one semantic horizontal table with totals first and one model-plus-effort row per line. The first cell presents model and effort on separate lines so responsive widths stay readable without an internal scrollbar.
 - The unknown column appears only when the total or at least one model has a non-zero unknown amount, so exact-only ranges retain the five-column cost layout.

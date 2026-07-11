@@ -10,6 +10,82 @@ function apiPathname(pathname: string) {
   return apiIndex === -1 ? pathname : pathname.slice(apiIndex)
 }
 
+const DEMO_USAGE_BREAKDOWN = {
+  cacheWriteTokens: 250_000_000,
+  cacheReadTokens: 982_000_000,
+  outputTokens: 149_240_000,
+  costs: {
+    input: 71.5,
+    cacheWrite: 143,
+    cacheRead: 46.5,
+    output: 278,
+    reasoning: 43.34,
+    unknown: 0,
+  },
+  models: [
+    {
+      model: 'gpt-5.6-sol',
+      reasoningEffort: 'high',
+      cacheWriteTokens: 110_000_000,
+      cacheReadTokens: 480_000_000,
+      outputTokens: 65_000_000,
+      costs: { input: 39.5, cacheWrite: 78, cacheRead: 24, output: 143, reasoning: 22.8, unknown: 0 },
+    },
+    {
+      model: 'gpt-5.6-sol',
+      reasoningEffort: 'medium',
+      cacheWriteTokens: 80_000_000,
+      cacheReadTokens: 350_000_000,
+      outputTokens: 50_000_000,
+      costs: { input: 22, cacheWrite: 45, cacheRead: 17.5, output: 95, reasoning: 12.3, unknown: 0 },
+    },
+    {
+      model: 'gpt-5.6-terra',
+      reasoningEffort: null,
+      cacheWriteTokens: 60_000_000,
+      cacheReadTokens: 152_000_000,
+      outputTokens: 34_240_000,
+      costs: { input: 10, cacheWrite: 20, cacheRead: 5, output: 40, reasoning: 8.24, unknown: 0 },
+    },
+  ],
+}
+
+const EMPTY_USAGE_BREAKDOWN = {
+  cacheWriteTokens: 0,
+  cacheReadTokens: 0,
+  outputTokens: 0,
+  costs: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0 },
+  models: [],
+}
+
+function demoUsageBreakdown() {
+  return demoModel.snapshot.scene === 'empty'
+    ? EMPTY_USAGE_BREAKDOWN
+    : DEMO_USAGE_BREAKDOWN
+}
+
+function demoUsageBreakdownForModels(modelIndexes: number[]) {
+  const models = modelIndexes.map((index) => DEMO_USAGE_BREAKDOWN.models[index]).filter((model) => model != null)
+  const costs = models.reduce(
+    (totals, model) => ({
+      input: totals.input + model.costs.input,
+      cacheWrite: totals.cacheWrite + model.costs.cacheWrite,
+      cacheRead: totals.cacheRead + model.costs.cacheRead,
+      output: totals.output + model.costs.output,
+      reasoning: totals.reasoning + model.costs.reasoning,
+      unknown: totals.unknown + model.costs.unknown,
+    }),
+    { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0 },
+  )
+  return {
+    cacheWriteTokens: models.reduce((total, model) => total + model.cacheWriteTokens, 0),
+    cacheReadTokens: models.reduce((total, model) => total + model.cacheReadTokens, 0),
+    outputTokens: models.reduce((total, model) => total + model.outputTokens, 0),
+    costs,
+    models,
+  }
+}
+
 export function demoSummary() {
   const empty = demoModel.snapshot.scene === 'empty'
   const attention = demoModel.snapshot.scene === 'attention'
@@ -23,6 +99,7 @@ export function demoSummary() {
     failureCount,
     totalCost: empty ? 0 : 582.34,
     totalTokens: empty ? 0 : 1_381_240_000,
+    usageBreakdown: demoUsageBreakdown(),
     inProgressConversationCount: empty ? 0 : attention ? 9 : 4,
     token: { requestCount: totalCount, totalTokens: empty ? 0 : 1_381_240_000, avgTokensPerRequest: empty ? 0 : 107_521, cacheInputTokens: empty ? 0 : 982_000_000, totalCost: empty ? 0 : 582.34 },
     network: { avgTtfbMs: empty ? 0 : 214, p95TtfbMs: empty ? 0 : 628, avgTotalMs: empty ? 0 : 2801, p95TotalMs: empty ? 0 : 9010 },
@@ -34,9 +111,116 @@ function invocations() {
   if (demoModel.snapshot.scene === 'empty') return []
   const attention = demoModel.snapshot.scene === 'attention'
   return [
-    { id: 9001, invokeId: 'demo-invocation-9001', occurredAt: demoNow(), createdAt: demoNow(), source: 'proxy', proxyDisplayName: 'Tokyo demo relay', endpoint: '/v1/responses', model: 'gpt-5.6-sol', status: 'running', requestedServiceTier: 'priority', serviceTier: 'priority', inputTokens: 12520, outputTokens: 0, cacheInputTokens: 10880, totalTokens: 12520, cost: 0.014, tUpstreamTtfbMs: null, tTotalMs: null },
-    { id: 9002, invokeId: 'demo-invocation-9002', occurredAt: '2026-07-10T09:23:00.000Z', createdAt: '2026-07-10T09:23:00.000Z', source: 'proxy', proxyDisplayName: 'Tokyo demo relay', endpoint: '/v1/responses', model: 'gpt-5.6-terra', status: attention ? 'http_502' : 'success', requestedServiceTier: 'auto', serviceTier: 'auto', inputTokens: 9320, outputTokens: 882, cacheInputTokens: 7311, totalTokens: 10202, cost: 0.0092, tUpstreamTtfbMs: 184, tTotalMs: 1882, errorMessage: attention ? 'simulated upstream timeout' : null, failureClass: attention ? 'service_failure' : null, failureKind: attention ? 'upstream_timeout' : null },
-    { id: 9003, invokeId: 'demo-invocation-9003', occurredAt: '2026-07-10T09:17:00.000Z', createdAt: '2026-07-10T09:17:00.000Z', source: 'proxy', proxyDisplayName: 'Tokyo demo relay', endpoint: '/v1/chat/completions', model: 'gpt-5.4-mini', status: 'success', requestedServiceTier: 'auto', serviceTier: 'auto', inputTokens: 4110, outputTokens: 295, cacheInputTokens: 2980, totalTokens: 4405, cost: 0.0037, tUpstreamTtfbMs: 146, tTotalMs: 1095 },
+    { id: 9001, invokeId: 'demo-invocation-9001', occurredAt: demoNow(), createdAt: demoNow(), source: 'proxy', proxyDisplayName: 'Tokyo demo relay', upstreamAccountId: 101, upstreamAccountName: 'alpha@demo.invalid', upstreamAccountPlanType: 'team', endpoint: '/v1/responses', model: 'gpt-5.6-sol', status: 'running', requestedServiceTier: 'priority', serviceTier: 'priority', inputTokens: 12520, outputTokens: 0, cacheInputTokens: 10880, cacheWriteTokens: 1640, reasoningTokens: 480, reasoningEffort: 'high', totalTokens: 12520, cost: 0.014, tUpstreamTtfbMs: null, tTotalMs: null },
+    { id: 9002, invokeId: 'demo-invocation-9002', occurredAt: '2026-07-10T09:23:00.000Z', createdAt: '2026-07-10T09:23:00.000Z', source: 'proxy', proxyDisplayName: 'Tokyo demo relay', upstreamAccountId: 101, upstreamAccountName: 'alpha@demo.invalid', upstreamAccountPlanType: 'team', endpoint: '/v1/responses', model: 'gpt-5.6-sol', status: attention ? 'http_502' : 'success', requestedServiceTier: 'auto', serviceTier: 'auto', inputTokens: 9320, outputTokens: 882, cacheInputTokens: 7311, cacheWriteTokens: 2009, reasoningTokens: 360, reasoningEffort: 'medium', totalTokens: 10202, cost: 0.0092, tUpstreamTtfbMs: 184, tTotalMs: 1882, errorMessage: attention ? 'simulated upstream timeout' : null, failureClass: attention ? 'service_failure' : null, failureKind: attention ? 'upstream_timeout' : null },
+    { id: 9003, invokeId: 'demo-invocation-9003', occurredAt: '2026-07-10T09:17:00.000Z', createdAt: '2026-07-10T09:17:00.000Z', source: 'proxy', proxyDisplayName: 'Tokyo demo relay', upstreamAccountId: 102, upstreamAccountName: 'backup-key', upstreamAccountPlanType: 'api', endpoint: '/v1/chat/completions', model: 'gpt-5.6-terra', status: 'success', requestedServiceTier: 'auto', serviceTier: 'auto', inputTokens: 4110, outputTokens: 295, cacheInputTokens: 2980, cacheWriteTokens: 1130, reasoningTokens: 0, totalTokens: 4405, cost: 0.0037, tUpstreamTtfbMs: 146, tTotalMs: 1095 },
+  ]
+}
+
+function demoDashboardActivityAccounts() {
+  if (demoModel.snapshot.scene === 'empty') return []
+  const attention = demoModel.snapshot.scene === 'attention'
+  const recent = invocations()
+  return [
+    {
+      accountKey: 'upstream:101',
+      upstreamAccountId: 101,
+      displayName: 'alpha@demo.invalid',
+      groupName: 'production',
+      planType: 'team',
+      enabled: true,
+      displayStatus: 'active',
+      enableStatus: 'enabled',
+      workStatus: 'working',
+      healthStatus: 'normal',
+      syncState: 'idle',
+      requestCount: 10_130,
+      successCount: attention ? 9_430 : 9_830,
+      failureCount: attention ? 700 : 300,
+      nonSuccessCount: attention ? 700 : 300,
+      totalTokens: 1_135_000_000,
+      successTokens: 1_109_000_000,
+      nonSuccessTokens: 26_000_000,
+      failureTokens: 26_000_000,
+      failureCost: attention ? 28.7 : 11.2,
+      totalCost: 499.1,
+      usageBreakdown: demoUsageBreakdownForModels([0, 1]),
+      cacheHitRate: 0.814,
+      tokensPerMinute: 37_852,
+      spendRate: 15.82,
+      firstByteAvgMs: 198,
+      firstResponseByteTotalAvgMs: 198,
+      avgTotalMs: 2_536,
+      inProgressInvocationCount: attention ? 7 : 3,
+      inProgressPhaseCounts: { queued: 1, requesting: 1, responding: attention ? 5 : 1 },
+      retryInvocationCount: attention ? 2 : 0,
+      effectiveRoutingRule: {
+        allowCutOut: true,
+        allowCutIn: true,
+        priorityTier: 'normal',
+        fastModeRewriteMode: 'keep_original',
+        imageToolRewriteMode: 'keep_original',
+        concurrencyLimit: 4,
+        upstream429RetryEnabled: true,
+        upstream429MaxRetries: 2,
+        availableModels: ['gpt-5.6-sol'],
+        availableModelsDefined: true,
+        systemDeniedModels: [],
+        sourceTagIds: [],
+        sourceTagNames: [],
+      },
+      recentInvocations: recent.filter((record) => record.upstreamAccountId === 101),
+    },
+    {
+      accountKey: 'upstream:102',
+      upstreamAccountId: 102,
+      displayName: 'backup-key',
+      groupName: 'standby',
+      planType: 'api',
+      enabled: true,
+      displayStatus: attention ? 'upstream_unavailable' : 'active',
+      enableStatus: 'enabled',
+      workStatus: attention ? 'unavailable' : 'idle',
+      healthStatus: attention ? 'upstream_unavailable' : 'normal',
+      syncState: 'idle',
+      lastError: attention ? 'Simulated upstream timeout.' : null,
+      requestCount: 2_716,
+      successCount: attention ? 2_242 : 2_588,
+      failureCount: attention ? 474 : 128,
+      nonSuccessCount: attention ? 474 : 128,
+      totalTokens: 246_240_000,
+      successTokens: 239_000_000,
+      nonSuccessTokens: 7_240_000,
+      failureTokens: 7_240_000,
+      failureCost: attention ? 12.4 : 3.8,
+      totalCost: 83.24,
+      usageBreakdown: demoUsageBreakdownForModels([2]),
+      cacheHitRate: 0.717,
+      tokensPerMinute: 8_189,
+      spendRate: 3.59,
+      firstByteAvgMs: 342,
+      firstResponseByteTotalAvgMs: 342,
+      avgTotalMs: 3_981,
+      inProgressInvocationCount: attention ? 2 : 1,
+      inProgressPhaseCounts: { queued: 0, requesting: 1, responding: attention ? 1 : 0 },
+      retryInvocationCount: attention ? 1 : 0,
+      effectiveRoutingRule: {
+        allowCutOut: true,
+        allowCutIn: false,
+        priorityTier: 'fallback',
+        fastModeRewriteMode: 'keep_original',
+        imageToolRewriteMode: 'keep_original',
+        concurrencyLimit: 2,
+        upstream429RetryEnabled: true,
+        upstream429MaxRetries: 1,
+        availableModels: ['gpt-5.6-terra'],
+        availableModelsDefined: true,
+        systemDeniedModels: [],
+        sourceTagIds: [],
+        sourceTagNames: [],
+      },
+      recentInvocations: recent.filter((record) => record.upstreamAccountId === 102),
+    },
   ]
 }
 
@@ -130,6 +314,7 @@ async function handleRequest(request: Request) {
   if (pathname === '/api/version') return json({ backend: 'demo', frontend: 'demo' })
   if (pathname === '/api/stats' || pathname === '/api/stats/summary') return json(demoSummary())
   if (pathname === '/api/stats/dashboard-activity') {
+    const includeAccounts = url.searchParams.get('includeAccounts') === 'true'
     return json({
       range: url.searchParams.get('range') ?? 'today',
       snapshotId: 901,
@@ -146,7 +331,7 @@ async function handleRequest(request: Request) {
         tokensPerMinute: 46_041,
         spendRate: 19.41,
       },
-      accounts: [],
+      accounts: includeAccounts ? demoDashboardActivityAccounts() : undefined,
     })
   }
   if (pathname === '/api/stats/timeseries') return json(timeseries())

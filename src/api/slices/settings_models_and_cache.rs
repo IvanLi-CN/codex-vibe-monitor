@@ -105,6 +105,8 @@ pub(crate) struct UsageCostBreakdownResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UsageBreakdownModelResponse {
     pub(crate) model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reasoning_effort: Option<String>,
     pub(crate) cache_write_tokens: i64,
     pub(crate) cache_read_tokens: i64,
     pub(crate) output_tokens: i64,

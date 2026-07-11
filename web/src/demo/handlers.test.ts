@@ -15,10 +15,42 @@ afterAll(() => server.close())
 describe('demo MSW handlers', () => {
   it('serves deterministic dashboard activity in the shape used by the production normalizer', async () => {
     const response = await fetch('http://demo.invalid/api/stats/dashboard-activity?range=today')
-    const payload = await response.json() as { summary: { stats: { totalCount: number } } }
+    const payload = await response.json() as {
+      summary: {
+        stats: {
+          totalCount: number
+          usageBreakdown: {
+            models: Array<{ model: string; reasoningEffort: string | null }>
+          }
+        }
+      }
+    }
 
     expect(response.ok).toBe(true)
     expect(payload.summary.stats.totalCount).toBe(12_846)
+    expect(payload.summary.stats.usageBreakdown.models).toEqual([
+      expect.objectContaining({ model: 'gpt-5.6-sol', reasoningEffort: 'high' }),
+      expect.objectContaining({ model: 'gpt-5.6-sol', reasoningEffort: 'medium' }),
+      expect.objectContaining({ model: 'gpt-5.6-terra', reasoningEffort: null }),
+    ])
+  })
+
+  it('serves model-plus-effort breakdowns for dashboard account cards on demand', async () => {
+    const response = await fetch('http://demo.invalid/api/stats/dashboard-activity?range=today&includeAccounts=true')
+    const payload = await response.json() as {
+      accounts: Array<{
+        displayName: string
+        usageBreakdown: { models: Array<{ model: string; reasoningEffort: string | null }> }
+      }>
+    }
+
+    expect(response.ok).toBe(true)
+    expect(payload.accounts).toHaveLength(2)
+    expect(payload.accounts[0]).toMatchObject({ displayName: 'alpha@demo.invalid' })
+    expect(payload.accounts[0]?.usageBreakdown.models).toEqual([
+      expect.objectContaining({ model: 'gpt-5.6-sol', reasoningEffort: 'high' }),
+      expect.objectContaining({ model: 'gpt-5.6-sol', reasoningEffort: 'medium' }),
+    ])
   })
 
   it('accepts Pages-scoped API paths so requests remain inside the demo worker scope', async () => {

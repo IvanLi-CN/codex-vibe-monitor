@@ -17,6 +17,7 @@
 - [x] Persist cost buckets, derive cache-write Token counts, and expose total/model usage breakdown APIs.
 - [x] Add accessible dashboard and upstream-account breakdown panels plus `CW` invocation labels.
 - [x] Preserve exact realtime cost buckets in mixed ranges and reconcile historical total costs through a dynamic `unknown` bucket.
+- [x] Group usage detail rows by model and recorded reasoning effort, with an explicit unspecified fallback and cache-hit Token labelling.
 - [x] Retire CRS runtime configuration, polling, aggregation, retention, and API reads while keeping old SQLite tables untouched.
 - [x] Run Rust and web validation, capture visual evidence, and update this file with the final verification set.
 
@@ -24,11 +25,13 @@
 
 - `cargo fmt --check`
 - `cargo check`
-- `cargo test` (1517 passed, 45 ignored)
+- `cargo test` (1520 passed, 45 ignored)
 - `cargo test estimate_proxy_cost_breakdown_uses_explicit_gpt_5_6_sol_cache_read_and_write_prices`
 - `cargo test ranged_summary_`
+- `cargo test ranged_summary_groups_model_usage_by_reasoning_effort`
 - `cd web && bun run test`
 - `cd web && bun run test-storybook`
 - `cd web && bun run build`
+- `cd web && bun run demo:build`
 - `cd web && bun run lint`
-- Storybook evidence is stored under this spec's `assets/` directory for Settings pricing, account cost detail, mobile Token detail, and mixed realtime/historical cost detail on desktop and mobile.
+- The spec's `assets/` directory retains the existing Storybook states and adds mock-only Web Demo evidence for the desktop dashboard and mobile upstream-account model-plus-reasoning-effort Token details. The Web Demo verifies that neither view has an internal or page-level horizontal scrollbar.
