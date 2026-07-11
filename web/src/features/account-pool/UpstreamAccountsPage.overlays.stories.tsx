@@ -107,9 +107,9 @@ export const DetailDrawer: Story = {
     await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
     await expect(within(dialog).queryByTestId('upstream-account-records-activity-overview')).not.toBeInTheDocument()
-    await expect(within(dialog).queryByText(/查看这个上游账号最近保留的调用记录|latest retained invocations routed to this upstream account/i)).not.toBeInTheDocument()
+    await expect(within(dialog).getByTestId('upstream-account-attempt-timeline')).toBeInTheDocument()
     await expect(within(dialog).queryByRole('combobox', { name: /记录数量|rows/i })).not.toBeInTheDocument()
-    await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/pool upstream responded with 500/i)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: /路由|routing/i }))
     await waitFor(() => {
       const requestLog =
@@ -159,7 +159,7 @@ export const DetailDrawerRecordsPopulated: Story = {
     await expect(within(dialog).queryByText(/账号活动总览|account activity overview/i)).not.toBeInTheDocument()
     await expect(within(dialog).queryByTestId('upstream-account-records-activity-overview')).not.toBeInTheDocument()
     await expect(within(dialog).queryByRole('combobox', { name: /记录数量|rows/i })).not.toBeInTheDocument()
-    await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/pool upstream responded with 500/i)).toBeInTheDocument()
   },
 }
 

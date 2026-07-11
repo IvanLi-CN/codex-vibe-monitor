@@ -300,6 +300,7 @@ export interface UpstreamAccountActionEvent {
   httpStatus?: number | null;
   failureKind?: string | null;
   invokeId?: string | null;
+  attemptId?: number | null;
   stickyKey?: string | null;
   createdAt: string;
 }
@@ -1446,6 +1447,7 @@ function normalizeUpstreamAccountActionEvent(
     failureKind:
       typeof payload.failureKind === "string" ? payload.failureKind : null,
     invokeId: typeof payload.invokeId === "string" ? payload.invokeId : null,
+    attemptId: normalizeFiniteNumber(payload.attemptId) ?? null,
     stickyKey: typeof payload.stickyKey === "string" ? payload.stickyKey : null,
     createdAt,
   };

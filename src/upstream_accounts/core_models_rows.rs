@@ -752,6 +752,7 @@ pub(crate) struct UpstreamAccountActionEventRow {
     pub(crate) http_status: Option<i64>,
     pub(crate) failure_kind: Option<String>,
     pub(crate) invoke_id: Option<String>,
+    pub(crate) attempt_id: Option<i64>,
     pub(crate) sticky_key: Option<String>,
     pub(crate) created_at: String,
 }

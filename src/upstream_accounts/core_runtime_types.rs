@@ -951,6 +951,29 @@ pub(crate) struct UpstreamAccountActionEventListResponse {
     pub(crate) page_size: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountAttemptListResponse {
+    pub(crate) items: Vec<ApiPoolUpstreamRequestAttempt>,
+    pub(crate) total: usize,
+    pub(crate) page: usize,
+    pub(crate) page_size: usize,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocateUpstreamAccountAttemptQuery {
+    pub(crate) attempt_id: i64,
+    pub(crate) page_size: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ListUpstreamAccountAttemptsQuery {
+    pub(crate) page: Option<usize>,
+    pub(crate) page_size: Option<usize>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountWindowUsageRequest {
@@ -1579,6 +1602,7 @@ pub(crate) struct UpstreamAccountActionEvent {
     pub(crate) http_status: Option<u16>,
     pub(crate) failure_kind: Option<String>,
     pub(crate) invoke_id: Option<String>,
+    pub(crate) attempt_id: Option<i64>,
     pub(crate) sticky_key: Option<String>,
     pub(crate) created_at: String,
 }

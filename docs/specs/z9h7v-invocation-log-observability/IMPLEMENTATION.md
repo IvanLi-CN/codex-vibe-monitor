@@ -21,6 +21,8 @@
 - raw request/response payload 的完整保留合同不作为 SQLite 止血牺牲项；本轮只补充 raw file write 的 `raw_kind`、codec、file bytes、observed bytes、truncated、path 与 elapsed 证据，并继续同步持久化 terminal usage/status/failure/raw metadata。
 - 账号详情调用记录现显示可选择的 `invokeId`；健康与事件的调用 ID 通过 `/api/invocations/locate` 获取目标所在 retained/runtime 分页窗口及短生命周期 `anchorId`，后续页复用冻结 runtime overlay，再由共享虚拟表格定位目标行。
 - 账号详情调用列表使用表面专属列宽，并按容器实际宽度自动缩小超长 `invokeId` 字号，以完整单行展示 ID；桌面与移动定位态均采用单层非布局型高亮并抑制默认 outline，其他共享 `InvocationTable` 使用方保持原布局。
+- 账号详情已将最终调用记录表替换为真实上游调用尝试时间线：按账号从 `pool_upstream_request_attempts` 读取最近 7 天主库数据，按 `occurred_at DESC, id DESC` 分页。每次重试都有独立行，尝试详情可跳转 `/records?requestId=...` 并自动展开最终调用。
+- `pool_upstream_account_events` 新增可空 `attempt_id`。failover 路径在已获得 pending attempt ID 时，将新生成的 call 事件直接绑定到同一账号、同一请求尝试；历史事件不回填，前端不会再用 `invokeId` 猜测其对应尝试。
 
 ## Migrated Implementation Notes
 

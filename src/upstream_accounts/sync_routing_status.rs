@@ -1202,7 +1202,37 @@ pub(crate) async fn record_upstream_account_action(
     account_id: i64,
     payload: UpstreamAccountActionPayload<'_>,
 ) -> Result<()> {
-    persist_upstream_account_action_with_proxy_snapshot(pool, account_id, payload, None, true).await
+    record_upstream_account_action_for_attempt(pool, account_id, payload, None).await
+}
+
+pub(crate) async fn record_upstream_account_action_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    payload: UpstreamAccountActionPayload<'_>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
+    record_upstream_account_action_for_attempt_with_latest_action(
+        pool, account_id, payload, attempt_id, true,
+    )
+    .await
+}
+
+pub(crate) async fn record_upstream_account_action_for_attempt_with_latest_action(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    payload: UpstreamAccountActionPayload<'_>,
+    attempt_id: Option<i64>,
+    update_latest_action: bool,
+) -> Result<()> {
+    persist_upstream_account_action_with_proxy_snapshot_and_attempt(
+        pool,
+        account_id,
+        payload,
+        None,
+        update_latest_action,
+        attempt_id,
+    )
+    .await
 }
 
 pub(crate) async fn record_upstream_account_action_with_proxy_snapshot(
@@ -1211,12 +1241,13 @@ pub(crate) async fn record_upstream_account_action_with_proxy_snapshot(
     payload: UpstreamAccountActionPayload<'_>,
     proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
 ) -> Result<()> {
-    persist_upstream_account_action_with_proxy_snapshot(
+    persist_upstream_account_action_with_proxy_snapshot_and_attempt(
         pool,
         account_id,
         payload,
         proxy_snapshot,
         true,
+        None,
     )
     .await
 }
@@ -1227,6 +1258,25 @@ pub(crate) async fn persist_upstream_account_action_with_proxy_snapshot(
     payload: UpstreamAccountActionPayload<'_>,
     proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
     update_latest_action: bool,
+) -> Result<()> {
+    persist_upstream_account_action_with_proxy_snapshot_and_attempt(
+        pool,
+        account_id,
+        payload,
+        proxy_snapshot,
+        update_latest_action,
+        None,
+    )
+    .await
+}
+
+async fn persist_upstream_account_action_with_proxy_snapshot_and_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    payload: UpstreamAccountActionPayload<'_>,
+    proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
+    update_latest_action: bool,
+    attempt_id: Option<i64>,
 ) -> Result<()> {
     let reason_message = payload
         .reason_message
@@ -1254,8 +1304,8 @@ pub(crate) async fn persist_upstream_account_action_with_proxy_snapshot(
             account_id, occurred_at, action, source, account_display_name, account_group_name,
             forward_proxy_key, forward_proxy_display_name, forward_proxy_egress_ip, result,
             result_description, reason_code, reason_message, http_status, failure_kind, invoke_id,
-            sticky_key, created_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+            attempt_id, sticky_key, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
         "#,
     )
     .bind(account_id)
@@ -1286,6 +1336,7 @@ pub(crate) async fn persist_upstream_account_action_with_proxy_snapshot(
     .bind(payload.http_status.map(|value| i64::from(value.as_u16())))
     .bind(payload.failure_kind)
     .bind(payload.invoke_id)
+    .bind(attempt_id)
     .bind(payload.sticky_key)
     .bind(created_at)
     .execute(pool)

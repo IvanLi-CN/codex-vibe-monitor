@@ -2451,13 +2451,16 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                     );
-                    record_pool_route_success_with_image_intent(
+                    record_pool_route_success_with_image_intent_for_attempt(
                         &state_for_task.pool,
                         account.account_id,
                         upstream_attempt_started_at_utc_for_task.unwrap_or_else(Utc::now),
                         sticky_key_for_task.as_deref(),
                         None,
                         request_image_intent,
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
                     )
                     .await
                 } else if had_stream_error {
@@ -2488,16 +2491,19 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     );
                     if response_info_is_retryable_server_overloaded(upstream_status, &response_info)
                     {
-                        record_pool_route_retryable_overload_failure(
+                        record_pool_route_retryable_overload_failure_for_attempt(
                             &state_for_task.pool,
                             account.account_id,
                             sticky_key_for_task.as_deref(),
                             &route_message,
                             None,
+                            pending_pool_attempt_record_for_task
+                                .as_ref()
+                                .and_then(|pending| pending.attempt_id),
                         )
                         .await
                     } else {
-                        record_pool_route_http_failure_with_image_intent(
+                        record_pool_route_http_failure_with_image_intent_for_attempt(
                             &state_for_task.pool,
                             account.account_id,
                             &account.kind,
@@ -2507,6 +2513,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             &route_message,
                             None,
                             request_image_intent,
+                            pending_pool_attempt_record_for_task
+                                .as_ref()
+                                .and_then(|pending| pending.attempt_id),
                         )
                         .await
                     }

@@ -7,6 +7,25 @@ pub(crate) async fn record_pool_route_success(
     sticky_key: Option<&str>,
     invoke_id: Option<&str>,
 ) -> Result<()> {
+    record_pool_route_success_inner(
+        pool,
+        account_id,
+        request_started_at_utc,
+        sticky_key,
+        invoke_id,
+        None,
+    )
+    .await
+}
+
+async fn record_pool_route_success_inner(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     let request_started_at_iso = format_utc_iso(request_started_at_utc);
     let update_result = sqlx::query(
@@ -41,7 +60,7 @@ pub(crate) async fn record_pool_route_success(
     if let Some(sticky_key) = sticky_key {
         upsert_sticky_route(pool, sticky_key, account_id, &now_iso).await?;
     }
-    record_upstream_account_action(
+    record_upstream_account_action_for_attempt(
         pool,
         account_id,
         UpstreamAccountActionPayload {
@@ -55,6 +74,7 @@ pub(crate) async fn record_pool_route_success(
             sticky_key,
             occurred_at: &now_iso,
         },
+        attempt_id,
     )
     .await?;
     Ok(())
@@ -68,12 +88,34 @@ pub(crate) async fn record_pool_route_success_with_image_intent(
     invoke_id: Option<&str>,
     image_intent: ImageIntent,
 ) -> Result<()> {
-    record_pool_route_success(
+    record_pool_route_success_with_image_intent_for_attempt(
         pool,
         account_id,
         request_started_at_utc,
         sticky_key,
         invoke_id,
+        image_intent,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_success_with_image_intent_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    invoke_id: Option<&str>,
+    image_intent: ImageIntent,
+    attempt_id: Option<i64>,
+) -> Result<()> {
+    record_pool_route_success_inner(
+        pool,
+        account_id,
+        request_started_at_utc,
+        sticky_key,
+        invoke_id,
+        attempt_id,
     )
     .await?;
     if image_intent_observes_capability(image_intent) {
@@ -147,6 +189,33 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
     invoke_id: Option<&str>,
     image_intent: ImageIntent,
 ) -> Result<()> {
+    record_pool_route_http_failure_with_image_intent_inner(
+        pool,
+        account_id,
+        account_kind,
+        single_account_rotation_enabled,
+        sticky_key,
+        status,
+        error_message,
+        invoke_id,
+        image_intent,
+        None,
+    )
+    .await
+}
+
+async fn record_pool_route_http_failure_with_image_intent_inner(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    account_kind: &str,
+    single_account_rotation_enabled: bool,
+    sticky_key: Option<&str>,
+    status: StatusCode,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    image_intent: ImageIntent,
+    attempt_id: Option<i64>,
+) -> Result<()> {
     if image_intent_observes_capability(image_intent)
         && classify_image_tool_capability_observation(status, Some(error_message))
             == ImageToolCapability::Unsupported
@@ -159,12 +228,13 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
         .await?;
     }
     if route_http_failure_is_retryable_server_overloaded(status, error_message) {
-        return record_pool_route_retryable_overload_failure(
+        return record_pool_route_retryable_overload_failure_inner(
             pool,
             account_id,
             sticky_key,
             error_message,
             invoke_id,
+            attempt_id,
         )
         .await;
     }
@@ -194,6 +264,7 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
                     status,
                     invoke_id,
                     &now_iso,
+                    attempt_id,
                 )
                 .await?;
                 return Ok(());
@@ -229,7 +300,7 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
             .bind(classification.failure_kind)
             .execute(pool)
             .await?;
-            record_upstream_account_action(
+            record_upstream_account_action_for_attempt(
                 pool,
                 account_id,
                 UpstreamAccountActionPayload {
@@ -243,6 +314,7 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
                     sticky_key,
                     occurred_at: &now_iso,
                 },
+                attempt_id,
             )
             .await?;
             Ok(())
@@ -273,6 +345,7 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
                 status,
                 base_secs,
                 invoke_id,
+                attempt_id,
             )
             .await?;
             if applied_status_change
@@ -294,6 +367,25 @@ pub(crate) async fn record_pool_route_retryable_overload_failure(
     error_message: &str,
     invoke_id: Option<&str>,
 ) -> Result<()> {
+    record_pool_route_retryable_overload_failure_inner(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        None,
+    )
+    .await
+}
+
+async fn record_pool_route_retryable_overload_failure_inner(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
     apply_pool_route_cooldown_failure(
         pool,
         account_id,
@@ -305,6 +397,7 @@ pub(crate) async fn record_pool_route_retryable_overload_failure(
         StatusCode::OK,
         5,
         invoke_id,
+        attempt_id,
     )
     .await?;
     Ok(())
@@ -317,6 +410,25 @@ pub(crate) async fn record_pool_route_transport_failure(
     error_message: &str,
     invoke_id: Option<&str>,
 ) -> Result<()> {
+    record_pool_route_transport_failure_inner(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        None,
+    )
+    .await
+}
+
+async fn record_pool_route_transport_failure_inner(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
     apply_pool_route_cooldown_failure(
         pool,
         account_id,
@@ -328,9 +440,75 @@ pub(crate) async fn record_pool_route_transport_failure(
         StatusCode::BAD_GATEWAY,
         5,
         invoke_id,
+        attempt_id,
     )
     .await?;
     Ok(())
+}
+
+pub(crate) async fn record_pool_route_transport_failure_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
+    record_pool_route_transport_failure_inner(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        attempt_id,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
+    record_pool_route_retryable_overload_failure_inner(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        attempt_id,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_http_failure_with_image_intent_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    account_kind: &str,
+    single_account_rotation_enabled: bool,
+    sticky_key: Option<&str>,
+    status: StatusCode,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    image_intent: ImageIntent,
+    attempt_id: Option<i64>,
+) -> Result<()> {
+    record_pool_route_http_failure_with_image_intent_inner(
+        pool,
+        account_id,
+        account_kind,
+        single_account_rotation_enabled,
+        sticky_key,
+        status,
+        error_message,
+        invoke_id,
+        image_intent,
+        attempt_id,
+    )
+    .await
 }
 
 pub(crate) async fn record_suppressed_pool_route_status_change(
@@ -343,19 +521,24 @@ pub(crate) async fn record_suppressed_pool_route_status_change(
     http_status: StatusCode,
     invoke_id: Option<&str>,
     occurred_at: &str,
+    attempt_id: Option<i64>,
 ) -> Result<()> {
-    record_status_change_suppressed_event_with_proxy_snapshot(
+    record_upstream_account_action_for_attempt_with_latest_action(
         pool,
         account_id,
-        UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
-        reason_code,
-        error_message,
-        Some(http_status),
-        Some(failure_kind),
-        invoke_id,
-        sticky_key,
-        occurred_at,
-        None,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED,
+            source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+            reason_code: Some(reason_code),
+            reason_message: Some(error_message),
+            http_status: Some(http_status),
+            failure_kind: Some(failure_kind),
+            invoke_id,
+            sticky_key,
+            occurred_at,
+        },
+        attempt_id,
+        false,
     )
     .await
 }
@@ -424,6 +607,7 @@ pub(crate) async fn apply_pool_route_cooldown_failure(
     http_status: StatusCode,
     base_secs: i64,
     invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
 ) -> Result<bool> {
     let row = load_upstream_account_row(pool, account_id)
         .await?
@@ -440,6 +624,7 @@ pub(crate) async fn apply_pool_route_cooldown_failure(
             http_status,
             invoke_id,
             &now_iso,
+            attempt_id,
         )
         .await?;
         return Ok(false);
@@ -500,7 +685,7 @@ pub(crate) async fn apply_pool_route_cooldown_failure(
     .bind(streak_started_at_iso)
     .execute(pool)
     .await?;
-    record_upstream_account_action(
+    record_upstream_account_action_for_attempt(
         pool,
         account_id,
         UpstreamAccountActionPayload {
@@ -518,6 +703,7 @@ pub(crate) async fn apply_pool_route_cooldown_failure(
             sticky_key,
             occurred_at: &now_iso,
         },
+        attempt_id,
     )
     .await?;
     Ok(true)

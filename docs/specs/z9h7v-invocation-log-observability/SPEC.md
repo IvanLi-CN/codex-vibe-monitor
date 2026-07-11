@@ -27,7 +27,10 @@
 - Records 与 Dashboard 两个 owner-facing 列表同时显示独立“图片工具”徽标，避免同一条 invocation 在不同列表面出现语义漂移。
 - Live 展开详情与 Dashboard 调用详情抽屉必须共用同一套调用详情组件，并按“快速排障”组织信息：请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示。
 - 新 HTTP proxy invocation 的 `invokeId` 必须使用 10 位 NanoID 风格短格式，去掉历史 `proxy-...` 前缀、内部 counter 与时间戳尾巴；历史 `proxy-...` 记录继续兼容查询和展示。
-- 账号详情调用记录必须显示可选择的 `invokeId`；健康与事件中的调用 ID 必须能通过后端锚点定位窗口跳转到对应调用记录，不允许前端逐页扫描历史记录。
+- 账号详情“上游调用尝试”必须按真实 `pool_upstream_request_attempts` 行展示请求、重试、失败与成功；概览统计继续采用最终调用口径。
+- 新产生的路由调用事件必须携带精确 `attemptId`，健康与事件只能用该 ID 定位同账号的尝试；缺少 `attemptId` 的历史事件必须明确不可定位，不做 `invokeId` 模糊跳转。
+- 尝试列表与定位只查询主库最近 7 天，按 `occurredAt DESC, id DESC` 稳定分页，不读取 archive。
+- 尝试详情必须提供到 `/records?requestId=...` 的全局调用总览入口，并自动展开该最终调用的完整尝试链。
 - 账号详情调用记录中的 `invokeId` 必须使用等宽字体单行完整展示，不得换行或截断；该表面可使用专用列宽回收用时、输入与输出列空间，但不得改变其他共享调用列表的默认布局。
 - 号池调用处于 `running` / `pending` 且已携带 `upstreamAccountName` 或 `upstreamAccountId` 时，所有共享 invocation 展示面必须用当前上游账号替代“号池路由中”fallback，并以蓝色呼吸文本表达正在路由中。
 
@@ -52,7 +55,7 @@
 
 ### Out of scope
 
-- 任何数据库 schema 变更。
+- 除账户事件新增可空 `attempt_id` 外的数据库 schema 变更。
 - 采集敏感头（如 `Authorization`）或原文脱敏策略重构。
 - 统计页图表结构改造。
 
@@ -106,6 +109,7 @@
 - 前端表格默认显示关键字段（token/cost/latency），用户展开后看到请求元信息与阶段耗时明细。
 - 前端展开详情时隐藏 `source` 行，避免把来源分类误读成出站代理。
 - `/api/invocations/{invoke_id}/pool-attempts` 读取 `pool_upstream_request_attempts.proxy_binding_key_snapshot` 并作为 `proxyBindingKeySnapshot` 返回。
+- `GET /api/pool/upstream-accounts/{accountId}/call-attempts` 返回该账号最近 7 天主库尝试的分页列表；`GET .../call-attempts/locate?attemptId=...` 返回目标尝试所在页，未命中返回 `404`。
 - 号池详情中，真实上游尝试与合成终态记录分开展示。`budget_exhausted_final` 或 `sameAccountRetryIndex <= 0` 仅作为号池终态说明，不作为普通尝试卡片展示，不显示同账号重试序号或阶段耗时。
 - 启动阶段执行历史回填：读取 `request_raw_path` 指向的原始请求 JSON，提取 `prompt_cache_key` 后写回 payload。
 - Settings 页面在现有 proxy card 内新增两个独立开关，文案明确区分“请求 body 记录”与“响应 body 记录”，并说明关闭仅影响新记录，旧记录继续走 retention。
@@ -132,6 +136,12 @@
 ### `GET /api/invocations/{invokeId}/pool-attempts` 尝试对象
 
 - `proxyBindingKeySnapshot?: string | null`
+
+### Upstream account attempts
+
+- `pool_upstream_account_events.attempt_id` 为可空精确关联；只为新产生且调用链路已拿到尝试主键的路由事件写入，不回填历史事件。
+- `GET /api/pool/upstream-accounts/{accountId}/call-attempts` Query: `page?: number`、`pageSize?: number`；Response: `items`、`total`、`page`、`pageSize`。
+- `GET /api/pool/upstream-accounts/{accountId}/call-attempts/locate` Query: `attemptId: number`、`pageSize?: number`；目标必须属于当前账号且处于 7 天主库窗口内。
 
 ### `GET /api/settings` / `PUT /api/settings/proxy` 新增字段
 
@@ -203,6 +213,13 @@
 - 启动 backend/frontend 后打开 `/dashboard` 与 `/#/live`，验证新增列与详情展开可用。
 
 ## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawer
+  state: upstream attempt retry timeline
+  evidence_note: verifies the account drawer renders independent failed and successful upstream attempts for one final call, keeps retry indices separate, and provides the Records global-overview link.
+  image:
+  ![Upstream account attempt timeline](./assets/upstream-account-attempt-timeline-storybook.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Settings/SettingsPage/Default

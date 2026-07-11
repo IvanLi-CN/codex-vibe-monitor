@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { RecordsNewDataButton } from "../features/records/RecordsNewDataButton";
 import { Button } from "../components/ui/button";
 import { FilterableCombobox } from "../components/ui/filterable-combobox";
@@ -49,6 +50,11 @@ function getVisiblePages(currentPage: number, totalPages: number) {
 
 export default function RecordsPage() {
   const { t } = useTranslation();
+  const [searchParams] = useSearchParams();
+  const requestedInvokeId = searchParams.get("requestId")?.trim() || null;
+  const requestedRangePreset =
+    searchParams.get("rangePreset") === "7d" ? "7d" : null;
+  const appliedRequestIdRef = useRef<string | null>(null);
   const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
   const {
@@ -94,6 +100,19 @@ export default function RecordsPage() {
   );
   const suggestionsSeqRef = useRef(0);
   const customRangeTouchedRef = useRef(false);
+
+  useEffect(() => {
+    const requestKey = `${requestedInvokeId}:${requestedRangePreset ?? ""}`;
+    if (!requestedInvokeId || appliedRequestIdRef.current === requestKey) return;
+    appliedRequestIdRef.current = requestKey;
+    resetDraft();
+    updateDraft("requestId", requestedInvokeId);
+    if (requestedRangePreset) {
+      updateDraft("rangePreset", requestedRangePreset);
+    }
+    const timer = window.setTimeout(() => void search(), 0);
+    return () => window.clearTimeout(timer);
+  }, [requestedInvokeId, requestedRangePreset, resetDraft, search, updateDraft]);
 
   useEffect(() => {
     suggestionsSeqRef.current += 1;
@@ -756,6 +775,7 @@ export default function RecordsPage() {
             onOpenUpstreamAccount={(accountId) =>
               openUpstreamAccount(accountId)
             }
+            autoExpandInvokeId={requestedInvokeId}
           />
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-base-300/70 bg-base-100/45 px-4 py-3">

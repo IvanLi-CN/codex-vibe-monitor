@@ -105,12 +105,12 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-function render(ui: React.ReactNode) {
+function render(ui: React.ReactNode, initialEntries?: string[]) {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
   act(() => {
-    root?.render(<MemoryRouter>{ui}</MemoryRouter>)
+    root?.render(<MemoryRouter initialEntries={initialEntries}>{ui}</MemoryRouter>)
   })
 }
 
@@ -717,5 +717,23 @@ describe('RecordsPage new data action', () => {
     })
 
     expect(updateDraft).toHaveBeenCalledWith('requestId', 'invoke-xyz')
+  })
+
+  it('resets stale filters before searching a request ID deep link', async () => {
+    const resetDraft = vi.fn()
+    const updateDraft = vi.fn()
+    const search = vi.fn()
+    mockInvocationRecords({ resetDraft, updateDraft, search })
+
+    vi.useFakeTimers()
+    render(<RecordsPage />, ['/records?requestId=invoke-target&rangePreset=7d'])
+    await act(async () => {
+      await vi.runAllTimersAsync()
+    })
+
+    expect(resetDraft).toHaveBeenCalledTimes(1)
+    expect(updateDraft).toHaveBeenNthCalledWith(1, 'requestId', 'invoke-target')
+    expect(updateDraft).toHaveBeenNthCalledWith(2, 'rangePreset', '7d')
+    expect(search).toHaveBeenCalledTimes(1)
   })
 })

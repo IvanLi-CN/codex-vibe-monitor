@@ -1,5 +1,10 @@
 # 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key / Body Logging Toggles） - History
 
+## Account upstream attempt observability
+
+- 账号详情从最终调用记录切换为 7 天主库上游尝试时间线，修复失败账号事件链接到最终成功账号调用而无法定位的问题。
+- 路由调用事件新增可空 `attempt_id` 精确关联；旧事件保持可见但不可跳转。
+
 ## Migration
 
 - Canonical docs taxonomy migration created or normalized this companion history file.

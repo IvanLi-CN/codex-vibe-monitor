@@ -1069,6 +1069,54 @@ export function StorybookUpstreamAccountsMock({
         return jsonResponse(clone(detail))
       }
 
+      const attemptMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)\/call-attempts(?:\/locate)?$/,
+      )
+      if (attemptMatch && method === 'GET') {
+        const accountId = Number(attemptMatch[1])
+        const attemptId = Number(parsedUrl.searchParams.get('attemptId') || 9001)
+        const attempts = [
+          {
+            id: 9001,
+            invokeId: 'storybook-pool-retry-001',
+            occurredAt: '2026-07-11T12:00:00.000Z',
+            endpoint: '/v1/responses',
+            stickyKey: 'storybook-sticky',
+            upstreamAccountId: accountId,
+            upstreamAccountName: 'Codex Pro - Tokyo',
+            attemptIndex: 1,
+            distinctAccountIndex: 0,
+            sameAccountRetryIndex: 0,
+            status: 'http_failure',
+            phase: 'failed',
+            httpStatus: 500,
+            failureKind: 'upstream_response_failed',
+            errorMessage: 'pool upstream responded with 500',
+            createdAt: '2026-07-11T12:00:00.000Z',
+          },
+          {
+            id: 9002,
+            invokeId: 'storybook-pool-retry-001',
+            occurredAt: '2026-07-11T12:00:01.000Z',
+            endpoint: '/v1/responses',
+            stickyKey: 'storybook-sticky',
+            upstreamAccountId: accountId,
+            upstreamAccountName: 'Codex Pro - Tokyo',
+            attemptIndex: 2,
+            distinctAccountIndex: 0,
+            sameAccountRetryIndex: 1,
+            status: 'success',
+            phase: 'completed',
+            httpStatus: 200,
+            createdAt: '2026-07-11T12:00:01.000Z',
+          },
+        ]
+        if (path.endsWith('/locate') && !attempts.some((attempt) => attempt.id === attemptId)) {
+          return jsonResponse({ message: 'upstream account attempt was not found' }, 404)
+        }
+        return jsonResponse({ items: attempts, total: attempts.length, page: 1, pageSize: 50 })
+      }
+
       if (path === '/api/invocations/locate' && method === 'GET') {
         const requestedAccountId = Number(
           parsedUrl.searchParams.get('upstreamAccountId') || 0,

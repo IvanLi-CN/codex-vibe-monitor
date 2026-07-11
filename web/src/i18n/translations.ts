@@ -954,7 +954,18 @@ const baseTranslations = {
       "Conversation override",
     "accountPool.upstreamAccounts.detailTitle": "Account details",
     "accountPool.upstreamAccounts.detailTabs.overview": "Overview",
-    "accountPool.upstreamAccounts.detailTabs.records": "Records",
+    "accountPool.upstreamAccounts.detailTabs.records": "Upstream attempts",
+    "accountPool.upstreamAttempts.locateUnavailable":
+      "This historical event has no locatable upstream attempt, or the attempt is outside the 7-day retention window.",
+    "accountPool.upstreamAttempts.empty":
+      "No upstream call attempts for this account in the past 7 days.",
+    "accountPool.upstreamAttempts.description":
+      "Upstream call attempts from the primary database for the past 7 days. Each retry is retained separately.",
+    "accountPool.upstreamAttempts.index": "Attempt #{{count}}",
+    "accountPool.upstreamAttempts.globalOverview": "View global call overview",
+    "accountPool.upstreamAttempts.total": "{{count}} attempts",
+    "accountPool.upstreamAttempts.previous": "Previous",
+    "accountPool.upstreamAttempts.next": "Next",
     "accountPool.upstreamAccounts.detailTabs.edit": "Edit",
     "accountPool.upstreamAccounts.detailTabs.routing": "Routing",
     "accountPool.upstreamAccounts.detailTabs.healthEvents": "Health & events",
@@ -3373,15 +3384,15 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.stickyConversations.table.stickyKey":
       "Sticky Key",
     "accountPool.upstreamAccounts.stickyConversations.table.actions": "操作",
-    "accountPool.upstreamAccounts.records.title": "调用记录",
+    "accountPool.upstreamAccounts.records.title": "上游调用尝试",
     "accountPool.upstreamAccounts.records.activityOverviewTitle":
       "账号活动总览",
     "accountPool.upstreamAccounts.records.description":
-      "查看这个上游账号最近保留的调用记录。",
+      "查看这个上游账号最近 7 天的每一次上游调用尝试、重试和结果。",
     "accountPool.upstreamAccounts.records.limitLabel": "记录数量",
     "accountPool.upstreamAccounts.records.limitOption": "{{count}} 条记录",
     "accountPool.upstreamAccounts.records.empty":
-      "这个上游账号暂时还没有保留的调用记录。",
+      "这个上游账号最近 7 天暂时还没有上游调用尝试。",
     "accountPool.upstreamAccounts.records.loadingMore": "正在加载更多记录...",
     "accountPool.upstreamAccounts.records.loaded":
       "已加载 {{loaded}} / {{total}} 条保留调用记录",
@@ -3463,7 +3474,17 @@ const baseTranslations = {
       "对话覆盖",
     "accountPool.upstreamAccounts.detailTitle": "账号详情",
     "accountPool.upstreamAccounts.detailTabs.overview": "概览",
-    "accountPool.upstreamAccounts.detailTabs.records": "调用记录",
+    "accountPool.upstreamAccounts.detailTabs.records": "上游调用尝试",
+    "accountPool.upstreamAttempts.locateUnavailable":
+      "该历史事件没有可定位的上游尝试，或尝试已超出 7 天保留范围。",
+    "accountPool.upstreamAttempts.empty": "最近 7 天没有该账号的上游调用尝试。",
+    "accountPool.upstreamAttempts.description":
+      "最近 7 天主库中的上游调用尝试。每次重试都会单独保留。",
+    "accountPool.upstreamAttempts.index": "尝试 #{{count}}",
+    "accountPool.upstreamAttempts.globalOverview": "查看全局调用总览",
+    "accountPool.upstreamAttempts.total": "{{count}} 次尝试",
+    "accountPool.upstreamAttempts.previous": "上一页",
+    "accountPool.upstreamAttempts.next": "下一页",
     "accountPool.upstreamAccounts.detailTabs.edit": "编辑",
     "accountPool.upstreamAccounts.detailTabs.routing": "路由",
     "accountPool.upstreamAccounts.detailTabs.healthEvents": "健康与事件",
