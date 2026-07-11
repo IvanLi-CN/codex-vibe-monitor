@@ -252,6 +252,14 @@
   PR: include
   ![Dashboard 上游账号 recent 错误摘要 tooltip 证据](./assets/dashboard-upstream-account-error-tooltip.png)
 
+- source_type: mock_ui
+  story_id_or_title: `dashboard-working-conversations-layout.spec.ts`
+  scenario: `wide upstream account long error summary no overflow`
+  evidence_note: 验证双列账号卡在长 429 错误载荷下保持等宽；错误摘要在 recent 行内单行截断，且 grid、账号卡与调用行均不越过父容器右边界。
+  image:
+  PR: include
+  ![Dashboard 上游账号长错误摘要不溢出证据](./assets/dashboard-upstream-account-error-summary-no-overflow.png)
+
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--running-only-conversation`
   scenario: `inline invocation phase status`
