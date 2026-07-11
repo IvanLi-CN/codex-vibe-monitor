@@ -1793,14 +1793,14 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                       </div>
                       <div className="space-y-2">
                         <label className="block text-xs font-medium text-base-content/68">
-                          {t('settings.pricing.columns.cacheInput')}
+                          {t('settings.pricing.columns.cacheRead')}
                         </label>
                         <Input
                           type="number"
                           step="any"
                           className="h-9 px-3"
-                          value={entry.cacheInputPer1m}
-                          onChange={(event) => handlePricingFieldChange(index, 'cacheInputPer1m', event.target.value)}
+                          value={entry.cacheReadPer1m}
+                          onChange={(event) => handlePricingFieldChange(index, 'cacheReadPer1m', event.target.value)}
                           onBlur={() => triggerPricingSave(true)}
                         />
                       </div>

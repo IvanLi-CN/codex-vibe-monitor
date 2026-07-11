@@ -188,7 +188,7 @@ function render(initialEntry = '/dashboard') {
 }
 
 describe('AppLayout', () => {
-  it('uses the shared segmented control helper for the top navigation', async () => {
+  it('keeps desktop navigation behind the compact hamburger menu contract', async () => {
     hookMocks.useUpdateAvailable.mockReturnValue({
       currentVersion: null,
       availableVersion: null,
@@ -211,15 +211,16 @@ describe('AppLayout', () => {
     })
 
     const navGroup = host?.querySelector('nav .segmented-control')
-    const navigation = host?.querySelector('[data-testid="app-header-navigation"]')
+    const desktopNavigation = navGroup?.parentElement
+    const mobileMenuButton = host?.querySelector('button[aria-label="app.nav.openMenu"]') as HTMLButtonElement | null
     const dashboardLink = host?.querySelector('a[href="/dashboard"]')
     const systemLink = host?.querySelector('a[href="/system"]')
     const logoMark = host?.querySelector('[data-testid="app-header-logo-mark"]')
     const logoImage = host?.querySelector('img[src="/brand-mark.svg"][alt="product icon"]')
 
     expect(navGroup).not.toBeNull()
-    expect(navigation?.className).toContain('order-3')
-    expect(navigation?.className).toContain('w-full')
+    expect(desktopNavigation?.className).toContain('hidden')
+    expect(desktopNavigation?.className).toContain('min-[1024px]:block')
     expect(dashboardLink?.className).toContain('segmented-control-item')
     expect(dashboardLink?.className).toContain('segmented-control-item--active')
     expect(systemLink?.className).toContain('segmented-control-item')
@@ -228,6 +229,14 @@ describe('AppLayout', () => {
     expect(logoMark?.className).toContain('h-10')
     expect(logoMark?.className).toContain('w-10')
     expect(logoImage).not.toBeNull()
+
+    expect(mobileMenuButton).not.toBeNull()
+    act(() => {
+      mobileMenuButton?.click()
+    })
+    expect(host?.querySelector('#app-mobile-navigation')).not.toBeNull()
+    expect(host?.querySelector('a[href="/account-pool/groups"]')).not.toBeNull()
+    expect(host?.querySelector('a[href="/system/tasks"]')).not.toBeNull()
   })
 
   it('keeps the header logo mark active across bursty updates until the recent-activity window expires', async () => {

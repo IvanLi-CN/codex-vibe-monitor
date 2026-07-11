@@ -238,7 +238,7 @@ export function AppLayout() {
               aria-expanded={mobileNavOpen}
               aria-controls="app-mobile-navigation"
             >
-              <AppIcon name="navigation-variant" className="h-[18px] w-[18px] text-primary" aria-hidden />
+              <AppIcon name="menu" className="h-[18px] w-[18px] text-primary" aria-hidden />
               <span className="sr-only">{t('app.nav.openMenu')}</span>
             </button>
             <HeaderBrandMark
@@ -341,7 +341,7 @@ export function AppLayout() {
                 ))}
               </ul>
             </div>
-          </div>
+          </nav>
 
         </div>
       </header>

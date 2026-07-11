@@ -2713,10 +2713,10 @@ function SharedUpstreamAccountDetailDrawerInner({
   );
   const handleDeleteConfirmOpenChange = useCallback(
     (nextOpen: boolean) => {
-      if (isBusyAction(busyAction, "delete", selected.id) && !nextOpen) return;
+      if (!nextOpen && selectedId != null && isBusyAction(busyAction, "delete", selectedId)) return;
       setIsDeleteConfirmOpen(nextOpen);
     },
-    [busyAction, selected?.id],
+    [busyAction, selectedId],
   );
 
   const detailIdentity =
