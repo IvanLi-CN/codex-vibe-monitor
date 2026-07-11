@@ -21,7 +21,10 @@ export function InvocationErrorSummary({
     <Tooltip
       side={tooltipSide}
       sideOffset={8}
-      className={cn("inline-flex min-w-0 max-w-full rounded-[0.2rem]", className)}
+      className={cn(
+        "inline-flex min-w-0 w-full max-w-full overflow-hidden rounded-[0.2rem]",
+        className,
+      )}
       contentClassName="max-w-[min(32rem,calc(100vw-1rem))] whitespace-pre-wrap break-words"
       content={normalizedMessage}
       triggerProps={{

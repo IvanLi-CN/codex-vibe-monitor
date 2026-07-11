@@ -3639,6 +3639,24 @@ export const ErrorSummaryTooltips: Story = {
       throw new Error("missing recent row error summary trigger");
     }
 
+    const accountGrid = canvasElement.querySelector(
+      '[data-testid="dashboard-upstream-account-grid"]',
+    );
+    const accountCard = recentRow.closest(
+      '[data-testid="dashboard-upstream-account-card"]',
+    );
+    if (!(accountGrid instanceof HTMLElement) || !(accountCard instanceof HTMLElement)) {
+      throw new Error("missing upstream account layout shrink chain");
+    }
+
+    expect(accountGrid.className).toContain(
+      "desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]",
+    );
+    expect(accountCard.className).toContain("min-w-0");
+    expect(recentRow.className).toContain("min-w-0");
+    expect(recentErrorTrigger.className).toContain("w-full");
+    expect(recentErrorTrigger.className).toContain("overflow-hidden");
+
     await userEvent.hover(recentErrorTrigger);
     await waitFor(() => {
       const tooltip = Array.from(document.body.querySelectorAll("[data-side]")).find(

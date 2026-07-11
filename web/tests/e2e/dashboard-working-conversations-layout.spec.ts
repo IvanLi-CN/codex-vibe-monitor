@@ -292,6 +292,75 @@ function buildWorkingConversationsResponse() {
   }
 }
 
+function buildDashboardActivityResponse() {
+  const longErrorMessage =
+    '[upstream_http_429]poolupstreamrespondedwith429:error:code=429reason="DAILY_LIMIT_EXCEEDED"message="dailyusagelimitexceeded"metadata=map[]'
+  const createAccount = (
+    upstreamAccountId: number,
+    displayName: string,
+    invokeId: string,
+    errorMessage?: string,
+  ) => ({
+    upstreamAccountId,
+    displayName,
+    requestCount: 12,
+    successCount: errorMessage ? 3 : 12,
+    failureCount: errorMessage ? 9 : 0,
+    nonSuccessCount: errorMessage ? 9 : 0,
+    totalTokens: 265_246,
+    successTokens: 192_000,
+    nonSuccessTokens: errorMessage ? 73_246 : 0,
+    failureTokens: errorMessage ? 73_246 : 0,
+    failureCost: errorMessage ? 0.28 : 0,
+    totalCost: 0.28,
+    cacheHitRate: 0.94,
+    tokensPerMinute: 0,
+    spendRate: 0,
+    firstByteAvgMs: 220,
+    firstResponseByteTotalAvgMs: 6610,
+    avgTotalMs: 8300,
+    inProgressInvocationCount: 0,
+    inProgressPhaseCounts: { queued: 0, requesting: 0, responding: 0 },
+    retryInvocationCount: 0,
+    effectiveRoutingRule: {},
+    recentInvocations: [
+      createPreview({
+        id: upstreamAccountId,
+        invokeId,
+        occurredAt: '2026-04-06T12:00:00.000Z',
+        status: errorMessage ? 'http_429' : 'success',
+        failureClass: errorMessage ? 'service_failure' : 'none',
+        failureKind: errorMessage ? 'upstream_rate_limit' : undefined,
+        errorMessage,
+        upstreamAccountId,
+        upstreamAccountName: displayName,
+      }),
+    ],
+  })
+
+  return {
+    range: 'today',
+    rangeStart: '2026-04-06T11:55:00.000Z',
+    rangeEnd: '2026-04-06T12:00:00.000Z',
+    snapshotId: 1,
+    rateWindow: {
+      start: '2026-04-06T11:55:00.000Z',
+      end: '2026-04-06T12:00:00.000Z',
+      windowMinutes: 5,
+      mode: 'activity_window',
+    },
+    summary: {
+      stats: buildSummary('today'),
+      tokensPerMinute: 0,
+      spendRate: 0,
+    },
+    accounts: [
+      createAccount(42, 'CIII', 'account-error-429', longErrorMessage),
+      createAccount(43, 'dzw', 'account-success-200'),
+    ],
+  }
+}
+
 function buildSummary(windowName: string) {
   if (windowName === 'today') {
     return {
@@ -416,6 +485,14 @@ async function installDashboardRoutes(page: Page) {
       body: JSON.stringify(buildWorkingConversationsResponse()),
     })
   })
+
+  await page.route('**/api/stats/dashboard-activity**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(buildDashboardActivityResponse()),
+    })
+  })
 }
 
 test.describe('Dashboard working conversations responsive layout', () => {
@@ -531,5 +608,52 @@ test.describe('Dashboard working conversations responsive layout', () => {
     expect(layout.chipBottomDelta).toBeLessThanOrEqual(8)
     expect(layout.lineOverflowRight).toBeLessThanOrEqual(1)
     expect(layout.lineHeight).toBeLessThan(32)
+  })
+
+  test('keeps long recent error summaries inside their upstream account cards', async ({ page }) => {
+    await installDashboardRoutes(page)
+    await page.setViewportSize({ width: 1660, height: 1180 })
+    await page.goto('/dashboard')
+
+    await page.getByRole('tab', { name: '上游账号' }).click()
+    await expect(page.getByTestId('dashboard-upstream-account-card')).toHaveCount(2)
+
+    const layout = await page.evaluate(() => {
+      const root = document.documentElement
+      const grid = document.querySelector<HTMLElement>('[data-testid="dashboard-upstream-account-grid"]')
+      const cards = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid="dashboard-upstream-account-card"]'),
+      )
+      const recentRows = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid="dashboard-upstream-account-recent-row"]'),
+      )
+      if (!grid || cards.length !== 2 || recentRows.length === 0) {
+        throw new Error('missing upstream account overflow geometry anchors')
+      }
+
+      const gridRect = grid.getBoundingClientRect()
+      const cardOverflowRight = Math.max(
+        ...cards.map((card) => card.getBoundingClientRect().right - gridRect.right),
+      )
+      const rowOverflowRight = Math.max(
+        ...recentRows.map((row) => {
+          const card = row.closest<HTMLElement>('[data-testid="dashboard-upstream-account-card"]')
+          if (!card) throw new Error('missing recent row card parent')
+          return row.getBoundingClientRect().right - card.getBoundingClientRect().right
+        }),
+      )
+
+      return {
+        rootOverflow: root.scrollWidth - root.clientWidth,
+        gridOverflowRight: gridRect.right - root.clientWidth,
+        cardOverflowRight,
+        rowOverflowRight,
+      }
+    })
+
+    expect(layout.rootOverflow).toBeLessThanOrEqual(1)
+    expect(layout.gridOverflowRight).toBeLessThanOrEqual(1)
+    expect(layout.cardOverflowRight).toBeLessThanOrEqual(1)
+    expect(layout.rowOverflowRight).toBeLessThanOrEqual(1)
   })
 })

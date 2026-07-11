@@ -78,6 +78,7 @@
 - 单账号卡下半部分必须展示当前范围内最近 4 条调用记录，复用现有紧凑调用行语言，而不是再做卡中卡；4 条记录必须在卡内完整可见，不得依赖展开、滚动或裁切。
 - 账号卡内每条 recent 调用记录的信息密度不得低于 Dashboard 对话卡片中的调用记录：至少需要覆盖状态、模型、endpoint、Token 用量摘要，以及 `RQ / UP / ED / TT` 时序摘要。
 - Dashboard 工作区 `对话` tab 的 recent/current 调用错误摘要，以及 `上游账号` tab recent 行错误摘要，必须统一保持单行省略；摘要文本本身就是 tooltip trigger，hover / focus / long-press 时使用 UI 库 tooltip 在 trigger 下方优先展示完整错误，除非浮层系统因视口避让自动翻转；不得依赖浏览器原生 `title` 作为最终交互。
+- 宽屏上游账号双列 grid 必须使用可缩小 track；账号卡、recent 调用行与错误摘要 trigger 必须组成连续的 `min-w-0` / 最大宽度约束链，确保任意长度的错误载荷都不能扩大 grid track、账号卡或 recent 行。
 - 账号卡 recent 调用记录的主标识行必须改为“对话短 ID + 分隔符/图标 + 请求 ID”；其中对话短 ID 固定基于真实 `promptCacheKey` 走既有 working-conversation 哈希与格式化规则，展示值去掉 `WC-` 前缀；请求 ID 显示完整 `invokeId` 并允许单行截断。
 - recent 行里的对话短 ID 必须渲染为轻量 identity chip，而不是独立彩色圆点；chip 以短码文本为主识别，颜色只作辅助 cue，不得与运行状态徽标争夺语义。
 - 上游账号 recent 行中的 identity chip 必须作为独立“对话详情”入口；点击或在 chip 上按 `Enter / Space` 时，打开对应 `promptCacheKey` 的对话详情抽屉，不得退化成调用详情。
