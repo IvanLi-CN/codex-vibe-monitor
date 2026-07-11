@@ -162,8 +162,8 @@ export const DetailDrawerRecordsPopulated: Story = {
     await expect(within(dialog).getByText(/pool upstream responded with 500/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/连接 186 ms|Connect 186 ms/i)).toBeInTheDocument()
-    await userEvent.click(within(dialog).getByRole('button', { name: /显示诊断信息|show diagnostics/i }))
-    await expect(within(dialog).getByText(/失败类型|failure kind/i)).toBeInTheDocument()
+    await expect(within(dialog).getByTestId('upstream-account-call-records-table')).toBeInTheDocument()
+    await expect(within(dialog).getByRole('columnheader', { name: /错误|error/i })).toBeInTheDocument()
     await expect(within(dialog).getByText(/upstream_response_failed/i)).toBeInTheDocument()
   },
 }

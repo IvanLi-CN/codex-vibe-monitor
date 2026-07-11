@@ -128,12 +128,10 @@ async fn load_upstream_account_attempt_page(
             attempts.same_account_retry_index,
             attempts.requester_ip,
             COALESCE(
-                inv.response_model,
                 inv.request_model,
-                inv.model
+                inv.model,
+                inv.response_model
             ) AS model,
-            inv.total_tokens,
-            inv.cost,
             attempts.started_at,
             attempts.finished_at,
             attempts.status,
