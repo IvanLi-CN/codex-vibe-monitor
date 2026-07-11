@@ -449,6 +449,8 @@ export interface ApiPoolUpstreamRequestAttempt {
   upstreamAccountId?: number | null;
   upstreamAccountName?: string | null;
   model?: string | null;
+  requestModel?: string | null;
+  responseModel?: string | null;
   upstreamRouteKey?: string | null;
   proxyBindingKeySnapshot?: string | null;
   attemptIndex: number;

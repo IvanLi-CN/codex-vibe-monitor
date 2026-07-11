@@ -141,8 +141,7 @@ export function UpstreamAccountAttemptTimeline({
             <tr>
               <th className="w-36 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.time")}</th>
               <th className="whitespace-nowrap px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.call")}</th>
-              <th className="w-32 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.model")}</th>
-              <th className="w-36 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.endpoint")}</th>
+              <th className="min-w-56 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.model")}</th>
               <th className="w-36 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.result")}</th>
               <th className="w-36 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.proxy")}</th>
               <th className="w-48 px-3 py-2.5">{t("accountPool.upstreamAttempts.columns.timing")}</th>
@@ -178,11 +177,15 @@ export function UpstreamAccountAttemptTimeline({
                       {attempt.invokeId}
                     </Link>
                   </td>
-                  <td className="break-words px-3 py-3 align-top text-base-content/80">
-                    {attempt.model?.trim() || t("accountPool.upstreamAttempts.modelUnavailable")}
-                  </td>
-                  <td className="break-all px-3 py-3 align-top font-mono text-xs text-base-content/75">
-                    {attempt.endpoint}
+                  <td className="px-3 py-3 align-top text-xs text-base-content/80">
+                    <div className="whitespace-nowrap">
+                      <span className="text-base-content/55">{t("accountPool.upstreamAttempts.requestModel")}</span>
+                      <span className="ml-1 font-mono">{attempt.requestModel?.trim() || attempt.model?.trim() || t("accountPool.upstreamAttempts.modelUnavailable")}</span>
+                    </div>
+                    <div className="mt-1 whitespace-nowrap">
+                      <span className="text-base-content/55">{t("accountPool.upstreamAttempts.responseModel")}</span>
+                      <span className="ml-1 font-mono">{attempt.responseModel?.trim() || "-"}</span>
+                    </div>
                   </td>
                   <td className="px-3 py-3 align-top">
                     <div className="flex flex-wrap items-center gap-1.5">

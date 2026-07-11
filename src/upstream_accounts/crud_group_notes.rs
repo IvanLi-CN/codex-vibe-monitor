@@ -132,6 +132,8 @@ async fn load_upstream_account_attempt_page(
                 inv.model,
                 inv.response_model
             ) AS model,
+            COALESCE(inv.request_model, inv.model) AS request_model,
+            inv.response_model,
             attempts.started_at,
             attempts.finished_at,
             attempts.status,
