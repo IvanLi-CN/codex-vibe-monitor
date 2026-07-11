@@ -3117,6 +3117,23 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_transport_decode_recent
+        ON pool_upstream_request_attempts (
+            upstream_account_id,
+            route_mode,
+            endpoint,
+            occurred_at DESC,
+            id DESC,
+            phase
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_request_attempts_transport_decode_recent")?;
+
+    sqlx::query(
+        r#"
         CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_sticky_occurred_at
         ON pool_upstream_request_attempts (sticky_key, occurred_at)
         "#,

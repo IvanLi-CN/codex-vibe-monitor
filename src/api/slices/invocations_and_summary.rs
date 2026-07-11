@@ -3708,6 +3708,41 @@ impl UsageBreakdownAccumulator {
         model_entry.add_cost_row(row.cost, costs);
     }
 
+    fn add_aggregate_row(&mut self, row: &UpstreamAccountUsageBreakdownAggregateRow) {
+        self.cache_write_tokens += row.cache_write_tokens;
+        self.cache_read_tokens += row.cache_read_tokens;
+        self.output_tokens += row.output_tokens;
+        if row.has_cost > 0 {
+            self.has_cost = true;
+            self.costs.input += row.cost_input;
+            self.costs.cache_write += row.cost_cache_write;
+            self.costs.cache_read += row.cost_cache_read;
+            self.costs.output += row.cost_output;
+            self.costs.reasoning += row.cost_reasoning;
+            self.costs.unknown += row.cost_unknown;
+        }
+
+        let model_entry = self
+            .models
+            .entry(UsageBreakdownGroupKey {
+                model: row.model.clone(),
+                reasoning_effort: row.reasoning_effort.clone(),
+            })
+            .or_default();
+        model_entry.cache_write_tokens += row.cache_write_tokens;
+        model_entry.cache_read_tokens += row.cache_read_tokens;
+        model_entry.output_tokens += row.output_tokens;
+        if row.has_cost > 0 {
+            model_entry.has_cost = true;
+            model_entry.costs.input += row.cost_input;
+            model_entry.costs.cache_write += row.cost_cache_write;
+            model_entry.costs.cache_read += row.cost_cache_read;
+            model_entry.costs.output += row.cost_output;
+            model_entry.costs.reasoning += row.cost_reasoning;
+            model_entry.costs.unknown += row.cost_unknown;
+        }
+    }
+
     fn merge_response(&mut self, response: &UsageBreakdownResponse) {
         self.cache_write_tokens += response.cache_write_tokens;
         self.cache_read_tokens += response.cache_read_tokens;
@@ -4007,11 +4042,343 @@ pub(crate) fn compute_upstream_account_activity_tail_rate(
     Some(total_value / (active_millis as f64 / MINUTE_MILLIS as f64))
 }
 
+#[derive(Debug, FromRow)]
+struct UpstreamAccountActivityAggregateRow {
+    upstream_account_id: Option<i64>,
+    request_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    non_success_count: i64,
+    total_tokens: i64,
+    success_tokens: i64,
+    non_success_tokens: i64,
+    failure_tokens: i64,
+    failure_cost: f64,
+    non_success_cost: f64,
+    cache_input_tokens: i64,
+    total_cost: f64,
+    first_response_byte_total_sample_count: i64,
+    first_response_byte_total_sum_ms: f64,
+    total_latency_sample_count: i64,
+    total_latency_sum_ms: f64,
+}
+
+#[derive(Debug, FromRow)]
+struct UpstreamAccountUsageBreakdownAggregateRow {
+    upstream_account_id: Option<i64>,
+    model: String,
+    reasoning_effort: Option<String>,
+    cache_write_tokens: i64,
+    cache_read_tokens: i64,
+    output_tokens: i64,
+    cost_input: f64,
+    cost_cache_write: f64,
+    cost_cache_read: f64,
+    cost_output: f64,
+    cost_reasoning: f64,
+    cost_unknown: f64,
+    has_cost: i64,
+}
+
+async fn query_live_upstream_account_activity_aggregate_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<Vec<UpstreamAccountActivityAggregateRow>, ApiError> {
+    let started_at = Instant::now();
+    let upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
+    let success_sql = format!(
+        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') AND ({failure_class_sql}) = 'none'"
+    );
+    let failure_sql = format!(
+        "LOWER(TRIM(COALESCE(status, ''))) NOT IN ('', 'running', 'pending') AND ({failure_class_sql}) <> 'none'"
+    );
+    let non_success_sql = format!(
+        "(LOWER(TRIM(COALESCE(status, ''))) = 'interrupted' OR \
+         (LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending') \
+          AND ({failure_class_sql}) <> 'none'))"
+    );
+    let first_response_byte_total_sql = "COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0)";
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        r#"
+        SELECT
+            {upstream_account_id_sql} AS upstream_account_id,
+            COUNT(*) AS request_count,
+            SUM(CASE WHEN {success_sql} THEN 1 ELSE 0 END) AS success_count,
+            SUM(CASE WHEN {failure_sql} THEN 1 ELSE 0 END) AS failure_count,
+            SUM(CASE WHEN {non_success_sql} THEN 1 ELSE 0 END) AS non_success_count,
+            COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens,
+            COALESCE(SUM(CASE WHEN {success_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) AS success_tokens,
+            COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) AS non_success_tokens,
+            COALESCE(SUM(CASE WHEN {failure_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) AS failure_tokens,
+            CAST(COALESCE(SUM(CASE WHEN {failure_sql} THEN COALESCE(cost, 0) ELSE 0 END), 0) AS REAL) AS failure_cost,
+            CAST(COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(cost, 0) ELSE 0 END), 0) AS REAL) AS non_success_cost,
+            COALESCE(SUM(COALESCE(cache_input_tokens, 0)), 0) AS cache_input_tokens,
+            CAST(COALESCE(SUM(COALESCE(cost, 0)), 0) AS REAL) AS total_cost,
+            SUM(CASE WHEN {success_sql} AND t_upstream_ttfb_ms > 0 THEN 1 ELSE 0 END) AS first_response_byte_total_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_upstream_ttfb_ms > 0 THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
+            SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN 1 ELSE 0 END) AS total_latency_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN t_total_ms ELSE 0 END), 0) AS REAL) AS total_latency_sum_ms
+        FROM codex_invocations
+        WHERE occurred_at >=
+        "#,
+    ));
+    query
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
+    query.push(" GROUP BY upstream_account_id");
+
+    let rows = query
+        .build_query_as::<UpstreamAccountActivityAggregateRow>()
+        .fetch_all(pool)
+        .await?;
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    if elapsed_ms >= 1_000 {
+        tracing::warn!(
+            endpoint = "/api/stats/upstream-account-activity",
+            operation = "live_account_aggregate",
+            ?source_scope,
+            start = %range.start,
+            end = %range.end,
+            row_count = rows.len(),
+            elapsed_ms,
+            "slow upstream-account activity aggregate"
+        );
+    }
+    Ok(rows)
+}
+
+async fn query_live_upstream_account_usage_breakdown_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<Vec<UpstreamAccountUsageBreakdownAggregateRow>, ApiError> {
+    let started_at = Instant::now();
+    let upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let model_sql = format!(
+        "COALESCE(NULLIF(TRIM({}), ''), NULLIF(TRIM(model), ''), 'unknown')",
+        INVOCATION_RESPONSE_MODEL_SQL
+    );
+    let reasoning_effort_sql = INVOCATION_REASONING_EFFORT_SQL;
+    let cost_complete_sql = "cost_input IS NOT NULL AND cost_cache_write IS NOT NULL AND cost_cache_read IS NOT NULL AND cost_output IS NOT NULL AND cost_reasoning IS NOT NULL";
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        r#"
+        SELECT
+            {upstream_account_id_sql} AS upstream_account_id,
+            {model_sql} AS model,
+            {reasoning_effort_sql} AS reasoning_effort,
+            COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens,
+            COALESCE(SUM(COALESCE(cache_input_tokens, 0)), 0) AS cache_read_tokens,
+            COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS output_tokens,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_input ELSE 0 END), 0) AS REAL) AS cost_input,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_cache_write ELSE 0 END), 0) AS REAL) AS cost_cache_write,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_cache_read ELSE 0 END), 0) AS REAL) AS cost_cache_read,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_output ELSE 0 END), 0) AS REAL) AS cost_output,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_reasoning ELSE 0 END), 0) AS REAL) AS cost_reasoning,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND NOT ({cost_complete_sql}) THEN cost ELSE 0 END), 0) AS REAL) AS cost_unknown,
+            SUM(CASE WHEN cost IS NOT NULL THEN 1 ELSE 0 END) AS has_cost
+        FROM codex_invocations
+        WHERE occurred_at >=
+        "#,
+    ));
+    query
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
+    query.push(" GROUP BY upstream_account_id, model, reasoning_effort");
+    let rows = query
+        .build_query_as::<UpstreamAccountUsageBreakdownAggregateRow>()
+        .fetch_all(pool)
+        .await?;
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    if elapsed_ms >= 1_000 {
+        tracing::warn!(
+            endpoint = "/api/stats/upstream-account-activity",
+            operation = "live_usage_breakdown",
+            ?source_scope,
+            start = %range.start,
+            end = %range.end,
+            row_count = rows.len(),
+            elapsed_ms,
+            "slow upstream-account usage breakdown"
+        );
+    }
+    Ok(rows)
+}
+
+#[derive(Debug, FromRow)]
+struct UpstreamAccountActivityRateRow {
+    upstream_account_id: Option<i64>,
+    occurred_at: String,
+    total_tokens: i64,
+    total_cost: f64,
+}
+
+async fn query_live_upstream_account_activity_rate_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<Vec<UpstreamAccountActivityRateRow>, ApiError> {
+    let rate_start = range.start.max(range.end - chrono::Duration::minutes(5));
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query
+        .push(resolved_upstream_account_id_sql.as_str())
+        .push(" AS upstream_account_id, occurred_at, COALESCE(total_tokens, 0) AS total_tokens, COALESCE(cost, 0.0) AS total_cost FROM codex_invocations WHERE occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(rate_start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
+    query
+        .build_query_as::<UpstreamAccountActivityRateRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+fn add_upstream_account_activity_preview_row(
+    account_activity: &mut HashMap<Option<i64>, UpstreamAccountActivityAccumulator>,
+    row: UpstreamAccountInvocationPreviewRow,
+    recent_limit: usize,
+    include_accounts: bool,
+) {
+    let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+        return;
+    };
+    let classification = resolve_failure_classification(
+        Some(row.status.as_str()),
+        row.error_message.as_deref(),
+        row.failure_kind.as_deref(),
+        row.failure_class.as_deref(),
+        row.is_actionable,
+    );
+    let is_success = prompt_cache_and_timeseries_shared::prompt_invocation_status_is_success_like(
+        Some(row.status.as_str()),
+        row.error_message.as_deref(),
+    ) && classification.failure_class == FailureClass::None;
+    let counts_toward_failure =
+        prompt_cache_and_timeseries_shared::prompt_invocation_status_counts_toward_terminal_totals(
+            Some(row.status.as_str()),
+        ) && classification.failure_class != FailureClass::None;
+    let counts_toward_non_success = invocation_counts_toward_non_success_usage(
+        Some(row.status.as_str()),
+        row.error_message.as_deref(),
+        row.failure_kind.as_deref(),
+        row.failure_class.as_deref(),
+        row.is_actionable,
+    );
+
+    let entry = account_activity.entry(row.upstream_account_id).or_default();
+    entry.last_occurred_at_epoch_ms = entry
+        .last_occurred_at_epoch_ms
+        .max(occurred_at.timestamp_millis());
+    if entry.display_name_hint.is_none() {
+        entry.display_name_hint =
+            normalize_trimmed_optional_string_local(row.upstream_account_name.clone());
+    }
+    if entry.plan_type_hint.is_none() {
+        entry.plan_type_hint =
+            normalize_trimmed_optional_string_local(row.upstream_account_plan_type.clone());
+    }
+    entry.request_count += 1;
+    entry.total_tokens += row.total_tokens.max(0);
+    entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default().max(0);
+    entry.total_cost += row.cost.unwrap_or_default();
+    entry.usage_breakdown.add_row(&row);
+    if is_success {
+        entry.success_count += 1;
+        entry.success_tokens += row.total_tokens.max(0);
+        if let Some(first_response_byte_total_ms) =
+            crate::stats::resolve_first_response_byte_total_ms(
+                row.t_req_read_ms,
+                row.t_req_parse_ms,
+                row.t_upstream_connect_ms,
+                row.t_upstream_ttfb_ms,
+            )
+        {
+            entry.first_response_byte_total_sample_count += 1;
+            entry.first_response_byte_total_sum_ms += first_response_byte_total_ms;
+        }
+        if let Some(total_ms) = row
+            .t_total_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            entry.total_latency_sample_count += 1;
+            entry.total_latency_sum_ms += total_ms;
+        }
+    } else if counts_toward_failure {
+        entry.failure_count += 1;
+        entry.failure_tokens += row.total_tokens.max(0);
+        entry.failure_cost += row.cost.unwrap_or_default();
+    }
+    if counts_toward_non_success {
+        entry.non_success_count += 1;
+        entry.non_success_tokens += row.total_tokens.max(0);
+        entry.non_success_cost += row.cost.unwrap_or_default();
+    }
+    entry.rate_usage_events.push(UpstreamAccountRateUsageEvent {
+        occurred_at_epoch_ms: occurred_at.timestamp_millis(),
+        total_tokens: row.total_tokens.max(0),
+        total_cost: row.cost.unwrap_or_default().max(0.0),
+    });
+    if matches!(
+        normalized_runtime_text(Some(row.status.as_str())).as_str(),
+        "running" | "pending"
+    ) && let Some(ttfb_ms) = row
+        .t_upstream_ttfb_ms
+        .filter(|value| value.is_finite() && *value >= 0.0)
+    {
+        entry.in_progress_wait_sum_ms += ttfb_ms;
+        entry.in_progress_wait_sample_count += 1;
+    }
+    if include_accounts && entry.recent_invocations.len() < recent_limit {
+        entry
+            .recent_invocations
+            .push(upstream_account_invocation_preview_from_row(row));
+    }
+}
+
 pub(crate) async fn query_live_upstream_account_activity_preview_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
 ) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
+    query_live_upstream_account_activity_preview_rows_with_limit(
+        pool,
+        source_scope,
+        range,
+        None,
+        None,
+        false,
+    )
+    .await
+}
+
+async fn query_live_upstream_account_activity_preview_rows_with_limit(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    upstream_account_id: Option<Option<i64>>,
+    limit: Option<usize>,
+    in_progress_only: bool,
+) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
+    let started_at = Instant::now();
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
     let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
@@ -4085,12 +4452,50 @@ pub(crate) async fn query_live_upstream_account_activity_preview_rows(
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
+    if in_progress_only {
+        query.push(" AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(resolved_upstream_account_id_sql.as_str());
+        match upstream_account_id {
+            Some(upstream_account_id) => {
+                query.push(" = ").push_bind(upstream_account_id);
+            }
+            None => {
+                query.push(" IS NULL");
+            }
+        }
+    }
     query.push(" ORDER BY occurred_at DESC, id DESC");
+    if let Some(limit) = limit {
+        query.push(" LIMIT ").push_bind(limit as i64);
+    }
 
-    Ok(query
+    let rows = query
         .build_query_as::<UpstreamAccountInvocationPreviewRow>()
         .fetch_all(pool)
-        .await?)
+        .await?;
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    if elapsed_ms >= 1_000 {
+        tracing::warn!(
+            endpoint = "/api/stats/upstream-account-activity",
+            operation = if limit.is_some() {
+                "live_preview_rows_limited"
+            } else {
+                "live_preview_rows"
+            },
+            ?source_scope,
+            start = %range.start,
+            end = %range.end,
+            upstream_account_id = ?upstream_account_id.flatten(),
+            row_count = rows.len(),
+            elapsed_ms,
+            "slow upstream-account activity read"
+        );
+    }
+    Ok(rows)
 }
 
 pub(crate) fn runtime_upstream_account_activity_preview_row(
@@ -4769,133 +5174,120 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         )
         .await;
     }
-    let mut live_rows =
-        query_live_upstream_account_activity_preview_rows(&state.pool, source_scope, range).await?;
+    let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
+    for row in query_live_upstream_account_activity_aggregate_rows(&state.pool, source_scope, range)
+        .await?
+    {
+        let entry = account_activity.entry(row.upstream_account_id).or_default();
+        entry.request_count += row.request_count;
+        entry.success_count += row.success_count;
+        entry.failure_count += row.failure_count;
+        entry.non_success_count += row.non_success_count;
+        entry.total_tokens += row.total_tokens;
+        entry.success_tokens += row.success_tokens;
+        entry.non_success_tokens += row.non_success_tokens;
+        entry.failure_tokens += row.failure_tokens;
+        entry.failure_cost += row.failure_cost;
+        entry.non_success_cost += row.non_success_cost;
+        entry.cache_input_tokens += row.cache_input_tokens;
+        entry.total_cost += row.total_cost;
+        entry.first_response_byte_total_sample_count += row.first_response_byte_total_sample_count;
+        entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
+        entry.total_latency_sample_count += row.total_latency_sample_count;
+        entry.total_latency_sum_ms += row.total_latency_sum_ms;
+    }
+    for row in
+        query_live_upstream_account_usage_breakdown_rows(&state.pool, source_scope, range).await?
+    {
+        account_activity
+            .entry(row.upstream_account_id)
+            .or_default()
+            .usage_breakdown
+            .add_aggregate_row(&row);
+    }
+    for row in
+        query_live_upstream_account_activity_rate_rows(&state.pool, source_scope, range).await?
+    {
+        if let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) {
+            account_activity
+                .entry(row.upstream_account_id)
+                .or_default()
+                .rate_usage_events
+                .push(UpstreamAccountRateUsageEvent {
+                    occurred_at_epoch_ms: occurred_at.timestamp_millis(),
+                    total_tokens: row.total_tokens.max(0),
+                    total_cost: row.total_cost.max(0.0),
+                });
+        }
+    }
+
+    let mut runtime_rows = query_live_upstream_account_activity_preview_rows_with_limit(
+        &state.pool,
+        source_scope,
+        range,
+        None,
+        None,
+        true,
+    )
+    .await?;
     overlay_runtime_upstream_account_activity_preview_rows(
         state,
-        &mut live_rows,
+        &mut runtime_rows,
         source_scope,
         range,
     );
-    let live_ids = live_rows.iter().map(|row| row.id).collect::<HashSet<_>>();
-    let mut combined_rows = live_rows;
+    let live_ids = runtime_rows
+        .iter()
+        .map(|row| row.id)
+        .collect::<HashSet<_>>();
+    for row in runtime_rows {
+        add_upstream_account_activity_preview_row(&mut account_activity, row, recent_limit, false);
+    }
+
     if range.start < retention_cutoff {
-        combined_rows.extend(
-            crate::stats::query_completed_invocation_archive_preview_rows(
+        let mut archived_rows = crate::stats::query_completed_invocation_archive_preview_rows(
+            &state.pool,
+            source_scope,
+            range,
+            Some(&live_ids),
+        )
+        .await?;
+        archived_rows.sort_by(|left, right| {
+            right
+                .occurred_at
+                .cmp(&left.occurred_at)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        for row in archived_rows {
+            add_upstream_account_activity_preview_row(
+                &mut account_activity,
+                row,
+                recent_limit,
+                include_accounts,
+            );
+        }
+    }
+
+    if include_accounts {
+        let account_keys = account_activity.keys().copied().collect::<Vec<_>>();
+        for account_id in account_keys {
+            let rows = query_live_upstream_account_activity_preview_rows_with_limit(
                 &state.pool,
                 source_scope,
                 range,
-                Some(&live_ids),
+                Some(account_id),
+                Some(recent_limit),
+                false,
             )
-            .await?,
-        );
-    }
-
-    combined_rows.sort_by(|left, right| {
-        right
-            .occurred_at
-            .cmp(&left.occurred_at)
-            .then_with(|| right.id.cmp(&left.id))
-    });
-
-    let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
-    for row in combined_rows {
-        let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
-            continue;
-        };
-        let classification = resolve_failure_classification(
-            Some(row.status.as_str()),
-            row.error_message.as_deref(),
-            row.failure_kind.as_deref(),
-            row.failure_class.as_deref(),
-            row.is_actionable,
-        );
-        let is_success =
-            prompt_cache_and_timeseries_shared::prompt_invocation_status_is_success_like(
-                Some(row.status.as_str()),
-                row.error_message.as_deref(),
-            ) && classification.failure_class == FailureClass::None;
-        let counts_toward_failure =
-            prompt_cache_and_timeseries_shared::prompt_invocation_status_counts_toward_terminal_totals(
-                Some(row.status.as_str()),
-            ) && classification.failure_class != FailureClass::None;
-        let counts_toward_non_success = invocation_counts_toward_non_success_usage(
-            Some(row.status.as_str()),
-            row.error_message.as_deref(),
-            row.failure_kind.as_deref(),
-            row.failure_class.as_deref(),
-            row.is_actionable,
-        );
-
-        let entry = account_activity.entry(row.upstream_account_id).or_default();
-        if entry.last_occurred_at_epoch_ms == 0 {
-            entry.last_occurred_at_epoch_ms = occurred_at.timestamp_millis();
-        }
-        if entry.display_name_hint.is_none() {
-            entry.display_name_hint =
-                normalize_trimmed_optional_string_local(row.upstream_account_name.clone());
-        }
-        if entry.plan_type_hint.is_none() {
-            entry.plan_type_hint =
-                normalize_trimmed_optional_string_local(row.upstream_account_plan_type.clone());
-        }
-        entry.request_count += 1;
-        entry.total_tokens += row.total_tokens.max(0);
-        entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default().max(0);
-        entry.total_cost += row.cost.unwrap_or_default();
-        entry.usage_breakdown.add_row(&row);
-        if is_success {
-            entry.success_count += 1;
-            entry.success_tokens += row.total_tokens.max(0);
-            if let Some(first_response_byte_total_ms) =
-                crate::stats::resolve_first_response_byte_total_ms(
-                    row.t_req_read_ms,
-                    row.t_req_parse_ms,
-                    row.t_upstream_connect_ms,
-                    row.t_upstream_ttfb_ms,
-                )
-            {
-                entry.first_response_byte_total_sample_count += 1;
-                entry.first_response_byte_total_sum_ms += first_response_byte_total_ms;
-            }
-            if let Some(total_ms) = row
-                .t_total_ms
-                .filter(|value| value.is_finite() && *value >= 0.0)
-            {
-                entry.total_latency_sample_count += 1;
-                entry.total_latency_sum_ms += total_ms;
-            }
-        } else if counts_toward_failure {
-            entry.failure_count += 1;
-            entry.failure_tokens += row.total_tokens.max(0);
-            entry.failure_cost += row.cost.unwrap_or_default();
-        }
-        if counts_toward_non_success {
-            entry.non_success_count += 1;
-            entry.non_success_tokens += row.total_tokens.max(0);
-            entry.non_success_cost += row.cost.unwrap_or_default();
-        }
-        entry.rate_usage_events.push(UpstreamAccountRateUsageEvent {
-            occurred_at_epoch_ms: occurred_at.timestamp_millis(),
-            total_tokens: row.total_tokens.max(0),
-            total_cost: row.cost.unwrap_or_default().max(0.0),
-        });
-        if matches!(
-            normalized_runtime_text(Some(row.status.as_str())).as_str(),
-            "running" | "pending"
-        ) {
-            if let Some(ttfb_ms) = row
-                .t_upstream_ttfb_ms
-                .filter(|value| value.is_finite() && *value >= 0.0)
-            {
-                entry.in_progress_wait_sum_ms += ttfb_ms;
-                entry.in_progress_wait_sample_count += 1;
-            }
-        }
-        if include_accounts && entry.recent_invocations.len() < recent_limit {
-            entry
-                .recent_invocations
-                .push(upstream_account_invocation_preview_from_row(row.clone()));
+            .await?;
+            let mut recent_invocations = rows
+                .into_iter()
+                .map(upstream_account_invocation_preview_from_row)
+                .collect::<Vec<_>>();
+            let entry = account_activity.entry(account_id).or_default();
+            recent_invocations.append(&mut entry.recent_invocations);
+            recent_invocations.truncate(recent_limit);
+            entry.recent_invocations = recent_invocations;
         }
     }
 

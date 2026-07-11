@@ -1011,75 +1011,76 @@ pub(crate) async fn load_transport_decode_sticky_escape_account_ids(
         return Ok(HashSet::new());
     }
 
-    #[derive(Debug, FromRow)]
-    struct EscapeRow {
-        upstream_account_id: i64,
-    }
+    let started_at = std::time::Instant::now();
+    let mut seen_account_ids = HashSet::new();
+    let unique_account_ids = account_ids
+        .iter()
+        .copied()
+        .filter(|account_id| seen_account_ids.insert(*account_id))
+        .collect::<Vec<_>>();
+    let mut rows = Vec::new();
 
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"
-        WITH ranked AS (
-            SELECT
-                upstream_account_id,
-                failure_kind,
-                ROW_NUMBER() OVER (
-                    PARTITION BY upstream_account_id
-                    ORDER BY occurred_at DESC, id DESC
-                ) AS attempt_rank
-            FROM pool_upstream_request_attempts
-            WHERE upstream_account_id IN (
-        "#,
-    );
-    {
-        let mut separated = query.separated(", ");
-        for account_id in account_ids {
-            separated.push_bind(account_id);
+    // SQLite limits compound SELECT terms; each account subquery stays capped at two rows.
+    for account_id_batch in unique_account_ids.chunks(400) {
+        let mut query = QueryBuilder::<Sqlite>::new("");
+        for (index, account_id) in account_id_batch.iter().enumerate() {
+            if index > 0 {
+                query.push(" UNION ALL ");
+            }
+            query
+                .push("SELECT ")
+                .push_bind(*account_id)
+                .push(" AS upstream_account_id, failure_kind FROM (")
+                .push("SELECT failure_kind FROM pool_upstream_request_attempts WHERE upstream_account_id = ")
+                .push_bind(*account_id)
+                .push(" AND route_mode = ")
+                .push_bind(INVOCATION_ROUTE_MODE_POOL)
+                .push(" AND endpoint = '/v1/responses' AND phase IN (")
+                .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED)
+                .push(", ")
+                .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+                .push(") ORDER BY occurred_at DESC, id DESC LIMIT 2)");
         }
-    }
-    query.push(
-        r#"
-            )
-              AND route_mode =
-        "#,
-    );
-    query.push_bind(INVOCATION_ROUTE_MODE_POOL).push(
-        r#"
-              AND endpoint = '/v1/responses'
-              AND phase IN (
-        "#,
-    );
-    query
-        .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED)
-        .push(", ")
-        .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
-        .push(
-            r#"
-              )
-        )
-        SELECT upstream_account_id
-        FROM ranked
-        WHERE attempt_rank <= 2
-        GROUP BY upstream_account_id
-        HAVING COUNT(*) = 2
-           AND SUM(
-                CASE
-                    WHEN failure_kind =
-        "#,
-        );
-    query.push_bind(PROXY_FAILURE_UPSTREAM_STREAM_ERROR).push(
-        r#"
-                    THEN 1
-                    ELSE 0
-                END
-            ) = 2
-        "#,
-    );
 
-    let rows = query.build_query_as::<EscapeRow>().fetch_all(pool).await?;
-    Ok(rows
+        rows.extend(
+            query
+                .build_query_as::<(i64, Option<String>)>()
+                .fetch_all(pool)
+                .await?,
+        );
+    }
+    let row_count = rows.len();
+    let mut latest_failures = HashMap::<i64, Vec<Option<String>>>::new();
+    for (account_id, failure_kind) in rows {
+        latest_failures
+            .entry(account_id)
+            .or_default()
+            .push(failure_kind);
+    }
+    let escaped_account_ids = latest_failures
         .into_iter()
-        .map(|row| row.upstream_account_id)
-        .collect())
+        .filter_map(|(account_id, failure_kinds)| {
+            (failure_kinds.len() == 2
+                && failure_kinds.iter().all(|failure_kind| {
+                    failure_kind.as_deref() == Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+                }))
+            .then_some(account_id)
+        })
+        .collect::<HashSet<_>>();
+
+    let elapsed_ms = started_at.elapsed().as_secs_f64() * 1_000.0;
+    if elapsed_ms >= 1_000.0 {
+        warn!(
+            endpoint = "/v1/responses",
+            operation = "transport_decode_sticky_escape",
+            phase = "candidate_loading",
+            candidate_count = unique_account_ids.len(),
+            rows_returned = row_count,
+            elapsed_ms,
+            "slow upstream-account routing read"
+        );
+    }
+    Ok(escaped_account_ids)
 }
 
 pub(crate) fn compare_routing_candidates(
