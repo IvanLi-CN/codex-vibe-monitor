@@ -2472,12 +2472,15 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                     );
-                    record_pool_route_transport_failure(
+                    record_pool_route_transport_failure_for_attempt(
                         &state_for_task.pool,
                         account.account_id,
                         sticky_key_for_task.as_deref(),
                         &route_message,
                         None,
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
                     )
                     .await
                 } else {

@@ -3245,14 +3245,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                         state_for_record.as_ref(),
                                         &reservation_key_for_record,
                                     );
-                                    if let Err(route_err) = record_pool_route_transport_failure(
-                                        &state_for_record.pool,
-                                        account.account_id,
-                                        sticky_key_for_record.as_deref(),
-                                        message,
-                                        invoke_id_for_record.as_deref(),
-                                    )
-                                    .await
+                                    if let Err(route_err) =
+                                        record_pool_route_transport_failure_for_attempt(
+                                            &state_for_record.pool,
+                                            account.account_id,
+                                            sticky_key_for_record.as_deref(),
+                                            message,
+                                            invoke_id_for_record.as_deref(),
+                                            pending_pool_attempt_record_for_task
+                                                .as_ref()
+                                                .and_then(|pending| pending.attempt_id),
+                                        )
+                                        .await
                                     {
                                         warn!(account_id = account.account_id, error = %route_err, "failed to record pool stream error");
                                     }
@@ -3869,12 +3873,15 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 state_for_record.as_ref(),
                 &reservation_key_for_record,
             );
-            if let Err(route_err) = record_pool_route_transport_failure(
+            if let Err(route_err) = record_pool_route_transport_failure_for_attempt(
                 &state_for_record.pool,
                 account.account_id,
                 sticky_key_for_record.as_deref(),
                 message,
                 invoke_id_for_record.as_deref(),
+                pending_pool_attempt_record_for_task
+                    .as_ref()
+                    .and_then(|pending| pending.attempt_id),
             )
             .await
             {
