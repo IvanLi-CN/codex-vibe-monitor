@@ -408,6 +408,49 @@ async fn ensure_schema_migrates_codex_invocations_off_raw_expires_at_and_adds_re
             .contains("idx_pool_upstream_request_attempts_pending_early_phase_started"),
         "unexpected stale attempt plan: {stale_attempt_plan}"
     );
+
+    let transport_decode_index_sql = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND name = 'idx_pool_upstream_request_attempts_transport_decode_recent'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load transport decode recent index");
+    assert!(transport_decode_index_sql.contains("upstream_account_id"));
+    assert!(transport_decode_index_sql.contains("route_mode"));
+    assert!(transport_decode_index_sql.contains("endpoint"));
+    assert!(transport_decode_index_sql.contains("phase"));
+    assert!(transport_decode_index_sql.contains("occurred_at DESC"));
+
+    let transport_decode_plan = sqlx::query(
+        r#"
+        EXPLAIN QUERY PLAN
+        SELECT failure_kind
+        FROM pool_upstream_request_attempts
+        WHERE upstream_account_id = 42
+          AND route_mode = 'pool'
+          AND endpoint = '/v1/responses'
+          AND phase IN ('completed', 'failed')
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT 2
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load transport decode explain plan")
+    .into_iter()
+    .map(|row| row.get::<String, _>("detail"))
+    .collect::<Vec<_>>()
+    .join(" | ");
+    assert!(
+        transport_decode_plan
+            .contains("idx_pool_upstream_request_attempts_transport_decode_recent"),
+        "unexpected transport decode plan: {transport_decode_plan}"
+    );
 }
 
 #[tokio::test]

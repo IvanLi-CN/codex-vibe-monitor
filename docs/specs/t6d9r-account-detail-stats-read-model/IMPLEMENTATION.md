@@ -54,6 +54,7 @@
 - summary live augmentation 在叠加进程内 runtime store 前会先查询同 key 的 terminal DB rows；即使某条内存 `running` 快照未被 terminal cleanup 清掉，也不会继续贡献 in-progress 总数、retry 总数或 wait 平均值。
 - 自然日 summary 测试夹具会把 `earlier_today` 限定在当前 Asia/Shanghai 自然日内且不落到未来，避免自然日开始后的前半小时造出未来行并误排除非成功用量。
 - 第八轮止血把 terminal invocation 记录也移出代理业务等待路径：records/current summary/account-activity 先消费 SSE + runtime-store/tombstone overlay，SQLite terminal 记录通过 write controller 最终一致补齐。账号详情公开字段不变，短时间内允许记录尚未落库但不得闪断 visible running/terminal 行。
+- Dashboard 账号活动的终态折叠不再 materialize 全范围 preview rows；统计、模型用量与近五分钟速率分别读取窄聚合/分组/尾段行，运行态继续走原有 runtime overlay，保持 account activity 公开统计口径不变。
 
 ## Verification
 

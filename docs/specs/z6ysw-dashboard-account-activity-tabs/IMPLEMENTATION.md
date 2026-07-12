@@ -53,6 +53,8 @@
 - 已实现：`dashboard-activity.summary` 的 `tokensPerMinute`、`spendRate` 与 in-progress 调用数由账号聚合结果求和得到；无账号流量进入 `unassigned` 聚合项，避免顶部数字无法由同屏明细解释。
 - 已实现：via-pool 请求级 cleanup guard 在响应消费期间保留 `pool-via-*` synthetic runtime snapshot，并随最终 stream task 生命周期收口；成功、失败、所有重试耗尽、下游断开或任务取消后清除残留非终态 snapshot，单次 upstream attempt 终结不会提前移除；普通 invocation runtime 与短暂终态 overlay 仍由其原有终态持久化路径负责。
 - 已实现：timeseries 继续只服务趋势图与兼容回退，不再作为 Dashboard 顶部当前速率类 KPI 的事实来源。
+- 已实现：账号活动快照的终态 live 数据改为账号级窄聚合与按模型用量分组，避免为整个 range 传输完整 invocation preview 行；运行态 runtime overlay、归档折叠、四个时间范围和公开响应字段保持原有语义。
+- 已实现：账号卡 recent 调用改为每个候选账号按时间倒序的受限读取，数量仍严格受请求 `recentLimit` 限制。
 
 ## Remaining Gaps
 

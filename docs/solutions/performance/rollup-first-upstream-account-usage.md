@@ -11,6 +11,7 @@
 - 列表接口不要同步计算 usage。
 - usage 查询优先读 hourly rollup，再用最小范围 raw fallback 补齐缺口。
 - 交互链路里的 usage 查询应该固定走 `hourly rollup + uncovered-bucket replay + partial boundary replay`。
+- 当公开响应还要求 read-model 未保存的模型分组、失败 token 分拆或 invocation preview 时，不能以不精确的 rollup 替换它们；应把该部分收敛为窄 `GROUP BY` 聚合，并把 preview 另拆为有界查询。
 
 ## 推荐模式
 
@@ -45,6 +46,7 @@
 - grouped/grid 若直接 hydrate 全量账号，只是把慢请求从 GET 挪到了 POST，没有真正解决问题。
 - 只看 live cursor 就相信小时桶完整，会在 fresh deploy / upgrade 时把 full-hour usage 漏掉。
 - stale hydrate 请求如果在 `finally` 里直接清空 pending ids，会把更新一轮的真实请求误判成“已完成”。
+- SQLite 会按结果值保留整数类型；映射到 Rust `f64` 的 `SUM` / `COALESCE` 输出应显式 `CAST(... AS REAL)`，否则整型测试数据会在 SQLx 解码阶段失败。
 - 列表 query key 变化时如果不清空 hydrate generation，旧 usage 响应会覆盖新筛选结果。
 
 ## 何时不适用
