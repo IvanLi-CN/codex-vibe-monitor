@@ -16,6 +16,7 @@
 - 上游账号详情和 Prompt Cache 会话详情支持紧凑页面化；账号详情 URL 继续使用既有账号与 tab 参数。
 - Settings、External API keys、账号池操作、调用详情和其他相关表面已接入响应式浮层规则。
 - 关键表格在窄屏改为可扫描的 card/list，筛选与子导航收敛为窄屏结构。
+- Records 的筛选编辑改为共享响应式 drawer：桌面为右侧工作抽屉，紧凑视口为全高 bottom sheet；页面主体只显示已提交的筛选条件，并支持逐项移除后立即刷新快照。
 - 所有页面级 `surface-panel` 在移动端扁平化为结构容器，保持单一 `12px` 页面 gutter；Settings 与 External API Keys 的外层 Card 同步扁平化，内部数据项保留紧凑 card。
 - 移动端移除桌面装饰背景；Dashboard Working Conversations 不再向扁平页面容器重复注入内边距。
 - App shell、账号详情、Dashboard、Settings 和 Prompt Cache 的 Storybook 移动状态已更新。
@@ -24,6 +25,8 @@
 
 - `bun run lint` passed.
 - `bun run build` and `bun run demo:build` passed.
+- Records targeted Vitest coverage passed: 40 tests across page and hook behavior.
+- Records Storybook entry includes the `mobile390` filter drawer interaction state.
 - Unit Vitest report: 276 suites and 1191 tests passed.
 - `bun run test-storybook` passed: 4 files and 6 tests, with 52 unsupported browser-only stories skipped by the configured project.
 - `bun run build-storybook` passed.

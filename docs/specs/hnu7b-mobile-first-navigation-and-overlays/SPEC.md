@@ -137,6 +137,31 @@
 
 ![Web Demo tablet navigation](./assets/web-demo-navigation-tablet768.png)
 
+### Records Filter Drawer And Applied Summary
+
+- source_type: `ui_demo`
+  source_revision: `abee4d41d77a24a96150d27fb0c5d965772d2b35`
+  target_program: mock-only Web Demo (`VITE_APP_RUNTIME=demo`)
+  sensitive_exclusion: demo fixtures only; no production account, secret, or backend request
+
+#### `390x844` Records Filter Drawer
+
+验证 Records 的编辑表单只在全高 bottom sheet 中出现，标题与操作区固定，内容区保持单一滚动体。
+
+![Web Demo records filter drawer mobile](./assets/records-filter-drawer-mobile390.png)
+
+#### `1440x920` Records Filter Drawer
+
+验证宽屏使用右侧筛选抽屉，原列表和统计仅作为遮罩下的上下文，不再在页面内容流中常驻筛选控件。
+
+![Web Demo records filter drawer desktop](./assets/records-filter-drawer-desktop1440.png)
+
+#### `1440x920` Records Applied Filter Summary
+
+验证提交筛选后主页面只保留已应用条件；草稿抽屉关闭，主体不再包含筛选输入。
+
+![Web Demo records applied filter summary](./assets/records-filter-summary-desktop1440.png)
+
 ## 风险 / 开放问题 / 假设
 
 - 复杂详情页面在 768px 以下页面化，避免在半宽 drawer 中压缩多标签工作区。
