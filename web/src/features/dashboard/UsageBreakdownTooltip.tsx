@@ -8,6 +8,7 @@ export interface UsageBreakdownTooltipProps {
   breakdown?: UsageBreakdown | null
   kind: UsageBreakdownKind
   formatNumber: (value: number) => string
+  formatRatio: (value: number | null) => string
   formatCurrency: (value: number) => string
   labels: {
     total: string
@@ -15,6 +16,7 @@ export interface UsageBreakdownTooltipProps {
     cacheWrite: string
     cacheRead: string
     cacheHitTokens: string
+    cacheHitRate: string
     output: string
     input: string
     reasoning: string
@@ -91,7 +93,7 @@ function BreakdownTable({
   modelLabel: string
   modelWidth: string
 }) {
-  const dense = columns.length > 5
+  const dense = columns.length >= 4
   return (
     <table className={`w-full table-fixed border-collapse ${dense ? 'text-[8px] leading-3 sm:text-[10px] sm:leading-4' : 'text-[10px] leading-4 sm:text-[11px]'}`}>
       <caption className="sr-only">{title}</caption>
@@ -180,8 +182,9 @@ function TokenBreakdownTable({
   breakdown,
   models,
   formatNumber,
+  formatRatio,
   labels,
-}: Pick<UsageBreakdownTooltipProps, 'formatNumber' | 'labels'> & {
+}: Pick<UsageBreakdownTooltipProps, 'formatNumber' | 'formatRatio' | 'labels'> & {
   title: string
   breakdown?: UsageBreakdown | null
   models: UsageBreakdown['models']
@@ -190,6 +193,7 @@ function TokenBreakdownTable({
     { label: labels.cacheWrite },
     { label: labels.cacheHitTokens },
     { label: labels.output },
+    { label: labels.cacheHitRate },
   ]
   const rowFor = (
     key: string,
@@ -202,6 +206,7 @@ function TokenBreakdownTable({
       formatNumber(item.cacheWriteTokens),
       formatNumber(item.cacheReadTokens),
       formatNumber(item.outputTokens),
+      formatRatio(cacheHitRate(item)),
     ],
   })
 
@@ -209,7 +214,7 @@ function TokenBreakdownTable({
     <BreakdownTable
       title={title}
       modelLabel={labels.model}
-      modelWidth="32%"
+      modelWidth="28%"
       columns={columns}
       rows={breakdown
         ? [
@@ -221,11 +226,22 @@ function TokenBreakdownTable({
   )
 }
 
+function cacheHitRate(
+  item: Pick<UsageBreakdown, 'cacheWriteTokens' | 'cacheReadTokens' | 'outputTokens'>,
+) {
+  const cacheWriteTokens = Math.max(item.cacheWriteTokens, 0)
+  const cacheReadTokens = Math.max(item.cacheReadTokens, 0)
+  const outputTokens = Math.max(item.outputTokens, 0)
+  const totalTokens = cacheWriteTokens + cacheReadTokens + outputTokens
+  return totalTokens > 0 ? cacheReadTokens / totalTokens : null
+}
+
 export function UsageBreakdownTooltip({
   title,
   breakdown,
   kind,
   formatNumber,
+  formatRatio,
   formatCurrency,
   labels,
 }: UsageBreakdownTooltipProps) {
@@ -250,7 +266,14 @@ export function UsageBreakdownTooltip({
     <div data-testid={`usage-breakdown-tooltip-${kind}`} className="space-y-1.5">
       <div className="px-0.5 text-[11px] font-semibold leading-4 text-base-content/72">{title}</div>
       {kind === 'tokens' ? (
-        <TokenBreakdownTable title={title} breakdown={breakdown} models={models} formatNumber={formatNumber} labels={labels} />
+        <TokenBreakdownTable
+          title={title}
+          breakdown={breakdown}
+          models={models}
+          formatNumber={formatNumber}
+          formatRatio={formatRatio}
+          labels={labels}
+        />
       ) : (
         <CostBreakdownTable title={title} breakdown={breakdown} models={models} formatCurrency={formatCurrency} labels={labels} />
       )}
