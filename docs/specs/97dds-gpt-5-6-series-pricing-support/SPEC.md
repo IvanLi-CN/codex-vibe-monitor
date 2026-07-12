@@ -92,7 +92,6 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 
 ## Visual Evidence
 
-PR: include
 ![Settings pricing cache read/write split](./assets/settings-pricing-cache-read-write-storybook.png)
 
 - source_type: storybook_canvas
@@ -133,7 +132,6 @@ PR: include
 - state: Token detail open with cache hit rate column
 - evidence_note: Verifies the five-column Token detail shows cache write, cache-hit Tokens, output, and cache hit rate for total and model rows without an internal scrollbar.
 
-PR: include
 ![Mixed realtime and historical cost breakdown on desktop](./assets/dashboard-mixed-cost-unknown-desktop.png)
 
 - source_type: storybook_canvas
@@ -147,7 +145,6 @@ PR: include
 - state: mixed exact and historical cost detail open
 - evidence_note: Verifies exact input, cache-write, cache-read, output, and reasoning amounts remain visible while historical total cost is reconciled in the dynamic unknown column.
 
-PR: include
 ![Mixed realtime and historical cost breakdown on mobile](./assets/dashboard-mixed-cost-unknown-mobile.png)
 
 - source_type: storybook_canvas
@@ -161,7 +158,6 @@ PR: include
 - state: mixed exact and historical cost detail open
 - evidence_note: Verifies the dynamic six-column cost table remains legible on a narrow viewport with explicit cell dividers and no internal scrollbar.
 
-PR: include
 ![Dashboard model and reasoning Token breakdown on desktop](./assets/dashboard-model-reasoning-breakdown-desktop.png)
 
 - source_type: ui_demo
@@ -175,7 +171,6 @@ PR: include
 - state: Dashboard Token detail open with high, medium, and unspecified reasoning-effort rows
 - evidence_note: Verifies model-plus-effort rows use a two-line first cell, the Token table calls `cacheReadTokens` cache-hit Tokens, and the full table renders without an internal scrollbar.
 
-PR: include
 ![Dashboard model and reasoning Token breakdown on mobile](./assets/dashboard-model-reasoning-breakdown-mobile.png)
 
 - source_type: ui_demo
