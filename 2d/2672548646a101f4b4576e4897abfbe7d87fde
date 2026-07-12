@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.26.1",
+  "base_stable_version": "2.26.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-12T02:40:33Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.26.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2b92a03de23be7296e5bf4cb068138c4f3e651fb",
+  "pr_number": 590,
+  "pr_title": "fix: bound account activity read paths",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.26.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.26.1",
+  "target_sha": "2d2672548646a101f4b4576e4897abfbe7d87fde",
+  "type_label": "type:patch"
+}
