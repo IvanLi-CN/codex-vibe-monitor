@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.27.1",
+  "base_stable_version": "2.27.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-12T14:51:11Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.27.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "48f60adba5adcf68b7f63221df81de408702d231",
+  "pr_number": 593,
+  "pr_title": "feat(dashboard): add cache hit rate column",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.27.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.27.1",
+  "target_sha": "254f949bdc2625ca03841c13a0da842a32bae99b",
+  "type_label": "type:patch"
+}
