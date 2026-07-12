@@ -4007,8 +4007,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   className="mt-2 block select-text break-all font-mono text-xs text-info underline decoration-info/35 underline-offset-4 transition hover:decoration-info focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                                   onClick={() => locateAccountAttempt(actionEvent.attemptId)}
                                 >
-                                  {t("accountPool.upstreamAccounts.latestAction.fields.invokeId")}:{" "}
-                                  {actionEvent.invokeId}
+                                  {t(
+                                    "accountPool.upstreamAccounts.latestAction.fields.attemptId",
+                                  )}
+                                  : {actionEvent.attemptId}
                                 </button>
                               ) : actionEvent.invokeId ? (
                                 <p className="mt-2 break-all font-mono text-xs text-base-content/55">

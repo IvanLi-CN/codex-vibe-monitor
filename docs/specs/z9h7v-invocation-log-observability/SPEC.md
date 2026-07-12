@@ -145,7 +145,7 @@
 - `pool_upstream_account_events.attempt_id` 为可空精确关联；只为新产生且调用链路已拿到尝试主键的路由事件写入，不回填历史事件。
 - `GET /api/pool/upstream-accounts/{accountId}/call-attempts` Query: `page?: number`、`pageSize?: number`；Response: `items`、`total`、`page`、`pageSize`。
 - `GET /api/pool/upstream-accounts/{accountId}/call-attempts/locate` Query: `attemptId: number`、`pageSize?: number`；目标必须属于当前账号且处于 7 天主库窗口内。
-- 尝试对象额外返回 `requestModel?: string | null` 与 `responseModel?: string | null`；请求模型按 `request_model ?? model` 投影，响应模型使用 `response_model`，缺少匹配 invocation 时保持空值。
+- 尝试对象额外返回 `requestModel?: string | null` 与 `responseModel?: string | null`；两个字段从关联 invocation 的 `payload.requestModel` / `payload.responseModel` 投影，请求模型缺失时回退 `model`，缺少匹配 invocation 时保持空值。该查询不得依赖新增 SQLite 列。
 
 ### `GET /api/settings` / `PUT /api/settings/proxy` 新增字段
 
@@ -205,7 +205,7 @@
 - Given 调用详情包含长 `invokeId`、`promptCacheKey`、endpoint、IPv6 或错误消息，When 页面在桌面和窄屏渲染，Then 文本在容器内换行或截断，不造成横向滚动或相邻内容遮挡。
 - Given 新 HTTP proxy invocation 被创建，When 查询 `/api/invocations`、接收 SSE `records` 或打开 Live/Dashboard 详情，Then `invokeId` 为 10 位短 ID，且不含 `proxy`、连字符、时间戳或内部 counter。
 - Given 历史 `proxy-9061-1783013997090` 记录存在，When 用户过滤、查询、展示或打开详情，Then 仍按完整历史 `invokeId` 兼容处理，不迁移、不回填。
-- Given 健康与事件带有当前账号的 `attemptId`，When 用户点击调用 ID，Then 账号详情立即进入上游调用尝试 tab，后端只返回该尝试所在页，目标记录展开诊断并短暂高亮。
+- Given 健康与事件带有当前账号的 `attemptId`，When 用户点击上游尝试 ID，Then 账号详情立即进入上游调用尝试 tab，后端只返回该尝试所在页，目标记录展开诊断并短暂高亮。
 - Given 账号详情展示上游调用，When 表格渲染，Then 每行直接显示时间、调用 ID、请求模型与响应模型、状态/HTTP、代理、三段延迟与错误；不得显示 endpoint、重试序号、tokens、费用或最终调用汇总。
 - Given 上游 HTTP 为 500 且下游 HTTP 为 502，When 账号上游调用表渲染，Then 主列显示“上游 HTTP 500”，其下的全宽“诊断详情”展开区显示下游 HTTP 502、上游请求 ID、路由键与完整可复制错误。
 - Given 账号上游调用表在 `mobile390` 渲染，When 用户查看失败行，Then 表格首屏显示时间、调用/模型、结果与错误摘要；展开同一行证据后可见代理、三段延迟和完整错误信息。
