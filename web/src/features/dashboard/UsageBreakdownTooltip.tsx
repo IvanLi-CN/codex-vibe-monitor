@@ -192,8 +192,8 @@ function TokenBreakdownTable({
   const columns = [
     { label: labels.cacheWrite },
     { label: labels.cacheHitTokens },
-    { label: labels.output },
     { label: labels.cacheHitRate },
+    { label: labels.output },
   ]
   const rowFor = (
     key: string,
@@ -205,8 +205,8 @@ function TokenBreakdownTable({
     values: [
       formatNumber(item.cacheWriteTokens),
       formatNumber(item.cacheReadTokens),
-      formatNumber(item.outputTokens),
       formatRatio(cacheHitRate(item)),
+      formatNumber(item.outputTokens),
     ],
   })
 

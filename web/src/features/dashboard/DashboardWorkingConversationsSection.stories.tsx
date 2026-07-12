@@ -3743,7 +3743,7 @@ export const UpstreamAccountMetricTooltips: Story = {
     await assertMetricTooltip("token", [
       "Token",
       "缓存写入",
-      "缓存命中 Token",
+      "缓存读取",
       "输出",
       "gpt-5.6",
     ]);
