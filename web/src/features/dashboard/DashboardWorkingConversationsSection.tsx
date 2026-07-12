@@ -3769,22 +3769,26 @@ export function DashboardWorkingConversationsSection({
       data-testid="dashboard-working-conversations"
     >
       <div className="surface-panel-body gap-5 desktop:!p-5">
-        <div className="flex flex-wrap items-start gap-3">
-          <div className="section-heading min-w-0 flex-1">
+        <div className="flex flex-col gap-3 desktop:flex-row desktop:items-start">
+          <div className="section-heading min-w-0 desktop:flex-1">
             <h2 className="section-title">
               {t("dashboard.section.workingConversationsTitle")}
             </h2>
             <p className="section-description">{sectionSubtitle}</p>
           </div>
-          <div className="ml-auto flex shrink-0 items-center justify-end gap-2 self-start">
+          <div
+            className="flex min-w-0 flex-col items-stretch gap-2 desktop:ml-auto desktop:flex-row desktop:items-center desktop:justify-end"
+            data-testid="dashboard-working-conversations-controls"
+          >
             <Badge
               variant="default"
-              className="rounded-full px-3 py-1 font-mono text-xs font-semibold"
+              className="w-fit rounded-full px-3 py-1 font-mono text-xs font-semibold"
             >
               {countBadgeLabel}
             </Badge>
             <SegmentedControl
               size="compact"
+              className="w-full desktop:w-auto"
               role="tablist"
               aria-label="Dashboard workspace view"
             >
@@ -3792,7 +3796,7 @@ export function DashboardWorkingConversationsSection({
                 active={activeView === "conversations"}
                 role="tab"
                 aria-selected={activeView === "conversations"}
-                className="h-11 px-3.5 text-[0.95rem]"
+                className="h-11 flex-1 px-3.5 text-[0.95rem]"
                 onClick={() => setPreferredView("conversations")}
               >
                 对话
@@ -3802,7 +3806,7 @@ export function DashboardWorkingConversationsSection({
                 role="tab"
                 aria-selected={activeView === "upstreamAccounts"}
                 disabled={upstreamAccountsDisabled}
-                className="h-11 px-3.5 text-[0.95rem]"
+                className="h-11 flex-1 px-3.5 text-[0.95rem]"
                 onClick={() => setPreferredView("upstreamAccounts")}
               >
                 上游账号

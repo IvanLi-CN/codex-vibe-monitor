@@ -4191,6 +4191,16 @@ export const Mobile390: Story = {
       },
     },
   },
+  play: async ({ canvasElement }) => {
+    const controls = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversations-controls"]',
+    );
+    if (!(controls instanceof HTMLElement)) {
+      throw new Error("missing workspace controls");
+    }
+    await expect(controls.className).toContain("flex-col");
+    await expect(controls.querySelector('[role="tablist"]')?.className).toContain("w-full");
+  },
 };
 
 export const WideDesktop1660: Story = {
