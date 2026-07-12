@@ -117,13 +117,13 @@ export function AccountDetailDrawerShell({
         presentation === 'page'
           ? 'min-h-[calc(100dvh-8.5rem)] bg-base-100'
           : 'h-[min(100dvh-0.5rem,100dvh)]',
-        'min-[1024px]:h-full min-[1024px]:rounded-none min-[1024px]:border-0',
+        'desktop:h-full desktop:rounded-none desktop:border-0',
         shellClassName,
       )}
       onClick={(event) => event.stopPropagation()}
     >
       <OverlayHostProvider value={sectionElement ?? undefined}>
-        <div className="drawer-header px-4 py-4 sm:px-5 min-[1024px]:px-5 min-[1024px]:py-4 sm:min-[1024px]:px-6">
+        <div className="drawer-header px-4 py-4 sm:px-5 desktop:px-6 desktop:py-4">
           <div className="flex items-start gap-4">
             <div className="min-w-0 flex-1">{header}</div>
             <Button
@@ -142,7 +142,7 @@ export function AccountDetailDrawerShell({
         <div
           ref={handleBodyRef}
           className={cn(
-            'drawer-body min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 min-[1024px]:px-5 min-[1024px]:py-5 sm:min-[1024px]:px-6 sm:min-[1024px]:py-6',
+            'drawer-body min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 desktop:px-6 desktop:py-6',
             bodyClassName,
           )}
         >
@@ -166,7 +166,7 @@ export function AccountDetailDrawerShell({
         onClick={closeDisabled ? undefined : onClose}
       />
       <div
-        className="absolute inset-x-0 bottom-0 top-0 flex items-end justify-end min-[1024px]:inset-y-0 min-[1024px]:left-auto min-[1024px]:right-0 min-[1024px]:items-stretch min-[1024px]:pl-4 sm:min-[1024px]:pl-8"
+        className="absolute inset-x-0 bottom-0 top-0 flex items-end justify-end desktop:inset-y-0 desktop:left-auto desktop:right-0 desktop:items-stretch desktop:pl-8"
         onClick={closeDisabled ? undefined : onClose}
       >
         {shell}

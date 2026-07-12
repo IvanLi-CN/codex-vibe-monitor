@@ -388,9 +388,9 @@ export function ImportedOauthValidationDialog({
       open={open}
       onOpenChange={(nextOpen: boolean) => (!nextOpen ? onClose() : undefined)}
     >
-      <DialogContent className="flex h-[calc(100dvh-0.75rem)] max-h-[calc(100dvh-0.75rem)] max-w-none flex-col overflow-hidden p-0 min-[1024px]:h-[min(92vh,56rem)] min-[1024px]:max-h-[min(92vh,56rem)] min-[1024px]:w-[min(96vw,92rem)]">
+      <DialogContent className="flex h-[calc(100dvh-0.75rem)] max-h-[calc(100dvh-0.75rem)] max-w-none flex-col overflow-hidden p-0 desktop:h-[min(92vh,56rem)] desktop:max-h-[min(92vh,56rem)] desktop:w-[min(96vw,92rem)]">
         <div className="grid h-full min-h-0 grid-rows-[auto,minmax(0,1fr),auto]">
-          <DialogHeader className="border-b border-base-300 bg-[linear-gradient(180deg,rgba(15,23,42,0.04),transparent)] px-5 pb-4 pt-4 min-[1024px]:px-6 min-[1024px]:pb-5 min-[1024px]:pt-5">
+          <DialogHeader className="border-b border-base-300 bg-[linear-gradient(180deg,rgba(15,23,42,0.04),transparent)] px-5 pb-4 pt-4 desktop:px-6 desktop:pb-5 desktop:pt-5">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <DialogTitle>
@@ -446,7 +446,7 @@ export function ImportedOauthValidationDialog({
             </div>
           </DialogHeader>
 
-          <div className="grid h-full min-h-0 grid-rows-[auto,minmax(0,1fr)] overflow-hidden px-5 py-5 min-[1024px]:px-6">
+          <div className="grid h-full min-h-0 grid-rows-[auto,minmax(0,1fr)] overflow-hidden px-5 py-5 desktop:px-6">
             {state?.importError || importDisabledReason ? (
               <Alert variant="error" className="mb-4">
                 <AppIcon
@@ -785,7 +785,7 @@ export function ImportedOauthValidationDialog({
             </section>
           </div>
 
-          <DialogFooter className="border-t border-base-300 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur min-[1024px]:px-6 min-[1024px]:py-4">
+          <DialogFooter className="border-t border-base-300 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:px-6 desktop:py-4">
             <div className="flex w-full flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex flex-wrap items-center gap-2 text-sm text-base-content/65">
                 <span>

@@ -3467,9 +3467,9 @@ export function PromptCacheConversationHistoryDrawer({
       <DialogContent
         role="alertdialog"
         container={drawerBodyElement}
-        className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 min-[1024px]:max-h-[calc(100dvh-2rem)]"
+        className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 desktop:max-h-[calc(100dvh-2rem)]"
       >
-        <div className="shrink-0 border-b border-base-300/80 px-5 py-4 min-[1024px]:px-6">
+        <div className="shrink-0 border-b border-base-300/80 px-5 py-4 desktop:px-6">
           <DialogHeader>
             <DialogTitle>
               {t("live.conversations.drawer.binding.ownerConfirm.title")}
@@ -3481,12 +3481,12 @@ export function PromptCacheConversationHistoryDrawer({
             </DialogDescription>
           </DialogHeader>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 min-[1024px]:px-6">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 desktop:px-6">
           <p className="rounded-xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm leading-6 text-base-content/82">
             {t("live.conversations.drawer.binding.ownerConfirm.risk")}
           </p>
         </div>
-        <DialogFooter className="shrink-0 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur min-[1024px]:px-6 min-[1024px]:py-4">
+        <DialogFooter className="shrink-0 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:px-6 desktop:py-4">
           <Button
             type="button"
             variant="ghost"

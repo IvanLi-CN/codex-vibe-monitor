@@ -2,19 +2,15 @@ import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useTranslation } from '../../i18n'
 import { SegmentedControl } from '../../components/ui/segmented-control'
 import { segmentedControlItemVariants } from '../../components/ui/segmented-control.variants'
-import { useCompactViewport } from '../../hooks/useCompactViewport'
 import { accountPoolNavItems, matchesNavigationPath } from '../../features/app-shell/navigation'
 
 export default function AccountPoolLayout() {
   const { t } = useTranslation()
   const location = useLocation()
-  const isCompactViewport = useCompactViewport()
 
   if (location.pathname === '/account-pool') {
     return <Navigate to="/account-pool/upstream-accounts" replace />
   }
-
-  const activeItem = accountPoolNavItems.find((item) => matchesNavigationPath(location.pathname, item)) ?? null
 
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
@@ -28,13 +24,7 @@ export default function AccountPoolLayout() {
               <h1 className="section-title text-2xl sm:text-3xl">{t('accountPool.title')}</h1>
               <p className="section-description max-w-2xl">{t('accountPool.description')}</p>
             </div>
-            {isCompactViewport ? (
-              activeItem ? (
-                <div className="self-start rounded-full border border-primary/22 bg-primary/10 px-3 py-1.5 text-sm font-semibold text-primary">
-                  {t(activeItem.labelKey)}
-                </div>
-              ) : null
-            ) : (
+            <div className="hidden desktop:block">
               <SegmentedControl className="self-start">
                 {accountPoolNavItems.map((item) => (
                   <NavLink
@@ -48,7 +38,7 @@ export default function AccountPoolLayout() {
                   </NavLink>
                 ))}
               </SegmentedControl>
-            )}
+            </div>
           </div>
         </div>
       </section>

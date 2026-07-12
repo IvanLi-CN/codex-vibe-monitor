@@ -13,8 +13,6 @@ export default function SystemLayout() {
     return <Navigate to="/system/status" replace />
   }
 
-  const activeItem = systemNavItems.find((item) => matchesNavigationPath(location.pathname, item)) ?? null
-
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
       <section className="surface-panel overflow-hidden">
@@ -25,13 +23,6 @@ export default function SystemLayout() {
             </span>
             <h1 className="section-title text-2xl sm:text-3xl">{t('system.title')}</h1>
             <p className="section-description max-w-3xl">{t('system.description')}</p>
-            {isCompactViewport && activeItem ? (
-              <div className="pt-2">
-                <span className="inline-flex rounded-full border border-primary/22 bg-primary/10 px-3 py-1.5 text-sm font-semibold text-primary">
-                  {t(activeItem.labelKey)}
-                </span>
-              </div>
-            ) : null}
           </div>
         </div>
       </section>

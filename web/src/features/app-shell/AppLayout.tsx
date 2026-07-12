@@ -244,12 +244,12 @@ export function AppLayout() {
             <HeaderBrandMark
               alt={t('app.logoAlt')}
               state={headerBrandMarkState}
-              className="h-9 w-9 min-[1024px]:h-10 min-[1024px]:w-10"
-              markClassName="h-9 w-9 min-[1024px]:h-10 min-[1024px]:w-10"
+              className="h-9 w-9 desktop:h-10 desktop:w-10"
+              markClassName="h-9 w-9 desktop:h-10 desktop:w-10"
               data-testid="app-header-logo-mark"
             />
             <div className="min-w-0">
-              <span className="hidden truncate text-lg font-semibold tracking-tight min-[1024px]:block min-[1024px]:text-xl">
+              <span className="hidden truncate text-lg font-semibold tracking-tight desktop:block desktop:text-xl">
                 {t('app.brand')}
               </span>
               <div className="desktop:hidden">

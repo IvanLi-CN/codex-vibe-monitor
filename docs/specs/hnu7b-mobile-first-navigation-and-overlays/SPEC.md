@@ -10,7 +10,7 @@
 
 ### Goals
 
-- 覆盖 `320px` 至 `768px` 纵向视口，并在 `<=1023px` 统一采用紧凑布局。
+- 覆盖 `320px` 至 `768px` 纵向视口，并在 `<=768px` 统一采用紧凑布局；从 `769px` 起恢复桌面导航与浮层形态。
 - 将一级路由和 `Account Pool` / `System` 二级路由收进同一汉堡导航层，页面头部只显示当前上下文与关键工具。
 - 让桌面 `Dialog` 和自建 modal 在紧凑视口统一成为带 safe-area 的底部 sheet；桌面保持居中 dialog。
 - 让桌面 side drawer 在紧凑视口逐项分流：账号详情和 Prompt Cache 会话页页面化，其余详情保留 overlay 但改为全高 bottom sheet。
@@ -42,13 +42,13 @@
 
 ### 紧凑导航
 
-- `<=1023px` 时，顶栏不得渲染横向主导航；只能通过汉堡菜单打开导航。
+- `<=768px` 时，顶栏不得渲染横向主导航；只能通过汉堡菜单打开导航。
 - 菜单必须直接提供 `/dashboard`、`/stats`、`/live`、`/records` 及 `Account Pool` / `System` 的全部二级路由，并明确当前页状态。
 - `AccountPoolLayout` 和 `SystemLayout` 在紧凑视口不得再占用单独的 segmented/sidebar 行。
 
 ### Responsive 浮层
 
-- `DialogContent` 在 `<=1023px` 必须固定在底部、宽度占满、适配 `100dvh` 与安全区；在桌面恢复居中 dialog。
+- `DialogContent` 在 `<=768px` 必须固定在底部、宽度占满、适配 `100dvh` 与安全区；从 `769px` 起恢复居中 dialog。
 - 紧凑浮层必须只有一个内容滚动体；操作区与标题区可保持 sticky，不能因内部 card 再生成嵌套滚动面。
 - 现有桌面 drawer 除两项页面化工作区外，紧凑视口保持 backdrop overlay，但改为从底部出现的全高 sheet。
 
@@ -62,11 +62,12 @@
 - Dashboard、Stats、Live、Records、Account Pool、Settings 和 System 的筛选区在窄屏改为纵向或最多两列布局。
 - 依赖 `min-w-[44rem]` 及更宽表格的内容在手机视口改为卡片/列表表达；桌面横向表格只在 `md+` 可用。
 - 默认页面 surface 不得包裹视觉等价的内部 card；页面 gutter 和控件最小宽度必须让主体内容优先获得可视宽度。
+- 在 `<=768px`，页面级 `surface-panel` 只组织文档流，不得再绘制第二层边框、背景、阴影或内边距。页面保留单一 `12px` gutter，真正的 metric、列表项和可独立操作的配置项才可使用紧凑 card。
 
 ## 验收标准
 
 - Given `320x568`、`390x844`、`430x932` 和 `768x1024` 纵向视口，When 打开任一路由，Then 主要内容无页面级横向溢出，且主导航只通过汉堡菜单进入。
-- Given 桌面 dialog 或自建 modal 打开，When 视口缩小到 `<=1023px`，Then 它以底部 sheet 而非居中 modal 呈现，安全区和单一内容滚动体正确。
+- Given 桌面 dialog 或自建 modal 打开，When 视口缩小到 `<=768px`，Then 它以底部 sheet 而非居中 modal 呈现，安全区和单一内容滚动体正确。
 - Given 打开上游账号详情或 Prompt Cache 会话详情，When 使用紧凑视口，Then 表现为可返回、可用 URL 恢复状态的独立页面；桌面仍保持 drawer。
 - Given 打开 dashboard 或 records 调用详情，When 使用紧凑视口，Then 表现为全高 bottom sheet；桌面仍从侧边进入。
 - Given 使用无真实后端的完整路由，When 在 Web Demo 中切换移动视口，Then 页面和关键浮层能够用确定性 mock 数据验收。
@@ -111,6 +112,12 @@
 验证 External API Key 创建不再居中显示，而是以带安全区底部操作区的 sheet 呈现。
 
 ![Web Demo external API key bottom sheet](./assets/web-demo-external-api-key-sheet-mobile390.png)
+
+### `390x844` Single-Gutter Stats Surface
+
+验证统计页取消页面级面板嵌套与装饰背景后，筛选控件占满有效宽度，数据卡以两列布局呈现，最后一项指标跨两列，页面无横向溢出。
+
+![Web Demo stats single-gutter surface](./assets/mobile-surface-density-390.png)
 
 ### `390x844` Prompt Cache Page
 

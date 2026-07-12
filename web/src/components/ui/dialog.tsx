@@ -74,8 +74,8 @@ const DialogContent = React.forwardRef<
               'data-[state=open]:animate-in data-[state=closed]:animate-out',
               'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
               'data-[state=closed]:slide-out-to-bottom-6 data-[state=open]:slide-in-from-bottom-6',
-              'min-[1024px]:left-1/2 min-[1024px]:right-auto min-[1024px]:top-1/2 min-[1024px]:max-h-[calc(100dvh-2rem)] min-[1024px]:w-[min(34rem,calc(100vw-2rem))] min-[1024px]:-translate-x-1/2 min-[1024px]:-translate-y-1/2 min-[1024px]:rounded-[1.75rem] min-[1024px]:border min-[1024px]:px-0 min-[1024px]:pb-0',
-              'min-[1024px]:data-[state=closed]:slide-out-to-bottom-0 min-[1024px]:data-[state=open]:slide-in-from-bottom-0 min-[1024px]:data-[state=closed]:zoom-out-95 min-[1024px]:data-[state=open]:zoom-in-95',
+              'desktop:left-1/2 desktop:right-auto desktop:top-1/2 desktop:max-h-[calc(100dvh-2rem)] desktop:w-[min(34rem,calc(100vw-2rem))] desktop:-translate-x-1/2 desktop:-translate-y-1/2 desktop:rounded-[1.75rem] desktop:border desktop:px-0 desktop:pb-0',
+              'desktop:data-[state=closed]:slide-out-to-bottom-0 desktop:data-[state=open]:slide-in-from-bottom-0 desktop:data-[state=closed]:zoom-out-95 desktop:data-[state=open]:zoom-in-95',
               className,
             )}
             {...props}
@@ -96,7 +96,7 @@ function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
 function DialogFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn('flex flex-col-reverse gap-3 min-[1024px]:flex-row min-[1024px]:justify-end', className)}
+      className={cn('flex flex-col-reverse gap-3 desktop:flex-row desktop:justify-end', className)}
       {...props}
     />
   )

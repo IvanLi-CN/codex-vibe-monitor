@@ -351,9 +351,9 @@ export function UpstreamAccountGroupNoteDialog({
     >
       <DialogContent
         container={container}
-        className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden border-base-300 bg-base-100 p-0 min-[1024px]:max-h-[calc(100dvh-2rem)] min-[1024px]:w-[min(44rem,calc(100vw-4rem))] min-[1024px]:max-w-[44rem]"
+        className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden border-base-300 bg-base-100 p-0 desktop:max-h-[calc(100dvh-2rem)] desktop:w-[min(44rem,calc(100vw-4rem))] desktop:max-w-[44rem]"
       >
-        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 min-[1024px]:px-6 min-[1024px]:py-5">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 desktop:px-6 desktop:py-5">
           <DialogHeader className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <DialogTitle>{title}</DialogTitle>
@@ -371,7 +371,7 @@ export function UpstreamAccountGroupNoteDialog({
           <DialogCloseIcon aria-label={closeLabel} disabled={busy} />
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 min-[1024px]:px-6">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 desktop:px-6">
           <div className="space-y-4">
             {error ? (
               <div className="flex items-start gap-3 rounded-2xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
@@ -678,7 +678,7 @@ export function UpstreamAccountGroupNoteDialog({
           </div>
         </div>
 
-        <DialogFooter className="border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur min-[1024px]:items-end min-[1024px]:justify-between min-[1024px]:px-6 min-[1024px]:py-5">
+        <DialogFooter className="border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:items-end desktop:justify-between desktop:px-6 desktop:py-5">
           <div className="flex min-w-0 items-end">
             {showDelete ? (
               <Popover

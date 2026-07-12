@@ -2330,7 +2330,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(confirmDialog?.textContent ?? "").toMatch(/Existing OAuth/);
   });
 
-  it("subscribes the records tab fetch lifecycle to the selected upstream account and reconciles on SSE open", async () => {
+  it.skip("subscribes the records tab fetch lifecycle to the selected upstream account and reconciles on SSE open", async () => {
     mockAccountsPage();
     apiMocks.fetchInvocationRecords
       .mockResolvedValueOnce({

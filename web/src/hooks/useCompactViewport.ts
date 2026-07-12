@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export const COMPACT_VIEWPORT_MEDIA_QUERY = '(max-width: 1023px)'
+export const COMPACT_VIEWPORT_MEDIA_QUERY = '(max-width: 768px)'
 
 function readCompactViewportMatch() {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {

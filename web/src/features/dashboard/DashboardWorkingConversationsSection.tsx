@@ -3749,7 +3749,7 @@ export function DashboardWorkingConversationsSection({
         className="surface-panel"
         data-testid="dashboard-working-conversations"
       >
-        <div className="surface-panel-body gap-4 !p-3 sm:!p-5">
+        <div className="surface-panel-body gap-4 desktop:!p-5">
           <div className="section-heading">
             <h2 className="section-title">
               {t("dashboard.section.workingConversationsTitle")}
@@ -3768,7 +3768,7 @@ export function DashboardWorkingConversationsSection({
       className="surface-panel overflow-hidden"
       data-testid="dashboard-working-conversations"
     >
-      <div className="surface-panel-body gap-5 !p-3 sm:!p-5">
+      <div className="surface-panel-body gap-5 desktop:!p-5">
         <div className="flex flex-wrap items-start gap-3">
           <div className="section-heading min-w-0 flex-1">
             <h2 className="section-title">
