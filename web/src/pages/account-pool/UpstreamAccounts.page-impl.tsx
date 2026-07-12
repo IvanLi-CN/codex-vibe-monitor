@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
@@ -35,6 +36,7 @@ import {
   type UpstreamAccountsTableLabels,
 } from "../../features/account-pool/UpstreamAccountsTable";
 import { AppIcon } from "../../features/shared/AppIcon";
+import { useCompactViewport } from "../../hooks/useCompactViewport";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
@@ -137,6 +139,7 @@ function areGroupFilterValuesEqual(left: string[], right: string[]): boolean {
 
 export default function UpstreamAccountsPage() {
   const { t } = useTranslation();
+  const isCompactViewport = useCompactViewport();
   const location = useLocation();
   const locationState = location.state as UpstreamAccountsLocationState | null;
   const navigate = useNavigate();
@@ -390,6 +393,10 @@ export default function UpstreamAccountsPage() {
       new Set(visibleGroupedAccountIds.filter((accountId) => visibleRosterIdSet.has(accountId))),
     );
   }, [rosterViewMode, visibleGroupedAccountIds, visibleRosterItems]);
+  const visibleHydrationAccountIdsKey = useMemo(
+    () => [...visibleHydrationAccountIds].sort((left, right) => left - right).join(","),
+    [visibleHydrationAccountIds],
+  );
   const effectiveMetrics = listMetrics ?? {
     total: items.length,
     oauth: items.filter((item) => item.kind === "oauth_codex").length,
@@ -456,6 +463,7 @@ export default function UpstreamAccountsPage() {
     listState.hasCurrentQueryData,
     showBlockingRosterState,
     visibleHydrationAccountIds,
+    visibleHydrationAccountIdsKey,
   ]);
   const handleWorkStatusFilterChange = useCallback(
     (value: string[]) => {
@@ -617,7 +625,7 @@ export default function UpstreamAccountsPage() {
     }, UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [listState.loadingState]);
+  }, [listState.dataQueryKey, listState.loadingState, listState.queryKey]);
 
   useLayoutEffect(() => {
     if (hideRosterDerivedUi) return;
@@ -626,7 +634,17 @@ export default function UpstreamAccountsPage() {
     const nextHeight = Math.ceil(region.getBoundingClientRect().height);
     if (!(nextHeight > 0)) return;
     setLastStableRosterRegionHeight((current) => (current === nextHeight ? current : nextHeight));
-  }, [hideRosterDerivedUi]);
+  }, [
+    bulkActionError,
+    bulkActionMessage,
+    hideRosterDerivedUi,
+    page,
+    pageCount,
+    pageSize,
+    selectedAccountIds.length,
+    visibleListWarning,
+    visibleRosterItems,
+  ]);
 
   useEffect(() => {
     if (
@@ -861,53 +879,34 @@ export default function UpstreamAccountsPage() {
       })
       .join(" / ");
   };
-  const accountEnableStatusLabel = useCallback(
-    (status: string) => t(`accountPool.upstreamAccounts.enableStatus.${status}`),
-    [t],
-  );
-  const accountWorkStatusLabel = useCallback(
-    (status: string) => t(`accountPool.upstreamAccounts.workStatus.${status}`),
-    [t],
-  );
-  const accountWorkingCountLabel = useCallback(
-    (count: number) => t("accountPool.upstreamAccounts.workStatus.workingWithCount", { count }),
-    [t],
-  );
-  const accountHealthStatusLabel = useCallback(
-    (status: string) => t(`accountPool.upstreamAccounts.healthStatus.${status}`),
-    [t],
-  );
-  const accountSyncStateLabel = useCallback(
-    (status: string) => t(`accountPool.upstreamAccounts.syncState.${status}`),
-    [t],
-  );
-  const accountActionLabel = useCallback(
-    (action?: string | null) => {
-      if (!action) return null;
-      const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`;
-      const translated = t(key);
-      return translated === key ? action : translated;
-    },
-    [t],
-  );
-  const accountActionSourceLabel = useCallback(
-    (source?: string | null) => {
-      if (!source) return null;
-      const key = `accountPool.upstreamAccounts.latestAction.sources.${source}`;
-      const translated = t(key);
-      return translated === key ? source : translated;
-    },
-    [t],
-  );
-  const accountActionReasonLabel = useCallback(
-    (reason?: string | null) => {
-      if (!reason) return null;
-      const key = `accountPool.upstreamAccounts.latestAction.reasons.${reason}`;
-      const translated = t(key);
-      return translated === key ? reason : translated;
-    },
-    [t],
-  );
+  const accountEnableStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.enableStatus.${status}`);
+  const accountWorkStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.workStatus.${status}`);
+  const accountWorkingCountLabel = (count: number) =>
+    t("accountPool.upstreamAccounts.workStatus.workingWithCount", { count });
+  const accountHealthStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.healthStatus.${status}`);
+  const accountSyncStateLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.syncState.${status}`);
+  const accountActionLabel = (action?: string | null) => {
+    if (!action) return null;
+    const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`;
+    const translated = t(key);
+    return translated === key ? action : translated;
+  };
+  const accountActionSourceLabel = (source?: string | null) => {
+    if (!source) return null;
+    const key = `accountPool.upstreamAccounts.latestAction.sources.${source}`;
+    const translated = t(key);
+    return translated === key ? source : translated;
+  };
+  const accountActionReasonLabel = (reason?: string | null) => {
+    if (!reason) return null;
+    const key = `accountPool.upstreamAccounts.latestAction.reasons.${reason}`;
+    const translated = t(key);
+    return translated === key ? reason : translated;
+  };
   const accountRosterLabels = useMemo<UpstreamAccountsTableLabels>(
     () => ({
       selectPage: t("accountPool.upstreamAccounts.bulk.selectPage"),
@@ -1191,13 +1190,9 @@ export default function UpstreamAccountsPage() {
       setSelectedAccountIds((current) => {
         const next = new Set(current);
         if (checked) {
-          currentPageIds.forEach((accountId) => {
-            next.add(accountId);
-          });
+          currentPageIds.forEach((accountId) => next.add(accountId));
         } else {
-          currentPageIds.forEach((accountId) => {
-            next.delete(accountId);
-          });
+          currentPageIds.forEach((accountId) => next.delete(accountId));
         }
         return Array.from(next);
       });
@@ -1371,6 +1366,7 @@ export default function UpstreamAccountsPage() {
     closeBulkSyncEventSource,
     getBulkSyncJob,
     isBulkSyncBusy,
+    refresh,
     selectedAccountIds,
     startBulkSyncJob,
   ]);
@@ -1471,6 +1467,23 @@ export default function UpstreamAccountsPage() {
     </div>
   ) : null;
 
+  if (isCompactViewport && upstreamAccountId != null) {
+    return (
+      <div className="mx-auto flex w-full max-w-full flex-col gap-6">
+        <SharedUpstreamAccountDetailDrawer
+          open
+          presentation="page"
+          accountId={upstreamAccountId}
+          initialTab={upstreamAccountTab}
+          initialDeleteConfirmOpen={pendingInitialDeleteConfirm}
+          onInitialDeleteConfirmHandled={() => setPendingInitialDeleteConfirm(false)}
+          onClose={closeUpstreamAccount}
+        />
+        {bulkSyncProgressBubble}
+      </div>
+    );
+  }
+
   return (
     <div className="grid gap-6">
       <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
@@ -1483,7 +1496,7 @@ export default function UpstreamAccountsPage() {
                   {t("accountPool.upstreamAccounts.description")}
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
                 <Button
                   type="button"
                   variant="secondary"
@@ -1667,7 +1680,7 @@ export default function UpstreamAccountsPage() {
                     {t("accountPool.upstreamAccounts.listDescription")}
                   </p>
                 </div>
-                <div className="flex items-center justify-start gap-3 lg:justify-end">
+                <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:justify-start lg:justify-end">
                   <SegmentedControl
                     size="compact"
                     role="tablist"
@@ -1712,7 +1725,7 @@ export default function UpstreamAccountsPage() {
                 </div>
               </div>
 
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-12">
+              <div className="grid gap-3 desktop:grid-cols-2 xl:grid-cols-12">
                 <label className={cn("field min-w-0", formFieldSpanVariants({ size: "compact" }))}>
                   <span className="field-label">
                     {t("accountPool.upstreamAccounts.workStatusFilterLabel")}
@@ -2107,8 +2120,8 @@ export default function UpstreamAccountsPage() {
         open={bulkGroupDialogOpen}
         onOpenChange={(open) => (!bulkActionBusy ? setBulkGroupDialogOpen(open) : undefined)}
       >
-        <DialogContent className="p-0">
-          <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
+        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 desktop:max-h-[calc(100dvh-2rem)]">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 desktop:px-6 desktop:py-5">
             <DialogHeader className="min-w-0 max-w-[28rem]">
               <DialogTitle>{t("accountPool.upstreamAccounts.bulk.groupDialogTitle")}</DialogTitle>
               <DialogDescription>
@@ -2120,7 +2133,7 @@ export default function UpstreamAccountsPage() {
               disabled={Boolean(bulkActionBusy)}
             />
           </div>
-          <div className="space-y-4 px-6 py-6">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5 desktop:px-6 desktop:py-6">
             <label className="field">
               <span className="field-label">
                 {t("accountPool.upstreamAccounts.bulk.groupField")}
@@ -2143,7 +2156,7 @@ export default function UpstreamAccountsPage() {
               />
             </label>
           </div>
-          <DialogFooter className="border-t border-base-300/80 px-6 py-5">
+          <DialogFooter className="shrink-0 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:px-6 desktop:py-5">
             <Button
               type="button"
               variant="outline"
@@ -2176,8 +2189,8 @@ export default function UpstreamAccountsPage() {
         open={bulkDeleteDialogOpen}
         onOpenChange={(open) => (!bulkActionBusy ? setBulkDeleteDialogOpen(open) : undefined)}
       >
-        <DialogContent className="p-0">
-          <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
+        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 desktop:max-h-[calc(100dvh-2rem)]">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 desktop:px-6 desktop:py-5">
             <DialogHeader className="min-w-0 max-w-[28rem]">
               <DialogTitle>{t("accountPool.upstreamAccounts.bulk.deleteDialogTitle")}</DialogTitle>
               <DialogDescription>
@@ -2191,7 +2204,7 @@ export default function UpstreamAccountsPage() {
               disabled={Boolean(bulkActionBusy)}
             />
           </div>
-          <DialogFooter className="px-6 py-5">
+          <DialogFooter className="shrink-0 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:px-6 desktop:py-5">
             <Button
               type="button"
               variant="outline"

@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- grouped/grid roster reuses the row rendering helpers from this module */
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -868,14 +869,16 @@ export function buildLatestActionSummary(
   if (Number.isFinite(item.lastActionHttpStatus ?? NaN)) {
     parts.push(`HTTP ${item.lastActionHttpStatus}`);
   }
-  const compact = parts.filter((value): value is string => Boolean(value?.trim())).join(" · ");
+  const compact = parts
+    .filter((value): value is string => Boolean(value && value.trim()))
+    .join(" · ");
   if (!compact) return formatDateTime(item.lastActionAt, labels.never);
   const timestamp = formatDateTime(item.lastActionAt, labels.never);
   return timestamp === labels.never ? compact : `${compact} · ${timestamp}`;
 }
 
 export function handleRowKeyDown(
-  event: KeyboardEvent<HTMLTableRowElement>,
+  event: KeyboardEvent<HTMLElement>,
   accountId: number,
   onSelect: (accountId: number) => void,
 ) {
@@ -1023,85 +1026,298 @@ export function UpstreamAccountsTable({
   return (
     <div
       ref={containerRef}
-      className="relative overflow-x-auto rounded-[1.35rem] border border-base-300/80 bg-base-100/72 md:overflow-x-visible"
+      className="relative rounded-[1.35rem] border border-base-300/80 bg-base-100/72"
       aria-busy={showBlockingOverlay ? "true" : undefined}
     >
-      <table
+      <div
         className={cn(
-          "min-w-[54rem] w-full table-auto border-collapse md:min-w-0 md:table-fixed",
+          "space-y-3 p-3 min-[769px]:hidden",
           showBlockingOverlay && "pointer-events-none select-none opacity-45",
         )}
       >
-        <colgroup>
-          <col className="w-[3rem]" />
-          <col className="w-[38%]" />
-          <col className="w-[16%]" />
-          <col className="w-[42%]" />
-          <col className="w-[4%]" />
-        </colgroup>
-        <thead>
-          <tr className="border-b border-base-300/80 bg-base-100/86 text-left">
-            <th className="px-3 py-2.5 text-center">
-              <SelectAllCheckbox
-                checked={allCurrentPageSelected}
-                indeterminate={partiallySelected}
-                ariaLabel={labels.selectPage}
-                onChange={onToggleSelectAllCurrentPage}
-              />
-            </th>
-            <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-              {labels.account}
-            </th>
-            <th className="pl-1 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-              {labels.sync}
-            </th>
-            <th className="pl-1 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-              {labels.windows}
-            </th>
-            <th className="w-12 pl-1 pr-3 py-2.5" aria-hidden />
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item, index) => {
-            const primaryWindowMissing = item.primaryWindow == null;
-            const secondaryWindowMissing = item.secondaryWindow == null;
-            const primary = windowPercent(item.primaryWindow?.usedPercent);
-            const secondary = windowPercent(item.secondaryWindow?.usedPercent);
-            const primaryResetText = item.primaryWindow?.resetsAt
-              ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.primaryWindow.resetsAt)}`
-              : undefined;
-            const secondaryResetText = item.secondaryWindow?.resetsAt
-              ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
-              : undefined;
-            const primaryLabel =
-              formatWindowShortLabel(item.primaryWindow?.windowDurationMins) ??
-              labels.primaryShort.toUpperCase();
-            const secondaryLabel =
-              formatWindowShortLabel(item.secondaryWindow?.windowDurationMins) ??
-              labels.secondaryShort.toUpperCase();
-            const primaryWindowUnexpected =
-              item.primaryWindow != null &&
-              Number.isFinite(item.primaryWindow.windowDurationMins) &&
-              Math.round(item.primaryWindow.windowDurationMins) !== 300;
-            const secondaryWindowUnexpected =
-              item.secondaryWindow != null &&
-              Number.isFinite(item.secondaryWindow.windowDurationMins) &&
-              Math.round(item.secondaryWindow.windowDurationMins) !== 10_080;
-            const selected = item.id === selectedId;
-            const routingBlockMessage = item.routingBlockReasonMessage?.trim() || null;
-            const latestActionTitle = buildLatestActionTitle(item, labels);
-            const statusBadges = resolveRosterSummaryStatusBadges(item, labels);
-            const primaryWindowTitle =
-              [item.primaryWindow?.limitText, primaryResetText].filter(Boolean).join(" · ") ||
-              undefined;
-            const secondaryWindowTitle =
-              [item.secondaryWindow?.limitText, secondaryResetText].filter(Boolean).join(" · ") ||
-              undefined;
-            const showPlanBadge = shouldShowPlanBadge(item.planType);
-            const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null;
-            return (
-              <>
-                {/* biome-ignore lint/a11y/useSemanticElements: The selectable table row contains independent checkbox and action controls, so it cannot be a native button. */}
+        <div className="flex items-center justify-between rounded-xl border border-base-300/70 bg-base-100/68 px-3 py-2.5">
+          <span className="text-xs font-semibold uppercase tracking-[0.14em] text-base-content/58">
+            {labels.selectPage}
+          </span>
+          <SelectAllCheckbox
+            checked={allCurrentPageSelected}
+            indeterminate={partiallySelected}
+            ariaLabel={labels.selectPage}
+            onChange={onToggleSelectAllCurrentPage}
+          />
+        </div>
+        {items.map((item, index) => {
+          const primaryWindowMissing = item.primaryWindow == null;
+          const secondaryWindowMissing = item.secondaryWindow == null;
+          const primary = windowPercent(item.primaryWindow?.usedPercent);
+          const secondary = windowPercent(item.secondaryWindow?.usedPercent);
+          const primaryResetText = item.primaryWindow?.resetsAt
+            ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.primaryWindow.resetsAt)}`
+            : undefined;
+          const secondaryResetText = item.secondaryWindow?.resetsAt
+            ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
+            : undefined;
+          const primaryLabel =
+            formatWindowShortLabel(item.primaryWindow?.windowDurationMins) ??
+            labels.primaryShort.toUpperCase();
+          const secondaryLabel =
+            formatWindowShortLabel(item.secondaryWindow?.windowDurationMins) ??
+            labels.secondaryShort.toUpperCase();
+          const primaryWindowUnexpected =
+            item.primaryWindow != null &&
+            Number.isFinite(item.primaryWindow.windowDurationMins) &&
+            Math.round(item.primaryWindow.windowDurationMins) !== 300;
+          const secondaryWindowUnexpected =
+            item.secondaryWindow != null &&
+            Number.isFinite(item.secondaryWindow.windowDurationMins) &&
+            Math.round(item.secondaryWindow.windowDurationMins) !== 10_080;
+          const selected = item.id === selectedId;
+          const routingBlockMessage = item.routingBlockReasonMessage?.trim() || null;
+          const latestActionTitle = buildLatestActionTitle(item, labels);
+          const statusBadges = resolveRosterSummaryStatusBadges(item, labels);
+          const showPlanBadge = shouldShowPlanBadge(item.planType);
+          const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null;
+
+          return (
+            <article
+              key={`mobile-${item.id}`}
+              role="button"
+              tabIndex={0}
+              aria-pressed={selected}
+              onClick={() => onSelect(item.id)}
+              onKeyDown={(event) => handleRowKeyDown(event, item.id, onSelect)}
+              className={cn(
+                "rounded-[1rem] border border-base-300/70 bg-base-100/78 p-4 outline-none transition-colors hover:bg-base-100/9 focus-visible:bg-base-100/9",
+                selected && "border-primary/45 bg-primary/10",
+                index % 2 === 1 && !selected && "bg-base-100/38",
+              )}
+            >
+              <div className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 cursor-pointer rounded border-base-300/90 bg-base-100 accent-primary"
+                  aria-label={labels.selectRow(item.displayName)}
+                  checked={selectedAccountIds.has(item.id)}
+                  onChange={(event) => onToggleSelected(item.id, event.target.checked)}
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p
+                        className="truncate text-[15px] font-semibold leading-5 text-base-content"
+                        title={item.displayName}
+                      >
+                        {item.displayName}
+                      </p>
+                      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
+                        {item.isMother ? (
+                          <div className="shrink-0">
+                            <MotherAccountBadge label={labels.mother} />
+                          </div>
+                        ) : null}
+                        {item.duplicateInfo ? compactBadge(labels.duplicate, "warning") : null}
+                        {statusBadges.map((badge) => (
+                          <Badge
+                            key={`${badge.key}:${badge.label}`}
+                            variant={badge.variant}
+                            className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
+                            title={badge.title}
+                          >
+                            {badge.label}
+                          </Badge>
+                        ))}
+                        {renderNoRefreshTokenBadge(item, labels)}
+                        {renderActiveRoutingPolicyBadges(item, labels)}
+                        {compactBadge(kindLabel(item, labels), "secondary")}
+                        {item.compactSupport?.status === "unsupported" &&
+                        labels.compactSupport?.(item)
+                          ? compactBadge(labels.compactSupport(item) ?? "", "warning", {
+                              title: labels.compactSupportHint?.(item) ?? undefined,
+                            })
+                          : null}
+                        {showPlanBadge && item.planType && planBadge
+                          ? compactBadge(item.planType, planBadge.variant, {
+                              className: planBadge.className,
+                              dataPlan: planBadge.dataPlan,
+                              title: item.planType,
+                            })
+                          : showPlanBadge && item.planType
+                            ? compactBadge(item.planType, "accent", { title: item.planType })
+                            : null}
+                        {compactBadge(
+                          resolveCurrentForwardProxyBadgeLabel(item, labels),
+                          resolveCurrentForwardProxyBadgeVariant(item),
+                          { title: resolveCurrentForwardProxyBadgeLabel(item, labels) },
+                        )}
+                      </div>
+                    </div>
+                    <AppIcon
+                      name={selected ? "chevron-right-circle" : "chevron-right"}
+                      className={cn(
+                        "mt-0.5 h-5 w-5 shrink-0",
+                        selected ? "text-primary" : "text-base-content/35",
+                      )}
+                      aria-hidden
+                    />
+                  </div>
+                  <div className="mt-3 flex min-w-0 flex-wrap items-center gap-1">
+                    {renderTagBadges(item.tags)}
+                    {renderTagOverflowBadge(labels, item.tags)}
+                  </div>
+                  <div className="mt-4 grid gap-3">
+                    <div className="rounded-xl border border-base-300/70 bg-base-100/68 px-3 py-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-base-content/58">
+                        {labels.sync}
+                      </div>
+                      <div className="mt-2 space-y-1.5">
+                        <CompactTimestampLine
+                          label={labels.lastSuccess}
+                          value={formatDateTime(item.lastSuccessfulSyncAt, labels.never)}
+                        />
+                        <CompactTimestampLine
+                          label={labels.lastCall}
+                          value={formatDateTime(item.lastActivityAt, labels.never)}
+                        />
+                        {routingBlockMessage ? (
+                          <CompactTimestampLine
+                            label={labels.routingBlock}
+                            value={routingBlockMessage}
+                            title={routingBlockMessage}
+                          />
+                        ) : null}
+                        <CompactTimestampLine
+                          label={labels.latestAction}
+                          value={buildLatestActionSummary(item, labels)}
+                          title={latestActionTitle ?? undefined}
+                        />
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-base-300/70 bg-base-100/68 px-3 py-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-base-content/58">
+                        {labels.windows}
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        <CompactWindowLine
+                          window={item.primaryWindow}
+                          label={primaryLabel}
+                          percent={primary}
+                          resetText={primaryResetText}
+                          metricLabels={{
+                            requests: labels.requestsMetric,
+                            tokens: labels.tokensMetric,
+                            cost: labels.costMetric,
+                            inputTokens: labels.inputTokensMetric,
+                            outputTokens: labels.outputTokensMetric,
+                            cacheInputTokens: labels.cacheInputTokensMetric,
+                          }}
+                          missing={primaryWindowMissing}
+                          labelClassName={primaryWindowUnexpected ? "text-warning/78" : undefined}
+                        />
+                        <CompactWindowLine
+                          window={item.secondaryWindow}
+                          label={secondaryLabel}
+                          percent={secondary}
+                          resetText={secondaryResetText}
+                          metricLabels={{
+                            requests: labels.requestsMetric,
+                            tokens: labels.tokensMetric,
+                            cost: labels.costMetric,
+                            inputTokens: labels.inputTokensMetric,
+                            outputTokens: labels.outputTokensMetric,
+                            cacheInputTokens: labels.cacheInputTokensMetric,
+                          }}
+                          missing={secondaryWindowMissing}
+                          hideLabelWhenMissing={item.localLimits?.secondaryLimit === null}
+                          accentClassName="bg-secondary"
+                          labelClassName={secondaryWindowUnexpected ? "text-warning/78" : undefined}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
+      <div
+        className={cn(
+          "hidden overflow-x-auto min-[769px]:block",
+          showBlockingOverlay && "pointer-events-none select-none opacity-45",
+        )}
+      >
+        <table className="min-w-[54rem] w-full table-auto border-collapse min-[769px]:table-fixed">
+          <colgroup>
+            <col className="w-[3rem]" />
+            <col className="w-[38%]" />
+            <col className="w-[16%]" />
+            <col className="w-[42%]" />
+            <col className="w-[4%]" />
+          </colgroup>
+          <thead>
+            <tr className="border-b border-base-300/80 bg-base-100/86 text-left">
+              <th className="px-3 py-2.5 text-center">
+                <SelectAllCheckbox
+                  checked={allCurrentPageSelected}
+                  indeterminate={partiallySelected}
+                  ariaLabel={labels.selectPage}
+                  onChange={onToggleSelectAllCurrentPage}
+                />
+              </th>
+              <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                {labels.account}
+              </th>
+              <th className="pl-1 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                {labels.sync}
+              </th>
+              <th className="pl-1 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                {labels.windows}
+              </th>
+              <th className="w-12 pl-1 pr-3 py-2.5" aria-hidden />
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item, index) => {
+              const primaryWindowMissing = item.primaryWindow == null;
+              const secondaryWindowMissing = item.secondaryWindow == null;
+              const primary = windowPercent(item.primaryWindow?.usedPercent);
+              const secondary = windowPercent(item.secondaryWindow?.usedPercent);
+              const primaryResetText = item.primaryWindow?.resetsAt
+                ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.primaryWindow.resetsAt)}`
+                : undefined;
+              const secondaryResetText = item.secondaryWindow?.resetsAt
+                ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
+                : undefined;
+              const primaryLabel =
+                formatWindowShortLabel(item.primaryWindow?.windowDurationMins) ??
+                labels.primaryShort.toUpperCase();
+              const secondaryLabel =
+                formatWindowShortLabel(item.secondaryWindow?.windowDurationMins) ??
+                labels.secondaryShort.toUpperCase();
+              const primaryWindowUnexpected =
+                item.primaryWindow != null &&
+                Number.isFinite(item.primaryWindow.windowDurationMins) &&
+                Math.round(item.primaryWindow.windowDurationMins) !== 300;
+              const secondaryWindowUnexpected =
+                item.secondaryWindow != null &&
+                Number.isFinite(item.secondaryWindow.windowDurationMins) &&
+                Math.round(item.secondaryWindow.windowDurationMins) !== 10_080;
+              const selected = item.id === selectedId;
+              const routingBlockMessage = item.routingBlockReasonMessage?.trim() || null;
+              const latestActionTitle = buildLatestActionTitle(item, labels);
+              const statusBadges = resolveRosterSummaryStatusBadges(item, labels);
+              const primaryWindowTitle =
+                [item.primaryWindow?.limitText, primaryResetText].filter(Boolean).join(" · ") ||
+                undefined;
+              const secondaryWindowTitle =
+                [item.secondaryWindow?.limitText, secondaryResetText].filter(Boolean).join(" · ") ||
+                undefined;
+              const showPlanBadge = shouldShowPlanBadge(item.planType);
+              const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null;
+              return (
                 <tr
                   key={item.id}
                   role="button"
@@ -1257,11 +1473,11 @@ export function UpstreamAccountsTable({
                     />
                   </td>
                 </tr>
-              </>
-            );
-          })}
-        </tbody>
-      </table>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
       {showBlockingOverlay ? (
         <div
           data-testid="upstream-accounts-table-loading-overlay"

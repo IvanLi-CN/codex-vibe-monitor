@@ -98,12 +98,12 @@ export default function SystemTasksPage() {
   return (
     <section className="surface-panel overflow-hidden">
       <div className="surface-panel-body gap-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div className="section-heading">
             <h2 className="section-title text-2xl">{t("system.tasks.title")}</h2>
             <p className="section-description max-w-3xl">{t("system.tasks.description")}</p>
           </div>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-3 min-[769px]:grid-cols-2 xl:grid-cols-5">
             <Input
               value={taskKind}
               onChange={(event) => {
@@ -152,7 +152,7 @@ export default function SystemTasksPage() {
                 }}
               />
             </label>
-            <div className="flex items-center rounded-xl border border-base-300/75 bg-base-100/72 px-3 text-sm text-base-content/70">
+            <div className="flex min-h-10 items-center rounded-xl border border-base-300/75 bg-base-100/72 px-3 text-sm text-base-content/70">
               {t("system.tasks.filters.count", { count: filteredCount })}
             </div>
           </div>
@@ -232,12 +232,12 @@ export default function SystemTasksPage() {
             })}
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2 rounded-xl border border-base-300/70 bg-base-100/55 px-3 py-2">
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-base-300/70 bg-base-100/55 px-3 py-2 sm:justify-start">
               <span className="text-sm font-medium text-base-content/65">
                 {t("system.tasks.pagination.pageSize")}
               </span>
               <SelectField
-                className="min-w-[7rem]"
+                className="w-[7rem] min-w-[7rem]"
                 value={String(pageSize)}
                 options={TASK_PAGE_SIZE_OPTIONS}
                 size="sm"

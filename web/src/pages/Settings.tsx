@@ -29,7 +29,6 @@ import { extractProxyDisplayName, extractProxyProtocolName } from "../lib/forwar
 import { cn } from "../lib/utils";
 
 type PricingDraftEntry = {
-  draftId: string;
   model: string;
   inputPer1m: string;
   outputPer1m: string;
@@ -106,12 +105,6 @@ const FORWARD_PROXY_BATCH_VALIDATION_ROUNDS = 12;
 const pricingTableHeaderCellClass =
   "px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/65";
 const pricingTableBodyCellClass = "align-middle px-4 py-3";
-let nextPricingDraftId = 0;
-
-function createPricingDraftId() {
-  nextPricingDraftId += 1;
-  return `pricing-draft-${nextPricingDraftId}`;
-}
 
 function normalizeDraftEntry(entry: PricingDraftEntry): PricingDraftEntry {
   return {
@@ -125,7 +118,6 @@ function toPricingDraft(pricing: PricingSettings): PricingDraft {
   return {
     catalogVersion: pricing.catalogVersion,
     entries: pricing.entries.map((entry) => ({
-      draftId: createPricingDraftId(),
       model: entry.model,
       inputPer1m: String(entry.inputPer1m),
       outputPer1m: String(entry.outputPer1m),
@@ -641,7 +633,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
   }, [currentProxy, persistProxy]);
 
   const handleToggleMergeUpstream = useCallback(() => {
-    if (!currentProxy?.hijackEnabled) return;
+    if (!currentProxy || !currentProxy.hijackEnabled) return;
     persistProxy({
       ...currentProxy,
       mergeUpstreamEnabled: !currentProxy.mergeUpstreamEnabled,
@@ -741,7 +733,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
         entries: [
           ...current.entries,
           {
-            draftId: createPricingDraftId(),
             model: "",
             inputPer1m: "0",
             outputPer1m: "0",
@@ -1293,7 +1284,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       setForwardProxyBatchTooltipKey((current) => (current === nodeKey ? null : current));
       setForwardProxyBatchResults((current) => {
         const target = current.find((item) => item.key === nodeKey);
-        if (target?.status !== "available") return current;
+        if (!target || target.status !== "available") return current;
         const nextProxyUrls = appendUniqueItem(forwardProxyUrlsRef.current, target.normalizedValue);
         applyForwardProxyUrls(nextProxyUrls);
         persistForwardProxyDraft({ proxyUrls: nextProxyUrls });
@@ -1552,13 +1543,13 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       {showGeneralSettings ? (
         <div className="grid items-start gap-6 lg:grid-cols-2">
           <div className="space-y-6">
-            <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
-              <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
+            <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+              <CardHeader className="mobile-flat-surface-header gap-2 border-b border-base-300/70 pb-4">
                 <CardTitle>{t("settings.proxy.title")}</CardTitle>
                 <CardDescription>{t("settings.proxy.description")}</CardDescription>
               </CardHeader>
 
-              <CardContent className="space-y-4 pt-4">
+              <CardContent className="mobile-flat-surface-body space-y-4 pt-4">
                 <div className="grid gap-4 xl:grid-cols-2">
                   <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
                     <div className="flex items-start justify-between gap-4">
@@ -1869,8 +1860,8 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
               </CardContent>
             </Card>
 
-            <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
-              <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
+            <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+              <CardHeader className="mobile-flat-surface-header flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
                 <div className="space-y-1.5">
                   <CardTitle>{t("settings.pricing.title")}</CardTitle>
                   <div className="space-y-1">
@@ -1891,7 +1882,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 </Button>
               </CardHeader>
 
-              <CardContent className="space-y-5 pt-4">
+              <CardContent className="mobile-flat-surface-body space-y-5 pt-4">
                 <div className="space-y-2">
                   <label
                     htmlFor="pricing-catalog-version"
@@ -1909,7 +1900,115 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   />
                 </div>
 
-                <div className="overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72">
+                <div className="space-y-3 desktop:hidden">
+                  {pricingDraft.entries.map((entry, index) => (
+                    <article
+                      key={`mobile-pricing-${index}`}
+                      className="rounded-xl border border-base-300/80 bg-base-100/72 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-2">
+                          <div className="text-sm font-semibold text-base-content">
+                            {entry.model || t("settings.pricing.columns.model")}
+                          </div>
+                          <Badge
+                            variant={sourceBadgeVariant(entry.source)}
+                            className="inline-flex min-w-[5rem] justify-center"
+                          >
+                            {entry.source}
+                          </Badge>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 px-2.5 text-error hover:bg-error/10"
+                          onClick={() => handleRemovePricingEntry(index)}
+                        >
+                          {t("settings.pricing.remove")}
+                        </Button>
+                      </div>
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <label className="block text-xs font-medium text-base-content/68">
+                            {t("settings.pricing.columns.model")}
+                          </label>
+                          <Input
+                            type="text"
+                            className="h-9 px-3"
+                            value={entry.model}
+                            onChange={(event) =>
+                              handlePricingFieldChange(index, "model", event.target.value)
+                            }
+                            onBlur={() => triggerPricingSave(true)}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="block text-xs font-medium text-base-content/68">
+                            {t("settings.pricing.columns.input")}
+                          </label>
+                          <Input
+                            type="number"
+                            step="any"
+                            className="h-9 px-3"
+                            value={entry.inputPer1m}
+                            onChange={(event) =>
+                              handlePricingFieldChange(index, "inputPer1m", event.target.value)
+                            }
+                            onBlur={() => triggerPricingSave(true)}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="block text-xs font-medium text-base-content/68">
+                            {t("settings.pricing.columns.output")}
+                          </label>
+                          <Input
+                            type="number"
+                            step="any"
+                            className="h-9 px-3"
+                            value={entry.outputPer1m}
+                            onChange={(event) =>
+                              handlePricingFieldChange(index, "outputPer1m", event.target.value)
+                            }
+                            onBlur={() => triggerPricingSave(true)}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="block text-xs font-medium text-base-content/68">
+                            {t("settings.pricing.columns.cacheRead")}
+                          </label>
+                          <Input
+                            type="number"
+                            step="any"
+                            className="h-9 px-3"
+                            value={entry.cacheReadPer1m}
+                            onChange={(event) =>
+                              handlePricingFieldChange(index, "cacheReadPer1m", event.target.value)
+                            }
+                            onBlur={() => triggerPricingSave(true)}
+                          />
+                        </div>
+                        <div className="space-y-2 sm:col-span-2">
+                          <label className="block text-xs font-medium text-base-content/68">
+                            {t("settings.pricing.columns.reasoning")}
+                          </label>
+                          <Input
+                            type="number"
+                            step="any"
+                            className="h-9 px-3"
+                            value={entry.reasoningPer1m}
+                            onChange={(event) =>
+                              handlePricingFieldChange(index, "reasoningPer1m", event.target.value)
+                            }
+                            onBlur={() => triggerPricingSave(true)}
+                          />
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+
+                <div className="hidden overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72 desktop:block">
                   <table className="w-full min-w-[56rem] table-fixed text-sm">
                     <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
                       <tr>
@@ -1947,7 +2046,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                     <tbody className="divide-y divide-base-300/65">
                       {pricingDraft.entries.map((entry, index) => (
                         <tr
-                          key={entry.draftId}
+                          key={index}
                           className={cn(
                             "transition-colors",
                             index % 2 === 0 ? "bg-base-100/38" : "bg-base-200/22",
@@ -2082,12 +2181,12 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       ) : null}
 
       {showForwardProxySettings ? (
-        <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
-          <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
+        <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+          <CardHeader className="mobile-flat-surface-header gap-2 border-b border-base-300/70 pb-4">
             <CardTitle>{t("settings.forwardProxy.title")}</CardTitle>
             <CardDescription>{t("settings.forwardProxy.description")}</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-5 pt-4">
+          <CardContent className="mobile-flat-surface-body space-y-5 pt-4">
             <div className="flex flex-wrap items-center gap-3 rounded-xl border border-base-300/80 bg-base-100/72 px-3.5 py-3">
               <Button
                 type="button"
@@ -2388,10 +2487,9 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 </thead>
                 <tbody className="divide-y divide-base-300/65">
                   {forwardProxyTableNodes.map((node) => {
-                    const windows = forwardProxyWindowColumns.map((column) => ({
-                      key: column.labelKey,
-                      value: column.selectStats(node.stats),
-                    }));
+                    const windows = forwardProxyWindowColumns.map((column) =>
+                      column.selectStats(node.stats),
+                    );
                     return (
                       <tr
                         key={node.key}
@@ -2418,15 +2516,15 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                         >
                           {renderForwardProxyLatencyButton(node)}
                         </td>
-                        {windows.map((window) => (
+                        {windows.map((window, index) => (
                           <td
-                            key={`${node.key}-${window.key}`}
+                            key={`${node.key}-${index}`}
                             className={cn(pricingTableBodyCellClass, "box-border px-2 text-center")}
                           >
                             <div className="space-y-0.5 text-[11px] leading-tight">
-                              <div>{formatSuccessRate(window.value.successRate)}</div>
+                              <div>{formatSuccessRate(window.successRate)}</div>
                               <div className="text-base-content/65">
-                                {formatLatency(window.value.avgLatencyMs)}
+                                {formatLatency(window.avgLatencyMs)}
                               </div>
                             </div>
                           </td>
@@ -2465,9 +2563,9 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
               typeof document !== "undefined" &&
               createPortal(
                 // Intentional body-root overlay: this page-level modal should escape local overlay hosts.
-                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-base-content/45 p-4">
-                  <div className="w-full max-w-2xl rounded-2xl border border-base-300/75 bg-base-100 shadow-xl">
-                    <div className="space-y-1 border-b border-base-300/70 px-5 py-4">
+                <div className="fixed inset-0 z-[80] flex items-end justify-center bg-base-content/45 p-0 desktop:items-center desktop:p-4">
+                  <div className="flex max-h-[min(100dvh-0.5rem,100dvh)] w-full flex-col overflow-hidden rounded-t-[1.75rem] rounded-b-none border border-base-300/75 bg-base-100 shadow-xl desktop:max-h-[calc(100dvh-2rem)] desktop:max-w-2xl desktop:rounded-2xl">
+                    <div className="sticky top-0 z-10 space-y-1 border-b border-base-300/70 bg-base-100/94 px-5 py-4 backdrop-blur">
                       <div className="flex items-start gap-3">
                         <div className="min-w-0 flex-1 space-y-1">
                           <h3 className="text-lg font-semibold">{forwardProxyModalTitle}</h3>
@@ -2579,7 +2677,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                         </ol>
                       )}
                     </div>
-                    <div className="space-y-4 px-5 py-4">
+                    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
                       {(!forwardProxyModalIsBatch || forwardProxyModalStep === 1) && (
                         <div className="space-y-2">
                           <label
@@ -2842,7 +2940,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                         </Alert>
                       )}
                     </div>
-                    <div className="flex items-center justify-end gap-2 border-t border-base-300/70 px-5 py-3">
+                    <div className="sticky bottom-0 z-10 flex flex-col-reverse gap-2 border-t border-base-300/70 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-3 backdrop-blur desktop:flex-row desktop:items-center desktop:justify-end">
                       <Button type="button" variant="ghost" onClick={closeForwardProxyAddModal}>
                         {t("settings.forwardProxy.modal.cancel")}
                       </Button>

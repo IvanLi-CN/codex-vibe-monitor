@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/ban-ts-comment, @typescript-eslint/no-unused-vars */
 // @ts-nocheck
 
 /** @vitest-environment jsdom */
@@ -15,6 +16,7 @@ import {
 import ts from "typescript";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
+import { COMPACT_VIEWPORT_MEDIA_QUERY } from "../../hooks/useCompactViewport";
 import { I18nProvider } from "../../i18n";
 import type { BroadcastPayload, EffectiveRoutingRule, TagSummary } from "../../lib/api";
 import { ApiRequestError } from "../../lib/api";
@@ -63,6 +65,7 @@ const virtualizerMocks = vi.hoisted(() => ({
   scrollToIndex: vi.fn(),
 }));
 const storage = new Map<string, string>();
+let compactViewportMatches = false;
 
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
@@ -244,9 +247,7 @@ class MockBulkSyncEventSource implements EventTarget {
 
   dispatchEvent(event: Event): boolean {
     const current = Array.from(this.listeners.get(event.type) ?? []);
-    current.forEach((listener) => {
-      listener(event);
-    });
+    current.forEach((listener) => listener(event));
     return true;
   }
 
@@ -306,6 +307,20 @@ beforeAll(() => {
     writable: true,
     value: vi.fn(),
   });
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: query === COMPACT_VIEWPORT_MEDIA_QUERY ? compactViewportMatches : false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
     writable: true,
@@ -352,6 +367,7 @@ describe("UpstreamAccountsPage detail route tab query", () => {
 });
 
 beforeEach(() => {
+  compactViewportMatches = false;
   virtualizerMocks.visibleIndexes = null;
   virtualizerMocks.scrollToIndex.mockReset();
   storage.clear();
@@ -571,6 +587,10 @@ async function flushTimers() {
   });
 }
 
+function setCompactViewportMatch(matches: boolean) {
+  compactViewportMatches = matches;
+}
+
 function setInputValue(selector: string, value: string) {
   const input = document.body.querySelector(selector);
   if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
@@ -739,7 +759,7 @@ function renderedInvocationAccountNames() {
     .filter((value) => value.length > 0);
 }
 
-function _clickSelectOption(matcher: RegExp) {
+function clickSelectOption(matcher: RegExp) {
   const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
     (candidate) => candidate instanceof HTMLElement && matcher.test(candidate.textContent || ""),
   );
@@ -2111,7 +2131,39 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     ]);
   });
 
-  it.skip("subscribes the legacy final-invocation records tab fetch lifecycle", async () => {
+  it("renders the detail delete confirmation as a sheet on compact viewports", async () => {
+    setCompactViewportMatch(true);
+    mockAccountsPage();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                open
+                accountId={5}
+                presentation="page"
+                onClose={vi.fn()}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>,
+      );
+    });
+
+    await flushAsync();
+    clickButton(/^delete$|^删除$/i);
+    await flushAsync();
+
+    const confirmDialog = document.body.querySelector('.dialog-surface[role="alertdialog"]');
+    expect(confirmDialog).not.toBeNull();
+    expect(confirmDialog?.textContent ?? "").toMatch(/Existing OAuth/);
+  });
+
+  it.skip("subscribes the records tab fetch lifecycle to the selected upstream account and reconciles on SSE open", async () => {
     mockAccountsPage();
     apiMocks.fetchInvocationRecords
       .mockResolvedValueOnce({

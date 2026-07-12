@@ -1,13 +1,8 @@
 import { Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
 import { SegmentedControl } from "../../components/ui/segmented-control";
 import { segmentedControlItemVariants } from "../../components/ui/segmented-control.variants";
+import { accountPoolNavItems, matchesNavigationPath } from "../../features/app-shell/navigation";
 import { useTranslation } from "../../i18n";
-
-const items = [
-  { to: "/account-pool/upstream-accounts", key: "accountPool.nav.upstreamAccounts" },
-  { to: "/account-pool/groups", key: "accountPool.nav.groups" },
-  { to: "/account-pool/maintenance-records", key: "accountPool.nav.maintenanceRecords" },
-] as const;
 
 export default function AccountPoolLayout() {
   const { t } = useTranslation();
@@ -29,19 +24,21 @@ export default function AccountPoolLayout() {
               <h1 className="section-title text-2xl sm:text-3xl">{t("accountPool.title")}</h1>
               <p className="section-description max-w-2xl">{t("accountPool.description")}</p>
             </div>
-            <SegmentedControl className="self-start">
-              {items.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  className={segmentedControlItemVariants({
-                    active: location.pathname.startsWith(item.to),
-                  })}
-                >
-                  {t(item.key)}
-                </NavLink>
-              ))}
-            </SegmentedControl>
+            <div className="hidden desktop:block">
+              <SegmentedControl className="self-start">
+                {accountPoolNavItems.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    className={segmentedControlItemVariants({
+                      active: matchesNavigationPath(location.pathname, item),
+                    })}
+                  >
+                    {t(item.labelKey)}
+                  </NavLink>
+                ))}
+              </SegmentedControl>
+            </div>
           </div>
         </div>
       </section>

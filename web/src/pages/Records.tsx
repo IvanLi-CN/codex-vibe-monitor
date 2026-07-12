@@ -4,9 +4,12 @@ import { Button } from "../components/ui/button";
 import { FilterableCombobox } from "../components/ui/filterable-combobox";
 import { SegmentedControl, SegmentedControlItem } from "../components/ui/segmented-control";
 import { SelectField } from "../components/ui/select-field";
+import { AccountDetailDrawerShell } from "../features/account-pool/AccountDetailDrawerShell";
 import { InvocationRecordsSummaryCards } from "../features/records/InvocationRecordsSummaryCards";
 import { InvocationRecordsTable } from "../features/records/InvocationRecordsTable";
 import { RecordsNewDataButton } from "../features/records/RecordsNewDataButton";
+import { AppIcon } from "../features/shared/AppIcon";
+import { useCompactViewport } from "../hooks/useCompactViewport";
 import { useInvocationRecords } from "../hooks/useInvocationRecords";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useTranslation } from "../i18n";
@@ -23,6 +26,7 @@ import { textInputAutocompleteOffProps } from "../lib/form-autocomplete";
 import {
   buildInvocationSuggestionsQuery,
   createDefaultCustomRange,
+  type InvocationRecordsDraftFilters,
   RECORDS_PAGE_SIZE_OPTIONS,
 } from "../lib/invocationRecords";
 import { cn } from "../lib/utils";
@@ -33,6 +37,22 @@ const inputClassName =
 
 const SUGGESTION_DEBOUNCE_MS = 250;
 const NEW_DATA_REFRESH_MIN_LOADING_MS = 600;
+
+type RemovableRecordFilterKey = Exclude<
+  keyof InvocationRecordsDraftFilters,
+  "rangePreset" | "customFrom" | "customTo"
+>;
+
+interface ActiveFilterChip {
+  id: string;
+  label: string;
+  draftKey?: RemovableRecordFilterKey;
+}
+
+function formatCustomRange(from: string, to: string) {
+  const values = [from, to].filter(Boolean).map((value) => value.replace("T", " "));
+  return values.join(" - ");
+}
 
 function getVisiblePages(currentPage: number, totalPages: number) {
   if (totalPages <= 1) return [1];
@@ -51,10 +71,12 @@ export default function RecordsPage() {
   const requestedInvokeId = searchParams.get("requestId")?.trim() || null;
   const requestedRangePreset = searchParams.get("rangePreset") === "7d" ? "7d" : null;
   const appliedRequestIdRef = useRef<string | null>(null);
+  const isCompactViewport = useCompactViewport();
   const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
   const {
     draft,
+    appliedDraft,
     focus,
     page,
     pageSize,
@@ -69,6 +91,7 @@ export default function RecordsPage() {
     isSummaryLoading,
     updateDraft,
     resetDraft,
+    applyDraft,
     setFocus,
     search,
     setPage,
@@ -83,6 +106,7 @@ export default function RecordsPage() {
     useState<InvocationSuggestionField | null>(null);
   const [isNewDataRefreshPending, setIsNewDataRefreshPending] = useState(false);
   const [cachedNewDataCount, setCachedNewDataCount] = useState(0);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const newDataRefreshSeqRef = useRef(0);
   const suggestionQuery = useMemo(
     () =>
@@ -229,6 +253,65 @@ export default function RecordsPage() {
   const promptCacheKeyBucket = suggestions?.promptCacheKey;
   const requesterIpBucket = suggestions?.requesterIp;
 
+  const activeFilterChips = useMemo<ActiveFilterChip[]>(() => {
+    if (!appliedDraft) return [];
+
+    const rangeLabel =
+      appliedDraft.rangePreset === "custom"
+        ? formatCustomRange(appliedDraft.customFrom, appliedDraft.customTo) ||
+          t("records.filters.rangePreset.custom")
+        : (rangeOptions.find((option) => option.value === appliedDraft.rangePreset)?.label ??
+          t("records.filters.rangePreset"));
+    const chips: ActiveFilterChip[] = [
+      {
+        id: "range",
+        label: `${t("records.filters.rangePreset")}: ${rangeLabel}`,
+      },
+    ];
+    const add = (draftKey: RemovableRecordFilterKey, label: string, value: string) => {
+      const normalized = value.trim();
+      if (!normalized) return;
+      chips.push({ id: draftKey, draftKey, label: `${label}: ${normalized}` });
+    };
+
+    const statusLabels: Record<string, string> = {
+      success: t("records.filters.status.success"),
+      failed: t("records.filters.status.failed"),
+      interrupted: t("records.filters.status.interrupted"),
+      running: t("records.filters.status.running"),
+      pending: t("records.filters.status.pending"),
+    };
+    const failureClassLabels: Record<string, string> = {
+      service_failure: t("records.filters.failureClass.service"),
+      client_failure: t("records.filters.failureClass.client"),
+      client_abort: t("records.filters.failureClass.abort"),
+    };
+
+    add(
+      "status",
+      t("records.filters.status"),
+      statusLabels[appliedDraft.status] ?? appliedDraft.status,
+    );
+    add("model", t("records.filters.model"), appliedDraft.model);
+    add("endpoint", t("records.filters.endpoint"), appliedDraft.endpoint);
+    add(
+      "failureClass",
+      t("records.filters.failureClass"),
+      failureClassLabels[appliedDraft.failureClass] ?? appliedDraft.failureClass,
+    );
+    add("requestId", t("records.filters.requestId"), appliedDraft.requestId);
+    add("failureKind", t("records.filters.failureKind"), appliedDraft.failureKind);
+    add("promptCacheKey", t("records.filters.promptCacheKey"), appliedDraft.promptCacheKey);
+    add("requesterIp", t("records.filters.requesterIp"), appliedDraft.requesterIp);
+    add("keyword", t("records.filters.keyword"), appliedDraft.keyword);
+    add("minTotalTokens", t("records.filters.minTotalTokens"), appliedDraft.minTotalTokens);
+    add("maxTotalTokens", t("records.filters.maxTotalTokens"), appliedDraft.maxTotalTokens);
+    add("minTotalMs", t("records.filters.minTotalMs"), appliedDraft.minTotalMs);
+    add("maxTotalMs", t("records.filters.maxTotalMs"), appliedDraft.maxTotalMs);
+
+    return chips;
+  }, [appliedDraft, rangeOptions, t]);
+
   const handleClearDraft = () => {
     customRangeTouchedRef.current = false;
     resetDraft();
@@ -258,6 +341,23 @@ export default function RecordsPage() {
     newDataRefreshSeqRef.current += 1;
     setIsNewDataRefreshPending(false);
     void search();
+  };
+
+  const closeFilters = () => {
+    setIsFiltersOpen(false);
+    setActiveSuggestionField(null);
+  };
+
+  const handleApplyFilters = () => {
+    closeFilters();
+    handleSearch();
+  };
+
+  const handleRemoveActiveFilter = (key: RemovableRecordFilterKey) => {
+    const nextDraft = { ...(appliedDraft ?? draft), [key]: "" };
+    newDataRefreshSeqRef.current += 1;
+    setIsNewDataRefreshPending(false);
+    void applyDraft(nextDraft);
   };
 
   const handleRefreshNewData = () => {
@@ -294,294 +394,359 @@ export default function RecordsPage() {
     void setSort(sortBy, value);
   };
 
+  if (isCompactViewport && upstreamAccountId != null) {
+    return (
+      <div className="mx-auto flex w-full max-w-full flex-col gap-6">
+        <SharedUpstreamAccountDetailDrawer
+          open
+          presentation="page"
+          accountId={upstreamAccountId}
+          onClose={closeUpstreamAccount}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
-      <section
-        className={cn("surface-panel", hasOpenSuggestion && "relative z-10 overflow-visible")}
-        data-testid="records-filters-panel"
-        data-suggestions-open={hasOpenSuggestion ? "true" : "false"}
-      >
-        <div className="surface-panel-body gap-5">
-          <div className="section-heading">
-            <h1 className="section-title">{t("records.title")}</h1>
-            <p className="section-description">{t("records.subtitle")}</p>
+      <section className="surface-panel" data-testid="records-filters-panel">
+        <div className="surface-panel-body gap-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="section-heading">
+              <h1 className="section-title">{t("records.title")}</h1>
+              <p className="section-description">{t("records.subtitle")}</p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsFiltersOpen(true)}
+              data-testid="records-open-filters"
+              aria-label={t("records.filters.openAria")}
+            >
+              <AppIcon name="tag-outline" className="h-4 w-4" aria-hidden />
+              <span>{t("records.filters.open")}</span>
+              <span className="min-w-5 rounded-full bg-base-200 px-1.5 py-0.5 text-center text-xs tabular-nums text-base-content/70">
+                {activeFilterChips.length}
+              </span>
+            </Button>
           </div>
 
-          <div className="rounded-2xl border border-base-300/70 bg-base-100/45 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="section-heading">
-                <h2 className="section-title text-base">{t("records.filters.title")}</h2>
-                <p className="section-description">{t("records.filters.description")}</p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
+          <div
+            className="flex flex-wrap gap-2"
+            data-testid="records-active-filters"
+            aria-label={t("records.filters.active")}
+          >
+            {activeFilterChips.map((chip) =>
+              chip.draftKey ? (
+                <button
+                  key={chip.id}
                   type="button"
-                  variant="ghost"
-                  onClick={handleClearDraft}
-                  disabled={isSearching}
+                  onClick={() => handleRemoveActiveFilter(chip.draftKey!)}
+                  data-testid={`records-active-filter-${chip.id}`}
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-base-300/80 bg-base-100 px-2.5 py-1 text-left text-xs font-medium text-base-content transition hover:border-primary/45 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  aria-label={t("records.filters.remove", { label: chip.label })}
                 >
-                  {t("records.filters.clearDraft")}
-                </Button>
-                <Button type="button" onClick={handleSearch} disabled={isSearching}>
-                  {isSearching ? t("records.filters.searching") : t("records.filters.search")}
-                </Button>
-              </div>
-            </div>
-
-            <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <SelectField
-                className="field"
-                label={t("records.filters.rangePreset")}
-                name="rangePreset"
-                value={draft.rangePreset}
-                options={rangeOptions}
-                onValueChange={(value) => handleRangePresetChange(value as InvocationRangePreset)}
-              />
-              <label className="field">
-                <span className="field-label">{t("records.filters.from")}</span>
-                <input
-                  {...textInputAutocompleteOffProps}
-                  className={inputClassName}
-                  type="datetime-local"
-                  name="customFrom"
-                  value={draft.customFrom}
-                  disabled={!isCustomRange}
-                  onChange={(event) => {
-                    customRangeTouchedRef.current = true;
-                    updateDraft("customFrom", event.target.value);
-                  }}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">{t("records.filters.to")}</span>
-                <input
-                  {...textInputAutocompleteOffProps}
-                  className={inputClassName}
-                  type="datetime-local"
-                  name="customTo"
-                  value={draft.customTo}
-                  disabled={!isCustomRange}
-                  onChange={(event) => {
-                    customRangeTouchedRef.current = true;
-                    updateDraft("customTo", event.target.value);
-                  }}
-                />
-              </label>
-              <SelectField
-                className="field"
-                label={t("records.filters.status")}
-                name="status"
-                value={draft.status}
-                options={[
-                  { value: "", label: t("records.filters.status.all") },
-                  {
-                    value: "success",
-                    label: t("records.filters.status.success"),
-                  },
-                  {
-                    value: "failed",
-                    label: t("records.filters.status.failed"),
-                  },
-                  {
-                    value: "interrupted",
-                    label: t("records.filters.status.interrupted"),
-                  },
-                  {
-                    value: "running",
-                    label: t("records.filters.status.running"),
-                  },
-                  {
-                    value: "pending",
-                    label: t("records.filters.status.pending"),
-                  },
-                ]}
-                onValueChange={(value) => updateDraft("status", value)}
-              />
-
-              <label className="field">
-                <span className="field-label">{t("records.filters.model")}</span>
-                <FilterableCombobox
-                  label={t("records.filters.model")}
-                  name="model"
-                  id="records-filter-model"
-                  value={draft.model}
-                  onValueChange={(next) => updateDraft("model", next)}
-                  options={(modelBucket?.items ?? []).map((item) => item.value)}
-                  placeholder={t("records.filters.any")}
-                  emptyText={t("records.filters.noMatches")}
-                  loading={isSuggestionsLoading && activeSuggestionField === "model"}
-                  loadingText={t("records.filters.searching")}
-                  inputClassName={inputClassName}
-                  onOpenChange={handleSuggestionOpenChange("model")}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">{t("records.filters.endpoint")}</span>
-                <FilterableCombobox
-                  label={t("records.filters.endpoint")}
-                  name="endpoint"
-                  id="records-filter-endpoint"
-                  value={draft.endpoint}
-                  onValueChange={(next) => updateDraft("endpoint", next)}
-                  options={(endpointBucket?.items ?? []).map((item) => item.value)}
-                  placeholder={t("records.filters.any")}
-                  emptyText={t("records.filters.noMatches")}
-                  loading={isSuggestionsLoading && activeSuggestionField === "endpoint"}
-                  loadingText={t("records.filters.searching")}
-                  inputClassName={inputClassName}
-                  onOpenChange={handleSuggestionOpenChange("endpoint")}
-                />
-              </label>
-              <SelectField
-                className="field"
-                label={t("records.filters.failureClass")}
-                name="failureClass"
-                value={draft.failureClass}
-                options={[
-                  { value: "", label: t("records.filters.failureClass.all") },
-                  {
-                    value: "service_failure",
-                    label: t("records.filters.failureClass.service"),
-                  },
-                  {
-                    value: "client_failure",
-                    label: t("records.filters.failureClass.client"),
-                  },
-                  {
-                    value: "client_abort",
-                    label: t("records.filters.failureClass.abort"),
-                  },
-                ]}
-                onValueChange={(value) => updateDraft("failureClass", value)}
-              />
-
-              <label className="field">
-                <span className="field-label">{t("records.filters.requestId")}</span>
-                <input
-                  {...textInputAutocompleteOffProps}
-                  name="requestId"
-                  className={inputClassName}
-                  value={draft.requestId}
-                  onChange={(event) => updateDraft("requestId", event.target.value)}
-                />
-              </label>
-
-              <label className="field">
-                <span className="field-label">{t("records.filters.failureKind")}</span>
-                <FilterableCombobox
-                  label={t("records.filters.failureKind")}
-                  name="failureKind"
-                  id="records-filter-failure-kind"
-                  value={draft.failureKind}
-                  onValueChange={(next) => updateDraft("failureKind", next)}
-                  options={(failureKindBucket?.items ?? []).map((item) => item.value)}
-                  placeholder={t("records.filters.any")}
-                  emptyText={t("records.filters.noMatches")}
-                  loading={isSuggestionsLoading && activeSuggestionField === "failureKind"}
-                  loadingText={t("records.filters.searching")}
-                  inputClassName={inputClassName}
-                  onOpenChange={handleSuggestionOpenChange("failureKind")}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">{t("records.filters.promptCacheKey")}</span>
-                <FilterableCombobox
-                  label={t("records.filters.promptCacheKey")}
-                  name="promptCacheKey"
-                  id="records-filter-prompt-cache-key"
-                  value={draft.promptCacheKey}
-                  onValueChange={(next) => updateDraft("promptCacheKey", next)}
-                  options={(promptCacheKeyBucket?.items ?? []).map((item) => item.value)}
-                  placeholder={t("records.filters.any")}
-                  emptyText={t("records.filters.noMatches")}
-                  loading={isSuggestionsLoading && activeSuggestionField === "promptCacheKey"}
-                  loadingText={t("records.filters.searching")}
-                  inputClassName={inputClassName}
-                  onOpenChange={handleSuggestionOpenChange("promptCacheKey")}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">{t("records.filters.requesterIp")}</span>
-                <FilterableCombobox
-                  label={t("records.filters.requesterIp")}
-                  name="requesterIp"
-                  id="records-filter-requester-ip"
-                  value={draft.requesterIp}
-                  onValueChange={(next) => updateDraft("requesterIp", next)}
-                  options={(requesterIpBucket?.items ?? []).map((item) => item.value)}
-                  placeholder={t("records.filters.any")}
-                  emptyText={t("records.filters.noMatches")}
-                  loading={isSuggestionsLoading && activeSuggestionField === "requesterIp"}
-                  loadingText={t("records.filters.searching")}
-                  inputClassName={inputClassName}
-                  onOpenChange={handleSuggestionOpenChange("requesterIp")}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">{t("records.filters.keyword")}</span>
-                <input
-                  {...textInputAutocompleteOffProps}
-                  name="keyword"
-                  className={inputClassName}
-                  value={draft.keyword}
-                  onChange={(event) => updateDraft("keyword", event.target.value)}
-                />
-              </label>
-
-              <label className="field">
-                <span className="field-label">{t("records.filters.minTotalTokens")}</span>
-                <input
-                  {...textInputAutocompleteOffProps}
-                  name="minTotalTokens"
-                  className={inputClassName}
-                  type="number"
-                  inputMode="numeric"
-                  step={1}
-                  value={draft.minTotalTokens}
-                  onChange={(event) => updateDraft("minTotalTokens", event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">{t("records.filters.maxTotalTokens")}</span>
-                <input
-                  {...textInputAutocompleteOffProps}
-                  name="maxTotalTokens"
-                  className={inputClassName}
-                  type="number"
-                  inputMode="numeric"
-                  step={1}
-                  value={draft.maxTotalTokens}
-                  onChange={(event) => updateDraft("maxTotalTokens", event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">{t("records.filters.minTotalMs")}</span>
-                <input
-                  {...textInputAutocompleteOffProps}
-                  name="minTotalMs"
-                  className={inputClassName}
-                  type="number"
-                  inputMode="decimal"
-                  value={draft.minTotalMs}
-                  onChange={(event) => updateDraft("minTotalMs", event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">{t("records.filters.maxTotalMs")}</span>
-                <input
-                  {...textInputAutocompleteOffProps}
-                  name="maxTotalMs"
-                  className={inputClassName}
-                  type="number"
-                  inputMode="decimal"
-                  value={draft.maxTotalMs}
-                  onChange={(event) => updateDraft("maxTotalMs", event.target.value)}
-                />
-              </label>
-            </div>
+                  <span className="truncate">{chip.label}</span>
+                  <AppIcon name="close" className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                </button>
+              ) : (
+                <button
+                  key={chip.id}
+                  type="button"
+                  onClick={() => setIsFiltersOpen(true)}
+                  data-testid={`records-active-filter-${chip.id}`}
+                  className="inline-flex max-w-full items-center rounded-full border border-base-300/80 bg-base-100 px-2.5 py-1 text-left text-xs font-medium text-base-content transition hover:border-primary/45 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <span className="truncate">{chip.label}</span>
+                </button>
+              ),
+            )}
           </div>
         </div>
       </section>
+
+      <AccountDetailDrawerShell
+        open={isFiltersOpen}
+        labelledBy="records-filters-drawer-title"
+        closeLabel={t("records.filters.close")}
+        onClose={closeFilters}
+        shellClassName="desktop:w-[min(34rem,42vw)]"
+        bodyClassName={cn(hasOpenSuggestion && "overflow-visible")}
+        header={
+          <div className="section-heading">
+            <h2 id="records-filters-drawer-title" className="section-title text-base">
+              {t("records.filters.title")}
+            </h2>
+            <p className="section-description">{t("records.filters.description")}</p>
+          </div>
+        }
+      >
+        <div
+          className="flex min-h-full flex-col gap-5"
+          data-testid="records-filters-drawer"
+          data-suggestions-open={hasOpenSuggestion ? "true" : "false"}
+        >
+          <div className="grid gap-4 min-[769px]:grid-cols-2">
+            <SelectField
+              className="field"
+              label={t("records.filters.rangePreset")}
+              name="rangePreset"
+              value={draft.rangePreset}
+              options={rangeOptions}
+              onValueChange={(value) => handleRangePresetChange(value as InvocationRangePreset)}
+            />
+            <label className="field">
+              <span className="field-label">{t("records.filters.from")}</span>
+              <input
+                {...textInputAutocompleteOffProps}
+                className={inputClassName}
+                type="datetime-local"
+                name="customFrom"
+                value={draft.customFrom}
+                disabled={!isCustomRange}
+                onChange={(event) => {
+                  customRangeTouchedRef.current = true;
+                  updateDraft("customFrom", event.target.value);
+                }}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">{t("records.filters.to")}</span>
+              <input
+                {...textInputAutocompleteOffProps}
+                className={inputClassName}
+                type="datetime-local"
+                name="customTo"
+                value={draft.customTo}
+                disabled={!isCustomRange}
+                onChange={(event) => {
+                  customRangeTouchedRef.current = true;
+                  updateDraft("customTo", event.target.value);
+                }}
+              />
+            </label>
+            <SelectField
+              className="field"
+              label={t("records.filters.status")}
+              name="status"
+              value={draft.status}
+              options={[
+                { value: "", label: t("records.filters.status.all") },
+                {
+                  value: "success",
+                  label: t("records.filters.status.success"),
+                },
+                {
+                  value: "failed",
+                  label: t("records.filters.status.failed"),
+                },
+                {
+                  value: "interrupted",
+                  label: t("records.filters.status.interrupted"),
+                },
+                {
+                  value: "running",
+                  label: t("records.filters.status.running"),
+                },
+                {
+                  value: "pending",
+                  label: t("records.filters.status.pending"),
+                },
+              ]}
+              onValueChange={(value) => updateDraft("status", value)}
+            />
+
+            <label className="field">
+              <span className="field-label">{t("records.filters.model")}</span>
+              <FilterableCombobox
+                label={t("records.filters.model")}
+                name="model"
+                id="records-filter-model"
+                value={draft.model}
+                onValueChange={(next) => updateDraft("model", next)}
+                options={(modelBucket?.items ?? []).map((item) => item.value)}
+                placeholder={t("records.filters.any")}
+                emptyText={t("records.filters.noMatches")}
+                loading={isSuggestionsLoading && activeSuggestionField === "model"}
+                loadingText={t("records.filters.searching")}
+                inputClassName={inputClassName}
+                onOpenChange={handleSuggestionOpenChange("model")}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">{t("records.filters.endpoint")}</span>
+              <FilterableCombobox
+                label={t("records.filters.endpoint")}
+                name="endpoint"
+                id="records-filter-endpoint"
+                value={draft.endpoint}
+                onValueChange={(next) => updateDraft("endpoint", next)}
+                options={(endpointBucket?.items ?? []).map((item) => item.value)}
+                placeholder={t("records.filters.any")}
+                emptyText={t("records.filters.noMatches")}
+                loading={isSuggestionsLoading && activeSuggestionField === "endpoint"}
+                loadingText={t("records.filters.searching")}
+                inputClassName={inputClassName}
+                onOpenChange={handleSuggestionOpenChange("endpoint")}
+              />
+            </label>
+            <SelectField
+              className="field"
+              label={t("records.filters.failureClass")}
+              name="failureClass"
+              value={draft.failureClass}
+              options={[
+                { value: "", label: t("records.filters.failureClass.all") },
+                {
+                  value: "service_failure",
+                  label: t("records.filters.failureClass.service"),
+                },
+                {
+                  value: "client_failure",
+                  label: t("records.filters.failureClass.client"),
+                },
+                {
+                  value: "client_abort",
+                  label: t("records.filters.failureClass.abort"),
+                },
+              ]}
+              onValueChange={(value) => updateDraft("failureClass", value)}
+            />
+
+            <label className="field">
+              <span className="field-label">{t("records.filters.requestId")}</span>
+              <input
+                {...textInputAutocompleteOffProps}
+                name="requestId"
+                className={inputClassName}
+                value={draft.requestId}
+                onChange={(event) => updateDraft("requestId", event.target.value)}
+              />
+            </label>
+
+            <label className="field">
+              <span className="field-label">{t("records.filters.failureKind")}</span>
+              <FilterableCombobox
+                label={t("records.filters.failureKind")}
+                name="failureKind"
+                id="records-filter-failure-kind"
+                value={draft.failureKind}
+                onValueChange={(next) => updateDraft("failureKind", next)}
+                options={(failureKindBucket?.items ?? []).map((item) => item.value)}
+                placeholder={t("records.filters.any")}
+                emptyText={t("records.filters.noMatches")}
+                loading={isSuggestionsLoading && activeSuggestionField === "failureKind"}
+                loadingText={t("records.filters.searching")}
+                inputClassName={inputClassName}
+                onOpenChange={handleSuggestionOpenChange("failureKind")}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">{t("records.filters.promptCacheKey")}</span>
+              <FilterableCombobox
+                label={t("records.filters.promptCacheKey")}
+                name="promptCacheKey"
+                id="records-filter-prompt-cache-key"
+                value={draft.promptCacheKey}
+                onValueChange={(next) => updateDraft("promptCacheKey", next)}
+                options={(promptCacheKeyBucket?.items ?? []).map((item) => item.value)}
+                placeholder={t("records.filters.any")}
+                emptyText={t("records.filters.noMatches")}
+                loading={isSuggestionsLoading && activeSuggestionField === "promptCacheKey"}
+                loadingText={t("records.filters.searching")}
+                inputClassName={inputClassName}
+                onOpenChange={handleSuggestionOpenChange("promptCacheKey")}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">{t("records.filters.requesterIp")}</span>
+              <FilterableCombobox
+                label={t("records.filters.requesterIp")}
+                name="requesterIp"
+                id="records-filter-requester-ip"
+                value={draft.requesterIp}
+                onValueChange={(next) => updateDraft("requesterIp", next)}
+                options={(requesterIpBucket?.items ?? []).map((item) => item.value)}
+                placeholder={t("records.filters.any")}
+                emptyText={t("records.filters.noMatches")}
+                loading={isSuggestionsLoading && activeSuggestionField === "requesterIp"}
+                loadingText={t("records.filters.searching")}
+                inputClassName={inputClassName}
+                onOpenChange={handleSuggestionOpenChange("requesterIp")}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">{t("records.filters.keyword")}</span>
+              <input
+                {...textInputAutocompleteOffProps}
+                name="keyword"
+                className={inputClassName}
+                value={draft.keyword}
+                onChange={(event) => updateDraft("keyword", event.target.value)}
+              />
+            </label>
+
+            <label className="field">
+              <span className="field-label">{t("records.filters.minTotalTokens")}</span>
+              <input
+                {...textInputAutocompleteOffProps}
+                name="minTotalTokens"
+                className={inputClassName}
+                type="number"
+                inputMode="numeric"
+                step={1}
+                value={draft.minTotalTokens}
+                onChange={(event) => updateDraft("minTotalTokens", event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">{t("records.filters.maxTotalTokens")}</span>
+              <input
+                {...textInputAutocompleteOffProps}
+                name="maxTotalTokens"
+                className={inputClassName}
+                type="number"
+                inputMode="numeric"
+                step={1}
+                value={draft.maxTotalTokens}
+                onChange={(event) => updateDraft("maxTotalTokens", event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">{t("records.filters.minTotalMs")}</span>
+              <input
+                {...textInputAutocompleteOffProps}
+                name="minTotalMs"
+                className={inputClassName}
+                type="number"
+                inputMode="decimal"
+                value={draft.minTotalMs}
+                onChange={(event) => updateDraft("minTotalMs", event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">{t("records.filters.maxTotalMs")}</span>
+              <input
+                {...textInputAutocompleteOffProps}
+                name="maxTotalMs"
+                className={inputClassName}
+                type="number"
+                inputMode="decimal"
+                value={draft.maxTotalMs}
+                onChange={(event) => updateDraft("maxTotalMs", event.target.value)}
+              />
+            </label>
+          </div>
+          <div className="sticky bottom-[-1rem] -mx-4 mt-auto flex flex-col-reverse gap-2 border-t border-base-300/70 bg-base-100 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 sm:flex-row sm:justify-end desktop:bottom-[-1.5rem] desktop:-mx-6 desktop:px-6">
+            <Button type="button" variant="ghost" onClick={handleClearDraft} disabled={isSearching}>
+              {t("records.filters.clearDraft")}
+            </Button>
+            <Button type="button" onClick={handleApplyFilters} disabled={isSearching}>
+              {isSearching ? t("records.filters.searching") : t("records.filters.apply")}
+            </Button>
+          </div>
+        </div>
+      </AccountDetailDrawerShell>
 
       <section className="surface-panel" data-testid="records-summary-panel">
         <div className="surface-panel-body gap-4">

@@ -251,8 +251,15 @@ describe("TodayStatsOverview", () => {
     );
 
     const grid = host?.querySelector('[data-testid="today-stats-metrics-grid"]');
+    const tokenTile = host
+      ?.querySelector('[data-testid="today-stats-value-total-tokens"]')
+      ?.closest('[data-testid="today-stats-metric-tile"]');
+    expect(grid?.className).toContain("min-[400px]:grid-cols-2");
+    expect(grid?.className).not.toContain("sm:grid-cols-2");
     expect(grid?.className).toContain("lg:grid-cols-4");
     expect(grid?.className).toContain("xl:grid-cols-7");
+    expect(tokenTile?.className).toContain("min-[400px]:col-span-2");
+    expect(tokenTile?.className).toContain("lg:col-span-1");
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(7);
     const tileLabels = Array.from(
       host?.querySelectorAll('[data-testid="today-stats-metric-tile"]') ?? [],

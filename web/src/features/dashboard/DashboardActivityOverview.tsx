@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
+import { SelectField } from "../../components/ui/select-field";
 import { useParallelWorkStats } from "../../hooks/useParallelWorkStats";
 import { useSummary } from "../../hooks/useStats";
 import { useTimeseries } from "../../hooks/useTimeseries";
@@ -830,13 +831,13 @@ export function DashboardActivityOverview({
   return (
     <section className={className} data-testid={testId}>
       <div className="surface-panel-body gap-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex max-w-full flex-wrap items-center gap-3">
+        <div className="space-y-3 min-[769px]:flex min-[769px]:items-start min-[769px]:justify-between min-[769px]:gap-3 min-[769px]:space-y-0">
+          <div className="flex max-w-full items-center gap-3">
             <div className="section-heading">
               <h2 className="section-title">{title ?? t("dashboard.activityOverview.title")}</h2>
             </div>
             <SegmentedControl
-              className="max-w-full flex-wrap"
+              className="hidden max-w-full flex-wrap min-[769px]:flex"
               role="tablist"
               aria-label={t("dashboard.activityOverview.rangeToggleAria")}
             >
@@ -857,6 +858,7 @@ export function DashboardActivityOverview({
             </SegmentedControl>
           </div>
           <SegmentedControl
+            className="hidden min-[769px]:flex"
             size="compact"
             role="tablist"
             aria-label={t("heatmap.metricsToggleAria")}
@@ -881,6 +883,33 @@ export function DashboardActivityOverview({
               );
             })}
           </SegmentedControl>
+          <div
+            className="grid grid-cols-2 gap-2 min-[769px]:hidden"
+            data-testid="dashboard-activity-mobile-selects"
+          >
+            <SelectField
+              aria-label={t("dashboard.activityOverview.rangeToggleAria")}
+              data-testid="dashboard-activity-range-select"
+              options={rangeOptions.map((option) => ({ value: option.key, label: option.label }))}
+              value={activeRange}
+              onValueChange={(value) => {
+                const nextRange = rangeOptions.find((option) => option.key === value);
+                if (nextRange) setActiveRange(nextRange.key);
+              }}
+              triggerClassName="h-11 min-w-0 px-3 text-sm font-medium shadow-none"
+            />
+            <SelectField
+              aria-label={t("heatmap.metricsToggleAria")}
+              data-testid="dashboard-activity-metric-select"
+              options={metricOptions.map((option) => ({ value: option.key, label: option.label }))}
+              value={activeMetric}
+              onValueChange={(value) => {
+                const nextMetric = metricOptions.find((option) => option.key === value);
+                if (nextMetric) setActiveMetric(nextMetric.key);
+              }}
+              triggerClassName="h-11 min-w-0 px-3 text-sm font-medium shadow-none"
+            />
+          </div>
         </div>
         {activeRange === "today" ? (
           <DashboardTodayRangePanel

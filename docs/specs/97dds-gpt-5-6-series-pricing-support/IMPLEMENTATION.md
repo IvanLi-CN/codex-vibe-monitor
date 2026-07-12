@@ -15,7 +15,7 @@
 - [x] Split the Settings pricing UI into cache read and cache write columns and keep legacy payload ingestion coverage.
 - [x] Generalize unsupported-model UI rendering away from the `gpt-5.5` special-case.
 - [x] Persist cost buckets, derive cache-write Token counts, and expose total/model usage breakdown APIs.
-- [x] Add accessible dashboard and upstream-account breakdown panels plus `CW` invocation labels.
+- [x] Add accessible dashboard and upstream-account breakdown panels, cache hit rate in Token detail, plus `CW` invocation labels.
 - [x] Preserve exact realtime cost buckets in mixed ranges and reconcile historical total costs through a dynamic `unknown` bucket.
 - [x] Group usage detail rows by model and recorded reasoning effort, with an explicit unspecified fallback and cache-hit Token labelling.
 - [x] Retire CRS runtime configuration, polling, aggregation, retention, and API reads while keeping old SQLite tables untouched.

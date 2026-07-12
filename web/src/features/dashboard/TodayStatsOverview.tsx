@@ -332,8 +332,8 @@ function MetricTile({
           data-testid={valueTestId ? `${valueTestId}-stacked-meta` : undefined}
           className="mt-3 grid min-h-[4.75rem] grid-cols-1 gap-y-2 text-xs leading-5"
         >
-          {stackedMetaItems.map((item) => (
-            <div key={item.label} className="min-w-0">
+          {stackedMetaItems.map((item, index) => (
+            <div key={`${item.label}-${index}`} className="min-w-0">
               <div className="flex min-w-0 items-baseline gap-1">
                 <span className="shrink-0 whitespace-nowrap text-base-content/52">
                   {item.label}
@@ -355,7 +355,7 @@ function MetricTile({
         <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs leading-5">
           {inlineSecondaryItems.map((item, index) => (
             <div
-              key={item.label}
+              key={`${item.label}-${index}`}
               className={cn("min-w-0", index % 2 === 1 ? "justify-self-end text-right" : undefined)}
             >
               <div className="flex min-w-0 items-baseline gap-1">
@@ -667,7 +667,8 @@ export function TodayStatsOverview({
           total: "总计",
           cacheWrite: "缓存写入",
           cacheRead: "缓存读取",
-          cacheHitTokens: "缓存命中 Token",
+          cacheHitTokens: "缓存读取",
+          cacheHitRate: "缓存命中率",
           output: "输出",
           model: "模型",
           input: "输入",
@@ -689,7 +690,8 @@ export function TodayStatsOverview({
           total: "Total",
           cacheWrite: "Cache write",
           cacheRead: "Cache read",
-          cacheHitTokens: "Cache hit tokens",
+          cacheHitTokens: "Cache read",
+          cacheHitRate: "Cache hit rate",
           output: "Output",
           model: "Model",
           input: "Input",
@@ -708,6 +710,12 @@ export function TodayStatsOverview({
           effortXhigh: "XHigh",
         };
   const formatBreakdownNumber = (value: number) => new Intl.NumberFormat(localeTag).format(value);
+  const formatBreakdownRatio = (value: number | null) =>
+    value == null
+      ? RATE_UNAVAILABLE_PLACEHOLDER
+      : new Intl.NumberFormat(localeTag, { style: "percent", maximumFractionDigits: 1 }).format(
+          value,
+        );
   const formatBreakdownCurrency = (value: number) =>
     new Intl.NumberFormat(localeTag, {
       style: "currency",
@@ -740,7 +748,7 @@ export function TodayStatsOverview({
         <div
           data-testid="today-stats-metrics-grid"
           className={cn(
-            "grid grid-cols-1 gap-3 sm:grid-cols-2",
+            "grid grid-cols-1 gap-3 min-[400px]:grid-cols-2",
             showLivePhaseSplit
               ? "lg:grid-cols-4 xl:grid-cols-7"
               : showInProgressConversations
@@ -993,6 +1001,7 @@ export function TodayStatsOverview({
                   breakdown={stats.usageBreakdown}
                   kind="cost"
                   formatNumber={formatBreakdownNumber}
+                  formatRatio={formatBreakdownRatio}
                   formatCurrency={formatBreakdownCurrency}
                   labels={usageBreakdownLabels}
                 />
@@ -1030,6 +1039,7 @@ export function TodayStatsOverview({
             iconName="database-outline"
             toneClass="text-secondary"
             valueTestId="today-stats-value-total-tokens"
+            className="min-[400px]:col-span-2 lg:col-span-1"
             metricTooltipContent={
               stats?.usageBreakdown ? (
                 <UsageBreakdownTooltip
@@ -1037,6 +1047,7 @@ export function TodayStatsOverview({
                   breakdown={stats.usageBreakdown}
                   kind="tokens"
                   formatNumber={formatBreakdownNumber}
+                  formatRatio={formatBreakdownRatio}
                   formatCurrency={formatBreakdownCurrency}
                   labels={usageBreakdownLabels}
                 />

@@ -40,6 +40,29 @@ function StorySurface({ children }: { children: ReactNode }) {
   );
 }
 
+const DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS = [
+  {
+    id: 21,
+    kind: "oauth_codex",
+    provider: "codex",
+    displayName: "growth.6vv4@relay.example",
+    groupName: "CIII",
+    status: "active",
+    displayStatus: "active",
+    enabled: true,
+  },
+  {
+    id: 101,
+    kind: "oauth_codex",
+    provider: "codex",
+    displayName: "Codex Pro - Tokyo",
+    groupName: "Tokyo",
+    status: "active",
+    displayStatus: "active",
+    enabled: true,
+  },
+] as const;
+
 function ForcedWorkspaceViewStory({
   view,
   children,
@@ -1930,6 +1953,8 @@ function DrawerPreviewStory({
   response,
   initialSelection,
   initialConversationKey,
+  initialConversationTab = "overview",
+  conversationPresentation = "overlay",
   historyInvocationsByPromptCacheKey,
   upstreamAccountActivity,
   recentPreviewLimit = 4,
@@ -1941,6 +1966,8 @@ function DrawerPreviewStory({
     slotKind: "current" | "previous";
   };
   initialConversationKey?: string;
+  initialConversationTab?: "overview" | "calls" | "settings";
+  conversationPresentation?: "overlay" | "page";
   historyInvocationsByPromptCacheKey?: Map<string, PromptCacheConversationInvocationPreview[]>;
   upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
   recentPreviewLimit?: number;
@@ -1976,6 +2003,49 @@ function DrawerPreviewStory({
     label: string;
     tab: "overview" | "routing" | "healthEvents";
   } | null>(null);
+  const promptCacheBindingStateRef = useRef<Map<string, Record<string, unknown>>>(new Map());
+
+  const buildPromptCacheBindingResponse = (
+    promptCacheKey: string,
+    overrides: Record<string, unknown> = {},
+  ) => ({
+    promptCacheKey,
+    bindingKind: "none",
+    groupName: null,
+    upstreamAccountId: null,
+    upstreamAccountName: null,
+    hasEncryptedSessionOwner: true,
+    encryptedOwnerAccountId: 21,
+    encryptedOwnerAccountName: "growth.6vv4@relay.example",
+    encryptedOwnerGroupName: "CIII",
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 120,
+      compactFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 300,
+    },
+    timeoutFieldSources: {
+      responsesFirstByteTimeoutSecs: "account",
+      compactFirstByteTimeoutSecs: "group",
+      responsesStreamTimeoutSecs: "account",
+      compactStreamTimeoutSecs: "root",
+    },
+    allowSwitchUpstream: false,
+    fastModeRewriteMode: "inherit",
+    imageToolRewriteMode: "inherit",
+    availableModels: ["gpt-5.5", "gpt-5.5-mini"],
+    forwardProxyKey: null,
+    forwardProxyKeys: [],
+    policyFieldSources: {
+      allowSwitchUpstream: "conversation",
+      fastModeRewriteMode: "account",
+      imageToolRewriteMode: "group",
+      availableModels: "conversation",
+      forwardProxyKey: "account",
+    },
+    updatedAt: "2026-05-12T16:15:57Z",
+    ...overrides,
+  });
 
   useEffect(() => {
     setSelectedInvocation(resolveInitialSelection(cards, initialSelection));
@@ -1990,6 +2060,37 @@ function DrawerPreviewStory({
     );
     setSelectedAccount(null);
   }, [cards, initialConversationKey, initialSelection]);
+
+  const promptCacheConversationPage = selectedConversation ? (
+    <div className="min-h-screen bg-base-200 p-3 text-base-content min-[769px]:p-6">
+      <div className="mx-auto w-full max-w-[78rem]">
+        <PromptCacheConversationHistoryDrawer
+          open
+          presentation="page"
+          conversationKey={selectedConversation.promptCacheKey}
+          conversationLabel={formatDashboardWorkingConversationSequenceId(
+            selectedConversation.conversationSequenceId,
+          )}
+          initialTab={initialConversationTab}
+          onClose={() => setSelectedConversation(null)}
+          t={t}
+          onOpenUpstreamAccount={(
+            accountId: number,
+            accountLabel: string,
+            options?: { tab?: "overview" | "routing" | "healthEvents" },
+          ) => {
+            setSelectedInvocation(null);
+            setSelectedConversation(null);
+            setSelectedAccount({
+              id: accountId,
+              label: accountLabel,
+              tab: options?.tab ?? "overview",
+            });
+          }}
+        />
+      </div>
+    </div>
+  ) : null;
 
   useLayoutEffect(() => {
     originalEventSourceRef.current = window.EventSource;
@@ -2019,6 +2120,99 @@ function DrawerPreviewStory({
       (
         window as typeof window & { __dashboardStoryFetchLog?: string[] }
       ).__dashboardStoryFetchLog?.push(`${url.pathname}?${url.searchParams.toString()}`);
+
+      const promptCacheBindingMatch = url.pathname.match(
+        /^\/api\/stats\/prompt-cache-conversation-bindings\/(.+)$/,
+      );
+      if (promptCacheBindingMatch) {
+        const promptCacheKey = decodeURIComponent(promptCacheBindingMatch[1] ?? "");
+        if (init?.method === "PATCH") {
+          const payload = init?.body ? JSON.parse(String(init.body)) : {};
+          const current =
+            promptCacheBindingStateRef.current.get(promptCacheKey) ??
+            buildPromptCacheBindingResponse(promptCacheKey);
+          const next = buildPromptCacheBindingResponse(promptCacheKey, {
+            ...current,
+            ...("bindingKind" in payload ? { bindingKind: payload.bindingKind } : null),
+            groupName:
+              payload.bindingKind === "group"
+                ? String(payload.groupName ?? "")
+                : payload.bindingKind === "none"
+                  ? null
+                  : current.groupName,
+            upstreamAccountId:
+              payload.bindingKind === "upstreamAccount"
+                ? Number(payload.upstreamAccountId)
+                : payload.bindingKind === "none"
+                  ? null
+                  : current.upstreamAccountId,
+            upstreamAccountName:
+              payload.bindingKind === "upstreamAccount"
+                ? (DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS.find(
+                    (account) => account.id === Number(payload.upstreamAccountId),
+                  )?.displayName ?? null)
+                : payload.bindingKind === "none"
+                  ? null
+                  : current.upstreamAccountName,
+            timeouts:
+              payload.timeouts != null && typeof payload.timeouts === "object"
+                ? {
+                    ...(typeof current.timeouts === "object" && current.timeouts != null
+                      ? current.timeouts
+                      : {}),
+                    ...(payload.timeouts as Record<string, unknown>),
+                  }
+                : current.timeouts,
+            updatedAt: "2026-05-12T16:20:00Z",
+          });
+          promptCacheBindingStateRef.current.set(promptCacheKey, next);
+          return jsonResponse(next);
+        }
+
+        const response =
+          promptCacheBindingStateRef.current.get(promptCacheKey) ??
+          buildPromptCacheBindingResponse(promptCacheKey);
+        promptCacheBindingStateRef.current.set(promptCacheKey, response);
+        return jsonResponse(response);
+      }
+
+      if (url.pathname === "/api/pool/upstream-accounts") {
+        return jsonResponse({
+          writesEnabled: true,
+          items: DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS,
+          groups: [
+            {
+              name: "CIII",
+              accountCount: 1,
+              oauthAccountCount: 1,
+              apiKeyAccountCount: 0,
+              enabledAccountCount: 1,
+              disabledAccountCount: 0,
+              activeConversationCount: 2,
+            },
+            {
+              name: "Tokyo",
+              accountCount: 1,
+              oauthAccountCount: 1,
+              apiKeyAccountCount: 0,
+              enabledAccountCount: 1,
+              disabledAccountCount: 0,
+              activeConversationCount: 1,
+            },
+          ],
+          forwardProxyNodes: [],
+          hasUngroupedAccounts: false,
+          total: DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS.length,
+          page: 1,
+          pageSize: DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS.length,
+          metrics: {
+            total: DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS.length,
+            oauth: DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS.length,
+            apiKey: 0,
+            attention: 0,
+          },
+        });
+      }
 
       const upstreamAccountPatchMatch = url.pathname.match(
         /^\/api\/pool\/upstream-accounts\/(\d+)$/,
@@ -2188,36 +2382,40 @@ function DrawerPreviewStory({
 
   return (
     <>
-      <DashboardWorkingConversationsSection
-        activeRange="today"
-        recentPreviewLimit={recentPreviewLimit}
-        cards={cards}
-        isLoading={false}
-        error={null}
-        onOpenUpstreamAccount={(
-          accountId: number,
-          accountLabel: string,
-          options?: { tab?: "overview" | "routing" | "healthEvents" },
-        ) => {
-          setSelectedInvocation(null);
-          setSelectedConversation(null);
-          setSelectedAccount({
-            id: accountId,
-            label: accountLabel,
-            tab: options?.tab ?? "overview",
-          });
-        }}
-        onOpenConversation={(selection) => {
-          setSelectedInvocation(null);
-          setSelectedAccount(null);
-          setSelectedConversation(selection);
-        }}
-        onOpenInvocation={(selection) => {
-          setSelectedConversation(null);
-          setSelectedAccount(null);
-          setSelectedInvocation(selection);
-        }}
-      />
+      {conversationPresentation === "page" && selectedConversation != null ? (
+        promptCacheConversationPage
+      ) : (
+        <DashboardWorkingConversationsSection
+          activeRange="today"
+          recentPreviewLimit={recentPreviewLimit}
+          cards={cards}
+          isLoading={false}
+          error={null}
+          onOpenUpstreamAccount={(
+            accountId: number,
+            accountLabel: string,
+            options?: { tab?: "overview" | "routing" | "healthEvents" },
+          ) => {
+            setSelectedInvocation(null);
+            setSelectedConversation(null);
+            setSelectedAccount({
+              id: accountId,
+              label: accountLabel,
+              tab: options?.tab ?? "overview",
+            });
+          }}
+          onOpenConversation={(selection) => {
+            setSelectedInvocation(null);
+            setSelectedAccount(null);
+            setSelectedConversation(selection);
+          }}
+          onOpenInvocation={(selection) => {
+            setSelectedConversation(null);
+            setSelectedAccount(null);
+            setSelectedInvocation(selection);
+          }}
+        />
+      )}
       <DashboardInvocationDetailDrawer
         open={selectedInvocation != null}
         selection={selectedInvocation}
@@ -2236,45 +2434,51 @@ function DrawerPreviewStory({
           });
         }}
       />
-      <PromptCacheConversationHistoryDrawer
-        open={selectedConversation != null}
-        conversationKey={selectedConversation?.promptCacheKey ?? null}
-        conversationLabel={
-          selectedConversation
-            ? formatDashboardWorkingConversationSequenceId(
-                selectedConversation.conversationSequenceId,
-              )
-            : null
-        }
-        onClose={() => setSelectedConversation(null)}
-        t={t}
-        onOpenUpstreamAccount={(
-          accountId: number,
-          accountLabel: string,
-          options?: { tab?: "overview" | "routing" | "healthEvents" },
-        ) => {
-          setSelectedInvocation(null);
-          setSelectedConversation(null);
-          setSelectedAccount({
-            id: accountId,
-            label: accountLabel,
-            tab: options?.tab ?? "overview",
-          });
-        }}
-      />
+      {conversationPresentation === "page" ? null : (
+        <PromptCacheConversationHistoryDrawer
+          open={selectedConversation != null}
+          presentation={conversationPresentation}
+          conversationKey={selectedConversation?.promptCacheKey ?? null}
+          conversationLabel={
+            selectedConversation
+              ? formatDashboardWorkingConversationSequenceId(
+                  selectedConversation.conversationSequenceId,
+                )
+              : null
+          }
+          initialTab={initialConversationTab}
+          onClose={() => setSelectedConversation(null)}
+          t={t}
+          onOpenUpstreamAccount={(
+            accountId: number,
+            accountLabel: string,
+            options?: { tab?: "overview" | "routing" | "healthEvents" },
+          ) => {
+            setSelectedInvocation(null);
+            setSelectedConversation(null);
+            setSelectedAccount({
+              id: accountId,
+              label: accountLabel,
+              tab: options?.tab ?? "overview",
+            });
+          }}
+        />
+      )}
       <StoryAccountDrawer account={selectedAccount} onClose={() => setSelectedAccount(null)} />
-      <div className="rounded-xl border border-base-300/75 bg-base-100/70 px-4 py-3 text-sm text-base-content/75">
-        <span className="font-semibold">Drawer state:</span>{" "}
-        <span data-testid="story-drawer-state" className="font-mono">
-          {selectedInvocation
-            ? `invocation:${selectedInvocation.invocation.record.invokeId}`
-            : selectedConversation
-              ? `conversation:${selectedConversation.promptCacheKey}`
-              : selectedAccount
-                ? `account:${selectedAccount.id}:${selectedAccount.tab}`
-                : "none"}
-        </span>
-      </div>
+      {conversationPresentation === "page" && selectedConversation != null ? null : (
+        <div className="rounded-xl border border-base-300/75 bg-base-100/70 px-4 py-3 text-sm text-base-content/75">
+          <span className="font-semibold">Drawer state:</span>{" "}
+          <span data-testid="story-drawer-state" className="font-mono">
+            {selectedInvocation
+              ? `invocation:${selectedInvocation.invocation.record.invokeId}`
+              : selectedConversation
+                ? `conversation:${selectedConversation.promptCacheKey}`
+                : selectedAccount
+                  ? `account:${selectedAccount.id}:${selectedAccount.tab}`
+                  : "none"}
+          </span>
+        </div>
+      )}
     </>
   );
 }
@@ -2836,6 +3040,46 @@ export const ConversationHistoryDrawerOpen: Story = {
   },
 };
 
+export const ConversationHistoryPageMobile: Story = {
+  args: {
+    activeRange: "today",
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => {
+    const fixtures = buildDashboardHistoryEvidenceFixtures();
+    return (
+      <DrawerPreviewStory
+        response={fixtures.dashboardResponse}
+        historyInvocationsByPromptCacheKey={fixtures.historyInvocationsByPromptCacheKey}
+        initialConversationKey="pck-dashboard-history-realistic"
+        initialConversationTab="settings"
+        conversationPresentation="page"
+        theme="vibe-dark"
+      />
+    );
+  },
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+    docs: {
+      description: {
+        story:
+          "Compact page presentation for the retained conversation history workspace, using the same URL-backed content hierarchy as the desktop drawer.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/对话详情|Conversation details/i)).toBeInTheDocument();
+    await expect(canvas.getByRole("tab", { name: /设置|settings/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+  },
+};
+
 export const UpstreamAccountTab: Story = {
   args: {
     activeRange: "today",
@@ -3246,7 +3490,7 @@ export const UpstreamAccountMetricTooltips: Story = {
       "未知",
       "gpt-5.6",
     ]);
-    await assertMetricTooltip("token", ["Token", "缓存写入", "缓存命中 Token", "输出", "gpt-5.6"]);
+    await assertMetricTooltip("token", ["Token", "缓存写入", "缓存读取", "输出", "gpt-5.6"]);
 
     const finalTrigger = canvasElement.querySelector(
       '[data-testid="dashboard-upstream-account-metric-card"][data-metric="cost"]',
@@ -3670,6 +3914,16 @@ export const Mobile390: Story = {
           "Mobile viewport keeps the working-conversations section in a single column while preserving the compact header and dual-slot summary hierarchy.",
       },
     },
+  },
+  play: async ({ canvasElement }) => {
+    const controls = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversations-controls"]',
+    );
+    if (!(controls instanceof HTMLElement)) {
+      throw new Error("missing workspace controls");
+    }
+    await expect(controls.className).toContain("flex-col");
+    await expect(controls.querySelector('[role="tablist"]')?.className).toContain("w-full");
   },
 };
 

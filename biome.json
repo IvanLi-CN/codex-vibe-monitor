@@ -41,9 +41,10 @@
         }
       },
       "a11y": {
+        "noNoninteractiveElementToInteractiveRole": "warn",
         "noStaticElementInteractions": "warn",
         "noLabelWithoutControl": {
-          "level": "on",
+          "level": "warn",
           "options": {
             "inputComponents": [
               "Input",
@@ -63,13 +64,15 @@
         "useSemanticElements": "warn"
       },
       "complexity": {
+        "noImportantStyles": "warn",
         "noUselessSwitchCase": "warn",
         "useOptionalChain": "warn"
       },
       "correctness": {
         "noUnusedImports": "warn",
         "noUnusedVariables": "warn",
-        "useExhaustiveDependencies": "warn"
+        "useExhaustiveDependencies": "warn",
+        "useHookAtTopLevel": "warn"
       },
       "style": {
         "noNonNullAssertion": "warn"

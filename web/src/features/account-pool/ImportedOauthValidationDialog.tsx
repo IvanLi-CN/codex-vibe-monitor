@@ -78,6 +78,7 @@ function computeValidationCounts(
       case "invalid":
         counts.invalid += 1;
         break;
+      case "error":
       default:
         counts.error += 1;
         break;
@@ -100,6 +101,7 @@ function filterKeyForStatus(status: ImportedOauthValidationRow["status"]): Valid
       return "exhausted";
     case "invalid":
       return "invalid";
+    case "error":
     default:
       return "error";
   }
@@ -115,6 +117,8 @@ function rowBadgeVariant(status: ImportedOauthValidationRow["status"]) {
       return "info" as const;
     case "duplicate_in_input":
       return "secondary" as const;
+    case "invalid":
+    case "error":
     default:
       return "error" as const;
   }
@@ -130,6 +134,8 @@ function rowAccentClass(status: ImportedOauthValidationRow["status"]) {
       return "before:bg-info";
     case "duplicate_in_input":
       return "before:bg-base-content/30";
+    case "invalid":
+    case "error":
     default:
       return "before:bg-error";
   }
@@ -145,6 +151,8 @@ function rowSurfaceClass(status: ImportedOauthValidationRow["status"]) {
       return "bg-info/10";
     case "duplicate_in_input":
       return "bg-base-200/40";
+    case "invalid":
+    case "error":
     default:
       return "bg-error/10";
   }
@@ -165,6 +173,7 @@ function formatStatusLabel(
       return t("accountPool.upstreamAccounts.import.validation.status.exhausted");
     case "invalid":
       return t("accountPool.upstreamAccounts.import.validation.status.invalid");
+    case "error":
     default:
       return t("accountPool.upstreamAccounts.import.validation.status.error");
   }
@@ -330,7 +339,7 @@ export function ImportedOauthValidationDialog({
 
   useEffect(() => {
     setPage(1);
-  }, []);
+  }, [activeFilter, state?.rows.length]);
 
   useEffect(() => {
     if (page > totalPages) {
@@ -340,9 +349,9 @@ export function ImportedOauthValidationDialog({
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen: boolean) => (!nextOpen ? onClose() : undefined)}>
-      <DialogContent className="h-[min(92vh,56rem)] w-[min(96vw,92rem)] max-w-none overflow-hidden p-0">
+      <DialogContent className="flex h-[calc(100dvh-0.75rem)] max-h-[calc(100dvh-0.75rem)] max-w-none flex-col overflow-hidden p-0 desktop:h-[min(92vh,56rem)] desktop:max-h-[min(92vh,56rem)] desktop:w-[min(96vw,92rem)]">
         <div className="grid h-full min-h-0 grid-rows-[auto,minmax(0,1fr),auto]">
-          <DialogHeader className="border-b border-base-300 bg-[linear-gradient(180deg,rgba(15,23,42,0.04),transparent)] px-6 pb-5 pt-5">
+          <DialogHeader className="border-b border-base-300 bg-[linear-gradient(180deg,rgba(15,23,42,0.04),transparent)] px-5 pb-4 pt-4 desktop:px-6 desktop:pb-5 desktop:pt-5">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <DialogTitle>
@@ -393,7 +402,7 @@ export function ImportedOauthValidationDialog({
             </div>
           </DialogHeader>
 
-          <div className="grid h-full min-h-0 grid-rows-[auto,minmax(0,1fr)] overflow-hidden px-6 py-5">
+          <div className="grid h-full min-h-0 grid-rows-[auto,minmax(0,1fr)] overflow-hidden px-5 py-5 desktop:px-6">
             {state?.importError || importDisabledReason ? (
               <Alert variant="error" className="mb-4">
                 <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
@@ -666,7 +675,7 @@ export function ImportedOauthValidationDialog({
             </section>
           </div>
 
-          <DialogFooter className="border-t border-base-300 px-6 py-4">
+          <DialogFooter className="border-t border-base-300 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:px-6 desktop:py-4">
             <div className="flex w-full flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex flex-wrap items-center gap-2 text-sm text-base-content/65">
                 <span>

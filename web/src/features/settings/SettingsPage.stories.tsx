@@ -893,6 +893,23 @@ export const ForwardProxyLatencyAndRefresh: Story = {
   },
 };
 
+export const MobileAdaptiveTables: Story = {
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+  render: () => <SettingsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvasElement.querySelector('[data-testid="settings-forward-proxy-mobile-windows"]'),
+    ).not.toBeNull();
+    await expect(canvas.getAllByRole("button", { name: "停用" })[0]!).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "创建 Key" }));
+    const dialog = within(document.body);
+    await expect(dialog.getByRole("heading", { name: "创建 External API Key" })).toBeVisible();
+  },
+};
+
 export const PenalizedPool: Story = {
   parameters: {
     mockSettings: createStorySettings({

@@ -155,6 +155,7 @@ function sortRecords(
       case "status":
         result = (left.status ?? "").localeCompare(right.status ?? "");
         break;
+      case "occurredAt":
       default:
         result = Date.parse(left.occurredAt) - Date.parse(right.occurredAt);
         break;
@@ -482,8 +483,7 @@ export const AutocompleteSuppressedFilters: Story = {
   render: () => <RecordsPage />,
   play: async ({ canvasElement }) => {
     const doc = canvasElement.ownerDocument;
-    const heading = within(canvasElement).getByRole("heading", { name: /筛选|filters/i });
-    await expect(heading).toBeInTheDocument();
+    await userEvent.click(within(canvasElement).getByTestId("records-open-filters"));
 
     const modelInput = doc.querySelector("#records-filter-model");
     const keywordInput = doc.querySelector('input[name="keyword"]');
@@ -520,6 +520,25 @@ export const AutocompleteSuppressedFilters: Story = {
 
     await expect(listbox).toBeVisible();
     await expect(listbox.textContent ?? "").toContain("gpt-5.3-codex");
+  },
+};
+
+export const MobileFiltersDrawer: Story = {
+  parameters: {
+    newRecordsCount: 0,
+    viewport: { defaultViewport: "mobile390" },
+  },
+  render: () => <RecordsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const doc = canvasElement.ownerDocument;
+
+    await userEvent.click(canvas.getByTestId("records-open-filters"));
+
+    await waitFor(() => {
+      expect(doc.querySelector('[data-testid="records-filters-drawer"]')).not.toBeNull();
+      expect(doc.querySelector('[role="dialog"]')).not.toBeNull();
+    });
   },
 };
 

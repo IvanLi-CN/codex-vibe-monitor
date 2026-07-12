@@ -833,14 +833,14 @@ export function GroupAccountRoutingRuleDialog({
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy && !nextOpen ? onClose() : undefined)}>
-      <DialogContent className="flex w-[min(48rem,calc(100vw-2rem))] max-h-[min(90vh,calc(100vh-2rem))] max-w-none flex-col overflow-hidden p-0">
-        <div className="shrink-0 border-b border-base-300/80 px-6 py-5">
+      <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] max-w-none flex-col overflow-hidden p-0 desktop:max-h-[min(90vh,calc(100vh-2rem))] desktop:w-[min(48rem,calc(100vw-2rem))]">
+        <div className="shrink-0 border-b border-base-300/80 px-5 py-4 desktop:px-6 desktop:py-5">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 desktop:px-6">
           <GroupAccountRoutingRuleEditor
             open={open}
             rule={rule}
@@ -855,7 +855,7 @@ export function GroupAccountRoutingRuleDialog({
             onPayloadChange={setPayload}
           />
         </div>
-        <div className="shrink-0 border-t border-base-300/80 px-6 py-4">
+        <div className="shrink-0 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:px-6 desktop:py-4">
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
               {labels.cancel}

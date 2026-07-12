@@ -2,10 +2,7 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import { DashboardActivityOverview } from "../features/dashboard/DashboardActivityOverview";
 import { DashboardInvocationDetailDrawer } from "../features/dashboard/DashboardInvocationDetailDrawer";
 import { DashboardPerformanceDiagnostics } from "../features/dashboard/DashboardPerformanceDiagnostics";
-import type {
-  DashboardOpenUpstreamAccountOptions,
-  DashboardWorkingConversationSelection,
-} from "../features/dashboard/DashboardWorkingConversationsSection";
+import type { DashboardOpenUpstreamAccountOptions } from "../features/dashboard/DashboardWorkingConversationsSection";
 import { DashboardWorkingConversationsSection } from "../features/dashboard/DashboardWorkingConversationsSection";
 import {
   DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
@@ -14,8 +11,10 @@ import {
   readPersistedDashboardActivityRange,
 } from "../features/dashboard/dashboardActivityRange";
 import { PromptCacheConversationHistoryDrawer } from "../features/prompt-cache/PromptCacheConversationTable";
+import { useCompactViewport } from "../hooks/useCompactViewport";
 import { useDashboardActivitySnapshot } from "../hooks/useDashboardUpstreamAccountActivity";
 import { useDashboardWorkingConversations } from "../hooks/useDashboardWorkingConversations";
+import { usePromptCacheConversationRoute } from "../hooks/usePromptCacheConversationRoute";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useTranslation } from "../i18n";
 import { resetDashboardPerformanceDiagnostics } from "../lib/dashboardPerformanceDiagnostics";
@@ -27,16 +26,25 @@ import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccoun
 
 export default function DashboardPage() {
   const { t } = useTranslation();
+  const isCompactViewport = useCompactViewport();
   const [activeRange, setActiveRange] = useState<DashboardActivityRangeKey>(() =>
     readPersistedDashboardActivityRange(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY),
   );
   const [selectedInvocation, setSelectedInvocation] =
     useState<DashboardWorkingConversationInvocationSelection | null>(null);
-  const [selectedConversation, setSelectedConversation] =
-    useState<DashboardWorkingConversationSelection | null>(null);
+  const [selectedConversation, setSelectedConversation] = useState<{
+    key: string;
+    label: string | null;
+  } | null>(null);
   const [includeUpstreamAccountActivity, setIncludeUpstreamAccountActivity] = useState(false);
   const { upstreamAccountId, upstreamAccountTab, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
+  const {
+    promptCacheConversationKey,
+    promptCacheConversationTab,
+    openPromptCacheConversation,
+    closePromptCacheConversation,
+  } = usePromptCacheConversationRoute();
   const {
     cards,
     totalMatched,
@@ -69,6 +77,16 @@ export default function DashboardPage() {
     }
   }, [upstreamAccountId]);
 
+  useEffect(() => {
+    if (promptCacheConversationKey == null) {
+      setSelectedConversation(null);
+      return;
+    }
+    setSelectedConversation((current) =>
+      current?.key === promptCacheConversationKey ? current : null,
+    );
+  }, [promptCacheConversationKey]);
+
   useLayoutEffect(() => {
     resetDashboardPerformanceDiagnostics();
   }, []);
@@ -84,8 +102,48 @@ export default function DashboardPage() {
   ) => {
     setSelectedInvocation(null);
     setSelectedConversation(null);
-    openUpstreamAccount(accountId, { tab: options?.tab });
+    openUpstreamAccount(accountId, {
+      tab: options?.tab,
+      clearPromptCacheConversation: true,
+    });
   };
+
+  if (isCompactViewport && promptCacheConversationKey != null) {
+    return (
+      <div className="mx-auto flex w-full max-w-full flex-col gap-6">
+        <PromptCacheConversationHistoryDrawer
+          open
+          presentation="page"
+          conversationKey={promptCacheConversationKey}
+          conversationLabel={selectedConversation?.label ?? null}
+          initialTab={promptCacheConversationTab}
+          onTabChange={(tab) =>
+            openPromptCacheConversation(promptCacheConversationKey, {
+              replace: true,
+              tab,
+            })
+          }
+          onClose={() => closePromptCacheConversation()}
+          t={t}
+          onOpenUpstreamAccount={handleOpenUpstreamAccount}
+        />
+      </div>
+    );
+  }
+
+  if (isCompactViewport && upstreamAccountId != null) {
+    return (
+      <div className="mx-auto flex w-full max-w-full flex-col gap-6">
+        <SharedUpstreamAccountDetailDrawer
+          open
+          presentation="page"
+          accountId={upstreamAccountId}
+          initialTab={upstreamAccountTab}
+          onClose={closeUpstreamAccount}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
@@ -113,10 +171,20 @@ export default function DashboardPage() {
         onOpenConversation={(selection) => {
           closeUpstreamAccount({ replace: true });
           setSelectedInvocation(null);
-          setSelectedConversation(selection);
+          const conversationLabel = formatDashboardWorkingConversationSequenceId(
+            selection.conversationSequenceId,
+          );
+          setSelectedConversation({
+            key: selection.promptCacheKey,
+            label: conversationLabel,
+          });
+          openPromptCacheConversation(selection.promptCacheKey, {
+            clearUpstreamAccount: true,
+          });
         }}
         onOpenInvocation={(selection) => {
           closeUpstreamAccount({ replace: true });
+          closePromptCacheConversation({ replace: true });
           setSelectedConversation(null);
           setSelectedInvocation(selection);
         }}
@@ -145,16 +213,18 @@ export default function DashboardPage() {
         onOpenUpstreamAccount={handleOpenUpstreamAccount}
       />
       <PromptCacheConversationHistoryDrawer
-        open={selectedConversation != null}
-        conversationKey={selectedConversation?.promptCacheKey ?? null}
-        conversationLabel={
-          selectedConversation
-            ? formatDashboardWorkingConversationSequenceId(
-                selectedConversation.conversationSequenceId,
-              )
-            : null
-        }
-        onClose={() => setSelectedConversation(null)}
+        open={promptCacheConversationKey != null && upstreamAccountId == null}
+        conversationKey={promptCacheConversationKey}
+        conversationLabel={selectedConversation?.label ?? null}
+        initialTab={promptCacheConversationTab}
+        onTabChange={(tab) => {
+          if (promptCacheConversationKey == null) return;
+          openPromptCacheConversation(promptCacheConversationKey, {
+            replace: true,
+            tab,
+          });
+        }}
+        onClose={() => closePromptCacheConversation()}
         t={t}
         onOpenUpstreamAccount={handleOpenUpstreamAccount}
       />

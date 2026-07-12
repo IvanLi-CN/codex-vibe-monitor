@@ -8,6 +8,7 @@ export interface UsageBreakdownTooltipProps {
   breakdown?: UsageBreakdown | null;
   kind: UsageBreakdownKind;
   formatNumber: (value: number) => string;
+  formatRatio: (value: number | null) => string;
   formatCurrency: (value: number) => string;
   labels: {
     total: string;
@@ -15,6 +16,7 @@ export interface UsageBreakdownTooltipProps {
     cacheWrite: string;
     cacheRead: string;
     cacheHitTokens: string;
+    cacheHitRate: string;
     output: string;
     input: string;
     reasoning: string;
@@ -77,7 +79,6 @@ function groupLabel(model: UsageBreakdownModel, labels: UsageBreakdownTooltipPro
   const effort = effortLabel(model.reasoningEffort, labels);
   return (
     <span
-      role="img"
       className="flex min-w-0 flex-col gap-0.5"
       aria-label={`${modelName}, ${labels.reasoningEffort}: ${effort}`}
     >
@@ -102,7 +103,7 @@ function BreakdownTable({
   modelLabel: string;
   modelWidth: string;
 }) {
-  const dense = columns.length > 5;
+  const dense = columns.length >= 4;
   return (
     <table
       className={`w-full table-fixed border-collapse ${dense ? "text-[8px] leading-3 sm:text-[10px] sm:leading-4" : "text-[10px] leading-4 sm:text-[11px]"}`}
@@ -151,19 +152,14 @@ function BreakdownTable({
                 {row.unavailable}
               </td>
             ) : (
-              row.values
-                ?.map((value, columnIndex) => ({
-                  key: columns[columnIndex]?.label ?? `column-${columnIndex}`,
-                  value,
-                }))
-                .map((cell) => (
-                  <td
-                    key={`${row.key}:${cell.key}`}
-                    className={`${dense ? "px-0.5" : "px-1"} border-l border-base-300/30 py-1.5 text-right font-mono font-semibold text-base-content tabular-nums whitespace-nowrap`}
-                  >
-                    {cell.value}
-                  </td>
-                ))
+              row.values?.map((value, columnIndex) => (
+                <td
+                  key={`${row.key}:${columnIndex}`}
+                  className={`${dense ? "px-0.5" : "px-1"} border-l border-base-300/30 py-1.5 text-right font-mono font-semibold text-base-content tabular-nums whitespace-nowrap`}
+                >
+                  {value}
+                </td>
+              ))
             )}
           </tr>
         ))}
@@ -226,8 +222,9 @@ function TokenBreakdownTable({
   breakdown,
   models,
   formatNumber,
+  formatRatio,
   labels,
-}: Pick<UsageBreakdownTooltipProps, "formatNumber" | "labels"> & {
+}: Pick<UsageBreakdownTooltipProps, "formatNumber" | "formatRatio" | "labels"> & {
   title: string;
   breakdown?: UsageBreakdown | null;
   models: UsageBreakdown["models"];
@@ -235,6 +232,7 @@ function TokenBreakdownTable({
   const columns = [
     { label: labels.cacheWrite },
     { label: labels.cacheHitTokens },
+    { label: labels.cacheHitRate },
     { label: labels.output },
   ];
   const rowFor = (
@@ -247,6 +245,7 @@ function TokenBreakdownTable({
     values: [
       formatNumber(item.cacheWriteTokens),
       formatNumber(item.cacheReadTokens),
+      formatRatio(cacheHitRate(item)),
       formatNumber(item.outputTokens),
     ],
   });
@@ -255,7 +254,7 @@ function TokenBreakdownTable({
     <BreakdownTable
       title={title}
       modelLabel={labels.model}
-      modelWidth="32%"
+      modelWidth="28%"
       columns={columns}
       rows={
         breakdown
@@ -269,11 +268,22 @@ function TokenBreakdownTable({
   );
 }
 
+function cacheHitRate(
+  item: Pick<UsageBreakdown, "cacheWriteTokens" | "cacheReadTokens" | "outputTokens">,
+) {
+  const cacheWriteTokens = Math.max(item.cacheWriteTokens, 0);
+  const cacheReadTokens = Math.max(item.cacheReadTokens, 0);
+  const outputTokens = Math.max(item.outputTokens, 0);
+  const totalTokens = cacheWriteTokens + cacheReadTokens + outputTokens;
+  return totalTokens > 0 ? cacheReadTokens / totalTokens : null;
+}
+
 export function UsageBreakdownTooltip({
   title,
   breakdown,
   kind,
   formatNumber,
+  formatRatio,
   formatCurrency,
   labels,
 }: UsageBreakdownTooltipProps) {
@@ -324,6 +334,7 @@ export function UsageBreakdownTooltip({
           breakdown={breakdown}
           models={models}
           formatNumber={formatNumber}
+          formatRatio={formatRatio}
           labels={labels}
         />
       ) : (

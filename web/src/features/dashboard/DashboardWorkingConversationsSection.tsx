@@ -2531,7 +2531,8 @@ function DashboardUpstreamAccountActivityCard({
           total: "总计",
           cacheWrite: "缓存写入",
           cacheRead: "缓存读取",
-          cacheHitTokens: "缓存命中 Token",
+          cacheHitTokens: "缓存读取",
+          cacheHitRate: "缓存命中率",
           output: "输出",
           model: "模型",
           input: "输入",
@@ -2553,7 +2554,8 @@ function DashboardUpstreamAccountActivityCard({
           total: "Total",
           cacheWrite: "Cache write",
           cacheRead: "Cache read",
-          cacheHitTokens: "Cache hit tokens",
+          cacheHitTokens: "Cache read",
+          cacheHitRate: "Cache hit rate",
           output: "Output",
           model: "Model",
           input: "Input",
@@ -2572,6 +2574,8 @@ function DashboardUpstreamAccountActivityCard({
           effortXhigh: "XHigh",
         };
   const formatBreakdownNumber = (value: number) => formatAccountNumberValue(value, localeTag, 0);
+  const formatBreakdownRatio = (value: number | null) =>
+    value == null ? FALLBACK_CELL : formatAccountPercentValue(value, localeTag);
   const formatBreakdownCurrency = (value: number) =>
     formatAccountCurrencyValue(value, localeTag, 4);
   const latencyDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
@@ -2957,6 +2961,7 @@ function DashboardUpstreamAccountActivityCard({
                 breakdown={account.usageBreakdown}
                 kind="cost"
                 formatNumber={formatBreakdownNumber}
+                formatRatio={formatBreakdownRatio}
                 formatCurrency={formatBreakdownCurrency}
                 labels={usageBreakdownLabels}
               />
@@ -2981,6 +2986,7 @@ function DashboardUpstreamAccountActivityCard({
                 breakdown={account.usageBreakdown}
                 kind="tokens"
                 formatNumber={formatBreakdownNumber}
+                formatRatio={formatBreakdownRatio}
                 formatCurrency={formatBreakdownCurrency}
                 labels={usageBreakdownLabels}
               />
@@ -3418,7 +3424,7 @@ export function DashboardWorkingConversationsSection({
   if (error && cards.length === 0) {
     return (
       <section className="surface-panel" data-testid="dashboard-working-conversations">
-        <div className="surface-panel-body gap-4 !p-3 sm:!p-5">
+        <div className="surface-panel-body gap-4 desktop:!p-5">
           <div className="section-heading">
             <h2 className="section-title">{t("dashboard.section.workingConversationsTitle")}</h2>
           </div>
@@ -3435,25 +3441,33 @@ export function DashboardWorkingConversationsSection({
       className="surface-panel overflow-hidden"
       data-testid="dashboard-working-conversations"
     >
-      <div className="surface-panel-body gap-5 !p-3 sm:!p-5">
-        <div className="flex flex-wrap items-start gap-3">
-          <div className="section-heading min-w-0 flex-1">
+      <div className="surface-panel-body gap-5 desktop:!p-5">
+        <div className="flex flex-col gap-3 desktop:flex-row desktop:items-start">
+          <div className="section-heading min-w-0 desktop:flex-1">
             <h2 className="section-title">{t("dashboard.section.workingConversationsTitle")}</h2>
             <p className="section-description">{sectionSubtitle}</p>
           </div>
-          <div className="ml-auto flex shrink-0 items-center justify-end gap-2 self-start">
+          <div
+            className="flex min-w-0 flex-col items-stretch gap-2 desktop:ml-auto desktop:flex-row desktop:items-center desktop:justify-end"
+            data-testid="dashboard-working-conversations-controls"
+          >
             <Badge
               variant="default"
-              className="rounded-full px-3 py-1 font-mono text-xs font-semibold"
+              className="w-fit rounded-full px-3 py-1 font-mono text-xs font-semibold"
             >
               {countBadgeLabel}
             </Badge>
-            <SegmentedControl size="compact" role="tablist" aria-label="Dashboard workspace view">
+            <SegmentedControl
+              size="compact"
+              className="w-full desktop:w-auto"
+              role="tablist"
+              aria-label="Dashboard workspace view"
+            >
               <SegmentedControlItem
                 active={activeView === "conversations"}
                 role="tab"
                 aria-selected={activeView === "conversations"}
-                className="h-11 px-3.5 text-[0.95rem]"
+                className="h-11 flex-1 px-3.5 text-[0.95rem]"
                 onClick={() => setPreferredView("conversations")}
               >
                 对话
@@ -3463,7 +3477,7 @@ export function DashboardWorkingConversationsSection({
                 role="tab"
                 aria-selected={activeView === "upstreamAccounts"}
                 disabled={upstreamAccountsDisabled}
-                className="h-11 px-3.5 text-[0.95rem]"
+                className="h-11 flex-1 px-3.5 text-[0.95rem]"
                 onClick={() => setPreferredView("upstreamAccounts")}
               >
                 上游账号

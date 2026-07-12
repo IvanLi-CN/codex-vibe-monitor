@@ -224,6 +224,7 @@ function Probe() {
       <div data-testid="summary-loading">{state.isSummaryLoading ? "yes" : "no"}</div>
       <div data-testid="records-error">{state.recordsError ?? ""}</div>
       <div data-testid="summary-error">{state.summaryError ?? ""}</div>
+      <div data-testid="applied-draft-model">{state.appliedDraft?.model ?? ""}</div>
       <button data-testid="focus-network" type="button" onClick={() => state.setFocus("network")}>
         network
       </button>
@@ -352,6 +353,7 @@ describe("useInvocationRecords", () => {
     expect(text("snapshot")).toBe("42");
     expect(text("page")).toBe("1");
     expect(text("model")).toBe("baseline-model");
+    expect(text("applied-draft-model")).toBe("");
 
     expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
     expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledTimes(1);
@@ -376,6 +378,7 @@ describe("useInvocationRecords", () => {
     expect(pageQuery?.page).toBe(2);
     expect(pageQuery?.model).toBeUndefined();
     expect(text("model")).toBe("baseline-model");
+    expect(text("applied-draft-model")).toBe("");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS);
@@ -397,6 +400,7 @@ describe("useInvocationRecords", () => {
     expect(text("snapshot")).toBe("84");
     expect(text("page")).toBe("1");
     expect(text("model")).toBe("next-model");
+    expect(text("applied-draft-model")).toBe("next-model");
     expect(text("new-count")).toBe("0");
 
     const searchQuery = apiMocks.fetchInvocationRecords.mock.calls[recordsCallsBeforeSearch]?.[0];

@@ -637,6 +637,30 @@ export const TodayView: Story = {
   },
 };
 
+export const Mobile390DropdownControls: Story = {
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const mobileControls = canvas.getByTestId("dashboard-activity-mobile-selects");
+    const rangeSelect = canvas.getByTestId("dashboard-activity-range-select");
+    const metricSelect = canvas.getByTestId("dashboard-activity-metric-select");
+
+    await expect(mobileControls).toHaveClass(/grid-cols-2/);
+    await expect(rangeSelect).toHaveTextContent(/今日|today/i);
+    await expect(metricSelect).toHaveTextContent(/次数|calls/i);
+
+    await userEvent.click(rangeSelect);
+    await userEvent.click(within(document.body).getByRole("option", { name: /昨日|yesterday/i }));
+    await expect(rangeSelect).toHaveTextContent(/昨日|yesterday/i);
+
+    await userEvent.click(metricSelect);
+    await userEvent.click(within(document.body).getByRole("option", { name: /tokens/i }));
+    await expect(metricSelect).toHaveTextContent(/tokens/i);
+  },
+};
+
 export const TodayViewNarrowDesktop: Story = {
   parameters: {
     viewport: { defaultViewport: "desktop1280" },

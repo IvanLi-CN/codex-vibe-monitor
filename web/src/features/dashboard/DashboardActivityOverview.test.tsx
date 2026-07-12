@@ -220,7 +220,7 @@ function createSummaryStore() {
   });
 
   return {
-    useSummaryWindow(window: string) {
+    use(window: string) {
       return useSyncExternalStore(
         (listener) => {
           listeners.add(listener);
@@ -239,9 +239,7 @@ function createSummaryStore() {
       },
     ) {
       values.set(window, value);
-      listeners.forEach((listener) => {
-        listener();
-      });
+      listeners.forEach((listener) => listener());
     },
     reset() {
       values.clear();
@@ -365,9 +363,7 @@ function installSummaryMocks() {
     error: null,
   });
 
-  hookMocks.useSummary.mockImplementation((window: string) =>
-    summaryStore.useSummaryWindow(window),
-  );
+  hookMocks.useSummary.mockImplementation((window: string) => summaryStore.use(window));
 
   hookMocks.useTimeseries.mockReturnValue({
     data: {
@@ -598,6 +594,14 @@ describe("DashboardActivityOverview", () => {
       host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,
     ).toBe("metric:totalCount");
     expect(host?.querySelector('[data-testid="stats-cards"]')).toBeNull();
+
+    const mobileSelects = host?.querySelector('[data-testid="dashboard-activity-mobile-selects"]');
+    const rangeSelect = host?.querySelector('[data-testid="dashboard-activity-range-select"]');
+    const metricSelect = host?.querySelector('[data-testid="dashboard-activity-metric-select"]');
+    expect(mobileSelects?.className).toContain("grid-cols-2");
+    expect(mobileSelects?.className).toContain("min-[769px]:hidden");
+    expect(rangeSelect?.getAttribute("aria-label")).toBe("Switch activity range");
+    expect(metricSelect?.getAttribute("aria-label")).toBe("Switch metric");
 
     clickTab("Cost");
     expect(

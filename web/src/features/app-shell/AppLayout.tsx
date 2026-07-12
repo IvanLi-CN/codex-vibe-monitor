@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "../../components/ui/button";
 import { SegmentedControl } from "../../components/ui/segmented-control";
 import { segmentedControlItemVariants } from "../../components/ui/segmented-control.variants";
@@ -13,16 +13,13 @@ import { frontendVersion, normalizeVersion } from "../../lib/version";
 import { useTheme } from "../../theme";
 import { AppIcon } from "../shared/AppIcon";
 import { HeaderBrandMark, type HeaderBrandMarkState } from "./HeaderBrandMark";
+import {
+  desktopNavItems,
+  matchesNavigationPath,
+  mobileNavigationGroups,
+  resolveAppNavigation,
+} from "./navigation";
 import { UpdateAvailableBanner } from "./UpdateAvailableBanner";
-
-const navItems = [
-  { to: "/dashboard", labelKey: "app.nav.dashboard" },
-  { to: "/stats", labelKey: "app.nav.stats" },
-  { to: "/live", labelKey: "app.nav.live" },
-  { to: "/records", labelKey: "app.nav.records" },
-  { to: "/account-pool", labelKey: "app.nav.accountPool" },
-  { to: "/system", labelKey: "app.nav.system" },
-] as const;
 
 const repositoryUrl = "https://github.com/IvanLi-CN/codex-vibe-monitor";
 const LOCALE_FLAG: Record<Locale, string> = {
@@ -33,12 +30,14 @@ const OFFLINE_NOTICE_THRESHOLD_MS = 2 * 60 * 1000;
 export const HEADER_BRAND_ACTIVITY_HOLD_MS = 3200;
 
 export function AppLayout() {
+  const location = useLocation();
   const { t, locale, setLocale } = useTranslation();
   const { themeMode, toggleTheme } = useTheme();
   const [hasRecentActivity, setHasRecentActivity] = useState(false);
   const activityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [versionInfo, setVersionInfo] = useState<VersionResponse | null>(null);
   const [backendLoading, setBackendLoading] = useState(true);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const update = useUpdateAvailable();
   const sseStatus = useSseStatus();
 
@@ -123,12 +122,22 @@ export function AppLayout() {
   );
 
   const activeChoice = localeChoices.find((choice) => choice.code === locale) ?? localeChoices[0];
+  const resolvedNavigation = useMemo(
+    () => resolveAppNavigation(location.pathname),
+    [location.pathname],
+  );
+  const mobileContextLabel = t(
+    resolvedNavigation.nestedItem?.labelKey ?? resolvedNavigation.topLevelItem.labelKey,
+  );
+  const mobileContextEyebrow = resolvedNavigation.nestedItem
+    ? t(resolvedNavigation.topLevelItem.labelKey)
+    : null;
 
   const toggleLanguageMenu = () => {
     setLanguageMenuOpen((open) => !open);
   };
 
-  const closeLanguageMenu = useCallback(() => setLanguageMenuOpen(false), []);
+  const closeLanguageMenu = () => setLanguageMenuOpen(false);
 
   const handleManualReconnect = () => {
     requestImmediateReconnect();
@@ -152,7 +161,29 @@ export function AppLayout() {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [languageMenuOpen, closeLanguageMenu]);
+  }, [languageMenuOpen]);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    if (!mobileNavOpen || typeof document === "undefined") return undefined;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileNavOpen(false);
+      }
+    };
+
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [mobileNavOpen]);
 
   const normalizedFrontendVersion = normalizeVersion(frontendVersion);
   const normalizedBackendVersion = versionInfo?.backend
@@ -201,21 +232,66 @@ export function AppLayout() {
     <div className="app-shell min-h-screen flex flex-col text-base-content">
       <header className="sticky top-0 z-50 border-b border-base-300/75 bg-base-100/80 backdrop-blur-md">
         <div
-          className="app-shell-boundary flex flex-wrap items-center gap-2 px-3 py-2 sm:flex-nowrap sm:px-4"
+          className="app-shell-boundary flex items-center gap-2 px-3 py-2 sm:px-4"
           data-testid="app-header-inner"
         >
-          <div className="order-1 flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5 sm:gap-3">
+            <button
+              type="button"
+              className="control-pill desktop:!hidden"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label={t("app.nav.openMenu")}
+              aria-expanded={mobileNavOpen}
+              aria-controls="app-mobile-navigation"
+            >
+              <AppIcon name="menu" className="h-[18px] w-[18px] text-primary" aria-hidden />
+              <span className="sr-only">{t("app.nav.openMenu")}</span>
+            </button>
             <HeaderBrandMark
               alt={t("app.logoAlt")}
               state={headerBrandMarkState}
+              className="h-9 w-9 desktop:h-10 desktop:w-10"
+              markClassName="h-9 w-9 desktop:h-10 desktop:w-10"
               data-testid="app-header-logo-mark"
             />
-            <span className="hidden truncate text-lg font-semibold tracking-tight sm:inline sm:text-xl">
-              {t("app.brand")}
-            </span>
+            <div className="min-w-0">
+              <span className="hidden truncate text-lg font-semibold tracking-tight desktop:block desktop:text-xl">
+                {t("app.brand")}
+              </span>
+              <div className="desktop:hidden">
+                {mobileContextEyebrow ? (
+                  <p className="truncate text-[10px] font-semibold uppercase tracking-[0.18em] text-primary/72">
+                    {mobileContextEyebrow}
+                  </p>
+                ) : null}
+                <p className="truncate text-sm font-semibold tracking-tight">
+                  {mobileContextLabel}
+                </p>
+              </div>
+            </div>
           </div>
 
-          <div className="order-2 flex shrink-0 items-center gap-2 sm:order-3 sm:gap-3">
+          <nav className="flex shrink-0 items-center gap-2 sm:gap-3">
+            <div className="hidden overflow-x-auto no-scrollbar desktop:block">
+              <SegmentedControl size="nav" className="min-w-max" aria-label={t("app.brand")}>
+                {desktopNavItems.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    aria-current={
+                      matchesNavigationPath(location.pathname, item) ? "page" : undefined
+                    }
+                    className={segmentedControlItemVariants({
+                      size: "nav",
+                      active: matchesNavigationPath(location.pathname, item),
+                    })}
+                  >
+                    {t(item.labelKey)}
+                  </NavLink>
+                ))}
+              </SegmentedControl>
+            </div>
+
             <button
               type="button"
               className="control-pill"
@@ -252,6 +328,7 @@ export function AppLayout() {
                 className={`absolute right-0 top-[calc(100%+0.4rem)] z-50 mt-2 min-w-[10.5rem] rounded-xl border border-base-300 bg-base-100/95 p-2 shadow-lg backdrop-blur ${
                   languageMenuOpen ? "block" : "hidden"
                 }`}
+                role="listbox"
                 aria-label={t("app.language.switcherAria")}
               >
                 {localeChoices.map((choice) => (
@@ -277,29 +354,99 @@ export function AppLayout() {
                 ))}
               </ul>
             </div>
-          </div>
-
-          <nav
-            className="order-3 w-full overflow-x-auto no-scrollbar sm:order-2 sm:w-auto sm:max-w-[40vw]"
-            aria-label={t("app.brand")}
-            data-testid="app-header-navigation"
-          >
-            <SegmentedControl size="compact" className="min-w-max" aria-label={t("app.brand")}>
-              {navItems.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  className={({ isActive }) =>
-                    segmentedControlItemVariants({ size: "compact", active: isActive })
-                  }
-                >
-                  {t(item.labelKey)}
-                </NavLink>
-              ))}
-            </SegmentedControl>
           </nav>
         </div>
       </header>
+      {mobileNavOpen ? (
+        <div className="fixed inset-0 z-[85] desktop:hidden">
+          <button
+            type="button"
+            aria-label={t("app.nav.closeMenu")}
+            className="absolute inset-0 bg-neutral/56 backdrop-blur-sm"
+            onClick={() => setMobileNavOpen(false)}
+          />
+          <aside
+            id="app-mobile-navigation"
+            className="absolute inset-y-0 left-0 flex w-[min(22rem,calc(100vw-1rem))] max-w-full flex-col border-r border-base-300/75 bg-base-100/96 px-4 pb-[max(env(safe-area-inset-bottom),1rem)] pt-[max(env(safe-area-inset-top),1rem)] shadow-[0_24px_72px_rgba(15,23,42,0.2)] backdrop-blur-xl"
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-base-300/70 pb-4">
+              <div className="flex min-w-0 items-center gap-3">
+                <HeaderBrandMark
+                  alt={t("app.logoAlt")}
+                  state={headerBrandMarkState}
+                  className="h-9 w-9"
+                  markClassName="h-9 w-9"
+                />
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold tracking-tight">{t("app.brand")}</p>
+                  <p className="truncate text-xs text-base-content/62">{mobileContextLabel}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="control-pill"
+                onClick={() => setMobileNavOpen(false)}
+                aria-label={t("app.nav.closeMenu")}
+              >
+                <AppIcon
+                  name="close"
+                  className="h-[18px] w-[18px] text-base-content/78"
+                  aria-hidden
+                />
+                <span className="sr-only">{t("app.nav.closeMenu")}</span>
+              </button>
+            </div>
+
+            <nav className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto py-4 pr-1">
+              <div className="flex flex-col gap-1.5">
+                {mobileNavigationGroups
+                  .filter((group) => group.items.length === 0)
+                  .map((item) => (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      className={[
+                        "flex items-center justify-between rounded-2xl border px-4 py-3 text-left text-sm font-medium transition-colors",
+                        matchesNavigationPath(location.pathname, item)
+                          ? "border-primary/45 bg-primary/12 text-primary"
+                          : "border-base-300/70 bg-base-100/72 text-base-content/78 hover:border-primary/30 hover:text-base-content",
+                      ].join(" ")}
+                    >
+                      <span>{t(item.labelKey)}</span>
+                      <AppIcon name="chevron-right" className="h-4 w-4" aria-hidden />
+                    </NavLink>
+                  ))}
+              </div>
+
+              {mobileNavigationGroups
+                .filter((group) => group.items.length > 0)
+                .map((group) => (
+                  <section key={group.to} className="space-y-2">
+                    <p className="px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-base-content/52">
+                      {t(group.labelKey)}
+                    </p>
+                    <div className="flex flex-col gap-1.5">
+                      {group.items.map((item) => (
+                        <NavLink
+                          key={item.to}
+                          to={item.to}
+                          className={[
+                            "rounded-2xl border px-4 py-3 text-sm font-medium transition-colors",
+                            matchesNavigationPath(location.pathname, item)
+                              ? "border-primary/45 bg-primary/12 text-primary"
+                              : "border-base-300/70 bg-base-100/72 text-base-content/78 hover:border-primary/30 hover:text-base-content",
+                          ].join(" ")}
+                        >
+                          {t(item.labelKey)}
+                        </NavLink>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+            </nav>
+          </aside>
+        </div>
+      ) : null}
       {showOfflineBanner && (
         <div className="fixed left-1/2 top-[78px] z-[60] w-full max-w-3xl -translate-x-1/2 px-4">
           <div
@@ -345,7 +492,10 @@ export function AppLayout() {
           }}
         />
       )}
-      <main className="app-shell-boundary flex-1 min-h-0 px-4 py-6 pb-8" data-testid="app-main">
+      <main
+        className="app-shell-boundary flex-1 min-h-0 px-3 py-5 pb-8 sm:px-4 sm:py-6"
+        data-testid="app-main"
+      >
         <Outlet />
       </main>
       <footer

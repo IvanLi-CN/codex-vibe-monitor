@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { useEffect, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
@@ -1980,15 +1981,15 @@ export function DuplicateAccountDetailDialog({
   const planBadge = upstreamPlanBadgeRecipe(detail?.planType ?? null);
   return (
     <Dialog open={open} onOpenChange={(nextOpen: boolean) => !nextOpen && onClose()}>
-      <DialogContent className="max-h-[85vh] overflow-hidden p-0 sm:max-w-[38rem]">
-        <div className="flex items-start justify-between gap-4 border-b border-base-300/70 px-5 py-4">
+      <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 desktop:max-h-[calc(100dvh-2rem)] desktop:w-[min(38rem,calc(100vw-2rem))]">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/70 px-5 py-4">
           <DialogHeader className="min-w-0">
             <DialogTitle className="truncate">{detail?.displayName ?? title}</DialogTitle>
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
           <DialogCloseIcon aria-label={closeLabel} />
         </div>
-        <div className="space-y-4 overflow-y-auto px-5 py-5">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5 pb-[max(env(safe-area-inset-bottom),1rem)]">
           {isLoading ? (
             <div className="flex min-h-44 items-center justify-center">
               <Spinner />

@@ -23,6 +23,7 @@ import {
   YAxis,
 } from "recharts";
 import { Alert } from "../../components/ui/alert";
+import { useCompactViewport } from "../../hooks/useCompactViewport";
 import { useTranslation } from "../../i18n";
 import type { TimeseriesResponse } from "../../lib/api";
 import {
@@ -110,6 +111,7 @@ const WHEEL_PAN_INTENSITY = 0.012;
 const POINTER_AXIS_LOCK_THRESHOLD_PX = 8;
 const POINTER_AXIS_LOCK_RATIO = 1.45;
 const POINTER_FREE_DIAGONAL_RATIO = 0.72;
+const COMPACT_COUNT_CHART_MAX_BARS = 72;
 
 interface ChartViewport {
   startIndex: number;
@@ -162,6 +164,63 @@ function shiftViewport(
 
 function isSameViewport(left: ChartViewport, right: ChartViewport) {
   return left.startIndex === right.startIndex && left.endIndex === right.endIndex;
+}
+
+function buildCompactCountChartData(data: DashboardTodayMinuteDatum[], maxBars: number) {
+  if (data.length <= maxBars) return data;
+
+  const bucketSize = Math.ceil(data.length / maxBars);
+  const buckets: DashboardTodayMinuteDatum[] = [];
+
+  for (let start = 0; start < data.length; start += bucketSize) {
+    const points = data.slice(start, start + bucketSize);
+    const first = points[0];
+    const last = points.at(-1);
+    if (!first || !last) continue;
+
+    const visiblePoints = points.filter((point) => point.chartSuccessCount != null);
+    const firstByteSampleCount = visiblePoints.reduce(
+      (total, point) => total + point.firstResponseByteTotalSampleCount,
+      0,
+    );
+    const firstByteWeightedTotal = visiblePoints.reduce(
+      (total, point) =>
+        total +
+        (point.chartFirstResponseByteTotalAvgMs ?? 0) * point.firstResponseByteTotalSampleCount,
+      0,
+    );
+    const sum = (field: keyof DashboardTodayMinuteDatum) =>
+      visiblePoints.reduce((total, point) => {
+        const value = point[field];
+        return total + (typeof value === "number" ? value : 0);
+      }, 0);
+
+    buckets.push({
+      ...last,
+      index: first.index,
+      epochMs: first.epochMs,
+      label: first.label,
+      tooltipLabel: `${first.tooltipLabel} - ${last.tooltipLabel}`,
+      successCount: sum("successCount"),
+      failureCount: sum("failureCount"),
+      inFlightCount: sum("inFlightCount"),
+      queuedInFlightCount: sum("queuedInFlightCount"),
+      runningInFlightCount: sum("runningInFlightCount"),
+      failureCountNegative: sum("failureCountNegative"),
+      chartSuccessCount: visiblePoints.length > 0 ? sum("chartSuccessCount") : null,
+      chartInFlightCount: visiblePoints.length > 0 ? sum("chartInFlightCount") : null,
+      chartQueuedInFlightCount: visiblePoints.length > 0 ? sum("chartQueuedInFlightCount") : null,
+      chartRunningInFlightCount: visiblePoints.length > 0 ? sum("chartRunningInFlightCount") : null,
+      chartFailureCountNegative: visiblePoints.length > 0 ? sum("chartFailureCountNegative") : null,
+      firstResponseByteTotalSampleCount: firstByteSampleCount,
+      firstResponseByteTotalAvgMs:
+        firstByteSampleCount > 0 ? firstByteWeightedTotal / firstByteSampleCount : null,
+      chartFirstResponseByteTotalAvgMs:
+        firstByteSampleCount > 0 ? firstByteWeightedTotal / firstByteSampleCount : null,
+    });
+  }
+
+  return buckets;
 }
 
 function zoomViewport(
@@ -347,6 +406,7 @@ function DashboardTodayActivityChartImpl({
   }, [diagnosticsEnabled, renderSignature]);
 
   const { t, locale } = useTranslation();
+  const isCompactViewport = useCompactViewport();
   const { themeMode } = useTheme();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const numberFormatter = useMemo(
@@ -473,20 +533,28 @@ function DashboardTodayActivityChartImpl({
   const viewportSpan = visibleWindow.endIndex - visibleWindow.startIndex + 1;
   const isZoomed = chartData.length > 0 && viewportSpan < chartData.length;
   const xDomain: [number, number] = [visibleWindow.startIndex, visibleWindow.endIndex];
+  const visibleCountChartData = useMemo(
+    () =>
+      isCompactViewport
+        ? buildCompactCountChartData(visibleChartData, COMPACT_COUNT_CHART_MAX_BARS)
+        : visibleChartData,
+    [isCompactViewport, visibleChartData],
+  );
   const countBarSize = useMemo(() => {
+    if (isCompactViewport) return 4;
     if (chartData.length <= 0) return 1;
     const zoomFactor = chartData.length / Math.max(1, viewportSpan);
     return clampValue(Math.round(zoomFactor * 0.75), 1, 10);
-  }, [chartData.length, viewportSpan]);
+  }, [chartData.length, isCompactViewport, viewportSpan]);
 
   const countAxisBound = useMemo(() => {
-    const maxValue = chartData.reduce(
+    const maxValue = visibleCountChartData.reduce(
       (current, item) =>
         Math.max(current, item.successCount + item.inFlightCount, item.failureCount),
       0,
     );
     return Math.max(1, maxValue);
-  }, [chartData]);
+  }, [visibleCountChartData]);
 
   const getAnchorRatio = useCallback((clientX: number) => {
     const rect = interactionRef.current?.getBoundingClientRect();
@@ -833,7 +901,7 @@ function DashboardTodayActivityChartImpl({
 
   return (
     <section
-      className="overscroll-x-contain rounded-xl border border-base-300/75 bg-base-200/40 p-4"
+      className="overscroll-x-contain rounded-xl border border-base-300/75 bg-base-200/40 p-3 desktop:p-4"
       data-testid="dashboard-today-activity-chart"
       data-chart-mode={chartMode}
       data-chart-metric={metric}
@@ -844,7 +912,7 @@ function DashboardTodayActivityChartImpl({
     >
       <div
         ref={setInteractionLayerRef}
-        className="h-80 w-full cursor-grab touch-pan-y overflow-hidden overscroll-x-contain select-none active:cursor-grabbing"
+        className="h-[21rem] w-full cursor-grab touch-pan-y overflow-hidden overscroll-x-contain select-none active:cursor-grabbing desktop:h-80"
         data-testid="dashboard-today-activity-chart-interaction-layer"
         data-chart-kind="dashboard-today-activity"
         data-min-visible-minutes={MIN_VISIBLE_MINUTES}
@@ -863,8 +931,12 @@ function DashboardTodayActivityChartImpl({
           <ResponsiveContainer>
             {metric === "totalCount" ? (
               <ComposedChart
-                data={visibleChartData}
-                margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
+                data={visibleCountChartData}
+                margin={
+                  isCompactViewport
+                    ? { top: 8, right: 8, left: -8, bottom: 8 }
+                    : { top: 12, right: 24, left: 0, bottom: 8 }
+                }
                 barGap="-100%"
                 stackOffset="sign"
               >
@@ -876,7 +948,7 @@ function DashboardTodayActivityChartImpl({
                   minTickGap={28}
                   axisLine={{ stroke: chartColors.gridLine }}
                   tickLine={{ stroke: chartColors.gridLine }}
-                  tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                  tick={{ fill: chartColors.axisText, fontSize: isCompactViewport ? 11 : 12 }}
                   tickFormatter={(value: number) => {
                     const item =
                       chartData[Math.max(0, Math.min(chartData.length - 1, Math.round(value)))];
@@ -887,20 +959,27 @@ function DashboardTodayActivityChartImpl({
                   yAxisId="count"
                   domain={[-countAxisBound, countAxisBound]}
                   allowDecimals={false}
-                  tickFormatter={(value) => numberFormatter.format(Math.abs(Number(value)))}
+                  width={isCompactViewport ? 44 : undefined}
+                  tickFormatter={(value) => {
+                    const numericValue = Number(value);
+                    const formatted = numberFormatter.format(Math.abs(numericValue));
+                    return numericValue < 0 ? `-${formatted}` : formatted;
+                  }}
                   axisLine={{ stroke: chartColors.gridLine }}
                   tickLine={{ stroke: chartColors.gridLine }}
-                  tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                  tick={{ fill: chartColors.axisText, fontSize: isCompactViewport ? 11 : 12 }}
                 />
-                <YAxis
-                  yAxisId="latency"
-                  orientation="right"
-                  tickFormatter={(value) => `${numberFormatter.format(Number(value))}ms`}
-                  width={72}
-                  axisLine={{ stroke: chartColors.gridLine }}
-                  tickLine={{ stroke: chartColors.gridLine }}
-                  tick={{ fill: chartColors.axisText, fontSize: 12 }}
-                />
+                {!isCompactViewport ? (
+                  <YAxis
+                    yAxisId="latency"
+                    orientation="right"
+                    tickFormatter={(value) => `${numberFormatter.format(Number(value))}ms`}
+                    width={72}
+                    axisLine={{ stroke: chartColors.gridLine }}
+                    tickLine={{ stroke: chartColors.gridLine }}
+                    tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                  />
+                ) : null}
                 <Tooltip
                   labelFormatter={(value) => {
                     const item =
@@ -919,7 +998,12 @@ function DashboardTodayActivityChartImpl({
                     />
                   )}
                 />
-                <Legend wrapperStyle={{ color: chartColors.axisText }} />
+                <Legend
+                  wrapperStyle={{
+                    color: chartColors.axisText,
+                    fontSize: isCompactViewport ? 11 : 12,
+                  }}
+                />
                 <ReferenceLine yAxisId="count" y={0} stroke={chartColors.gridLine} />
                 <Bar
                   yAxisId="count"
@@ -961,23 +1045,25 @@ function DashboardTodayActivityChartImpl({
                   shape={<NegativeFailureBarShape />}
                   isAnimationActive={animate}
                 />
-                <Line
-                  yAxisId="latency"
-                  type="monotone"
-                  dataKey="chartFirstResponseByteTotalAvgMs"
-                  name={countSeriesNames.firstByteTotal}
-                  stroke={chartColors.firstByte}
-                  strokeOpacity={0.72}
-                  strokeWidth={1.25}
-                  dot={{
-                    r: 1.25,
-                    strokeWidth: 0,
-                    fill: chartColors.firstByte,
-                    fillOpacity: 0.72,
-                  }}
-                  connectNulls={false}
-                  isAnimationActive={animate}
-                />
+                {!isCompactViewport ? (
+                  <Line
+                    yAxisId="latency"
+                    type="monotone"
+                    dataKey="chartFirstResponseByteTotalAvgMs"
+                    name={countSeriesNames.firstByteTotal}
+                    stroke={chartColors.firstByte}
+                    strokeOpacity={0.72}
+                    strokeWidth={1.25}
+                    dot={{
+                      r: 1.25,
+                      strokeWidth: 0,
+                      fill: chartColors.firstByte,
+                      fillOpacity: 0.72,
+                    }}
+                    connectNulls={false}
+                    isAnimationActive={animate}
+                  />
+                ) : null}
               </ComposedChart>
             ) : metric === "trend" ? (
               <ComposedChart
