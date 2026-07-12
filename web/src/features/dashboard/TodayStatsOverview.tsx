@@ -611,16 +611,19 @@ export function TodayStatsOverview({
     : null
   const usageBreakdownLabels = locale === 'zh'
     ? {
-        total: '总计', cacheWrite: '缓存写入', cacheRead: '缓存读取', cacheHitTokens: '缓存命中 Token', output: '输出',
+        total: '总计', cacheWrite: '缓存写入', cacheRead: '缓存读取', cacheHitTokens: '缓存命中 Token', cacheHitRate: '缓存命中率', output: '输出',
         model: '模型', input: '输入', reasoning: '推理', unknown: '未知', unavailable: '成本分项未提供', tokenUnavailable: 'Token 分项未提供', unknownModel: '未标识模型',
         reasoningEffort: '思考等级', unspecifiedEffort: '未指定', effortNone: '无', effortMinimal: '最小', effortLow: '低', effortMedium: '中', effortHigh: '高', effortXhigh: '极高',
       }
     : {
-        total: 'Total', cacheWrite: 'Cache write', cacheRead: 'Cache read', cacheHitTokens: 'Cache hit tokens', output: 'Output',
+        total: 'Total', cacheWrite: 'Cache write', cacheRead: 'Cache read', cacheHitTokens: 'Cache hit tokens', cacheHitRate: 'Cache hit rate', output: 'Output',
         model: 'Model', input: 'Input', reasoning: 'Reasoning', unknown: 'Unknown', unavailable: 'Cost breakdown unavailable', tokenUnavailable: 'Token breakdown unavailable', unknownModel: 'Unidentified model',
         reasoningEffort: 'Reasoning effort', unspecifiedEffort: 'Unspecified', effortNone: 'None', effortMinimal: 'Minimal', effortLow: 'Low', effortMedium: 'Medium', effortHigh: 'High', effortXhigh: 'XHigh',
       }
   const formatBreakdownNumber = (value: number) => new Intl.NumberFormat(localeTag).format(value)
+  const formatBreakdownRatio = (value: number | null) => value == null
+    ? RATE_UNAVAILABLE_PLACEHOLDER
+    : new Intl.NumberFormat(localeTag, { style: 'percent', maximumFractionDigits: 1 }).format(value)
   const formatBreakdownCurrency = (value: number) => new Intl.NumberFormat(localeTag, {
     style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4,
   }).format(value)
@@ -897,6 +900,7 @@ export function TodayStatsOverview({
                 breakdown={stats.usageBreakdown}
                 kind="cost"
                 formatNumber={formatBreakdownNumber}
+                formatRatio={formatBreakdownRatio}
                 formatCurrency={formatBreakdownCurrency}
                 labels={usageBreakdownLabels}
               />
@@ -938,6 +942,7 @@ export function TodayStatsOverview({
                 breakdown={stats.usageBreakdown}
                 kind="tokens"
                 formatNumber={formatBreakdownNumber}
+                formatRatio={formatBreakdownRatio}
                 formatCurrency={formatBreakdownCurrency}
                 labels={usageBreakdownLabels}
               />

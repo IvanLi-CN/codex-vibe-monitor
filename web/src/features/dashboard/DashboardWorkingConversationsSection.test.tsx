@@ -1016,6 +1016,7 @@ describe("DashboardWorkingConversationsSection", () => {
       expect(tooltipText).toContain("3,200");
       expect(tooltipText).toContain("缓存写入");
       expect(tooltipText).toContain("缓存命中 Token");
+      expect(tooltipText).toContain("缓存命中率");
       expect(tooltipText).toContain("输出");
       expect(tooltipText).toContain("gpt-5.6");
     });

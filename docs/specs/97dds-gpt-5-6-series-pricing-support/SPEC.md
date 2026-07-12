@@ -119,7 +119,8 @@ PR: include
 - state: cost detail open
 - evidence_note: Verifies the cost detail uses one horizontal table with a total row followed by model rows, exposes all five billing buckets, and has no internal scrollbar.
 
-![Dashboard Token breakdown table on mobile](./assets/dashboard-token-breakdown-mobile.png)
+PR: include
+![Dashboard Token breakdown with cache hit rate on mobile](./assets/dashboard-token-breakdown-cache-hit-rate-mobile.jpg)
 
 - source_type: storybook_canvas
 - target_program: mock-only
@@ -129,8 +130,8 @@ PR: include
 - sensitive_exclusion: N/A
 - submission_gate: approved
 - story_id_or_title: Dashboard/TodayStatsOverview Usage Breakdown Details
-- state: Token detail open
-- evidence_note: Verifies the Token detail remains a single readable four-column table on a narrow viewport, with total and model rows visible without an internal scrollbar.
+- state: Token detail open with cache hit rate column
+- evidence_note: Verifies the five-column Token detail shows cache write, cache-hit Tokens, output, and cache hit rate for total and model rows without an internal scrollbar.
 
 PR: include
 ![Mixed realtime and historical cost breakdown on desktop](./assets/dashboard-mixed-cost-unknown-desktop.png)
