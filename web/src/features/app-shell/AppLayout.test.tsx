@@ -188,7 +188,7 @@ function render(initialEntry = '/dashboard') {
 }
 
 describe('AppLayout', () => {
-  it('keeps desktop navigation behind the compact hamburger menu contract', async () => {
+  it('uses the compact hamburger menu only through the mobile breakpoint', async () => {
     hookMocks.useUpdateAvailable.mockReturnValue({
       currentVersion: null,
       availableVersion: null,
@@ -220,7 +220,7 @@ describe('AppLayout', () => {
 
     expect(navGroup).not.toBeNull()
     expect(desktopNavigation?.className).toContain('hidden')
-    expect(desktopNavigation?.className).toContain('min-[1024px]:block')
+    expect(desktopNavigation?.className).toContain('desktop:block')
     expect(dashboardLink?.className).toContain('segmented-control-item')
     expect(dashboardLink?.className).toContain('segmented-control-item--active')
     expect(systemLink?.className).toContain('segmented-control-item')
@@ -231,6 +231,7 @@ describe('AppLayout', () => {
     expect(logoImage).not.toBeNull()
 
     expect(mobileMenuButton).not.toBeNull()
+    expect(mobileMenuButton?.className).toContain('desktop:!hidden')
     act(() => {
       mobileMenuButton?.click()
     })

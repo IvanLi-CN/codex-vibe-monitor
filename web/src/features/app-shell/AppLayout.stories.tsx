@@ -263,6 +263,7 @@ export const Default: Story = {
     await expect(canvas.getByTestId('app-main')).toBeVisible()
     await expect(canvas.getByTestId('app-footer-inner')).toBeVisible()
     await expect(canvas.getByRole('link', { name: '号池' })).toHaveAttribute('aria-current', 'page')
+    await expect(canvas.queryByRole('button', { name: /打开导航菜单/i })).not.toBeInTheDocument()
   },
 }
 

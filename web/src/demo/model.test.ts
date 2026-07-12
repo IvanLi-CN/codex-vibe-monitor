@@ -12,12 +12,15 @@ describe('demoModel', () => {
   it('resets each scene to deterministic seed data', () => {
     demoModel.setScene('attention')
     demoModel.createAccount()
-    expect(demoModel.snapshot.accounts).toHaveLength(3)
+    expect(demoModel.snapshot.accounts).toHaveLength(16)
 
     demoModel.reset()
 
     expect(demoModel.snapshot.scene).toBe('attention')
-    expect(demoModel.snapshot.accounts).toHaveLength(2)
+    expect(demoModel.snapshot.accounts).toHaveLength(15)
+    expect(demoModel.snapshot.accounts.map((account) => account.groupName)).toEqual(
+      expect.arrayContaining(['production', 'research', 'standby', 'edge', null]),
+    )
     expect(demoModel.snapshot.actions).toEqual([])
   })
 
