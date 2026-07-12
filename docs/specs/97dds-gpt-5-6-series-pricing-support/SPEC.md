@@ -87,7 +87,7 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - Given an exact-only range, when cost detail is rendered, then the `unknown` value is zero and the UI keeps the five known cost columns.
 - Given calls for the same model with different recorded reasoning efforts, when usage is aggregated, then each model-plus-effort pair is returned separately while the total remains reconciled across all pairs.
 - Given a missing or blank recorded reasoning effort, when its model row is rendered, then it is labelled as unspecified without inferring a model default.
-- Given a Token detail panel, when cache-read Token usage is rendered, then its column is labelled as cache-read Tokens while the cost panel retains the cache-read billing label.
+- Given a Token detail panel, when cache-read Token usage is rendered, then its column is labelled as cache read while the cost panel retains the cache-read billing label.
 - Given a dashboard or upstream-account cost/Token label, when it is hovered, focused, or clicked, then total and sorted model detail is readable on desktop and mobile.
 
 ## Visual Evidence
@@ -130,7 +130,7 @@ PR: include
 - submission_gate: approved
 - story_id_or_title: Dashboard/TodayStatsOverview Usage Breakdown Details
 - state: Token detail open with cache hit rate column
-- evidence_note: Verifies the five-column Token detail puts cache hit rate immediately after cache-read Tokens, followed by output, for total and model rows without an internal scrollbar.
+- evidence_note: Verifies the five-column Token detail puts cache hit rate immediately after cache read, followed by output, for total and model rows without an internal scrollbar.
 
 ![Mixed realtime and historical cost breakdown on desktop](./assets/dashboard-mixed-cost-unknown-desktop.png)
 
