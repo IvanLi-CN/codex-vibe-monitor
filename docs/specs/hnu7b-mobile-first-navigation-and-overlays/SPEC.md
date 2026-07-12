@@ -162,6 +162,17 @@
 
 ![Web Demo records applied filter summary](./assets/records-filter-summary-desktop1440.png)
 
+### `390x844` Dashboard Chart Visibility
+
+- source_type: `ui_demo`
+  source_revision: `1b4d6b44`
+  target_program: mock-only Web Demo (`VITE_APP_RUNTIME=demo`)
+  sensitive_exclusion: demo fixtures only; no production account, secret, or backend request
+
+验证今天活动图在手机视口将密集分钟柱聚合为可见宽度，移除挤占绘图区的延迟轴，并以负号区分失败侧；当前对话说明与 workspace 切换控件在窄屏分行，避免文字被压缩成窄列。
+
+![Web Demo dashboard readable chart mobile](./assets/dashboard-chart-readable-mobile390.png)
+
 ## 风险 / 开放问题 / 假设
 
 - 复杂详情页面在 768px 以下页面化，避免在半宽 drawer 中压缩多标签工作区。
