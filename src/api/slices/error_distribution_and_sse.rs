@@ -1846,6 +1846,20 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_activity_live_snapshot_infers_missing_runtime_phase() {
+        let mut requesting = live_record("requesting", Some(42), "running", None, 1);
+        requesting.t_upstream_connect_ms = Some(4.0);
+        let mut responding = live_record("responding", Some(42), "running", None, 1);
+        responding.t_upstream_ttfb_ms = Some(12.0);
+
+        let snapshot = build_dashboard_activity_live_snapshot(10, [requesting, responding]);
+
+        assert_eq!(snapshot.in_progress_phase_counts.queued, 0);
+        assert_eq!(snapshot.in_progress_phase_counts.requesting, 1);
+        assert_eq!(snapshot.in_progress_phase_counts.responding, 1);
+    }
+
+    #[test]
     fn build_invocation_filters_normalizes_request_id() {
         let params = ListQuery {
             request_id: Some(" invoke-123 ".to_string()),
@@ -2075,9 +2089,13 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
                 retry_invocation_count: 0,
             });
         account.in_progress_invocation_count += 1;
+        let live_phase = record
+            .live_phase
+            .as_deref()
+            .or_else(|| runtime_invocation_live_phase(&record));
         account
             .in_progress_phase_counts
-            .increment_phase_name(record.live_phase.as_deref());
+            .increment_phase_name(live_phase);
         if record.pool_attempt_count.unwrap_or_default() > 1 {
             account.retry_invocation_count += 1;
         }

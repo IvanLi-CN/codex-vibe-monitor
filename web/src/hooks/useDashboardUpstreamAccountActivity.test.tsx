@@ -371,6 +371,37 @@ describe("useDashboardUpstreamAccountActivity", () => {
     expect(text("live-count")).toBe("2");
   });
 
+  it("does not apply current live snapshots to the yesterday range", async () => {
+    apiMocks.fetchDashboardActivity.mockResolvedValue(createAccountResponse(0, []));
+    render(<SnapshotProbe includeAccounts range="yesterday" />);
+    await flushAsync();
+
+    act(() => {
+      sseMocks.listener?.({
+        type: "dashboardActivityLive",
+        snapshot: {
+          revision: 7,
+          generatedAt: "2026-04-04T10:05:01Z",
+          inProgressInvocationCount: 2,
+          inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
+          retryInvocationCount: 1,
+          accounts: [
+            {
+              accountKey: "upstream:42",
+              upstreamAccountId: 42,
+              inProgressInvocationCount: 2,
+              inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
+              retryInvocationCount: 1,
+            },
+          ],
+        },
+      });
+    });
+
+    expect(text("live-count")).toBe("0");
+    expect(text("summary-live-count")).toBe("0");
+  });
+
   it("can fetch a summary-only dashboard snapshot without account details", async () => {
     apiMocks.fetchDashboardActivity.mockResolvedValue({
       ...createAccountResponse(0, []),

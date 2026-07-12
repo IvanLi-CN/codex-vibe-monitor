@@ -232,7 +232,9 @@ export function useDashboardActivitySnapshot(
       );
       const latestLiveSnapshot = latestLiveSnapshotRef.current;
       setData(
-        latestLiveSnapshot && latestLiveSnapshot.revision > (response.liveRevision ?? 0)
+        requestedRange !== "yesterday" &&
+          latestLiveSnapshot &&
+          latestLiveSnapshot.revision > (response.liveRevision ?? 0)
           ? mergeDashboardActivityLiveSnapshot(response, latestLiveSnapshot)
           : response,
       );
@@ -304,6 +306,7 @@ export function useDashboardActivitySnapshot(
         const current = latestLiveSnapshotRef.current;
         if (current && payload.snapshot.revision <= current.revision) return;
         latestLiveSnapshotRef.current = payload.snapshot;
+        if (rangeRef.current === "yesterday") return;
         setData((currentData) =>
           currentData ? mergeDashboardActivityLiveSnapshot(currentData, payload.snapshot) : currentData,
         );
