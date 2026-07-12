@@ -184,8 +184,10 @@ function createSuggestions(overrides: Partial<InvocationSuggestionsResponse> = {
 }
 
 function mockInvocationRecords(overrides: Partial<ReturnType<typeof hookMocks.useInvocationRecords>> = {}) {
+  const draft = { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange(), model: 'alp' }
   hookMocks.useInvocationRecords.mockReturnValue({
-    draft: { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange(), model: 'alp' },
+    draft,
+    appliedDraft: draft,
     focus: 'token',
     page: 1,
     pageSize: 20,
@@ -200,6 +202,7 @@ function mockInvocationRecords(overrides: Partial<ReturnType<typeof hookMocks.us
     isSummaryLoading: false,
     updateDraft: vi.fn(),
     resetDraft: vi.fn(),
+    applyDraft: vi.fn(() => Promise.resolve()),
     setFocus: vi.fn(),
     search: vi.fn(),
     setPage: vi.fn(),
@@ -207,6 +210,21 @@ function mockInvocationRecords(overrides: Partial<ReturnType<typeof hookMocks.us
     setSort: vi.fn(),
     ...overrides,
   })
+}
+
+function openFilters() {
+  const button = host?.querySelector('[data-testid="records-open-filters"]')
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error('missing open filters button')
+  }
+  act(() => {
+    button.click()
+  })
+  const drawer = document.body.querySelector('[data-testid="records-filters-drawer"]')
+  if (!(drawer instanceof HTMLElement)) {
+    throw new Error('missing filters drawer')
+  }
+  return drawer
 }
 
 function getNewDataButton() {
@@ -230,21 +248,23 @@ describe('RecordsPage suggestions', () => {
     mockInvocationRecords()
 
     render(<RecordsPage />)
+    openFilters()
 
-    expect(host?.querySelector('#records-filter-proxy')).toBeNull()
-    expect(host?.textContent ?? '').not.toContain('records.filters.proxy')
+    expect(document.body.querySelector('#records-filter-proxy')).toBeNull()
+    expect(document.body.textContent ?? '').not.toContain('records.filters.proxy')
   })
 
   it('disables browser native autocomplete for filter controls', () => {
     mockInvocationRecords()
 
     render(<RecordsPage />)
+    openFilters()
 
-    const modelInput = host?.querySelector('#records-filter-model')
-    const rangePresetSelect = host?.querySelector('select[name="rangePreset"]')
+    const modelInput = document.body.querySelector('#records-filter-model')
+    const rangePresetSelect = document.body.querySelector('select[name="rangePreset"]')
     const rangePresetTrigger = getSelectTrigger('records.filters.rangePreset')
-    const keywordInput = host?.querySelector('input[name="keyword"]')
-    const minTotalTokensInput = host?.querySelector('input[name="minTotalTokens"]')
+    const keywordInput = document.body.querySelector('input[name="keyword"]')
+    const minTotalTokensInput = document.body.querySelector('input[name="minTotalTokens"]')
 
     if (!(modelInput instanceof HTMLInputElement)) {
       throw new Error('missing model input')
@@ -275,6 +295,7 @@ describe('RecordsPage suggestions', () => {
     mockInvocationRecords()
 
     render(<RecordsPage />)
+    openFilters()
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300)
@@ -282,7 +303,7 @@ describe('RecordsPage suggestions', () => {
     await flushAsync()
     expect(apiMocks.fetchInvocationSuggestions).not.toHaveBeenCalled()
 
-    const input = host?.querySelector('#records-filter-model')
+    const input = document.body.querySelector('#records-filter-model')
     if (!(input instanceof HTMLInputElement)) {
       throw new Error('missing model input')
     }
@@ -324,8 +345,9 @@ describe('RecordsPage suggestions', () => {
     mockInvocationRecords()
 
     render(<RecordsPage />)
+    openFilters()
 
-    const input = host?.querySelector('#records-filter-model')
+    const input = document.body.querySelector('#records-filter-model')
     if (!(input instanceof HTMLInputElement)) {
       throw new Error('missing model input')
     }
@@ -367,7 +389,7 @@ describe('RecordsPage suggestions', () => {
     })
     await flushAsync()
 
-    expect(host?.textContent).not.toContain('alp-stale')
+    expect(document.body.textContent).not.toContain('alp-stale')
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300)
@@ -375,11 +397,11 @@ describe('RecordsPage suggestions', () => {
     await flushAsync()
 
     expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(2)
-    expect(host?.textContent).toContain('alp-fresh')
-    expect(host?.textContent).not.toContain('alp-stale')
+    expect(document.body.textContent).toContain('alp-fresh')
+    expect(document.body.textContent).not.toContain('alp-stale')
   })
 
-  it('raises the filters panel while a suggestion dropdown is open', async () => {
+  it('keeps filter suggestions inside the drawer without changing page surface layering', async () => {
     vi.useFakeTimers()
     apiMocks.fetchInvocationSuggestions.mockResolvedValue(
       createSuggestions({
@@ -395,16 +417,17 @@ describe('RecordsPage suggestions', () => {
 
     render(<RecordsPage />)
 
-    const filtersPanel = host?.querySelector('[data-testid="records-filters-panel"]')
     const summaryPanel = host?.querySelector('[data-testid="records-summary-panel"]')
-    if (!(filtersPanel instanceof HTMLElement) || !(summaryPanel instanceof HTMLElement)) {
+    if (!(summaryPanel instanceof HTMLElement)) {
       throw new Error('missing panel anchors')
     }
 
-    expect(filtersPanel.dataset.suggestionsOpen).toBe('false')
-    expect(filtersPanel.className).not.toContain('z-10')
+    expect(document.body.querySelector('[data-testid="records-filters-drawer"]')).toBeNull()
+    const filtersDrawer = openFilters()
+    expect(filtersDrawer.dataset.suggestionsOpen).toBe('false')
+    expect(filtersDrawer.closest('[role="dialog"]')).not.toBeNull()
 
-    const input = host?.querySelector('#records-filter-prompt-cache-key')
+    const input = document.body.querySelector('#records-filter-prompt-cache-key')
     if (!(input instanceof HTMLInputElement)) {
       throw new Error('missing prompt cache key input')
     }
@@ -419,10 +442,6 @@ describe('RecordsPage suggestions', () => {
     })
     await flushAsync()
 
-    expect(filtersPanel.dataset.suggestionsOpen).toBe('true')
-    expect(filtersPanel.className).toContain('relative')
-    expect(filtersPanel.className).toContain('z-10')
-    expect(filtersPanel.className).toContain('overflow-visible')
     expect(summaryPanel.className).toBe('surface-panel')
 
     act(() => {
@@ -433,8 +452,49 @@ describe('RecordsPage suggestions', () => {
     })
     await flushAsync()
 
-    expect(filtersPanel.dataset.suggestionsOpen).toBe('false')
-    expect(filtersPanel.className).not.toContain('z-10')
+    expect(host?.querySelector('[data-testid="records-filters-panel"]')?.className).toBe('surface-panel')
+  })
+})
+
+describe('RecordsPage filter drawer', () => {
+  it('keeps draft controls out of the page flow and summarizes only applied filters', () => {
+    const baseDraft = { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange() }
+    const appliedDraft = { ...baseDraft, model: 'gpt-5.3-codex', status: 'failed' }
+    const applyDraft = vi.fn(() => Promise.resolve())
+    mockInvocationRecords({
+      draft: { ...appliedDraft, endpoint: '/v1/responses' },
+      appliedDraft,
+      applyDraft,
+    })
+
+    render(<RecordsPage />)
+
+    expect(host?.querySelector('#records-filter-model')).toBeNull()
+    const activeFilters = host?.querySelector('[data-testid="records-active-filters"]')
+    expect(activeFilters?.textContent).toContain('records.filters.model: gpt-5.3-codex')
+    expect(activeFilters?.textContent).toContain('records.filters.status: records.filters.status.failed')
+    expect(activeFilters?.textContent).not.toContain('/v1/responses')
+
+    const modelChip = host?.querySelector('[data-testid="records-active-filter-model"]')
+    if (!(modelChip instanceof HTMLButtonElement)) {
+      throw new Error('missing applied model filter chip')
+    }
+    act(() => {
+      modelChip.click()
+    })
+
+    expect(applyDraft).toHaveBeenCalledWith(expect.objectContaining({ model: '', status: 'failed' }))
+  })
+
+  it('opens filters in the shared drawer instead of leaving form controls in the page body', () => {
+    mockInvocationRecords()
+
+    render(<RecordsPage />)
+
+    expect(host?.querySelector('[data-testid="records-filters-drawer"]')).toBeNull()
+    const drawer = openFilters()
+    expect(drawer.closest('[role="dialog"]')).not.toBeNull()
+    expect(document.body.querySelector('#records-filter-model')).toBeInstanceOf(HTMLInputElement)
   })
 })
 
@@ -703,8 +763,9 @@ describe('RecordsPage new data action', () => {
     })
 
     render(<RecordsPage />)
+    openFilters()
 
-    const input = host?.querySelector('input[name="requestId"]')
+    const input = document.body.querySelector('input[name="requestId"]')
     if (!(input instanceof HTMLInputElement)) {
       throw new Error('missing request ID input')
     }

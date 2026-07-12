@@ -27,6 +27,7 @@ import {
 
 export interface UseInvocationRecordsResult {
   draft: InvocationRecordsDraftFilters
+  appliedDraft: InvocationRecordsDraftFilters | null
   focus: InvocationFocus
   page: number
   pageSize: number
@@ -41,6 +42,7 @@ export interface UseInvocationRecordsResult {
   isSummaryLoading: boolean
   updateDraft: <K extends keyof InvocationRecordsDraftFilters>(key: K, value: InvocationRecordsDraftFilters[K]) => void
   resetDraft: () => void
+  applyDraft: (draft: InvocationRecordsDraftFilters) => Promise<void>
   setFocus: (focus: InvocationFocus) => void
   search: (options?: InvocationRecordsSearchOptions) => Promise<void>
   setPage: (page: number) => Promise<void>
@@ -51,6 +53,7 @@ export interface UseInvocationRecordsResult {
 export interface InvocationRecordsSearchOptions {
   source?: 'draft' | 'applied'
   preserveSummary?: boolean
+  draft?: InvocationRecordsDraftFilters
 }
 
 interface SearchState {
@@ -143,6 +146,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     const next = createDefaultInvocationRecordsDraft()
     return { ...next, ...createDefaultCustomRange() }
   })
+  const [appliedDraft, setAppliedDraft] = useState<InvocationRecordsDraftFilters | null>(null)
   const [focus, setFocus] = useState<InvocationFocus>(DEFAULT_RECORDS_FOCUS)
   const [page, setPageState] = useState(1)
   const [pageSize, setPageSizeState] = useState<number>(DEFAULT_RECORDS_PAGE_SIZE)
@@ -271,10 +275,12 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     let listLoaded = false
 
     try {
+      const shouldUseAppliedFilters = options?.source === 'applied' && !options?.draft
+      const sourceDraft = options?.draft ?? draftRef.current
       const filters =
-        options?.source === 'applied' && appliedRef.current
+        shouldUseAppliedFilters && appliedRef.current
           ? appliedRef.current.filters
-          : buildAppliedInvocationFilters(draftRef.current)
+          : buildAppliedInvocationFilters(sourceDraft)
       const listResponse = await fetchInvocationRecords(
         buildInvocationRecordsQuery(filters, {
           page: 1,
@@ -287,7 +293,10 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
 
       listLoaded = true
       appliedRef.current = { filters, snapshotId: listResponse.snapshotId, generation: requestSeq }
-      const previousRecords = options?.source === 'applied' ? recordsRef.current : null
+      if (!shouldUseAppliedFilters) {
+        setAppliedDraft({ ...sourceDraft })
+      }
+      const previousRecords = shouldUseAppliedFilters ? recordsRef.current : null
       const { response: visibleListResponse, preservedKeys } = mergeTransientInFlightRecords(
         listResponse,
         previousRecords,
@@ -368,6 +377,15 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     draftRef.current = next
     setDraft(next)
   }, [])
+
+  const applyDraft = useCallback(
+    async (nextDraft: InvocationRecordsDraftFilters) => {
+      draftRef.current = nextDraft
+      setDraft(nextDraft)
+      await search({ draft: nextDraft })
+    },
+    [search],
+  )
 
   useEffect(() => {
     void search()
@@ -557,6 +575,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   const api = useMemo(
     () => ({
       draft,
+      appliedDraft,
       focus,
       page,
       pageSize,
@@ -583,13 +602,14 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         setDraft(next)
       },
       resetDraft,
+      applyDraft,
       setFocus,
       search,
       setPage,
       setPageSize,
       setSort,
     }),
-    [draft, focus, isRecordsLoading, isSearching, isSummaryLoading, liveMergeState.matchingVisibleInsertKeys.length, page, pageSize, records, recordsError, resetDraft, search, setPage, setPageSize, setSort, sortBy, sortOrder, summary, summaryError],
+    [appliedDraft, applyDraft, draft, focus, isRecordsLoading, isSearching, isSummaryLoading, liveMergeState.matchingVisibleInsertKeys.length, page, pageSize, records, recordsError, resetDraft, search, setPage, setPageSize, setSort, sortBy, sortOrder, summary, summaryError],
   )
 
   return api
