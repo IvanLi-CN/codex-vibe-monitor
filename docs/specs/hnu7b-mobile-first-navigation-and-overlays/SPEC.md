@@ -93,7 +93,7 @@
 
 - source_type: `ui_demo`
   target_program: mock-only Web Demo (`VITE_APP_RUNTIME=demo`)
-  source_revision: `15089c374ffab1dd0669aae78de3279148140cdb`
+  source_revision: `f5c4035a`
   sensitive_exclusion: demo fixtures only; no production account, secret, or backend request
   capture_scope: browser viewport
 
