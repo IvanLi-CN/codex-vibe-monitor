@@ -14,6 +14,7 @@ import type {
   UpdateGroupAccountRoutingRulePayload,
   UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
+  ApiPoolUpstreamRequestAttempt,
   UpstreamAccountListResponse,
 } from '../../lib/api'
 import AccountPoolLayout from '../../pages/account-pool/AccountPoolLayout'
@@ -491,6 +492,15 @@ export function StorybookUpstreamAccountsMock({
           return jsonResponse({ message: failureMessage }, 503)
         }
         return jsonResponse(payload)
+      }
+
+      if (path === '/api/pool/forward-proxy-binding-nodes' && method === 'GET') {
+        const requestedKeys = new Set(parsedUrl.searchParams.getAll('key'))
+        const nodes = store.forwardProxyNodes.filter((node) => {
+          if (requestedKeys.size === 0) return true
+          return requestedKeys.has(node.key) || (node.aliasKeys ?? []).some((key) => requestedKeys.has(key))
+        })
+        return jsonResponse(clone(nodes))
       }
 
       if (path === '/api/pool/upstream-account-events' && method === 'GET') {
@@ -1067,6 +1077,94 @@ export function StorybookUpstreamAccountsMock({
         if (!detail)
           return jsonResponse({ message: 'missing mock account' }, 404)
         return jsonResponse(clone(detail))
+      }
+
+      const attemptMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)\/call-attempts(?:\/locate)?$/,
+      )
+      if (attemptMatch && method === 'GET') {
+        const accountId = Number(attemptMatch[1])
+        const attemptId = Number(parsedUrl.searchParams.get('attemptId') || 9001)
+        const attempts: ApiPoolUpstreamRequestAttempt[] = [
+          {
+            id: 9001,
+            invokeId: 'storybook-pool-retry-001',
+            occurredAt: '2026-07-11T12:00:00.000Z',
+            endpoint: '/v1/responses',
+            stickyKey: 'storybook-sticky',
+            upstreamAccountId: accountId,
+            upstreamAccountName: 'Codex Pro - Tokyo',
+            model: 'gpt-5.4',
+            requestModel: 'gpt-5.4',
+            proxyBindingKeySnapshot: 'jp-edge-01',
+            requesterIp: '203.0.113.24',
+            connectLatencyMs: 186,
+            firstByteLatencyMs: 742,
+            streamLatencyMs: 1284,
+            upstreamRequestId: 'upstream-story-500',
+            upstreamRouteKey: 'route-tokyo-primary',
+            attemptIndex: 1,
+            distinctAccountIndex: 0,
+            sameAccountRetryIndex: 0,
+            status: 'http_failure',
+            phase: 'failed',
+            httpStatus: 500,
+            downstreamHttpStatus: 502,
+            failureKind: 'upstream_response_failed',
+            errorMessage: 'pool upstream responded with 500',
+            createdAt: '2026-07-11T12:00:00.000Z',
+          },
+          {
+            id: 9002,
+            invokeId: 'storybook-pool-retry-001',
+            occurredAt: '2026-07-11T12:00:01.000Z',
+            endpoint: '/v1/responses',
+            stickyKey: 'storybook-sticky',
+            upstreamAccountId: accountId,
+            upstreamAccountName: 'Codex Pro - Tokyo',
+            model: 'gpt-5.4',
+            requestModel: 'gpt-5.4',
+            responseModel: 'gpt-5.4-2026-07-01',
+            proxyBindingKeySnapshot: 'jp-edge-01',
+            requesterIp: '203.0.113.24',
+            connectLatencyMs: 94,
+            firstByteLatencyMs: 328,
+            streamLatencyMs: 1890,
+            upstreamRequestId: 'upstream-story-200',
+            upstreamRouteKey: 'route-tokyo-primary',
+            attemptIndex: 2,
+            distinctAccountIndex: 0,
+            sameAccountRetryIndex: 1,
+            status: 'success',
+            phase: 'completed',
+            httpStatus: 200,
+            createdAt: '2026-07-11T12:00:01.000Z',
+          },
+        ]
+        if (storyId?.endsWith('--detail-drawer-records-pending-mobile')) {
+          attempts.unshift({
+            id: 9003,
+            invokeId: 'storybook-pool-pending-001',
+            occurredAt: '2026-07-11T12:00:02.000Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: accountId,
+            upstreamAccountName: 'Codex Pro - Tokyo',
+            model: 'gpt-5.4',
+            requestModel: 'gpt-5.4',
+            proxyBindingKeySnapshot: 'jp-edge-01',
+            attemptIndex: 1,
+            distinctAccountIndex: 0,
+            sameAccountRetryIndex: 0,
+            status: 'pending',
+            phase: 'waiting_first_byte',
+            connectLatencyMs: 83,
+            createdAt: '2026-07-11T12:00:02.000Z',
+          })
+        }
+        if (path.endsWith('/locate') && !attempts.some((attempt) => attempt.id === attemptId)) {
+          return jsonResponse({ message: 'upstream account attempt was not found' }, 404)
+        }
+        return jsonResponse({ items: attempts, total: attempts.length, page: 1, pageSize: 50 })
       }
 
       if (path === '/api/invocations/locate' && method === 'GET') {

@@ -6,6 +6,8 @@ export {
   fetchInvocationRecordsNewCount,
   fetchInvocationSuggestions,
   fetchInvocationPoolAttempts,
+  fetchUpstreamAccountAttempts,
+  locateUpstreamAccountAttempt,
   fetchInvocationRecordDetail,
   fetchInvocationResponseBody,
   fetchStats,

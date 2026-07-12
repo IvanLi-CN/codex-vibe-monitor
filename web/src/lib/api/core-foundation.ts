@@ -448,6 +448,9 @@ export interface ApiPoolUpstreamRequestAttempt {
   stickyKey?: string | null;
   upstreamAccountId?: number | null;
   upstreamAccountName?: string | null;
+  model?: string | null;
+  requestModel?: string | null;
+  responseModel?: string | null;
   upstreamRouteKey?: string | null;
   proxyBindingKeySnapshot?: string | null;
   attemptIndex: number;
@@ -468,6 +471,13 @@ export interface ApiPoolUpstreamRequestAttempt {
   streamLatencyMs?: number | null;
   upstreamRequestId?: string | null;
   createdAt: string;
+}
+
+export interface UpstreamAccountAttemptListResponse {
+  items: ApiPoolUpstreamRequestAttempt[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export type InvocationFocus = "token" | "network" | "exception";
@@ -1016,6 +1026,35 @@ export async function fetchInvocationSuggestions(
 export async function fetchInvocationPoolAttempts(invokeId: string) {
   return fetchJson<ApiPoolUpstreamRequestAttempt[]>(
     `/api/invocations/${encodeURIComponent(invokeId)}/pool-attempts`,
+  );
+}
+
+export async function fetchUpstreamAccountAttempts(
+  accountId: number,
+  options?: { page?: number; pageSize?: number; signal?: AbortSignal },
+) {
+  const search = new URLSearchParams({
+    page: String(options?.page ?? 1),
+    pageSize: String(options?.pageSize ?? 50),
+  });
+  return fetchJson<UpstreamAccountAttemptListResponse>(
+    `/api/pool/upstream-accounts/${encodeURIComponent(String(accountId))}/call-attempts?${search.toString()}`,
+    { signal: options?.signal },
+  );
+}
+
+export async function locateUpstreamAccountAttempt(
+  accountId: number,
+  attemptId: number,
+  options?: { pageSize?: number; signal?: AbortSignal },
+) {
+  const search = new URLSearchParams({
+    attemptId: String(attemptId),
+    pageSize: String(options?.pageSize ?? 50),
+  });
+  return fetchJson<UpstreamAccountAttemptListResponse>(
+    `/api/pool/upstream-accounts/${encodeURIComponent(String(accountId))}/call-attempts/locate?${search.toString()}`,
+    { signal: options?.signal },
   );
 }
 

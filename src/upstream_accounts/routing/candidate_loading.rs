@@ -614,6 +614,7 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                                     http_status.unwrap_or(StatusCode::BAD_GATEWAY),
                                     5,
                                     None,
+                                    None,
                                 )
                                 .await?;
                             }

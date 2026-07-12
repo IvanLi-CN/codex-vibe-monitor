@@ -43,6 +43,7 @@ interface InvocationRecordsTableProps {
   isLoading: boolean;
   error?: string | null;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  autoExpandInvokeId?: string | null;
 }
 
 type StatusMeta = {
@@ -417,6 +418,7 @@ export function InvocationRecordsTable({
   isLoading,
   error,
   onOpenUpstreamAccount,
+  autoExpandInvokeId = null,
 }: InvocationRecordsTableProps) {
   const { t, locale } = useTranslation();
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -572,6 +574,12 @@ export function InvocationRecordsTable({
       return rows.some((row) => row.rowKey === current) ? current : null;
     });
   }, [rows]);
+
+  useEffect(() => {
+    if (!autoExpandInvokeId) return;
+    const row = rows.find((candidate) => candidate.record.invokeId === autoExpandInvokeId);
+    if (row) setExpandedId(row.rowKey);
+  }, [autoExpandInvokeId, rows]);
 
   useEffect(() => {
     setDrawerRecordId((current) => {

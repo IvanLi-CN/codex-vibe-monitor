@@ -2635,6 +2635,75 @@ async fn record_pool_route_transport_failure_starts_temporary_cooldown_after_str
 }
 
 #[tokio::test]
+async fn route_failure_event_records_the_exact_upstream_attempt_id() {
+    let pool = test_pool().await;
+    let account_id = insert_api_key_account(&pool, "Attempt Event Link").await;
+
+    record_pool_route_transport_failure_for_attempt(
+        &pool,
+        account_id,
+        None,
+        "failed to contact upstream",
+        Some("invk_attempt_event_link"),
+        Some(9_102),
+    )
+    .await
+    .expect("record route failure with attempt id");
+
+    let attempt_id = sqlx::query_scalar::<_, Option<i64>>(
+        r#"
+        SELECT attempt_id
+        FROM pool_upstream_account_events
+        WHERE account_id = ?1 AND invoke_id = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(account_id)
+    .bind("invk_attempt_event_link")
+    .fetch_one(&pool)
+    .await
+    .expect("load route failure event");
+
+    assert_eq!(attempt_id, Some(9_102));
+}
+
+#[tokio::test]
+async fn route_success_event_records_the_exact_upstream_attempt_id() {
+    let pool = test_pool().await;
+    let account_id = insert_api_key_account(&pool, "Attempt Success Event Link").await;
+
+    record_pool_route_success_with_image_intent_for_attempt(
+        &pool,
+        account_id,
+        Utc::now(),
+        None,
+        Some("invk_attempt_success_event_link"),
+        ImageIntent::Unknown,
+        Some(9_103),
+    )
+    .await
+    .expect("record route success with attempt id");
+
+    let attempt_id = sqlx::query_scalar::<_, Option<i64>>(
+        r#"
+        SELECT attempt_id
+        FROM pool_upstream_account_events
+        WHERE account_id = ?1 AND invoke_id = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(account_id)
+    .bind("invk_attempt_success_event_link")
+    .fetch_one(&pool)
+    .await
+    .expect("load route success event");
+
+    assert_eq!(attempt_id, Some(9_103));
+}
+
+#[tokio::test]
 async fn record_pool_route_transport_failure_caps_temporary_cooldown_at_sixty_seconds() {
     let pool = test_pool().await;
     let account_id = insert_api_key_account(&pool, "Cooldown Cap").await;

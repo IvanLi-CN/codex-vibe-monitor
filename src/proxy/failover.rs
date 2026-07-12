@@ -2508,16 +2508,19 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     continue;
                 }
                 let route_failure_result = if oauth_transport_failure_kind.is_some() {
-                    record_pool_route_transport_failure(
+                    record_pool_route_transport_failure_for_attempt(
                         &state.pool,
                         account.account_id,
                         sticky_key,
                         normalized_failure.canonical_error_message.as_str(),
                         trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                        pending_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
                     )
                     .await
                 } else {
-                    record_pool_route_http_failure_with_image_intent(
+                    record_pool_route_http_failure_with_image_intent_for_attempt(
                         &state.pool,
                         account.account_id,
                         &account.kind,
@@ -2527,6 +2530,9 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         &route_error_message,
                         trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
                         attempted_requested_image_intent,
+                        pending_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
                     )
                     .await
                 };
@@ -2756,12 +2762,15 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         sleep(retry_delay).await;
                         continue;
                     }
-                    if let Err(route_err) = record_pool_route_transport_failure(
+                    if let Err(route_err) = record_pool_route_transport_failure_for_attempt(
                         &state.pool,
                         account.account_id,
                         sticky_key,
                         &message,
                         trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                        pending_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
                     )
                     .await
                     {
@@ -2914,14 +2923,18 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         continue;
                     }
 
-                    if let Err(route_err) = record_pool_route_retryable_overload_failure(
-                        &state.pool,
-                        account.account_id,
-                        sticky_key,
-                        &message,
-                        trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                    )
-                    .await
+                    if let Err(route_err) =
+                        record_pool_route_retryable_overload_failure_for_attempt(
+                            &state.pool,
+                            account.account_id,
+                            sticky_key,
+                            &message,
+                            trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                            pending_attempt_record
+                                .as_ref()
+                                .and_then(|pending| pending.attempt_id),
+                        )
+                        .await
                     {
                         warn!(account_id = account.account_id, error = %route_err, "failed to record retryable response.failed route state");
                     }
@@ -3003,12 +3016,15 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             "failed to broadcast first-event gate failure snapshot"
                         );
                     }
-                    if let Err(route_err) = record_pool_route_transport_failure(
+                    if let Err(route_err) = record_pool_route_transport_failure_for_attempt(
                         &state.pool,
                         account.account_id,
                         sticky_key,
                         &message,
                         trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                        pending_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
                     )
                     .await
                     {

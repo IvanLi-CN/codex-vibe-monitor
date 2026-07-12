@@ -58,6 +58,7 @@ import { DashboardActivityOverview } from "../../features/dashboard/DashboardAct
 import { ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX } from "../../features/dashboard/dashboardActivityRange";
 import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
 import { UpstreamAccountUsageCard } from "../../features/account-pool/UpstreamAccountUsageCard";
+import { UpstreamAccountAttemptTimeline } from "../../features/account-pool/UpstreamAccountAttemptTimeline";
 import { StickyKeyConversationTable } from "../../features/prompt-cache/StickyKeyConversationTable";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useInvocationRecordsRealtime } from "../../hooks/useInvocationRecordsRealtime";
@@ -172,6 +173,7 @@ export type {
 };
 
 const ACCOUNT_RECORD_PAGE_SIZE = 50;
+const LEGACY_ACCOUNT_RECORDS_ENABLED = false;
 const DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE = "count:50";
 const DIRECT_PROXY_KEY = "__direct__";
 const STICKY_CONVERSATION_SELECTION_OPTIONS = [
@@ -978,6 +980,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     setStickyConversationSelectionValue,
   ] = useState(DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE);
   const [expandedStickyKeys, setExpandedStickyKeys] = useState<string[]>([]);
+  const [focusedAttemptId, setFocusedAttemptId] = useState<number | null>(null);
   const [accountRecords, setAccountRecords] = useState<ApiInvocation[]>([]);
   const [accountRecordsMode, setAccountRecordsMode] =
     useState<AccountRecordsMode>("latest");
@@ -1046,6 +1049,9 @@ function SharedUpstreamAccountDetailDrawerInner({
   const detailDrawerBodyElementRef = useRef<HTMLDivElement | null>(null);
   const accountRecordsLocateAlertRef = useRef<HTMLDivElement | null>(null);
   const accountRecordsAnchorScrollGuardUntilRef = useRef(0);
+  useEffect(() => {
+    setFocusedAttemptId(null);
+  }, [accountId]);
   const draftSessionKeyRef = useRef<string | null>(null);
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
@@ -1723,7 +1729,12 @@ function SharedUpstreamAccountDetailDrawerInner({
     ): void => {
       const requestSeq = accountRecordsRequestSeqRef.current + 1;
       accountRecordsRequestSeqRef.current = requestSeq;
-      if (!open || accountId == null || detailTab !== "records") {
+      if (
+        !LEGACY_ACCOUNT_RECORDS_ENABLED ||
+        !open ||
+        accountId == null ||
+        detailTab !== "records"
+      ) {
         return;
       }
 
@@ -1962,6 +1973,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   }, [accountRecordsLocateError]);
 
   useEffect(() => {
+    if (!LEGACY_ACCOUNT_RECORDS_ENABLED) return;
     const previous = previousAccountRecordsContextRef.current;
     const next = {
       open,
@@ -2036,6 +2048,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   ]);
 
   useEffect(() => {
+    if (!LEGACY_ACCOUNT_RECORDS_ENABLED) return;
     if (!open || accountId == null || detailTab !== "records") return;
     const scrollTarget = detailDrawerBodyElement;
     if (!scrollTarget) return;
@@ -2071,14 +2084,16 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   useInvocationRecordsRealtime({
     enabled: Boolean(
-      open &&
+      LEGACY_ACCOUNT_RECORDS_ENABLED &&
+        open &&
         accountId != null &&
         detailTab === "records" &&
         accountRecordsMode === "latest",
     ),
     isHydrated:
       Boolean(
-        open &&
+        LEGACY_ACCOUNT_RECORDS_ENABLED &&
+          open &&
           accountId != null &&
           detailTab === "records" &&
           accountRecordsMode === "latest",
@@ -2150,6 +2165,11 @@ function SharedUpstreamAccountDetailDrawerInner({
   const handleDetailDrawerClose = useCallback(() => {
     onClose();
   }, [onClose]);
+  const locateAccountAttempt = useCallback((attemptId: number | null | undefined) => {
+    if (attemptId == null || !Number.isFinite(attemptId)) return;
+    setFocusedAttemptId(attemptId);
+    setDetailTab("records");
+  }, []);
   const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType);
   const selectedRecoveryHint = resolveOauthRecoveryHint(
     selectedDetail?.kind ?? selected?.kind ?? "",
@@ -3008,7 +3028,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-selected={detailTab === "records"}
                   aria-controls={detailTabIds.records.panel}
                   aria-pressed={detailTab === "records"}
-                  onClick={() => setDetailTab("records")}
+                  onClick={() => {
+                    setFocusedAttemptId(null);
+                    setDetailTab("records");
+                  }}
                 >
                   {t("accountPool.upstreamAccounts.detailTabs.records")}
                 </SegmentedControlItem>
@@ -3239,6 +3262,13 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-labelledby={detailTabIds.records.tab}
                   className="flex min-w-0 flex-col gap-3"
                 >
+                  {accountId != null ? (
+                    <UpstreamAccountAttemptTimeline
+                      accountId={accountId}
+                      focusedAttemptId={focusedAttemptId}
+                    />
+                  ) : null}
+                  <div className="hidden" aria-hidden="true">
                   {accountRecordsMode === "anchored" ? (
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-info/35 bg-info/8 px-3 py-2 text-sm">
                       <span className="text-base-content/72">
@@ -3358,6 +3388,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       )}
                     </div>
                   ) : null}
+                  </div>
                 </div>
               ) : null}
 
@@ -4358,17 +4389,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                               )}
                               value={
                                 selectedDetail.lastActionInvokeId ? (
-                                  <button
-                                    type="button"
-                                    className="select-text break-all font-mono text-info underline decoration-info/35 underline-offset-4 transition hover:decoration-info focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                                    onClick={() =>
-                                      locateAccountRecord(
-                                        selectedDetail.lastActionInvokeId ?? "",
-                                      )
-                                    }
-                                  >
+                                  <span className="select-text break-all font-mono">
                                     {selectedDetail.lastActionInvokeId}
-                                  </button>
+                                  </span>
                                 ) : (
                                   t("accountPool.upstreamAccounts.unavailable")
                                 )
@@ -4459,12 +4482,12 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   {actionEvent.reasonMessage}
                                 </p>
                               ) : null}
-                              {actionEvent.invokeId ? (
+                              {actionEvent.attemptId != null ? (
                                 <button
                                   type="button"
                                   className="mt-2 block select-text break-all font-mono text-xs text-info underline decoration-info/35 underline-offset-4 transition hover:decoration-info focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                                   onClick={() =>
-                                    locateAccountRecord(actionEvent.invokeId ?? "")
+                                    locateAccountAttempt(actionEvent.attemptId)
                                   }
                                 >
                                   {t(
@@ -4472,6 +4495,12 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   )}
                                   : {actionEvent.invokeId}
                                 </button>
+                              ) : actionEvent.invokeId ? (
+                                <p className="mt-2 break-all font-mono text-xs text-base-content/55">
+                                  {t(
+                                    "accountPool.upstreamAccounts.latestAction.fields.invokeId",
+                                  )}: {actionEvent.invokeId}（历史事件未关联尝试）
+                                </p>
                               ) : null}
                             </div>
                           ))}
