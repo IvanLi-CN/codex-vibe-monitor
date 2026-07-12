@@ -1,13 +1,13 @@
-import { useCallback } from 'react'
-import { useSystemNotifications } from '../components/ui/system-notifications'
-import type { UpstreamAccountSummary } from '../lib/api'
-import { updateUpstreamAccount } from '../lib/api'
-import { emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
+import { useCallback } from "react";
+import { useSystemNotifications } from "../components/ui/system-notifications";
+import type { UpstreamAccountSummary } from "../lib/api";
+import { updateUpstreamAccount } from "../lib/api";
+import { emitUpstreamAccountsChanged } from "../lib/upstreamAccountsEvents";
 import {
   detectMotherSwitches,
-  normalizeMotherGroupKey,
   type MotherSwitchSnapshot,
-} from '../lib/upstreamMother'
+  normalizeMotherGroupKey,
+} from "../lib/upstreamMother";
 
 function isPureMotherGroupMove(
   accountId: number,
@@ -16,50 +16,52 @@ function isPureMotherGroupMove(
   relatedChanges: MotherSwitchSnapshot[],
 ): boolean {
   if (!previous.isMother || !next.isMother) {
-    return false
+    return false;
   }
 
-  const previousGroup = normalizeMotherGroupKey(previous.groupName)
-  const nextGroup = normalizeMotherGroupKey(next.groupName)
+  const previousGroup = normalizeMotherGroupKey(previous.groupName);
+  const nextGroup = normalizeMotherGroupKey(next.groupName);
   if (previousGroup === nextGroup || relatedChanges.length === 0) {
-    return false
+    return false;
   }
 
   return relatedChanges.every((change) => {
     const touchedAccountIds = [change.previousMotherAccountId, change.newMotherAccountId].filter(
       (value): value is number => value != null,
-    )
-    return touchedAccountIds.length > 0 && touchedAccountIds.every((value) => value === accountId)
-  })
+    );
+    return touchedAccountIds.length > 0 && touchedAccountIds.every((value) => value === accountId);
+  });
 }
 
 export function useMotherSwitchNotifications() {
-  const { showMotherSwitchUndo } = useSystemNotifications()
+  const { showMotherSwitchUndo } = useSystemNotifications();
 
   return useCallback(
     (previousItems: UpstreamAccountSummary[], nextItems: UpstreamAccountSummary[]) => {
-      const previousById = new Map(previousItems.map((item) => [item.id, item] as const))
-      const nextById = new Map(nextItems.map((item) => [item.id, item] as const))
-      const changes = detectMotherSwitches(previousItems, nextItems)
-      const consumedGroupKeys = new Set<string>()
+      const previousById = new Map(previousItems.map((item) => [item.id, item] as const));
+      const nextById = new Map(nextItems.map((item) => [item.id, item] as const));
+      const changes = detectMotherSwitches(previousItems, nextItems);
+      const consumedGroupKeys = new Set<string>();
 
       for (const [accountId, previous] of previousById) {
-        const next = nextById.get(accountId)
-        if (!next) continue
-        const previousGroup = normalizeMotherGroupKey(previous.groupName)
-        const nextGroup = normalizeMotherGroupKey(next.groupName)
+        const next = nextById.get(accountId);
+        if (!next) continue;
+        const previousGroup = normalizeMotherGroupKey(previous.groupName);
+        const nextGroup = normalizeMotherGroupKey(next.groupName);
         if (previousGroup === nextGroup || (!previous.isMother && !next.isMother)) {
-          continue
+          continue;
         }
 
         const relatedChanges = changes.filter(
           (change) =>
             change.previousMotherAccountId === accountId || change.newMotherAccountId === accountId,
-        )
-        if (relatedChanges.length === 0) continue
+        );
+        if (relatedChanges.length === 0) continue;
         if (isPureMotherGroupMove(accountId, previous, next, relatedChanges)) {
-          relatedChanges.forEach((change) => consumedGroupKeys.add(change.groupKey))
-          continue
+          relatedChanges.forEach((change) => {
+            consumedGroupKeys.add(change.groupKey);
+          });
+          continue;
         }
 
         const primaryChange =
@@ -70,18 +72,19 @@ export function useMotherSwitchNotifications() {
               )
             : relatedChanges.find(
                 (change) =>
-                  change.groupKey === previousGroup &&
-                  change.previousMotherAccountId === accountId,
-              )) ?? relatedChanges[0]
+                  change.groupKey === previousGroup && change.previousMotherAccountId === accountId,
+              )) ?? relatedChanges[0];
 
-        relatedChanges.forEach((change) => consumedGroupKeys.add(change.groupKey))
+        relatedChanges.forEach((change) => {
+          consumedGroupKeys.add(change.groupKey);
+        });
         showMotherSwitchUndo({
           payload: primaryChange,
           onUndo: async () => {
             await updateUpstreamAccount(accountId, {
-              groupName: previous.groupName?.trim() ?? '',
+              groupName: previous.groupName?.trim() ?? "",
               isMother: previous.isMother,
-            })
+            });
 
             if (
               next.isMother &&
@@ -90,34 +93,34 @@ export function useMotherSwitchNotifications() {
             ) {
               await updateUpstreamAccount(primaryChange.previousMotherAccountId, {
                 isMother: true,
-              })
+              });
             }
 
-            emitUpstreamAccountsChanged()
+            emitUpstreamAccountsChanged();
           },
-        })
+        });
       }
 
       for (const change of changes) {
         if (change.previousMotherAccountId == null && change.newMotherAccountId == null) {
-          continue
+          continue;
         }
         if (consumedGroupKeys.has(change.groupKey)) {
-          continue
+          continue;
         }
         showMotherSwitchUndo({
           payload: change,
           onUndo: async () => {
             if (change.previousMotherAccountId != null) {
-              await updateUpstreamAccount(change.previousMotherAccountId, { isMother: true })
+              await updateUpstreamAccount(change.previousMotherAccountId, { isMother: true });
             } else if (change.newMotherAccountId != null) {
-              await updateUpstreamAccount(change.newMotherAccountId, { isMother: false })
+              await updateUpstreamAccount(change.newMotherAccountId, { isMother: false });
             }
-            emitUpstreamAccountsChanged()
+            emitUpstreamAccountsChanged();
           },
-        })
+        });
       }
     },
     [showMotherSwitchUndo],
-  )
+  );
 }

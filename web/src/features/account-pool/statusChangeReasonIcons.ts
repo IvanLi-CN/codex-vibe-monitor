@@ -1,5 +1,5 @@
-import type { AppIconName } from "../shared/AppIcon";
 import type { StatusChangeReasonCode } from "../../lib/upstreamAccountStatusChangeReasons";
+import type { AppIconName } from "../shared/AppIcon";
 
 const statusChangeReasonIcons = {
   upstream_http_401: "key-outline",
@@ -15,8 +15,6 @@ const statusChangeReasonIcons = {
   upstream_http_5xx: "alert-decagram-outline",
 } satisfies Record<StatusChangeReasonCode, AppIconName>;
 
-export function statusChangeReasonIconName(
-  reason: StatusChangeReasonCode,
-): AppIconName {
+export function statusChangeReasonIconName(reason: StatusChangeReasonCode): AppIconName {
   return statusChangeReasonIcons[reason];
 }

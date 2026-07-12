@@ -1,39 +1,31 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
-import { InvocationRecordsTable } from "./InvocationRecordsTable";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ApiInvocation,
   ApiPoolUpstreamRequestAttempt,
   ForwardProxyBindingNode,
 } from "../../lib/api";
+import { InvocationRecordsTable } from "./InvocationRecordsTable";
 
 const { apiMocks } = vi.hoisted(() => ({
   apiMocks: {
     fetchInvocationPoolAttempts: vi.fn(),
     fetchInvocationRecordDetail: vi.fn(),
     fetchInvocationResponseBody: vi.fn(),
-    fetchForwardProxyBindingNodes: vi.fn<
-      (
-        keys?: string[],
-        options?: { includeCurrent?: boolean; groupName?: string },
-      ) => Promise<ForwardProxyBindingNode[]>
-    >(),
+    fetchForwardProxyBindingNodes:
+      vi.fn<
+        (
+          keys?: string[],
+          options?: { includeCurrent?: boolean; groupName?: string },
+        ) => Promise<ForwardProxyBindingNode[]>
+      >(),
   },
 }));
 
 vi.mock("../../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
+  const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
     fetchInvocationPoolAttempts: apiMocks.fetchInvocationPoolAttempts,
@@ -180,9 +172,7 @@ describe("InvocationRecordsTable", () => {
       />,
     );
 
-    const badges = host?.querySelectorAll(
-      '[data-testid="invocation-transport-badge"]',
-    );
+    const badges = host?.querySelectorAll('[data-testid="invocation-transport-badge"]');
     expect((badges?.length ?? 0) > 0).toBe(true);
     expect(
       Array.from(badges ?? []).every(
@@ -214,11 +204,7 @@ describe("InvocationRecordsTable", () => {
       />,
     );
 
-    expect(
-      host?.querySelectorAll(
-        '[data-testid="invocation-transport-badge"]',
-      ),
-    ).toHaveLength(0);
+    expect(host?.querySelectorAll('[data-testid="invocation-transport-badge"]')).toHaveLength(0);
   });
 
   it("treats completed rows as success in the shared records table", () => {
@@ -277,9 +263,7 @@ describe("InvocationRecordsTable", () => {
     );
 
     expect(
-      host?.querySelector(
-        '[data-testid="invocation-records-model-routing-indicator"]',
-      ),
+      host?.querySelector('[data-testid="invocation-records-model-routing-indicator"]'),
     ).not.toBeNull();
   });
 
@@ -329,12 +313,8 @@ describe("InvocationRecordsTable", () => {
 
     clickFirstToggle();
 
-    expect(
-      host?.querySelector('[data-testid="records-detail-summary-strip"]'),
-    ).not.toBeNull();
-    expect(
-      host?.querySelector('[data-testid="invocation-detail-notice"]'),
-    ).not.toBeNull();
+    expect(host?.querySelector('[data-testid="records-detail-summary-strip"]')).not.toBeNull();
+    expect(host?.querySelector('[data-testid="invocation-detail-notice"]')).not.toBeNull();
 
     const text = host?.textContent ?? "";
     expect(text).toContain("table.details.failureClass");
@@ -395,19 +375,12 @@ describe("InvocationRecordsTable", () => {
     clickFirstToggle();
 
     await waitFor(
-      () =>
-        host?.querySelector(
-          '[data-testid="invocation-response-body-preview"]',
-        ) != null,
+      () => host?.querySelector('[data-testid="invocation-response-body-preview"]') != null,
     );
 
     expect(apiMocks.fetchInvocationRecordDetail).toHaveBeenCalledWith(1);
-    expect(host?.textContent ?? "").toContain(
-      '{"error":{"message":"upstream exploded"}}',
-    );
-    expect(host?.textContent ?? "").toContain(
-      "table.responseBody.previewTruncated",
-    );
+    expect(host?.textContent ?? "").toContain('{"error":{"message":"upstream exploded"}}');
+    expect(host?.textContent ?? "").toContain("table.responseBody.previewTruncated");
   });
 
   it("opens the full-details drawer and loads the complete abnormal response body", async () => {
@@ -440,10 +413,7 @@ describe("InvocationRecordsTable", () => {
 
     clickFirstToggle();
     await waitFor(
-      () =>
-        host?.querySelector(
-          '[data-testid="invocation-response-body-preview"]',
-        ) != null,
+      () => host?.querySelector('[data-testid="invocation-response-body-preview"]') != null,
     );
 
     const button = Array.from(document.body.querySelectorAll("button")).find(
@@ -458,10 +428,7 @@ describe("InvocationRecordsTable", () => {
     });
 
     await waitFor(
-      () =>
-        document.body.textContent?.includes(
-          "records.table.fullDetails.title",
-        ) ?? false,
+      () => document.body.textContent?.includes("records.table.fullDetails.title") ?? false,
     );
 
     expect(apiMocks.fetchInvocationResponseBody).toHaveBeenCalledWith(1);
@@ -486,15 +453,11 @@ describe("InvocationRecordsTable", () => {
 
     clickFirstToggle();
 
-    await waitFor(() =>
-      (host?.textContent ?? "").includes("preview pending placeholder flush"),
-    );
+    await waitFor(() => (host?.textContent ?? "").includes("preview pending placeholder flush"));
 
     expect(apiMocks.fetchInvocationRecordDetail).not.toHaveBeenCalled();
     expect(apiMocks.fetchInvocationResponseBody).not.toHaveBeenCalled();
-    expect(host?.textContent ?? "").not.toContain(
-      "table.responseBody.openFullDetails",
-    );
+    expect(host?.textContent ?? "").not.toContain("table.responseBody.openFullDetails");
   });
 
   it("lazy loads pool attempts for pool-routed records", async () => {
@@ -537,16 +500,10 @@ describe("InvocationRecordsTable", () => {
 
     clickFirstToggle();
 
-    await waitFor(
-      () => host?.querySelector('[data-testid="pool-attempts-list"]') != null,
-    );
+    await waitFor(() => host?.querySelector('[data-testid="pool-attempts-list"]') != null);
 
-    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledWith(
-      "invoke-pool",
-    );
-    expect(
-      host?.querySelector('[data-testid="pool-attempts-list"]'),
-    ).not.toBeNull();
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledWith("invoke-pool");
+    expect(host?.querySelector('[data-testid="pool-attempts-list"]')).not.toBeNull();
     expect(host?.textContent ?? "").toContain("pool-account-42");
     expect(host?.textContent ?? "").toContain("table.poolAttempts.proxy");
     expect(host?.textContent ?? "").toContain("Direct");
@@ -574,16 +531,10 @@ describe("InvocationRecordsTable", () => {
 
     clickFirstToggle();
 
-    await waitFor(
-      () => host?.querySelector('[data-testid="pool-attempts-error"]') != null,
-    );
+    await waitFor(() => host?.querySelector('[data-testid="pool-attempts-error"]') != null);
 
-    expect(
-      host?.querySelector('[data-testid="pool-attempts-error"]'),
-    ).not.toBeNull();
-    expect(host?.textContent ?? "").toContain(
-      "table.poolAttempts.loadError: boom",
-    );
+    expect(host?.querySelector('[data-testid="pool-attempts-error"]')).not.toBeNull();
+    expect(host?.textContent ?? "").toContain("table.poolAttempts.loadError: boom");
   });
 
   it("renders upstream and downstream error channels separately", async () => {
@@ -655,29 +606,18 @@ describe("InvocationRecordsTable", () => {
     clickFirstToggle();
 
     await waitFor(
-      () =>
-        host?.querySelector('[data-testid="invocation-downstream-error-section"]') != null,
+      () => host?.querySelector('[data-testid="invocation-downstream-error-section"]') != null,
     );
 
-    expect(
-      host?.querySelector('[data-testid="invocation-upstream-error-section"]'),
-    ).not.toBeNull();
+    expect(host?.querySelector('[data-testid="invocation-upstream-error-section"]')).not.toBeNull();
     expect(
       host?.querySelector('[data-testid="invocation-downstream-error-section"]'),
     ).not.toBeNull();
-    expect(
-      host?.querySelector('[data-testid="pool-attempt-upstream-error"]'),
-    ).not.toBeNull();
-    expect(
-      host?.querySelector('[data-testid="pool-attempt-downstream-error"]'),
-    ).not.toBeNull();
-    expect(host?.textContent ?? "").toContain(
-      "failed to contact oauth codex upstream",
-    );
+    expect(host?.querySelector('[data-testid="pool-attempt-upstream-error"]')).not.toBeNull();
+    expect(host?.querySelector('[data-testid="pool-attempt-downstream-error"]')).not.toBeNull();
+    expect(host?.textContent ?? "").toContain("failed to contact oauth codex upstream");
     expect(host?.textContent ?? "").toContain("pool upstream responded with 502");
-    await waitFor(() =>
-      (host?.textContent ?? "").includes("OAuth Bridge Proxy"),
-    );
+    await waitFor(() => (host?.textContent ?? "").includes("OAuth Bridge Proxy"));
     expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenCalledWith(
       ["fpb_failed_oauth_bridge"],
       { includeCurrent: true, groupName: undefined },
@@ -685,9 +625,7 @@ describe("InvocationRecordsTable", () => {
     expect(host?.textContent ?? "").toContain("OAuth Bridge Proxy");
     expect(host?.textContent ?? "").not.toContain("fpb_failed_oauth_bridge");
     expect(
-      host
-        ?.querySelector('[data-testid="pool-attempt-proxy-value"]')
-        ?.getAttribute("title"),
+      host?.querySelector('[data-testid="pool-attempt-proxy-value"]')?.getAttribute("title"),
     ).toBe("OAuth Bridge Proxy (fpb_failed_oauth_bridge)");
   });
 
@@ -740,18 +678,11 @@ describe("InvocationRecordsTable", () => {
 
     clickFirstToggle();
 
-    await waitFor(
-      () =>
-        host?.querySelector('[data-testid="pool-attempt-proxy-value"]') != null,
-    );
+    await waitFor(() => host?.querySelector('[data-testid="pool-attempt-proxy-value"]') != null);
 
-    const proxyValue = host?.querySelector(
-      '[data-testid="pool-attempt-proxy-value"]',
-    );
+    const proxyValue = host?.querySelector('[data-testid="pool-attempt-proxy-value"]');
     expect(proxyValue?.textContent).toBe("fpb_281c...f7dd26");
-    expect(proxyValue?.getAttribute("title")).toBe(
-      "fpb_281c35167c1348e9d84a9f7dd26",
-    );
+    expect(proxyValue?.getAttribute("title")).toBe("fpb_281c35167c1348e9d84a9f7dd26");
     expect(proxyValue?.className).toContain("whitespace-nowrap");
     expect(proxyValue?.className).toContain("truncate");
   });
@@ -880,8 +811,7 @@ describe("InvocationRecordsTable", () => {
         status: "http_failure",
         httpStatus: 429,
         failureKind: "upstream_http_429_quota_exhausted",
-        errorMessage:
-          "pool upstream responded with 429: The usage limit has been reached",
+        errorMessage: "pool upstream responded with 429: The usage limit has been reached",
         connectLatencyMs: 4940.9,
         firstByteLatencyMs: null,
         streamLatencyMs: null,
@@ -900,8 +830,7 @@ describe("InvocationRecordsTable", () => {
         status: "budget_exhausted_final",
         httpStatus: 429,
         failureKind: "max_distinct_accounts_exhausted",
-        errorMessage:
-          "pool upstream responded with 429: The usage limit has been reached",
+        errorMessage: "pool upstream responded with 429: The usage limit has been reached",
         connectLatencyMs: null,
         firstByteLatencyMs: null,
         streamLatencyMs: null,
@@ -941,20 +870,13 @@ describe("InvocationRecordsTable", () => {
       () => host?.querySelector('[data-testid="pool-attempt-terminal-record"]') != null,
     );
 
-    const attemptsList = host?.querySelector(
-      '[data-testid="pool-attempts-list"]',
-    );
+    const attemptsList = host?.querySelector('[data-testid="pool-attempts-list"]');
     expect(attemptsList?.querySelectorAll('[data-testid="pool-attempt-item"]')).toHaveLength(7);
-    expect(host?.textContent ?? "").toContain(
-      "table.poolAttempts.realAttemptCount: 7",
-    );
-    expect(host?.textContent ?? "").toContain(
-      "table.poolAttempts.terminalRecordCount: 1",
-    );
+    expect(host?.textContent ?? "").toContain("table.poolAttempts.realAttemptCount: 7");
+    expect(host?.textContent ?? "").toContain("table.poolAttempts.terminalRecordCount: 1");
 
     const terminalText =
-      host?.querySelector('[data-testid="pool-attempt-terminal-record"]')
-        ?.textContent ?? "";
+      host?.querySelector('[data-testid="pool-attempt-terminal-record"]')?.textContent ?? "";
     expect(terminalText).toContain("table.poolAttempts.terminal.notDispatched");
     expect(terminalText).toContain("table.poolAttempts.terminal.previousAccount");
     expect(terminalText).toContain("solacebambi9197 Team");
@@ -1018,9 +940,7 @@ describe("InvocationRecordsTable", () => {
 
     const accountLabel = host?.querySelector('[title="pool-account-42"]');
     expect(accountLabel).not.toBeNull();
-    expect(accountLabel?.className).toContain(
-      "invocation-account-routing-in-progress",
-    );
+    expect(accountLabel?.className).toContain("invocation-account-routing-in-progress");
   });
 
   it("refetches pool attempts when in-flight detail fields change without counter changes", async () => {
@@ -1039,13 +959,7 @@ describe("InvocationRecordsTable", () => {
       tUpstreamTtfbMs: 120,
     });
 
-    render(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[initialRecord]}
-      />,
-    );
+    render(<InvocationRecordsTable focus="network" isLoading={false} records={[initialRecord]} />);
 
     clickFirstToggle();
     await flushAsyncWork();
@@ -1065,35 +979,28 @@ describe("InvocationRecordsTable", () => {
       />,
     );
 
-    await waitFor(
-      () => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2,
-    );
+    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2);
 
     expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledTimes(2);
-    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(
-      2,
-      "invoke-pool-poll",
-    );
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(2, "invoke-pool-poll");
   });
 
   it("refetches pool attempts when an expanded in-flight record changes attempt counters", async () => {
-    apiMocks.fetchInvocationPoolAttempts
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          id: 10,
-          invokeId: "invoke-pool-refresh",
-          occurredAt: "2026-03-10T00:00:00Z",
-          endpoint: "/v1/responses",
-          attemptIndex: 2,
-          distinctAccountIndex: 2,
-          sameAccountRetryIndex: 1,
-          status: "transport_failure",
-          createdAt: "2026-03-10T00:00:02Z",
-          upstreamAccountId: 84,
-          upstreamAccountName: "pool-account-84",
-        },
-      ]);
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        id: 10,
+        invokeId: "invoke-pool-refresh",
+        occurredAt: "2026-03-10T00:00:00Z",
+        endpoint: "/v1/responses",
+        attemptIndex: 2,
+        distinctAccountIndex: 2,
+        sameAccountRetryIndex: 1,
+        status: "transport_failure",
+        createdAt: "2026-03-10T00:00:02Z",
+        upstreamAccountId: 84,
+        upstreamAccountName: "pool-account-84",
+      },
+    ]);
 
     const initialRecord = createRecord({
       id: 4,
@@ -1106,18 +1013,10 @@ describe("InvocationRecordsTable", () => {
       poolDistinctAccountCount: 1,
     });
 
-    render(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[initialRecord]}
-      />,
-    );
+    render(<InvocationRecordsTable focus="network" isLoading={false} records={[initialRecord]} />);
 
     clickFirstToggle();
-    await waitFor(
-      () => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 1,
-    );
+    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 1);
 
     rerender(
       <InvocationRecordsTable
@@ -1133,14 +1032,9 @@ describe("InvocationRecordsTable", () => {
       />,
     );
 
-    await waitFor(
-      () => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2,
-    );
+    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2);
 
-    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(
-      2,
-      "invoke-pool-refresh",
-    );
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(2, "invoke-pool-refresh");
     await waitFor(() => (host?.textContent ?? "").includes("pool-account-84"));
   });
 
@@ -1213,9 +1107,7 @@ describe("InvocationRecordsTable", () => {
     );
 
     clickFirstToggle();
-    await waitFor(
-      () => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 1,
-    );
+    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 1);
 
     const collapseButton = host?.querySelector(
       'button[aria-label="records.table.hideDetails"]',
@@ -1226,9 +1118,7 @@ describe("InvocationRecordsTable", () => {
     });
 
     clickFirstToggle();
-    await waitFor(
-      () => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2,
-    );
+    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2);
 
     resolveFirstRequest([]);
     await waitFor(() => (host?.textContent ?? "").includes("pool-account-52"));

@@ -1,5 +1,5 @@
 export {
+  createBulkUpstreamAccountSyncJobEventSource,
   createEventSource,
   createImportedOauthValidationJobEventSource,
-  createBulkUpstreamAccountSyncJobEventSource,
 } from "./core";

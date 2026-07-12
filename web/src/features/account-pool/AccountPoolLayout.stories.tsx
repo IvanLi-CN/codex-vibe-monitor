@@ -1,8 +1,8 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, within } from 'storybook/test'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { I18nProvider } from '../../i18n'
-import AccountPoolLayout from '../../pages/account-pool/AccountPoolLayout'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { expect, within } from "storybook/test";
+import { I18nProvider } from "../../i18n";
+import AccountPoolLayout from "../../pages/account-pool/AccountPoolLayout";
 
 function MockModuleContent() {
   return (
@@ -21,29 +21,33 @@ function MockModuleContent() {
           <div className="rounded-2xl border border-base-300 bg-base-100/90 p-4">
             <p className="text-sm font-medium text-base-content">5h usage window</p>
             <p className="mt-2 text-3xl font-semibold text-primary">64%</p>
-            <p className="mt-1 text-sm text-base-content/70">Primary quota snapshot in the layout context.</p>
+            <p className="mt-1 text-sm text-base-content/70">
+              Primary quota snapshot in the layout context.
+            </p>
           </div>
           <div className="rounded-2xl border border-base-300 bg-base-100/90 p-4">
             <p className="text-sm font-medium text-base-content">7d usage window</p>
             <p className="mt-2 text-3xl font-semibold text-primary">22%</p>
-            <p className="mt-1 text-sm text-base-content/70">Secondary quota snapshot in the layout context.</p>
+            <p className="mt-1 text-sm text-base-content/70">
+              Secondary quota snapshot in the layout context.
+            </p>
           </div>
         </div>
       </div>
     </section>
-  )
+  );
 }
 
 const meta = {
-  title: 'Account Pool/Layout/Module Layout',
+  title: "Account Pool/Layout/Module Layout",
   component: AccountPoolLayout,
-  tags: ['autodocs'],
+  tags: ["autodocs"],
   decorators: [
     (Story) => (
       <I18nProvider>
         <div className="min-h-screen bg-base-200 text-base-content">
           <div className="app-shell-boundary px-4 py-6">
-            <MemoryRouter initialEntries={['/account-pool/upstream-accounts']}>
+            <MemoryRouter initialEntries={["/account-pool/upstream-accounts"]}>
               <Routes>
                 <Route path="/account-pool" element={<Story />}>
                   <Route path="upstream-accounts" element={<MockModuleContent />} />
@@ -56,22 +60,25 @@ const meta = {
     ),
   ],
   parameters: {
-    layout: 'fullscreen',
-    viewport: { defaultViewport: 'desktop1660' },
+    layout: "fullscreen",
+    viewport: { defaultViewport: "desktop1660" },
   },
-} satisfies Meta<typeof AccountPoolLayout>
+} satisfies Meta<typeof AccountPoolLayout>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByRole('heading', { name: '号池' })).toBeVisible()
-    await expect(canvas.getByRole('link', { name: '上游账号' })).toHaveAttribute('aria-current', 'page')
-    await expect(canvas.getByRole('link', { name: '维护记录' })).toBeVisible()
-    await expect(canvas.getByRole('link', { name: '分组' })).toBeVisible()
-    await expect(canvas.queryByRole('link', { name: '标签' })).not.toBeInTheDocument()
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("heading", { name: "号池" })).toBeVisible();
+    await expect(canvas.getByRole("link", { name: "上游账号" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await expect(canvas.getByRole("link", { name: "维护记录" })).toBeVisible();
+    await expect(canvas.getByRole("link", { name: "分组" })).toBeVisible();
+    await expect(canvas.queryByRole("link", { name: "标签" })).not.toBeInTheDocument();
   },
-}
+};

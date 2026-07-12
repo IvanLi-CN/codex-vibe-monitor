@@ -3,7 +3,7 @@ use axum::{
     Json, Router,
     extract::State,
     http::{HeaderMap, StatusCode},
-    routing::{any, get, post},
+    routing::{get, post},
 };
 #[allow(unused_imports)]
 use serde_json::json;
@@ -14,11 +14,7 @@ use std::{
     sync::{Arc, atomic::AtomicUsize},
     time::Duration,
 };
-use tokio::{
-    net::TcpListener,
-    sync::{Mutex, Notify},
-    time::timeout,
-};
+use tokio::{net::TcpListener, sync::Mutex, time::timeout};
 
 async fn wait_for_imported_oauth_validation_job_terminal(
     job: &Arc<ImportedOauthValidationJob>,
@@ -2630,8 +2626,10 @@ async fn create_api_key_account_persists_node_shunt_for_existing_multi_account_g
     let state = test_app_state_with_usage_base(&base_url).await;
     let secondary_proxy_key = {
         let mut manager = state.forward_proxy.lock().await;
-        let mut settings = ForwardProxySettings::default();
-        settings.proxy_urls = vec!["http://127.0.0.1:18080".to_string()];
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:18080".to_string()],
+            ..Default::default()
+        };
         manager.apply_settings(settings);
         manager
             .binding_nodes()

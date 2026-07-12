@@ -1,13 +1,7 @@
 import type { AppIconName } from "../../features/shared/AppIcon";
-import type {
-  CompactSupportState,
-  UpstreamAccountSummary,
-} from "../../lib/api";
 import type { TranslationValues } from "../../i18n";
-import type {
-  AccountBusyActionType,
-  BusyActionState,
-} from "./UpstreamAccounts.shared-types";
+import type { CompactSupportState, UpstreamAccountSummary } from "../../lib/api";
+import type { AccountBusyActionType, BusyActionState } from "./UpstreamAccounts.shared-types";
 
 type AccountStatusSnapshot = Pick<
   UpstreamAccountSummary,
@@ -94,7 +88,7 @@ export function compactSupportLabel(
   support: CompactSupportState | null | undefined,
   t: (key: string) => string,
 ) {
-  if (!support || support.status !== "unsupported") return null;
+  if (support?.status !== "unsupported") return null;
   return t("accountPool.upstreamAccounts.compactSupport.unsupportedBadge");
 }
 

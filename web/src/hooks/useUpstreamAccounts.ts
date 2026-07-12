@@ -1,88 +1,80 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  bulkUpdateUpstreamAccounts,
-  cancelBulkUpstreamAccountSyncJob,
-  cancelImportedOauthValidationJob,
-  createBulkUpstreamAccountSyncJob,
-  createApiKeyUpstreamAccount,
-  createImportedOauthValidationJob,
-  createOauthMailboxSession,
-  completeOauthLoginSession,
-  confirmOauthIdentityOverwrite,
-  createOauthLoginSession,
-  fetchBulkUpstreamAccountSyncJob,
-  deleteOauthMailboxSession,
-  deleteUpstreamAccount,
-  deleteUpstreamAccountGroup,
-  fetchOauthMailboxStatuses,
-  fetchOauthLoginSession,
-  fetchUpstreamAccountDetail,
-  fetchUpstreamAccountWindowUsage,
-  fetchUpstreamAccounts,
-  importValidatedOauthAccounts,
-  reloginUpstreamAccount,
-  syncUpstreamAccount,
-  updateOauthLoginSession,
-  updateUpstreamAccountGroup,
-  updatePoolRoutingSettings,
-  updateUpstreamAccount,
-  validateImportedOauthAccounts,
   type BulkUpstreamAccountActionPayload,
   type BulkUpstreamAccountActionResponse,
   type BulkUpstreamAccountSyncJobPayload,
   type BulkUpstreamAccountSyncJobResponse,
-  type CreateApiKeyAccountPayload,
+  bulkUpdateUpstreamAccounts,
   type CompleteOauthLoginSessionPayload,
+  type CreateApiKeyAccountPayload,
   type CreateOauthLoginSessionPayload,
+  cancelBulkUpstreamAccountSyncJob,
+  cancelImportedOauthValidationJob,
+  completeOauthLoginSession,
+  confirmOauthIdentityOverwrite,
+  createApiKeyUpstreamAccount,
+  createBulkUpstreamAccountSyncJob,
+  createImportedOauthValidationJob,
+  createOauthLoginSession,
+  createOauthMailboxSession,
+  deleteOauthMailboxSession,
+  deleteUpstreamAccount,
+  deleteUpstreamAccountGroup,
   type FetchUpstreamAccountsQuery,
   type ForwardProxyBindingNode,
-  type ImportValidatedOauthAccountsPayload,
+  fetchBulkUpstreamAccountSyncJob,
+  fetchOauthLoginSession,
+  fetchOauthMailboxStatuses,
+  fetchUpstreamAccountDetail,
+  fetchUpstreamAccounts,
+  fetchUpstreamAccountWindowUsage,
   type ImportedOauthImportResponse,
   type ImportedOauthValidationJobResponse,
   type ImportedOauthValidationResponse,
+  type ImportValidatedOauthAccountsPayload,
+  importValidatedOauthAccounts,
   type LoginSessionStatusResponse,
   type OauthMailboxSession,
   type OauthMailboxStatus,
   type PoolRoutingSettings,
   type RateWindowActualUsage,
-  type UpstreamAccountListMetrics,
-  type UpstreamAccountGroupSummary,
+  reloginUpstreamAccount,
+  syncUpstreamAccount,
   type UpdateOauthLoginSessionPayload,
   type UpdatePoolRoutingSettingsPayload,
   type UpdateUpstreamAccountGroupPayload,
   type UpdateUpstreamAccountPayload,
   type UpstreamAccountDetail,
+  type UpstreamAccountGroupSummary,
+  type UpstreamAccountListMetrics,
   type UpstreamAccountSummary,
+  updateOauthLoginSession,
+  updatePoolRoutingSettings,
+  updateUpstreamAccount,
+  updateUpstreamAccountGroup,
   type ValidateImportedOauthAccountsPayload,
+  validateImportedOauthAccounts,
 } from "../lib/api";
+import { subscribeToSseOpen } from "../lib/sse";
+import { isUpstreamAccountNotFoundError } from "../lib/upstreamAccountErrors";
 import { upsertGroupSummary } from "../lib/upstreamAccountGroups";
 import {
-  UPSTREAM_ACCOUNTS_CHANGED_EVENT,
   emitUpstreamAccountsChanged,
+  UPSTREAM_ACCOUNTS_CHANGED_EVENT,
 } from "../lib/upstreamAccountsEvents";
-import { isUpstreamAccountNotFoundError } from "../lib/upstreamAccountErrors";
-import { subscribeToSseOpen } from "../lib/sse";
 
 const LOAD_LIST_FAILED = Symbol("load-list-failed");
 const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {};
 export const UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS = 3_000;
 
-export type UpstreamAccountsListFreshness =
-  | "fresh"
-  | "stale"
-  | "missing"
-  | "deferred";
+export type UpstreamAccountsListFreshness = "fresh" | "stale" | "missing" | "deferred";
 export type UpstreamAccountsListLoadingState =
   | "idle"
   | "deferred"
   | "initial"
   | "switching"
   | "refreshing";
-export type UpstreamAccountsListStatus =
-  | "ready"
-  | "loading"
-  | "error"
-  | "deferred";
+export type UpstreamAccountsListStatus = "ready" | "loading" | "error" | "deferred";
 export type ForwardProxyCatalogKind =
   | "ready-empty"
   | "ready-with-data"
@@ -144,10 +136,7 @@ function normalizeQueryNumberArray(values?: number[]) {
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function applyWindowUsageToSummary(
-  item: UpstreamAccountSummary,
-  usage?: HydratedWindowUsage,
-) {
+function applyWindowUsageToSummary(item: UpstreamAccountSummary, usage?: HydratedWindowUsage) {
   if (!usage) return item;
   return {
     ...item,
@@ -173,14 +162,10 @@ function applyWindowUsageToRoster(
   if (items.length === 0 || Object.keys(usageByAccount).length === 0) {
     return items;
   }
-  return items.map((item) =>
-    applyWindowUsageToSummary(item, usageByAccount[item.id]),
-  );
+  return items.map((item) => applyWindowUsageToSummary(item, usageByAccount[item.id]));
 }
 
-export function buildUpstreamAccountsListQueryKey(
-  query?: FetchUpstreamAccountsQuery | null,
-) {
+export function buildUpstreamAccountsListQueryKey(query?: FetchUpstreamAccountsQuery | null) {
   if (query == null) return null;
 
   return JSON.stringify({
@@ -212,10 +197,7 @@ export function useUpstreamAccounts(
   options?: UseUpstreamAccountsOptions,
 ) {
   const effectiveQuery = query ?? DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY;
-  const currentListQueryKey = useMemo(
-    () => buildUpstreamAccountsListQueryKey(query),
-    [query],
-  );
+  const currentListQueryKey = useMemo(() => buildUpstreamAccountsListQueryKey(query), [query]);
   const resolvedOptions = {
     ...DEFAULT_OPTIONS,
     ...options,
@@ -225,9 +207,9 @@ export function useUpstreamAccounts(
     Record<number, HydratedWindowUsage>
   >({});
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([]);
-  const [forwardProxyNodes, setForwardProxyNodes] = useState<
-    ForwardProxyBindingNode[] | null
-  >(null);
+  const [forwardProxyNodes, setForwardProxyNodes] = useState<ForwardProxyBindingNode[] | null>(
+    null,
+  );
   const [hasUngroupedAccounts, setHasUngroupedAccounts] = useState(false);
   const [writesEnabled, setWritesEnabled] = useState(true);
   const [routing, setRouting] = useState<PoolRoutingSettings | null>(null);
@@ -249,9 +231,7 @@ export function useUpstreamAccounts(
   const [listDataQueryKey, setListDataQueryKey] = useState<string | null>(null);
   const [isWindowUsagePending, setIsWindowUsagePending] = useState(false);
   const [detailErrors, setDetailErrors] = useState<Record<number, string>>({});
-  const [missingDetailAccountId, setMissingDetailAccountId] = useState<
-    number | null
-  >(null);
+  const [missingDetailAccountId, setMissingDetailAccountId] = useState<number | null>(null);
   const selectedIdRef = useRef<number | null>(null);
   const detailRef = useRef<UpstreamAccountDetail | null>(null);
   const currentListQueryKeyRef = useRef<string | null>(currentListQueryKey);
@@ -260,9 +240,9 @@ export function useUpstreamAccounts(
   const rosterItemsRef = useRef<UpstreamAccountSummary[]>([]);
   const listRequestSeqRef = useRef(0);
   const listRequestInFlightSeqRef = useRef<number | null>(null);
-  const listRequestPromiseRef = useRef<Promise<
-    number | null | typeof LOAD_LIST_FAILED
-  > | null>(null);
+  const listRequestPromiseRef = useRef<Promise<number | null | typeof LOAD_LIST_FAILED> | null>(
+    null,
+  );
   const listRequestQueryKeyRef = useRef<string | null>(null);
   const queuedSameQueryRefreshRef = useRef<{
     preferredId?: number | null;
@@ -401,21 +381,16 @@ export function useUpstreamAccounts(
         listRequestQueryKeyRef.current === requestQueryKey
       ) {
         const currentQueryHydrated =
-          requestQueryKey != null &&
-          listDataQueryKeyRef.current === requestQueryKey;
+          requestQueryKey != null && listDataQueryKeyRef.current === requestQueryKey;
         if (currentQueryHydrated) {
           const queued = queuedSameQueryRefreshRef.current;
           queuedSameQueryRefreshRef.current = {
             preferredId,
             options: {
               respectCurrentSelection:
-                options?.respectCurrentSelection ??
-                queued?.options?.respectCurrentSelection,
-              selectionAnchorId:
-                options?.selectionAnchorId ??
-                queued?.options?.selectionAnchorId,
-              silent:
-                (options?.silent ?? true) && (queued?.options?.silent ?? true),
+                options?.respectCurrentSelection ?? queued?.options?.respectCurrentSelection,
+              selectionAnchorId: options?.selectionAnchorId ?? queued?.options?.selectionAnchorId,
+              silent: (options?.silent ?? true) && (queued?.options?.silent ?? true),
             },
           };
         }
@@ -436,18 +411,13 @@ export function useUpstreamAccounts(
             return LOAD_LIST_FAILED;
           }
           const currentSelectedId = selectedIdRef.current;
-          const selectionAnchorId =
-            options?.selectionAnchorId ?? preferredId ?? null;
+          const selectionAnchorId = options?.selectionAnchorId ?? preferredId ?? null;
           const shouldPreferRequestedId =
             preferredId != null &&
-            (!options?.respectCurrentSelection ||
-              currentSelectedId === selectionAnchorId);
-          const candidateId = shouldPreferRequestedId
-            ? preferredId
-            : currentSelectedId;
+            (!options?.respectCurrentSelection || currentSelectedId === selectionAnchorId);
+          const candidateId = shouldPreferRequestedId ? preferredId : currentSelectedId;
           const hasCandidateInList =
-            candidateId != null &&
-            response.items.some((item) => item.id === candidateId);
+            candidateId != null && response.items.some((item) => item.id === candidateId);
           const nextSelectedId = hasCandidateInList
             ? candidateId
             : candidateId != null && resolvedOptions.allowSelectionOutsideList
@@ -497,9 +467,7 @@ export function useUpstreamAccounts(
             requestQueryKey != null &&
             currentListQueryKeyRef.current === requestQueryKey &&
             queuedSameQueryRefreshRef.current != null;
-          const queuedRefresh = shouldReplaySameQuery
-            ? queuedSameQueryRefreshRef.current
-            : null;
+          const queuedRefresh = shouldReplaySameQuery ? queuedSameQueryRefreshRef.current : null;
           queuedSameQueryRefreshRef.current = null;
           if (listRequestInFlightSeqRef.current === requestSeq) {
             listRequestInFlightSeqRef.current = null;
@@ -561,27 +529,19 @@ export function useUpstreamAccounts(
           signal: controller.signal,
           includeRecentActions: options.includeRecentActions,
         });
-        if (
-          requestSeq !== detailRequestSeqRef.current ||
-          selectedIdRef.current !== accountId
-        ) {
+        if (requestSeq !== detailRequestSeqRef.current || selectedIdRef.current !== accountId) {
           return null;
         }
         const nextDetail = commitDetailResponse(response, options);
         detailHydratedAccountIdsRef.current.add(accountId);
         clearDetailError(accountId);
-        setMissingDetailAccountId((current) =>
-          current === accountId ? null : current,
-        );
+        setMissingDetailAccountId((current) => (current === accountId ? null : current));
         return nextDetail;
       } catch (err) {
         if (controller.signal.aborted) {
           return null;
         }
-        if (
-          requestSeq !== detailRequestSeqRef.current ||
-          selectedIdRef.current !== accountId
-        ) {
+        if (requestSeq !== detailRequestSeqRef.current || selectedIdRef.current !== accountId) {
           return null;
         }
         if (isUpstreamAccountNotFoundError(err)) {
@@ -618,8 +578,7 @@ export function useUpstreamAccounts(
     }
     if (
       autoLoadQueryKeyRef.current === currentListQueryKey &&
-      (listRequestPromiseRef.current != null ||
-        listDataQueryKeyRef.current === currentListQueryKey)
+      (listRequestPromiseRef.current != null || listDataQueryKeyRef.current === currentListQueryKey)
     ) {
       return;
     }
@@ -638,27 +597,20 @@ export function useUpstreamAccounts(
 
   const hydrateWindowUsage = useCallback(async (accountIds: number[]) => {
     const requestQueryKey = currentListQueryKeyRef.current;
-    if (
-      requestQueryKey == null ||
-      listDataQueryKeyRef.current !== requestQueryKey
-    ) {
+    if (requestQueryKey == null || listDataQueryKeyRef.current !== requestQueryKey) {
       return;
     }
 
     const currentRosterIdSet = new Set(
       rosterItemsRef.current
-        .filter(
-          (item) => item.primaryWindow != null || item.secondaryWindow != null,
-        )
+        .filter((item) => item.primaryWindow != null || item.secondaryWindow != null)
         .map((item) => item.id),
     );
     const normalizedAccountIds = Array.from(
       new Set(
         accountIds.filter(
           (accountId) =>
-            Number.isFinite(accountId) &&
-            accountId > 0 &&
-            currentRosterIdSet.has(accountId),
+            Number.isFinite(accountId) && accountId > 0 && currentRosterIdSet.has(accountId),
         ),
       ),
     ).filter(
@@ -678,8 +630,7 @@ export function useUpstreamAccounts(
     setIsWindowUsagePending(true);
 
     try {
-      const response =
-        await fetchUpstreamAccountWindowUsage(normalizedAccountIds);
+      const response = await fetchUpstreamAccountWindowUsage(normalizedAccountIds);
       if (
         generation !== usageHydrationGenerationRef.current ||
         requestQueryKey !== currentListQueryKeyRef.current ||
@@ -727,10 +678,7 @@ export function useUpstreamAccounts(
         listDataQueryKeyRef.current === requestQueryKey;
       if (isStillCurrent) {
         normalizedAccountIds.forEach((accountId) => {
-          if (
-            pendingWindowUsageGenerationByIdRef.current.get(accountId) ===
-            generation
-          ) {
+          if (pendingWindowUsageGenerationByIdRef.current.get(accountId) === generation) {
             pendingWindowUsageGenerationByIdRef.current.delete(accountId);
           }
         });
@@ -749,14 +697,7 @@ export function useUpstreamAccounts(
       return;
     }
     void hydrateWindowUsage([selectedId]);
-  }, [
-    currentListQueryKey,
-    hydrateWindowUsage,
-    listDataQueryKey,
-    query,
-    rosterItems,
-    selectedId,
-  ]);
+  }, [currentListQueryKey, hydrateWindowUsage, listDataQueryKey, query, rosterItems, selectedId]);
 
   const refreshCurrentSelectedDetail = useCallback(
     async (skipAccountId?: number | null, options: LoadOptions = {}) => {
@@ -796,10 +737,7 @@ export function useUpstreamAccounts(
     };
     window.addEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
     return () => {
-      window.removeEventListener(
-        UPSTREAM_ACCOUNTS_CHANGED_EVENT,
-        handleChanged,
-      );
+      window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
     };
   }, [refresh]);
 
@@ -813,21 +751,10 @@ export function useUpstreamAccounts(
         return;
       }
       const now = Date.now();
-      if (
-        !force &&
-        now - lastRefreshAtRef.current <
-          UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS
-      ) {
+      if (!force && now - lastRefreshAtRef.current < UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS) {
         return;
       }
-      if (
-        !shouldTriggerUpstreamAccountsOpenResync(
-          lastOpenResyncAtRef.current,
-          now,
-          force,
-        )
-      )
-        return;
+      if (!shouldTriggerUpstreamAccountsOpenResync(lastOpenResyncAtRef.current, now, force)) return;
       lastOpenResyncAtRef.current = now;
       void refresh({ silent: true });
     },
@@ -852,12 +779,9 @@ export function useUpstreamAccounts(
     [setSelectedAccount],
   );
 
-  const beginOauthLogin = useCallback(
-    async (payload: CreateOauthLoginSessionPayload) => {
-      return createOauthLoginSession(payload);
-    },
-    [],
-  );
+  const beginOauthLogin = useCallback(async (payload: CreateOauthLoginSessionPayload) => {
+    return createOauthLoginSession(payload);
+  }, []);
 
   const beginRelogin = useCallback(async (accountId: number) => {
     return reloginUpstreamAccount(accountId);
@@ -881,12 +805,11 @@ export function useUpstreamAccounts(
     [],
   );
 
-  const beginOauthMailboxSession =
-    useCallback(async (): Promise<OauthMailboxSession> => {
-      const response = await createOauthMailboxSession();
-      setListError(null);
-      return response;
-    }, []);
+  const beginOauthMailboxSession = useCallback(async (): Promise<OauthMailboxSession> => {
+    const response = await createOauthMailboxSession();
+    setListError(null);
+    return response;
+  }, []);
 
   const beginOauthMailboxSessionForAddress = useCallback(
     async (emailAddress: string): Promise<OauthMailboxSession> => {
@@ -966,13 +889,7 @@ export function useUpstreamAccounts(
       emitUpstreamAccountsChanged();
       return response;
     },
-    [
-      clearDetailError,
-      invalidateListRequest,
-      loadDetail,
-      loadList,
-      setSelectedAccount,
-    ],
+    [clearDetailError, invalidateListRequest, loadDetail, loadList, setSelectedAccount],
   );
 
   const runImportedOauthValidation = useCallback(
@@ -998,9 +915,7 @@ export function useUpstreamAccounts(
   }, []);
 
   const importOauthAccounts = useCallback(
-    async (
-      payload: ImportValidatedOauthAccountsPayload,
-    ): Promise<ImportedOauthImportResponse> => {
+    async (payload: ImportValidatedOauthAccountsPayload): Promise<ImportedOauthImportResponse> => {
       const response = await importValidatedOauthAccounts(payload);
       invalidateListRequest();
       await loadList(selectedIdRef.current, {
@@ -1042,14 +957,11 @@ export function useUpstreamAccounts(
     ],
   );
 
-  const saveRouting = useCallback(
-    async (payload: UpdatePoolRoutingSettingsPayload) => {
-      const response = await updatePoolRoutingSettings(payload);
-      setRouting(response);
-      return response;
-    },
-    [],
-  );
+  const saveRouting = useCallback(async (payload: UpdatePoolRoutingSettingsPayload) => {
+    const response = await updatePoolRoutingSettings(payload);
+    setRouting(response);
+    return response;
+  }, []);
 
   const saveGroupNote = useCallback(
     async (groupName: string, payload: UpdateUpstreamAccountGroupPayload) => {
@@ -1164,9 +1076,7 @@ export function useUpstreamAccounts(
         setSelectedAccount(fallbackSelectedId);
         setDetail((current) => (current?.id === accountId ? null : current));
       }
-      const preferredId = shouldReanchorSelection
-        ? fallbackSelectedId
-        : currentSelectedId;
+      const preferredId = shouldReanchorSelection ? fallbackSelectedId : currentSelectedId;
       await loadList(preferredId, {
         respectCurrentSelection: !shouldReanchorSelection,
         selectionAnchorId: preferredId,
@@ -1207,11 +1117,9 @@ export function useUpstreamAccounts(
     [],
   );
 
-  const selectedDetailError =
-    selectedId == null ? null : (detailErrors[selectedId] ?? null);
+  const selectedDetailError = selectedId == null ? null : (detailErrors[selectedId] ?? null);
   const isDetailRecentActionsHydrated =
-    detail != null &&
-    detailRecentActionsHydratedAccountIdRef.current === detail.id;
+    detail != null && detailRecentActionsHydratedAccountIdRef.current === detail.id;
   const hasCurrentQueryData =
     currentListQueryKey != null && listDataQueryKey === currentListQueryKey;
   const listFreshness: UpstreamAccountsListFreshness =

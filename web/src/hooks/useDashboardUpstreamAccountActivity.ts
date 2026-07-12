@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
-  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
-} from "./useDashboardWorkingConversations";
-import {
-  fetchDashboardActivity,
   type DashboardActivityResponse,
+  fetchDashboardActivity,
   type UpstreamAccountActivityAccount,
 } from "../lib/api";
 import {
@@ -13,6 +9,10 @@ import {
   recordUpstreamAccountActivityRefresh,
 } from "../lib/dashboardPerformanceDiagnostics";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
+import {
+  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
+} from "./useDashboardWorkingConversations";
 
 export const DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_REFRESH_THROTTLE_MS = 5_000;
 export const DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_OPEN_RESYNC_COOLDOWN_MS = 5_000;
@@ -31,10 +31,7 @@ function clampRecentInvocationLimit(value: number) {
   }
   return Math.min(
     DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
-    Math.max(
-      DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
-      Math.trunc(value),
-    ),
+    Math.max(DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN, Math.trunc(value)),
   );
 }
 
@@ -56,12 +53,7 @@ export function useDashboardUpstreamAccountActivity(
   enabled: boolean,
   recentInvocationLimit = DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
 ) {
-  const snapshot = useDashboardActivitySnapshot(
-    range,
-    enabled,
-    true,
-    recentInvocationLimit,
-  );
+  const snapshot = useDashboardActivitySnapshot(range, enabled, true, recentInvocationLimit);
   const data = snapshot.data
     ? {
         range: snapshot.data.range,
@@ -82,14 +74,13 @@ export function useDashboardActivitySnapshot(
   includeAccounts: boolean,
   recentInvocationLimit = DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
 ) {
-  const initialRecentInvocationLimit = clampRecentInvocationLimit(
-    recentInvocationLimit,
-  );
+  const initialRecentInvocationLimit = clampRecentInvocationLimit(recentInvocationLimit);
   const [data, setData] = useState<DashboardActivityResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [visibleRecentInvocationLimit, setVisibleRecentInvocationLimit] =
-    useState(initialRecentInvocationLimit);
+  const [visibleRecentInvocationLimit, setVisibleRecentInvocationLimit] = useState(
+    initialRecentInvocationLimit,
+  );
   const enabledRef = useRef(enabled);
   const includeAccountsRef = useRef(includeAccounts);
   const rangeRef = useRef(range);
@@ -118,9 +109,7 @@ export function useDashboardActivitySnapshot(
   }, [range]);
 
   useEffect(() => {
-    const nextSeedRecentInvocationLimit = clampRecentInvocationLimit(
-      recentInvocationLimit,
-    );
+    const nextSeedRecentInvocationLimit = clampRecentInvocationLimit(recentInvocationLimit);
     const rangeChanged = previousRangeRef.current !== range;
     previousRangeRef.current = range;
     if (!enabled) {
@@ -130,10 +119,7 @@ export function useDashboardActivitySnapshot(
     }
     recentInvocationLimitRef.current = rangeChanged
       ? nextSeedRecentInvocationLimit
-      : Math.max(
-          recentInvocationLimitRef.current,
-          nextSeedRecentInvocationLimit,
-        );
+      : Math.max(recentInvocationLimitRef.current, nextSeedRecentInvocationLimit);
   }, [enabled, range, recentInvocationLimit]);
 
   const clearPendingRefreshTimer = useCallback(() => {
@@ -179,10 +165,9 @@ export function useDashboardActivitySnapshot(
       ) {
         return;
       }
-      const resolvedRecentInvocationLimit =
-        requestedIncludeAccounts
-          ? resolveUpstreamAccountRecentPreviewLimit(response.accounts ?? [])
-          : requestedRecentLimit;
+      const resolvedRecentInvocationLimit = requestedIncludeAccounts
+        ? resolveUpstreamAccountRecentPreviewLimit(response.accounts ?? [])
+        : requestedRecentLimit;
       const nextRecentInvocationLimit = Math.max(
         requestedRecentLimit,
         resolvedRecentInvocationLimit,
@@ -191,9 +176,7 @@ export function useDashboardActivitySnapshot(
         requestedIncludeAccounts && nextRecentInvocationLimit > requestedRecentLimit;
       recentInvocationLimitRef.current = nextRecentInvocationLimit;
       setVisibleRecentInvocationLimit(
-        needsExpandedReload
-          ? requestedRecentLimit
-          : nextRecentInvocationLimit,
+        needsExpandedReload ? requestedRecentLimit : nextRecentInvocationLimit,
       );
       setData(response);
       recordUpstreamAccountActivityRefresh();
@@ -247,15 +230,7 @@ export function useDashboardActivitySnapshot(
     }
     hasActivatedRef.current = true;
     void load({ silent: hasHydratedRef.current });
-  }, [
-    clearPendingRefreshTimer,
-    enabled,
-    includeAccounts,
-    invalidateCurrentRequest,
-    load,
-    range,
-    recentInvocationLimit,
-  ]);
+  }, [clearPendingRefreshTimer, enabled, invalidateCurrentRequest, load]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -264,8 +239,7 @@ export function useDashboardActivitySnapshot(
       const now = Date.now();
       const delay = Math.max(
         0,
-        DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_REFRESH_THROTTLE_MS -
-          (now - lastRefreshAtRef.current),
+        DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_REFRESH_THROTTLE_MS - (now - lastRefreshAtRef.current),
       );
       const run = () => {
         refreshTimerRef.current = null;

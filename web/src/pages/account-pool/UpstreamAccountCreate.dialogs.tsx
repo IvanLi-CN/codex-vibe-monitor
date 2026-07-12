@@ -1,8 +1,8 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+// biome-ignore-all lint/suspicious/noExplicitAny: dialog setters receive the controller's incremental migration context
 import { ImportedOauthValidationDialog } from "../../features/account-pool/ImportedOauthValidationDialog";
 import { UpstreamAccountGroupNoteDialog } from "../../features/account-pool/UpstreamAccountGroupNoteDialog";
-import { DuplicateAccountDetailDialog } from "./UpstreamAccountCreate.shared";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
+import { DuplicateAccountDetailDialog } from "./UpstreamAccountCreate.shared";
 import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh";
 
 export function UpstreamAccountCreateDialogs() {
@@ -65,9 +65,7 @@ export function UpstreamAccountCreateDialogs() {
         concurrencyLimit={groupNoteEditor.concurrencyLimit}
         boundProxyKeys={groupNoteEditor.boundProxyKeys}
         nodeShuntEnabled={groupNoteEditor.nodeShuntEnabled}
-        singleAccountRotationEnabled={
-          groupNoteEditor.singleAccountRotationEnabled
-        }
+        singleAccountRotationEnabled={groupNoteEditor.singleAccountRotationEnabled}
         availableProxyNodes={forwardProxyNodes}
         proxyBindingsCatalogKind={forwardProxyCatalogState?.kind}
         proxyBindingsCatalogFreshness={forwardProxyCatalogState?.freshness}
@@ -114,12 +112,8 @@ export function UpstreamAccountCreateDialogs() {
             ...current,
             upstream429RetryEnabled: value,
             upstream429MaxRetries: value
-              ? normalizeEnabledGroupUpstream429MaxRetries(
-                  current.upstream429MaxRetries,
-                )
-              : normalizeGroupUpstream429MaxRetries(
-                  current.upstream429MaxRetries,
-                ),
+              ? normalizeEnabledGroupUpstream429MaxRetries(current.upstream429MaxRetries)
+              : normalizeGroupUpstream429MaxRetries(current.upstream429MaxRetries),
           }));
         }}
         onUpstream429MaxRetriesChange={(value) => {
@@ -133,26 +127,14 @@ export function UpstreamAccountCreateDialogs() {
         }}
         onClose={closeGroupNoteEditor}
         onSave={() => void handleSaveGroupNote()}
-        onDelete={
-          groupNoteEditor.existing ? () => void handleDeleteGroupNote() : undefined
-        }
+        onDelete={groupNoteEditor.existing ? () => void handleDeleteGroupNote() : undefined}
         title={t("accountPool.upstreamAccounts.groupNotes.dialogTitle")}
-        existingDescription={t(
-          "accountPool.upstreamAccounts.groupNotes.existingDescription",
-        )}
-        draftDescription={t(
-          "accountPool.upstreamAccounts.groupNotes.draftDescription",
-        )}
+        existingDescription={t("accountPool.upstreamAccounts.groupNotes.existingDescription")}
+        draftDescription={t("accountPool.upstreamAccounts.groupNotes.draftDescription")}
         noteLabel={t("accountPool.upstreamAccounts.fields.note")}
-        notePlaceholder={t(
-          "accountPool.upstreamAccounts.groupNotes.notePlaceholder",
-        )}
-        concurrencyLimitLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.concurrency.label",
-        )}
-        concurrencyLimitHint={t(
-          "accountPool.upstreamAccounts.groupNotes.concurrency.hint",
-        )}
+        notePlaceholder={t("accountPool.upstreamAccounts.groupNotes.notePlaceholder")}
+        concurrencyLimitLabel={t("accountPool.upstreamAccounts.groupNotes.concurrency.label")}
+        concurrencyLimitHint={t("accountPool.upstreamAccounts.groupNotes.concurrency.hint")}
         concurrencyLimitCurrentLabel={t(
           "accountPool.upstreamAccounts.groupNotes.concurrency.current",
         )}
@@ -164,31 +146,18 @@ export function UpstreamAccountCreateDialogs() {
         deleteLabel={t("accountPool.upstreamAccounts.actions.delete")}
         deleteDisabledHint={
           groupNoteEditor.accountCount > 0
-            ? t(
-                "accountPool.upstreamAccounts.groupNotes.deleteBlockedWithCount",
-                { count: groupNoteEditor.accountCount },
-              )
+            ? t("accountPool.upstreamAccounts.groupNotes.deleteBlockedWithCount", {
+                count: groupNoteEditor.accountCount,
+              })
             : undefined
         }
         closeLabel={t("accountPool.upstreamAccounts.actions.cancel")}
-        existingBadgeLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.badges.existing",
-        )}
-        draftBadgeLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.badges.draft",
-        )}
-        nodeShuntLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.nodeShunt.label",
-        )}
-        nodeShuntHint={t(
-          "accountPool.upstreamAccounts.groupNotes.nodeShunt.hint",
-        )}
-        nodeShuntToggleLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle",
-        )}
-        nodeShuntWarning={t(
-          "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning",
-        )}
+        existingBadgeLabel={t("accountPool.upstreamAccounts.groupNotes.badges.existing")}
+        draftBadgeLabel={t("accountPool.upstreamAccounts.groupNotes.badges.draft")}
+        nodeShuntLabel={t("accountPool.upstreamAccounts.groupNotes.nodeShunt.label")}
+        nodeShuntHint={t("accountPool.upstreamAccounts.groupNotes.nodeShunt.hint")}
+        nodeShuntToggleLabel={t("accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle")}
+        nodeShuntWarning={t("accountPool.upstreamAccounts.groupNotes.nodeShunt.warning")}
         singleAccountRotationLabel={t(
           "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.label",
         )}
@@ -198,47 +167,32 @@ export function UpstreamAccountCreateDialogs() {
         singleAccountRotationToggleLabel={t(
           "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.toggle",
         )}
-        upstream429RetryLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.upstream429.label",
-        )}
-        upstream429RetryHint={t(
-          "accountPool.upstreamAccounts.groupNotes.upstream429.hint",
-        )}
+        upstream429RetryLabel={t("accountPool.upstreamAccounts.groupNotes.upstream429.label")}
+        upstream429RetryHint={t("accountPool.upstreamAccounts.groupNotes.upstream429.hint")}
         upstream429RetryToggleLabel={t(
           "accountPool.upstreamAccounts.groupNotes.upstream429.toggle",
         )}
         upstream429RetryCountLabel={t(
           "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel",
         )}
-        upstream429RetryCountOptions={GROUP_UPSTREAM_429_RETRY_OPTIONS.map(
-          (value: number) => ({
-            value,
-            label:
-              value === 1
-                ? t(
-                    "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce",
-                  )
-                : t(
-                    "accountPool.upstreamAccounts.groupNotes.upstream429.countMany",
-                    { count: value },
-                  ),
-          }),
-        )}
-        proxyBindingsLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.label",
-        )}
-        proxyBindingsHint={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint",
-        )}
+        upstream429RetryCountOptions={GROUP_UPSTREAM_429_RETRY_OPTIONS.map((value: number) => ({
+          value,
+          label:
+            value === 1
+              ? t("accountPool.upstreamAccounts.groupNotes.upstream429.countOnce")
+              : t("accountPool.upstreamAccounts.groupNotes.upstream429.countMany", {
+                  count: value,
+                }),
+        }))}
+        proxyBindingsLabel={t("accountPool.upstreamAccounts.groupNotes.proxyBindings.label")}
+        proxyBindingsHint={t("accountPool.upstreamAccounts.groupNotes.proxyBindings.hint")}
         proxyBindingsAutomaticLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic",
         )}
         proxyBindingsLoadingLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.loading",
         )}
-        proxyBindingsEmptyLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty",
-        )}
+        proxyBindingsEmptyLabel={t("accountPool.upstreamAccounts.groupNotes.proxyBindings.empty")}
         proxyBindingsMissingLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing",
         )}
@@ -282,9 +236,7 @@ export function UpstreamAccountCreateDialogs() {
           email: t("accountPool.upstreamAccounts.fields.email"),
           accountId: t("accountPool.upstreamAccounts.fields.accountId"),
           userId: t("accountPool.upstreamAccounts.fields.userId"),
-          lastSuccessSync: t(
-            "accountPool.upstreamAccounts.fields.lastSuccessSync",
-          ),
+          lastSuccessSync: t("accountPool.upstreamAccounts.fields.lastSuccessSync"),
         }}
       />
     </>

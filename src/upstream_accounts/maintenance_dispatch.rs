@@ -919,7 +919,7 @@ pub(crate) fn resolve_due_maintenance_dispatch_plans(
     }
 
     ranked_available.sort_by(compare_maintenance_candidates);
-    forced_priority.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
+    forced_priority.sort_by_key(|lhs| lhs.id);
     high_frequency.sort_by(compare_maintenance_candidates);
     secondary.sort_by(compare_maintenance_candidates);
 

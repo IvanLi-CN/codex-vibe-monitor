@@ -4,6 +4,7 @@
   "scripts": {
     "dev": "rspress dev --host 127.0.0.1 --port ${DOCS_PORT:-60081}",
     "build": "rspress build",
+    "lint": "bun --cwd .. run lint:docs",
     "preview": "rspress preview --host 127.0.0.1 --port ${DOCS_PORT:-60081}"
   },
   "devDependencies": {

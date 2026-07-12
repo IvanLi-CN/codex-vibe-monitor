@@ -1,7 +1,7 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import type { ComponentProps, ReactNode } from 'react'
-import { expect, userEvent, within } from 'storybook/test'
-import { OauthMailboxChip } from './OauthMailboxChip'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import type { ComponentProps, ReactNode } from "react";
+import { expect, userEvent, within } from "storybook/test";
+import { OauthMailboxChip } from "./OauthMailboxChip";
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
@@ -13,11 +13,11 @@ function StorySurface({ children }: { children: ReactNode }) {
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 const meta = {
-  title: 'Account Pool/Pages/Upstream Account Create/Mailbox Chip',
+  title: "Account Pool/Pages/Upstream Account Create/Mailbox Chip",
   component: OauthMailboxChip,
   decorators: [
     (Story) => (
@@ -27,89 +27,93 @@ const meta = {
     ),
   ],
   parameters: {
-    layout: 'fullscreen',
+    layout: "fullscreen",
   },
-} satisfies Meta<typeof OauthMailboxChip>
+} satisfies Meta<typeof OauthMailboxChip>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 const baseArgs = {
-  className: 'max-w-[24rem]',
-  emptyLabel: 'No mailbox yet',
-  copyAriaLabel: 'Copy mailbox',
-  copyHintLabel: 'Click to copy',
-  copiedLabel: 'Copied',
-  manualCopyLabel: 'Auto copy failed. Please copy the mailbox below manually.',
-  manualBadgeLabel: 'Manual',
+  className: "max-w-[24rem]",
+  emptyLabel: "No mailbox yet",
+  copyAriaLabel: "Copy mailbox",
+  copyHintLabel: "Click to copy",
+  copiedLabel: "Copied",
+  manualCopyLabel: "Auto copy failed. Please copy the mailbox below manually.",
+  manualBadgeLabel: "Manual",
   onCopy: () => undefined,
-} satisfies Partial<ComponentProps<typeof OauthMailboxChip>>
+} satisfies Partial<ComponentProps<typeof OauthMailboxChip>>;
 
 export const Hover: Story = {
   args: {
     ...baseArgs,
-    emailAddress: 'hover-preview@mail-tw.707079.xyz',
+    emailAddress: "hover-preview@mail-tw.707079.xyz",
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const copyMailboxButton = canvas.getByRole('button', { name: /copy mailbox/i })
+    const canvas = within(canvasElement);
+    const copyMailboxButton = canvas.getByRole("button", { name: /copy mailbox/i });
 
-    await userEvent.hover(copyMailboxButton)
-    const tooltip = within(document.body)
-    await expect(tooltip.getByText(/click to copy/i)).toBeInTheDocument()
-    await expect(tooltip.getByText(/hover-preview@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
+    await userEvent.hover(copyMailboxButton);
+    const tooltip = within(document.body);
+    await expect(tooltip.getByText(/click to copy/i)).toBeInTheDocument();
+    await expect(tooltip.getByText(/hover-preview@mail-tw\.707079\.xyz/i)).toBeInTheDocument();
   },
-}
+};
 
 export const LongPress: Story = {
   args: {
     ...baseArgs,
-    emailAddress: 'press-preview@mail-tw.707079.xyz',
+    emailAddress: "press-preview@mail-tw.707079.xyz",
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const copyMailboxButton = canvas.getByRole('button', { name: /copy mailbox/i })
+    const canvas = within(canvasElement);
+    const copyMailboxButton = canvas.getByRole("button", { name: /copy mailbox/i });
 
-    copyMailboxButton.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch', button: 0 }))
-    await new Promise((resolve) => window.setTimeout(resolve, 420))
+    copyMailboxButton.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch", button: 0 }),
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 420));
 
-    const tooltip = within(document.body)
-    await expect(tooltip.getByText(/click to copy/i)).toBeInTheDocument()
-    await expect(tooltip.getByText(/press-preview@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
+    const tooltip = within(document.body);
+    await expect(tooltip.getByText(/click to copy/i)).toBeInTheDocument();
+    await expect(tooltip.getByText(/press-preview@mail-tw\.707079\.xyz/i)).toBeInTheDocument();
 
-    copyMailboxButton.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch', button: 0 }))
+    copyMailboxButton.dispatchEvent(
+      new PointerEvent("pointerup", { bubbles: true, pointerType: "touch", button: 0 }),
+    );
   },
-}
+};
 
 export const Copied: Story = {
   args: {
     ...baseArgs,
-    emailAddress: 'copied-preview@mail-tw.707079.xyz',
-    tone: 'copied',
+    emailAddress: "copied-preview@mail-tw.707079.xyz",
+    tone: "copied",
   },
-}
+};
 
 export const ManualCopy: Story = {
   args: {
     ...baseArgs,
-    emailAddress: 'manual-copy@mail-tw.707079.xyz',
-    tone: 'manual',
+    emailAddress: "manual-copy@mail-tw.707079.xyz",
+    tone: "manual",
   },
-}
+};
 
 export const EditablePopover: Story = {
   args: {
     ...baseArgs,
-    emailAddress: 'editable-preview@mail-tw.707079.xyz',
+    emailAddress: "editable-preview@mail-tw.707079.xyz",
     editor: {
-      draftValue: 'editable-preview@mail-tw.707079.xyz',
-      inputAriaLabel: 'Mailbox address',
-      inputPlaceholder: 'mailbox@example.com',
-      editAriaLabel: 'Edit mailbox',
-      editHintLabel: 'Unused helper copy',
-      submitAriaLabel: 'Submit mailbox',
-      cancelAriaLabel: 'Cancel mailbox edit',
+      draftValue: "editable-preview@mail-tw.707079.xyz",
+      inputAriaLabel: "Mailbox address",
+      inputPlaceholder: "mailbox@example.com",
+      editAriaLabel: "Edit mailbox",
+      editHintLabel: "Unused helper copy",
+      submitAriaLabel: "Submit mailbox",
+      cancelAriaLabel: "Cancel mailbox edit",
       startEditing: () => undefined,
       onDraftValueChange: () => undefined,
       onSubmit: () => undefined,
@@ -118,30 +122,30 @@ export const EditablePopover: Story = {
     },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const copyMailboxButton = canvas.getByRole('button', { name: /copy mailbox/i })
+    const canvas = within(canvasElement);
+    const copyMailboxButton = canvas.getByRole("button", { name: /copy mailbox/i });
 
-    await userEvent.hover(copyMailboxButton)
+    await userEvent.hover(copyMailboxButton);
 
-    const popover = within(document.body)
-    await expect(popover.getByText(/click to copy/i)).toBeInTheDocument()
-    await expect(popover.getByRole('button', { name: /edit mailbox/i })).toBeInTheDocument()
+    const popover = within(document.body);
+    await expect(popover.getByText(/click to copy/i)).toBeInTheDocument();
+    await expect(popover.getByRole("button", { name: /edit mailbox/i })).toBeInTheDocument();
   },
-}
+};
 
 export const EditableCopiedFeedback: Story = {
   args: {
     ...baseArgs,
-    emailAddress: 'copied-editor@mail-tw.707079.xyz',
-    tone: 'copied',
+    emailAddress: "copied-editor@mail-tw.707079.xyz",
+    tone: "copied",
     editor: {
-      draftValue: 'copied-editor@mail-tw.707079.xyz',
-      inputAriaLabel: 'Mailbox address',
-      inputPlaceholder: 'mailbox@example.com',
-      editAriaLabel: 'Edit mailbox',
-      editHintLabel: 'Unused helper copy',
-      submitAriaLabel: 'Submit mailbox',
-      cancelAriaLabel: 'Cancel mailbox edit',
+      draftValue: "copied-editor@mail-tw.707079.xyz",
+      inputAriaLabel: "Mailbox address",
+      inputPlaceholder: "mailbox@example.com",
+      editAriaLabel: "Edit mailbox",
+      editHintLabel: "Unused helper copy",
+      submitAriaLabel: "Submit mailbox",
+      cancelAriaLabel: "Cancel mailbox edit",
       startEditing: () => undefined,
       onDraftValueChange: () => undefined,
       onSubmit: () => undefined,
@@ -149,4 +153,4 @@ export const EditableCopiedFeedback: Story = {
       editing: false,
     },
   },
-}
+};

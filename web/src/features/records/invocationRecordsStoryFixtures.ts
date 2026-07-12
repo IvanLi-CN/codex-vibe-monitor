@@ -10,63 +10,63 @@ import type {
   InvocationRecordsSummaryResponse,
   InvocationTokenSummary,
   StatsResponse,
-} from '../../lib/api'
+} from "../../lib/api";
 
 function formatStoryProxyBindingDisplayName(key: string) {
-  if (key === 'fpb_story_pool_attempt_lifecycle') return 'Storybook Dallas Egress'
-  const storyAttemptMatch = key.match(/^fpb_story_inv_story_(\d+)_(\d+)$/)
+  if (key === "fpb_story_pool_attempt_lifecycle") return "Storybook Dallas Egress";
+  const storyAttemptMatch = key.match(/^fpb_story_inv_story_(\d+)_(\d+)$/);
   if (storyAttemptMatch) {
-    return `Story Proxy ${storyAttemptMatch[1]}-${storyAttemptMatch[2]}`
+    return `Story Proxy ${storyAttemptMatch[1]}-${storyAttemptMatch[2]}`;
   }
-  return `Story Proxy ${key.slice(-6)}`
+  return `Story Proxy ${key.slice(-6)}`;
 }
 
 export function createStoryForwardProxyBindingNodes(keys: string[]): ForwardProxyBindingNode[] {
   return Array.from(new Set(keys.map((key) => key.trim()).filter(Boolean)))
-    .filter((key) => key !== '__direct__')
+    .filter((key) => key !== "__direct__")
     .map((key) => ({
       key,
-      source: 'storybook',
+      source: "storybook",
       displayName: formatStoryProxyBindingDisplayName(key),
-      protocolLabel: 'HTTP',
+      protocolLabel: "HTTP",
       penalized: false,
       selectable: true,
       last24h: [],
-    }))
+    }));
 }
 
 export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
   {
     id: 6101,
-    invokeId: 'inv_story_6101',
-    occurredAt: '2026-03-10T07:58:12.000Z',
-    createdAt: '2026-03-10T07:58:12.000Z',
-    source: 'pool',
-    proxyDisplayName: 'tokyo-edge-01',
-    routeMode: 'pool',
-    transport: 'websocket',
+    invokeId: "inv_story_6101",
+    occurredAt: "2026-03-10T07:58:12.000Z",
+    createdAt: "2026-03-10T07:58:12.000Z",
+    source: "pool",
+    proxyDisplayName: "tokyo-edge-01",
+    routeMode: "pool",
+    transport: "websocket",
     upstreamAccountId: 17,
-    upstreamAccountName: 'Pool Alpha 17',
+    upstreamAccountName: "Pool Alpha 17",
     poolAttemptCount: 2,
     poolDistinctAccountCount: 1,
-    endpoint: '/v1/responses',
-    model: 'gpt-5.4',
-    requestModel: 'gpt-5.4',
-    responseModel: 'gpt-5.4',
-    status: 'success',
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    requestModel: "gpt-5.4",
+    responseModel: "gpt-5.4",
+    status: "success",
     inputTokens: 18240,
     outputTokens: 1240,
     cacheInputTokens: 15280,
     reasoningTokens: 280,
-    reasoningEffort: 'high',
+    reasoningEffort: "high",
     totalTokens: 19760,
     cost: 0.1824,
-    requesterIp: '203.0.113.24',
-    promptCacheKey: 'pck_story_alpha',
-    requestedServiceTier: 'priority',
-    serviceTier: 'priority',
-    billingServiceTier: 'priority',
-    responseContentEncoding: 'gzip, br',
+    requesterIp: "203.0.113.24",
+    promptCacheKey: "pck_story_alpha",
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+    billingServiceTier: "priority",
+    responseContentEncoding: "gzip, br",
     tReqReadMs: 24,
     tReqParseMs: 6,
     tUpstreamConnectMs: 708,
@@ -75,73 +75,73 @@ export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
   },
   {
     id: 6102,
-    invokeId: 'inv_story_6102',
-    occurredAt: '2026-03-10T07:56:44.000Z',
-    createdAt: '2026-03-10T07:56:44.000Z',
-    source: 'pool',
-    proxyDisplayName: 'osaka-edge-02',
-    routeMode: 'pool',
+    invokeId: "inv_story_6102",
+    occurredAt: "2026-03-10T07:56:44.000Z",
+    createdAt: "2026-03-10T07:56:44.000Z",
+    source: "pool",
+    proxyDisplayName: "osaka-edge-02",
+    routeMode: "pool",
     upstreamAccountId: 23,
-    upstreamAccountName: 'Pool Beta 23',
+    upstreamAccountName: "Pool Beta 23",
     poolAttemptCount: 5,
     poolDistinctAccountCount: 3,
-    poolAttemptTerminalReason: 'budget_exhausted_final',
-    endpoint: '/v1/chat/completions',
-    model: 'gpt-5',
-    requestModel: 'gpt-5',
-    responseModel: 'gpt-5',
-    status: 'failed',
+    poolAttemptTerminalReason: "budget_exhausted_final",
+    endpoint: "/v1/chat/completions",
+    model: "gpt-5",
+    requestModel: "gpt-5",
+    responseModel: "gpt-5",
+    status: "failed",
     inputTokens: 6240,
     outputTokens: 0,
     cacheInputTokens: 0,
     totalTokens: 6240,
     cost: 0.041,
-    errorMessage: 'upstream timeout while waiting first byte',
-    failureKind: 'upstream_timeout',
-    failureClass: 'service_failure',
+    errorMessage: "upstream timeout while waiting first byte",
+    failureKind: "upstream_timeout",
+    failureClass: "service_failure",
     isActionable: true,
-    requesterIp: '198.51.100.19',
-    promptCacheKey: 'pck_story_beta',
-    requestedServiceTier: 'priority',
-    serviceTier: 'default',
-    billingServiceTier: 'priority',
-    responseContentEncoding: 'identity',
+    requesterIp: "198.51.100.19",
+    promptCacheKey: "pck_story_beta",
+    requestedServiceTier: "priority",
+    serviceTier: "default",
+    billingServiceTier: "priority",
+    responseContentEncoding: "identity",
     tUpstreamTtfbMs: null,
     tTotalMs: 30015,
   },
   {
     id: 6103,
-    invokeId: 'inv_story_6103',
-    occurredAt: '2026-03-10T07:53:08.000Z',
-    createdAt: '2026-03-10T07:53:08.000Z',
-    source: 'pool',
-    proxyDisplayName: 'singapore-edge-03',
-    routeMode: 'pool',
+    invokeId: "inv_story_6103",
+    occurredAt: "2026-03-10T07:53:08.000Z",
+    createdAt: "2026-03-10T07:53:08.000Z",
+    source: "pool",
+    proxyDisplayName: "singapore-edge-03",
+    routeMode: "pool",
     upstreamAccountId: 31,
-    upstreamAccountName: 'Pool Gamma 31',
+    upstreamAccountName: "Pool Gamma 31",
     poolAttemptCount: 1,
     poolDistinctAccountCount: 1,
-    poolAttemptTerminalReason: 'client_failure',
-    endpoint: '/v1/responses',
-    model: 'gpt-5-mini',
-    status: 'failed',
+    poolAttemptTerminalReason: "client_failure",
+    endpoint: "/v1/responses",
+    model: "gpt-5-mini",
+    status: "failed",
     inputTokens: 980,
     outputTokens: 0,
     cacheInputTokens: 0,
     totalTokens: 980,
     cost: 0.0043,
-    errorMessage: 'request payload missing required field: input',
-    failureKind: 'invalid_request',
-    failureClass: 'client_failure',
+    errorMessage: "request payload missing required field: input",
+    failureKind: "invalid_request",
+    failureClass: "client_failure",
     isActionable: false,
-    requesterIp: '198.51.100.77',
-    promptCacheKey: 'pck_story_gamma',
-    requestedServiceTier: 'auto',
-    serviceTier: 'auto',
-    detailLevel: 'structured_only',
-    detailPrunedAt: '2026-03-10T08:30:00.000Z',
-    detailPruneReason: 'success_over_30d',
-    responseContentEncoding: 'gzip',
+    requesterIp: "198.51.100.77",
+    promptCacheKey: "pck_story_gamma",
+    requestedServiceTier: "auto",
+    serviceTier: "auto",
+    detailLevel: "structured_only",
+    detailPrunedAt: "2026-03-10T08:30:00.000Z",
+    detailPruneReason: "success_over_30d",
+    responseContentEncoding: "gzip",
     tReqReadMs: 12,
     tReqParseMs: 5,
     tUpstreamConnectMs: 18,
@@ -150,36 +150,37 @@ export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
   },
   {
     id: 6104,
-    invokeId: 'inv_story_6104',
-    occurredAt: '2026-03-10T07:51:02.000Z',
-    createdAt: '2026-03-10T07:51:02.000Z',
-    source: 'pool',
-    proxyDisplayName: 'seoul-edge-04',
-    routeMode: 'pool',
+    invokeId: "inv_story_6104",
+    occurredAt: "2026-03-10T07:51:02.000Z",
+    createdAt: "2026-03-10T07:51:02.000Z",
+    source: "pool",
+    proxyDisplayName: "seoul-edge-04",
+    routeMode: "pool",
     upstreamAccountId: 12,
-    upstreamAccountName: 'Pool Delta 12',
+    upstreamAccountName: "Pool Delta 12",
     poolAttemptCount: 2,
     poolDistinctAccountCount: 1,
-    poolAttemptTerminalReason: 'client_abort',
-    endpoint: '/v1/responses',
-    model: 'gpt-5.4',
-    status: 'failed',
+    poolAttemptTerminalReason: "client_abort",
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    status: "failed",
     inputTokens: 2140,
     outputTokens: 40,
     cacheInputTokens: 620,
     totalTokens: 2180,
     cost: 0.0122,
     downstreamStatusCode: 200,
-    downstreamErrorMessage: '[downstream_closed] downstream closed while streaming upstream response',
-    failureKind: 'downstream_closed',
-    failureClass: 'client_abort',
+    downstreamErrorMessage:
+      "[downstream_closed] downstream closed while streaming upstream response",
+    failureKind: "downstream_closed",
+    failureClass: "client_abort",
     isActionable: false,
-    requesterIp: '203.0.113.88',
-    promptCacheKey: 'pck_story_delta',
-    requestedServiceTier: 'priority',
-    serviceTier: 'priority',
-    billingServiceTier: 'priority',
-    responseContentEncoding: 'br',
+    requesterIp: "203.0.113.88",
+    promptCacheKey: "pck_story_delta",
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+    billingServiceTier: "priority",
+    responseContentEncoding: "br",
     tReqReadMs: 18,
     tReqParseMs: 6,
     tUpstreamConnectMs: 300,
@@ -188,33 +189,33 @@ export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
   },
   {
     id: 6105,
-    invokeId: 'inv_story_6105',
-    occurredAt: '2026-03-10T07:49:17.000Z',
-    createdAt: '2026-03-10T07:49:17.000Z',
-    source: 'pool',
-    proxyDisplayName: 'taipei-edge-05',
-    routeMode: 'pool',
+    invokeId: "inv_story_6105",
+    occurredAt: "2026-03-10T07:49:17.000Z",
+    createdAt: "2026-03-10T07:49:17.000Z",
+    source: "pool",
+    proxyDisplayName: "taipei-edge-05",
+    routeMode: "pool",
     upstreamAccountId: 44,
-    upstreamAccountName: 'Pool Echo 44',
+    upstreamAccountName: "Pool Echo 44",
     poolAttemptCount: 1,
     poolDistinctAccountCount: 1,
-    poolAttemptTerminalReason: 'success',
-    endpoint: '/v1/responses',
-    model: 'gpt-5.4',
-    status: 'success',
+    poolAttemptTerminalReason: "success",
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    status: "success",
     inputTokens: 11820,
     outputTokens: 830,
     cacheInputTokens: 6440,
     reasoningTokens: 120,
-    reasoningEffort: 'medium',
+    reasoningEffort: "medium",
     totalTokens: 12650,
     cost: 0.0917,
-    requesterIp: '203.0.113.129',
-    promptCacheKey: 'pck_story_epsilon',
-    requestedServiceTier: 'priority',
-    serviceTier: 'priority',
-    billingServiceTier: 'priority',
-    responseContentEncoding: 'gzip',
+    requesterIp: "203.0.113.129",
+    promptCacheKey: "pck_story_epsilon",
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+    billingServiceTier: "priority",
+    responseContentEncoding: "gzip",
     tReqReadMs: 22,
     tReqParseMs: 9,
     tUpstreamConnectMs: 715,
@@ -223,26 +224,26 @@ export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
   },
   {
     id: 6107,
-    invokeId: 'inv_story_6107',
-    occurredAt: '2026-03-10T07:44:20.000Z',
-    createdAt: '2026-03-10T07:44:20.000Z',
-    source: 'proxy',
-    proxyDisplayName: 'san-jose-edge-07',
-    endpoint: '/v1/responses',
-    model: 'gpt-5.4',
-    status: 'success',
+    invokeId: "inv_story_6107",
+    occurredAt: "2026-03-10T07:44:20.000Z",
+    createdAt: "2026-03-10T07:44:20.000Z",
+    source: "proxy",
+    proxyDisplayName: "san-jose-edge-07",
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    status: "success",
     inputTokens: 133604,
     outputTokens: 349,
     cacheInputTokens: 132608,
     reasoningTokens: 62,
-    reasoningEffort: 'high',
+    reasoningEffort: "high",
     totalTokens: 133953,
     cost: 0.0409,
-    requesterIp: '192.168.31.6',
-    promptCacheKey: 'pck_story_semantics',
-    requestedServiceTier: 'auto',
-    serviceTier: 'auto',
-    responseContentEncoding: 'identity',
+    requesterIp: "192.168.31.6",
+    promptCacheKey: "pck_story_semantics",
+    requestedServiceTier: "auto",
+    serviceTier: "auto",
+    responseContentEncoding: "identity",
     tReqReadMs: 31,
     tReqParseMs: 1,
     tUpstreamConnectMs: 9330,
@@ -254,235 +255,237 @@ export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
   },
   {
     id: 6108,
-    invokeId: 'inv_story_6108',
-    occurredAt: '2026-03-10T07:42:12.000Z',
-    createdAt: '2026-03-10T07:42:12.000Z',
-    source: 'pool',
-    proxyDisplayName: 'sfo-edge-08',
-    routeMode: 'pool',
+    invokeId: "inv_story_6108",
+    occurredAt: "2026-03-10T07:42:12.000Z",
+    createdAt: "2026-03-10T07:42:12.000Z",
+    source: "pool",
+    proxyDisplayName: "sfo-edge-08",
+    routeMode: "pool",
     upstreamAccountId: 91,
-    upstreamAccountName: 'Pool Theta 91',
+    upstreamAccountName: "Pool Theta 91",
     poolAttemptCount: 2,
     poolDistinctAccountCount: 2,
-    poolAttemptTerminalReason: 'failed_contact_upstream',
-    endpoint: '/v1/responses',
-    model: 'gpt-5.4',
-    status: 'failed',
+    poolAttemptTerminalReason: "failed_contact_upstream",
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    status: "failed",
     inputTokens: 2408,
     outputTokens: 0,
     cacheInputTokens: 0,
     totalTokens: 2408,
     cost: 0.0164,
     errorMessage:
-      'failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+      "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
     downstreamStatusCode: 502,
     downstreamErrorMessage:
-      'pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
-    failureKind: 'failed_contact_upstream',
-    failureClass: 'service_failure',
+      "pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+    failureKind: "failed_contact_upstream",
+    failureClass: "service_failure",
     isActionable: true,
     upstreamErrorMessage:
-      'failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
-    requesterIp: '203.0.113.166',
-    promptCacheKey: 'pck_story_transport_split',
-    requestedServiceTier: 'priority',
-    serviceTier: 'priority',
-    billingServiceTier: 'priority',
-    responseContentEncoding: 'identity',
+      "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+    requesterIp: "203.0.113.166",
+    promptCacheKey: "pck_story_transport_split",
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+    billingServiceTier: "priority",
+    responseContentEncoding: "identity",
     tUpstreamConnectMs: 188,
     tTotalMs: 512,
   },
   {
     id: 6109,
-    invokeId: 'inv_story_6109',
-    occurredAt: '2026-03-10T07:40:48.000Z',
-    createdAt: '2026-03-10T07:40:48.000Z',
-    source: 'pool',
-    proxyDisplayName: 'sfo-edge-09',
-    routeMode: 'pool',
+    invokeId: "inv_story_6109",
+    occurredAt: "2026-03-10T07:40:48.000Z",
+    createdAt: "2026-03-10T07:40:48.000Z",
+    source: "pool",
+    proxyDisplayName: "sfo-edge-09",
+    routeMode: "pool",
     upstreamAccountId: 92,
-    upstreamAccountName: 'Pool Iota 92',
+    upstreamAccountName: "Pool Iota 92",
     poolAttemptCount: 1,
     poolDistinctAccountCount: 1,
-    poolAttemptTerminalReason: 'upstream_response_failed',
-    endpoint: '/v1/responses',
-    model: 'gpt-5.4',
-    status: 'failed',
+    poolAttemptTerminalReason: "upstream_response_failed",
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    status: "failed",
     inputTokens: 1980,
     outputTokens: 0,
     cacheInputTokens: 0,
     totalTokens: 1980,
     cost: 0.0129,
     errorMessage:
-      '[upstream_response_failed] server_error: upstream returned 502 while creating the response',
-    failureKind: 'upstream_response_failed',
-    failureClass: 'service_failure',
+      "[upstream_response_failed] server_error: upstream returned 502 while creating the response",
+    failureKind: "upstream_response_failed",
+    failureClass: "service_failure",
     isActionable: true,
-    upstreamErrorCode: 'server_error',
-    upstreamErrorMessage: 'server_error: upstream returned 502 while creating the response',
-    upstreamRequestId: 'req_story_true_502',
-    requesterIp: '203.0.113.167',
-    promptCacheKey: 'pck_story_true_502',
-    requestedServiceTier: 'priority',
-    serviceTier: 'priority',
-    billingServiceTier: 'priority',
-    responseContentEncoding: 'gzip',
+    upstreamErrorCode: "server_error",
+    upstreamErrorMessage: "server_error: upstream returned 502 while creating the response",
+    upstreamRequestId: "req_story_true_502",
+    requesterIp: "203.0.113.167",
+    promptCacheKey: "pck_story_true_502",
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+    billingServiceTier: "priority",
+    responseContentEncoding: "gzip",
     tUpstreamConnectMs: 120,
     tUpstreamTtfbMs: 310,
     tTotalMs: 804,
   },
   {
     id: 6106,
-    invokeId: 'inv_story_6106',
-    occurredAt: '2026-03-10T07:46:55.000Z',
-    createdAt: '2026-03-10T07:46:55.000Z',
-    source: 'pool',
-    proxyDisplayName: 'frankfurt-edge-06',
-    routeMode: 'pool',
+    invokeId: "inv_story_6106",
+    occurredAt: "2026-03-10T07:46:55.000Z",
+    createdAt: "2026-03-10T07:46:55.000Z",
+    source: "pool",
+    proxyDisplayName: "frankfurt-edge-06",
+    routeMode: "pool",
     upstreamAccountId: 58,
-    upstreamAccountName: 'Pool Zeta 58',
+    upstreamAccountName: "Pool Zeta 58",
     poolAttemptCount: 3,
     poolDistinctAccountCount: 2,
-    poolAttemptTerminalReason: 'in_progress',
-    endpoint: '/v1/chat/completions',
-    model: 'gpt-5.4',
-    status: 'running',
+    poolAttemptTerminalReason: "in_progress",
+    endpoint: "/v1/chat/completions",
+    model: "gpt-5.4",
+    status: "running",
     inputTokens: 4200,
     outputTokens: 0,
     cacheInputTokens: 2100,
     totalTokens: 4200,
     cost: 0.019,
-    requesterIp: '203.0.113.141',
-    promptCacheKey: 'pck_story_zeta',
-    requestedServiceTier: 'priority',
-    serviceTier: 'priority',
-    billingServiceTier: 'priority',
-    responseContentEncoding: 'gzip',
+    requesterIp: "203.0.113.141",
+    promptCacheKey: "pck_story_zeta",
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+    billingServiceTier: "priority",
+    responseContentEncoding: "gzip",
     tUpstreamTtfbMs: null,
     tTotalMs: 1450,
   },
   {
     id: 6110,
-    invokeId: 'inv_story_6110',
-    occurredAt: '2026-05-11T08:14:19.000Z',
-    createdAt: '2026-05-11T08:14:19.000Z',
-    source: 'pool',
-    proxyDisplayName: 'shanghai-edge-10',
-    routeMode: 'pool',
+    invokeId: "inv_story_6110",
+    occurredAt: "2026-05-11T08:14:19.000Z",
+    createdAt: "2026-05-11T08:14:19.000Z",
+    source: "pool",
+    proxyDisplayName: "shanghai-edge-10",
+    routeMode: "pool",
     upstreamAccountId: 2644,
-    upstreamAccountName: 'solacebambi9197 Team',
+    upstreamAccountName: "solacebambi9197 Team",
     poolAttemptCount: 7,
     poolDistinctAccountCount: 3,
-    poolAttemptTerminalReason: 'max_distinct_accounts_exhausted',
-    endpoint: '/v1/responses',
-    model: 'gpt-5.5',
-    status: 'failed',
+    poolAttemptTerminalReason: "max_distinct_accounts_exhausted",
+    endpoint: "/v1/responses",
+    model: "gpt-5.5",
+    status: "failed",
     inputTokens: 13184,
     outputTokens: 0,
     cacheInputTokens: 0,
     totalTokens: 13184,
     cost: 0.052,
     errorMessage:
-      '[upstream_http_429_quota_exhausted] pool upstream responded with 429: The usage limit has been reached',
-    failureKind: 'upstream_http_429_quota_exhausted',
-    failureClass: 'service_failure',
+      "[upstream_http_429_quota_exhausted] pool upstream responded with 429: The usage limit has been reached",
+    failureKind: "upstream_http_429_quota_exhausted",
+    failureClass: "service_failure",
     isActionable: true,
-    requesterIp: '192.168.31.6',
-    promptCacheKey: '019e1619-ab2a-7ec3-9f89-a5a2c2462baa',
-    requestedServiceTier: 'priority',
-    serviceTier: 'default',
-    billingServiceTier: 'priority',
-    responseContentEncoding: 'identity',
+    requesterIp: "192.168.31.6",
+    promptCacheKey: "019e1619-ab2a-7ec3-9f89-a5a2c2462baa",
+    requestedServiceTier: "priority",
+    serviceTier: "default",
+    billingServiceTier: "priority",
+    responseContentEncoding: "identity",
     tUpstreamConnectMs: 4940.9,
     tUpstreamTtfbMs: null,
     tUpstreamStreamMs: null,
     tTotalMs: 31620,
   },
-]
+];
 
-function resolveStoryPoolAttemptStatus(record: ApiInvocation): ApiPoolUpstreamRequestAttempt['status'] {
-  if (record.status === 'success') return 'success'
-  if (record.poolAttemptTerminalReason === 'budget_exhausted_final') return 'budget_exhausted_final'
-  if (record.failureClass === 'client_failure') return 'http_failure'
-  return 'transport_failure'
+function resolveStoryPoolAttemptStatus(
+  record: ApiInvocation,
+): ApiPoolUpstreamRequestAttempt["status"] {
+  if (record.status === "success") return "success";
+  if (record.poolAttemptTerminalReason === "budget_exhausted_final")
+    return "budget_exhausted_final";
+  if (record.failureClass === "client_failure") return "http_failure";
+  return "transport_failure";
 }
 
 export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
-  const attemptsByInvokeId: Record<string, ApiPoolUpstreamRequestAttempt[]> = {}
+  const attemptsByInvokeId: Record<string, ApiPoolUpstreamRequestAttempt[]> = {};
 
   records.forEach((record, recordIndex) => {
-    if (record.routeMode !== 'pool') return
+    if (record.routeMode !== "pool") return;
 
-    if (record.invokeId === 'inv_story_6110') {
-      const occurredAtMs = Date.parse(record.occurredAt)
+    if (record.invokeId === "inv_story_6110") {
+      const occurredAtMs = Date.parse(record.occurredAt);
       const accounts = [
-        { id: 2562, name: 'CaroleeKnorr31 Team' },
-        { id: 2821, name: 'orpvvgk884@outlook.com' },
-        { id: 2644, name: 'solacebambi9197 Team' },
-      ]
+        { id: 2562, name: "CaroleeKnorr31 Team" },
+        { id: 2821, name: "orpvvgk884@outlook.com" },
+        { id: 2644, name: "solacebambi9197 Team" },
+      ];
       const realAttempts: ApiPoolUpstreamRequestAttempt[] = [
         ...Array.from({ length: 3 }, (_, index) => ({
           account: accounts[0],
-          status: 'transport_failure' as const,
+          status: "transport_failure" as const,
           httpStatus: null,
-          failureKind: 'failed_contact_upstream',
+          failureKind: "failed_contact_upstream",
           errorMessage:
-            'failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+            "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
           downstreamErrorMessage:
-            'pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+            "pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
           connectLatencyMs: 3918.4 + index * 66,
         })),
         ...Array.from({ length: 3 }, (_, index) => ({
           account: accounts[1],
-          status: 'transport_failure' as const,
+          status: "transport_failure" as const,
           httpStatus: null,
-          failureKind: 'failed_contact_upstream',
+          failureKind: "failed_contact_upstream",
           errorMessage:
-            'failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+            "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
           downstreamErrorMessage:
-            'pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+            "pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
           connectLatencyMs: 4036.2 + index * 35,
         })),
         {
           account: accounts[2],
-          status: 'http_failure' as const,
+          status: "http_failure" as const,
           httpStatus: 429,
-          failureKind: 'upstream_http_429_quota_exhausted',
-          errorMessage: 'pool upstream responded with 429: The usage limit has been reached',
+          failureKind: "upstream_http_429_quota_exhausted",
+          errorMessage: "pool upstream responded with 429: The usage limit has been reached",
           downstreamErrorMessage: null,
           connectLatencyMs: 4940.9,
         },
       ].map((attempt, index) => {
-        const startedAtMs = occurredAtMs + index * 4_000
-        const accountIndex = accounts.findIndex((account) => account.id === attempt.account.id)
-        const retryIndex =
-          index < 3 ? index + 1 : index < 6 ? index - 2 : 1
+        const startedAtMs = occurredAtMs + index * 4_000;
+        const accountIndex = accounts.findIndex((account) => account.id === attempt.account.id);
+        const retryIndex = index < 3 ? index + 1 : index < 6 ? index - 2 : 1;
 
         return {
           id: record.id * 100 + index + 1,
           invokeId: record.invokeId,
           occurredAt: record.occurredAt,
-          endpoint: record.endpoint ?? '/v1/responses',
+          endpoint: record.endpoint ?? "/v1/responses",
           attemptIndex: index + 1,
           distinctAccountIndex: accountIndex + 1,
           sameAccountRetryIndex: retryIndex,
           status: attempt.status,
           httpStatus: attempt.httpStatus,
-          downstreamHttpStatus: attempt.status === 'transport_failure' ? 502 : null,
+          downstreamHttpStatus: attempt.status === "transport_failure" ? 502 : null,
           failureKind: attempt.failureKind,
           errorMessage: attempt.errorMessage,
           downstreamErrorMessage: attempt.downstreamErrorMessage,
           connectLatencyMs: attempt.connectLatencyMs,
           firstByteLatencyMs: null,
           streamLatencyMs: null,
-          upstreamRequestId: attempt.status === 'http_failure' ? 'req_story_quota_429' : null,
+          upstreamRequestId: attempt.status === "http_failure" ? "req_story_quota_429" : null,
           startedAt: new Date(startedAtMs).toISOString(),
           finishedAt: new Date(startedAtMs + 3_900).toISOString(),
           createdAt: new Date(startedAtMs + 3_900).toISOString(),
           upstreamAccountId: attempt.account.id,
           upstreamAccountName: attempt.account.name,
-        }
-      })
+        };
+      });
 
       attemptsByInvokeId[record.invokeId] = [
         ...realAttempts,
@@ -490,15 +493,15 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
           id: record.id * 100 + 8,
           invokeId: record.invokeId,
           occurredAt: record.occurredAt,
-          endpoint: record.endpoint ?? '/v1/responses',
+          endpoint: record.endpoint ?? "/v1/responses",
           attemptIndex: 8,
           distinctAccountIndex: 3,
           sameAccountRetryIndex: 0,
-          status: 'budget_exhausted_final',
+          status: "budget_exhausted_final",
           httpStatus: 429,
           downstreamHttpStatus: null,
-          failureKind: 'max_distinct_accounts_exhausted',
-          errorMessage: 'pool upstream responded with 429: The usage limit has been reached',
+          failureKind: "max_distinct_accounts_exhausted",
+          errorMessage: "pool upstream responded with 429: The usage limit has been reached",
           downstreamErrorMessage: null,
           connectLatencyMs: null,
           firstByteLatencyMs: null,
@@ -508,245 +511,267 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
           finishedAt: new Date(occurredAtMs + 28_000).toISOString(),
           createdAt: new Date(occurredAtMs + 28_000).toISOString(),
           upstreamAccountId: 2644,
-          upstreamAccountName: 'solacebambi9197 Team',
+          upstreamAccountName: "solacebambi9197 Team",
         },
-      ]
-      return
+      ];
+      return;
     }
 
-    const attemptTotal = Math.max(1, record.poolAttemptCount ?? 1)
-    const distinctTotal = Math.max(1, Math.min(attemptTotal, record.poolDistinctAccountCount ?? attemptTotal))
+    const attemptTotal = Math.max(1, record.poolAttemptCount ?? 1);
+    const distinctTotal = Math.max(
+      1,
+      Math.min(attemptTotal, record.poolDistinctAccountCount ?? attemptTotal),
+    );
     const finalAccountId =
-      typeof record.upstreamAccountId === 'number' && Number.isFinite(record.upstreamAccountId)
+      typeof record.upstreamAccountId === "number" && Number.isFinite(record.upstreamAccountId)
         ? Math.trunc(record.upstreamAccountId)
-        : 100 + recordIndex * 10 + distinctTotal
-    const baseAccountId = finalAccountId - (distinctTotal - 1)
-    const finalStatus = resolveStoryPoolAttemptStatus(record)
+        : 100 + recordIndex * 10 + distinctTotal;
+    const baseAccountId = finalAccountId - (distinctTotal - 1);
+    const finalStatus = resolveStoryPoolAttemptStatus(record);
 
-    attemptsByInvokeId[record.invokeId] = Array.from({ length: attemptTotal }, (_, attemptIndex) => {
-      const isLastAttempt = attemptIndex === attemptTotal - 1
-      const distinctAccountIndex = Math.min(distinctTotal, attemptIndex + 1)
-      const sameAccountRetryIndex = attemptIndex < distinctTotal ? 1 : attemptIndex - distinctTotal + 2
-      const upstreamAccountId = isLastAttempt ? finalAccountId : baseAccountId + distinctAccountIndex - 1
-      const upstreamAccountName =
-        isLastAttempt && record.upstreamAccountName?.trim()
-          ? record.upstreamAccountName
-          : `Pool Candidate ${upstreamAccountId}`
-      const status = isLastAttempt ? finalStatus : attemptIndex % 2 === 0 ? 'transport_failure' : 'http_failure'
-      const startedAtMs = Date.parse(record.occurredAt) - (attemptTotal - attemptIndex) * 900
-      const finishedAtMs = startedAtMs + 240 + attemptIndex * 90
-      const proxyBindingKeySnapshot =
-        record.invokeId === 'inv_story_6104'
-          ? '__direct__'
-          : `fpb_story_${record.invokeId.replace(/[^a-zA-Z0-9]/g, '_')}_${attemptIndex + 1}`
+    attemptsByInvokeId[record.invokeId] = Array.from(
+      { length: attemptTotal },
+      (_, attemptIndex) => {
+        const isLastAttempt = attemptIndex === attemptTotal - 1;
+        const distinctAccountIndex = Math.min(distinctTotal, attemptIndex + 1);
+        const sameAccountRetryIndex =
+          attemptIndex < distinctTotal ? 1 : attemptIndex - distinctTotal + 2;
+        const upstreamAccountId = isLastAttempt
+          ? finalAccountId
+          : baseAccountId + distinctAccountIndex - 1;
+        const upstreamAccountName =
+          isLastAttempt && record.upstreamAccountName?.trim()
+            ? record.upstreamAccountName
+            : `Pool Candidate ${upstreamAccountId}`;
+        const status = isLastAttempt
+          ? finalStatus
+          : attemptIndex % 2 === 0
+            ? "transport_failure"
+            : "http_failure";
+        const startedAtMs = Date.parse(record.occurredAt) - (attemptTotal - attemptIndex) * 900;
+        const finishedAtMs = startedAtMs + 240 + attemptIndex * 90;
+        const proxyBindingKeySnapshot =
+          record.invokeId === "inv_story_6104"
+            ? "__direct__"
+            : `fpb_story_${record.invokeId.replace(/[^a-zA-Z0-9]/g, "_")}_${attemptIndex + 1}`;
 
-      const syntheticOauthBridgeAttempt =
-        record.invokeId === 'inv_story_6108' && isLastAttempt
-          ? {
-              status: 'transport_failure' as const,
-              httpStatus: null,
-              downstreamHttpStatus: 502,
-              failureKind: 'failed_contact_upstream',
-              errorMessage:
-                'failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
-              downstreamErrorMessage:
-                'pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
-              upstreamRequestId: null,
-            }
-          : null
-      const trueUpstreamHttpAttempt =
-        record.invokeId === 'inv_story_6109' && isLastAttempt
-          ? {
-              status: 'http_failure' as const,
-              httpStatus: 502,
-              downstreamHttpStatus: null,
-              failureKind: 'upstream_response_failed',
-              errorMessage:
-                '[upstream_response_failed] server_error: upstream returned 502 while creating the response',
-              downstreamErrorMessage: null,
-              upstreamRequestId: 'req_story_true_502',
-            }
-          : null
-      const downstreamClosedAttempt =
-        record.invokeId === 'inv_story_6104' && isLastAttempt
-          ? {
-              status: 'success' as const,
-              httpStatus: 200,
-              downstreamHttpStatus: 200,
-              failureKind: null,
-              errorMessage: null,
-              downstreamErrorMessage:
-                '[downstream_closed] downstream closed while streaming upstream response',
-              upstreamRequestId: `${record.invokeId}-attempt-${attemptIndex + 1}`,
-            }
-          : null
-      const forcedAttempt = syntheticOauthBridgeAttempt ?? trueUpstreamHttpAttempt ?? downstreamClosedAttempt
+        const syntheticOauthBridgeAttempt =
+          record.invokeId === "inv_story_6108" && isLastAttempt
+            ? {
+                status: "transport_failure" as const,
+                httpStatus: null,
+                downstreamHttpStatus: 502,
+                failureKind: "failed_contact_upstream",
+                errorMessage:
+                  "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+                downstreamErrorMessage:
+                  "pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+                upstreamRequestId: null,
+              }
+            : null;
+        const trueUpstreamHttpAttempt =
+          record.invokeId === "inv_story_6109" && isLastAttempt
+            ? {
+                status: "http_failure" as const,
+                httpStatus: 502,
+                downstreamHttpStatus: null,
+                failureKind: "upstream_response_failed",
+                errorMessage:
+                  "[upstream_response_failed] server_error: upstream returned 502 while creating the response",
+                downstreamErrorMessage: null,
+                upstreamRequestId: "req_story_true_502",
+              }
+            : null;
+        const downstreamClosedAttempt =
+          record.invokeId === "inv_story_6104" && isLastAttempt
+            ? {
+                status: "success" as const,
+                httpStatus: 200,
+                downstreamHttpStatus: 200,
+                failureKind: null,
+                errorMessage: null,
+                downstreamErrorMessage:
+                  "[downstream_closed] downstream closed while streaming upstream response",
+                upstreamRequestId: `${record.invokeId}-attempt-${attemptIndex + 1}`,
+              }
+            : null;
+        const forcedAttempt =
+          syntheticOauthBridgeAttempt ?? trueUpstreamHttpAttempt ?? downstreamClosedAttempt;
 
-      return {
-        id: record.id * 100 + attemptIndex + 1,
-        invokeId: record.invokeId,
-        occurredAt: record.occurredAt,
-        endpoint: record.endpoint ?? '/v1/responses',
-        proxyBindingKeySnapshot,
-        attemptIndex: attemptIndex + 1,
-        distinctAccountIndex,
-        sameAccountRetryIndex,
-        status: forcedAttempt?.status ?? status,
-        httpStatus:
-          forcedAttempt?.httpStatus ??
-          (status === 'success' ? 200 : status === 'http_failure' ? (isLastAttempt ? 400 : 429) : null),
-        downstreamHttpStatus: forcedAttempt?.downstreamHttpStatus ?? null,
-        failureKind:
-          forcedAttempt?.failureKind ??
-          (status === 'success'
-            ? null
-            : status === 'http_failure'
-              ? isLastAttempt
-                ? record.failureKind ?? 'invalid_request'
-                : 'rate_limit'
-              : 'connect_timeout'),
-        errorMessage:
-          forcedAttempt?.errorMessage ??
-          (status === 'success'
-            ? null
-            : status === 'http_failure'
-              ? isLastAttempt
-                ? record.errorMessage ?? 'upstream rejected request'
-                : 'upstream returned 429'
-              : 'forward proxy connect timeout'),
-        downstreamErrorMessage: forcedAttempt?.downstreamErrorMessage ?? null,
-        connectLatencyMs: status === 'transport_failure' ? 160 + attemptIndex * 20 : 55 + attemptIndex * 12,
-        firstByteLatencyMs:
-          forcedAttempt?.status === 'success'
-            ? record.tUpstreamTtfbMs ?? 180
-            : forcedAttempt?.status === 'http_failure'
-              ? 210 + attemptIndex * 18
-              : status === 'success'
-                ? record.tUpstreamTtfbMs ?? 180
-                : status === 'http_failure'
-                  ? 210 + attemptIndex * 18
-                  : null,
-        streamLatencyMs:
-          (forcedAttempt?.status ?? status) === 'success' &&
-          typeof record.tTotalMs === 'number' &&
-          Number.isFinite(record.tTotalMs)
-            ? Math.max(80, record.tTotalMs - (record.tUpstreamTtfbMs ?? 180))
-            : null,
-        upstreamRequestId: forcedAttempt?.upstreamRequestId ?? `${record.invokeId}-attempt-${attemptIndex + 1}`,
-        startedAt: new Date(startedAtMs).toISOString(),
-        finishedAt: new Date(finishedAtMs).toISOString(),
-        createdAt: new Date(finishedAtMs).toISOString(),
-        upstreamAccountId,
-        upstreamAccountName,
-      }
-    })
-  })
+        return {
+          id: record.id * 100 + attemptIndex + 1,
+          invokeId: record.invokeId,
+          occurredAt: record.occurredAt,
+          endpoint: record.endpoint ?? "/v1/responses",
+          proxyBindingKeySnapshot,
+          attemptIndex: attemptIndex + 1,
+          distinctAccountIndex,
+          sameAccountRetryIndex,
+          status: forcedAttempt?.status ?? status,
+          httpStatus:
+            forcedAttempt?.httpStatus ??
+            (status === "success"
+              ? 200
+              : status === "http_failure"
+                ? isLastAttempt
+                  ? 400
+                  : 429
+                : null),
+          downstreamHttpStatus: forcedAttempt?.downstreamHttpStatus ?? null,
+          failureKind:
+            forcedAttempt?.failureKind ??
+            (status === "success"
+              ? null
+              : status === "http_failure"
+                ? isLastAttempt
+                  ? (record.failureKind ?? "invalid_request")
+                  : "rate_limit"
+                : "connect_timeout"),
+          errorMessage:
+            forcedAttempt?.errorMessage ??
+            (status === "success"
+              ? null
+              : status === "http_failure"
+                ? isLastAttempt
+                  ? (record.errorMessage ?? "upstream rejected request")
+                  : "upstream returned 429"
+                : "forward proxy connect timeout"),
+          downstreamErrorMessage: forcedAttempt?.downstreamErrorMessage ?? null,
+          connectLatencyMs:
+            status === "transport_failure" ? 160 + attemptIndex * 20 : 55 + attemptIndex * 12,
+          firstByteLatencyMs:
+            forcedAttempt?.status === "success"
+              ? (record.tUpstreamTtfbMs ?? 180)
+              : forcedAttempt?.status === "http_failure"
+                ? 210 + attemptIndex * 18
+                : status === "success"
+                  ? (record.tUpstreamTtfbMs ?? 180)
+                  : status === "http_failure"
+                    ? 210 + attemptIndex * 18
+                    : null,
+          streamLatencyMs:
+            (forcedAttempt?.status ?? status) === "success" &&
+            typeof record.tTotalMs === "number" &&
+            Number.isFinite(record.tTotalMs)
+              ? Math.max(80, record.tTotalMs - (record.tUpstreamTtfbMs ?? 180))
+              : null,
+          upstreamRequestId:
+            forcedAttempt?.upstreamRequestId ?? `${record.invokeId}-attempt-${attemptIndex + 1}`,
+          startedAt: new Date(startedAtMs).toISOString(),
+          finishedAt: new Date(finishedAtMs).toISOString(),
+          createdAt: new Date(finishedAtMs).toISOString(),
+          upstreamAccountId,
+          upstreamAccountName,
+        };
+      },
+    );
+  });
 
-  return attemptsByInvokeId
+  return attemptsByInvokeId;
 }
 
-export const STORYBOOK_PROXY_ERROR_CONTRACT_RECORDS = STORYBOOK_INVOCATION_RECORDS.filter((record) =>
-  ['inv_story_6108', 'inv_story_6109', 'inv_story_6104'].includes(record.invokeId),
-)
+export const STORYBOOK_PROXY_ERROR_CONTRACT_RECORDS = STORYBOOK_INVOCATION_RECORDS.filter(
+  (record) => ["inv_story_6108", "inv_story_6109", "inv_story_6104"].includes(record.invokeId),
+);
 
 export function createStoryInvocationRecordDetailsById(records: ApiInvocation[]) {
-  const detailsById: Record<number, ApiInvocationRecordDetailResponse> = {}
+  const detailsById: Record<number, ApiInvocationRecordDetailResponse> = {};
 
   for (const record of records) {
-    if (record.status !== 'failed' && !record.failureClass) continue
+    if (record.status !== "failed" && !record.failureClass) continue;
 
     const basePreview =
-      record.failureClass === 'client_failure'
+      record.failureClass === "client_failure"
         ? '{"error":{"message":"invalid input payload","type":"invalid_request_error"}}'
-        : record.failureClass === 'client_abort'
+        : record.failureClass === "client_abort"
           ? '{"error":{"message":"downstream client disconnected while streaming","type":"client_abort"}}'
-          : '{"error":{"message":"upstream request timed out after 30s","type":"server_error"},"request_id":"req_story_timeout_6102"}'
+          : '{"error":{"message":"upstream request timed out after 30s","type":"server_error"},"request_id":"req_story_timeout_6102"}';
 
     detailsById[record.id] = {
       id: record.id,
       abnormalResponseBody: {
         available: true,
         previewText: basePreview,
-        hasMore: record.failureClass !== 'client_failure',
+        hasMore: record.failureClass !== "client_failure",
       },
-    }
+    };
 
-    if (record.detailLevel === 'structured_only') {
+    if (record.detailLevel === "structured_only") {
       detailsById[record.id] = {
         id: record.id,
         abnormalResponseBody: {
           available: false,
           previewText: null,
           hasMore: false,
-          unavailableReason: 'detail_pruned',
+          unavailableReason: "detail_pruned",
         },
-      }
+      };
     }
   }
 
-  return detailsById
+  return detailsById;
 }
 
 export function createStoryInvocationResponseBodiesById(records: ApiInvocation[]) {
-  const responseBodiesById: Record<number, ApiInvocationResponseBodyResponse> = {}
+  const responseBodiesById: Record<number, ApiInvocationResponseBodyResponse> = {};
 
   for (const record of records) {
-    if (record.status !== 'failed' && !record.failureClass) continue
+    if (record.status !== "failed" && !record.failureClass) continue;
 
-    if (record.detailLevel === 'structured_only') {
+    if (record.detailLevel === "structured_only") {
       responseBodiesById[record.id] = {
         available: false,
-        unavailableReason: 'detail_pruned',
-      }
-      continue
+        unavailableReason: "detail_pruned",
+      };
+      continue;
     }
 
     responseBodiesById[record.id] = {
       available: true,
       bodyText:
-        record.failureClass === 'client_failure'
+        record.failureClass === "client_failure"
           ? '{"error":{"message":"invalid input payload","type":"invalid_request_error","param":"input"}}'
-          : record.failureClass === 'client_abort'
+          : record.failureClass === "client_abort"
             ? '{"error":{"message":"downstream client disconnected while streaming","type":"client_abort","request_id":"req_story_abort_6104"}}'
             : '{\n  "error": {\n    "message": "upstream request timed out after 30s",\n    "type": "server_error",\n    "code": "upstream_timeout"\n  },\n  "request_id": "req_story_timeout_6102",\n  "trace": "edge-timeout-6102-full"\n}',
-    }
+    };
   }
 
-  return responseBodiesById
+  return responseBodiesById;
 }
 
 export const STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS: ApiInvocation[] = [
   STORYBOOK_INVOCATION_RECORDS[5]!,
   STORYBOOK_INVOCATION_RECORDS[4]!,
   STORYBOOK_INVOCATION_RECORDS[1]!,
-]
+];
 
 function sum(values: number[]) {
-  return values.reduce((total, value) => total + value, 0)
+  return values.reduce((total, value) => total + value, 0);
 }
 
 function percentile(values: number[], ratio: number) {
-  if (values.length === 0) return null
-  const sorted = [...values].sort((left, right) => left - right)
-  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1))
-  return sorted[index]
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1));
+  return sorted[index];
 }
 
 function resolveNumericValue(value?: number | null) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 export function summarizeInvocationRecords(records: ApiInvocation[]) {
-  const totalTokens = sum(records.map((record) => record.totalTokens ?? 0))
-  const totalCost = sum(records.map((record) => record.cost ?? 0))
-  const successCount = records.filter((record) => record.status === 'success').length
-  const failureCount = records.filter((record) => record.status === 'failed').length
+  const totalTokens = sum(records.map((record) => record.totalTokens ?? 0));
+  const totalCost = sum(records.map((record) => record.cost ?? 0));
+  const successCount = records.filter((record) => record.status === "success").length;
+  const failureCount = records.filter((record) => record.status === "failed").length;
   const ttfbValues = records
     .map((record) => resolveNumericValue(record.tUpstreamTtfbMs))
-    .filter((value): value is number => value != null)
+    .filter((value): value is number => value != null);
   const totalMsValues = records
     .map((record) => resolveNumericValue(record.tTotalMs))
-    .filter((value): value is number => value != null)
+    .filter((value): value is number => value != null);
 
   const stats: StatsResponse = {
     totalCount: records.length,
@@ -754,7 +779,7 @@ export function summarizeInvocationRecords(records: ApiInvocation[]) {
     failureCount,
     totalCost: Number(totalCost.toFixed(4)),
     totalTokens,
-  }
+  };
 
   const token: InvocationTokenSummary = {
     requestCount: records.length,
@@ -762,27 +787,34 @@ export function summarizeInvocationRecords(records: ApiInvocation[]) {
     avgTokensPerRequest: records.length > 0 ? Number((totalTokens / records.length).toFixed(2)) : 0,
     cacheInputTokens: sum(records.map((record) => record.cacheInputTokens ?? 0)),
     totalCost: Number(totalCost.toFixed(4)),
-  }
+  };
 
   const network: InvocationNetworkSummary = {
-    avgTtfbMs: ttfbValues.length > 0 ? Number((sum(ttfbValues) / ttfbValues.length).toFixed(2)) : null,
+    avgTtfbMs:
+      ttfbValues.length > 0 ? Number((sum(ttfbValues) / ttfbValues.length).toFixed(2)) : null,
     p95TtfbMs: percentile(ttfbValues, 0.95),
-    avgTotalMs: totalMsValues.length > 0 ? Number((sum(totalMsValues) / totalMsValues.length).toFixed(2)) : null,
+    avgTotalMs:
+      totalMsValues.length > 0
+        ? Number((sum(totalMsValues) / totalMsValues.length).toFixed(2))
+        : null,
     p95TotalMs: percentile(totalMsValues, 0.95),
-  }
+  };
 
   const exception: InvocationExceptionSummary = {
     failureCount,
-    serviceFailureCount: records.filter((record) => record.failureClass === 'service_failure').length,
-    clientFailureCount: records.filter((record) => record.failureClass === 'client_failure').length,
-    clientAbortCount: records.filter((record) => record.failureClass === 'client_abort').length,
+    serviceFailureCount: records.filter((record) => record.failureClass === "service_failure")
+      .length,
+    clientFailureCount: records.filter((record) => record.failureClass === "client_failure").length,
+    clientAbortCount: records.filter((record) => record.failureClass === "client_abort").length,
     actionableFailureCount: records.filter((record) => record.isActionable).length,
-  }
+  };
 
-  return { stats, token, network, exception }
+  return { stats, token, network, exception };
 }
 
-export function createStoryInvocationRecordsResponse(overrides?: Partial<InvocationRecordsResponse>): InvocationRecordsResponse {
+export function createStoryInvocationRecordsResponse(
+  overrides?: Partial<InvocationRecordsResponse>,
+): InvocationRecordsResponse {
   return {
     snapshotId: 8844,
     total: STORYBOOK_INVOCATION_RECORDS.length,
@@ -790,13 +822,13 @@ export function createStoryInvocationRecordsResponse(overrides?: Partial<Invocat
     pageSize: 20,
     records: STORYBOOK_INVOCATION_RECORDS.map((record) => ({ ...record })),
     ...overrides,
-  }
+  };
 }
 
 export function createStoryInvocationRecordsSummary(
   overrides?: Partial<InvocationRecordsSummaryResponse>,
 ): InvocationRecordsSummaryResponse {
-  const base = summarizeInvocationRecords(STORYBOOK_INVOCATION_RECORDS)
+  const base = summarizeInvocationRecords(STORYBOOK_INVOCATION_RECORDS);
   return {
     snapshotId: 8844,
     newRecordsCount: 0,
@@ -805,5 +837,5 @@ export function createStoryInvocationRecordsSummary(
     network: base.network,
     exception: base.exception,
     ...overrides,
-  }
+  };
 }

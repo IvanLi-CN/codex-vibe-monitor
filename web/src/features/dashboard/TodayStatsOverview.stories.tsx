@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, waitFor, within } from 'storybook/test'
-import { I18nProvider } from '../../i18n'
-import type { ParallelWorkStatsResponse, StatsResponse, TimeseriesResponse } from '../../lib/api'
-import { TodayStatsOverview } from './TodayStatsOverview'
-import type { DashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useEffect, useMemo, useState } from "react";
+import { expect, userEvent, waitFor, within } from "storybook/test";
+import { I18nProvider } from "../../i18n";
+import type { ParallelWorkStatsResponse, StatsResponse, TimeseriesResponse } from "../../lib/api";
+import type { DashboardTodayRateSnapshot } from "./dashboardTodayRateSnapshot";
+import { TodayStatsOverview } from "./TodayStatsOverview";
 
 const sampleUsageBreakdown = {
   cacheWriteTokens: 432000,
@@ -20,30 +20,51 @@ const sampleUsageBreakdown = {
   },
   models: [
     {
-      model: 'gpt-5.6',
-      reasoningEffort: 'high',
+      model: "gpt-5.6",
+      reasoningEffort: "high",
       cacheWriteTokens: 200000,
       cacheReadTokens: 90000,
       outputTokens: 100000,
-      costs: { input: 0.84, cacheWrite: 1.5, cacheRead: 0.18, output: 2.9, reasoning: 0.34, unknown: 0 },
+      costs: {
+        input: 0.84,
+        cacheWrite: 1.5,
+        cacheRead: 0.18,
+        output: 2.9,
+        reasoning: 0.34,
+        unknown: 0,
+      },
     },
     {
-      model: 'gpt-5.6',
-      reasoningEffort: 'medium',
+      model: "gpt-5.6",
+      reasoningEffort: "medium",
       cacheWriteTokens: 121000,
       cacheReadTokens: 54000,
       outputTokens: 54190,
-      costs: { input: 0.5, cacheWrite: 0.91, cacheRead: 0.11, output: 1.68, reasoning: 0.19, unknown: 0 },
+      costs: {
+        input: 0.5,
+        cacheWrite: 0.91,
+        cacheRead: 0.11,
+        output: 1.68,
+        reasoning: 0.19,
+        unknown: 0,
+      },
     },
     {
-      model: 'gpt-5.4-mini',
+      model: "gpt-5.4-mini",
       cacheWriteTokens: 111000,
       cacheReadTokens: 52000,
       outputTokens: 60000,
-      costs: { input: 0.62, cacheWrite: 0.83, cacheRead: 0.15, output: 1.54, reasoning: 0.18, unknown: 0 },
+      costs: {
+        input: 0.62,
+        cacheWrite: 0.83,
+        cacheRead: 0.15,
+        output: 1.54,
+        reasoning: 0.18,
+        unknown: 0,
+      },
     },
   ],
-}
+};
 
 const mixedUsageBreakdown = {
   ...sampleUsageBreakdown,
@@ -55,13 +76,15 @@ const mixedUsageBreakdown = {
     reasoning: 0.53,
     unknown: 3.32,
   },
-  models: sampleUsageBreakdown.models.map((model) => model.model === 'gpt-5.4-mini'
-    ? {
-        ...model,
-        costs: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 3.32 },
-      }
-    : model),
-}
+  models: sampleUsageBreakdown.models.map((model) =>
+    model.model === "gpt-5.4-mini"
+      ? {
+          ...model,
+          costs: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 3.32 },
+        }
+      : model,
+  ),
+};
 
 const historicalUsageBreakdown = {
   ...sampleUsageBreakdown,
@@ -74,10 +97,10 @@ const historicalUsageBreakdown = {
       cacheRead: 0,
       output: 0,
       reasoning: 0,
-      unknown: model.model === 'gpt-5.6' ? (model.reasoningEffort === 'high' ? 5.76 : 3.39) : 3.32,
+      unknown: model.model === "gpt-5.6" ? (model.reasoningEffort === "high" ? 5.76 : 3.39) : 3.32,
     },
   })),
-}
+};
 
 const sampleStats: StatsResponse = {
   totalCount: 2184,
@@ -96,14 +119,14 @@ const sampleStats: StatsResponse = {
   },
   nonSuccessCost: 0.83,
   nonSuccessTokens: 12640,
-}
+};
 
 const sampleRate: DashboardTodayRateSnapshot = {
   tokensPerMinute: 1000.6,
   spendRate: 0.1,
   windowMinutes: 5,
   available: true,
-}
+};
 
 const comparisonStats: StatsResponse = {
   totalCount: 1760,
@@ -121,7 +144,7 @@ const comparisonStats: StatsResponse = {
   },
   nonSuccessCost: 0.96,
   nonSuccessTokens: 14020,
-}
+};
 
 const previous7dStats: StatsResponse = {
   totalCount: 12880,
@@ -139,17 +162,17 @@ const previous7dStats: StatsResponse = {
   },
   nonSuccessCost: 5.6,
   nonSuccessTokens: 88310,
-}
+};
 
 const sampleTimeseries: TimeseriesResponse = {
-  rangeStart: '2026-04-10T00:00:00.000Z',
-  rangeEnd: '2026-04-10T00:08:00.000Z',
+  rangeStart: "2026-04-10T00:00:00.000Z",
+  rangeEnd: "2026-04-10T00:08:00.000Z",
   bucketSeconds: 60,
   points: Array.from({ length: 8 }, (_, index) => {
-    const sampleCount = index % 3 === 0 ? 0 : 2 + index
+    const sampleCount = index % 3 === 0 ? 0 : 2 + index;
     return {
-      bucketStart: new Date(Date.parse('2026-04-10T00:00:00.000Z') + index * 60_000).toISOString(),
-      bucketEnd: new Date(Date.parse('2026-04-10T00:01:00.000Z') + index * 60_000).toISOString(),
+      bucketStart: new Date(Date.parse("2026-04-10T00:00:00.000Z") + index * 60_000).toISOString(),
+      bucketEnd: new Date(Date.parse("2026-04-10T00:01:00.000Z") + index * 60_000).toISOString(),
       totalCount: index % 3 === 0 ? 0 : 2 + index,
       successCount: index % 3 === 0 ? 0 : 2 + index,
       failureCount: index === 5 ? 1 : 0,
@@ -160,32 +183,33 @@ const sampleTimeseries: TimeseriesResponse = {
       totalLatencySampleCount: sampleCount,
       firstResponseByteTotalSampleCount: sampleCount,
       firstResponseByteTotalAvgMs: index % 3 === 0 ? null : Number((780 + index * 96.5).toFixed(1)),
-      firstResponseByteTotalP95Ms: index % 3 === 0 ? null : Number((960 + index * 118.5).toFixed(1)),
-    }
+      firstResponseByteTotalP95Ms:
+        index % 3 === 0 ? null : Number((960 + index * 118.5).toFixed(1)),
+    };
   }),
-}
+};
 
 const comparisonTimeseries: TimeseriesResponse = {
   ...sampleTimeseries,
-  rangeStart: '2026-04-09T00:00:00.000Z',
-  rangeEnd: '2026-04-09T00:07:00.000Z',
+  rangeStart: "2026-04-09T00:00:00.000Z",
+  rangeEnd: "2026-04-09T00:07:00.000Z",
   points: sampleTimeseries.points.slice(0, 7).map((point, index) => ({
     ...point,
-    bucketStart: new Date(Date.parse('2026-04-09T00:00:00.000Z') + index * 60_000).toISOString(),
-    bucketEnd: new Date(Date.parse('2026-04-09T00:01:00.000Z') + index * 60_000).toISOString(),
+    bucketStart: new Date(Date.parse("2026-04-09T00:00:00.000Z") + index * 60_000).toISOString(),
+    bucketEnd: new Date(Date.parse("2026-04-09T00:01:00.000Z") + index * 60_000).toISOString(),
     firstResponseByteTotalAvgMs:
       point.firstResponseByteTotalAvgMs == null
         ? null
         : Number((point.firstResponseByteTotalAvgMs * 0.82).toFixed(1)),
   })),
-}
+};
 
 const comparisonArgs = {
   timeseries: sampleTimeseries,
   comparisonStats,
   comparisonTimeseries,
   previous7dStats,
-}
+};
 
 function buildParallelWorkWindow(
   counts: number[],
@@ -193,13 +217,13 @@ function buildParallelWorkWindow(
     rangeStart,
     bucketSeconds = 60,
   }: {
-    rangeStart: string
-    bucketSeconds?: number
+    rangeStart: string;
+    bucketSeconds?: number;
   },
-): ParallelWorkStatsResponse['current'] {
-  const startMs = Date.parse(rangeStart)
-  const lastBucketStart = startMs + Math.max(counts.length - 1, 0) * bucketSeconds * 1000
-  const rangeEnd = new Date(lastBucketStart + bucketSeconds * 1000).toISOString()
+): ParallelWorkStatsResponse["current"] {
+  const startMs = Date.parse(rangeStart);
+  const lastBucketStart = startMs + Math.max(counts.length - 1, 0) * bucketSeconds * 1000;
+  const rangeEnd = new Date(lastBucketStart + bucketSeconds * 1000).toISOString();
 
   return {
     rangeStart,
@@ -218,49 +242,49 @@ function buildParallelWorkWindow(
       bucketEnd: new Date(startMs + (index + 1) * bucketSeconds * 1000).toISOString(),
       parallelCount,
     })),
-  }
+  };
 }
 
 const sampleParallelWorkStats: ParallelWorkStatsResponse = {
   current: buildParallelWorkWindow([8, 10, 9], {
-    rangeStart: '2026-04-10T00:00:00.000Z',
+    rangeStart: "2026-04-10T00:00:00.000Z",
   }),
   minute7d: buildParallelWorkWindow([6, 7, 8, 9], {
-    rangeStart: '2026-04-03T00:00:00.000Z',
+    rangeStart: "2026-04-03T00:00:00.000Z",
   }),
   hour30d: buildParallelWorkWindow([5, 6, 7], {
-    rangeStart: '2026-03-11T00:00:00.000Z',
+    rangeStart: "2026-03-11T00:00:00.000Z",
     bucketSeconds: 3600,
   }),
   dayAll: buildParallelWorkWindow([7], {
-    rangeStart: '2026-04-09T00:00:00.000Z',
+    rangeStart: "2026-04-09T00:00:00.000Z",
     bucketSeconds: 86400,
   }),
-}
+};
 
 const comparisonParallelWorkStats: ParallelWorkStatsResponse = {
   current: buildParallelWorkWindow([7, 8, 9], {
-    rangeStart: '2026-04-09T00:00:00.000Z',
+    rangeStart: "2026-04-09T00:00:00.000Z",
   }),
   minute7d: buildParallelWorkWindow([5, 6, 7, 8], {
-    rangeStart: '2026-04-02T00:00:00.000Z',
+    rangeStart: "2026-04-02T00:00:00.000Z",
   }),
   hour30d: buildParallelWorkWindow([4, 5, 6], {
-    rangeStart: '2026-03-10T00:00:00.000Z',
+    rangeStart: "2026-03-10T00:00:00.000Z",
     bucketSeconds: 3600,
   }),
   dayAll: buildParallelWorkWindow([8], {
-    rangeStart: '2026-04-08T00:00:00.000Z',
+    rangeStart: "2026-04-08T00:00:00.000Z",
     bucketSeconds: 86400,
   }),
-}
+};
 
 const meta = {
-  title: 'Dashboard/TodayStatsOverview',
+  title: "Dashboard/TodayStatsOverview",
   component: TodayStatsOverview,
-  tags: ['autodocs'],
+  tags: ["autodocs"],
   parameters: {
-    layout: 'fullscreen',
+    layout: "fullscreen",
   },
   decorators: [
     (Story) => (
@@ -273,11 +297,11 @@ const meta = {
       </I18nProvider>
     ),
   ],
-} satisfies Meta<typeof TodayStatsOverview>
+} satisfies Meta<typeof TodayStatsOverview>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const Populated: Story = {
   args: {
@@ -290,18 +314,18 @@ export const Populated: Story = {
     error: null,
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByRole('button', { name: /tokens per minute|每分钟 tokens/i }))
-    await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
-    await userEvent.click(canvas.getByRole('button', { name: /time to first byte|首字用时/i }))
-    await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
-    await expect(canvas.getByTestId('today-stats-value-spend-rate')).toHaveTextContent('0.10')
-    await expect(canvas.getByTestId('today-stats-value-spend-rate')).not.toHaveTextContent('$')
-    await expect(canvas.getByTestId('today-stats-secondary-spend-rate-per-conversation')).toHaveTextContent(
-      '$0.01',
-    )
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: /tokens per minute|每分钟 tokens/i }));
+    await expect(within(document.body).getByRole("tooltip")).toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: /time to first byte|首字用时/i }));
+    await expect(within(document.body).getByRole("tooltip")).toBeInTheDocument();
+    await expect(canvas.getByTestId("today-stats-value-spend-rate")).toHaveTextContent("0.10");
+    await expect(canvas.getByTestId("today-stats-value-spend-rate")).not.toHaveTextContent("$");
+    await expect(
+      canvas.getByTestId("today-stats-secondary-spend-rate-per-conversation"),
+    ).toHaveTextContent("$0.01");
   },
-}
+};
 
 export const UsageBreakdownDetails: Story = {
   args: {
@@ -314,44 +338,46 @@ export const UsageBreakdownDetails: Story = {
     error: null,
   },
   parameters: {
-    viewport: { defaultViewport: 'mobile390' },
+    viewport: { defaultViewport: "mobile390" },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByTestId('today-stats-label-total-cost'))
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByTestId("today-stats-label-total-cost"));
     await waitFor(() => {
-      const tooltip = within(document.body).getByRole('tooltip')
-      expect(tooltip).toHaveTextContent(/Cache write|缓存写入/)
-      expect(tooltip).toHaveTextContent('gpt-5.6')
-      const panel = within(tooltip).getByTestId('usage-breakdown-tooltip-cost')
-      expect(within(panel).getAllByRole('table')).toHaveLength(1)
-      expect(within(panel).queryByRole('columnheader', { name: /Unknown|未知/i })).not.toBeInTheDocument()
-      expect(panel).not.toHaveClass('overflow-y-auto')
-    })
-    await userEvent.click(canvas.getByTestId('today-stats-label-total-tokens'))
+      const tooltip = within(document.body).getByRole("tooltip");
+      expect(tooltip).toHaveTextContent(/Cache write|缓存写入/);
+      expect(tooltip).toHaveTextContent("gpt-5.6");
+      const panel = within(tooltip).getByTestId("usage-breakdown-tooltip-cost");
+      expect(within(panel).getAllByRole("table")).toHaveLength(1);
+      expect(
+        within(panel).queryByRole("columnheader", { name: /Unknown|未知/i }),
+      ).not.toBeInTheDocument();
+      expect(panel).not.toHaveClass("overflow-y-auto");
+    });
+    await userEvent.click(canvas.getByTestId("today-stats-label-total-tokens"));
     await waitFor(() => {
-      const tooltip = within(document.body).getByRole('tooltip')
-      expect(tooltip).toHaveTextContent(/Cache hit tokens|缓存命中 Token/)
-      expect(tooltip).toHaveTextContent(/Reasoning effort|思考等级/)
-      expect(tooltip).toHaveTextContent(/Unspecified|未指定/)
-      expect(tooltip).toHaveTextContent(/Output|输出/)
-      const panel = within(tooltip).getByTestId('usage-breakdown-tooltip-tokens')
-      expect(within(panel).getAllByRole('table')).toHaveLength(1)
-      expect(panel).not.toHaveClass('overflow-y-auto')
-    })
+      const tooltip = within(document.body).getByRole("tooltip");
+      expect(tooltip).toHaveTextContent(/Cache hit tokens|缓存命中 Token/);
+      expect(tooltip).toHaveTextContent(/Reasoning effort|思考等级/);
+      expect(tooltip).toHaveTextContent(/Unspecified|未指定/);
+      expect(tooltip).toHaveTextContent(/Output|输出/);
+      const panel = within(tooltip).getByTestId("usage-breakdown-tooltip-tokens");
+      expect(within(panel).getAllByRole("table")).toHaveLength(1);
+      expect(panel).not.toHaveClass("overflow-y-auto");
+    });
   },
-}
+};
 
 export const ModelReasoningBreakdownMobile: Story = {
   ...UsageBreakdownDetails,
-}
+};
 
 export const ModelReasoningBreakdownDesktop: Story = {
   ...UsageBreakdownDetails,
   parameters: {
-    viewport: { defaultViewport: 'desktop1440' },
+    viewport: { defaultViewport: "desktop1440" },
   },
-}
+};
 
 export const UnrecognizedReasoningEffort: Story = {
   args: {
@@ -359,9 +385,11 @@ export const UnrecognizedReasoningEffort: Story = {
       ...sampleStats,
       usageBreakdown: {
         ...sampleUsageBreakdown,
-        models: sampleUsageBreakdown.models.map((model) => model.model === 'gpt-5.4-mini'
-          ? { ...model, reasoningEffort: 'adaptive-experimental' }
-          : model),
+        models: sampleUsageBreakdown.models.map((model) =>
+          model.model === "gpt-5.4-mini"
+            ? { ...model, reasoningEffort: "adaptive-experimental" }
+            : model,
+        ),
       },
     },
     rate: sampleRate,
@@ -372,19 +400,19 @@ export const UnrecognizedReasoningEffort: Story = {
     error: null,
   },
   parameters: {
-    viewport: { defaultViewport: 'mobile390' },
+    viewport: { defaultViewport: "mobile390" },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByTestId('today-stats-label-total-tokens'))
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByTestId("today-stats-label-total-tokens"));
     await waitFor(() => {
       const panel = within(document.body)
-        .getByRole('tooltip')
-        .querySelector('[data-testid="usage-breakdown-tooltip-tokens"]')
-      expect(panel).toHaveTextContent('adaptive-experimental')
-    })
+        .getByRole("tooltip")
+        .querySelector('[data-testid="usage-breakdown-tooltip-tokens"]');
+      expect(panel).toHaveTextContent("adaptive-experimental");
+    });
   },
-}
+};
 
 export const MixedCostBreakdownUnknownMobile: Story = {
   args: {
@@ -400,30 +428,38 @@ export const MixedCostBreakdownUnknownMobile: Story = {
     error: null,
   },
   parameters: {
-    viewport: { defaultViewport: 'mobile390' },
+    viewport: { defaultViewport: "mobile390" },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByTestId('today-stats-label-total-cost'))
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByTestId("today-stats-label-total-cost"));
     await waitFor(() => {
-      const tooltip = within(document.body).getByRole('tooltip')
-      const panel = within(tooltip).getByTestId('usage-breakdown-tooltip-cost')
-      expect(within(panel).getByRole('columnheader', { name: /Unknown|未知/i })).toBeInTheDocument()
-      expect(within(panel).getByRole('rowheader', { name: /gpt-5\.6.*(?:High|高)/i })).toBeInTheDocument()
-      expect(within(panel).getByRole('rowheader', { name: /gpt-5\.6.*(?:Medium|中)/i })).toBeInTheDocument()
-      expect(within(panel).getByRole('rowheader', { name: /gpt-5\.4-mini.*(?:Unspecified|未指定)/i })).toBeInTheDocument()
-      expect(within(panel).getAllByRole('table')).toHaveLength(1)
-      expect(panel).not.toHaveClass('overflow-y-auto')
-    })
+      const tooltip = within(document.body).getByRole("tooltip");
+      const panel = within(tooltip).getByTestId("usage-breakdown-tooltip-cost");
+      expect(
+        within(panel).getByRole("columnheader", { name: /Unknown|未知/i }),
+      ).toBeInTheDocument();
+      expect(
+        within(panel).getByRole("rowheader", { name: /gpt-5\.6.*(?:High|高)/i }),
+      ).toBeInTheDocument();
+      expect(
+        within(panel).getByRole("rowheader", { name: /gpt-5\.6.*(?:Medium|中)/i }),
+      ).toBeInTheDocument();
+      expect(
+        within(panel).getByRole("rowheader", { name: /gpt-5\.4-mini.*(?:Unspecified|未指定)/i }),
+      ).toBeInTheDocument();
+      expect(within(panel).getAllByRole("table")).toHaveLength(1);
+      expect(panel).not.toHaveClass("overflow-y-auto");
+    });
   },
-}
+};
 
 export const MixedCostBreakdownUnknownDesktop: Story = {
   ...MixedCostBreakdownUnknownMobile,
   parameters: {
-    viewport: { defaultViewport: 'desktop1440' },
+    viewport: { defaultViewport: "desktop1440" },
   },
-}
+};
 
 export const PureHistoricalCostBreakdown: Story = {
   args: {
@@ -439,15 +475,15 @@ export const PureHistoricalCostBreakdown: Story = {
     error: null,
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByTestId('today-stats-label-total-cost'))
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByTestId("today-stats-label-total-cost"));
     await waitFor(() => {
-      const tooltip = within(document.body).getByRole('tooltip')
-      expect(tooltip).toHaveTextContent(/Unknown|未知/i)
-      expect(tooltip).not.toHaveTextContent(/Cost breakdown unavailable|成本分项未提供/i)
-    })
+      const tooltip = within(document.body).getByRole("tooltip");
+      expect(tooltip).toHaveTextContent(/Unknown|未知/i);
+      expect(tooltip).not.toHaveTextContent(/Cost breakdown unavailable|成本分项未提供/i);
+    });
   },
-}
+};
 
 export const MissingTotalCostBreakdownUnavailable: Story = {
   args: {
@@ -473,18 +509,18 @@ export const MissingTotalCostBreakdownUnavailable: Story = {
     error: null,
   },
   parameters: {
-    viewport: { defaultViewport: 'mobile390' },
+    viewport: { defaultViewport: "mobile390" },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByTestId('today-stats-label-total-cost'))
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByTestId("today-stats-label-total-cost"));
     await waitFor(() => {
-      expect(within(document.body).getByRole('tooltip')).toHaveTextContent(
+      expect(within(document.body).getByRole("tooltip")).toHaveTextContent(
         /Cost breakdown unavailable|成本分项未提供/,
-      )
-    })
+      );
+    });
   },
-}
+};
 
 export const DesktopSingleRow: Story = {
   args: {
@@ -498,19 +534,19 @@ export const DesktopSingleRow: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1440',
+      defaultViewport: "desktop1440",
     },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const tiles = canvas.getAllByTestId('today-stats-metric-tile')
-    await expect(tiles).toHaveLength(7)
-    const labels = tiles.map((tile) => tile.textContent ?? '')
-    expect(labels[2]).toMatch(/in progress|进行中/i)
-    expect(labels[3]).toMatch(/time to first byte|首字用时/i)
-    expect(labels[4]).toMatch(/success|成功/i)
+    const canvas = within(canvasElement);
+    const tiles = canvas.getAllByTestId("today-stats-metric-tile");
+    await expect(tiles).toHaveLength(7);
+    const labels = tiles.map((tile) => tile.textContent ?? "");
+    expect(labels[2]).toMatch(/in progress|进行中/i);
+    expect(labels[3]).toMatch(/time to first byte|首字用时/i);
+    expect(labels[4]).toMatch(/success|成功/i);
   },
-}
+};
 
 export const EmbeddedTodayTab: Story = {
   args: {
@@ -527,10 +563,10 @@ export const EmbeddedTodayTab: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1440',
+      defaultViewport: "desktop1440",
     },
   },
-}
+};
 
 export const ScopedAccountEmbedded: Story = {
   args: {
@@ -547,29 +583,43 @@ export const ScopedAccountEmbedded: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1440',
+      defaultViewport: "desktop1440",
     },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const grid = canvas.getByTestId('today-stats-metrics-grid')
-    const tiles = canvas.getAllByTestId('today-stats-metric-tile')
-    await expect(grid).toHaveClass(/lg:grid-cols-4/)
-    await expect(grid).toHaveClass(/xl:grid-cols-7/)
-    await expect(tiles).toHaveLength(7)
-    await expect(canvas.getByText(/in progress|进行中/i)).toBeInTheDocument()
-    await expect(canvas.getByTestId('today-stats-value-queued-invocations')).toBeInTheDocument()
-    await expect(canvas.getByTestId('today-stats-secondary-in-progress-delta')).toHaveTextContent('+37.5%')
-    await expect(canvas.getByTestId('today-stats-secondary-in-progress-day-average')).toHaveTextContent('9')
-    await expect(canvas.getByTestId('today-stats-secondary-in-progress-retry')).toBeVisible()
-    await expect(canvas.getByTestId('today-stats-secondary-tpm-per-conversation')).not.toHaveTextContent('—')
-    await expect(canvas.getByTestId('today-stats-secondary-success-ratio')).not.toHaveTextContent('—')
-    await expect(canvas.getByTestId('today-stats-secondary-response-time-avg-total')).not.toHaveTextContent('—')
-    await expect(canvas.getByTestId('today-stats-secondary-cost-failed')).not.toHaveTextContent('—')
-    await expect(canvas.getByTestId('today-stats-secondary-tokens-failed')).not.toHaveTextContent('—')
-    await expect(canvas.getByText(/time to first byte|首字用时/i)).toBeInTheDocument()
+    const canvas = within(canvasElement);
+    const grid = canvas.getByTestId("today-stats-metrics-grid");
+    const tiles = canvas.getAllByTestId("today-stats-metric-tile");
+    await expect(grid).toHaveClass(/lg:grid-cols-4/);
+    await expect(grid).toHaveClass(/xl:grid-cols-7/);
+    await expect(tiles).toHaveLength(7);
+    await expect(canvas.getByText(/in progress|进行中/i)).toBeInTheDocument();
+    await expect(canvas.getByTestId("today-stats-value-queued-invocations")).toBeInTheDocument();
+    await expect(canvas.getByTestId("today-stats-secondary-in-progress-delta")).toHaveTextContent(
+      "+37.5%",
+    );
+    await expect(
+      canvas.getByTestId("today-stats-secondary-in-progress-day-average"),
+    ).toHaveTextContent("9");
+    await expect(canvas.getByTestId("today-stats-secondary-in-progress-retry")).toBeVisible();
+    await expect(
+      canvas.getByTestId("today-stats-secondary-tpm-per-conversation"),
+    ).not.toHaveTextContent("—");
+    await expect(canvas.getByTestId("today-stats-secondary-success-ratio")).not.toHaveTextContent(
+      "—",
+    );
+    await expect(
+      canvas.getByTestId("today-stats-secondary-response-time-avg-total"),
+    ).not.toHaveTextContent("—");
+    await expect(canvas.getByTestId("today-stats-secondary-cost-failed")).not.toHaveTextContent(
+      "—",
+    );
+    await expect(canvas.getByTestId("today-stats-secondary-tokens-failed")).not.toHaveTextContent(
+      "—",
+    );
+    await expect(canvas.getByText(/time to first byte|首字用时/i)).toBeInTheDocument();
   },
-}
+};
 
 export const RateLoading: Story = {
   args: {
@@ -586,10 +636,10 @@ export const RateLoading: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1440',
+      defaultViewport: "desktop1440",
     },
   },
-}
+};
 
 export const RateUnavailable: Story = {
   args: {
@@ -597,7 +647,7 @@ export const RateUnavailable: Story = {
     rate: null,
     loading: false,
     rateLoading: false,
-    rateError: 'timeseries failed',
+    rateError: "timeseries failed",
     parallelWorkStats: sampleParallelWorkStats,
     comparisonParallelWorkStats,
     error: null,
@@ -607,10 +657,10 @@ export const RateUnavailable: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1440',
+      defaultViewport: "desktop1440",
     },
   },
-}
+};
 
 export const ZeroRate: Story = {
   args: {
@@ -631,10 +681,10 @@ export const ZeroRate: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1440',
+      defaultViewport: "desktop1440",
     },
   },
-}
+};
 
 export const OverflowFallback: Story = {
   args: {
@@ -661,18 +711,18 @@ export const OverflowFallback: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1440',
+      defaultViewport: "desktop1440",
     },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
+    const canvas = within(canvasElement);
     await waitFor(() => {
-      const totalTokensValue = canvas.getByTestId('today-stats-value-total-tokens')
-      expect(totalTokensValue).toHaveAttribute('data-compact', 'true')
-      expect(totalTokensValue.textContent ?? '').toContain('1.31B')
-    })
+      const totalTokensValue = canvas.getByTestId("today-stats-value-total-tokens");
+      expect(totalTokensValue).toHaveAttribute("data-compact", "true");
+      expect(totalTokensValue.textContent ?? "").toContain("1.31B");
+    });
   },
-}
+};
 
 export const Desktop1280PrecisionGuard: Story = {
   args: {
@@ -705,20 +755,24 @@ export const Desktop1280PrecisionGuard: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1280',
+      defaultViewport: "desktop1280",
     },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
+    const canvas = within(canvasElement);
     await waitFor(() => {
-      const totalTokensValue = canvas.getByTestId('today-stats-value-total-tokens')
-      expect(totalTokensValue.textContent ?? '').toContain('1.05B')
-      expect(totalTokensValue.textContent ?? '').not.toBe('1B')
-      expect(canvas.getByTestId('today-stats-secondary-tokens-failed').textContent ?? '').toMatch(/88(\.8|\.83)?M/i)
-      expect(canvas.getByTestId('today-stats-secondary-tokens-delta').textContent ?? '').not.toContain('…')
-    })
+      const totalTokensValue = canvas.getByTestId("today-stats-value-total-tokens");
+      expect(totalTokensValue.textContent ?? "").toContain("1.05B");
+      expect(totalTokensValue.textContent ?? "").not.toBe("1B");
+      expect(canvas.getByTestId("today-stats-secondary-tokens-failed").textContent ?? "").toMatch(
+        /88(\.8|\.83)?M/i,
+      );
+      expect(
+        canvas.getByTestId("today-stats-secondary-tokens-delta").textContent ?? "",
+      ).not.toContain("…");
+    });
   },
-}
+};
 
 export const Desktop1280LabelGuard: Story = {
   args: {
@@ -751,22 +805,26 @@ export const Desktop1280LabelGuard: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1280',
+      defaultViewport: "desktop1280",
     },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
+    const canvas = within(canvasElement);
     await waitFor(() => {
-      const labels = canvas.getAllByRole('button')
+      const labels = canvas.getAllByRole("button");
       for (const label of labels) {
-        expect(label.textContent ?? '').not.toContain('\n')
+        expect(label.textContent ?? "").not.toContain("\n");
       }
-      expect(canvas.getByTestId('today-stats-label-total-tokens')).toHaveTextContent('Today Token')
-      expect(canvas.getByTestId('today-stats-secondary-cost-failed').textContent ?? '').not.toContain('…')
-      expect(canvas.getByTestId('today-stats-secondary-tokens-failed').textContent ?? '').not.toContain('…')
-    })
+      expect(canvas.getByTestId("today-stats-label-total-tokens")).toHaveTextContent("Today Token");
+      expect(
+        canvas.getByTestId("today-stats-secondary-cost-failed").textContent ?? "",
+      ).not.toContain("…");
+      expect(
+        canvas.getByTestId("today-stats-secondary-tokens-failed").textContent ?? "",
+      ).not.toContain("…");
+    });
   },
-}
+};
 
 const ratePrecisionStats: StatsResponse = {
   totalCount: 12,
@@ -779,16 +837,16 @@ const ratePrecisionStats: StatsResponse = {
   inProgressAvgWaitMs: 820,
   nonSuccessCost: 0.2,
   nonSuccessTokens: 120,
-}
+};
 
 const ratePrecisionTimeseries: TimeseriesResponse = {
-  rangeStart: '2026-04-10T00:00:00.000Z',
-  rangeEnd: '2026-04-10T00:02:00.000Z',
+  rangeStart: "2026-04-10T00:00:00.000Z",
+  rangeEnd: "2026-04-10T00:02:00.000Z",
   bucketSeconds: 60,
   points: [
     {
-      bucketStart: '2026-04-10T00:00:00.000Z',
-      bucketEnd: '2026-04-10T00:01:00.000Z',
+      bucketStart: "2026-04-10T00:00:00.000Z",
+      bucketEnd: "2026-04-10T00:01:00.000Z",
       totalCount: 12,
       successCount: 11,
       failureCount: 1,
@@ -802,8 +860,8 @@ const ratePrecisionTimeseries: TimeseriesResponse = {
       firstResponseByteTotalP95Ms: 960,
     },
     {
-      bucketStart: '2026-04-10T00:01:00.000Z',
-      bucketEnd: '2026-04-10T00:02:00.000Z',
+      bucketStart: "2026-04-10T00:01:00.000Z",
+      bucketEnd: "2026-04-10T00:02:00.000Z",
       totalCount: 0,
       successCount: 0,
       failureCount: 0,
@@ -817,7 +875,7 @@ const ratePrecisionTimeseries: TimeseriesResponse = {
       firstResponseByteTotalP95Ms: null,
     },
   ],
-}
+};
 
 export const RatePrecisionGuard: Story = {
   args: {
@@ -842,22 +900,24 @@ export const RatePrecisionGuard: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1440',
+      defaultViewport: "desktop1440",
     },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
+    const canvas = within(canvasElement);
     await waitFor(() => {
-      expect(canvas.getByTestId('today-stats-value-spend-rate')).toHaveTextContent('1.00')
-      expect(canvas.getByTestId('today-stats-value-spend-rate')).not.toHaveTextContent('$')
-      expect(canvas.getByTestId('today-stats-secondary-spend-rate-day-average')).toHaveTextContent('$1.00')
-      expect(canvas.getByTestId('today-stats-secondary-spend-rate-per-conversation')).toHaveTextContent(
-        '$1.00',
-      )
-      expect(canvas.getByTestId('today-stats-secondary-cost-failed')).toHaveTextContent('$0.2')
-    })
+      expect(canvas.getByTestId("today-stats-value-spend-rate")).toHaveTextContent("1.00");
+      expect(canvas.getByTestId("today-stats-value-spend-rate")).not.toHaveTextContent("$");
+      expect(canvas.getByTestId("today-stats-secondary-spend-rate-day-average")).toHaveTextContent(
+        "$1.00",
+      );
+      expect(
+        canvas.getByTestId("today-stats-secondary-spend-rate-per-conversation"),
+      ).toHaveTextContent("$1.00");
+      expect(canvas.getByTestId("today-stats-secondary-cost-failed")).toHaveTextContent("$0.2");
+    });
   },
-}
+};
 
 export const NarrowTileMetaStackGuard: Story = {
   args: {
@@ -890,7 +950,7 @@ export const NarrowTileMetaStackGuard: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1280',
+      defaultViewport: "desktop1280",
     },
   },
   decorators: [
@@ -905,16 +965,20 @@ export const NarrowTileMetaStackGuard: Story = {
     ),
   ],
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
+    const canvas = within(canvasElement);
     await waitFor(() => {
-      const tile = canvas.getByTestId('today-stats-metric-tile')
-      expect(tile).toHaveAttribute('data-stack-meta', 'true')
-      expect(canvas.getByTestId('today-stats-value-total-tokens-stacked-meta')).toBeVisible()
-      expect(canvas.getByTestId('today-stats-secondary-tokens-delta').textContent ?? '').not.toContain('…')
-      expect(canvas.getByTestId('today-stats-secondary-tokens-failed').textContent ?? '').toMatch(/88(\.8|\.83)?M/i)
-    })
+      const tile = canvas.getByTestId("today-stats-metric-tile");
+      expect(tile).toHaveAttribute("data-stack-meta", "true");
+      expect(canvas.getByTestId("today-stats-value-total-tokens-stacked-meta")).toBeVisible();
+      expect(
+        canvas.getByTestId("today-stats-secondary-tokens-delta").textContent ?? "",
+      ).not.toContain("…");
+      expect(canvas.getByTestId("today-stats-secondary-tokens-failed").textContent ?? "").toMatch(
+        /88(\.8|\.83)?M/i,
+      );
+    });
   },
-}
+};
 
 export const Loading: Story = {
   args: {
@@ -923,7 +987,7 @@ export const Loading: Story = {
     loading: true,
     error: null,
   },
-}
+};
 
 export const NarrowDesktopLoading: Story = {
   args: {
@@ -937,18 +1001,18 @@ export const NarrowDesktopLoading: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1280',
+      defaultViewport: "desktop1280",
     },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
+    const canvas = within(canvasElement);
     await waitFor(() => {
-      const loadingTile = canvas.getByTestId('today-stats-value-tpm-loading')
-      expect(loadingTile.className).toContain('w-full')
-      expect(loadingTile.className).toContain('max-w-[7.5rem]')
-    })
+      const loadingTile = canvas.getByTestId("today-stats-value-tpm-loading");
+      expect(loadingTile.className).toContain("w-full");
+      expect(loadingTile.className).toContain("max-w-[7.5rem]");
+    });
   },
-}
+};
 
 export const Empty: Story = {
   args: {
@@ -964,23 +1028,23 @@ export const Empty: Story = {
     loading: false,
     error: null,
   },
-}
+};
 
 export const LoadError: Story = {
   args: {
     stats: null,
     rate: null,
     loading: false,
-    error: 'Request failed: 500 unable to open database file',
+    error: "Request failed: 500 unable to open database file",
   },
-}
+};
 
 function buildAnimatedStats(step: number): StatsResponse {
-  const totalCount = sampleStats.totalCount + step * 17
-  const failureCount = 18 + (step % 5) * 3
-  const successCount = Math.max(totalCount - failureCount, 0)
-  const totalTokens = sampleStats.totalTokens + step * 5630 + (step % 3) * 830
-  const totalCost = Number((sampleStats.totalCost + step * 0.11 + (step % 4) * 0.03).toFixed(2))
+  const totalCount = sampleStats.totalCount + step * 17;
+  const failureCount = 18 + (step % 5) * 3;
+  const successCount = Math.max(totalCount - failureCount, 0);
+  const totalTokens = sampleStats.totalTokens + step * 5630 + (step % 3) * 830;
+  const totalCost = Number((sampleStats.totalCost + step * 0.11 + (step % 4) * 0.03).toFixed(2));
 
   return {
     totalCount,
@@ -993,7 +1057,7 @@ function buildAnimatedStats(step: number): StatsResponse {
     inProgressAvgWaitMs: 1400 + step * 60,
     nonSuccessCost: Number((0.45 + step * 0.04).toFixed(2)),
     nonSuccessTokens: 8400 + step * 220,
-  }
+  };
 }
 
 function buildAnimatedRate(step: number): DashboardTodayRateSnapshot {
@@ -1002,36 +1066,36 @@ function buildAnimatedRate(step: number): DashboardTodayRateSnapshot {
     spendRate: Number((0.1 + step * 0.006).toFixed(3)),
     windowMinutes: 5,
     available: true,
-  }
+  };
 }
 
 function LiveTickerPreview() {
-  const [ready, setReady] = useState(false)
-  const [step, setStep] = useState(0)
+  const [ready, setReady] = useState(false);
+  const [step, setStep] = useState(0);
 
   useEffect(() => {
     const warmup = window.setTimeout(() => {
-      setReady(true)
-    }, 900)
+      setReady(true);
+    }, 900);
 
     return () => {
-      window.clearTimeout(warmup)
-    }
-  }, [])
+      window.clearTimeout(warmup);
+    };
+  }, []);
 
   useEffect(() => {
-    if (!ready) return undefined
+    if (!ready) return undefined;
     const timer = window.setInterval(() => {
-      setStep((value) => value + 1)
-    }, 1400)
+      setStep((value) => value + 1);
+    }, 1400);
 
     return () => {
-      window.clearInterval(timer)
-    }
-  }, [ready])
+      window.clearInterval(timer);
+    };
+  }, [ready]);
 
-  const stats = useMemo(() => buildAnimatedStats(step), [step])
-  const rate = useMemo(() => buildAnimatedRate(step), [step])
+  const stats = useMemo(() => buildAnimatedStats(step), [step]);
+  const rate = useMemo(() => buildAnimatedRate(step), [step]);
 
   return (
     <div className="space-y-3">
@@ -1050,7 +1114,7 @@ function LiveTickerPreview() {
         error={null}
       />
     </div>
-  )
+  );
 }
 
 export const LiveTicker: Story = {
@@ -1061,7 +1125,7 @@ export const LiveTicker: Story = {
     error: null,
   },
   render: () => <LiveTickerPreview />,
-}
+};
 
 function StateGalleryPreview() {
   return (
@@ -1069,7 +1133,8 @@ function StateGalleryPreview() {
       <div className="section-heading">
         <h2 className="section-title">Today stats states</h2>
         <p className="section-description">
-          Desktop preview keeps all seven KPI tiles on one row while preserving loading, partial fallback, and failure states.
+          Desktop preview keeps all seven KPI tiles on one row while preserving loading, partial
+          fallback, and failure states.
         </p>
       </div>
       <div className="grid gap-10">
@@ -1126,7 +1191,7 @@ function StateGalleryPreview() {
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 export const StateGallery: Story = {
@@ -1138,8 +1203,8 @@ export const StateGallery: Story = {
   },
   parameters: {
     viewport: {
-      defaultViewport: 'desktop1440',
+      defaultViewport: "desktop1440",
     },
   },
   render: () => <StateGalleryPreview />,
-}
+};

@@ -5,6 +5,7 @@
 - Canonical spec: `docs/specs/tr4ev-bun-first-toolchain/SPEC.md`
 - Implementation summary: 已完成
 - Current toolchain baseline: Bun `1.3.14` / Rust `1.96.0` / GitHub-hosted x64 `ubuntu-24.04` / release arm64 `ubuntu-24.04-arm`
+- Static analysis baseline: root Biome `2.5.3` for `web/` and `docs-site/`; Clippy runs with `-D warnings` in local hooks and the existing `Lint & Format Check` jobs.
 
 ## Migrated Implementation Notes
 
@@ -22,15 +23,32 @@
 - `bun install --cwd docs-site --frozen-lockfile`
 - `cd web && bun install --frozen-lockfile`
 - `cargo check --locked --all-targets --all-features`
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - `bash .github/scripts/test-quality-gates-contract.sh`
 - `bash .github/scripts/test-build-smoke-image-with-retry.sh`
 - `bash .github/scripts/test-release-snapshot.sh`
-- `cd web && bun run lint`
+- `bun run lint:web`
+- `bun run lint:docs`
+- `cargo fmt --all -- --check`
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - `cd web && bun run test`
 - `cd web && bun run build`
 - `cd web && bun run storybook:build -- --quiet`
 - `bun run check:bun-first`
 - `docker build -t codex-vibe-monitor:gha-env-refresh --build-arg APP_EFFECTIVE_VERSION=dev .`
+
+### Biome and Clippy quality-gate convergence
+
+- Root `biome.json` owns JavaScript, TypeScript, JSON, and CSS checks for `web/` and `docs-site/`; Markdown remains under dprint.
+- `web/public/mockServiceWorker.js` is excluded as generated code. Tailwind directives are parsed as CSS rather than globally suppressing unknown at-rule diagnostics.
+- Biome recommended rules remain enabled. Existing behavior-sensitive React dependency, accessibility, key, and assertion diagnostics stay visible as warnings while parse, format, import organization, and all non-migrated diagnostics remain blocking; legacy Hook exceptions use file-level, reasoned Biome suppressions instead of ESLint comments.
+- `web/` delegates `lint` to `bun run lint:web`; `docs-site/` delegates to `bun run lint:docs`; ESLint and its configuration have been removed.
+- CI job names and required-check inventory remain unchanged while the existing lint job now installs Clippy and runs the strict command above.
+- Visual verification uses `Dashboard/WorkingConversationsSection` `Wide Desktop 1660` Storybook canvas, with existing story interaction coverage retained.
+
+## Visual Evidence
+
+- Storybook canvas: `Dashboard/WorkingConversationsSection` / `Wide Desktop 1660`, captured from the deterministic local Storybook surface on 2026-07-12. The rendered current, placeholder, success, and failure conversation states retain their expected layout after the accessibility corrections.
 
 ## Migrated Implementation Sections
 

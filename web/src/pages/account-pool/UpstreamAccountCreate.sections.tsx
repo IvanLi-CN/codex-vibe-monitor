@@ -1,25 +1,16 @@
-import { AppIcon } from "../../features/shared/AppIcon";
 import { Link } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from "../../components/ui/segmented-control";
+import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { Spinner } from "../../components/ui/spinner";
+import { AppIcon } from "../../features/shared/AppIcon";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 import { UpstreamAccountCreateDialogs } from "./UpstreamAccountCreate.dialogs";
 import { UpstreamAccountCreatePrimaryCard } from "./UpstreamAccountCreate.primary-card";
 
-const CREATE_TABS = [
-  "oauth",
-  "batchOauth",
-  "import",
-  "importSession",
-  "apiKey",
-] as const;
+const CREATE_TABS = ["oauth", "batchOauth", "import", "importSession", "apiKey"] as const;
 
 export function UpstreamAccountCreatePageSections() {
   const {
@@ -39,9 +30,7 @@ export function UpstreamAccountCreatePageSections() {
     t,
     writesEnabled,
   } = useUpstreamAccountCreateViewContext();
-  const oauthCompletedPlanBadge = upstreamPlanBadgeRecipe(
-    oauthCompletedDetail?.planType ?? null,
-  );
+  const oauthCompletedPlanBadge = upstreamPlanBadgeRecipe(oauthCompletedDetail?.planType ?? null);
 
   return (
     <div className="grid gap-6">
@@ -49,18 +38,9 @@ export function UpstreamAccountCreatePageSections() {
         <div className="surface-panel-body gap-5">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="section-heading">
-              <Button
-                asChild
-                variant="ghost"
-                size="sm"
-                className="mb-1 self-start px-0"
-              >
+              <Button asChild variant="ghost" size="sm" className="mb-1 self-start px-0">
                 <Link to="/account-pool/upstream-accounts">
-                  <AppIcon
-                    name="arrow-left"
-                    className="mr-2 h-4 w-4"
-                    aria-hidden
-                  />
+                  <AppIcon name="arrow-left" className="mr-2 h-4 w-4" aria-hidden />
                   {t("accountPool.upstreamAccounts.actions.backToList")}
                 </Link>
               </Button>
@@ -71,29 +51,19 @@ export function UpstreamAccountCreatePageSections() {
               </h2>
               <p className="section-description">
                 {isRelinking
-                  ? t(
-                      "accountPool.upstreamAccounts.createPage.relinkDescription",
-                      {
-                        name:
-                          relinkSummary?.displayName ??
-                          t("accountPool.upstreamAccounts.unavailable"),
-                      },
-                    )
+                  ? t("accountPool.upstreamAccounts.createPage.relinkDescription", {
+                      name:
+                        relinkSummary?.displayName ?? t("accountPool.upstreamAccounts.unavailable"),
+                    })
                   : t("accountPool.upstreamAccounts.createPage.description")}
               </p>
             </div>
-            {isLoading || relinkDetailLoading ? (
-              <Spinner className="text-primary" />
-            ) : null}
+            {isLoading || relinkDetailLoading ? <Spinner className="text-primary" /> : null}
           </div>
 
           {!writesEnabled ? (
             <Alert variant="warning">
-              <AppIcon
-                name="shield-key-outline"
-                className="mt-0.5 h-4 w-4 shrink-0"
-                aria-hidden
-              />
+              <AppIcon name="shield-key-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
               <div>
                 <p className="font-medium">
                   {t("accountPool.upstreamAccounts.writesDisabledTitle")}
@@ -149,60 +119,37 @@ export function UpstreamAccountCreatePageSections() {
               }
             >
               <AppIcon
-                name={
-                  session.status === "completed"
-                    ? "check-circle-outline"
-                    : "link-variant-plus"
-                }
+                name={session.status === "completed" ? "check-circle-outline" : "link-variant-plus"}
                 className="mt-0.5 h-4 w-4 shrink-0"
                 aria-hidden
               />
               <div className="space-y-1">
                 <p className="font-medium">
-                  {t(
-                    `accountPool.upstreamAccounts.oauth.status.${session.status}`,
-                  )}
+                  {t(`accountPool.upstreamAccounts.oauth.status.${session.status}`)}
                 </p>
                 <p className="text-sm opacity-90">
-                  {sessionHint ??
-                    session.error ??
-                    formatDateTime(session.expiresAt)}
+                  {sessionHint ?? session.error ?? formatDateTime(session.expiresAt)}
                 </p>
               </div>
             </Alert>
           ) : sessionHint ? (
             <Alert variant="warning">
-              <AppIcon
-                name="refresh-circle"
-                className="mt-0.5 h-4 w-4 shrink-0"
-                aria-hidden
-              />
+              <AppIcon name="refresh-circle" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
               <div className="text-sm">{sessionHint}</div>
             </Alert>
           ) : null}
 
           {oauthCompletedDetail ? (
-            <Alert
-              variant={
-                oauthCompletedDetail.duplicateInfo ? "warning" : "success"
-              }
-            >
+            <Alert variant={oauthCompletedDetail.duplicateInfo ? "warning" : "success"}>
               <AppIcon
-                name={
-                  oauthCompletedDetail.duplicateInfo
-                    ? "alert-outline"
-                    : "check-circle-outline"
-                }
+                name={oauthCompletedDetail.duplicateInfo ? "alert-outline" : "check-circle-outline"}
                 className="mt-0.5 h-4 w-4 shrink-0"
                 aria-hidden
               />
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-medium">
-                    {t("accountPool.upstreamAccounts.oauth.completed")}
-                  </p>
-                  {oauthCompletedPlanBadge &&
-                  oauthCompletedDetail.planType ? (
+                  <p className="font-medium">{t("accountPool.upstreamAccounts.oauth.completed")}</p>
+                  {oauthCompletedPlanBadge && oauthCompletedDetail.planType ? (
                     <Badge variant={oauthCompletedPlanBadge.variant}>
                       {oauthCompletedDetail.planType}
                     </Badge>
@@ -215,9 +162,7 @@ export function UpstreamAccountCreatePageSections() {
                 </div>
                 <p className="text-sm opacity-90">
                   {t("accountPool.upstreamAccounts.batchOauth.completed", {
-                    name:
-                      oauthCompletedDetail.displayName ||
-                      `#${oauthCompletedDetail.id}`,
+                    name: oauthCompletedDetail.displayName || `#${oauthCompletedDetail.id}`,
                   })}
                 </p>
                 <div className="flex flex-wrap gap-2">
@@ -231,11 +176,8 @@ export function UpstreamAccountCreatePageSections() {
                           ? {
                               accountId: oauthCompletedDetail.id,
                               displayName: oauthCompletedDetail.displayName,
-                              peerAccountIds:
-                                oauthCompletedDetail.duplicateInfo
-                                  .peerAccountIds,
-                              reasons:
-                                oauthCompletedDetail.duplicateInfo.reasons,
+                              peerAccountIds: oauthCompletedDetail.duplicateInfo.peerAccountIds,
+                              reasons: oauthCompletedDetail.duplicateInfo.reasons,
                             }
                           : null,
                       }}
@@ -265,20 +207,12 @@ export function UpstreamAccountCreatePageSections() {
                   {tab === "oauth"
                     ? t("accountPool.upstreamAccounts.createPage.tabs.oauth")
                     : tab === "batchOauth"
-                      ? t(
-                          "accountPool.upstreamAccounts.createPage.tabs.batchOauth",
-                        )
+                      ? t("accountPool.upstreamAccounts.createPage.tabs.batchOauth")
                       : tab === "import"
-                        ? t(
-                            "accountPool.upstreamAccounts.createPage.tabs.import",
-                          )
+                        ? t("accountPool.upstreamAccounts.createPage.tabs.import")
                         : tab === "importSession"
-                          ? t(
-                              "accountPool.upstreamAccounts.createPage.tabs.importSession",
-                            )
-                        : t(
-                            "accountPool.upstreamAccounts.createPage.tabs.apiKey",
-                          )}
+                          ? t("accountPool.upstreamAccounts.createPage.tabs.importSession")
+                          : t("accountPool.upstreamAccounts.createPage.tabs.apiKey")}
                 </SegmentedControlItem>
               ))}
             </SegmentedControl>

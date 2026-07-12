@@ -8,9 +8,7 @@ export type ForwardProxyBindingOption = ForwardProxyBindingNode & {
 export function normalizeForwardProxyBindingKeys(values?: string[]): string[] {
   if (!Array.isArray(values)) return [];
   return Array.from(
-    new Set(
-      values.map((value) => value.trim()).filter((value) => value.length > 0),
-    ),
+    new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)),
   );
 }
 
@@ -19,17 +17,13 @@ export function canonicalizeForwardProxyBindingKeys(
   availableProxyNodes?: ForwardProxyBindingNode[],
 ): string[] {
   const keyAliases = new Map<string, string>();
-  for (const node of Array.isArray(availableProxyNodes)
-    ? availableProxyNodes
-    : []) {
+  for (const node of Array.isArray(availableProxyNodes) ? availableProxyNodes : []) {
     keyAliases.set(node.key, node.key);
     for (const alias of normalizeForwardProxyBindingKeys(node.aliasKeys)) {
       keyAliases.set(alias, node.key);
     }
   }
-  return Array.from(
-    new Set(values.map((value) => keyAliases.get(value) ?? value)),
-  );
+  return Array.from(new Set(values.map((value) => keyAliases.get(value) ?? value)));
 }
 
 function buildMissingProxyOption(key: string): ForwardProxyBindingOption {
@@ -71,9 +65,7 @@ export function resolveForwardProxyBindingOptions(
 ): ForwardProxyBindingOption[] {
   const available = Array.isArray(availableProxyNodes)
     ? availableProxyNodes
-        .filter(
-          (node) => node.source !== "missing" || selectedKeys.includes(node.key),
-        )
+        .filter((node) => node.source !== "missing" || selectedKeys.includes(node.key))
         .map((node) => ({
           ...node,
           last24h: Array.isArray(node.last24h) ? node.last24h : [],
@@ -95,8 +87,7 @@ export function resolveForwardProxyBindingOptions(
     );
   }
   return options.map((node) => {
-    const duplicateDisplayName =
-      (displayNameCounts.get(node.displayName.trim()) ?? 0) > 1;
+    const duplicateDisplayName = (displayNameCounts.get(node.displayName.trim()) ?? 0) > 1;
     return {
       ...node,
       identityHint: shouldShowProxyIdentityHint(node, duplicateDisplayName)
@@ -112,8 +103,6 @@ export function hasSelectableForwardProxyBindingSelection(
 ): boolean {
   return (
     selectedKeys.length === 0 ||
-    selectedKeys.some((key) =>
-      options.some((node) => node.key === key && node.selectable),
-    )
+    selectedKeys.some((key) => options.some((node) => node.key === key && node.selectable))
   );
 }

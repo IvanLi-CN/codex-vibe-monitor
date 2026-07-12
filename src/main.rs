@@ -1,4 +1,8 @@
 #![recursion_limit = "256"]
+#![expect(
+    dead_code,
+    reason = "All-target Clippy checks production and test compilation units separately; shared internal helpers are intentionally target-dependent."
+)]
 
 use std::{
     borrow::Cow,
@@ -21,6 +25,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+#[cfg(test)]
 pub(crate) use axum::http::header as http_header;
 use axum::response::sse::{Event, KeepAlive};
 use axum::{
@@ -89,13 +94,29 @@ mod external_api;
 mod forward_proxy;
 mod http_stream_tracking;
 mod maintenance;
+#[expect(
+    clippy::too_many_arguments,
+    reason = "OAuth bridge adapters preserve upstream request contracts."
+)]
 mod oauth_bridge;
 mod pricing;
 mod proxy;
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Runtime shutdown coordination preserves established task handles."
+)]
 mod runtime;
 mod schema;
 mod share_links;
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Batch variants preserve established channel payload ownership."
+)]
 mod sqlite_batch_writer;
+#[expect(
+    clippy::type_complexity,
+    reason = "Statistics row tuples mirror persisted query shapes."
+)]
 mod stats;
 #[cfg(test)]
 mod tests;

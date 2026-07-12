@@ -44,10 +44,7 @@ describe("invocationRecordsLive", () => {
       limit: 10,
     });
 
-    expect(merged.map((record) => record.invokeId)).toEqual([
-      "invoke-valued",
-      "invoke-null",
-    ]);
+    expect(merged.map((record) => record.invokeId)).toEqual(["invoke-valued", "invoke-null"]);
   });
 
   it("keeps null metric values at the end for descending live windows", () => {
@@ -72,10 +69,7 @@ describe("invocationRecordsLive", () => {
       limit: 10,
     });
 
-    expect(merged.map((record) => record.invokeId)).toEqual([
-      "invoke-valued",
-      "invoke-null",
-    ]);
+    expect(merged.map((record) => record.invokeId)).toEqual(["invoke-valued", "invoke-null"]);
   });
 
   it("matches backend DESC occurredAt tie-breaks for ascending non-time sorts", () => {
@@ -100,10 +94,7 @@ describe("invocationRecordsLive", () => {
       limit: 10,
     });
 
-    expect(merged.map((record) => record.invokeId)).toEqual([
-      "invoke-later",
-      "invoke-earlier",
-    ]);
+    expect(merged.map((record) => record.invokeId)).toEqual(["invoke-later", "invoke-earlier"]);
   });
 
   it("keeps a terminal record when a stale running update arrives later", () => {

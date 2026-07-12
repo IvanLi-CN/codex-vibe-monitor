@@ -1,20 +1,20 @@
-import type { TimeseriesResponse } from '../../lib/api'
-import { parseDateInput, resolveClosedNaturalDayEnd } from './dashboardNaturalDayWindow'
+import type { TimeseriesResponse } from "../../lib/api";
+import { parseDateInput, resolveClosedNaturalDayEnd } from "./dashboardNaturalDayWindow";
 
-const MINUTE_MS = 60_000
-const DEFAULT_WINDOW_MINUTES = 5
+const MINUTE_MS = 60_000;
+const DEFAULT_WINDOW_MINUTES = 5;
 
 interface LatencyBucket {
-  bucketStartMs: number
-  bucketEndMs: number
-  sampleCount: number
-  totalWeightedMs: number
+  bucketStartMs: number;
+  bucketEndMs: number;
+  sampleCount: number;
+  totalWeightedMs: number;
 }
 
 export interface DashboardResponseTimeSnapshot {
-  responseTimeMs: number | null
-  dayAverageMs: number | null
-  available: boolean
+  responseTimeMs: number | null;
+  dayAverageMs: number | null;
+  available: boolean;
 }
 
 export function buildDashboardResponseTimeSnapshot(
@@ -22,75 +22,77 @@ export function buildDashboardResponseTimeSnapshot(
   options?: { now?: Date; targetWindowMinutes?: number; closedNaturalDay?: boolean },
 ): DashboardResponseTimeSnapshot | null {
   if (!response) {
-    return null
+    return null;
   }
 
-  const targetWindowMinutes = Math.max(1, options?.targetWindowMinutes ?? DEFAULT_WINDOW_MINUTES)
-  const fallbackNow = options?.now ?? new Date()
+  const targetWindowMinutes = Math.max(1, options?.targetWindowMinutes ?? DEFAULT_WINDOW_MINUTES);
+  const fallbackNow = options?.now ?? new Date();
   const closedNaturalDayEnd = resolveClosedNaturalDayEnd(
     response,
     options?.closedNaturalDay ?? false,
-  )
-  const responseEnd = parseDateInput(response.rangeEnd)
-  const anchor = closedNaturalDayEnd ?? resolveLiveNaturalDayAnchor(responseEnd, fallbackNow)
+  );
+  const responseEnd = parseDateInput(response.rangeEnd);
+  const anchor = closedNaturalDayEnd ?? resolveLiveNaturalDayAnchor(responseEnd, fallbackNow);
   const start = closedNaturalDayEnd
     ? floorToMinute(
         parseDateInput(response.rangeStart) ??
           new Date(closedNaturalDayEnd.getTime() - 24 * 60 * MINUTE_MS),
       )
-    : startOfLocalDay(anchor)
-  const startMs = start.getTime()
-  const anchorMs = anchor.getTime()
-  const windowStartMs = Math.max(startMs, anchorMs - targetWindowMinutes * MINUTE_MS)
+    : startOfLocalDay(anchor);
+  const startMs = start.getTime();
+  const anchorMs = anchor.getTime();
+  const windowStartMs = Math.max(startMs, anchorMs - targetWindowMinutes * MINUTE_MS);
 
   if (anchorMs <= startMs) {
     return {
       responseTimeMs: null,
       dayAverageMs: null,
       available: true,
-    }
+    };
   }
 
-  const pointMap = new Map<number, LatencyBucket>()
+  const pointMap = new Map<number, LatencyBucket>();
 
   for (const point of response.points ?? []) {
-    const bucketStart = parseDateInput(point.bucketStart)
-    const bucketEnd = parseDateInput(point.bucketEnd)
-    if (!bucketStart || !bucketEnd) continue
+    const bucketStart = parseDateInput(point.bucketStart);
+    const bucketEnd = parseDateInput(point.bucketEnd);
+    if (!bucketStart || !bucketEnd) continue;
 
-    const bucketStartMs = floorToMinute(bucketStart).getTime()
-    const bucketEndMs = bucketEnd.getTime()
-    if (bucketStartMs >= anchorMs || bucketEndMs <= startMs) continue
+    const bucketStartMs = floorToMinute(bucketStart).getTime();
+    const bucketEndMs = bucketEnd.getTime();
+    if (bucketStartMs >= anchorMs || bucketEndMs <= startMs) continue;
 
-    const avgMs = point.firstResponseByteTotalAvgMs ?? null
+    const avgMs = point.firstResponseByteTotalAvgMs ?? null;
     const pointCallCount = Math.max(
       point.totalCount ?? 0,
       (point.successCount ?? 0) + (point.failureCount ?? 0) + Math.max(point.inFlightCount ?? 0, 0),
       0,
-    )
-    if (pointCallCount <= 0 || avgMs == null || !Number.isFinite(avgMs)) continue
+    );
+    if (pointCallCount <= 0 || avgMs == null || !Number.isFinite(avgMs)) continue;
 
-    const sampleCount = Math.max(point.firstResponseByteTotalSampleCount ?? 1, 1)
+    const sampleCount = Math.max(point.firstResponseByteTotalSampleCount ?? 1, 1);
 
     const current = pointMap.get(bucketStartMs) ?? {
       bucketStartMs,
       bucketEndMs,
       sampleCount: 0,
       totalWeightedMs: 0,
-    }
-    current.bucketEndMs = Math.max(current.bucketEndMs, bucketEndMs)
-    current.sampleCount += sampleCount
-    current.totalWeightedMs += avgMs * sampleCount
-    pointMap.set(bucketStartMs, current)
+    };
+    current.bucketEndMs = Math.max(current.bucketEndMs, bucketEndMs);
+    current.sampleCount += sampleCount;
+    current.totalWeightedMs += avgMs * sampleCount;
+    pointMap.set(bucketStartMs, current);
   }
 
-  const buckets = [...pointMap.values()].sort((left, right) => left.bucketStartMs - right.bucketStartMs)
+  const buckets = [...pointMap.values()].sort(
+    (left, right) => left.bucketStartMs - right.bucketStartMs,
+  );
 
   return {
     responseTimeMs: computeActiveTailAverage(buckets, anchorMs, windowStartMs),
     dayAverageMs: computeWeightedAverage(buckets, startMs, anchorMs),
     available: true,
-  }
+  };
 }
 
 function computeActiveTailAverage(
@@ -98,45 +100,41 @@ function computeActiveTailAverage(
   anchorMs: number,
   windowStartMs: number,
 ) {
-  const firstActiveBucket = buckets.find((bucket) => bucket.sampleCount > 0)
-  if (!firstActiveBucket) return null
+  const firstActiveBucket = buckets.find((bucket) => bucket.sampleCount > 0);
+  if (!firstActiveBucket) return null;
 
-  const activeStartMs = Math.max(windowStartMs, firstActiveBucket.bucketStartMs)
-  return computeWeightedAverage(buckets, activeStartMs, anchorMs)
+  const activeStartMs = Math.max(windowStartMs, firstActiveBucket.bucketStartMs);
+  return computeWeightedAverage(buckets, activeStartMs, anchorMs);
 }
 
-function computeWeightedAverage(
-  buckets: LatencyBucket[],
-  startMs: number,
-  endMs: number,
-) {
-  let totalWeightedMs = 0
-  let sampleCount = 0
+function computeWeightedAverage(buckets: LatencyBucket[], startMs: number, endMs: number) {
+  let totalWeightedMs = 0;
+  let sampleCount = 0;
 
   for (const bucket of buckets) {
     if (bucket.bucketEndMs <= startMs || bucket.bucketStartMs >= endMs) {
-      continue
+      continue;
     }
-    totalWeightedMs += bucket.totalWeightedMs
-    sampleCount += bucket.sampleCount
+    totalWeightedMs += bucket.totalWeightedMs;
+    sampleCount += bucket.sampleCount;
   }
 
-  if (sampleCount <= 0) return null
-  return totalWeightedMs / sampleCount
+  if (sampleCount <= 0) return null;
+  return totalWeightedMs / sampleCount;
 }
 
 function startOfLocalDay(date: Date) {
-  const next = new Date(date)
-  next.setHours(0, 0, 0, 0)
-  return next
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
 }
 
 function resolveLiveNaturalDayAnchor(responseEnd: Date | null, now: Date) {
-  if (!responseEnd) return now
+  if (!responseEnd) return now;
   if (isSameLocalDay(responseEnd, now) && now.getTime() > responseEnd.getTime()) {
-    return now
+    return now;
   }
-  return responseEnd
+  return responseEnd;
 }
 
 function isSameLocalDay(left: Date, right: Date) {
@@ -144,11 +142,11 @@ function isSameLocalDay(left: Date, right: Date) {
     left.getFullYear() === right.getFullYear() &&
     left.getMonth() === right.getMonth() &&
     left.getDate() === right.getDate()
-  )
+  );
 }
 
 function floorToMinute(date: Date) {
-  const next = new Date(date)
-  next.setSeconds(0, 0)
-  return next
+  const next = new Date(date);
+  next.setSeconds(0, 0);
+  return next;
 }

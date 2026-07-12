@@ -1,186 +1,197 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { AppIcon } from '../features/shared/AppIcon'
-import { ExternalApiKeysSettingsCard } from '../features/settings/ExternalApiKeysSettingsCard'
-import { Badge } from '../components/ui/badge'
-import { Alert } from '../components/ui/alert'
-import { Button } from '../components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
-import { Input } from '../components/ui/input'
-import { SelectField } from '../components/ui/select-field'
-import { Switch } from '../components/ui/switch'
-import { Tooltip } from '../components/ui/tooltip'
-import { useSettings } from '../hooks/useSettings'
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Alert } from "../components/ui/alert";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Input } from "../components/ui/input";
+import { SelectField } from "../components/ui/select-field";
+import { Switch } from "../components/ui/switch";
+import { Tooltip } from "../components/ui/tooltip";
+import { ExternalApiKeysSettingsCard } from "../features/settings/ExternalApiKeysSettingsCard";
+import { AppIcon } from "../features/shared/AppIcon";
+import { useSettings } from "../hooks/useSettings";
+import { useTranslation } from "../i18n";
 import {
   createForwardProxyNodeLatencyTestEventSource,
   createForwardProxyNodesLatencyTestEventSource,
-  type ForwardProxyNodeStats,
   type ForwardProxyLatencyTestNodeProgress,
-  normalizeForwardProxyLatencyTestStreamEvent,
-  refreshForwardProxySubscriptions,
-  validateForwardProxyCandidate,
+  type ForwardProxyNodeStats,
   type ForwardProxySettings,
+  normalizeForwardProxyLatencyTestStreamEvent,
   type PricingEntry,
   type PricingSettings,
   type ProxySettings,
-} from '../lib/api'
-import {
-  extractProxyDisplayName,
-  extractProxyProtocolName,
-} from '../lib/forwardProxyDisplay'
-import { cn } from '../lib/utils'
-import { useTranslation } from '../i18n'
+  refreshForwardProxySubscriptions,
+  validateForwardProxyCandidate,
+} from "../lib/api";
+import { extractProxyDisplayName, extractProxyProtocolName } from "../lib/forwardProxyDisplay";
+import { cn } from "../lib/utils";
 
 type PricingDraftEntry = {
-  model: string
-  inputPer1m: string
-  outputPer1m: string
-  cacheReadPer1m: string
-  cacheWritePer1m: string
-  reasoningPer1m: string
-  source: string
-}
+  draftId: string;
+  model: string;
+  inputPer1m: string;
+  outputPer1m: string;
+  cacheReadPer1m: string;
+  cacheWritePer1m: string;
+  reasoningPer1m: string;
+  source: string;
+};
 
 type PricingDraft = {
-  catalogVersion: string
-  entries: PricingDraftEntry[]
-}
+  catalogVersion: string;
+  entries: PricingDraftEntry[];
+};
 
 type ForwardProxyValidationState =
-  | { status: 'idle' }
-  | { status: 'validating'; message?: string }
-  | { status: 'failed'; message: string }
-  | { status: 'passed'; message: string; normalizedValues: string[]; discoveredNodes?: number; latencyMs?: number }
+  | { status: "idle" }
+  | { status: "validating"; message?: string }
+  | { status: "failed"; message: string }
+  | {
+      status: "passed";
+      message: string;
+      normalizedValues: string[];
+      discoveredNodes?: number;
+      latencyMs?: number;
+    };
 
-type ForwardProxyModalKind = 'proxyBatch' | 'subscriptionUrl'
+type ForwardProxyModalKind = "proxyBatch" | "subscriptionUrl";
 
-type ForwardProxyBatchValidationStatus = 'validating' | 'available' | 'unavailable'
+type ForwardProxyBatchValidationStatus = "validating" | "available" | "unavailable";
 
 type ForwardProxyBatchRoundResult = {
-  round: number
-  ok: boolean
-  timedOut: boolean
-  latencyMs?: number
-  message: string
-}
+  round: number;
+  ok: boolean;
+  timedOut: boolean;
+  latencyMs?: number;
+  message: string;
+};
 
 type ForwardProxyBatchValidationItem = {
-  key: string
-  order: number
-  rawValue: string
-  normalizedValue: string
-  displayName: string
-  protocolName: string
-  status: ForwardProxyBatchValidationStatus
-  latencyMs?: number
-  message: string
-  rounds: ForwardProxyBatchRoundResult[]
-  completedRounds: number
-  totalRounds: number
-  successRounds: number
-  lastRound?: ForwardProxyBatchRoundResult
-}
+  key: string;
+  order: number;
+  rawValue: string;
+  normalizedValue: string;
+  displayName: string;
+  protocolName: string;
+  status: ForwardProxyBatchValidationStatus;
+  latencyMs?: number;
+  message: string;
+  rounds: ForwardProxyBatchRoundResult[];
+  completedRounds: number;
+  totalRounds: number;
+  successRounds: number;
+  lastRound?: ForwardProxyBatchRoundResult;
+};
 
 type ForwardProxyTableNode = {
-  key: string
-  displayName: string
-  endpointUrl?: string
-  weight?: number
-  penalized: boolean
-  stats: ForwardProxyNodeStats
-}
+  key: string;
+  displayName: string;
+  endpointUrl?: string;
+  weight?: number;
+  penalized: boolean;
+  stats: ForwardProxyNodeStats;
+};
 
 type ForwardProxyLatencyUiState =
-  | { status: 'idle' }
-  | { status: 'testing'; progress?: ForwardProxyLatencyTestNodeProgress }
-  | { status: 'ready'; progress: ForwardProxyLatencyTestNodeProgress }
-  | { status: 'failed'; progress?: ForwardProxyLatencyTestNodeProgress; message: string }
+  | { status: "idle" }
+  | { status: "testing"; progress?: ForwardProxyLatencyTestNodeProgress }
+  | { status: "ready"; progress: ForwardProxyLatencyTestNodeProgress }
+  | { status: "failed"; progress?: ForwardProxyLatencyTestNodeProgress; message: string };
 
-const AUTO_SAVE_DEBOUNCE_MS = 600
-const FORWARD_PROXY_BATCH_VALIDATION_CONCURRENCY = 5
-const FORWARD_PROXY_BATCH_VALIDATION_ROUNDS = 12
+const AUTO_SAVE_DEBOUNCE_MS = 600;
+const FORWARD_PROXY_BATCH_VALIDATION_CONCURRENCY = 5;
+const FORWARD_PROXY_BATCH_VALIDATION_ROUNDS = 12;
 const pricingTableHeaderCellClass =
-  'px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/65'
-const pricingTableBodyCellClass = 'align-middle px-4 py-3'
+  "px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/65";
+const pricingTableBodyCellClass = "align-middle px-4 py-3";
+let nextPricingDraftId = 0;
+
+function createPricingDraftId() {
+  nextPricingDraftId += 1;
+  return `pricing-draft-${nextPricingDraftId}`;
+}
 
 function normalizeDraftEntry(entry: PricingDraftEntry): PricingDraftEntry {
   return {
     ...entry,
     model: entry.model.trim(),
-    source: entry.source.trim() || 'custom',
-  }
+    source: entry.source.trim() || "custom",
+  };
 }
 
 function toPricingDraft(pricing: PricingSettings): PricingDraft {
   return {
     catalogVersion: pricing.catalogVersion,
     entries: pricing.entries.map((entry) => ({
+      draftId: createPricingDraftId(),
       model: entry.model,
       inputPer1m: String(entry.inputPer1m),
       outputPer1m: String(entry.outputPer1m),
       cacheReadPer1m:
         (entry.cacheReadPer1m ?? entry.cacheInputPer1m) == null
-          ? ''
+          ? ""
           : String(entry.cacheReadPer1m ?? entry.cacheInputPer1m),
-      cacheWritePer1m: entry.cacheWritePer1m == null ? '' : String(entry.cacheWritePer1m),
-      reasoningPer1m: entry.reasoningPer1m == null ? '' : String(entry.reasoningPer1m),
+      cacheWritePer1m: entry.cacheWritePer1m == null ? "" : String(entry.cacheWritePer1m),
+      reasoningPer1m: entry.reasoningPer1m == null ? "" : String(entry.reasoningPer1m),
       source: entry.source,
     })),
-  }
+  };
 }
 
 function parsePricingValue(raw: string, allowEmpty: boolean): number | null | undefined {
-  const text = raw.trim()
+  const text = raw.trim();
   if (!text) {
-    return allowEmpty ? null : undefined
+    return allowEmpty ? null : undefined;
   }
-  const parsed = Number(text)
-  if (!Number.isFinite(parsed)) return undefined
-  return parsed
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed)) return undefined;
+  return parsed;
 }
 
 function normalizeProxyUpstream429MaxRetries(value: number): number {
-  if (!Number.isFinite(value)) return 3
-  const normalized = Math.trunc(value)
-  return Math.min(5, Math.max(0, normalized))
+  if (!Number.isFinite(value)) return 3;
+  const normalized = Math.trunc(value);
+  return Math.min(5, Math.max(0, normalized));
 }
 
 function parsePricingDraft(draft: PricingDraft): { value?: PricingSettings; error?: string } {
-  const catalogVersion = draft.catalogVersion.trim()
+  const catalogVersion = draft.catalogVersion.trim();
   if (!catalogVersion) {
-    return { error: 'settings.pricing.errors.catalogVersionRequired' }
+    return { error: "settings.pricing.errors.catalogVersionRequired" };
   }
 
-  const entries: PricingEntry[] = []
-  const seen = new Set<string>()
+  const entries: PricingEntry[] = [];
+  const seen = new Set<string>();
   for (const rawEntry of draft.entries.map(normalizeDraftEntry)) {
-    const model = rawEntry.model
+    const model = rawEntry.model;
     if (!model) {
-      return { error: 'settings.pricing.errors.modelRequired' }
+      return { error: "settings.pricing.errors.modelRequired" };
     }
     if (model.length > 128) {
-      return { error: 'settings.pricing.errors.modelTooLong' }
+      return { error: "settings.pricing.errors.modelTooLong" };
     }
     if (seen.has(model)) {
-      return { error: 'settings.pricing.errors.modelDuplicated' }
+      return { error: "settings.pricing.errors.modelDuplicated" };
     }
-    seen.add(model)
+    seen.add(model);
 
-    const inputPer1m = parsePricingValue(rawEntry.inputPer1m, false)
-    const outputPer1m = parsePricingValue(rawEntry.outputPer1m, false)
-    const cacheReadPer1m = parsePricingValue(rawEntry.cacheReadPer1m, true)
-    const cacheWritePer1m = parsePricingValue(rawEntry.cacheWritePer1m, true)
-    const reasoningPer1m = parsePricingValue(rawEntry.reasoningPer1m, true)
+    const inputPer1m = parsePricingValue(rawEntry.inputPer1m, false);
+    const outputPer1m = parsePricingValue(rawEntry.outputPer1m, false);
+    const cacheReadPer1m = parsePricingValue(rawEntry.cacheReadPer1m, true);
+    const cacheWritePer1m = parsePricingValue(rawEntry.cacheWritePer1m, true);
+    const reasoningPer1m = parsePricingValue(rawEntry.reasoningPer1m, true);
 
     if (inputPer1m == null || outputPer1m == null) {
-      return { error: 'settings.pricing.errors.numberInvalid' }
+      return { error: "settings.pricing.errors.numberInvalid" };
     }
     if (
       cacheReadPer1m === undefined ||
       cacheWritePer1m === undefined ||
       reasoningPer1m === undefined
     ) {
-      return { error: 'settings.pricing.errors.numberInvalid' }
+      return { error: "settings.pricing.errors.numberInvalid" };
     }
     if (
       inputPer1m < 0 ||
@@ -189,7 +200,7 @@ function parsePricingDraft(draft: PricingDraft): { value?: PricingSettings; erro
       (cacheWritePer1m != null && cacheWritePer1m < 0) ||
       (reasoningPer1m != null && reasoningPer1m < 0)
     ) {
-      return { error: 'settings.pricing.errors.numberNegative' }
+      return { error: "settings.pricing.errors.numberNegative" };
     }
 
     entries.push({
@@ -200,77 +211,79 @@ function parsePricingDraft(draft: PricingDraft): { value?: PricingSettings; erro
       cacheReadPer1m,
       cacheWritePer1m,
       reasoningPer1m,
-      source: rawEntry.source || 'custom',
-    })
+      source: rawEntry.source || "custom",
+    });
   }
 
-  entries.sort((a, b) => a.model.localeCompare(b.model))
+  entries.sort((a, b) => a.model.localeCompare(b.model));
   return {
     value: {
       catalogVersion,
       entries,
     },
-  }
+  };
 }
 
 function stablePricingKey(value: PricingSettings | null): string {
-  if (!value) return 'null'
+  if (!value) return "null";
   return JSON.stringify({
     catalogVersion: value.catalogVersion,
     entries: [...value.entries].sort((a, b) => a.model.localeCompare(b.model)),
-  })
+  });
 }
 
-function sourceBadgeVariant(source: string): 'success' | 'warning' | 'secondary' {
-  if (source === 'official') return 'success'
-  if (source === 'temporary') return 'warning'
-  return 'secondary'
+function sourceBadgeVariant(source: string): "success" | "warning" | "secondary" {
+  if (source === "official") return "success";
+  if (source === "temporary") return "warning";
+  return "secondary";
 }
 
 function appendUniqueItem(list: string[], value: string): string[] {
-  const trimmed = value.trim()
-  if (!trimmed) return list
-  if (list.includes(trimmed)) return list
-  return [...list, trimmed]
+  const trimmed = value.trim();
+  if (!trimmed) return list;
+  if (list.includes(trimmed)) return list;
+  return [...list, trimmed];
 }
 
 function appendUniqueItems(list: string[], values: string[]): string[] {
-  let next = list
+  let next = list;
   for (const value of values) {
-    next = appendUniqueItem(next, value)
+    next = appendUniqueItem(next, value);
   }
-  return next
+  return next;
 }
 
 function parseMultilineItems(raw: string): string[] {
-  const seen = new Set<string>()
-  const items: string[] = []
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed || seen.has(trimmed)) continue
-    seen.add(trimmed)
-    items.push(trimmed)
+  const seen = new Set<string>();
+  const items: string[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    items.push(trimmed);
   }
-  return items
+  return items;
 }
 
-function sortBatchResults(items: Iterable<ForwardProxyBatchValidationItem>): ForwardProxyBatchValidationItem[] {
-  return [...items].sort((a, b) => a.order - b.order)
+function sortBatchResults(
+  items: Iterable<ForwardProxyBatchValidationItem>,
+): ForwardProxyBatchValidationItem[] {
+  return [...items].sort((a, b) => a.order - b.order);
 }
 
 function formatSuccessRate(value?: number): string {
-  if (value == null || Number.isNaN(value)) return '—'
-  return `${(value * 100).toFixed(1)}%`
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function formatLatency(value?: number): string {
-  if (value == null || Number.isNaN(value)) return '—'
-  return `${value.toFixed(0)} ms`
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${value.toFixed(0)} ms`;
 }
 
 function formatManualLatency(value?: number): string {
-  if (value == null || Number.isNaN(value)) return '--'
-  return `${value.toFixed(0)} ms`
+  if (value == null || Number.isNaN(value)) return "--";
+  return `${value.toFixed(0)} ms`;
 }
 
 function forwardProxyLatencyProgressFailed(progress: ForwardProxyLatencyTestNodeProgress): boolean {
@@ -280,36 +293,40 @@ function forwardProxyLatencyProgressFailed(progress: ForwardProxyLatencyTestNode
     !progress.egressIp.ok ||
     !progress.oauthUpstream.ok ||
     !progress.codexResponses.ok
-  )
+  );
 }
 
 function isDraftForwardProxyNodeKey(key: string): boolean {
-  return key.startsWith('__draft__')
+  return key.startsWith("__draft__");
 }
 
 function isForwardProxyValidationTimeout(message: string): boolean {
-  const normalized = message.toLowerCase()
-  return normalized.includes('timed out') || normalized.includes('timeout') || normalized.includes('超时')
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("timed out") ||
+    normalized.includes("timeout") ||
+    normalized.includes("超时")
+  );
 }
 
 function isForwardProxyBackendServerError(message: string): boolean {
-  const normalized = message.toLowerCase()
+  const normalized = message.toLowerCase();
   return (
-    normalized.includes('request failed: 500') ||
-    normalized.includes('request failed: 502') ||
-    normalized.includes('request failed: 503') ||
-    normalized.includes('request failed: 504')
-  )
+    normalized.includes("request failed: 500") ||
+    normalized.includes("request failed: 502") ||
+    normalized.includes("request failed: 503") ||
+    normalized.includes("request failed: 504")
+  );
 }
 
 function isForwardProxyBackendUnreachable(message: string): boolean {
-  const normalized = message.toLowerCase()
+  const normalized = message.toLowerCase();
   return (
-    normalized.includes('failed to fetch') ||
-    normalized.includes('networkerror') ||
-    normalized.includes('load failed') ||
-    normalized.includes('network request failed')
-  )
+    normalized.includes("failed to fetch") ||
+    normalized.includes("networkerror") ||
+    normalized.includes("load failed") ||
+    normalized.includes("network request failed")
+  );
 }
 
 function emptyForwardProxyNodeStats(): ForwardProxyNodeStats {
@@ -319,40 +336,40 @@ function emptyForwardProxyNodeStats(): ForwardProxyNodeStats {
     oneHour: { attempts: 0 },
     oneDay: { attempts: 0 },
     sevenDays: { attempts: 0 },
-  }
+  };
 }
 
 const forwardProxyWindowColumns = [
   {
-    labelKey: 'settings.forwardProxy.table.sevenDays',
+    labelKey: "settings.forwardProxy.table.sevenDays",
     selectStats: (stats: ForwardProxyNodeStats) => stats.sevenDays,
   },
   {
-    labelKey: 'settings.forwardProxy.table.oneDay',
+    labelKey: "settings.forwardProxy.table.oneDay",
     selectStats: (stats: ForwardProxyNodeStats) => stats.oneDay,
   },
   {
-    labelKey: 'settings.forwardProxy.table.oneHour',
+    labelKey: "settings.forwardProxy.table.oneHour",
     selectStats: (stats: ForwardProxyNodeStats) => stats.oneHour,
   },
   {
-    labelKey: 'settings.forwardProxy.table.fifteenMinutes',
+    labelKey: "settings.forwardProxy.table.fifteenMinutes",
     selectStats: (stats: ForwardProxyNodeStats) => stats.fifteenMinutes,
   },
   {
-    labelKey: 'settings.forwardProxy.table.oneMinute',
+    labelKey: "settings.forwardProxy.table.oneMinute",
     selectStats: (stats: ForwardProxyNodeStats) => stats.oneMinute,
   },
-] as const
+] as const;
 
-type SettingsPageMode = 'all' | 'general' | 'proxy'
+type SettingsPageMode = "all" | "general" | "proxy";
 
 type SettingsPageProps = {
-  mode?: SettingsPageMode
-}
+  mode?: SettingsPageMode;
+};
 
-export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
-  const { t } = useTranslation()
+export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
+  const { t } = useTranslation();
   const {
     settings,
     isLoading,
@@ -365,123 +382,137 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
     saveProxy,
     saveForwardProxy,
     savePricing,
-  } = useSettings()
+  } = useSettings();
 
-  const [pricingDraft, setPricingDraft] = useState<PricingDraft | null>(null)
-  const [pricingErrorKey, setPricingErrorKey] = useState<string | null>(null)
-  const [forwardProxyUrls, setForwardProxyUrls] = useState<string[]>([])
-  const [forwardProxySubscriptionUrls, setForwardProxySubscriptionUrls] = useState<string[]>([])
-  const [forwardProxyIntervalSecs, setForwardProxyIntervalSecs] = useState('3600')
-  const [forwardProxyDirty, setForwardProxyDirty] = useState(false)
-  const [forwardProxyModalKind, setForwardProxyModalKind] = useState<ForwardProxyModalKind | null>(null)
-  const [forwardProxyModalStep, setForwardProxyModalStep] = useState<1 | 2>(1)
-  const [forwardProxyModalInput, setForwardProxyModalInput] = useState('')
-  const [forwardProxyBatchResults, setForwardProxyBatchResults] = useState<ForwardProxyBatchValidationItem[]>([])
-  const [forwardProxyBatchTooltipKey, setForwardProxyBatchTooltipKey] = useState<string | null>(null)
-  const [forwardProxyValidation, setForwardProxyValidation] = useState<ForwardProxyValidationState>({ status: 'idle' })
-  const [forwardProxyLatencyByKey, setForwardProxyLatencyByKey] = useState<Record<string, ForwardProxyLatencyUiState>>({})
-  const [isForwardProxyRefreshingSubscriptions, setIsForwardProxyRefreshingSubscriptions] = useState(false)
-  const [forwardProxyRefreshMessage, setForwardProxyRefreshMessage] = useState<string | null>(null)
-  const forwardProxyUrlsRef = useRef<string[]>([])
-  const forwardProxySubscriptionUrlsRef = useRef<string[]>([])
-  const forwardProxyLatencyEventSourceRef = useRef<EventSource | null>(null)
-  const forwardProxyLatencyPendingKeysRef = useRef<Set<string>>(new Set())
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const forwardProxyBatchValidationRunRef = useRef(0)
-  const lastSyncedPricingKeyRef = useRef<string | null>(null)
-  const lastHandledRollbackVersionRef = useRef(pricingRollbackVersion)
-  const showGeneralSettings = mode !== 'proxy'
-  const showForwardProxySettings = mode !== 'general'
+  const [pricingDraft, setPricingDraft] = useState<PricingDraft | null>(null);
+  const [pricingErrorKey, setPricingErrorKey] = useState<string | null>(null);
+  const [forwardProxyUrls, setForwardProxyUrls] = useState<string[]>([]);
+  const [forwardProxySubscriptionUrls, setForwardProxySubscriptionUrls] = useState<string[]>([]);
+  const [forwardProxyIntervalSecs, setForwardProxyIntervalSecs] = useState("3600");
+  const [forwardProxyDirty, setForwardProxyDirty] = useState(false);
+  const [forwardProxyModalKind, setForwardProxyModalKind] = useState<ForwardProxyModalKind | null>(
+    null,
+  );
+  const [forwardProxyModalStep, setForwardProxyModalStep] = useState<1 | 2>(1);
+  const [forwardProxyModalInput, setForwardProxyModalInput] = useState("");
+  const [forwardProxyBatchResults, setForwardProxyBatchResults] = useState<
+    ForwardProxyBatchValidationItem[]
+  >([]);
+  const [forwardProxyBatchTooltipKey, setForwardProxyBatchTooltipKey] = useState<string | null>(
+    null,
+  );
+  const [forwardProxyValidation, setForwardProxyValidation] = useState<ForwardProxyValidationState>(
+    { status: "idle" },
+  );
+  const [forwardProxyLatencyByKey, setForwardProxyLatencyByKey] = useState<
+    Record<string, ForwardProxyLatencyUiState>
+  >({});
+  const [isForwardProxyRefreshingSubscriptions, setIsForwardProxyRefreshingSubscriptions] =
+    useState(false);
+  const [forwardProxyRefreshMessage, setForwardProxyRefreshMessage] = useState<string | null>(null);
+  const forwardProxyUrlsRef = useRef<string[]>([]);
+  const forwardProxySubscriptionUrlsRef = useRef<string[]>([]);
+  const forwardProxyLatencyEventSourceRef = useRef<EventSource | null>(null);
+  const forwardProxyLatencyPendingKeysRef = useRef<Set<string>>(new Set());
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const forwardProxyBatchValidationRunRef = useRef(0);
+  const lastSyncedPricingKeyRef = useRef<string | null>(null);
+  const lastHandledRollbackVersionRef = useRef(pricingRollbackVersion);
+  const showGeneralSettings = mode !== "proxy";
+  const showForwardProxySettings = mode !== "general";
   const pageTitleKey =
-    mode === 'general'
-      ? 'system.settings.title'
-      : mode === 'proxy'
-        ? 'system.proxy.title'
-        : 'settings.title'
+    mode === "general"
+      ? "system.settings.title"
+      : mode === "proxy"
+        ? "system.proxy.title"
+        : "settings.title";
   const pageDescriptionKey =
-    mode === 'general'
-      ? 'system.settings.description'
-      : mode === 'proxy'
-        ? 'system.proxy.description'
-        : 'settings.description'
+    mode === "general"
+      ? "system.settings.description"
+      : mode === "proxy"
+        ? "system.proxy.description"
+        : "settings.description";
 
   const applyForwardProxyUrls = useCallback((nextUrls: string[]) => {
-    forwardProxyUrlsRef.current = nextUrls
-    setForwardProxyUrls(nextUrls)
-  }, [])
+    forwardProxyUrlsRef.current = nextUrls;
+    setForwardProxyUrls(nextUrls);
+  }, []);
 
   const applyForwardProxySubscriptionUrls = useCallback((nextUrls: string[]) => {
-    forwardProxySubscriptionUrlsRef.current = nextUrls
-    setForwardProxySubscriptionUrls(nextUrls)
-  }, [])
+    forwardProxySubscriptionUrlsRef.current = nextUrls;
+    setForwardProxySubscriptionUrls(nextUrls);
+  }, []);
 
   useEffect(() => {
     return () => {
-      forwardProxyLatencyEventSourceRef.current?.close()
-      forwardProxyLatencyEventSourceRef.current = null
-      forwardProxyLatencyPendingKeysRef.current.clear()
-    }
-  }, [])
+      forwardProxyLatencyEventSourceRef.current?.close();
+      forwardProxyLatencyEventSourceRef.current = null;
+      forwardProxyLatencyPendingKeysRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
-    if (!settings?.pricing) return
-    const nextPricing = settings.pricing
-    const nextPricingKey = stablePricingKey(nextPricing)
+    if (!settings?.pricing) return;
+    const nextPricing = settings.pricing;
+    const nextPricingKey = stablePricingKey(nextPricing);
 
     setPricingDraft((current) => {
       if (!current) {
-        lastSyncedPricingKeyRef.current = nextPricingKey
-        return toPricingDraft(nextPricing)
+        lastSyncedPricingKeyRef.current = nextPricingKey;
+        return toPricingDraft(nextPricing);
       }
 
-      const parsedCurrent = parsePricingDraft(current)
+      const parsedCurrent = parsePricingDraft(current);
       if (!parsedCurrent.value) {
-        return current
+        return current;
       }
 
       if (pricingRollbackVersion !== lastHandledRollbackVersionRef.current) {
-        lastHandledRollbackVersionRef.current = pricingRollbackVersion
-        lastSyncedPricingKeyRef.current = nextPricingKey
-        return toPricingDraft(nextPricing)
+        lastHandledRollbackVersionRef.current = pricingRollbackVersion;
+        lastSyncedPricingKeyRef.current = nextPricingKey;
+        return toPricingDraft(nextPricing);
       }
 
-      const currentDraftKey = stablePricingKey(parsedCurrent.value)
+      const currentDraftKey = stablePricingKey(parsedCurrent.value);
       if (currentDraftKey === nextPricingKey) {
-        lastSyncedPricingKeyRef.current = nextPricingKey
-        return current
+        lastSyncedPricingKeyRef.current = nextPricingKey;
+        return current;
       }
 
-      if (lastSyncedPricingKeyRef.current == null || currentDraftKey === lastSyncedPricingKeyRef.current) {
-        lastSyncedPricingKeyRef.current = nextPricingKey
-        return toPricingDraft(nextPricing)
+      if (
+        lastSyncedPricingKeyRef.current == null ||
+        currentDraftKey === lastSyncedPricingKeyRef.current
+      ) {
+        lastSyncedPricingKeyRef.current = nextPricingKey;
+        return toPricingDraft(nextPricing);
       }
 
-      return current
-    })
-  }, [pricingRollbackVersion, settings?.pricing])
+      return current;
+    });
+  }, [pricingRollbackVersion, settings?.pricing]);
 
   useEffect(() => {
-    if (!settings?.forwardProxy) return
-    if (forwardProxyDirty && !isForwardProxySaving) return
-    applyForwardProxyUrls(settings.forwardProxy.proxyUrls)
-    applyForwardProxySubscriptionUrls(settings.forwardProxy.subscriptionUrls)
-    setForwardProxyIntervalSecs(String(settings.forwardProxy.subscriptionUpdateIntervalSecs))
-    setForwardProxyDirty(false)
+    if (!settings?.forwardProxy) return;
+    if (forwardProxyDirty && !isForwardProxySaving) return;
+    applyForwardProxyUrls(settings.forwardProxy.proxyUrls);
+    applyForwardProxySubscriptionUrls(settings.forwardProxy.subscriptionUrls);
+    setForwardProxyIntervalSecs(String(settings.forwardProxy.subscriptionUpdateIntervalSecs));
+    setForwardProxyDirty(false);
   }, [
     applyForwardProxySubscriptionUrls,
     applyForwardProxyUrls,
     forwardProxyDirty,
     isForwardProxySaving,
     settings?.forwardProxy,
-  ])
-  const currentProxy = settings?.proxy ?? null
-  const currentForwardProxy = settings?.forwardProxy ?? null
+  ]);
+  const currentProxy = settings?.proxy ?? null;
+  const currentForwardProxy = settings?.forwardProxy ?? null;
   const enabledPresetModelSet = useMemo(
     () => new Set(currentProxy?.enabledModels ?? []),
     [currentProxy?.enabledModels],
-  )
+  );
   const forwardProxyTableNodes = useMemo<ForwardProxyTableNode[]>(() => {
-    const persistedNodes = currentForwardProxy?.nodes ?? []
+    const persistedNodes = currentForwardProxy?.nodes ?? [];
     const tableNodes: ForwardProxyTableNode[] = persistedNodes.map((node) => ({
       key: node.key,
       displayName: node.displayName,
@@ -489,98 +520,102 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
       weight: node.weight,
       penalized: node.penalized,
       stats: node.stats,
-    }))
+    }));
 
     const endpointUrlSet = new Set(
       persistedNodes
         .map((node) => node.endpointUrl?.trim())
         .filter((candidate): candidate is string => Boolean(candidate)),
-    )
+    );
 
     for (const rawUrl of forwardProxyUrls) {
-      const candidate = rawUrl.trim()
-      if (!candidate || endpointUrlSet.has(candidate)) continue
-      endpointUrlSet.add(candidate)
+      const candidate = rawUrl.trim();
+      if (!candidate || endpointUrlSet.has(candidate)) continue;
+      endpointUrlSet.add(candidate);
       tableNodes.push({
         key: `__draft__${candidate}`,
-        displayName: extractProxyDisplayName(candidate) || t('settings.forwardProxy.modal.unknownNode'),
+        displayName:
+          extractProxyDisplayName(candidate) || t("settings.forwardProxy.modal.unknownNode"),
         endpointUrl: candidate,
         weight: undefined,
         penalized: false,
         stats: emptyForwardProxyNodeStats(),
-      })
+      });
     }
 
-    return tableNodes
-  }, [currentForwardProxy?.nodes, forwardProxyUrls, t])
+    return tableNodes;
+  }, [currentForwardProxy?.nodes, forwardProxyUrls, t]);
   const forwardProxyIntervalOptions = useMemo(
     () => [
-      { value: '60', label: t('settings.forwardProxy.interval.1m') },
-      { value: '300', label: t('settings.forwardProxy.interval.5m') },
-      { value: '900', label: t('settings.forwardProxy.interval.15m') },
-      { value: '3600', label: t('settings.forwardProxy.interval.1h') },
-      { value: '21600', label: t('settings.forwardProxy.interval.6h') },
-      { value: '86400', label: t('settings.forwardProxy.interval.1d') },
+      { value: "60", label: t("settings.forwardProxy.interval.1m") },
+      { value: "300", label: t("settings.forwardProxy.interval.5m") },
+      { value: "900", label: t("settings.forwardProxy.interval.15m") },
+      { value: "3600", label: t("settings.forwardProxy.interval.1h") },
+      { value: "21600", label: t("settings.forwardProxy.interval.6h") },
+      { value: "86400", label: t("settings.forwardProxy.interval.1d") },
     ],
     [t],
-  )
+  );
 
-  const remotePricingKey = useMemo(() => stablePricingKey(settings?.pricing ?? null), [settings?.pricing])
-  const remotePricingKeyRef = useRef(remotePricingKey)
+  const remotePricingKey = useMemo(
+    () => stablePricingKey(settings?.pricing ?? null),
+    [settings?.pricing],
+  );
+  const remotePricingKeyRef = useRef(remotePricingKey);
 
   useEffect(() => {
-    remotePricingKeyRef.current = remotePricingKey
-  }, [remotePricingKey])
+    remotePricingKeyRef.current = remotePricingKey;
+  }, [remotePricingKey]);
 
   const triggerPricingSave = useCallback(
     (forceImmediate: boolean) => {
-      if (!pricingDraft) return
-      const parsed = parsePricingDraft(pricingDraft)
+      if (!pricingDraft) return;
+      const parsed = parsePricingDraft(pricingDraft);
       if (!parsed.value) {
         if (debounceTimerRef.current) {
-          clearTimeout(debounceTimerRef.current)
-          debounceTimerRef.current = null
+          clearTimeout(debounceTimerRef.current);
+          debounceTimerRef.current = null;
         }
-        setPricingErrorKey(parsed.error ?? 'settings.pricing.errors.numberInvalid')
-        return
+        setPricingErrorKey(parsed.error ?? "settings.pricing.errors.numberInvalid");
+        return;
       }
-      const draftKey = stablePricingKey(parsed.value)
+      const draftKey = stablePricingKey(parsed.value);
       if (draftKey === remotePricingKeyRef.current) {
         if (debounceTimerRef.current) {
-          clearTimeout(debounceTimerRef.current)
-          debounceTimerRef.current = null
+          clearTimeout(debounceTimerRef.current);
+          debounceTimerRef.current = null;
         }
-        setPricingErrorKey(null)
-        return
+        setPricingErrorKey(null);
+        return;
       }
 
-      setPricingErrorKey(null)
+      setPricingErrorKey(null);
       const runSave = () => {
-        void savePricing(parsed.value as PricingSettings)
-      }
+        void savePricing(parsed.value as PricingSettings);
+      };
 
       if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current)
+        clearTimeout(debounceTimerRef.current);
       }
 
       if (forceImmediate) {
-        runSave()
+        runSave();
       } else {
-        debounceTimerRef.current = setTimeout(runSave, AUTO_SAVE_DEBOUNCE_MS)
+        debounceTimerRef.current = setTimeout(runSave, AUTO_SAVE_DEBOUNCE_MS);
       }
     },
     [pricingDraft, savePricing],
-  )
+  );
 
   useEffect(() => {
-    if (!pricingDraft) return
-    triggerPricingSave(false)
+    if (!pricingDraft) return;
+    triggerPricingSave(false);
     return () => {
       if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current)
+        clearTimeout(debounceTimerRef.current);
       }
-    }
-  }, [pricingDraft, triggerPricingSave])
+    };
+  }, [pricingDraft, triggerPricingSave]);
 
   const persistProxy = useCallback(
     (nextProxy: ProxySettings) => {
@@ -588,191 +623,196 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
         ...nextProxy,
         mergeUpstreamEnabled: nextProxy.hijackEnabled ? nextProxy.mergeUpstreamEnabled : false,
         upstream429MaxRetries: normalizeProxyUpstream429MaxRetries(nextProxy.upstream429MaxRetries),
-        enabledModels: nextProxy.models.filter((candidate) => nextProxy.enabledModels.includes(candidate)),
-      }
-      void saveProxy(normalizedProxy)
+        enabledModels: nextProxy.models.filter((candidate) =>
+          nextProxy.enabledModels.includes(candidate),
+        ),
+      };
+      void saveProxy(normalizedProxy);
     },
     [saveProxy],
-  )
+  );
 
   const handleToggleHijack = useCallback(() => {
-    if (!currentProxy) return
+    if (!currentProxy) return;
     persistProxy({
       ...currentProxy,
       hijackEnabled: !currentProxy.hijackEnabled,
-    })
-  }, [currentProxy, persistProxy])
+    });
+  }, [currentProxy, persistProxy]);
 
   const handleToggleMergeUpstream = useCallback(() => {
-    if (!currentProxy || !currentProxy.hijackEnabled) return
+    if (!currentProxy?.hijackEnabled) return;
     persistProxy({
       ...currentProxy,
       mergeUpstreamEnabled: !currentProxy.mergeUpstreamEnabled,
-    })
-  }, [currentProxy, persistProxy])
+    });
+  }, [currentProxy, persistProxy]);
 
   const handleToggleWebsocketDownstream = useCallback(() => {
-    if (!currentProxy) return
+    if (!currentProxy) return;
     persistProxy({
       ...currentProxy,
       websocketEnabled: !currentProxy.websocketEnabled,
-    })
-  }, [currentProxy, persistProxy])
+    });
+  }, [currentProxy, persistProxy]);
 
   const handleToggleWebsocketUpstream = useCallback(() => {
-    if (!currentProxy) return
+    if (!currentProxy) return;
     persistProxy({
       ...currentProxy,
       upstreamWebsocketDefaultEnabled: !currentProxy.upstreamWebsocketDefaultEnabled,
-    })
-  }, [currentProxy, persistProxy])
+    });
+  }, [currentProxy, persistProxy]);
 
   const handleToggleRequestBodyLogging = useCallback(() => {
-    if (!currentProxy) return
+    if (!currentProxy) return;
     persistProxy({
       ...currentProxy,
       requestBodyLoggingEnabled: !currentProxy.requestBodyLoggingEnabled,
-    })
-  }, [currentProxy, persistProxy])
+    });
+  }, [currentProxy, persistProxy]);
 
   const handleToggleResponseBodyLogging = useCallback(() => {
-    if (!currentProxy) return
+    if (!currentProxy) return;
     persistProxy({
       ...currentProxy,
       responseBodyLoggingEnabled: !currentProxy.responseBodyLoggingEnabled,
-    })
-  }, [currentProxy, persistProxy])
+    });
+  }, [currentProxy, persistProxy]);
 
   const handleToggleEncryptedOwnerRouting = useCallback(() => {
-    if (!currentProxy) return
+    if (!currentProxy) return;
     persistProxy({
       ...currentProxy,
       encryptedSessionOwnerRoutingEnabled: !currentProxy.encryptedSessionOwnerRoutingEnabled,
-    })
-  }, [currentProxy, persistProxy])
+    });
+  }, [currentProxy, persistProxy]);
 
   const handleTogglePresetModel = useCallback(
     (modelId: string) => {
-      if (!currentProxy) return
-      const enabled = new Set(currentProxy.enabledModels)
+      if (!currentProxy) return;
+      const enabled = new Set(currentProxy.enabledModels);
       if (enabled.has(modelId)) {
-        enabled.delete(modelId)
+        enabled.delete(modelId);
       } else {
-        enabled.add(modelId)
+        enabled.add(modelId);
       }
       persistProxy({
         ...currentProxy,
         enabledModels: currentProxy.models.filter((candidate) => enabled.has(candidate)),
-      })
+      });
     },
     [currentProxy, persistProxy],
-  )
+  );
 
   const handlePricingFieldChange = useCallback(
     (index: number, field: keyof PricingDraftEntry, value: string) => {
       setPricingDraft((current) => {
-        if (!current) return current
-        const nextEntries = [...current.entries]
+        if (!current) return current;
+        const nextEntries = [...current.entries];
         nextEntries[index] = {
           ...nextEntries[index],
           [field]: value,
-        }
+        };
         return {
           ...current,
           entries: nextEntries,
-        }
-      })
+        };
+      });
     },
     [],
-  )
+  );
 
   const handleCatalogVersionChange = useCallback((value: string) => {
     setPricingDraft((current) => {
-      if (!current) return current
+      if (!current) return current;
       return {
         ...current,
         catalogVersion: value,
-      }
-    })
-  }, [])
+      };
+    });
+  }, []);
 
   const handleAddPricingEntry = useCallback(() => {
     setPricingDraft((current) => {
-      if (!current) return current
+      if (!current) return current;
       return {
         ...current,
         entries: [
           ...current.entries,
           {
-            model: '',
-            inputPer1m: '0',
-            outputPer1m: '0',
-            cacheReadPer1m: '',
-            cacheWritePer1m: '',
-            reasoningPer1m: '',
-            source: 'custom',
+            draftId: createPricingDraftId(),
+            model: "",
+            inputPer1m: "0",
+            outputPer1m: "0",
+            cacheReadPer1m: "",
+            cacheWritePer1m: "",
+            reasoningPer1m: "",
+            source: "custom",
           },
         ],
-      }
-    })
-  }, [])
+      };
+    });
+  }, []);
 
   const handleRemovePricingEntry = useCallback((index: number) => {
     setPricingDraft((current) => {
-      if (!current) return current
+      if (!current) return current;
       return {
         ...current,
         entries: current.entries.filter((_, candidateIndex) => candidateIndex !== index),
-      }
-    })
-  }, [])
+      };
+    });
+  }, []);
 
   const handleForwardProxySave = useCallback(() => {
-    if (!currentForwardProxy) return
-    const parsedInterval = Number(forwardProxyIntervalSecs)
-    const intervalSecs = Number.isFinite(parsedInterval) ? Math.max(60, Math.floor(parsedInterval)) : 3600
+    if (!currentForwardProxy) return;
+    const parsedInterval = Number(forwardProxyIntervalSecs);
+    const intervalSecs = Number.isFinite(parsedInterval)
+      ? Math.max(60, Math.floor(parsedInterval))
+      : 3600;
     const nextForwardProxy: ForwardProxySettings = {
       ...currentForwardProxy,
       proxyUrls: forwardProxyUrls,
       subscriptionUrls: forwardProxySubscriptionUrls,
       subscriptionUpdateIntervalSecs: intervalSecs,
-    }
-    void saveForwardProxy(nextForwardProxy)
-    setForwardProxyDirty(false)
+    };
+    void saveForwardProxy(nextForwardProxy);
+    setForwardProxyDirty(false);
   }, [
     currentForwardProxy,
     forwardProxyIntervalSecs,
     forwardProxySubscriptionUrls,
     forwardProxyUrls,
     saveForwardProxy,
-  ])
+  ]);
 
   const handleRefreshForwardProxySubscriptions = useCallback(async () => {
-    if (isForwardProxyRefreshingSubscriptions || forwardProxyDirty) return
-    setIsForwardProxyRefreshingSubscriptions(true)
-    setForwardProxyRefreshMessage(null)
+    if (isForwardProxyRefreshingSubscriptions || forwardProxyDirty) return;
+    setIsForwardProxyRefreshingSubscriptions(true);
+    setForwardProxyRefreshMessage(null);
     try {
-      const result = await refreshForwardProxySubscriptions()
-      applyForwardProxyUrls(result.forwardProxy.proxyUrls)
-      applyForwardProxySubscriptionUrls(result.forwardProxy.subscriptionUrls)
-      setForwardProxyIntervalSecs(String(result.forwardProxy.subscriptionUpdateIntervalSecs))
-      setForwardProxyDirty(false)
-      await refreshSettings()
+      const result = await refreshForwardProxySubscriptions();
+      applyForwardProxyUrls(result.forwardProxy.proxyUrls);
+      applyForwardProxySubscriptionUrls(result.forwardProxy.subscriptionUrls);
+      setForwardProxyIntervalSecs(String(result.forwardProxy.subscriptionUpdateIntervalSecs));
+      setForwardProxyDirty(false);
+      await refreshSettings();
       setForwardProxyRefreshMessage(
-        t('settings.forwardProxy.refreshSubscriptionsSuccess', {
+        t("settings.forwardProxy.refreshSubscriptionsSuccess", {
           added: result.addedNodeCount,
           count: result.subscriptionCount,
         }),
-      )
+      );
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = err instanceof Error ? err.message : String(err);
       setForwardProxyRefreshMessage(
-        t('settings.forwardProxy.refreshSubscriptionsFailed', {
-          error: message || 'unknown',
+        t("settings.forwardProxy.refreshSubscriptionsFailed", {
+          error: message || "unknown",
         }),
-      )
+      );
     } finally {
-      setIsForwardProxyRefreshingSubscriptions(false)
+      setIsForwardProxyRefreshingSubscriptions(false);
     }
   }, [
     applyForwardProxySubscriptionUrls,
@@ -781,217 +821,234 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
     isForwardProxyRefreshingSubscriptions,
     refreshSettings,
     t,
-  ])
+  ]);
 
-  const handleForwardProxyLatencyStreamEvent = useCallback((rawEvent: MessageEvent) => {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(rawEvent.data) as unknown
-    } catch {
-      return
-    }
-    const payload = normalizeForwardProxyLatencyTestStreamEvent(parsed)
-    if (!payload) return
-    const latencyFailed = forwardProxyLatencyProgressFailed(payload.node)
-    setForwardProxyLatencyByKey((current) => ({
-      ...current,
-      [payload.node.key]: payload.node.done
-        ? !latencyFailed && payload.node.averageLatencyMs != null
-          ? { status: 'ready', progress: payload.node }
-          : { status: 'failed', progress: payload.node, message: payload.node.message || t('settings.forwardProxy.latency.timeout') }
-        : { status: 'testing', progress: payload.node },
-    }))
-    if (payload.node.done) {
-      forwardProxyLatencyPendingKeysRef.current.delete(payload.node.key)
-      if (forwardProxyLatencyPendingKeysRef.current.size === 0) {
-        forwardProxyLatencyEventSourceRef.current?.close()
-        forwardProxyLatencyEventSourceRef.current = null
+  const handleForwardProxyLatencyStreamEvent = useCallback(
+    (rawEvent: MessageEvent) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawEvent.data) as unknown;
+      } catch {
+        return;
       }
-    }
-  }, [t])
+      const payload = normalizeForwardProxyLatencyTestStreamEvent(parsed);
+      if (!payload) return;
+      const latencyFailed = forwardProxyLatencyProgressFailed(payload.node);
+      setForwardProxyLatencyByKey((current) => ({
+        ...current,
+        [payload.node.key]: payload.node.done
+          ? !latencyFailed && payload.node.averageLatencyMs != null
+            ? { status: "ready", progress: payload.node }
+            : {
+                status: "failed",
+                progress: payload.node,
+                message: payload.node.message || t("settings.forwardProxy.latency.timeout"),
+              }
+          : { status: "testing", progress: payload.node },
+      }));
+      if (payload.node.done) {
+        forwardProxyLatencyPendingKeysRef.current.delete(payload.node.key);
+        if (forwardProxyLatencyPendingKeysRef.current.size === 0) {
+          forwardProxyLatencyEventSourceRef.current?.close();
+          forwardProxyLatencyEventSourceRef.current = null;
+        }
+      }
+    },
+    [t],
+  );
 
   const startForwardProxyLatencyTest = useCallback(
     (proxyKeys: string[]) => {
-      const testableKeys = proxyKeys.filter((key) => key && !isDraftForwardProxyNodeKey(key))
-      if (testableKeys.length === 0) return
-      forwardProxyLatencyEventSourceRef.current?.close()
-      forwardProxyLatencyPendingKeysRef.current = new Set(testableKeys)
+      const testableKeys = proxyKeys.filter((key) => key && !isDraftForwardProxyNodeKey(key));
+      if (testableKeys.length === 0) return;
+      forwardProxyLatencyEventSourceRef.current?.close();
+      forwardProxyLatencyPendingKeysRef.current = new Set(testableKeys);
       setForwardProxyLatencyByKey((current) => {
-        const next = { ...current }
+        const next = { ...current };
         for (const key of testableKeys) {
-          next[key] = { status: 'testing' }
+          next[key] = { status: "testing" };
         }
-        return next
-      })
+        return next;
+      });
       const source =
         testableKeys.length === 1
           ? createForwardProxyNodeLatencyTestEventSource(testableKeys[0])
-          : createForwardProxyNodesLatencyTestEventSource(testableKeys)
-      forwardProxyLatencyEventSourceRef.current = source
-      source.addEventListener('progress', handleForwardProxyLatencyStreamEvent)
-      source.addEventListener('completed', handleForwardProxyLatencyStreamEvent)
+          : createForwardProxyNodesLatencyTestEventSource(testableKeys);
+      forwardProxyLatencyEventSourceRef.current = source;
+      source.addEventListener("progress", handleForwardProxyLatencyStreamEvent);
+      source.addEventListener("completed", handleForwardProxyLatencyStreamEvent);
       source.onerror = () => {
         if (forwardProxyLatencyPendingKeysRef.current.size === 0) {
-          source.close()
-          return
+          source.close();
+          return;
         }
-        const failedKeys = [...forwardProxyLatencyPendingKeysRef.current]
-        forwardProxyLatencyPendingKeysRef.current.clear()
-        source.close()
+        const failedKeys = [...forwardProxyLatencyPendingKeysRef.current];
+        forwardProxyLatencyPendingKeysRef.current.clear();
+        source.close();
         if (forwardProxyLatencyEventSourceRef.current === source) {
-          forwardProxyLatencyEventSourceRef.current = null
+          forwardProxyLatencyEventSourceRef.current = null;
         }
         setForwardProxyLatencyByKey((current) => {
-          const next = { ...current }
+          const next = { ...current };
           for (const key of failedKeys) {
-            const currentState = next[key]
-            if (currentState?.status === 'ready') continue
+            const currentState = next[key];
+            if (currentState?.status === "ready") continue;
             next[key] = {
-              status: 'failed',
-              progress: currentState?.status === 'testing' ? currentState.progress : undefined,
-              message: t('settings.forwardProxy.latency.streamFailed'),
-            }
+              status: "failed",
+              progress: currentState?.status === "testing" ? currentState.progress : undefined,
+              message: t("settings.forwardProxy.latency.streamFailed"),
+            };
           }
-          return next
-        })
-      }
+          return next;
+        });
+      };
     },
     [handleForwardProxyLatencyStreamEvent, t],
-  )
+  );
 
   const handleTestAllForwardProxyNodes = useCallback(() => {
-    startForwardProxyLatencyTest(forwardProxyTableNodes.map((node) => node.key))
-  }, [forwardProxyTableNodes, startForwardProxyLatencyTest])
+    startForwardProxyLatencyTest(forwardProxyTableNodes.map((node) => node.key));
+  }, [forwardProxyTableNodes, startForwardProxyLatencyTest]);
 
   const persistForwardProxyDraft = useCallback(
     (overrides?: { proxyUrls?: string[]; subscriptionUrls?: string[] }) => {
-      if (!currentForwardProxy) return
-      const parsedInterval = Number(forwardProxyIntervalSecs)
-      const intervalSecs = Number.isFinite(parsedInterval) ? Math.max(60, Math.floor(parsedInterval)) : 3600
+      if (!currentForwardProxy) return;
+      const parsedInterval = Number(forwardProxyIntervalSecs);
+      const intervalSecs = Number.isFinite(parsedInterval)
+        ? Math.max(60, Math.floor(parsedInterval))
+        : 3600;
       const nextForwardProxy: ForwardProxySettings = {
         ...currentForwardProxy,
         proxyUrls: overrides?.proxyUrls ?? forwardProxyUrlsRef.current,
         subscriptionUrls: overrides?.subscriptionUrls ?? forwardProxySubscriptionUrlsRef.current,
         subscriptionUpdateIntervalSecs: intervalSecs,
-      }
-      void saveForwardProxy(nextForwardProxy)
-      setForwardProxyDirty(false)
+      };
+      void saveForwardProxy(nextForwardProxy);
+      setForwardProxyDirty(false);
     },
     [currentForwardProxy, forwardProxyIntervalSecs, saveForwardProxy],
-  )
+  );
 
   const handleRemoveForwardProxyUrl = useCallback(
     (targetUrl: string) => {
-      const currentProxyUrls = forwardProxyUrlsRef.current
-      const nextProxyUrls = currentProxyUrls.filter((item) => item !== targetUrl)
-      if (nextProxyUrls.length === currentProxyUrls.length) return
-      applyForwardProxyUrls(nextProxyUrls)
-      persistForwardProxyDraft({ proxyUrls: nextProxyUrls })
+      const currentProxyUrls = forwardProxyUrlsRef.current;
+      const nextProxyUrls = currentProxyUrls.filter((item) => item !== targetUrl);
+      if (nextProxyUrls.length === currentProxyUrls.length) return;
+      applyForwardProxyUrls(nextProxyUrls);
+      persistForwardProxyDraft({ proxyUrls: nextProxyUrls });
     },
     [applyForwardProxyUrls, persistForwardProxyDraft],
-  )
+  );
 
   const handleRemoveForwardProxySubscriptionUrl = useCallback(
     (targetUrl: string) => {
-      const currentSubscriptionUrls = forwardProxySubscriptionUrlsRef.current
-      const nextSubscriptionUrls = currentSubscriptionUrls.filter((item) => item !== targetUrl)
-      if (nextSubscriptionUrls.length === currentSubscriptionUrls.length) return
-      applyForwardProxySubscriptionUrls(nextSubscriptionUrls)
-      persistForwardProxyDraft({ subscriptionUrls: nextSubscriptionUrls })
+      const currentSubscriptionUrls = forwardProxySubscriptionUrlsRef.current;
+      const nextSubscriptionUrls = currentSubscriptionUrls.filter((item) => item !== targetUrl);
+      if (nextSubscriptionUrls.length === currentSubscriptionUrls.length) return;
+      applyForwardProxySubscriptionUrls(nextSubscriptionUrls);
+      persistForwardProxyDraft({ subscriptionUrls: nextSubscriptionUrls });
     },
     [applyForwardProxySubscriptionUrls, persistForwardProxyDraft],
-  )
+  );
 
   const openForwardProxyAddModal = useCallback((kind: ForwardProxyModalKind) => {
-    forwardProxyBatchValidationRunRef.current += 1
-    setForwardProxyModalKind(kind)
-    setForwardProxyModalStep(1)
-    setForwardProxyModalInput('')
-    setForwardProxyBatchResults([])
-    setForwardProxyBatchTooltipKey(null)
-    setForwardProxyValidation({ status: 'idle' })
-  }, [])
+    forwardProxyBatchValidationRunRef.current += 1;
+    setForwardProxyModalKind(kind);
+    setForwardProxyModalStep(1);
+    setForwardProxyModalInput("");
+    setForwardProxyBatchResults([]);
+    setForwardProxyBatchTooltipKey(null);
+    setForwardProxyValidation({ status: "idle" });
+  }, []);
 
   const closeForwardProxyAddModal = useCallback(() => {
-    forwardProxyBatchValidationRunRef.current += 1
-    setForwardProxyModalKind(null)
-    setForwardProxyModalStep(1)
-    setForwardProxyModalInput('')
-    setForwardProxyBatchResults([])
-    setForwardProxyBatchTooltipKey(null)
-    setForwardProxyValidation({ status: 'idle' })
-  }, [])
+    forwardProxyBatchValidationRunRef.current += 1;
+    setForwardProxyModalKind(null);
+    setForwardProxyModalStep(1);
+    setForwardProxyModalInput("");
+    setForwardProxyBatchResults([]);
+    setForwardProxyBatchTooltipKey(null);
+    setForwardProxyValidation({ status: "idle" });
+  }, []);
 
   const resolveForwardProxyValidationErrorMessage = useCallback(
     (error: unknown) => {
-      const rawMessage = error instanceof Error ? error.message : String(error ?? '')
+      const rawMessage = error instanceof Error ? error.message : String(error ?? "");
       if (isForwardProxyValidationTimeout(rawMessage)) {
-        return rawMessage
+        return rawMessage;
       }
       if (isForwardProxyBackendUnreachable(rawMessage)) {
-        return t('settings.forwardProxy.modal.backendUnreachable')
+        return t("settings.forwardProxy.modal.backendUnreachable");
       }
       if (isForwardProxyBackendServerError(rawMessage)) {
-        return t('settings.forwardProxy.modal.backendServerError')
+        return t("settings.forwardProxy.modal.backendServerError");
       }
-      const trimmed = rawMessage.trim()
-      return trimmed || t('settings.forwardProxy.modal.validateFailed')
+      const trimmed = rawMessage.trim();
+      return trimmed || t("settings.forwardProxy.modal.validateFailed");
     },
     [t],
-  )
+  );
 
   const syncForwardProxyBatchValidationState = useCallback(
     (results: ForwardProxyBatchValidationItem[]) => {
-      const availableCount = results.filter((item) => item.status === 'available').length
-      const unavailableCount = results.filter((item) => item.status === 'unavailable').length
-      const validatingCount = results.length - availableCount - unavailableCount
+      const availableCount = results.filter((item) => item.status === "available").length;
+      const unavailableCount = results.filter((item) => item.status === "unavailable").length;
+      const validatingCount = results.length - availableCount - unavailableCount;
       if (validatingCount > 0) {
         setForwardProxyValidation({
-          status: 'validating',
-          message: t('settings.forwardProxy.modal.batchValidateProgress', {
+          status: "validating",
+          message: t("settings.forwardProxy.modal.batchValidateProgress", {
             available: availableCount,
             unavailable: unavailableCount,
             validating: validatingCount,
           }),
-        })
-        return
+        });
+        return;
       }
       setForwardProxyValidation({
-        status: 'passed',
-        message: t('settings.forwardProxy.modal.batchValidateSummary', {
+        status: "passed",
+        message: t("settings.forwardProxy.modal.batchValidateSummary", {
           available: availableCount,
           unavailable: unavailableCount,
         }),
         normalizedValues: results
-          .filter((item) => item.status === 'available')
+          .filter((item) => item.status === "available")
           .map((item) => item.normalizedValue),
         discoveredNodes: availableCount,
-      })
+      });
     },
     [t],
-  )
+  );
 
   const runForwardProxyBatchValidationRoundTask = useCallback(
-    async (params: { validationRunId: number; nodeKey: string; rawValue: string; round: number }) => {
-      const { validationRunId, nodeKey, rawValue, round } = params
-      const unknownNodeName = t('settings.forwardProxy.modal.unknownNode')
-      const unknownProtocolName = t('settings.forwardProxy.modal.unknownProtocol')
+    async (params: {
+      validationRunId: number;
+      nodeKey: string;
+      rawValue: string;
+      round: number;
+    }) => {
+      const { validationRunId, nodeKey, rawValue, round } = params;
+      const unknownNodeName = t("settings.forwardProxy.modal.unknownNode");
+      const unknownProtocolName = t("settings.forwardProxy.modal.unknownProtocol");
       if (forwardProxyBatchValidationRunRef.current !== validationRunId) {
-        return
+        return;
       }
 
-      let roundResult: ForwardProxyBatchRoundResult
-      let normalizedValueFromResult: string | null = null
+      let roundResult: ForwardProxyBatchRoundResult;
+      let normalizedValueFromResult: string | null = null;
       try {
         const result = await validateForwardProxyCandidate({
-          kind: 'proxyUrl',
+          kind: "proxyUrl",
           value: rawValue,
-        })
+        });
         const message =
-          result.message || (result.ok ? t('settings.forwardProxy.modal.validateSuccess') : t('settings.forwardProxy.modal.validateFailed'))
-        const normalizedCandidate = result.normalizedValue?.trim()
+          result.message ||
+          (result.ok
+            ? t("settings.forwardProxy.modal.validateSuccess")
+            : t("settings.forwardProxy.modal.validateFailed"));
+        const normalizedCandidate = result.normalizedValue?.trim();
         if (normalizedCandidate) {
-          normalizedValueFromResult = normalizedCandidate
+          normalizedValueFromResult = normalizedCandidate;
         }
         roundResult = {
           round,
@@ -999,37 +1056,38 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
           timedOut: !result.ok && isForwardProxyValidationTimeout(message),
           latencyMs: result.latencyMs,
           message,
-        }
+        };
       } catch (err) {
-        const message = resolveForwardProxyValidationErrorMessage(err)
+        const message = resolveForwardProxyValidationErrorMessage(err);
         roundResult = {
           round,
           ok: false,
           timedOut: isForwardProxyValidationTimeout(message),
-          message: message || t('settings.forwardProxy.modal.validateFailed'),
-        }
+          message: message || t("settings.forwardProxy.modal.validateFailed"),
+        };
       }
 
       if (forwardProxyBatchValidationRunRef.current !== validationRunId) {
-        return
+        return;
       }
 
       setForwardProxyBatchResults((current) => {
         const next = current.map((item) => {
-          if (item.key !== nodeKey) return item
-          const normalizedValue = normalizedValueFromResult ?? item.normalizedValue
+          if (item.key !== nodeKey) return item;
+          const normalizedValue = normalizedValueFromResult ?? item.normalizedValue;
 
-          const rounds = [...item.rounds.filter((entry) => entry.round !== round), roundResult].sort(
-            (lhs, rhs) => lhs.round - rhs.round,
-          )
-          const completedRounds = rounds.length
-          const successRounds = rounds.filter((entry) => entry.ok).length
-          const isCompleted = completedRounds >= FORWARD_PROXY_BATCH_VALIDATION_ROUNDS
+          const rounds = [
+            ...item.rounds.filter((entry) => entry.round !== round),
+            roundResult,
+          ].sort((lhs, rhs) => lhs.round - rhs.round);
+          const completedRounds = rounds.length;
+          const successRounds = rounds.filter((entry) => entry.ok).length;
+          const isCompleted = completedRounds >= FORWARD_PROXY_BATCH_VALIDATION_ROUNDS;
           const nextStatus: ForwardProxyBatchValidationStatus =
-            successRounds > 0 ? 'available' : isCompleted ? 'unavailable' : 'validating'
+            successRounds > 0 ? "available" : isCompleted ? "unavailable" : "validating";
 
-          const normalizedDisplayName = extractProxyDisplayName(normalizedValue)
-          const normalizedProtocolName = extractProxyProtocolName(normalizedValue)
+          const normalizedDisplayName = extractProxyDisplayName(normalizedValue);
+          const normalizedProtocolName = extractProxyProtocolName(normalizedValue);
 
           return {
             ...item,
@@ -1044,70 +1102,70 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
             totalRounds: FORWARD_PROXY_BATCH_VALIDATION_ROUNDS,
             successRounds,
             lastRound: rounds[rounds.length - 1],
-          }
-        })
-        syncForwardProxyBatchValidationState(next)
-        return next
-      })
+          };
+        });
+        syncForwardProxyBatchValidationState(next);
+        return next;
+      });
     },
     [resolveForwardProxyValidationErrorMessage, syncForwardProxyBatchValidationState, t],
-  )
+  );
 
   const handleValidateForwardProxyCandidate = useCallback(async () => {
-    if (!forwardProxyModalKind) return
-    const candidate = forwardProxyModalInput.trim()
+    if (!forwardProxyModalKind) return;
+    const candidate = forwardProxyModalInput.trim();
     if (!candidate) {
       setForwardProxyValidation({
-        status: 'failed',
-        message: t('settings.forwardProxy.modal.required'),
-      })
-      return
+        status: "failed",
+        message: t("settings.forwardProxy.modal.required"),
+      });
+      return;
     }
 
-    setForwardProxyValidation({ status: 'validating' })
-    if (forwardProxyModalKind === 'subscriptionUrl') {
+    setForwardProxyValidation({ status: "validating" });
+    if (forwardProxyModalKind === "subscriptionUrl") {
       try {
         const result = await validateForwardProxyCandidate({
-          kind: 'subscriptionUrl',
+          kind: "subscriptionUrl",
           value: candidate,
-        })
+        });
         if (!result.ok) {
           setForwardProxyValidation({
-            status: 'failed',
-            message: result.message || t('settings.forwardProxy.modal.validateFailed'),
-          })
-          return
+            status: "failed",
+            message: result.message || t("settings.forwardProxy.modal.validateFailed"),
+          });
+          return;
         }
         setForwardProxyValidation({
-          status: 'passed',
-          message: result.message || t('settings.forwardProxy.modal.validateSuccess'),
+          status: "passed",
+          message: result.message || t("settings.forwardProxy.modal.validateSuccess"),
           normalizedValues: [result.normalizedValue?.trim() || candidate],
           discoveredNodes: result.discoveredNodes,
           latencyMs: result.latencyMs,
-        })
+        });
       } catch (err) {
         setForwardProxyValidation({
-          status: 'failed',
+          status: "failed",
           message: resolveForwardProxyValidationErrorMessage(err),
-        })
+        });
       }
-      return
+      return;
     }
 
-    const lines = parseMultilineItems(forwardProxyModalInput)
+    const lines = parseMultilineItems(forwardProxyModalInput);
     if (lines.length === 0) {
       setForwardProxyValidation({
-        status: 'failed',
-        message: t('settings.forwardProxy.modal.required'),
-      })
-      return
+        status: "failed",
+        message: t("settings.forwardProxy.modal.required"),
+      });
+      return;
     }
-    const unknownNodeName = t('settings.forwardProxy.modal.unknownNode')
-    const unknownProtocolName = t('settings.forwardProxy.modal.unknownProtocol')
-    setForwardProxyModalStep(2)
-    const validationRunId = forwardProxyBatchValidationRunRef.current + 1
-    forwardProxyBatchValidationRunRef.current = validationRunId
-    setForwardProxyBatchTooltipKey(null)
+    const unknownNodeName = t("settings.forwardProxy.modal.unknownNode");
+    const unknownProtocolName = t("settings.forwardProxy.modal.unknownProtocol");
+    setForwardProxyModalStep(2);
+    const validationRunId = forwardProxyBatchValidationRunRef.current + 1;
+    forwardProxyBatchValidationRunRef.current = validationRunId;
+    setForwardProxyBatchTooltipKey(null);
 
     const initialResults = lines.map((rawLine, index) => ({
       key: `__batch__${index}`,
@@ -1116,39 +1174,42 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
       normalizedValue: rawLine,
       displayName: extractProxyDisplayName(rawLine) || unknownNodeName,
       protocolName: extractProxyProtocolName(rawLine) || unknownProtocolName,
-      status: 'validating' as const,
-      message: t('settings.forwardProxy.modal.rowValidating'),
+      status: "validating" as const,
+      message: t("settings.forwardProxy.modal.rowValidating"),
       rounds: [],
       completedRounds: 0,
       totalRounds: FORWARD_PROXY_BATCH_VALIDATION_ROUNDS,
       successRounds: 0,
-    }))
+    }));
 
-    const sortedInitialResults = sortBatchResults(initialResults)
-    setForwardProxyBatchResults(sortedInitialResults)
-    syncForwardProxyBatchValidationState(sortedInitialResults)
+    const sortedInitialResults = sortBatchResults(initialResults);
+    setForwardProxyBatchResults(sortedInitialResults);
+    syncForwardProxyBatchValidationState(sortedInitialResults);
 
-    const workerCount = Math.min(FORWARD_PROXY_BATCH_VALIDATION_CONCURRENCY, sortedInitialResults.length)
+    const workerCount = Math.min(
+      FORWARD_PROXY_BATCH_VALIDATION_CONCURRENCY,
+      sortedInitialResults.length,
+    );
     for (let round = 1; round <= FORWARD_PROXY_BATCH_VALIDATION_ROUNDS; round += 1) {
-      if (forwardProxyBatchValidationRunRef.current !== validationRunId) return
-      let nextNodeIndex = 0
+      if (forwardProxyBatchValidationRunRef.current !== validationRunId) return;
+      let nextNodeIndex = 0;
       await Promise.all(
         Array.from({ length: workerCount }, async () => {
           while (true) {
-            if (forwardProxyBatchValidationRunRef.current !== validationRunId) return
-            const currentNodeIndex = nextNodeIndex
-            nextNodeIndex += 1
-            if (currentNodeIndex >= sortedInitialResults.length) return
-            const currentItem = sortedInitialResults[currentNodeIndex]
+            if (forwardProxyBatchValidationRunRef.current !== validationRunId) return;
+            const currentNodeIndex = nextNodeIndex;
+            nextNodeIndex += 1;
+            if (currentNodeIndex >= sortedInitialResults.length) return;
+            const currentItem = sortedInitialResults[currentNodeIndex];
             await runForwardProxyBatchValidationRoundTask({
               validationRunId,
               nodeKey: currentItem.key,
               rawValue: currentItem.rawValue,
               round,
-            })
+            });
           }
         }),
-      )
+      );
     }
   }, [
     forwardProxyModalInput,
@@ -1157,44 +1218,44 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
     runForwardProxyBatchValidationRoundTask,
     syncForwardProxyBatchValidationState,
     t,
-  ])
+  ]);
 
   const handleConfirmAddForwardProxyCandidate = useCallback(() => {
-    if (forwardProxyValidation.status !== 'passed' || !forwardProxyModalKind) return
-    if (forwardProxyModalKind !== 'subscriptionUrl') return
-    if (forwardProxyValidation.normalizedValues.length === 0) return
+    if (forwardProxyValidation.status !== "passed" || !forwardProxyModalKind) return;
+    if (forwardProxyModalKind !== "subscriptionUrl") return;
+    if (forwardProxyValidation.normalizedValues.length === 0) return;
     const nextSubscriptionUrls = appendUniqueItem(
       forwardProxySubscriptionUrlsRef.current,
       forwardProxyValidation.normalizedValues[0],
-    )
-    applyForwardProxySubscriptionUrls(nextSubscriptionUrls)
-    persistForwardProxyDraft({ subscriptionUrls: nextSubscriptionUrls })
-    closeForwardProxyAddModal()
+    );
+    applyForwardProxySubscriptionUrls(nextSubscriptionUrls);
+    persistForwardProxyDraft({ subscriptionUrls: nextSubscriptionUrls });
+    closeForwardProxyAddModal();
   }, [
     applyForwardProxySubscriptionUrls,
     closeForwardProxyAddModal,
     forwardProxyModalKind,
     forwardProxyValidation,
     persistForwardProxyDraft,
-  ])
+  ]);
 
   const handleRetryBatchNode = useCallback(
     async (nodeKey: string) => {
-      if (forwardProxyModalKind !== 'proxyBatch') return
-      const target = forwardProxyBatchResults.find((item) => item.key === nodeKey)
-      if (!target) return
-      const validationRunId = forwardProxyBatchValidationRunRef.current + 1
-      forwardProxyBatchValidationRunRef.current = validationRunId
-      setForwardProxyBatchTooltipKey((current) => (current === nodeKey ? null : current))
+      if (forwardProxyModalKind !== "proxyBatch") return;
+      const target = forwardProxyBatchResults.find((item) => item.key === nodeKey);
+      if (!target) return;
+      const validationRunId = forwardProxyBatchValidationRunRef.current + 1;
+      forwardProxyBatchValidationRunRef.current = validationRunId;
+      setForwardProxyBatchTooltipKey((current) => (current === nodeKey ? null : current));
 
       setForwardProxyBatchResults((current) => {
         const next = current.map((item) =>
           item.key === nodeKey
             ? {
                 ...item,
-                status: 'validating' as const,
+                status: "validating" as const,
                 latencyMs: undefined,
-                message: t('settings.forwardProxy.modal.rowValidating'),
+                message: t("settings.forwardProxy.modal.rowValidating"),
                 rounds: [] as ForwardProxyBatchRoundResult[],
                 completedRounds: 0,
                 totalRounds: FORWARD_PROXY_BATCH_VALIDATION_ROUNDS,
@@ -1202,19 +1263,19 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                 lastRound: undefined,
               }
             : item,
-        )
-        syncForwardProxyBatchValidationState(next)
-        return next
-      })
+        );
+        syncForwardProxyBatchValidationState(next);
+        return next;
+      });
 
       for (let round = 1; round <= FORWARD_PROXY_BATCH_VALIDATION_ROUNDS; round += 1) {
-        if (forwardProxyBatchValidationRunRef.current !== validationRunId) return
+        if (forwardProxyBatchValidationRunRef.current !== validationRunId) return;
         await runForwardProxyBatchValidationRoundTask({
           validationRunId,
           nodeKey,
           rawValue: target.rawValue,
           round,
-        })
+        });
       }
     },
     [
@@ -1224,187 +1285,221 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
       syncForwardProxyBatchValidationState,
       t,
     ],
-  )
+  );
 
   const handleAddValidatedBatchNode = useCallback(
     (nodeKey: string) => {
-      if (forwardProxyModalKind !== 'proxyBatch') return
-      setForwardProxyBatchTooltipKey((current) => (current === nodeKey ? null : current))
+      if (forwardProxyModalKind !== "proxyBatch") return;
+      setForwardProxyBatchTooltipKey((current) => (current === nodeKey ? null : current));
       setForwardProxyBatchResults((current) => {
-        const target = current.find((item) => item.key === nodeKey)
-        if (!target || target.status !== 'available') return current
-        const nextProxyUrls = appendUniqueItem(forwardProxyUrlsRef.current, target.normalizedValue)
-        applyForwardProxyUrls(nextProxyUrls)
-        persistForwardProxyDraft({ proxyUrls: nextProxyUrls })
-        const next = current.filter((item) => item.key !== nodeKey)
+        const target = current.find((item) => item.key === nodeKey);
+        if (target?.status !== "available") return current;
+        const nextProxyUrls = appendUniqueItem(forwardProxyUrlsRef.current, target.normalizedValue);
+        applyForwardProxyUrls(nextProxyUrls);
+        persistForwardProxyDraft({ proxyUrls: nextProxyUrls });
+        const next = current.filter((item) => item.key !== nodeKey);
         if (next.length === 0) {
-          queueMicrotask(() => closeForwardProxyAddModal())
+          queueMicrotask(() => closeForwardProxyAddModal());
         }
-        return next
-      })
+        return next;
+      });
     },
-    [applyForwardProxyUrls, closeForwardProxyAddModal, forwardProxyModalKind, persistForwardProxyDraft],
-  )
+    [
+      applyForwardProxyUrls,
+      closeForwardProxyAddModal,
+      forwardProxyModalKind,
+      persistForwardProxyDraft,
+    ],
+  );
 
   const handleSubmitValidatedBatchNodes = useCallback(() => {
-    if (forwardProxyModalKind !== 'proxyBatch') return
-    setForwardProxyBatchTooltipKey(null)
+    if (forwardProxyModalKind !== "proxyBatch") return;
+    setForwardProxyBatchTooltipKey(null);
     setForwardProxyBatchResults((current) => {
-      const availableItems = current.filter((item) => item.status === 'available')
-      if (availableItems.length === 0) return current
+      const availableItems = current.filter((item) => item.status === "available");
+      if (availableItems.length === 0) return current;
       const nextProxyUrls = appendUniqueItems(
         forwardProxyUrlsRef.current,
         availableItems.map((item) => item.normalizedValue),
-      )
-      applyForwardProxyUrls(nextProxyUrls)
-      persistForwardProxyDraft({ proxyUrls: nextProxyUrls })
-      const next = current.filter((item) => item.status !== 'available')
+      );
+      applyForwardProxyUrls(nextProxyUrls);
+      persistForwardProxyDraft({ proxyUrls: nextProxyUrls });
+      const next = current.filter((item) => item.status !== "available");
       if (next.length === 0) {
-        queueMicrotask(() => closeForwardProxyAddModal())
+        queueMicrotask(() => closeForwardProxyAddModal());
       }
-      return next
-    })
-  }, [applyForwardProxyUrls, closeForwardProxyAddModal, forwardProxyModalKind, persistForwardProxyDraft])
+      return next;
+    });
+  }, [
+    applyForwardProxyUrls,
+    closeForwardProxyAddModal,
+    forwardProxyModalKind,
+    persistForwardProxyDraft,
+  ]);
 
   const forwardProxyModalTitle = forwardProxyModalKind
     ? t(
-        forwardProxyModalKind === 'proxyBatch'
-          ? 'settings.forwardProxy.modal.proxyBatchTitle'
-          : 'settings.forwardProxy.modal.subscriptionTitle',
+        forwardProxyModalKind === "proxyBatch"
+          ? "settings.forwardProxy.modal.proxyBatchTitle"
+          : "settings.forwardProxy.modal.subscriptionTitle",
       )
-    : ''
-  const forwardProxyModalIsBatch = forwardProxyModalKind === 'proxyBatch'
+    : "";
+  const forwardProxyModalIsBatch = forwardProxyModalKind === "proxyBatch";
   const forwardProxyModalInputLabel = forwardProxyModalKind
     ? t(
-        forwardProxyModalKind === 'proxyBatch'
-          ? 'settings.forwardProxy.modal.proxyBatchInputLabel'
-          : 'settings.forwardProxy.modal.subscriptionInputLabel',
+        forwardProxyModalKind === "proxyBatch"
+          ? "settings.forwardProxy.modal.proxyBatchInputLabel"
+          : "settings.forwardProxy.modal.subscriptionInputLabel",
       )
-    : ''
+    : "";
   const forwardProxyModalPlaceholder = forwardProxyModalKind
     ? t(
-        forwardProxyModalKind === 'proxyBatch'
-          ? 'settings.forwardProxy.modal.proxyBatchPlaceholder'
-          : 'settings.forwardProxy.modal.subscriptionPlaceholder',
+        forwardProxyModalKind === "proxyBatch"
+          ? "settings.forwardProxy.modal.proxyBatchPlaceholder"
+          : "settings.forwardProxy.modal.subscriptionPlaceholder",
       )
-    : ''
-  const forwardProxyBatchAvailableCount = forwardProxyBatchResults.filter((item) => item.status === 'available').length
-  const forwardProxyBatchUnavailableCount = forwardProxyBatchResults.filter((item) => item.status === 'unavailable').length
-  const forwardProxyBatchValidatingCount = forwardProxyBatchResults.length - forwardProxyBatchAvailableCount - forwardProxyBatchUnavailableCount
+    : "";
+  const forwardProxyBatchAvailableCount = forwardProxyBatchResults.filter(
+    (item) => item.status === "available",
+  ).length;
+  const forwardProxyBatchUnavailableCount = forwardProxyBatchResults.filter(
+    (item) => item.status === "unavailable",
+  ).length;
+  const forwardProxyBatchValidatingCount =
+    forwardProxyBatchResults.length -
+    forwardProxyBatchAvailableCount -
+    forwardProxyBatchUnavailableCount;
   const forwardProxyBatchHasFirstRoundForAll =
-    forwardProxyBatchResults.length > 0 && forwardProxyBatchResults.every((item) => item.completedRounds > 0)
+    forwardProxyBatchResults.length > 0 &&
+    forwardProxyBatchResults.every((item) => item.completedRounds > 0);
   const forwardProxyCanConfirmAdd =
     !forwardProxyModalIsBatch &&
-    forwardProxyValidation.status === 'passed' &&
+    forwardProxyValidation.status === "passed" &&
     forwardProxyValidation.normalizedValues.length > 0 &&
-    !isForwardProxySaving
+    !isForwardProxySaving;
   const forwardProxyCanSubmitBatch =
     forwardProxyModalIsBatch &&
     forwardProxyModalStep === 2 &&
     forwardProxyBatchHasFirstRoundForAll &&
     forwardProxyBatchAvailableCount > 0 &&
-    !isForwardProxySaving
+    !isForwardProxySaving;
   const formatForwardProxyLatencyTargetRows = (progress: ForwardProxyLatencyTestNodeProgress) => {
     const rows = [
-      { label: t('settings.forwardProxy.latency.target.egressIp'), result: progress.egressIp },
-      { label: t('settings.forwardProxy.latency.target.oauthUpstream'), result: progress.oauthUpstream },
-      { label: t('settings.forwardProxy.latency.target.codexResponses'), result: progress.codexResponses },
-    ]
+      { label: t("settings.forwardProxy.latency.target.egressIp"), result: progress.egressIp },
+      {
+        label: t("settings.forwardProxy.latency.target.oauthUpstream"),
+        result: progress.oauthUpstream,
+      },
+      {
+        label: t("settings.forwardProxy.latency.target.codexResponses"),
+        result: progress.codexResponses,
+      },
+    ];
     return rows
       .map(({ label, result }) => {
         const detailParts = [
           result.latencyMs == null ? null : formatManualLatency(result.latencyMs),
           result.httpStatus == null ? null : `HTTP ${result.httpStatus}`,
           result.ip ?? null,
-          result.ok ? null : result.error ?? null,
-        ].filter((part): part is string => Boolean(part))
-        return t(result.ok ? 'settings.forwardProxy.latency.targetOk' : 'settings.forwardProxy.latency.targetFailed', {
-          target: label,
-          detail: detailParts.length > 0 ? ` (${detailParts.join(', ')})` : '',
-        })
+          result.ok ? null : (result.error ?? null),
+        ].filter((part): part is string => Boolean(part));
+        return t(
+          result.ok
+            ? "settings.forwardProxy.latency.targetOk"
+            : "settings.forwardProxy.latency.targetFailed",
+          {
+            target: label,
+            detail: detailParts.length > 0 ? ` (${detailParts.join(", ")})` : "",
+          },
+        );
       })
-      .join('\n')
-  }
+      .join("\n");
+  };
   const renderForwardProxyLatencyButton = (node: ForwardProxyTableNode) => {
-    const state = forwardProxyLatencyByKey[node.key] ?? { status: 'idle' as const }
-    const disabled = isDraftForwardProxyNodeKey(node.key)
-    const progress = state.status === 'idle' ? undefined : state.progress
+    const state = forwardProxyLatencyByKey[node.key] ?? { status: "idle" as const };
+    const disabled = isDraftForwardProxyNodeKey(node.key);
+    const progress = state.status === "idle" ? undefined : state.progress;
     const label =
-      state.status === 'testing'
+      state.status === "testing"
         ? progress?.averageLatencyMs != null
           ? formatManualLatency(progress.averageLatencyMs)
           : progress
-            ? t('settings.forwardProxy.latency.progress', {
-              current: progress.completedRounds,
-              total: progress.totalRounds,
-            })
-            : t('settings.forwardProxy.latency.testing')
-        : state.status === 'ready'
+            ? t("settings.forwardProxy.latency.progress", {
+                current: progress.completedRounds,
+                total: progress.totalRounds,
+              })
+            : t("settings.forwardProxy.latency.testing")
+        : state.status === "ready"
           ? formatManualLatency(state.progress.averageLatencyMs)
-          : state.status === 'failed'
-            ? t('settings.forwardProxy.latency.empty')
-            : t('settings.forwardProxy.latency.test')
+          : state.status === "failed"
+            ? t("settings.forwardProxy.latency.empty")
+            : t("settings.forwardProxy.latency.test");
     const title =
-      state.status === 'ready'
-        ? t('settings.forwardProxy.latency.tooltipReady', {
+      state.status === "ready"
+        ? t("settings.forwardProxy.latency.tooltipReady", {
             latency: formatManualLatency(state.progress.averageLatencyMs),
             success: state.progress.successCount,
             attempts: state.progress.attemptCount,
             targets: formatForwardProxyLatencyTargetRows(state.progress),
           })
-        : state.status === 'failed'
-          ? t('settings.forwardProxy.latency.tooltipFailed', {
-            message: state.message,
-            targets: state.progress ? formatForwardProxyLatencyTargetRows(state.progress) : '',
-          })
-          : state.status === 'testing'
+        : state.status === "failed"
+          ? t("settings.forwardProxy.latency.tooltipFailed", {
+              message: state.message,
+              targets: state.progress ? formatForwardProxyLatencyTargetRows(state.progress) : "",
+            })
+          : state.status === "testing"
             ? progress
-              ? `${t('settings.forwardProxy.latency.tooltipTesting')}\n${formatForwardProxyLatencyTargetRows(progress)}`
-              : t('settings.forwardProxy.latency.tooltipTesting')
-            : t('settings.forwardProxy.latency.tooltipIdle')
+              ? `${t("settings.forwardProxy.latency.tooltipTesting")}\n${formatForwardProxyLatencyTargetRows(progress)}`
+              : t("settings.forwardProxy.latency.tooltipTesting")
+            : t("settings.forwardProxy.latency.tooltipIdle");
     const button = (
       <Button
         type="button"
         size="sm"
-        variant={state.status === 'ready' ? 'secondary' : 'ghost'}
+        variant={state.status === "ready" ? "secondary" : "ghost"}
         className={cn(
-          'h-7 min-w-[4.5rem] rounded-full px-2.5 font-mono text-[11px] tabular-nums',
-          state.status === 'ready' ? 'border border-success/35 bg-success/12 text-success' : '',
-          state.status === 'failed' ? 'border border-error/35 bg-error/10 text-error' : '',
-          state.status === 'testing' ? 'border border-info/35 bg-info/10 text-info' : '',
+          "h-7 min-w-[4.5rem] rounded-full px-2.5 font-mono text-[11px] tabular-nums",
+          state.status === "ready" ? "border border-success/35 bg-success/12 text-success" : "",
+          state.status === "failed" ? "border border-error/35 bg-error/10 text-error" : "",
+          state.status === "testing" ? "border border-info/35 bg-info/10 text-info" : "",
         )}
         disabled={disabled}
         title={title}
-        aria-label={t('settings.forwardProxy.latency.ariaLabel', { node: node.displayName })}
+        aria-label={t("settings.forwardProxy.latency.ariaLabel", { node: node.displayName })}
         onClick={() => startForwardProxyLatencyTest([node.key])}
       >
         {label}
       </Button>
-    )
-    if (!progress || state.status === 'idle') return button
+    );
+    if (!progress || state.status === "idle") return button;
 
     const summary =
-      state.status === 'failed'
+      state.status === "failed"
         ? state.message
-        : state.status === 'ready'
-          ? t('settings.forwardProxy.latency.tooltipReady', {
-            latency: formatManualLatency(progress.averageLatencyMs),
-            success: progress.successCount,
-            attempts: progress.attemptCount,
-            targets: '',
-          }).trim()
-          : t('settings.forwardProxy.latency.tooltipTesting')
+        : state.status === "ready"
+          ? t("settings.forwardProxy.latency.tooltipReady", {
+              latency: formatManualLatency(progress.averageLatencyMs),
+              success: progress.successCount,
+              attempts: progress.attemptCount,
+              targets: "",
+            }).trim()
+          : t("settings.forwardProxy.latency.tooltipTesting");
 
     return (
       <Tooltip
         side="left"
         contentClassName="max-w-[24rem]"
         triggerProps={{
-          'aria-label': title,
+          "aria-label": title,
         }}
         content={
           <div className="space-y-2">
-            <div className={cn('text-[11px] font-semibold', state.status === 'failed' ? 'text-error' : 'text-base-content')}>
+            <div
+              className={cn(
+                "text-[11px] font-semibold",
+                state.status === "failed" ? "text-error" : "text-base-content",
+              )}
+            >
               {summary}
             </div>
             <div className="whitespace-pre-line font-mono text-[11px] leading-5 text-base-content/78">
@@ -1415,34 +1510,36 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
       >
         {button}
       </Tooltip>
-    )
-  }
+    );
+  };
 
   if (isLoading) {
     return (
       <section className="mx-auto max-w-full space-y-4">
         <h1 className="text-2xl font-semibold">{t(pageTitleKey)}</h1>
-        <p className="text-sm text-base-content/70">{t('settings.loading')}</p>
+        <p className="text-sm text-base-content/70">{t("settings.loading")}</p>
       </section>
-    )
+    );
   }
 
   if (!settings || !currentProxy || !currentForwardProxy) {
     return (
       <section className="mx-auto max-w-full space-y-4">
         <h1 className="text-2xl font-semibold">{t(pageTitleKey)}</h1>
-        <p className="text-sm text-error">{t('settings.loadError', { error: error ?? 'unknown' })}</p>
+        <p className="text-sm text-error">
+          {t("settings.loadError", { error: error ?? "unknown" })}
+        </p>
       </section>
-    )
+    );
   }
 
   if (!pricingDraft) {
     return (
       <section className="mx-auto max-w-full space-y-4">
         <h1 className="text-2xl font-semibold">{t(pageTitleKey)}</h1>
-        <p className="text-sm text-base-content/70">{t('settings.loading')}</p>
+        <p className="text-sm text-base-content/70">{t("settings.loading")}</p>
       </section>
-    )
+    );
   }
 
   return (
@@ -1457,391 +1554,526 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
           <div className="space-y-6">
             <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
               <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
-                <CardTitle>{t('settings.proxy.title')}</CardTitle>
-                <CardDescription>{t('settings.proxy.description')}</CardDescription>
+                <CardTitle>{t("settings.proxy.title")}</CardTitle>
+                <CardDescription>{t("settings.proxy.description")}</CardDescription>
               </CardHeader>
 
-            <CardContent className="space-y-4 pt-4">
-              <div className="grid gap-4 xl:grid-cols-2">
-                <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-1">
-                      <div className="font-medium leading-snug">{t('settings.proxy.hijackLabel')}</div>
-                      <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.hijackHint')}</div>
-                    </div>
-                    <div className="pt-0.5">
-                      <Switch
-                        checked={currentProxy.hijackEnabled}
-                        disabled={isProxySaving}
-                        onCheckedChange={() => handleToggleHijack()}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-1">
-                      <div className="font-medium leading-snug">{t('settings.proxy.mergeLabel')}</div>
-                      <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.mergeHint')}</div>
-                      {!currentProxy.hijackEnabled && (
-                        <div className="mt-1 text-xs text-warning">{t('settings.proxy.mergeDisabledHint')}</div>
-                      )}
-                    </div>
-                    <div className="pt-0.5">
-                      <Switch
-                        checked={currentProxy.mergeUpstreamEnabled}
-                        disabled={isProxySaving || !currentProxy.hijackEnabled}
-                        onCheckedChange={() => handleToggleMergeUpstream()}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="space-y-1">
-                    <div className="font-medium leading-snug">{t('settings.proxy.encryptedOwnerRoutingTitle')}</div>
-                    <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.encryptedOwnerRoutingHint')}</div>
-                  </div>
-                  <Badge variant="secondary" className="shrink-0">
-                    {t('settings.autoSaved')}
-                  </Badge>
-                </div>
-
-                <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 space-y-1">
-                      <div className="font-medium leading-snug">{t('settings.proxy.encryptedOwnerRoutingLabel')}</div>
-                      <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.encryptedOwnerRoutingDescription')}</div>
-                      <div className="break-all font-mono text-[11px] text-base-content/55">
-                        OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end gap-2">
-                      <Switch
-                        checked={currentProxy.encryptedSessionOwnerRoutingEnabled}
-                        disabled={isProxySaving}
-                        aria-label={t('settings.proxy.encryptedOwnerRoutingLabel')}
-                        onCheckedChange={() => handleToggleEncryptedOwnerRouting()}
-                      />
-                      <Badge variant={currentProxy.encryptedSessionOwnerRoutingEnabled ? 'success' : 'secondary'}>
-                        {currentProxy.encryptedSessionOwnerRoutingEnabled
-                          ? t('settings.proxy.websocketEnabled')
-                          : t('settings.proxy.websocketDisabled')}
-                      </Badge>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="space-y-1">
-                    <div className="font-medium leading-snug">{t('settings.proxy.websocketRuntimeTitle')}</div>
-                    <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.websocketRuntimeHint')}</div>
-                  </div>
-                  <Badge variant="secondary" className="shrink-0">
-                    {t('settings.autoSaved')}
-                  </Badge>
-                </div>
-
-                <div className="grid gap-3 xl:grid-cols-2">
-                  <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 space-y-1">
-                        <div className="font-medium leading-snug">{t('settings.proxy.websocketDownstreamLabel')}</div>
-                        <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.websocketDownstreamHint')}</div>
-                        <div className="break-all font-mono text-[11px] text-base-content/55">OPENAI_PROXY_WEBSOCKET_ENABLED</div>
-                      </div>
-                      <div className="flex shrink-0 flex-col items-end gap-2">
-                        <Switch
-                          checked={currentProxy.websocketEnabled}
-                          disabled={isProxySaving}
-                          aria-label={t('settings.proxy.websocketDownstreamLabel')}
-                          onCheckedChange={() => handleToggleWebsocketDownstream()}
-                        />
-                        <Badge variant={currentProxy.websocketEnabled ? 'success' : 'secondary'}>
-                          {currentProxy.websocketEnabled ? t('settings.proxy.websocketEnabled') : t('settings.proxy.websocketDisabled')}
-                        </Badge>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 space-y-1">
-                        <div className="font-medium leading-snug">{t('settings.proxy.websocketUpstreamLabel')}</div>
-                        <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.websocketUpstreamHint')}</div>
-                        <div className="break-all font-mono text-[11px] text-base-content/55">OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED</div>
-                      </div>
-                      <div className="flex shrink-0 flex-col items-end gap-2">
-                        <Switch
-                          checked={currentProxy.upstreamWebsocketDefaultEnabled}
-                          disabled={isProxySaving}
-                          aria-label={t('settings.proxy.websocketUpstreamLabel')}
-                          onCheckedChange={() => handleToggleWebsocketUpstream()}
-                        />
-                        <Badge variant={currentProxy.upstreamWebsocketDefaultEnabled ? 'success' : 'secondary'}>
-                          {currentProxy.upstreamWebsocketDefaultEnabled
-                            ? t('settings.proxy.websocketEnabled')
-                            : t('settings.proxy.websocketDisabled')}
-                        </Badge>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="space-y-1">
-                    <div className="font-medium leading-snug">{t('settings.proxy.bodyLoggingTitle')}</div>
-                    <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.bodyLoggingHint')}</div>
-                  </div>
-                  <Badge variant="secondary" className="shrink-0">
-                    {t('settings.autoSaved')}
-                  </Badge>
-                </div>
-
-                <div className="grid gap-3 xl:grid-cols-2">
-                  <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 space-y-1">
-                        <div className="font-medium leading-snug">{t('settings.proxy.requestBodyLoggingLabel')}</div>
-                        <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.requestBodyLoggingHint')}</div>
-                      </div>
-                      <div className="flex shrink-0 flex-col items-end gap-2">
-                        <Switch
-                          checked={currentProxy.requestBodyLoggingEnabled}
-                          disabled={isProxySaving}
-                          aria-label={t('settings.proxy.requestBodyLoggingLabel')}
-                          onCheckedChange={() => handleToggleRequestBodyLogging()}
-                        />
-                        <Badge variant={currentProxy.requestBodyLoggingEnabled ? 'success' : 'secondary'}>
-                          {currentProxy.requestBodyLoggingEnabled
-                            ? t('settings.proxy.websocketEnabled')
-                            : t('settings.proxy.websocketDisabled')}
-                        </Badge>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 space-y-1">
-                        <div className="font-medium leading-snug">{t('settings.proxy.responseBodyLoggingLabel')}</div>
-                        <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.responseBodyLoggingHint')}</div>
-                      </div>
-                      <div className="flex shrink-0 flex-col items-end gap-2">
-                        <Switch
-                          checked={currentProxy.responseBodyLoggingEnabled}
-                          disabled={isProxySaving}
-                          aria-label={t('settings.proxy.responseBodyLoggingLabel')}
-                          onCheckedChange={() => handleToggleResponseBodyLogging()}
-                        />
-                        <Badge variant={currentProxy.responseBodyLoggingEnabled ? 'success' : 'secondary'}>
-                          {currentProxy.responseBodyLoggingEnabled
-                            ? t('settings.proxy.websocketEnabled')
-                            : t('settings.proxy.websocketDisabled')}
-                        </Badge>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <p className="text-xs leading-snug text-base-content/60">
-                  {t('settings.proxy.bodyLoggingRetentionHint')}
-                </p>
-              </div>
-
-              <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="font-medium">{t('settings.proxy.presetModels')}</div>
-                  <span className="text-xs text-base-content/70">
-                    {t('settings.proxy.enabledCount', {
-                      count: currentProxy.enabledModels.length,
-                      total: currentProxy.models.length,
-                    })}
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {currentProxy.models.map((modelId) => {
-                    const enabled = enabledPresetModelSet.has(modelId)
-                    return (
-                      <label
-                        key={modelId}
-                        className={cn(
-                          'flex min-h-12 items-center gap-3 rounded-lg border px-3.5 py-2.5',
-                          enabled ? 'border-primary/45 bg-primary/10' : 'border-base-300/85 bg-base-100/68',
-                          isProxySaving ? 'opacity-70' : 'hover:border-primary/40',
-                        )}
-                      >
-                        <span className="truncate pr-2 font-mono text-sm">{modelId}</span>
-                        <div className="ml-auto shrink-0">
-                          <Switch
-                            checked={enabled}
-                            disabled={isProxySaving}
-                            aria-label={modelId}
-                            onCheckedChange={() => handleTogglePresetModel(modelId)}
-                          />
+              <CardContent className="space-y-4 pt-4">
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-1">
+                        <div className="font-medium leading-snug">
+                          {t("settings.proxy.hijackLabel")}
                         </div>
-                      </label>
-                    )
-                  })}
-                </div>
-                {currentProxy.enabledModels.length === 0 && (
-                  <div className="mt-2 text-xs text-warning">{t('settings.proxy.noneEnabledHint')}</div>
-                )}
-              </div>
+                        <div className="text-sm leading-snug text-base-content/70">
+                          {t("settings.proxy.hijackHint")}
+                        </div>
+                      </div>
+                      <div className="pt-0.5">
+                        <Switch
+                          checked={currentProxy.hijackEnabled}
+                          disabled={isProxySaving}
+                          onCheckedChange={() => handleToggleHijack()}
+                        />
+                      </div>
+                    </div>
+                  </div>
 
-              <div className="text-xs text-base-content/70">{isProxySaving ? t('settings.saving') : t('settings.autoSaved')}</div>
-            </CardContent>
-          </Card>
-
-          <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
-            <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
-              <div className="space-y-1.5">
-                <CardTitle>{t('settings.pricing.title')}</CardTitle>
-                <div className="space-y-1">
-                  <CardDescription>{t('settings.pricing.description')}</CardDescription>
-                  <p className="text-xs text-base-content/65">{t('settings.pricing.compactNote')}</p>
-                </div>
-              </div>
-              <Button type="button" size="sm" className="h-9 gap-1.5 px-3.5" onClick={handleAddPricingEntry}>
-                <AppIcon name="plus" className="h-[18px] w-[18px]" aria-hidden />
-                {t('settings.pricing.add')}
-              </Button>
-            </CardHeader>
-
-            <CardContent className="space-y-5 pt-4">
-              <div className="space-y-2">
-                <label htmlFor="pricing-catalog-version" className="block text-sm font-medium text-base-content/75">
-                  {t('settings.pricing.catalogVersion')}
-                </label>
-                <Input
-                  id="pricing-catalog-version"
-                  type="text"
-                  className="max-w-md"
-                  value={pricingDraft.catalogVersion}
-                  onChange={(event) => handleCatalogVersionChange(event.target.value)}
-                  onBlur={() => triggerPricingSave(true)}
-                />
-              </div>
-
-              <div className="overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72">
-                <table className="w-full min-w-[56rem] table-fixed text-sm">
-                  <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
-                    <tr>
-                      <th className={cn('w-44', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.model')}</th>
-                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.input')}</th>
-                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.output')}</th>
-                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.cacheRead')}</th>
-                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.cacheWrite')}</th>
-                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.reasoning')}</th>
-                      <th className={cn('w-28 whitespace-nowrap', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.source')}</th>
-                      <th className={cn('w-24 whitespace-nowrap text-right', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.actions')}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-base-300/65">
-                    {pricingDraft.entries.map((entry, index) => (
-                      <tr
-                        key={index}
-                        className={cn(
-                          'transition-colors',
-                          index % 2 === 0 ? 'bg-base-100/38' : 'bg-base-200/22',
-                          'hover:bg-primary/6',
+                  <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-1">
+                        <div className="font-medium leading-snug">
+                          {t("settings.proxy.mergeLabel")}
+                        </div>
+                        <div className="text-sm leading-snug text-base-content/70">
+                          {t("settings.proxy.mergeHint")}
+                        </div>
+                        {!currentProxy.hijackEnabled && (
+                          <div className="mt-1 text-xs text-warning">
+                            {t("settings.proxy.mergeDisabledHint")}
+                          </div>
                         )}
-                      >
-                        <td className={pricingTableBodyCellClass}>
-                          <Input
-                            type="text"
-                            className="h-9 px-3"
-                            value={entry.model}
-                            onChange={(event) => handlePricingFieldChange(index, 'model', event.target.value)}
-                            onBlur={() => triggerPricingSave(true)}
-                          />
-                        </td>
-                        <td className={pricingTableBodyCellClass}>
-                          <Input
-                            type="number"
-                            step="any"
-                            className="h-9 px-3"
-                            value={entry.inputPer1m}
-                            onChange={(event) => handlePricingFieldChange(index, 'inputPer1m', event.target.value)}
-                            onBlur={() => triggerPricingSave(true)}
-                          />
-                        </td>
-                        <td className={pricingTableBodyCellClass}>
-                          <Input
-                            type="number"
-                            step="any"
-                            className="h-9 px-3"
-                            value={entry.outputPer1m}
-                            onChange={(event) => handlePricingFieldChange(index, 'outputPer1m', event.target.value)}
-                            onBlur={() => triggerPricingSave(true)}
-                          />
-                        </td>
-                        <td className={pricingTableBodyCellClass}>
-                          <Input
-                            type="number"
-                            step="any"
-                            className="h-9 px-3"
-                            value={entry.cacheReadPer1m}
-                            onChange={(event) => handlePricingFieldChange(index, 'cacheReadPer1m', event.target.value)}
-                            onBlur={() => triggerPricingSave(true)}
-                          />
-                        </td>
-                        <td className={pricingTableBodyCellClass}>
-                          <Input
-                            type="number"
-                            step="any"
-                            className="h-9 px-3"
-                            value={entry.cacheWritePer1m}
-                            onChange={(event) => handlePricingFieldChange(index, 'cacheWritePer1m', event.target.value)}
-                            onBlur={() => triggerPricingSave(true)}
-                          />
-                        </td>
-                        <td className={pricingTableBodyCellClass}>
-                          <Input
-                            type="number"
-                            step="any"
-                            className="h-9 px-3"
-                            value={entry.reasoningPer1m}
-                            onChange={(event) => handlePricingFieldChange(index, 'reasoningPer1m', event.target.value)}
-                            onBlur={() => triggerPricingSave(true)}
-                          />
-                        </td>
-                        <td className={cn(pricingTableBodyCellClass, 'whitespace-nowrap')}>
-                          <Badge variant={sourceBadgeVariant(entry.source)} className="inline-flex min-w-[5rem] justify-center">
-                            {entry.source}
-                          </Badge>
-                        </td>
-                        <td className={cn(pricingTableBodyCellClass, 'text-right whitespace-nowrap')}>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 px-2.5 text-error hover:bg-error/10"
-                            onClick={() => handleRemovePricingEntry(index)}
-                          >
-                            {t('settings.pricing.remove')}
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                      </div>
+                      <div className="pt-0.5">
+                        <Switch
+                          checked={currentProxy.mergeUpstreamEnabled}
+                          disabled={isProxySaving || !currentProxy.hijackEnabled}
+                          onCheckedChange={() => handleToggleMergeUpstream()}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
 
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <span className="text-base-content/70">
-                  {isPricingSaving ? t('settings.saving') : t('settings.autoSaved')}
-                </span>
-                {pricingErrorKey && <span className="text-error">{t(pricingErrorKey)}</span>}
-              </div>
-            </CardContent>
+                <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="font-medium leading-snug">
+                        {t("settings.proxy.encryptedOwnerRoutingTitle")}
+                      </div>
+                      <div className="text-sm leading-snug text-base-content/70">
+                        {t("settings.proxy.encryptedOwnerRoutingHint")}
+                      </div>
+                    </div>
+                    <Badge variant="secondary" className="shrink-0">
+                      {t("settings.autoSaved")}
+                    </Badge>
+                  </div>
+
+                  <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <div className="font-medium leading-snug">
+                          {t("settings.proxy.encryptedOwnerRoutingLabel")}
+                        </div>
+                        <div className="text-sm leading-snug text-base-content/70">
+                          {t("settings.proxy.encryptedOwnerRoutingDescription")}
+                        </div>
+                        <div className="break-all font-mono text-[11px] text-base-content/55">
+                          OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-2">
+                        <Switch
+                          checked={currentProxy.encryptedSessionOwnerRoutingEnabled}
+                          disabled={isProxySaving}
+                          aria-label={t("settings.proxy.encryptedOwnerRoutingLabel")}
+                          onCheckedChange={() => handleToggleEncryptedOwnerRouting()}
+                        />
+                        <Badge
+                          variant={
+                            currentProxy.encryptedSessionOwnerRoutingEnabled
+                              ? "success"
+                              : "secondary"
+                          }
+                        >
+                          {currentProxy.encryptedSessionOwnerRoutingEnabled
+                            ? t("settings.proxy.websocketEnabled")
+                            : t("settings.proxy.websocketDisabled")}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="font-medium leading-snug">
+                        {t("settings.proxy.websocketRuntimeTitle")}
+                      </div>
+                      <div className="text-sm leading-snug text-base-content/70">
+                        {t("settings.proxy.websocketRuntimeHint")}
+                      </div>
+                    </div>
+                    <Badge variant="secondary" className="shrink-0">
+                      {t("settings.autoSaved")}
+                    </Badge>
+                  </div>
+
+                  <div className="grid gap-3 xl:grid-cols-2">
+                    <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                          <div className="font-medium leading-snug">
+                            {t("settings.proxy.websocketDownstreamLabel")}
+                          </div>
+                          <div className="text-sm leading-snug text-base-content/70">
+                            {t("settings.proxy.websocketDownstreamHint")}
+                          </div>
+                          <div className="break-all font-mono text-[11px] text-base-content/55">
+                            OPENAI_PROXY_WEBSOCKET_ENABLED
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-2">
+                          <Switch
+                            checked={currentProxy.websocketEnabled}
+                            disabled={isProxySaving}
+                            aria-label={t("settings.proxy.websocketDownstreamLabel")}
+                            onCheckedChange={() => handleToggleWebsocketDownstream()}
+                          />
+                          <Badge variant={currentProxy.websocketEnabled ? "success" : "secondary"}>
+                            {currentProxy.websocketEnabled
+                              ? t("settings.proxy.websocketEnabled")
+                              : t("settings.proxy.websocketDisabled")}
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                          <div className="font-medium leading-snug">
+                            {t("settings.proxy.websocketUpstreamLabel")}
+                          </div>
+                          <div className="text-sm leading-snug text-base-content/70">
+                            {t("settings.proxy.websocketUpstreamHint")}
+                          </div>
+                          <div className="break-all font-mono text-[11px] text-base-content/55">
+                            OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-2">
+                          <Switch
+                            checked={currentProxy.upstreamWebsocketDefaultEnabled}
+                            disabled={isProxySaving}
+                            aria-label={t("settings.proxy.websocketUpstreamLabel")}
+                            onCheckedChange={() => handleToggleWebsocketUpstream()}
+                          />
+                          <Badge
+                            variant={
+                              currentProxy.upstreamWebsocketDefaultEnabled ? "success" : "secondary"
+                            }
+                          >
+                            {currentProxy.upstreamWebsocketDefaultEnabled
+                              ? t("settings.proxy.websocketEnabled")
+                              : t("settings.proxy.websocketDisabled")}
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="font-medium leading-snug">
+                        {t("settings.proxy.bodyLoggingTitle")}
+                      </div>
+                      <div className="text-sm leading-snug text-base-content/70">
+                        {t("settings.proxy.bodyLoggingHint")}
+                      </div>
+                    </div>
+                    <Badge variant="secondary" className="shrink-0">
+                      {t("settings.autoSaved")}
+                    </Badge>
+                  </div>
+
+                  <div className="grid gap-3 xl:grid-cols-2">
+                    <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                          <div className="font-medium leading-snug">
+                            {t("settings.proxy.requestBodyLoggingLabel")}
+                          </div>
+                          <div className="text-sm leading-snug text-base-content/70">
+                            {t("settings.proxy.requestBodyLoggingHint")}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-2">
+                          <Switch
+                            checked={currentProxy.requestBodyLoggingEnabled}
+                            disabled={isProxySaving}
+                            aria-label={t("settings.proxy.requestBodyLoggingLabel")}
+                            onCheckedChange={() => handleToggleRequestBodyLogging()}
+                          />
+                          <Badge
+                            variant={
+                              currentProxy.requestBodyLoggingEnabled ? "success" : "secondary"
+                            }
+                          >
+                            {currentProxy.requestBodyLoggingEnabled
+                              ? t("settings.proxy.websocketEnabled")
+                              : t("settings.proxy.websocketDisabled")}
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                          <div className="font-medium leading-snug">
+                            {t("settings.proxy.responseBodyLoggingLabel")}
+                          </div>
+                          <div className="text-sm leading-snug text-base-content/70">
+                            {t("settings.proxy.responseBodyLoggingHint")}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-2">
+                          <Switch
+                            checked={currentProxy.responseBodyLoggingEnabled}
+                            disabled={isProxySaving}
+                            aria-label={t("settings.proxy.responseBodyLoggingLabel")}
+                            onCheckedChange={() => handleToggleResponseBodyLogging()}
+                          />
+                          <Badge
+                            variant={
+                              currentProxy.responseBodyLoggingEnabled ? "success" : "secondary"
+                            }
+                          >
+                            {currentProxy.responseBodyLoggingEnabled
+                              ? t("settings.proxy.websocketEnabled")
+                              : t("settings.proxy.websocketDisabled")}
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-xs leading-snug text-base-content/60">
+                    {t("settings.proxy.bodyLoggingRetentionHint")}
+                  </p>
+                </div>
+
+                <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-medium">{t("settings.proxy.presetModels")}</div>
+                    <span className="text-xs text-base-content/70">
+                      {t("settings.proxy.enabledCount", {
+                        count: currentProxy.enabledModels.length,
+                        total: currentProxy.models.length,
+                      })}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {currentProxy.models.map((modelId) => {
+                      const enabled = enabledPresetModelSet.has(modelId);
+                      return (
+                        <label
+                          key={modelId}
+                          className={cn(
+                            "flex min-h-12 items-center gap-3 rounded-lg border px-3.5 py-2.5",
+                            enabled
+                              ? "border-primary/45 bg-primary/10"
+                              : "border-base-300/85 bg-base-100/68",
+                            isProxySaving ? "opacity-70" : "hover:border-primary/40",
+                          )}
+                        >
+                          <span className="truncate pr-2 font-mono text-sm">{modelId}</span>
+                          <div className="ml-auto shrink-0">
+                            <Switch
+                              checked={enabled}
+                              disabled={isProxySaving}
+                              aria-label={modelId}
+                              onCheckedChange={() => handleTogglePresetModel(modelId)}
+                            />
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {currentProxy.enabledModels.length === 0 && (
+                    <div className="mt-2 text-xs text-warning">
+                      {t("settings.proxy.noneEnabledHint")}
+                    </div>
+                  )}
+                </div>
+
+                <div className="text-xs text-base-content/70">
+                  {isProxySaving ? t("settings.saving") : t("settings.autoSaved")}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+              <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
+                <div className="space-y-1.5">
+                  <CardTitle>{t("settings.pricing.title")}</CardTitle>
+                  <div className="space-y-1">
+                    <CardDescription>{t("settings.pricing.description")}</CardDescription>
+                    <p className="text-xs text-base-content/65">
+                      {t("settings.pricing.compactNote")}
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-9 gap-1.5 px-3.5"
+                  onClick={handleAddPricingEntry}
+                >
+                  <AppIcon name="plus" className="h-[18px] w-[18px]" aria-hidden />
+                  {t("settings.pricing.add")}
+                </Button>
+              </CardHeader>
+
+              <CardContent className="space-y-5 pt-4">
+                <div className="space-y-2">
+                  <label
+                    htmlFor="pricing-catalog-version"
+                    className="block text-sm font-medium text-base-content/75"
+                  >
+                    {t("settings.pricing.catalogVersion")}
+                  </label>
+                  <Input
+                    id="pricing-catalog-version"
+                    type="text"
+                    className="max-w-md"
+                    value={pricingDraft.catalogVersion}
+                    onChange={(event) => handleCatalogVersionChange(event.target.value)}
+                    onBlur={() => triggerPricingSave(true)}
+                  />
+                </div>
+
+                <div className="overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72">
+                  <table className="w-full min-w-[56rem] table-fixed text-sm">
+                    <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
+                      <tr>
+                        <th className={cn("w-44", pricingTableHeaderCellClass)}>
+                          {t("settings.pricing.columns.model")}
+                        </th>
+                        <th className={cn("w-24", pricingTableHeaderCellClass)}>
+                          {t("settings.pricing.columns.input")}
+                        </th>
+                        <th className={cn("w-24", pricingTableHeaderCellClass)}>
+                          {t("settings.pricing.columns.output")}
+                        </th>
+                        <th className={cn("w-24", pricingTableHeaderCellClass)}>
+                          {t("settings.pricing.columns.cacheRead")}
+                        </th>
+                        <th className={cn("w-24", pricingTableHeaderCellClass)}>
+                          {t("settings.pricing.columns.cacheWrite")}
+                        </th>
+                        <th className={cn("w-24", pricingTableHeaderCellClass)}>
+                          {t("settings.pricing.columns.reasoning")}
+                        </th>
+                        <th className={cn("w-28 whitespace-nowrap", pricingTableHeaderCellClass)}>
+                          {t("settings.pricing.columns.source")}
+                        </th>
+                        <th
+                          className={cn(
+                            "w-24 whitespace-nowrap text-right",
+                            pricingTableHeaderCellClass,
+                          )}
+                        >
+                          {t("settings.pricing.columns.actions")}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-base-300/65">
+                      {pricingDraft.entries.map((entry, index) => (
+                        <tr
+                          key={entry.draftId}
+                          className={cn(
+                            "transition-colors",
+                            index % 2 === 0 ? "bg-base-100/38" : "bg-base-200/22",
+                            "hover:bg-primary/6",
+                          )}
+                        >
+                          <td className={pricingTableBodyCellClass}>
+                            <Input
+                              type="text"
+                              className="h-9 px-3"
+                              value={entry.model}
+                              onChange={(event) =>
+                                handlePricingFieldChange(index, "model", event.target.value)
+                              }
+                              onBlur={() => triggerPricingSave(true)}
+                            />
+                          </td>
+                          <td className={pricingTableBodyCellClass}>
+                            <Input
+                              type="number"
+                              step="any"
+                              className="h-9 px-3"
+                              value={entry.inputPer1m}
+                              onChange={(event) =>
+                                handlePricingFieldChange(index, "inputPer1m", event.target.value)
+                              }
+                              onBlur={() => triggerPricingSave(true)}
+                            />
+                          </td>
+                          <td className={pricingTableBodyCellClass}>
+                            <Input
+                              type="number"
+                              step="any"
+                              className="h-9 px-3"
+                              value={entry.outputPer1m}
+                              onChange={(event) =>
+                                handlePricingFieldChange(index, "outputPer1m", event.target.value)
+                              }
+                              onBlur={() => triggerPricingSave(true)}
+                            />
+                          </td>
+                          <td className={pricingTableBodyCellClass}>
+                            <Input
+                              type="number"
+                              step="any"
+                              className="h-9 px-3"
+                              value={entry.cacheReadPer1m}
+                              onChange={(event) =>
+                                handlePricingFieldChange(
+                                  index,
+                                  "cacheReadPer1m",
+                                  event.target.value,
+                                )
+                              }
+                              onBlur={() => triggerPricingSave(true)}
+                            />
+                          </td>
+                          <td className={pricingTableBodyCellClass}>
+                            <Input
+                              type="number"
+                              step="any"
+                              className="h-9 px-3"
+                              value={entry.cacheWritePer1m}
+                              onChange={(event) =>
+                                handlePricingFieldChange(
+                                  index,
+                                  "cacheWritePer1m",
+                                  event.target.value,
+                                )
+                              }
+                              onBlur={() => triggerPricingSave(true)}
+                            />
+                          </td>
+                          <td className={pricingTableBodyCellClass}>
+                            <Input
+                              type="number"
+                              step="any"
+                              className="h-9 px-3"
+                              value={entry.reasoningPer1m}
+                              onChange={(event) =>
+                                handlePricingFieldChange(
+                                  index,
+                                  "reasoningPer1m",
+                                  event.target.value,
+                                )
+                              }
+                              onBlur={() => triggerPricingSave(true)}
+                            />
+                          </td>
+                          <td className={cn(pricingTableBodyCellClass, "whitespace-nowrap")}>
+                            <Badge
+                              variant={sourceBadgeVariant(entry.source)}
+                              className="inline-flex min-w-[5rem] justify-center"
+                            >
+                              {entry.source}
+                            </Badge>
+                          </td>
+                          <td
+                            className={cn(
+                              pricingTableBodyCellClass,
+                              "text-right whitespace-nowrap",
+                            )}
+                          >
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2.5 text-error hover:bg-error/10"
+                              onClick={() => handleRemovePricingEntry(index)}
+                            >
+                              {t("settings.pricing.remove")}
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="text-base-content/70">
+                    {isPricingSaving ? t("settings.saving") : t("settings.autoSaved")}
+                  </span>
+                  {pricingErrorKey && <span className="text-error">{t(pricingErrorKey)}</span>}
+                </div>
+              </CardContent>
             </Card>
           </div>
 
@@ -1852,632 +2084,811 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
       {showForwardProxySettings ? (
         <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
           <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
-            <CardTitle>{t('settings.forwardProxy.title')}</CardTitle>
-            <CardDescription>{t('settings.forwardProxy.description')}</CardDescription>
+            <CardTitle>{t("settings.forwardProxy.title")}</CardTitle>
+            <CardDescription>{t("settings.forwardProxy.description")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-5 pt-4">
-          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-base-300/80 bg-base-100/72 px-3.5 py-3">
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              disabled={isForwardProxySaving}
-              onClick={() => openForwardProxyAddModal('proxyBatch')}
-            >
-              <AppIcon name="plus" className="mr-1 h-4 w-4" aria-hidden />
-              {t('settings.forwardProxy.addProxyBatch')}
-            </Button>
-            <span className="text-xs text-base-content/70">{t('settings.forwardProxy.proxyCount', { count: forwardProxyUrls.length })}</span>
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              disabled={isForwardProxySaving}
-              onClick={() => openForwardProxyAddModal('subscriptionUrl')}
-            >
-              <AppIcon name="plus" className="mr-1 h-4 w-4" aria-hidden />
-              {t('settings.forwardProxy.addSubscription')}
-            </Button>
-            <span className="text-xs text-base-content/70">
-              {t('settings.forwardProxy.subscriptionCount', { count: forwardProxySubscriptionUrls.length })}
-            </span>
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              disabled={
-                isForwardProxySaving ||
-                isForwardProxyRefreshingSubscriptions ||
-                forwardProxyDirty ||
-                forwardProxySubscriptionUrls.length === 0
-              }
-              onClick={() => void handleRefreshForwardProxySubscriptions()}
-            >
-              <AppIcon name="refresh" className="mr-1 h-4 w-4" aria-hidden />
-              {isForwardProxyRefreshingSubscriptions
-                ? t('settings.forwardProxy.refreshingSubscriptions')
-                : t('settings.forwardProxy.refreshSubscriptions')}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              disabled={forwardProxyTableNodes.every((node) => isDraftForwardProxyNodeKey(node.key))}
-              onClick={handleTestAllForwardProxyNodes}
-            >
-              <AppIcon name="timer-refresh-outline" className="mr-1 h-4 w-4" aria-hidden />
-              {t('settings.forwardProxy.testAllLatency')}
-            </Button>
-            {forwardProxyRefreshMessage && (
-              <span className="text-xs text-base-content/70">{forwardProxyRefreshMessage}</span>
-            )}
-          </div>
-
-          <div className="grid gap-3 lg:grid-cols-2">
-            <section className="rounded-xl border border-base-300/80 bg-base-100/72 p-3">
-              <header className="mb-2 flex items-center justify-between gap-2">
-                <h4 className="text-sm font-medium text-base-content/85">{t('settings.forwardProxy.proxyUrls')}</h4>
-                <span className="text-xs text-base-content/65">{forwardProxyUrls.length}</span>
-              </header>
-              {forwardProxyUrls.length === 0 ? (
-                <p className="text-xs text-base-content/60">{t('settings.forwardProxy.listEmpty')}</p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {forwardProxyUrls.map((proxyUrl, index) => (
-                    <li
-                      key={`proxy-url-${proxyUrl}`}
-                      className="flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-100/75 px-2.5 py-1.5"
-                    >
-                      <div className="min-w-0 flex-1 text-sm font-medium">
-                        <div className="truncate whitespace-nowrap">
-                          {extractProxyDisplayName(proxyUrl) ??
-                            t('settings.forwardProxy.nodeItemFallback', { index: index + 1 })}
-                        </div>
-                      </div>
-                      <span className="rounded-md border border-base-300/70 bg-base-200/45 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-base-content/75">
-                        {extractProxyProtocolName(proxyUrl) ?? t('settings.forwardProxy.modal.unknownProtocol')}
-                      </span>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 w-7 p-0 text-error hover:bg-error/10 hover:text-error"
-                        onClick={() => handleRemoveForwardProxyUrl(proxyUrl)}
-                        title={t('settings.forwardProxy.remove')}
-                        aria-label={t('settings.forwardProxy.remove')}
-                      >
-                        <AppIcon name="trash-can-outline" className="h-4 w-4" aria-hidden />
-                        <span className="sr-only">{t('settings.forwardProxy.remove')}</span>
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
+            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-base-300/80 bg-base-100/72 px-3.5 py-3">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={isForwardProxySaving}
+                onClick={() => openForwardProxyAddModal("proxyBatch")}
+              >
+                <AppIcon name="plus" className="mr-1 h-4 w-4" aria-hidden />
+                {t("settings.forwardProxy.addProxyBatch")}
+              </Button>
+              <span className="text-xs text-base-content/70">
+                {t("settings.forwardProxy.proxyCount", { count: forwardProxyUrls.length })}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={isForwardProxySaving}
+                onClick={() => openForwardProxyAddModal("subscriptionUrl")}
+              >
+                <AppIcon name="plus" className="mr-1 h-4 w-4" aria-hidden />
+                {t("settings.forwardProxy.addSubscription")}
+              </Button>
+              <span className="text-xs text-base-content/70">
+                {t("settings.forwardProxy.subscriptionCount", {
+                  count: forwardProxySubscriptionUrls.length,
+                })}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={
+                  isForwardProxySaving ||
+                  isForwardProxyRefreshingSubscriptions ||
+                  forwardProxyDirty ||
+                  forwardProxySubscriptionUrls.length === 0
+                }
+                onClick={() => void handleRefreshForwardProxySubscriptions()}
+              >
+                <AppIcon name="refresh" className="mr-1 h-4 w-4" aria-hidden />
+                {isForwardProxyRefreshingSubscriptions
+                  ? t("settings.forwardProxy.refreshingSubscriptions")
+                  : t("settings.forwardProxy.refreshSubscriptions")}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={forwardProxyTableNodes.every((node) =>
+                  isDraftForwardProxyNodeKey(node.key),
+                )}
+                onClick={handleTestAllForwardProxyNodes}
+              >
+                <AppIcon name="timer-refresh-outline" className="mr-1 h-4 w-4" aria-hidden />
+                {t("settings.forwardProxy.testAllLatency")}
+              </Button>
+              {forwardProxyRefreshMessage && (
+                <span className="text-xs text-base-content/70">{forwardProxyRefreshMessage}</span>
               )}
-            </section>
-
-            <section className="rounded-xl border border-base-300/80 bg-base-100/72 p-3">
-              <header className="mb-2 flex items-center justify-between gap-2">
-                <h4 className="text-sm font-medium text-base-content/85">{t('settings.forwardProxy.subscriptionUrls')}</h4>
-                <span className="text-xs text-base-content/65">{forwardProxySubscriptionUrls.length}</span>
-              </header>
-              {forwardProxySubscriptionUrls.length === 0 ? (
-                <p className="text-xs text-base-content/60">{t('settings.forwardProxy.subscriptionListEmpty')}</p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {forwardProxySubscriptionUrls.map((subscriptionUrl, index) => (
-                    <li
-                      key={`subscription-url-${subscriptionUrl}`}
-                      className="flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-100/75 px-2.5 py-1.5"
-                    >
-                      <div className="min-w-0 flex-1 text-sm font-medium">
-                        <div className="truncate whitespace-nowrap">
-                          {t('settings.forwardProxy.subscriptionItemFallback', { index: index + 1 })}
-                        </div>
-                      </div>
-                      <span className="rounded-md border border-base-300/70 bg-base-200/45 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-base-content/75">
-                        {extractProxyProtocolName(subscriptionUrl) ?? t('settings.forwardProxy.modal.unknownProtocol')}
-                      </span>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 w-7 p-0 text-error hover:bg-error/10 hover:text-error"
-                        onClick={() => handleRemoveForwardProxySubscriptionUrl(subscriptionUrl)}
-                        title={t('settings.forwardProxy.remove')}
-                        aria-label={t('settings.forwardProxy.remove')}
-                      >
-                        <AppIcon name="trash-can-outline" className="h-4 w-4" aria-hidden />
-                        <span className="sr-only">{t('settings.forwardProxy.remove')}</span>
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          </div>
-
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="space-y-2">
-              <label htmlFor="forward-proxy-interval" className="block text-sm font-medium text-base-content/75">
-                {t('settings.forwardProxy.subscriptionInterval')}
-              </label>
-              <SelectField
-                id="forward-proxy-interval"
-                name="forwardProxyInterval"
-                className="mt-2"
-                triggerClassName="h-10 min-w-48 border-base-300/80 bg-base-100/70"
-                value={forwardProxyIntervalSecs}
-                options={forwardProxyIntervalOptions}
-                onValueChange={(value) => {
-                  setForwardProxyIntervalSecs(value)
-                  setForwardProxyDirty(true)
-                }}
-              />
             </div>
-            <Button
-              type="button"
-              className="h-10"
-              disabled={isForwardProxySaving || !forwardProxyDirty}
-              onClick={handleForwardProxySave}
-            >
-              {isForwardProxySaving ? t('settings.saving') : t('settings.forwardProxy.save')}
-            </Button>
-            <span className="text-xs text-base-content/70">{t('settings.forwardProxy.supportHint')}</span>
-          </div>
 
-          <div className="space-y-3 md:hidden">
-            {forwardProxyTableNodes.map((node) => {
-              const windows = forwardProxyWindowColumns.map((column) => ({
-                label: t(column.labelKey),
-                stats: column.selectStats(node.stats),
-              }))
-              return (
-                <article
-                  key={`mobile-${node.key}`}
-                  className={cn(
-                    'rounded-xl border border-base-300/80 bg-base-100/72 p-3',
-                    node.penalized ? 'bg-warning/8' : '',
-                  )}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate whitespace-nowrap text-sm font-medium" title={node.displayName}>
-                        {node.displayName}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
-                        {t('settings.forwardProxy.table.latency')}
-                      </div>
-                      <div className="mt-1">{renderForwardProxyLatencyButton(node)}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
-                        {t('settings.forwardProxy.table.weight')}
-                      </div>
-                      <div className="font-mono text-sm tabular-nums">
-                        {node.weight == null || Number.isNaN(node.weight) ? '—' : node.weight.toFixed(2)}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3" data-testid="settings-forward-proxy-mobile-windows">
-                    {windows.map((window) => (
-                      <div key={`${node.key}-${window.label}`} className="rounded-lg border border-base-300/70 bg-base-100/75 p-2">
-                        <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">{window.label}</div>
-                        <div className="mt-1 text-[11px] leading-tight">
-                          <div>{formatSuccessRate(window.stats.successRate)}</div>
-                          <div className="text-base-content/65">{formatLatency(window.stats.avgLatencyMs)}</div>
+            <div className="grid gap-3 lg:grid-cols-2">
+              <section className="rounded-xl border border-base-300/80 bg-base-100/72 p-3">
+                <header className="mb-2 flex items-center justify-between gap-2">
+                  <h4 className="text-sm font-medium text-base-content/85">
+                    {t("settings.forwardProxy.proxyUrls")}
+                  </h4>
+                  <span className="text-xs text-base-content/65">{forwardProxyUrls.length}</span>
+                </header>
+                {forwardProxyUrls.length === 0 ? (
+                  <p className="text-xs text-base-content/60">
+                    {t("settings.forwardProxy.listEmpty")}
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {forwardProxyUrls.map((proxyUrl, index) => (
+                      <li
+                        key={`proxy-url-${proxyUrl}`}
+                        className="flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-100/75 px-2.5 py-1.5"
+                      >
+                        <div className="min-w-0 flex-1 text-sm font-medium">
+                          <div className="truncate whitespace-nowrap">
+                            {extractProxyDisplayName(proxyUrl) ??
+                              t("settings.forwardProxy.nodeItemFallback", { index: index + 1 })}
+                          </div>
                         </div>
-                      </div>
+                        <span className="rounded-md border border-base-300/70 bg-base-200/45 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-base-content/75">
+                          {extractProxyProtocolName(proxyUrl) ??
+                            t("settings.forwardProxy.modal.unknownProtocol")}
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0 text-error hover:bg-error/10 hover:text-error"
+                          onClick={() => handleRemoveForwardProxyUrl(proxyUrl)}
+                          title={t("settings.forwardProxy.remove")}
+                          aria-label={t("settings.forwardProxy.remove")}
+                        >
+                          <AppIcon name="trash-can-outline" className="h-4 w-4" aria-hidden />
+                          <span className="sr-only">{t("settings.forwardProxy.remove")}</span>
+                        </Button>
+                      </li>
                     ))}
-                  </div>
-                </article>
-              )
-            })}
-            {forwardProxyTableNodes.length === 0 && (
-              <div className="rounded-xl border border-base-300/80 bg-base-100/72 px-4 py-6 text-center text-xs text-base-content/60">
-                {t('settings.forwardProxy.table.empty')}
-              </div>
-            )}
-          </div>
+                  </ul>
+                )}
+              </section>
 
-          <div className="hidden overflow-hidden rounded-xl border border-base-300/80 bg-base-100/72 md:block">
-            <table className="w-full table-fixed text-xs" data-testid="settings-forward-proxy-desktop-table">
-              <thead className="bg-base-200/70 uppercase tracking-[0.08em] text-base-content/65">
-                <tr>
-                  <th className={cn('box-border w-[24%]', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.proxy')}</th>
-                  <th className={cn('box-border w-[10%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.latency')}</th>
-                  {forwardProxyWindowColumns.map((column) => (
-                    <th key={column.labelKey} className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>
-                      {t(column.labelKey)}
-                    </th>
-                  ))}
-                  <th className={cn('box-border w-[11%] text-right', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.weight')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-base-300/65">
-                {forwardProxyTableNodes.map((node) => {
-                  const windows = forwardProxyWindowColumns.map((column) => column.selectStats(node.stats))
-                  return (
-                    <tr key={node.key} className={cn('transition-colors hover:bg-primary/6', node.penalized ? 'bg-warning/8' : '')}>
-                      <td className={cn(pricingTableBodyCellClass, 'box-border max-w-0 overflow-hidden px-3')}>
-                        <div className="block w-full truncate whitespace-nowrap text-sm font-medium" title={node.displayName}>
+              <section className="rounded-xl border border-base-300/80 bg-base-100/72 p-3">
+                <header className="mb-2 flex items-center justify-between gap-2">
+                  <h4 className="text-sm font-medium text-base-content/85">
+                    {t("settings.forwardProxy.subscriptionUrls")}
+                  </h4>
+                  <span className="text-xs text-base-content/65">
+                    {forwardProxySubscriptionUrls.length}
+                  </span>
+                </header>
+                {forwardProxySubscriptionUrls.length === 0 ? (
+                  <p className="text-xs text-base-content/60">
+                    {t("settings.forwardProxy.subscriptionListEmpty")}
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {forwardProxySubscriptionUrls.map((subscriptionUrl, index) => (
+                      <li
+                        key={`subscription-url-${subscriptionUrl}`}
+                        className="flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-100/75 px-2.5 py-1.5"
+                      >
+                        <div className="min-w-0 flex-1 text-sm font-medium">
+                          <div className="truncate whitespace-nowrap">
+                            {t("settings.forwardProxy.subscriptionItemFallback", {
+                              index: index + 1,
+                            })}
+                          </div>
+                        </div>
+                        <span className="rounded-md border border-base-300/70 bg-base-200/45 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-base-content/75">
+                          {extractProxyProtocolName(subscriptionUrl) ??
+                            t("settings.forwardProxy.modal.unknownProtocol")}
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0 text-error hover:bg-error/10 hover:text-error"
+                          onClick={() => handleRemoveForwardProxySubscriptionUrl(subscriptionUrl)}
+                          title={t("settings.forwardProxy.remove")}
+                          aria-label={t("settings.forwardProxy.remove")}
+                        >
+                          <AppIcon name="trash-can-outline" className="h-4 w-4" aria-hidden />
+                          <span className="sr-only">{t("settings.forwardProxy.remove")}</span>
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </div>
+
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-2">
+                <label
+                  htmlFor="forward-proxy-interval"
+                  className="block text-sm font-medium text-base-content/75"
+                >
+                  {t("settings.forwardProxy.subscriptionInterval")}
+                </label>
+                <SelectField
+                  id="forward-proxy-interval"
+                  name="forwardProxyInterval"
+                  className="mt-2"
+                  triggerClassName="h-10 min-w-48 border-base-300/80 bg-base-100/70"
+                  value={forwardProxyIntervalSecs}
+                  options={forwardProxyIntervalOptions}
+                  onValueChange={(value) => {
+                    setForwardProxyIntervalSecs(value);
+                    setForwardProxyDirty(true);
+                  }}
+                />
+              </div>
+              <Button
+                type="button"
+                className="h-10"
+                disabled={isForwardProxySaving || !forwardProxyDirty}
+                onClick={handleForwardProxySave}
+              >
+                {isForwardProxySaving ? t("settings.saving") : t("settings.forwardProxy.save")}
+              </Button>
+              <span className="text-xs text-base-content/70">
+                {t("settings.forwardProxy.supportHint")}
+              </span>
+            </div>
+
+            <div className="space-y-3 md:hidden">
+              {forwardProxyTableNodes.map((node) => {
+                const windows = forwardProxyWindowColumns.map((column) => ({
+                  label: t(column.labelKey),
+                  stats: column.selectStats(node.stats),
+                }));
+                return (
+                  <article
+                    key={`mobile-${node.key}`}
+                    className={cn(
+                      "rounded-xl border border-base-300/80 bg-base-100/72 p-3",
+                      node.penalized ? "bg-warning/8" : "",
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div
+                          className="truncate whitespace-nowrap text-sm font-medium"
+                          title={node.displayName}
+                        >
                           {node.displayName}
                         </div>
-                      </td>
-                      <td className={cn(pricingTableBodyCellClass, 'box-border px-2 text-center')}>
-                        {renderForwardProxyLatencyButton(node)}
-                      </td>
-                      {windows.map((window, index) => (
-                        <td key={`${node.key}-${index}`} className={cn(pricingTableBodyCellClass, 'box-border px-2 text-center')}>
-                          <div className="space-y-0.5 text-[11px] leading-tight">
-                            <div>{formatSuccessRate(window.successRate)}</div>
-                            <div className="text-base-content/65">{formatLatency(window.avgLatencyMs)}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                          {t("settings.forwardProxy.table.latency")}
+                        </div>
+                        <div className="mt-1">{renderForwardProxyLatencyButton(node)}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                          {t("settings.forwardProxy.table.weight")}
+                        </div>
+                        <div className="font-mono text-sm tabular-nums">
+                          {node.weight == null || Number.isNaN(node.weight)
+                            ? "—"
+                            : node.weight.toFixed(2)}
+                        </div>
+                      </div>
+                    </div>
+                    <div
+                      className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3"
+                      data-testid="settings-forward-proxy-mobile-windows"
+                    >
+                      {windows.map((window) => (
+                        <div
+                          key={`${node.key}-${window.label}`}
+                          className="rounded-lg border border-base-300/70 bg-base-100/75 p-2"
+                        >
+                          <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                            {window.label}
+                          </div>
+                          <div className="mt-1 text-[11px] leading-tight">
+                            <div>{formatSuccessRate(window.stats.successRate)}</div>
+                            <div className="text-base-content/65">
+                              {formatLatency(window.stats.avgLatencyMs)}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                );
+              })}
+              {forwardProxyTableNodes.length === 0 && (
+                <div className="rounded-xl border border-base-300/80 bg-base-100/72 px-4 py-6 text-center text-xs text-base-content/60">
+                  {t("settings.forwardProxy.table.empty")}
+                </div>
+              )}
+            </div>
+
+            <div className="hidden overflow-hidden rounded-xl border border-base-300/80 bg-base-100/72 md:block">
+              <table
+                className="w-full table-fixed text-xs"
+                data-testid="settings-forward-proxy-desktop-table"
+              >
+                <thead className="bg-base-200/70 uppercase tracking-[0.08em] text-base-content/65">
+                  <tr>
+                    <th className={cn("box-border w-[24%]", pricingTableHeaderCellClass)}>
+                      {t("settings.forwardProxy.table.proxy")}
+                    </th>
+                    <th
+                      className={cn("box-border w-[10%] text-center", pricingTableHeaderCellClass)}
+                    >
+                      {t("settings.forwardProxy.table.latency")}
+                    </th>
+                    {forwardProxyWindowColumns.map((column) => (
+                      <th
+                        key={column.labelKey}
+                        className={cn(
+                          "box-border w-[11%] text-center",
+                          pricingTableHeaderCellClass,
+                        )}
+                      >
+                        {t(column.labelKey)}
+                      </th>
+                    ))}
+                    <th
+                      className={cn("box-border w-[11%] text-right", pricingTableHeaderCellClass)}
+                    >
+                      {t("settings.forwardProxy.table.weight")}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-base-300/65">
+                  {forwardProxyTableNodes.map((node) => {
+                    const windows = forwardProxyWindowColumns.map((column) => ({
+                      key: column.labelKey,
+                      value: column.selectStats(node.stats),
+                    }));
+                    return (
+                      <tr
+                        key={node.key}
+                        className={cn(
+                          "transition-colors hover:bg-primary/6",
+                          node.penalized ? "bg-warning/8" : "",
+                        )}
+                      >
+                        <td
+                          className={cn(
+                            pricingTableBodyCellClass,
+                            "box-border max-w-0 overflow-hidden px-3",
+                          )}
+                        >
+                          <div
+                            className="block w-full truncate whitespace-nowrap text-sm font-medium"
+                            title={node.displayName}
+                          >
+                            {node.displayName}
                           </div>
                         </td>
-                      ))}
-                      <td className={cn(pricingTableBodyCellClass, 'box-border whitespace-nowrap px-3 text-right font-mono text-sm')}>
-                        {node.weight == null || Number.isNaN(node.weight) ? '—' : node.weight.toFixed(2)}
+                        <td
+                          className={cn(pricingTableBodyCellClass, "box-border px-2 text-center")}
+                        >
+                          {renderForwardProxyLatencyButton(node)}
+                        </td>
+                        {windows.map((window) => (
+                          <td
+                            key={`${node.key}-${window.key}`}
+                            className={cn(pricingTableBodyCellClass, "box-border px-2 text-center")}
+                          >
+                            <div className="space-y-0.5 text-[11px] leading-tight">
+                              <div>{formatSuccessRate(window.value.successRate)}</div>
+                              <div className="text-base-content/65">
+                                {formatLatency(window.value.avgLatencyMs)}
+                              </div>
+                            </div>
+                          </td>
+                        ))}
+                        <td
+                          className={cn(
+                            pricingTableBodyCellClass,
+                            "box-border whitespace-nowrap px-3 text-right font-mono text-sm",
+                          )}
+                        >
+                          {node.weight == null || Number.isNaN(node.weight)
+                            ? "—"
+                            : node.weight.toFixed(2)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {forwardProxyTableNodes.length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={8}
+                        className={cn(
+                          pricingTableBodyCellClass,
+                          "py-6 text-center text-base-content/60",
+                        )}
+                      >
+                        {t("settings.forwardProxy.table.empty")}
                       </td>
                     </tr>
-                  )
-                })}
-                {forwardProxyTableNodes.length === 0 && (
-                  <tr>
-                    <td colSpan={8} className={cn(pricingTableBodyCellClass, 'py-6 text-center text-base-content/60')}>
-                      {t('settings.forwardProxy.table.empty')}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {forwardProxyModalKind &&
-            typeof document !== 'undefined' &&
-            createPortal(
-              // Intentional body-root overlay: this page-level modal should escape local overlay hosts.
-              <div className="fixed inset-0 z-[80] flex items-center justify-center bg-base-content/45 p-4">
-              <div className="w-full max-w-2xl rounded-2xl border border-base-300/75 bg-base-100 shadow-xl">
-                <div className="space-y-1 border-b border-base-300/70 px-5 py-4">
-                  <div className="flex items-start gap-3">
-                    <div className="min-w-0 flex-1 space-y-1">
-                      <h3 className="text-lg font-semibold">{forwardProxyModalTitle}</h3>
-                      <p className="text-sm text-base-content/65">{t('settings.forwardProxy.modal.description')}</p>
-                    </div>
-                    {forwardProxyModalIsBatch && (
-                      <ol className="hidden shrink-0 items-center gap-1 rounded-lg border border-base-300/70 bg-base-200/35 px-2 py-1 sm:flex">
-                        {[1, 2].map((step) => {
-                          const isActive = forwardProxyModalStep === step
-                          const isCompleted = step === 1 && forwardProxyModalStep === 2
-                          const canJump = step === 1 || forwardProxyModalStep === 2
-                          return (
-                            <li key={step} className="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                className={cn(
-                                  'flex items-center gap-1.5 rounded-md px-1 py-0.5 transition',
-                                  canJump ? 'hover:bg-base-300/45' : 'cursor-default',
-                                )}
-                                disabled={!canJump}
-                                onClick={() => {
-                                  if (!canJump) return
-                                  setForwardProxyModalStep(step as 1 | 2)
-                                }}
-                              >
-                                <span
-                                  className={cn(
-                                    'inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold',
-                                    isActive
-                                      ? 'bg-primary text-primary-content'
-                                      : isCompleted
-                                        ? 'bg-success/85 text-success-content'
-                                        : 'bg-base-300/85 text-base-content/70',
-                                  )}
-                                >
-                                  {isCompleted ? '✓' : step}
-                                </span>
-                                <span className={cn('text-[11px] font-medium', isActive ? 'text-primary' : 'text-base-content/65')}>
-                                  {t(
-                                    step === 1
-                                      ? 'settings.forwardProxy.modal.step1Compact'
-                                      : 'settings.forwardProxy.modal.step2Compact',
-                                  )}
-                                </span>
-                              </button>
-                              {step === 1 && <span className="text-base-content/35">/</span>}
-                            </li>
-                          )
-                        })}
-                      </ol>
-                    )}
-                  </div>
-                  {forwardProxyModalIsBatch && (
-                    <ol className="mt-2 flex items-center gap-1 rounded-lg border border-base-300/70 bg-base-200/35 px-2 py-1 sm:hidden">
-                      {[1, 2].map((step) => {
-                        const isActive = forwardProxyModalStep === step
-                        const isCompleted = step === 1 && forwardProxyModalStep === 2
-                        const canJump = step === 1 || forwardProxyModalStep === 2
-                        return (
-                          <li key={`mobile-${step}`} className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              className={cn(
-                                'flex items-center gap-1.5 rounded-md px-1 py-0.5 transition',
-                                canJump ? 'hover:bg-base-300/45' : 'cursor-default',
-                              )}
-                              disabled={!canJump}
-                              onClick={() => {
-                                if (!canJump) return
-                                setForwardProxyModalStep(step as 1 | 2)
-                              }}
-                            >
-                              <span
-                                className={cn(
-                                  'inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold',
-                                  isActive
-                                    ? 'bg-primary text-primary-content'
-                                    : isCompleted
-                                      ? 'bg-success/85 text-success-content'
-                                      : 'bg-base-300/85 text-base-content/70',
-                                )}
-                              >
-                                {isCompleted ? '✓' : step}
-                              </span>
-                              <span className={cn('text-[11px] font-medium', isActive ? 'text-primary' : 'text-base-content/65')}>
-                                {t(
-                                  step === 1
-                                    ? 'settings.forwardProxy.modal.step1Compact'
-                                    : 'settings.forwardProxy.modal.step2Compact',
-                                )}
-                              </span>
-                            </button>
-                            {step === 1 && <span className="text-base-content/35">/</span>}
-                          </li>
-                        )
-                      })}
-                    </ol>
                   )}
-                </div>
-                <div className="space-y-4 px-5 py-4">
-                  {(!forwardProxyModalIsBatch || forwardProxyModalStep === 1) && (
-                    <div className="space-y-2">
-                      <label htmlFor="forward-proxy-modal-input" className="block text-sm font-medium text-base-content/75">
-                        {forwardProxyModalInputLabel}
-                      </label>
-                      {forwardProxyModalIsBatch ? (
-                        <textarea
-                          id="forward-proxy-modal-input"
-                          className="h-36 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm font-mono outline-none ring-0 transition focus:border-primary/50"
-                          value={forwardProxyModalInput}
-                          placeholder={forwardProxyModalPlaceholder}
-                          onChange={(event) => {
-                            forwardProxyBatchValidationRunRef.current += 1
-                            setForwardProxyModalInput(event.target.value)
-                            setForwardProxyBatchResults([])
-                            setForwardProxyBatchTooltipKey(null)
-                            setForwardProxyValidation({ status: 'idle' })
-                          }}
-                        />
-                      ) : (
-                        <Input
-                          id="forward-proxy-modal-input"
-                          value={forwardProxyModalInput}
-                          placeholder={forwardProxyModalPlaceholder}
-                          onChange={(event) => {
-                            setForwardProxyModalInput(event.target.value)
-                            setForwardProxyValidation({ status: 'idle' })
-                          }}
-                        />
-                      )}
-                    </div>
-                  )}
+                </tbody>
+              </table>
+            </div>
 
-                  {forwardProxyModalIsBatch && forwardProxyModalStep === 2 && (
-                    <div className="space-y-3">
-                      <Alert variant="info">
-                        {forwardProxyBatchValidatingCount > 0
-                          ? t('settings.forwardProxy.modal.batchValidateProgress', {
-                              available: forwardProxyBatchAvailableCount,
-                              unavailable: forwardProxyBatchUnavailableCount,
-                              validating: forwardProxyBatchValidatingCount,
-                            })
-                          : t('settings.forwardProxy.modal.batchValidateSummary', {
-                              available: forwardProxyBatchAvailableCount,
-                              unavailable: forwardProxyBatchUnavailableCount,
-                            })}
-                      </Alert>
-                      <div className="max-h-72 overflow-y-auto rounded-xl border border-base-300/75">
-                        <table className="w-full table-fixed text-xs">
-                          <thead className="bg-base-200/70 text-base-content/65">
-                            <tr>
-                              <th className="w-14 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultIndex')}</th>
-                              <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultName')}</th>
-                              <th className="w-24 px-3 py-2 text-right">{t('settings.forwardProxy.modal.resultProtocol')}</th>
-                              <th className="w-24 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultStatus')}</th>
-                              <th className="w-32 px-3 py-2 text-right">{t('settings.forwardProxy.modal.resultAction')}</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-base-300/65">
-                            {forwardProxyBatchResults.map((item, index) => (
-                              <tr key={item.key} className={item.status === 'unavailable' ? 'bg-warning/10' : ''}>
-                                <td className="px-3 py-2 text-base-content/60">{index + 1}</td>
-                                <td className="px-3 py-2">
-                                  <div
-                                    className="truncate text-sm font-medium text-base-content/85"
-                                    title={item.displayName}
+            {forwardProxyModalKind &&
+              typeof document !== "undefined" &&
+              createPortal(
+                // Intentional body-root overlay: this page-level modal should escape local overlay hosts.
+                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-base-content/45 p-4">
+                  <div className="w-full max-w-2xl rounded-2xl border border-base-300/75 bg-base-100 shadow-xl">
+                    <div className="space-y-1 border-b border-base-300/70 px-5 py-4">
+                      <div className="flex items-start gap-3">
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <h3 className="text-lg font-semibold">{forwardProxyModalTitle}</h3>
+                          <p className="text-sm text-base-content/65">
+                            {t("settings.forwardProxy.modal.description")}
+                          </p>
+                        </div>
+                        {forwardProxyModalIsBatch && (
+                          <ol className="hidden shrink-0 items-center gap-1 rounded-lg border border-base-300/70 bg-base-200/35 px-2 py-1 sm:flex">
+                            {[1, 2].map((step) => {
+                              const isActive = forwardProxyModalStep === step;
+                              const isCompleted = step === 1 && forwardProxyModalStep === 2;
+                              const canJump = step === 1 || forwardProxyModalStep === 2;
+                              return (
+                                <li key={step} className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    className={cn(
+                                      "flex items-center gap-1.5 rounded-md px-1 py-0.5 transition",
+                                      canJump ? "hover:bg-base-300/45" : "cursor-default",
+                                    )}
+                                    disabled={!canJump}
+                                    onClick={() => {
+                                      if (!canJump) return;
+                                      setForwardProxyModalStep(step as 1 | 2);
+                                    }}
                                   >
-                                    {item.displayName}
-                                  </div>
-                                </td>
-                                <td className="px-3 py-2 text-right font-mono text-base-content/70">
-                                  <span className="inline-block w-full truncate whitespace-nowrap text-sm">{item.protocolName}</span>
-                                </td>
-                                <td className="px-3 py-2">
-                                  {(() => {
-                                    const latestRound = item.lastRound
-                                    const latestRoundLabel =
-                                      latestRound == null
-                                        ? t('settings.forwardProxy.modal.statusValidating')
-                                        : latestRound.ok
-                                          ? formatLatency(latestRound.latencyMs)
-                                          : latestRound.timedOut
-                                            ? t('settings.forwardProxy.modal.statusTimeout')
-                                            : t('settings.forwardProxy.modal.statusUnavailable')
-                                    const latestRoundTone =
-                                      latestRound == null
-                                        ? 'text-info'
-                                        : latestRound.ok
-                                          ? 'text-success'
-                                          : latestRound.timedOut
-                                            ? 'text-warning'
-                                            : 'text-error'
-                                    return (
-                                      <div className="group relative inline-flex max-w-full flex-col items-start">
-                                        <button
-                                          type="button"
-                                          className="text-left"
-                                          disabled={item.rounds.length === 0}
-                                          onClick={() => {
-                                            if (item.rounds.length === 0) return
-                                            setForwardProxyBatchTooltipKey((current) => (current === item.key ? null : item.key))
-                                          }}
-                                        >
-                                          <span className={cn('inline-block whitespace-nowrap text-sm font-medium', latestRoundTone)}>
-                                            {latestRoundLabel}
-                                          </span>
-                                          <span className="block font-mono text-[10px] text-base-content/65">
-                                            {t('settings.forwardProxy.modal.roundProgress', {
-                                              current: item.completedRounds,
-                                              total: item.totalRounds,
-                                            })}
-                                          </span>
-                                        </button>
-                                        {item.rounds.length > 0 && (
-                                          <div
-                                            className={cn(
-                                              'pointer-events-none absolute left-0 top-full z-20 mt-1 hidden max-h-52 min-w-[16rem] max-w-[22rem] overflow-y-auto rounded-md border border-base-300/80 bg-base-100/95 p-2 text-left text-[11px] leading-snug text-base-content shadow-lg',
-                                              forwardProxyBatchTooltipKey === item.key ? 'block' : 'group-hover:block',
-                                            )}
-                                          >
-                                            <div className="space-y-1 font-mono">
-                                              {item.rounds.map((round) => (
-                                                <div key={`${item.key}-round-${round.round}`}>
-                                                  {round.ok
-                                                    ? t('settings.forwardProxy.modal.roundResultSuccess', {
-                                                        round: round.round,
-                                                        latency: formatLatency(round.latencyMs),
-                                                      })
-                                                    : round.timedOut
-                                                      ? t('settings.forwardProxy.modal.roundResultTimeout', { round: round.round })
-                                                      : t('settings.forwardProxy.modal.roundResultFailed', { round: round.round })}
-                                                </div>
-                                              ))}
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
-                                    )
-                                  })()}
-                                </td>
-                                <td className="px-3 py-2 text-right">
-                                  <div className="inline-flex items-center gap-1.5">
-                                    <Button
-                                      type="button"
-                                      size="icon"
-                                      variant="ghost"
-                                      className="h-8 w-8"
-                                      title={t('settings.forwardProxy.modal.retryNode')}
-                                      disabled={item.status === 'validating' || forwardProxyBatchValidatingCount > 0 || isForwardProxySaving}
-                                      onClick={() => void handleRetryBatchNode(item.key)}
+                                    <span
+                                      className={cn(
+                                        "inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold",
+                                        isActive
+                                          ? "bg-primary text-primary-content"
+                                          : isCompleted
+                                            ? "bg-success/85 text-success-content"
+                                            : "bg-base-300/85 text-base-content/70",
+                                      )}
                                     >
-                                      <AppIcon name="refresh" className="h-4 w-4" aria-hidden />
-                                      <span className="sr-only">{t('settings.forwardProxy.modal.retryNode')}</span>
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      size="icon"
-                                      className="h-8 w-8"
-                                      title={t('settings.forwardProxy.modal.addNode')}
-                                      disabled={item.status !== 'available' || isForwardProxySaving}
-                                      onClick={() => handleAddValidatedBatchNode(item.key)}
+                                      {isCompleted ? "✓" : step}
+                                    </span>
+                                    <span
+                                      className={cn(
+                                        "text-[11px] font-medium",
+                                        isActive ? "text-primary" : "text-base-content/65",
+                                      )}
                                     >
-                                      <AppIcon name="plus" className="h-4 w-4" aria-hidden />
-                                      <span className="sr-only">{t('settings.forwardProxy.modal.addNode')}</span>
-                                    </Button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
-
-                  {!forwardProxyModalIsBatch && forwardProxyValidation.status === 'validating' && (
-                    <Alert variant="info">{t('settings.forwardProxy.modal.validating')}</Alert>
-                  )}
-                  {forwardProxyValidation.status === 'failed' && (
-                    <Alert variant="error">{forwardProxyValidation.message}</Alert>
-                  )}
-                  {!forwardProxyModalIsBatch && forwardProxyValidation.status === 'passed' && (
-                    <Alert variant="success">
-                      <div className="space-y-1">
-                        <div>{forwardProxyValidation.message || t('settings.forwardProxy.modal.validateSuccess')}</div>
-                        {forwardProxyValidation.normalizedValues.slice(0, 2).map((value) => (
-                          <div key={value} className="font-mono text-xs opacity-80">
-                            {t('settings.forwardProxy.modal.normalizedValue', { value })}
-                          </div>
-                        ))}
-                        {(forwardProxyValidation.discoveredNodes != null || forwardProxyValidation.latencyMs != null) && (
-                          <div className="text-xs opacity-80">
-                            {t('settings.forwardProxy.modal.probeSummary', {
-                              nodes: forwardProxyValidation.discoveredNodes ?? 1,
-                              latency:
-                                forwardProxyValidation.latencyMs == null
-                                  ? '—'
-                                  : `${forwardProxyValidation.latencyMs.toFixed(0)} ms`,
+                                      {t(
+                                        step === 1
+                                          ? "settings.forwardProxy.modal.step1Compact"
+                                          : "settings.forwardProxy.modal.step2Compact",
+                                      )}
+                                    </span>
+                                  </button>
+                                  {step === 1 && <span className="text-base-content/35">/</span>}
+                                </li>
+                              );
                             })}
-                          </div>
+                          </ol>
                         )}
                       </div>
-                    </Alert>
-                  )}
-                </div>
-                <div className="flex items-center justify-end gap-2 border-t border-base-300/70 px-5 py-3">
-                  <Button type="button" variant="ghost" onClick={closeForwardProxyAddModal}>
-                    {t('settings.forwardProxy.modal.cancel')}
-                  </Button>
-                  {forwardProxyModalIsBatch && forwardProxyModalStep === 2 ? (
-                    <Button type="button" disabled={!forwardProxyCanSubmitBatch} onClick={handleSubmitValidatedBatchNodes}>
-                      {t('settings.forwardProxy.modal.submitWithCount', { count: forwardProxyBatchAvailableCount })}
-                    </Button>
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      disabled={forwardProxyValidation.status === 'validating'}
-                      onClick={() => void handleValidateForwardProxyCandidate()}
-                    >
-                      {t('settings.forwardProxy.modal.validate')}
-                    </Button>
-                  )}
-                  {!forwardProxyModalIsBatch && (
-                    <Button type="button" disabled={!forwardProxyCanConfirmAdd} onClick={handleConfirmAddForwardProxyCandidate}>
-                      {t('settings.forwardProxy.modal.add')}
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>,
-              document.body,
-            )}
+                      {forwardProxyModalIsBatch && (
+                        <ol className="mt-2 flex items-center gap-1 rounded-lg border border-base-300/70 bg-base-200/35 px-2 py-1 sm:hidden">
+                          {[1, 2].map((step) => {
+                            const isActive = forwardProxyModalStep === step;
+                            const isCompleted = step === 1 && forwardProxyModalStep === 2;
+                            const canJump = step === 1 || forwardProxyModalStep === 2;
+                            return (
+                              <li key={`mobile-${step}`} className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    "flex items-center gap-1.5 rounded-md px-1 py-0.5 transition",
+                                    canJump ? "hover:bg-base-300/45" : "cursor-default",
+                                  )}
+                                  disabled={!canJump}
+                                  onClick={() => {
+                                    if (!canJump) return;
+                                    setForwardProxyModalStep(step as 1 | 2);
+                                  }}
+                                >
+                                  <span
+                                    className={cn(
+                                      "inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold",
+                                      isActive
+                                        ? "bg-primary text-primary-content"
+                                        : isCompleted
+                                          ? "bg-success/85 text-success-content"
+                                          : "bg-base-300/85 text-base-content/70",
+                                    )}
+                                  >
+                                    {isCompleted ? "✓" : step}
+                                  </span>
+                                  <span
+                                    className={cn(
+                                      "text-[11px] font-medium",
+                                      isActive ? "text-primary" : "text-base-content/65",
+                                    )}
+                                  >
+                                    {t(
+                                      step === 1
+                                        ? "settings.forwardProxy.modal.step1Compact"
+                                        : "settings.forwardProxy.modal.step2Compact",
+                                    )}
+                                  </span>
+                                </button>
+                                {step === 1 && <span className="text-base-content/35">/</span>}
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      )}
+                    </div>
+                    <div className="space-y-4 px-5 py-4">
+                      {(!forwardProxyModalIsBatch || forwardProxyModalStep === 1) && (
+                        <div className="space-y-2">
+                          <label
+                            htmlFor="forward-proxy-modal-input"
+                            className="block text-sm font-medium text-base-content/75"
+                          >
+                            {forwardProxyModalInputLabel}
+                          </label>
+                          {forwardProxyModalIsBatch ? (
+                            <textarea
+                              id="forward-proxy-modal-input"
+                              className="h-36 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm font-mono outline-none ring-0 transition focus:border-primary/50"
+                              value={forwardProxyModalInput}
+                              placeholder={forwardProxyModalPlaceholder}
+                              onChange={(event) => {
+                                forwardProxyBatchValidationRunRef.current += 1;
+                                setForwardProxyModalInput(event.target.value);
+                                setForwardProxyBatchResults([]);
+                                setForwardProxyBatchTooltipKey(null);
+                                setForwardProxyValidation({ status: "idle" });
+                              }}
+                            />
+                          ) : (
+                            <Input
+                              id="forward-proxy-modal-input"
+                              value={forwardProxyModalInput}
+                              placeholder={forwardProxyModalPlaceholder}
+                              onChange={(event) => {
+                                setForwardProxyModalInput(event.target.value);
+                                setForwardProxyValidation({ status: "idle" });
+                              }}
+                            />
+                          )}
+                        </div>
+                      )}
+
+                      {forwardProxyModalIsBatch && forwardProxyModalStep === 2 && (
+                        <div className="space-y-3">
+                          <Alert variant="info">
+                            {forwardProxyBatchValidatingCount > 0
+                              ? t("settings.forwardProxy.modal.batchValidateProgress", {
+                                  available: forwardProxyBatchAvailableCount,
+                                  unavailable: forwardProxyBatchUnavailableCount,
+                                  validating: forwardProxyBatchValidatingCount,
+                                })
+                              : t("settings.forwardProxy.modal.batchValidateSummary", {
+                                  available: forwardProxyBatchAvailableCount,
+                                  unavailable: forwardProxyBatchUnavailableCount,
+                                })}
+                          </Alert>
+                          <div className="max-h-72 overflow-y-auto rounded-xl border border-base-300/75">
+                            <table className="w-full table-fixed text-xs">
+                              <thead className="bg-base-200/70 text-base-content/65">
+                                <tr>
+                                  <th className="w-14 px-3 py-2 text-left">
+                                    {t("settings.forwardProxy.modal.resultIndex")}
+                                  </th>
+                                  <th className="px-3 py-2 text-left">
+                                    {t("settings.forwardProxy.modal.resultName")}
+                                  </th>
+                                  <th className="w-24 px-3 py-2 text-right">
+                                    {t("settings.forwardProxy.modal.resultProtocol")}
+                                  </th>
+                                  <th className="w-24 px-3 py-2 text-left">
+                                    {t("settings.forwardProxy.modal.resultStatus")}
+                                  </th>
+                                  <th className="w-32 px-3 py-2 text-right">
+                                    {t("settings.forwardProxy.modal.resultAction")}
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-base-300/65">
+                                {forwardProxyBatchResults.map((item, index) => (
+                                  <tr
+                                    key={item.key}
+                                    className={item.status === "unavailable" ? "bg-warning/10" : ""}
+                                  >
+                                    <td className="px-3 py-2 text-base-content/60">{index + 1}</td>
+                                    <td className="px-3 py-2">
+                                      <div
+                                        className="truncate text-sm font-medium text-base-content/85"
+                                        title={item.displayName}
+                                      >
+                                        {item.displayName}
+                                      </div>
+                                    </td>
+                                    <td className="px-3 py-2 text-right font-mono text-base-content/70">
+                                      <span className="inline-block w-full truncate whitespace-nowrap text-sm">
+                                        {item.protocolName}
+                                      </span>
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {(() => {
+                                        const latestRound = item.lastRound;
+                                        const latestRoundLabel =
+                                          latestRound == null
+                                            ? t("settings.forwardProxy.modal.statusValidating")
+                                            : latestRound.ok
+                                              ? formatLatency(latestRound.latencyMs)
+                                              : latestRound.timedOut
+                                                ? t("settings.forwardProxy.modal.statusTimeout")
+                                                : t(
+                                                    "settings.forwardProxy.modal.statusUnavailable",
+                                                  );
+                                        const latestRoundTone =
+                                          latestRound == null
+                                            ? "text-info"
+                                            : latestRound.ok
+                                              ? "text-success"
+                                              : latestRound.timedOut
+                                                ? "text-warning"
+                                                : "text-error";
+                                        return (
+                                          <div className="group relative inline-flex max-w-full flex-col items-start">
+                                            <button
+                                              type="button"
+                                              className="text-left"
+                                              disabled={item.rounds.length === 0}
+                                              onClick={() => {
+                                                if (item.rounds.length === 0) return;
+                                                setForwardProxyBatchTooltipKey((current) =>
+                                                  current === item.key ? null : item.key,
+                                                );
+                                              }}
+                                            >
+                                              <span
+                                                className={cn(
+                                                  "inline-block whitespace-nowrap text-sm font-medium",
+                                                  latestRoundTone,
+                                                )}
+                                              >
+                                                {latestRoundLabel}
+                                              </span>
+                                              <span className="block font-mono text-[10px] text-base-content/65">
+                                                {t("settings.forwardProxy.modal.roundProgress", {
+                                                  current: item.completedRounds,
+                                                  total: item.totalRounds,
+                                                })}
+                                              </span>
+                                            </button>
+                                            {item.rounds.length > 0 && (
+                                              <div
+                                                className={cn(
+                                                  "pointer-events-none absolute left-0 top-full z-20 mt-1 hidden max-h-52 min-w-[16rem] max-w-[22rem] overflow-y-auto rounded-md border border-base-300/80 bg-base-100/95 p-2 text-left text-[11px] leading-snug text-base-content shadow-lg",
+                                                  forwardProxyBatchTooltipKey === item.key
+                                                    ? "block"
+                                                    : "group-hover:block",
+                                                )}
+                                              >
+                                                <div className="space-y-1 font-mono">
+                                                  {item.rounds.map((round) => (
+                                                    <div key={`${item.key}-round-${round.round}`}>
+                                                      {round.ok
+                                                        ? t(
+                                                            "settings.forwardProxy.modal.roundResultSuccess",
+                                                            {
+                                                              round: round.round,
+                                                              latency: formatLatency(
+                                                                round.latencyMs,
+                                                              ),
+                                                            },
+                                                          )
+                                                        : round.timedOut
+                                                          ? t(
+                                                              "settings.forwardProxy.modal.roundResultTimeout",
+                                                              { round: round.round },
+                                                            )
+                                                          : t(
+                                                              "settings.forwardProxy.modal.roundResultFailed",
+                                                              { round: round.round },
+                                                            )}
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })()}
+                                    </td>
+                                    <td className="px-3 py-2 text-right">
+                                      <div className="inline-flex items-center gap-1.5">
+                                        <Button
+                                          type="button"
+                                          size="icon"
+                                          variant="ghost"
+                                          className="h-8 w-8"
+                                          title={t("settings.forwardProxy.modal.retryNode")}
+                                          disabled={
+                                            item.status === "validating" ||
+                                            forwardProxyBatchValidatingCount > 0 ||
+                                            isForwardProxySaving
+                                          }
+                                          onClick={() => void handleRetryBatchNode(item.key)}
+                                        >
+                                          <AppIcon name="refresh" className="h-4 w-4" aria-hidden />
+                                          <span className="sr-only">
+                                            {t("settings.forwardProxy.modal.retryNode")}
+                                          </span>
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          size="icon"
+                                          className="h-8 w-8"
+                                          title={t("settings.forwardProxy.modal.addNode")}
+                                          disabled={
+                                            item.status !== "available" || isForwardProxySaving
+                                          }
+                                          onClick={() => handleAddValidatedBatchNode(item.key)}
+                                        >
+                                          <AppIcon name="plus" className="h-4 w-4" aria-hidden />
+                                          <span className="sr-only">
+                                            {t("settings.forwardProxy.modal.addNode")}
+                                          </span>
+                                        </Button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {!forwardProxyModalIsBatch &&
+                        forwardProxyValidation.status === "validating" && (
+                          <Alert variant="info">
+                            {t("settings.forwardProxy.modal.validating")}
+                          </Alert>
+                        )}
+                      {forwardProxyValidation.status === "failed" && (
+                        <Alert variant="error">{forwardProxyValidation.message}</Alert>
+                      )}
+                      {!forwardProxyModalIsBatch && forwardProxyValidation.status === "passed" && (
+                        <Alert variant="success">
+                          <div className="space-y-1">
+                            <div>
+                              {forwardProxyValidation.message ||
+                                t("settings.forwardProxy.modal.validateSuccess")}
+                            </div>
+                            {forwardProxyValidation.normalizedValues.slice(0, 2).map((value) => (
+                              <div key={value} className="font-mono text-xs opacity-80">
+                                {t("settings.forwardProxy.modal.normalizedValue", { value })}
+                              </div>
+                            ))}
+                            {(forwardProxyValidation.discoveredNodes != null ||
+                              forwardProxyValidation.latencyMs != null) && (
+                              <div className="text-xs opacity-80">
+                                {t("settings.forwardProxy.modal.probeSummary", {
+                                  nodes: forwardProxyValidation.discoveredNodes ?? 1,
+                                  latency:
+                                    forwardProxyValidation.latencyMs == null
+                                      ? "—"
+                                      : `${forwardProxyValidation.latencyMs.toFixed(0)} ms`,
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        </Alert>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-end gap-2 border-t border-base-300/70 px-5 py-3">
+                      <Button type="button" variant="ghost" onClick={closeForwardProxyAddModal}>
+                        {t("settings.forwardProxy.modal.cancel")}
+                      </Button>
+                      {forwardProxyModalIsBatch && forwardProxyModalStep === 2 ? (
+                        <Button
+                          type="button"
+                          disabled={!forwardProxyCanSubmitBatch}
+                          onClick={handleSubmitValidatedBatchNodes}
+                        >
+                          {t("settings.forwardProxy.modal.submitWithCount", {
+                            count: forwardProxyBatchAvailableCount,
+                          })}
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={forwardProxyValidation.status === "validating"}
+                          onClick={() => void handleValidateForwardProxyCandidate()}
+                        >
+                          {t("settings.forwardProxy.modal.validate")}
+                        </Button>
+                      )}
+                      {!forwardProxyModalIsBatch && (
+                        <Button
+                          type="button"
+                          disabled={!forwardProxyCanConfirmAdd}
+                          onClick={handleConfirmAddForwardProxyCandidate}
+                        >
+                          {t("settings.forwardProxy.modal.add")}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )}
           </CardContent>
         </Card>
       ) : null}
 
-      {error && <Alert variant="error" className="text-sm">{t('settings.loadError', { error })}</Alert>}
+      {error && (
+        <Alert variant="error" className="text-sm">
+          {t("settings.loadError", { error })}
+        </Alert>
+      )}
     </section>
-  )
+  );
 }

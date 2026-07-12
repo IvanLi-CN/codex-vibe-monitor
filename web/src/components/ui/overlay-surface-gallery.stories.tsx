@@ -1,26 +1,32 @@
-import { useEffect, type ReactNode } from 'react'
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, waitFor, within } from 'storybook/test'
-import { Tooltip } from './tooltip'
-import { InfoTooltip } from './info-tooltip'
-import { InlineChartTooltipSurface } from './inline-chart-tooltip'
-import { MotherSwitchUndoToast, SystemNotificationProvider } from './system-notifications'
-import { I18nProvider } from '../../i18n'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { type ReactNode, useEffect } from "react";
+import { expect, userEvent, waitFor, within } from "storybook/test";
+import { I18nProvider } from "../../i18n";
+import { InfoTooltip } from "./info-tooltip";
+import { InlineChartTooltipSurface } from "./inline-chart-tooltip";
+import { MotherSwitchUndoToast, SystemNotificationProvider } from "./system-notifications";
+import { Tooltip } from "./tooltip";
 
-function ThemeRoot({ theme, children }: { theme: 'vibe-light' | 'vibe-dark'; children: ReactNode }) {
+function ThemeRoot({
+  theme,
+  children,
+}: {
+  theme: "vibe-light" | "vibe-dark";
+  children: ReactNode;
+}) {
   useEffect(() => {
-    const previousTheme = document.documentElement.getAttribute('data-theme')
-    document.documentElement.setAttribute('data-theme', theme)
+    const previousTheme = document.documentElement.getAttribute("data-theme");
+    document.documentElement.setAttribute("data-theme", theme);
     return () => {
       if (previousTheme) {
-        document.documentElement.setAttribute('data-theme', previousTheme)
+        document.documentElement.setAttribute("data-theme", previousTheme);
       } else {
-        document.documentElement.removeAttribute('data-theme')
+        document.documentElement.removeAttribute("data-theme");
       }
-    }
-  }, [theme])
+    };
+  }, [theme]);
 
-  return <div data-theme={theme}>{children}</div>
+  return <div data-theme={theme}>{children}</div>;
 }
 
 function NoiseCard({ title, children }: { title: string; children: ReactNode }) {
@@ -28,11 +34,13 @@ function NoiseCard({ title, children }: { title: string; children: ReactNode }) 
     <section className="rounded-[1.35rem] border border-base-300/65 bg-base-100/18 p-4 shadow-[0_18px_45px_rgba(15,23,42,0.12)] backdrop-blur-sm">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-base-content">{title}</h3>
-        <span className="text-[11px] uppercase tracking-[0.14em] text-base-content/55">shared surface</span>
+        <span className="text-[11px] uppercase tracking-[0.14em] text-base-content/55">
+          shared surface
+        </span>
       </div>
       {children}
     </section>
-  )
+  );
 }
 
 function InlineChartPreview() {
@@ -40,17 +48,17 @@ function InlineChartPreview() {
     <InlineChartTooltipSurface
       items={[
         {
-          title: 'Window A',
+          title: "Window A",
           rows: [
-            { label: 'Success', value: '24', tone: 'success' },
-            { label: 'Failure', value: '2', tone: 'error' },
+            { label: "Success", value: "24", tone: "success" },
+            { label: "Failure", value: "2", tone: "error" },
           ],
         },
         {
-          title: 'Window B',
+          title: "Window B",
           rows: [
-            { label: 'Success', value: '18', tone: 'success' },
-            { label: 'Failure', value: '5', tone: 'error' },
+            { label: "Success", value: "18", tone: "success" },
+            { label: "Failure", value: "5", tone: "error" },
           ],
         },
       ]}
@@ -63,10 +71,10 @@ function InlineChartPreview() {
       {({ getItemProps }) => (
         <div className="flex h-full items-end gap-4 rounded-[1rem] border border-base-300/35 bg-base-100/10 px-5 py-4">
           {[
-            { height: 72, label: 'A' },
-            { height: 94, label: 'B' },
+            { height: 72, label: "A" },
+            { height: 94, label: "B" },
           ].map((item, index) => {
-            const { ref, ...itemProps } = getItemProps(index)
+            const { ref, ...itemProps } = getItemProps(index);
             return (
               <button
                 key={item.label}
@@ -83,31 +91,31 @@ function InlineChartPreview() {
                 />
                 <span className="text-xs font-semibold text-base-content/68">{item.label}</span>
               </button>
-            )
+            );
           })}
         </div>
       )}
     </InlineChartTooltipSurface>
-  )
+  );
 }
 
-function OverlayGallery({ theme }: { theme: 'vibe-light' | 'vibe-dark' }) {
+function OverlayGallery({ theme }: { theme: "vibe-light" | "vibe-dark" }) {
   const previewNotification = {
-    id: 'storybook-mother-switch-preview',
-    kind: 'motherSwitchUndo' as const,
-    groupKey: 'tokyo-core',
+    id: "storybook-mother-switch-preview",
+    kind: "motherSwitchUndo" as const,
+    groupKey: "tokyo-core",
     payload: {
-      groupKey: 'tokyo-core',
-      groupName: 'Tokyo Core',
+      groupKey: "tokyo-core",
+      groupName: "Tokyo Core",
       previousMotherAccountId: 11,
-      previousMotherDisplayName: 'Codex Pro - Tokyo',
+      previousMotherDisplayName: "Codex Pro - Tokyo",
       newMotherAccountId: 18,
-      newMotherDisplayName: 'Codex Team - Tokyo',
+      newMotherDisplayName: "Codex Team - Tokyo",
       hadNoMotherBefore: false,
     },
     onUndo: async () => undefined,
     error: null,
-  }
+  };
 
   return (
     <I18nProvider>
@@ -117,7 +125,7 @@ function OverlayGallery({ theme }: { theme: 'vibe-light' | 'vibe-dark' }) {
             className="min-h-screen px-5 py-6"
             style={{
               backgroundImage:
-                'radial-gradient(circle at 14% 0%, rgba(56,189,248,0.18), transparent 36%), radial-gradient(circle at 86% 8%, rgba(45,212,191,0.16), transparent 30%)',
+                "radial-gradient(circle at 14% 0%, rgba(56,189,248,0.18), transparent 36%), radial-gradient(circle at 86% 8%, rgba(45,212,191,0.16), transparent 30%)",
             }}
           >
             <div className="mx-auto max-w-6xl space-y-4">
@@ -133,8 +141,14 @@ function OverlayGallery({ theme }: { theme: 'vibe-light' | 'vibe-dark' }) {
                 <NoiseCard title="Tooltip + InfoTooltip">
                   <div className="rounded-[1.1rem] border border-base-300/35 bg-base-100/12 px-4 py-4">
                     <div className="flex flex-wrap items-center gap-3 text-sm text-base-content/80">
-                      <Tooltip open content="This tooltip now uses the same shared frosted surface tokens as the rest of the overlay family.">
-                        <button type="button" className="rounded-full border border-primary/35 bg-primary/12 px-3 py-2 font-medium text-primary">
+                      <Tooltip
+                        open
+                        content="This tooltip now uses the same shared frosted surface tokens as the rest of the overlay family."
+                      >
+                        <button
+                          type="button"
+                          className="rounded-full border border-primary/35 bg-primary/12 px-3 py-2 font-medium text-primary"
+                        >
                           Shared tooltip
                         </button>
                       </Tooltip>
@@ -154,9 +168,9 @@ function OverlayGallery({ theme }: { theme: 'vibe-light' | 'vibe-dark' }) {
               </div>
               <NoiseCard title="Dense background reference">
                 <div className="overflow-hidden rounded-[1.1rem] border border-base-300/35 bg-base-100/8">
-                  {Array.from({ length: 4 }, (_, index) => (
+                  {["row-1", "row-2", "row-3", "row-4"].map((rowKey, index) => (
                     <div
-                      key={index}
+                      key={rowKey}
                       className="grid grid-cols-[1.4fr_0.9fr_0.8fr_1fr] items-center gap-3 border-b border-base-300/25 px-4 py-3 text-sm text-base-content/72 last:border-b-0"
                     >
                       <span className="truncate font-medium">{`ora.success.${index + 3}@mail-tw.707079.xyz`}</span>
@@ -172,48 +186,48 @@ function OverlayGallery({ theme }: { theme: 'vibe-light' | 'vibe-dark' }) {
         </SystemNotificationProvider>
       </ThemeRoot>
     </I18nProvider>
-  )
+  );
 }
 
 const meta = {
-  title: 'UI/Overlay Surface Gallery',
+  title: "UI/Overlay Surface Gallery",
   component: OverlayGallery,
-  tags: ['autodocs'],
+  tags: ["autodocs"],
   args: {
-    theme: 'vibe-light',
+    theme: "vibe-light",
   },
   parameters: {
-    layout: 'fullscreen',
+    layout: "fullscreen",
   },
-} satisfies Meta<typeof OverlayGallery>
+} satisfies Meta<typeof OverlayGallery>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 async function openOverlaySurfaceGallery({ canvasElement }: { canvasElement: HTMLElement }) {
-    const canvas = within(canvasElement)
-    const body = within(canvasElement.ownerDocument.body)
-    await userEvent.click(canvas.getByRole('button', { name: /explain shared overlay surface/i }))
-    await userEvent.hover(canvas.getByRole('button', { name: 'Window A' }))
-    await waitFor(async () => {
-      await expect(body.getAllByRole('tooltip').length).toBeGreaterThan(1)
-      await expect(body.getByText(/Tokyo Core/i)).toBeInTheDocument()
-    })
+  const canvas = within(canvasElement);
+  const body = within(canvasElement.ownerDocument.body);
+  await userEvent.click(canvas.getByRole("button", { name: /explain shared overlay surface/i }));
+  await userEvent.hover(canvas.getByRole("button", { name: "Window A" }));
+  await waitFor(async () => {
+    await expect(body.getAllByRole("tooltip").length).toBeGreaterThan(1);
+    await expect(body.getByText(/Tokyo Core/i)).toBeInTheDocument();
+  });
 }
 
 export const LightTheme: Story = {
   args: {
-    theme: 'vibe-light',
+    theme: "vibe-light",
   },
   render: (args) => <OverlayGallery {...args} />,
   play: openOverlaySurfaceGallery,
-}
+};
 
 export const DarkTheme: Story = {
   args: {
-    theme: 'vibe-dark',
+    theme: "vibe-dark",
   },
   render: (args) => <OverlayGallery {...args} />,
   play: openOverlaySurfaceGallery,
-}
+};

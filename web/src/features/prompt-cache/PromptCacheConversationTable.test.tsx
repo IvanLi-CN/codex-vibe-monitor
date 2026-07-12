@@ -1,18 +1,11 @@
 /** @vitest-environment jsdom */
-import { renderToStaticMarkup } from "react-dom/server";
+
+import userEvent from "@testing-library/user-event";
 import { act, type ComponentProps, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
-import userEvent from "@testing-library/user-event";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import type {
   BroadcastPayload,
@@ -25,8 +18,7 @@ import type {
 import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
 
 const apiMocks = vi.hoisted(() => ({
-  fetchUpstreamAccountDetail:
-    vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
+  fetchUpstreamAccountDetail: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   fetchInvocationRecords: vi.fn(),
   fetchInvocationRecordsSummary: vi.fn(),
   fetchPromptCacheConversationBinding:
@@ -43,34 +35,28 @@ const sseMocks = vi.hoisted(() => ({
 class MockPointerEvent extends MouseEvent {
   pointerType: string;
 
-  constructor(
-    type: string,
-    init: MouseEventInit & { pointerType?: string } = {},
-  ) {
+  constructor(type: string, init: MouseEventInit & { pointerType?: string } = {}) {
     super(type, init);
     this.pointerType = init.pointerType ?? "mouse";
   }
 }
 
 function findSelectOption(label: string) {
-  return Array.from(document.querySelectorAll('[role="option"]')).find(
-    (option) => option.textContent?.includes(label),
+  return Array.from(document.querySelectorAll('[role="option"]')).find((option) =>
+    option.textContent?.includes(label),
   ) as HTMLElement | undefined;
 }
 
 vi.mock("../../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
+  const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
     fetchInvocationRecords: apiMocks.fetchInvocationRecords,
     fetchInvocationRecordsSummary: apiMocks.fetchInvocationRecordsSummary,
-    fetchPromptCacheConversationBinding:
-      apiMocks.fetchPromptCacheConversationBinding,
+    fetchPromptCacheConversationBinding: apiMocks.fetchPromptCacheConversationBinding,
     fetchUpstreamAccounts: apiMocks.fetchUpstreamAccounts,
-    updatePromptCacheConversationBinding:
-      apiMocks.updatePromptCacheConversationBinding,
+    updatePromptCacheConversationBinding: apiMocks.updatePromptCacheConversationBinding,
   };
 });
 
@@ -88,11 +74,7 @@ vi.mock("../../lib/sse", () => ({
 function renderTable(stats: PromptCacheConversationsResponse) {
   return renderToStaticMarkup(
     <I18nProvider>
-      <PromptCacheConversationTable
-        stats={stats}
-        isLoading={false}
-        error={null}
-      />
+      <PromptCacheConversationTable stats={stats} isLoading={false} error={null} />
     </I18nProvider>,
   );
 }
@@ -312,12 +294,7 @@ describe("PromptCacheConversationTable", () => {
     props: Partial<ComponentProps<typeof PromptCacheConversationTable>> = {},
   ) {
     renderInteractiveElement(
-      <PromptCacheConversationTable
-        stats={stats}
-        isLoading={false}
-        error={null}
-        {...props}
-      />,
+      <PromptCacheConversationTable stats={stats} isLoading={false} error={null} {...props} />,
     );
   }
 
@@ -332,15 +309,13 @@ describe("PromptCacheConversationTable", () => {
   }
 
   function findInputByAriaLabel(label: string) {
-    return document.querySelector(
-      `input[aria-label="${label}"]`,
-    ) as HTMLInputElement | null;
+    return document.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement | null;
   }
 
   async function clickDrawerTab(label: string) {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    const tab = Array.from(document.querySelectorAll('[role="tab"]')).find(
-      (node) => node.textContent?.includes(label),
+    const tab = Array.from(document.querySelectorAll('[role="tab"]')).find((node) =>
+      node.textContent?.includes(label),
     ) as HTMLElement | undefined;
     expect(tab).toBeTruthy();
     await user.click(tab!);
@@ -349,7 +324,9 @@ describe("PromptCacheConversationTable", () => {
 
   function emitSseRecords(payload: BroadcastPayload) {
     act(() => {
-      sseMocks.listeners.forEach((listener) => listener(payload));
+      sseMocks.listeners.forEach((listener) => {
+        listener(payload);
+      });
     });
   }
 
@@ -820,8 +797,8 @@ describe("PromptCacheConversationTable", () => {
       { onOpenUpstreamAccount },
     );
 
-    const trigger = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Pool Alpha"),
+    const trigger = Array.from(document.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Pool Alpha"),
     );
     expect(trigger).toBeTruthy();
 
@@ -874,9 +851,7 @@ describe("PromptCacheConversationTable", () => {
     };
 
     function Harness() {
-      const [expandedPromptCacheKeys, setExpandedPromptCacheKeys] = useState<
-        string[]
-      >([]);
+      const [expandedPromptCacheKeys, setExpandedPromptCacheKeys] = useState<string[]>([]);
 
       return (
         <PromptCacheConversationTable
@@ -905,9 +880,7 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(
-      document.querySelector('[data-testid="invocation-table-scroll"]'),
-    ).toBeTruthy();
+    expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeTruthy();
     expect(document.body.textContent).toContain("首字总耗时 / HTTP 压缩");
     expect(document.body.textContent).not.toContain("输入 / 缓存");
     expect(document.body.textContent).toContain("gpt-5.4");
@@ -924,9 +897,9 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    const accountButtons = Array.from(
-      document.querySelectorAll("button"),
-    ).filter((button) => button.textContent?.includes("Pool Alpha"));
+    const accountButtons = Array.from(document.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Pool Alpha"),
+    );
     expect(accountButtons.length).toBeGreaterThan(0);
 
     const collapseButton = findButtonByAriaLabel("收起最近调用记录");
@@ -988,9 +961,7 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(
-      document.querySelector('[data-testid="invocation-table-scroll"]'),
-    ).toBeTruthy();
+    expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeTruthy();
     expect(document.body.textContent).toContain("首字总耗时 / HTTP 压缩");
     expect(document.body.textContent).toContain("Proxy Central");
 
@@ -1035,64 +1006,66 @@ describe("PromptCacheConversationTable", () => {
         actionableFailureCount: 2,
       },
     });
-    apiMocks.fetchInvocationRecords.mockImplementation(async (query: {
-      page?: number;
-      snapshotId?: number;
-      sortOrder?: string;
-      pageSize?: number;
-      signal?: AbortSignal;
-    }) => {
-      if (query.pageSize === 200) {
-        return {
-          snapshotId: 900,
-          total: 0,
-          page: 1,
-          pageSize: 200,
-          records: [],
-        };
-      }
-      if (query.page === 1) {
-        return {
-        snapshotId: 901,
-        total: 3,
-        page: 1,
-        pageSize: 2,
-        records: [
-          {
-            id: 71,
-            invokeId: "history-71",
-            occurredAt: "2026-03-02T12:30:00Z",
-            status: "completed",
-            failureClass: "none",
-            totalTokens: 1500,
-            cost: 0.31,
-            endpoint: "/v1/responses",
-            promptCacheKey: "pck-history",
-            upstreamAccountId: 101,
-            upstreamAccountName: "Pool Alpha",
-            proxyDisplayName: "Proxy West",
-            createdAt: "2026-03-02T12:30:00Z",
-          },
-          {
-            id: 70,
-            invokeId: "history-70",
-            occurredAt: "2026-03-02T12:10:00Z",
-            status: "http_502",
-            failureClass: "service_failure",
-            totalTokens: 900,
-            cost: 0.2,
-            endpoint: "/v1/chat/completions",
-            promptCacheKey: "pck-history",
-            upstreamAccountId: null,
-            upstreamAccountName: null,
-            proxyDisplayName: "Proxy East",
-            createdAt: "2026-03-02T12:10:00Z",
-          },
-        ],
-        };
-      }
-      throw new Error("page 2 failed");
-    });
+    apiMocks.fetchInvocationRecords.mockImplementation(
+      async (query: {
+        page?: number;
+        snapshotId?: number;
+        sortOrder?: string;
+        pageSize?: number;
+        signal?: AbortSignal;
+      }) => {
+        if (query.pageSize === 200) {
+          return {
+            snapshotId: 900,
+            total: 0,
+            page: 1,
+            pageSize: 200,
+            records: [],
+          };
+        }
+        if (query.page === 1) {
+          return {
+            snapshotId: 901,
+            total: 3,
+            page: 1,
+            pageSize: 2,
+            records: [
+              {
+                id: 71,
+                invokeId: "history-71",
+                occurredAt: "2026-03-02T12:30:00Z",
+                status: "completed",
+                failureClass: "none",
+                totalTokens: 1500,
+                cost: 0.31,
+                endpoint: "/v1/responses",
+                promptCacheKey: "pck-history",
+                upstreamAccountId: 101,
+                upstreamAccountName: "Pool Alpha",
+                proxyDisplayName: "Proxy West",
+                createdAt: "2026-03-02T12:30:00Z",
+              },
+              {
+                id: 70,
+                invokeId: "history-70",
+                occurredAt: "2026-03-02T12:10:00Z",
+                status: "http_502",
+                failureClass: "service_failure",
+                totalTokens: 900,
+                cost: 0.2,
+                endpoint: "/v1/chat/completions",
+                promptCacheKey: "pck-history",
+                upstreamAccountId: null,
+                upstreamAccountName: null,
+                proxyDisplayName: "Proxy East",
+                createdAt: "2026-03-02T12:10:00Z",
+              },
+            ],
+          };
+        }
+        throw new Error("page 2 failed");
+      },
+    );
 
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",
@@ -1169,9 +1142,7 @@ describe("PromptCacheConversationTable", () => {
       snapshotId: 901,
       signal: expect.any(AbortSignal),
     });
-    expect(
-      document.querySelector('[data-testid="invocation-table-scroll"]'),
-    ).toBeTruthy();
+    expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeTruthy();
     expect(document.body.textContent).toContain("首字总耗时 / HTTP 压缩");
     expect(document.body.textContent).not.toContain("输入 / 缓存");
     expect(document.body.textContent).toContain("Proxy West");
@@ -1305,14 +1276,11 @@ describe("PromptCacheConversationTable", () => {
     });
     await flushInteractive();
 
-    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
-      "pck-binding",
-      {
-        bindingKind: "upstreamAccount",
-        upstreamAccountId: 77,
-        timeouts: {},
-      },
-    );
+    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith("pck-binding", {
+      bindingKind: "upstreamAccount",
+      upstreamAccountId: 77,
+      timeouts: {},
+    });
     expect(document.body.textContent).toContain("当前：账号 Pool Beta");
   });
 
@@ -1451,29 +1419,19 @@ describe("PromptCacheConversationTable", () => {
         groupName: null,
         upstreamAccountId: null,
         upstreamAccountName: null,
-        allowSwitchUpstream:
-          "allowSwitchUpstream" in payload ? payload.allowSwitchUpstream : null,
+        allowSwitchUpstream: "allowSwitchUpstream" in payload ? payload.allowSwitchUpstream : null,
         fastModeRewriteMode:
-          "fastModeRewriteMode" in payload
-            ? payload.fastModeRewriteMode
-            : "keep_original",
+          "fastModeRewriteMode" in payload ? payload.fastModeRewriteMode : "keep_original",
         imageToolRewriteMode:
           "imageToolRewriteMode" in payload ? payload.imageToolRewriteMode : null,
-        availableModels:
-          "availableModels" in payload ? payload.availableModels : null,
-        forwardProxyKey:
-          "forwardProxyKey" in payload ? payload.forwardProxyKey : null,
+        availableModels: "availableModels" in payload ? payload.availableModels : null,
+        forwardProxyKey: "forwardProxyKey" in payload ? payload.forwardProxyKey : null,
         policyFieldSources: {
-          allowSwitchUpstream:
-            "allowSwitchUpstream" in payload ? "conversation" : "account",
-          fastModeRewriteMode:
-            "fastModeRewriteMode" in payload ? "conversation" : "account",
-          imageToolRewriteMode:
-            "imageToolRewriteMode" in payload ? "conversation" : "account",
-          availableModels:
-            "availableModels" in payload ? "conversation" : "account",
-          forwardProxyKey:
-            "forwardProxyKey" in payload ? "conversation" : "account",
+          allowSwitchUpstream: "allowSwitchUpstream" in payload ? "conversation" : "account",
+          fastModeRewriteMode: "fastModeRewriteMode" in payload ? "conversation" : "account",
+          imageToolRewriteMode: "imageToolRewriteMode" in payload ? "conversation" : "account",
+          availableModels: "availableModels" in payload ? "conversation" : "account",
+          forwardProxyKey: "forwardProxyKey" in payload ? "conversation" : "account",
         },
         updatedAt: "2026-03-02T12:01:00Z",
       }),
@@ -1515,22 +1473,16 @@ describe("PromptCacheConversationTable", () => {
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 切出")!);
-    await user.click(
-      document.querySelector('[role="combobox"][aria-label="切出"]') as HTMLElement,
-    );
+    await user.click(document.querySelector('[role="combobox"][aria-label="切出"]') as HTMLElement);
     await user.click(findSelectOption("允许换上游")!);
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
     );
     await vi.waitFor(() =>
-      expect(findButtonByAriaLabel("编辑对话覆盖: FAST 模式")?.disabled).toBe(
-        false,
-      ),
+      expect(findButtonByAriaLabel("编辑对话覆盖: FAST 模式")?.disabled).toBe(false),
     );
-    await user.click(
-      findButtonByAriaLabel("编辑对话覆盖: FAST 模式")!,
-    );
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: FAST 模式")!);
     await user.click(
       document.querySelector('[role="combobox"][aria-label="FAST 模式"]') as HTMLElement,
     );
@@ -1549,9 +1501,7 @@ describe("PromptCacheConversationTable", () => {
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(3),
     );
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 代理")!);
-    await user.click(
-      document.querySelector('[role="combobox"][aria-label="代理"]') as HTMLElement,
-    );
+    await user.click(document.querySelector('[role="combobox"][aria-label="代理"]') as HTMLElement);
     await user.click(findSelectOption("直连 · DIRECT")!);
     await flushInteractive();
     await vi.waitFor(() =>
@@ -1561,10 +1511,7 @@ describe("PromptCacheConversationTable", () => {
     await vi.waitFor(() => expect(findInputByAriaLabel("可用模型")).toBeTruthy());
     const availableModelsInput = findInputByAriaLabel("可用模型")!;
     await user.clear(availableModelsInput);
-    await user.type(
-      availableModelsInput,
-      "gpt-5.1-codex-max, gpt-5.1-codex-mini",
-    );
+    await user.type(availableModelsInput, "gpt-5.1-codex-max, gpt-5.1-codex-mini");
     await user.click(findButtonByAriaLabel("应用覆盖")!);
     await flushInteractive();
     await vi.waitFor(() =>
@@ -1789,17 +1736,11 @@ describe("PromptCacheConversationTable", () => {
     await flushInteractive();
     await clickDrawerTab("概览");
 
-    const chart = document.querySelector(
-      '[data-testid="conversation-activity-chart"]',
-    );
+    const chart = document.querySelector('[data-testid="conversation-activity-chart"]');
     expect(chart?.getAttribute("data-visible-total-count")).toBe("1");
     expect(chart?.getAttribute("data-visible-span")).toBe("1");
-    expect(chart?.getAttribute("data-chart-range-start")).toBe(
-      "2026-02-01T12:30:00.000Z",
-    );
-    expect(chart?.getAttribute("data-chart-range-end")).toBe(
-      "2026-02-01T12:31:00.000Z",
-    );
+    expect(chart?.getAttribute("data-chart-range-start")).toBe("2026-02-01T12:30:00.000Z");
+    expect(chart?.getAttribute("data-chart-range-end")).toBe("2026-02-01T12:31:00.000Z");
 
     await clickDrawerTab("调用");
     expect(document.body.textContent).toContain("Proxy West");
@@ -1895,8 +1836,9 @@ describe("PromptCacheConversationTable", () => {
     expect(confirmDialog?.textContent).toContain("invalid_encrypted_content");
     expect(apiMocks.updatePromptCacheConversationBinding).not.toHaveBeenCalled();
 
-    const cancelButton = Array.from(confirmDialog?.querySelectorAll("button") ?? [])
-      .find((button) => button.textContent?.includes("取消"));
+    const cancelButton = Array.from(confirmDialog?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.includes("取消"),
+    );
     await act(async () => {
       cancelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -1922,21 +1864,19 @@ describe("PromptCacheConversationTable", () => {
     });
     await flushInteractive();
     const reopenedDialog = document.body.querySelector('[role="alertdialog"]');
-    const continueButton = Array.from(reopenedDialog?.querySelectorAll("button") ?? [])
-      .find((button) => button.textContent?.includes("继续更改"));
+    const continueButton = Array.from(reopenedDialog?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.includes("继续更改"),
+    );
     await act(async () => {
       continueButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
 
-    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
-      "pck-binding",
-      {
-        bindingKind: "group",
-        groupName: "prod",
-        timeouts: {},
-      },
-    );
+    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith("pck-binding", {
+      bindingKind: "group",
+      groupName: "prod",
+      timeouts: {},
+    });
   });
 
   it("does not confirm when clearing a manual override back to the encrypted owner lock", async () => {
@@ -2168,19 +2108,11 @@ describe("PromptCacheConversationTable", () => {
     await flushInteractive();
     await clickDrawerTab("概览");
 
-    const chart = document.querySelector(
-      '[data-testid="conversation-activity-chart"]',
-    );
+    const chart = document.querySelector('[data-testid="conversation-activity-chart"]');
     expect(chart?.getAttribute("data-visible-total-count")).toBe("4");
-    expect(chart?.getAttribute("data-chart-range-start")).toBe(
-      "2026-05-13T23:26:12.000Z",
-    );
-    expect(chart?.getAttribute("data-chart-range-end")).toBe(
-      "2026-05-13T23:40:47.000Z",
-    );
-    expect(chart?.getAttribute("data-chart-range-start")).not.toBe(
-      "2026-05-13T16:00:00.000Z",
-    );
+    expect(chart?.getAttribute("data-chart-range-start")).toBe("2026-05-13T23:26:12.000Z");
+    expect(chart?.getAttribute("data-chart-range-end")).toBe("2026-05-13T23:40:47.000Z");
+    expect(chart?.getAttribute("data-chart-range-start")).not.toBe("2026-05-13T16:00:00.000Z");
   });
 
   it("renders neutral activity buckets in the chart", async () => {
@@ -2300,90 +2232,91 @@ describe("PromptCacheConversationTable", () => {
         actionableFailureCount: 0,
       },
     });
-    apiMocks.fetchInvocationRecords.mockImplementation(async (query: {
-      page?: number;
-      pageSize?: number;
-      snapshotId?: number;
-      sortOrder?: string;
-      signal?: AbortSignal;
-    }) => {
-      if (!query.signal) {
-        const listRecords = [
-          {
-            id: 1001,
-            invokeId: "sampled-history-1001",
-            occurredAt: "2026-03-02T23:00:00Z",
-            status: "completed",
-            failureClass: "none",
-            totalTokens: 100,
-            cost: 0.1,
-            endpoint: "/v1/responses",
-            promptCacheKey: "pck-sampled-history",
-            upstreamAccountId: null,
-            upstreamAccountName: null,
-            proxyDisplayName: "Proxy 1001",
-            createdAt: "2026-03-02T23:00:00Z",
-          },
-          {
-            id: 1000,
-            invokeId: "sampled-history-1000",
-            occurredAt: "2026-03-02T22:59:00Z",
-            status: "completed",
-            failureClass: "none",
-            totalTokens: 100,
-            cost: 0.1,
-            endpoint: "/v1/responses",
-            promptCacheKey: "pck-sampled-history",
-            upstreamAccountId: null,
-            upstreamAccountName: null,
-            proxyDisplayName: "Proxy 1000",
-            createdAt: "2026-03-02T22:59:00Z",
-          },
-        ];
+    apiMocks.fetchInvocationRecords.mockImplementation(
+      async (query: {
+        page?: number;
+        pageSize?: number;
+        snapshotId?: number;
+        sortOrder?: string;
+        signal?: AbortSignal;
+      }) => {
+        if (!query.signal) {
+          const listRecords = [
+            {
+              id: 1001,
+              invokeId: "sampled-history-1001",
+              occurredAt: "2026-03-02T23:00:00Z",
+              status: "completed",
+              failureClass: "none",
+              totalTokens: 100,
+              cost: 0.1,
+              endpoint: "/v1/responses",
+              promptCacheKey: "pck-sampled-history",
+              upstreamAccountId: null,
+              upstreamAccountName: null,
+              proxyDisplayName: "Proxy 1001",
+              createdAt: "2026-03-02T23:00:00Z",
+            },
+            {
+              id: 1000,
+              invokeId: "sampled-history-1000",
+              occurredAt: "2026-03-02T22:59:00Z",
+              status: "completed",
+              failureClass: "none",
+              totalTokens: 100,
+              cost: 0.1,
+              endpoint: "/v1/responses",
+              promptCacheKey: "pck-sampled-history",
+              upstreamAccountId: null,
+              upstreamAccountName: null,
+              proxyDisplayName: "Proxy 1000",
+              createdAt: "2026-03-02T22:59:00Z",
+            },
+          ];
+          return {
+            snapshotId: 901,
+            total: listRecords.length,
+            page: query.page ?? 1,
+            pageSize: query.pageSize ?? 200,
+            records: query.page === 1 ? listRecords : [],
+          };
+        }
+        const page = query.page ?? 1;
+        const pageSize = query.pageSize ?? 200;
+        const total = 1001;
+        const startOffset = (page - 1) * pageSize;
+        const count = Math.max(0, Math.min(pageSize, total - startOffset));
         return {
           snapshotId: 901,
-          total: listRecords.length,
-          page: query.page ?? 1,
-          pageSize: query.pageSize ?? 200,
-          records: query.page === 1 ? listRecords : [],
+          total,
+          page,
+          pageSize,
+          records: Array.from({ length: count }, (_, index) => {
+            const offset = startOffset + index;
+            const id = total - offset;
+            const occurredAt =
+              offset === total - 1
+                ? "2026-01-01T00:00:00Z"
+                : new Date(Date.parse("2026-03-03T12:00:00Z") - offset * 60_000).toISOString();
+            return {
+              id,
+              invokeId: `sampled-history-${id}`,
+              occurredAt,
+              status: "completed",
+              failureClass: "none",
+              totalTokens: 100,
+              cost: 0.1,
+              endpoint: "/v1/responses",
+              promptCacheKey: "pck-sampled-history",
+              upstreamAccountId: null,
+              upstreamAccountName: null,
+              proxyDisplayName: `Proxy ${id}`,
+              createdAt: occurredAt,
+            };
+          }),
         };
-      }
-      const page = query.page ?? 1;
-      const pageSize = query.pageSize ?? 200;
-      const total = 1001;
-      const startOffset = (page - 1) * pageSize;
-      const count = Math.max(0, Math.min(pageSize, total - startOffset));
-      return {
-        snapshotId: 901,
-        total,
-        page,
-        pageSize,
-        records: Array.from({ length: count }, (_, index) => {
-          const offset = startOffset + index;
-          const id = total - offset;
-          const occurredAt =
-            offset === total - 1
-              ? "2026-01-01T00:00:00Z"
-              : new Date(Date.parse("2026-03-03T12:00:00Z") - offset * 60_000)
-                  .toISOString();
-          return {
-            id,
-            invokeId: `sampled-history-${id}`,
-            occurredAt,
-            status: "completed",
-            failureClass: "none",
-            totalTokens: 100,
-            cost: 0.1,
-            endpoint: "/v1/responses",
-            promptCacheKey: "pck-sampled-history",
-            upstreamAccountId: null,
-            upstreamAccountName: null,
-            proxyDisplayName: `Proxy ${id}`,
-            createdAt: occurredAt,
-          };
-        }),
-      };
-    });
+      },
+    );
 
     renderInteractive({
       rangeStart: "2026-01-01T00:00:00Z",
@@ -2423,20 +2356,12 @@ describe("PromptCacheConversationTable", () => {
         snapshotId: 901,
       }),
     );
-    const chart = document.querySelector(
-      '[data-testid="conversation-activity-chart"]',
-    );
-    expect(chart?.getAttribute("data-chart-range-start")).toBe(
-      "2026-01-01T00:00:00.000Z",
-    );
-    expect(chart?.getAttribute("data-chart-range-end")).toBe(
-      "2026-03-03T12:00:00.000Z",
-    );
+    const chart = document.querySelector('[data-testid="conversation-activity-chart"]');
+    expect(chart?.getAttribute("data-chart-range-start")).toBe("2026-01-01T00:00:00.000Z");
+    expect(chart?.getAttribute("data-chart-range-end")).toBe("2026-03-03T12:00:00.000Z");
     expect(document.body.textContent).toContain("01/01");
     expect(document.body.textContent).toContain("03/03");
-    expect(document.body.textContent).toContain(
-      "图表采样最近 1,000 / 1,001 条匹配调用",
-    );
+    expect(document.body.textContent).toContain("图表采样最近 1,000 / 1,001 条匹配调用");
   });
 
   it("streams live history rows into the open drawer and replaces running snapshots with final records", async () => {
@@ -2457,49 +2382,51 @@ describe("PromptCacheConversationTable", () => {
       resolveRefresh = resolve;
     });
 
-    apiMocks.fetchInvocationRecords.mockImplementation(async (query: {
-      page?: number;
-      snapshotId?: number;
-      sortOrder?: string;
-      pageSize?: number;
-      signal?: AbortSignal;
-    }) => {
-      if (query.pageSize === 200) {
-        return {
-          snapshotId: 900,
-          total: 0,
-          page: 1,
-          pageSize: 200,
-          records: [],
-        };
-      }
-      if (query.page === 1 && query.snapshotId == null) {
-        return {
-          snapshotId: 902,
-          total: 1,
-          page: 1,
-          pageSize: 200,
-          records: [
-            {
-              id: 61,
-              invokeId: "history-base-61",
-              occurredAt: "2026-03-02T12:10:00Z",
-              status: "completed",
-              failureClass: "none",
-              totalTokens: 900,
-              cost: 0.2,
-              endpoint: "/v1/responses",
-              promptCacheKey: "pck-history-live",
-              upstreamAccountId: 101,
-              upstreamAccountName: "Pool Alpha",
-              proxyDisplayName: "Proxy Base",
-              createdAt: "2026-03-02T12:10:00Z",
-            },
-          ],
-        };
-      }
-      return refreshPromise;
-    });
+    apiMocks.fetchInvocationRecords.mockImplementation(
+      async (query: {
+        page?: number;
+        snapshotId?: number;
+        sortOrder?: string;
+        pageSize?: number;
+        signal?: AbortSignal;
+      }) => {
+        if (query.pageSize === 200) {
+          return {
+            snapshotId: 900,
+            total: 0,
+            page: 1,
+            pageSize: 200,
+            records: [],
+          };
+        }
+        if (query.page === 1 && query.snapshotId == null) {
+          return {
+            snapshotId: 902,
+            total: 1,
+            page: 1,
+            pageSize: 200,
+            records: [
+              {
+                id: 61,
+                invokeId: "history-base-61",
+                occurredAt: "2026-03-02T12:10:00Z",
+                status: "completed",
+                failureClass: "none",
+                totalTokens: 900,
+                cost: 0.2,
+                endpoint: "/v1/responses",
+                promptCacheKey: "pck-history-live",
+                upstreamAccountId: 101,
+                upstreamAccountName: "Pool Alpha",
+                proxyDisplayName: "Proxy Base",
+                createdAt: "2026-03-02T12:10:00Z",
+              },
+            ],
+          };
+        }
+        return refreshPromise;
+      },
+    );
 
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",
@@ -2576,10 +2503,10 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).not.toContain("Proxy Running");
 
     await act(async () => {
-            resolveRefresh({
-              snapshotId: 903,
-              total: 2,
-              page: 1,
+      resolveRefresh({
+        snapshotId: 903,
+        total: 2,
+        page: 1,
         pageSize: 50,
         records: [
           {
@@ -2632,67 +2559,65 @@ describe("PromptCacheConversationTable", () => {
 
   it("continues from page 2 after a silent refresh adopts a new history snapshot", async () => {
     let pageOneRequests = 0;
-    apiMocks.fetchInvocationRecords.mockImplementation(async (query: {
-      page?: number;
-      snapshotId?: number;
-      pageSize?: number;
-    }) => {
-      if (query.pageSize === 200) {
-        return {
-          snapshotId: 900,
-          total: 0,
-          page: 1,
-          pageSize: 200,
-          records: [],
-        };
-      }
-      if (query.page === 1 && query.snapshotId == null) {
-        pageOneRequests += 1;
-        const snapshotId = pageOneRequests === 1 ? 902 : 903;
-        return {
-          snapshotId,
-          total: 120,
-          page: 1,
-          pageSize: 50,
-          records: [
-            {
-              id: snapshotId,
-              invokeId: `history-snapshot-${snapshotId}`,
-              occurredAt: "2026-03-02T12:35:00Z",
-              status: "completed",
-              promptCacheKey: "pck-history-snapshot",
-              totalTokens: 1500,
-              cost: 0.31,
-              proxyDisplayName: `Proxy Snapshot ${snapshotId}`,
-              createdAt: "2026-03-02T12:35:00Z",
-            },
-          ],
-        };
-      }
-      if (query.page === 2) {
-        const snapshotId = query.snapshotId ?? 903;
-        return {
-          snapshotId,
-          total: 120,
-          page: 2,
-          pageSize: 50,
-          records: [
-            {
-              id: 51,
-              invokeId: "history-snapshot-page-2",
-              occurredAt: "2026-03-02T12:10:00Z",
-              status: "completed",
-              promptCacheKey: "pck-history-snapshot",
-              totalTokens: 900,
-              cost: 0.2,
-              proxyDisplayName: `Proxy Snapshot Page 2 ${snapshotId}`,
-              createdAt: "2026-03-02T12:10:00Z",
-            },
-          ],
-        };
-      }
-      throw new Error(`unexpected page ${query.page}`);
-    });
+    apiMocks.fetchInvocationRecords.mockImplementation(
+      async (query: { page?: number; snapshotId?: number; pageSize?: number }) => {
+        if (query.pageSize === 200) {
+          return {
+            snapshotId: 900,
+            total: 0,
+            page: 1,
+            pageSize: 200,
+            records: [],
+          };
+        }
+        if (query.page === 1 && query.snapshotId == null) {
+          pageOneRequests += 1;
+          const snapshotId = pageOneRequests === 1 ? 902 : 903;
+          return {
+            snapshotId,
+            total: 120,
+            page: 1,
+            pageSize: 50,
+            records: [
+              {
+                id: snapshotId,
+                invokeId: `history-snapshot-${snapshotId}`,
+                occurredAt: "2026-03-02T12:35:00Z",
+                status: "completed",
+                promptCacheKey: "pck-history-snapshot",
+                totalTokens: 1500,
+                cost: 0.31,
+                proxyDisplayName: `Proxy Snapshot ${snapshotId}`,
+                createdAt: "2026-03-02T12:35:00Z",
+              },
+            ],
+          };
+        }
+        if (query.page === 2) {
+          const snapshotId = query.snapshotId ?? 903;
+          return {
+            snapshotId,
+            total: 120,
+            page: 2,
+            pageSize: 50,
+            records: [
+              {
+                id: 51,
+                invokeId: "history-snapshot-page-2",
+                occurredAt: "2026-03-02T12:10:00Z",
+                status: "completed",
+                promptCacheKey: "pck-history-snapshot",
+                totalTokens: 900,
+                cost: 0.2,
+                proxyDisplayName: `Proxy Snapshot Page 2 ${snapshotId}`,
+                createdAt: "2026-03-02T12:10:00Z",
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected page ${query.page}`);
+      },
+    );
 
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",

@@ -1,7 +1,7 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from "@playwright/test";
 
-const isBackendEventsRequest = (url: URL): boolean => url.pathname === '/events'
-const isBackendApiRequest = (url: URL): boolean => url.pathname.startsWith('/api/')
+const isBackendEventsRequest = (url: URL): boolean => url.pathname === "/events";
+const isBackendApiRequest = (url: URL): boolean => url.pathname.startsWith("/api/");
 
 const RECORDS_FIXTURE = {
   snapshotId: 901,
@@ -11,16 +11,16 @@ const RECORDS_FIXTURE = {
   records: [
     {
       id: 9001,
-      invokeId: 'inv_records_overlay_9001',
-      occurredAt: '2026-03-12T03:35:52Z',
-      createdAt: '2026-03-12T03:35:52Z',
-      source: 'proxy',
-      proxyDisplayName: 'sg-relay-edge-01',
-      endpoint: '/v1/responses',
-      model: 'gpt-5.3-codex',
-      status: 'success',
-      requestedServiceTier: 'priority',
-      serviceTier: 'priority',
+      invokeId: "inv_records_overlay_9001",
+      occurredAt: "2026-03-12T03:35:52Z",
+      createdAt: "2026-03-12T03:35:52Z",
+      source: "proxy",
+      proxyDisplayName: "sg-relay-edge-01",
+      endpoint: "/v1/responses",
+      model: "gpt-5.3-codex",
+      status: "success",
+      requestedServiceTier: "priority",
+      serviceTier: "priority",
       inputTokens: 113273,
       outputTokens: 176,
       cacheInputTokens: 109568,
@@ -31,16 +31,16 @@ const RECORDS_FIXTURE = {
     },
     {
       id: 9002,
-      invokeId: 'inv_records_overlay_9002',
-      occurredAt: '2026-03-12T03:34:52Z',
-      createdAt: '2026-03-12T03:34:52Z',
-      source: 'proxy',
-      proxyDisplayName: 'iad-relay-edge-02',
-      endpoint: '/v1/responses/compact',
-      model: 'gpt-5.3-codex',
-      status: 'failed',
-      requestedServiceTier: 'priority',
-      serviceTier: 'auto',
+      invokeId: "inv_records_overlay_9002",
+      occurredAt: "2026-03-12T03:34:52Z",
+      createdAt: "2026-03-12T03:34:52Z",
+      source: "proxy",
+      proxyDisplayName: "iad-relay-edge-02",
+      endpoint: "/v1/responses/compact",
+      model: "gpt-5.3-codex",
+      status: "failed",
+      requestedServiceTier: "priority",
+      serviceTier: "auto",
       inputTokens: 95250,
       outputTokens: 69,
       cacheInputTokens: 99072,
@@ -48,10 +48,10 @@ const RECORDS_FIXTURE = {
       cost: 0.0186,
       tUpstreamTtfbMs: 102.2,
       tTotalMs: 7348.7,
-      errorMessage: 'request aborted by downstream client',
+      errorMessage: "request aborted by downstream client",
     },
   ],
-}
+};
 
 const SUMMARY_FIXTURE = {
   snapshotId: RECORDS_FIXTURE.snapshotId,
@@ -81,7 +81,7 @@ const SUMMARY_FIXTURE = {
     clientAbortCount: 0,
     actionableFailureCount: 1,
   },
-}
+};
 
 const SUGGESTIONS_FIXTURE = {
   model: { items: [], hasMore: false },
@@ -96,113 +96,119 @@ const SUGGESTIONS_FIXTURE = {
     hasMore: false,
   },
   requesterIp: { items: [], hasMore: false },
-}
+};
 
 async function mockRecordsPageApis(page: Page) {
   await page.route(isBackendEventsRequest, async (route) => {
     await route.fulfill({
       status: 204,
       headers: {
-        'content-type': 'text/event-stream',
-        'cache-control': 'no-cache',
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
       },
-      body: '',
-    })
-  })
+      body: "",
+    });
+  });
 
   await page.route(isBackendApiRequest, async (route) => {
-    const requestUrl = new URL(route.request().url())
-    const { pathname } = requestUrl
+    const requestUrl = new URL(route.request().url());
+    const { pathname } = requestUrl;
 
-    if (pathname === '/api/invocations') {
+    if (pathname === "/api/invocations") {
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
+        contentType: "application/json",
         body: JSON.stringify(RECORDS_FIXTURE),
-      })
-      return
+      });
+      return;
     }
 
-    if (pathname === '/api/invocations/summary') {
+    if (pathname === "/api/invocations/summary") {
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
+        contentType: "application/json",
         body: JSON.stringify(SUMMARY_FIXTURE),
-      })
-      return
+      });
+      return;
     }
 
-    if (pathname === '/api/invocations/new-count') {
+    if (pathname === "/api/invocations/new-count") {
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
+        contentType: "application/json",
         body: JSON.stringify({
           snapshotId: RECORDS_FIXTURE.snapshotId,
           newRecordsCount: 0,
         }),
-      })
-      return
+      });
+      return;
     }
 
-    if (pathname === '/api/invocations/suggestions') {
+    if (pathname === "/api/invocations/suggestions") {
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
+        contentType: "application/json",
         body: JSON.stringify(SUGGESTIONS_FIXTURE),
-      })
-      return
+      });
+      return;
     }
 
-    if (pathname === '/api/version') {
+    if (pathname === "/api/version") {
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
+        contentType: "application/json",
         body: JSON.stringify({
-          backend: '1.2.0',
-          frontend: '0.2.0',
+          backend: "1.2.0",
+          frontend: "0.2.0",
         }),
-      })
-      return
+      });
+      return;
     }
 
-    throw new Error(`unmocked API route in records overlay test: ${pathname}`)
-  })
+    throw new Error(`unmocked API route in records overlay test: ${pathname}`);
+  });
 }
 
 type OverlayViewport = {
-  label: string
-  width: number
-  height: number
-  overlapMarginRem: number
-  minimumOverlapPx: number
-}
+  label: string;
+  width: number;
+  height: number;
+  overlapMarginRem: number;
+  minimumOverlapPx: number;
+};
 
 const OVERLAY_VIEWPORTS: OverlayViewport[] = [
-  { label: 'desktop', width: 1440, height: 960, overlapMarginRem: 11, minimumOverlapPx: 12 },
+  { label: "desktop", width: 1440, height: 960, overlapMarginRem: 11, minimumOverlapPx: 12 },
   // 1279px stays below Tailwind's xl breakpoint, so Records collapses from 4 columns to 2.
-  { label: 'narrow-desktop', width: 1279, height: 1500, overlapMarginRem: 18, minimumOverlapPx: 12 },
-]
+  {
+    label: "narrow-desktop",
+    width: 1279,
+    height: 1500,
+    overlapMarginRem: 18,
+    minimumOverlapPx: 12,
+  },
+];
 
 async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: OverlayViewport) {
-  await page.setViewportSize({ width: viewport.width, height: viewport.height })
-  await mockRecordsPageApis(page)
-  await page.goto('/#/records')
+  await page.setViewportSize({ width: viewport.width, height: viewport.height });
+  await mockRecordsPageApis(page);
+  await page.goto("/#/records");
 
-  const filtersPanel = page.getByTestId('records-filters-panel')
-  const summaryPanel = page.getByTestId('records-summary-panel')
-  const promptCacheKeyInput = page.locator('#records-filter-prompt-cache-key')
+  const filtersPanel = page.getByTestId("records-filters-panel");
+  const summaryPanel = page.getByTestId("records-summary-panel");
+  const promptCacheKeyInput = page.locator("#records-filter-prompt-cache-key");
 
-  await expect(filtersPanel).toBeVisible()
-  await expect(summaryPanel).toBeVisible()
-  await expect(promptCacheKeyInput).toBeVisible()
-  await promptCacheKeyInput.scrollIntoViewIfNeeded()
+  await expect(filtersPanel).toBeVisible();
+  await expect(summaryPanel).toBeVisible();
+  await expect(promptCacheKeyInput).toBeVisible();
+  await promptCacheKeyInput.scrollIntoViewIfNeeded();
 
-  await promptCacheKeyInput.click()
+  await promptCacheKeyInput.click();
 
-  const listbox = filtersPanel.locator('[role="listbox"]')
-  await expect(listbox).toBeVisible()
-  await expect(listbox.getByRole('option').first()).toBeVisible()
-  await expect(filtersPanel).toHaveAttribute('data-suggestions-open', 'true')
+  const listbox = filtersPanel.locator('[role="listbox"]');
+  await expect(listbox).toBeVisible();
+  await expect(listbox.getByRole("option").first()).toBeVisible();
+  await expect(filtersPanel).toHaveAttribute("data-suggestions-open", "true");
 
   // Force an overlap scenario after the populated listbox opens so layout shifts do not block the click target itself.
   await page.addStyleTag({
@@ -211,26 +217,33 @@ async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: Overl
         margin-top: -${viewport.overlapMarginRem}rem !important;
       }
     `,
-  })
-  await page.waitForTimeout(100)
+  });
+  await page.waitForTimeout(100);
 
   const overlayState = await page.evaluate(() => {
-    const panel = document.querySelector('[data-testid="records-filters-panel"]') as HTMLElement | null
-    const summary = document.querySelector('[data-testid="records-summary-panel"]') as HTMLElement | null
-    const listboxNode = panel?.querySelector('[role="listbox"]') as HTMLElement | null
+    const panel = document.querySelector(
+      '[data-testid="records-filters-panel"]',
+    ) as HTMLElement | null;
+    const summary = document.querySelector(
+      '[data-testid="records-summary-panel"]',
+    ) as HTMLElement | null;
+    const listboxNode = panel?.querySelector('[role="listbox"]') as HTMLElement | null;
     if (!panel || !summary || !listboxNode) {
-      return null
+      return null;
     }
 
-    const panelStyles = window.getComputedStyle(panel)
-    const listRect = listboxNode.getBoundingClientRect()
-    const summaryRect = summary.getBoundingClientRect()
-    const overlapTop = Math.max(listRect.top, summaryRect.top)
-    const overlapBottom = Math.min(listRect.bottom, summaryRect.bottom)
-    const overlapY = overlapBottom - overlapTop
-    const probeX = Math.min(listRect.right - 12, Math.max(listRect.left + 12, listRect.left + listRect.width * 0.25))
-    const probeY = overlapTop + Math.max(12, Math.min(overlapY / 2, 40))
-    const topNode = document.elementFromPoint(probeX, probeY) as HTMLElement | null
+    const panelStyles = window.getComputedStyle(panel);
+    const listRect = listboxNode.getBoundingClientRect();
+    const summaryRect = summary.getBoundingClientRect();
+    const overlapTop = Math.max(listRect.top, summaryRect.top);
+    const overlapBottom = Math.min(listRect.bottom, summaryRect.bottom);
+    const overlapY = overlapBottom - overlapTop;
+    const probeX = Math.min(
+      listRect.right - 12,
+      Math.max(listRect.left + 12, listRect.left + listRect.width * 0.25),
+    );
+    const probeY = overlapTop + Math.max(12, Math.min(overlapY / 2, 40));
+    const topNode = document.elementFromPoint(probeX, probeY) as HTMLElement | null;
 
     return {
       panelZIndex: panelStyles.zIndex,
@@ -238,20 +251,22 @@ async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: Overl
       summaryTop: summaryRect.top,
       overlapY,
       topNodeInsideListbox: !!topNode && listboxNode.contains(topNode),
-    }
-  })
+    };
+  });
 
-  expect(overlayState).not.toBeNull()
-  expect(overlayState?.panelZIndex).toBe('10')
-  expect(overlayState?.listBottom).toBeGreaterThan(overlayState?.summaryTop ?? 0)
-  expect(overlayState?.overlapY).toBeGreaterThan(viewport.minimumOverlapPx)
-  expect(overlayState?.topNodeInsideListbox).toBe(true)
+  expect(overlayState).not.toBeNull();
+  expect(overlayState?.panelZIndex).toBe("10");
+  expect(overlayState?.listBottom).toBeGreaterThan(overlayState?.summaryTop ?? 0);
+  expect(overlayState?.overlapY).toBeGreaterThan(viewport.minimumOverlapPx);
+  expect(overlayState?.topNodeInsideListbox).toBe(true);
 }
 
-test.describe('Records filter overlay', () => {
+test.describe("Records filter overlay", () => {
   for (const viewport of OVERLAY_VIEWPORTS) {
-    test(`keeps the prompt cache key dropdown above the summary panel at ${viewport.label}`, async ({ page }) => {
-      await expectPromptCacheDropdownAboveSummary(page, viewport)
-    })
+    test(`keeps the prompt cache key dropdown above the summary panel at ${viewport.label}`, async ({
+      page,
+    }) => {
+      await expectPromptCacheDropdownAboveSummary(page, viewport);
+    });
   }
-})
+});

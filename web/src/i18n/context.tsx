@@ -1,73 +1,82 @@
-/* eslint-disable react-refresh/only-export-components */
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { FALLBACK_LOCALE, formatTranslation, supportedLocales, translations, type Locale, type TranslationValues } from './translations'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import {
+  FALLBACK_LOCALE,
+  formatTranslation,
+  type Locale,
+  supportedLocales,
+  type TranslationValues,
+  translations,
+} from "./translations";
 
-const STORAGE_KEY = 'codex-vibe-monitor.locale'
+const STORAGE_KEY = "codex-vibe-monitor.locale";
 const DOC_LANG_MAP: Record<Locale, string> = {
-  zh: 'zh-Hans',
-  en: 'en',
-}
+  zh: "zh-Hans",
+  en: "en",
+};
 
 interface I18nContextValue {
-  locale: Locale
-  setLocale: (next: Locale) => void
-  t: (key: string, values?: TranslationValues) => string
-  availableLocales: readonly Locale[]
+  locale: Locale;
+  setLocale: (next: Locale) => void;
+  t: (key: string, values?: TranslationValues) => string;
+  availableLocales: readonly Locale[];
 }
 
-const I18nContext = createContext<I18nContextValue | undefined>(undefined)
+const I18nContext = createContext<I18nContextValue | undefined>(undefined);
 
 function isLocale(value: unknown): value is Locale {
-  return typeof value === 'string' && supportedLocales.includes(value as Locale)
+  return typeof value === "string" && supportedLocales.includes(value as Locale);
 }
 
 function translate(locale: Locale, key: string, values?: TranslationValues) {
-  const dictionary = translations[locale] ?? translations[FALLBACK_LOCALE]
-  const fallback = translations[FALLBACK_LOCALE]
-  const safeDictionary = dictionary as Record<string, string>
-  const safeFallback = fallback as Record<string, string>
-  const template = safeDictionary[key] ?? safeFallback[key] ?? key
-  return formatTranslation(template, values)
+  const dictionary = translations[locale] ?? translations[FALLBACK_LOCALE];
+  const fallback = translations[FALLBACK_LOCALE];
+  const safeDictionary = dictionary as Record<string, string>;
+  const safeFallback = fallback as Record<string, string>;
+  const template = safeDictionary[key] ?? safeFallback[key] ?? key;
+  return formatTranslation(template, values);
 }
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       try {
-        const cached = window.localStorage.getItem(STORAGE_KEY)
+        const cached = window.localStorage.getItem(STORAGE_KEY);
         if (isLocale(cached)) {
-          return cached
+          return cached;
         }
       } catch {
         // ignore storage failures (Safari private mode etc.)
       }
-      const preferred = window.navigator.language || window.navigator.languages?.[0]
-      if (preferred && preferred.toLowerCase().startsWith('zh')) {
-        return 'zh'
+      const preferred = window.navigator.language || window.navigator.languages?.[0];
+      if (preferred?.toLowerCase().startsWith("zh")) {
+        return "zh";
       }
     }
-    return supportedLocales[0]
-  })
+    return supportedLocales[0];
+  });
 
   const setLocale = useCallback((next: Locale) => {
-    setLocaleState((current) => (current === next ? current : next))
-    if (typeof window !== 'undefined') {
+    setLocaleState((current) => (current === next ? current : next));
+    if (typeof window !== "undefined") {
       try {
-        window.localStorage.setItem(STORAGE_KEY, next)
+        window.localStorage.setItem(STORAGE_KEY, next);
       } catch {
         // suppress storage write errors
       }
     }
-  }, [])
+  }, []);
 
   useEffect(() => {
-    if (typeof document === 'undefined') return
-    const lang = DOC_LANG_MAP[locale] ?? DOC_LANG_MAP[FALLBACK_LOCALE]
-    document.documentElement.lang = lang
-    document.documentElement.setAttribute('data-locale', locale)
-  }, [locale])
+    if (typeof document === "undefined") return;
+    const lang = DOC_LANG_MAP[locale] ?? DOC_LANG_MAP[FALLBACK_LOCALE];
+    document.documentElement.lang = lang;
+    document.documentElement.setAttribute("data-locale", locale);
+  }, [locale]);
 
-  const t = useCallback((key: string, values?: TranslationValues) => translate(locale, key, values), [locale])
+  const t = useCallback(
+    (key: string, values?: TranslationValues) => translate(locale, key, values),
+    [locale],
+  );
 
   const value = useMemo<I18nContextValue>(
     () => ({
@@ -77,15 +86,15 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
       availableLocales: supportedLocales,
     }),
     [locale, setLocale, t],
-  )
+  );
 
-  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
 
 export function useTranslation() {
-  const context = useContext(I18nContext)
+  const context = useContext(I18nContext);
   if (!context) {
-    throw new Error('useTranslation must be used within I18nProvider')
+    throw new Error("useTranslation must be used within I18nProvider");
   }
-  return context
+  return context;
 }

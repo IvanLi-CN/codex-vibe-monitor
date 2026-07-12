@@ -59,9 +59,9 @@ afterEach(() => {
 
 describe("useGroupNoteCatalogAutoRefresh", () => {
   it("does not launch a second refresh while an empty catalog refresh is already loading", () => {
-    const refresh = vi.fn<
-      (options?: { silent?: boolean }) => Promise<unknown>
-    >(() => Promise.resolve());
+    const refresh = vi.fn<(options?: { silent?: boolean }) => Promise<unknown>>(() =>
+      Promise.resolve(),
+    );
 
     render(
       <Probe
@@ -79,9 +79,9 @@ describe("useGroupNoteCatalogAutoRefresh", () => {
   });
 
   it("avoids retry loops when the catalog falls back to missing after a failed refresh", () => {
-    const refresh = vi.fn<
-      (options?: { silent?: boolean }) => Promise<unknown>
-    >(() => Promise.resolve());
+    const refresh = vi.fn<(options?: { silent?: boolean }) => Promise<unknown>>(() =>
+      Promise.resolve(),
+    );
 
     render(
       <Probe
@@ -123,9 +123,9 @@ describe("useGroupNoteCatalogAutoRefresh", () => {
   });
 
   it("retries again after the dialog recovers or reopens", () => {
-    const refresh = vi.fn<
-      (options?: { silent?: boolean }) => Promise<unknown>
-    >(() => Promise.resolve());
+    const refresh = vi.fn<(options?: { silent?: boolean }) => Promise<unknown>>(() =>
+      Promise.resolve(),
+    );
 
     render(
       <Probe

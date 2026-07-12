@@ -883,19 +883,14 @@ fn copy_forwardable_headers(
         }
         builder = builder.header(name, value);
         let lower_name = name.as_str().to_ascii_lowercase();
-        if let (Some(crypto_key), Some(header_fingerprints)) = (crypto_key, fingerprints.as_mut()) {
-            if is_fingerprinted_oauth_header_name(lower_name.as_str())
-                && !value.as_bytes().is_empty()
-            {
-                header_fingerprints.insert(
-                    lower_name.clone(),
-                    oauth_fingerprint_header_value(
-                        crypto_key,
-                        lower_name.as_str(),
-                        value.as_bytes(),
-                    ),
-                );
-            }
+        if let (Some(crypto_key), Some(header_fingerprints)) = (crypto_key, fingerprints.as_mut())
+            && is_fingerprinted_oauth_header_name(lower_name.as_str())
+            && !value.as_bytes().is_empty()
+        {
+            header_fingerprints.insert(
+                lower_name.clone(),
+                oauth_fingerprint_header_value(crypto_key, lower_name.as_str(), value.as_bytes()),
+            );
         }
         forwarded_names.insert(lower_name);
     }
@@ -1321,17 +1316,16 @@ fn transform_models_payload(bytes: &[u8]) -> Result<Value> {
 }
 
 fn summarize_error_detail(bytes: &[u8]) -> Option<String> {
-    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
-        if let Some(message) = value
+    if let Ok(value) = serde_json::from_slice::<Value>(bytes)
+        && let Some(message) = value
             .get("error")
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str)
             .or_else(|| value.get("message").and_then(Value::as_str))
-        {
-            let trimmed = message.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.chars().take(240).collect());
-            }
+    {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.chars().take(240).collect());
         }
     }
     let text = String::from_utf8_lossy(bytes);

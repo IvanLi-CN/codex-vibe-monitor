@@ -678,8 +678,10 @@ async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
     .await;
     let secondary_proxy_key = {
         let mut manager = state.forward_proxy.lock().await;
-        let mut settings = ForwardProxySettings::default();
-        settings.proxy_urls = vec![proxy_url];
+        let settings = ForwardProxySettings {
+            proxy_urls: vec![proxy_url],
+            ..Default::default()
+        };
         manager.apply_settings(settings);
         manager.bound_group_runtime.insert(
             "node-shunt-refresh".to_string(),

@@ -1,12 +1,12 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { I18nProvider } from '../../i18n'
-import type { TimeseriesPoint } from '../../lib/api'
-import { SuccessFailureChart } from './SuccessFailureChart'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { I18nProvider } from "../../i18n";
+import type { TimeseriesPoint } from "../../lib/api";
+import { SuccessFailureChart } from "./SuccessFailureChart";
 
 const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
   {
-    bucketStart: '2026-03-26T10:00:00.000Z',
-    bucketEnd: '2026-03-26T10:15:00.000Z',
+    bucketStart: "2026-03-26T10:00:00.000Z",
+    bucketEnd: "2026-03-26T10:15:00.000Z",
     totalCount: 168,
     successCount: 166,
     failureCount: 2,
@@ -20,8 +20,8 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstResponseByteTotalP95Ms: 31_200,
   },
   {
-    bucketStart: '2026-03-26T10:15:00.000Z',
-    bucketEnd: '2026-03-26T10:30:00.000Z',
+    bucketStart: "2026-03-26T10:15:00.000Z",
+    bucketEnd: "2026-03-26T10:30:00.000Z",
     totalCount: 154,
     successCount: 151,
     failureCount: 3,
@@ -35,8 +35,8 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstResponseByteTotalP95Ms: 33_400,
   },
   {
-    bucketStart: '2026-03-26T10:30:00.000Z',
-    bucketEnd: '2026-03-26T10:45:00.000Z',
+    bucketStart: "2026-03-26T10:30:00.000Z",
+    bucketEnd: "2026-03-26T10:45:00.000Z",
     totalCount: 82,
     successCount: 79,
     failureCount: 3,
@@ -50,8 +50,8 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstResponseByteTotalP95Ms: 38_240,
   },
   {
-    bucketStart: '2026-03-26T10:45:00.000Z',
-    bucketEnd: '2026-03-26T11:00:00.000Z',
+    bucketStart: "2026-03-26T10:45:00.000Z",
+    bucketEnd: "2026-03-26T11:00:00.000Z",
     totalCount: 112,
     successCount: 109,
     failureCount: 3,
@@ -65,8 +65,8 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstResponseByteTotalP95Ms: 52_340,
   },
   {
-    bucketStart: '2026-03-26T11:00:00.000Z',
-    bucketEnd: '2026-03-26T11:15:00.000Z',
+    bucketStart: "2026-03-26T11:00:00.000Z",
+    bucketEnd: "2026-03-26T11:15:00.000Z",
     totalCount: 166,
     successCount: 163,
     failureCount: 3,
@@ -80,8 +80,8 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstResponseByteTotalP95Ms: 47_900,
   },
   {
-    bucketStart: '2026-03-26T11:15:00.000Z',
-    bucketEnd: '2026-03-26T11:30:00.000Z',
+    bucketStart: "2026-03-26T11:15:00.000Z",
+    bucketEnd: "2026-03-26T11:30:00.000Z",
     totalCount: 149,
     successCount: 145,
     failureCount: 4,
@@ -94,13 +94,13 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstResponseByteTotalAvgMs: 34_480,
     firstResponseByteTotalP95Ms: 39_120,
   },
-]
+];
 
 const meta = {
-  title: 'Stats/SuccessFailureChart',
+  title: "Stats/SuccessFailureChart",
   component: SuccessFailureChart,
   parameters: {
-    layout: 'fullscreen',
+    layout: "fullscreen",
   },
   decorators: [
     (Story) => (
@@ -113,11 +113,11 @@ const meta = {
       </I18nProvider>
     ),
   ],
-} satisfies Meta<typeof SuccessFailureChart>
+} satisfies Meta<typeof SuccessFailureChart>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const FirstResponseByteTotalP95: Story = {
   args: {
@@ -131,11 +131,11 @@ export const FirstResponseByteTotalP95: Story = {
     docs: {
       description: {
         story:
-          'Stable chart evidence for the corrected stats metric. The highlighted latency line now follows `首字总耗时` semantics, so a bucket can surface `43.89 s` average with a `52.34 s` P95 while success/failure bars remain unchanged.',
+          "Stable chart evidence for the corrected stats metric. The highlighted latency line now follows `首字总耗时` semantics, so a bucket can surface `43.89 s` average with a `52.34 s` P95 while success/failure bars remain unchanged.",
       },
     },
   },
-}
+};
 
 export const Loading: Story = {
   args: {
@@ -143,4 +143,4 @@ export const Loading: Story = {
     isLoading: true,
     bucketSeconds: 900,
   },
-}
+};

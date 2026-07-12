@@ -3,7 +3,7 @@ pre-commit:
   commands:
     check-web:
       glob: "web/**/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
-      run: cd web && bun run lint -- --max-warnings=0
+      run: bun run lint:web
     typecheck-web:
       run: cd web && bunx tsc -b
     format-markdown:
@@ -16,7 +16,7 @@ pre-commit:
       stage_fixed: true
     check:
       glob: "*.{rs}"
-      run: cargo check --locked --all-targets --all-features
+      run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
 commit-msg:
   commands:

@@ -146,8 +146,10 @@ async fn node_shunt_assignments_preserve_slots_for_accounts_with_in_flight_reser
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let secondary_proxy_key = {
         let mut manager = state.forward_proxy.lock().await;
-        let mut settings = ForwardProxySettings::default();
-        settings.proxy_urls = vec!["http://127.0.0.1:18080".to_string()];
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:18080".to_string()],
+            ..Default::default()
+        };
         manager.apply_settings(settings);
         manager
             .binding_nodes()
@@ -295,8 +297,10 @@ async fn node_shunt_assignments_keep_all_reserved_proxy_keys_occupied_for_one_ac
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let secondary_proxy_key = {
         let mut manager = state.forward_proxy.lock().await;
-        let mut settings = ForwardProxySettings::default();
-        settings.proxy_urls = vec!["http://127.0.0.1:18080".to_string()];
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:18080".to_string()],
+            ..Default::default()
+        };
         manager.apply_settings(settings);
         manager
             .binding_nodes()
@@ -489,8 +493,10 @@ async fn node_shunt_assignments_keep_globally_reserved_proxy_keys_occupied() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let secondary_proxy_key = {
         let mut manager = state.forward_proxy.lock().await;
-        let mut settings = ForwardProxySettings::default();
-        settings.proxy_urls = vec!["http://127.0.0.1:18080".to_string()];
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:18080".to_string()],
+            ..Default::default()
+        };
         manager.apply_settings(settings);
         manager
             .binding_nodes()
@@ -912,8 +918,10 @@ async fn provisioning_scope_skips_proxy_keys_assigned_to_other_groups() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let secondary_proxy_key = {
         let mut manager = state.forward_proxy.lock().await;
-        let mut settings = ForwardProxySettings::default();
-        settings.proxy_urls = vec!["http://127.0.0.1:18080".to_string()];
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:18080".to_string()],
+            ..Default::default()
+        };
         manager.apply_settings(settings);
         manager
             .binding_nodes()
@@ -1053,8 +1061,10 @@ async fn provisioning_scope_skips_proxy_keys_reserved_by_other_accounts() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let secondary_proxy_key = {
         let mut manager = state.forward_proxy.lock().await;
-        let mut settings = ForwardProxySettings::default();
-        settings.proxy_urls = vec!["http://127.0.0.1:18080".to_string()];
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:18080".to_string()],
+            ..Default::default()
+        };
         manager.apply_settings(settings);
         manager
             .binding_nodes()
@@ -1168,8 +1178,10 @@ async fn provisioning_scope_reuses_live_reserved_proxy_key_for_same_account() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let secondary_proxy_key = {
         let mut manager = state.forward_proxy.lock().await;
-        let mut settings = ForwardProxySettings::default();
-        settings.proxy_urls = vec!["http://127.0.0.1:18080".to_string()];
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:18080".to_string()],
+            ..Default::default()
+        };
         manager.apply_settings(settings);
         manager
             .binding_nodes()

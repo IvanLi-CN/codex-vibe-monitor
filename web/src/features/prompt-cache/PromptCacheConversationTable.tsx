@@ -1,13 +1,13 @@
 import {
   Fragment,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useId,
   useMemo,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
-  type ReactNode,
 } from "react";
 import {
   Bar,
@@ -20,49 +20,9 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { useTranslation } from "../../i18n";
-import type {
-  ApiInvocation,
-  InvocationRecordsQuery,
-  InvocationRecordsSummaryResponse,
-  PromptCacheConversation,
-  PromptCacheConversationBindingResponse,
-  PromptCacheConversationBindingKind,
-  PromptCacheConversationRewriteMode,
-  PromptCacheConversationUpstreamAccount,
-  PromptCacheConversationsResponse,
-  UpstreamAccountSummary,
-  ForwardProxyBindingNode,
-} from "../../lib/api";
-import {
-  fetchInvocationRecords,
-  fetchInvocationRecordsSummary,
-  fetchPromptCacheConversationBinding,
-  fetchUpstreamAccounts,
-  updatePromptCacheConversationBinding,
-} from "../../lib/api";
-import {
-  chartBaseTokens,
-  chartStatusTokens,
-  metricAccent,
-} from "../../lib/chartTheme";
-import { resolvePromptCacheInvocationOutcome } from "../../lib/conversationRequestPoint";
-import { mergeInvocationRecordCollections } from "../../lib/invocationLiveMerge";
-import { invocationStableKey } from "../../lib/invocation";
-import { buildInvocationFromPromptCachePreview } from "../../lib/promptCacheLive";
-import { subscribeToSse, subscribeToSseOpen } from "../../lib/sse";
-import type { ThemeMode } from "../../theme";
-import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
-import { AppIcon } from "../shared/AppIcon";
-import { InvocationTable } from "../invocations/InvocationTable";
-import { ConversationSparkline } from "./KeyedConversationTable";
-import { Button } from "../../components/ui/button";
-import { Badge } from "../../components/ui/badge";
-import {
-  FALLBACK_CELL,
-  findVisibleConversationChartMax,
-} from "./keyedConversationChart";
 import { Alert } from "../../components/ui/alert";
+import { Badge } from "../../components/ui/badge";
+import { Button } from "../../components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -71,13 +31,39 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
-import { floatingSurfaceStyle, type FloatingSurfaceTheme } from "../../components/ui/floating-surface";
-import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
+import {
+  type FloatingSurfaceTheme,
+  floatingSurfaceStyle,
+} from "../../components/ui/floating-surface";
 import { Input } from "../../components/ui/input";
+import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { SelectField } from "../../components/ui/select-field";
 import { Spinner } from "../../components/ui/spinner";
-import { RoutingTimeoutOverridesEditor } from "../account-pool/RoutingTimeoutOverridesEditor";
-import { cn } from "../../lib/utils";
+import { useTranslation } from "../../i18n";
+import type {
+  ApiInvocation,
+  ForwardProxyBindingNode,
+  InvocationRecordsQuery,
+  InvocationRecordsSummaryResponse,
+  PromptCacheConversation,
+  PromptCacheConversationBindingKind,
+  PromptCacheConversationBindingResponse,
+  PromptCacheConversationRewriteMode,
+  PromptCacheConversationsResponse,
+  PromptCacheConversationUpstreamAccount,
+  UpstreamAccountSummary,
+} from "../../lib/api";
+import {
+  fetchInvocationRecords,
+  fetchInvocationRecordsSummary,
+  fetchPromptCacheConversationBinding,
+  fetchUpstreamAccounts,
+  updatePromptCacheConversationBinding,
+} from "../../lib/api";
+import { chartBaseTokens, chartStatusTokens, metricAccent } from "../../lib/chartTheme";
+import { resolvePromptCacheInvocationOutcome } from "../../lib/conversationRequestPoint";
+import { invocationStableKey } from "../../lib/invocation";
+import { mergeInvocationRecordCollections } from "../../lib/invocationLiveMerge";
 import {
   buildRoutingTimeoutOverrideDraftForSource,
   buildRoutingTimeoutOverrideEnabledStateForSource,
@@ -86,6 +72,16 @@ import {
   type RoutingTimeoutOverrideDraft,
   type RoutingTimeoutOverrideEnabledState,
 } from "../../lib/poolRoutingTimeouts";
+import { buildInvocationFromPromptCachePreview } from "../../lib/promptCacheLive";
+import { subscribeToSse, subscribeToSseOpen } from "../../lib/sse";
+import { cn } from "../../lib/utils";
+import type { ThemeMode } from "../../theme";
+import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
+import { RoutingTimeoutOverridesEditor } from "../account-pool/RoutingTimeoutOverridesEditor";
+import { InvocationTable } from "../invocations/InvocationTable";
+import { AppIcon } from "../shared/AppIcon";
+import { ConversationSparkline } from "./KeyedConversationTable";
+import { FALLBACK_CELL, findVisibleConversationChartMax } from "./keyedConversationChart";
 
 interface PromptCacheConversationTableProps {
   stats: PromptCacheConversationsResponse | null;
@@ -96,13 +92,8 @@ interface PromptCacheConversationTableProps {
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   keyColumnLabel?: string;
   emptyLabel?: string;
-  historyQueryForConversationKey?: (
-    conversationKey: string,
-  ) => Partial<InvocationRecordsQuery>;
-  historyRecordMatchesConversationKey?: (
-    record: ApiInvocation,
-    conversationKey: string,
-  ) => boolean;
+  historyQueryForConversationKey?: (conversationKey: string) => Partial<InvocationRecordsQuery>;
+  historyRecordMatchesConversationKey?: (record: ApiInvocation, conversationKey: string) => boolean;
 }
 
 type ConversationHistoryQueryBuilder = NonNullable<
@@ -156,21 +147,13 @@ function parseEpoch(raw?: string | null) {
   return Number.isNaN(epoch) ? null : epoch;
 }
 
-function formatNumber(
-  value: number | null | undefined,
-  formatter: Intl.NumberFormat,
-) {
-  if (typeof value !== "number" || !Number.isFinite(value))
-    return FALLBACK_CELL;
+function formatNumber(value: number | null | undefined, formatter: Intl.NumberFormat) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
   return formatter.format(value);
 }
 
-function formatCurrency(
-  value: number | null | undefined,
-  formatter: Intl.NumberFormat,
-) {
-  if (typeof value !== "number" || !Number.isFinite(value))
-    return FALLBACK_CELL;
+function formatCurrency(value: number | null | undefined, formatter: Intl.NumberFormat) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
   return formatter.format(value);
 }
 
@@ -187,24 +170,18 @@ function conversationBindingAccountLabel(account: UpstreamAccountSummary) {
 }
 
 function conversationForwardProxyLabel(node: ForwardProxyBindingNode) {
-  return node.protocolLabel
-    ? `${node.displayName} · ${node.protocolLabel}`
-    : node.displayName;
+  return node.protocolLabel ? `${node.displayName} · ${node.protocolLabel}` : node.displayName;
 }
 
 function normalizeConversationProxyKeys(values?: string[] | null): string[] {
   if (!Array.isArray(values)) return [];
   return Array.from(
-    new Set(
-      values.map((value) => value.trim()).filter((value) => value.length > 0),
-    ),
+    new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)),
   );
 }
 
 function toggleConversationProxyKey(keys: string[], target: string): string[] {
-  return keys.includes(target)
-    ? keys.filter((key) => key !== target)
-    : [...keys, target];
+  return keys.includes(target) ? keys.filter((key) => key !== target) : [...keys, target];
 }
 
 function splitConversationModelsDraft(value: string) {
@@ -234,13 +211,9 @@ function applyBindingPolicyDraft(
   );
   setters.setFastModeDraft(nextBinding.fastModeRewriteMode ?? "inherit");
   setters.setImageToolDraft(nextBinding.imageToolRewriteMode ?? "inherit");
-  setters.setAvailableModelsMode(
-    nextBinding.availableModels == null ? "inherit" : "override",
-  );
+  setters.setAvailableModelsMode(nextBinding.availableModels == null ? "inherit" : "override");
   setters.setAvailableModelsDraft((nextBinding.availableModels ?? []).join(", "));
-  setters.setForwardProxyKeysDraft(
-    normalizeConversationProxyKeys(nextBinding.forwardProxyKeys),
-  );
+  setters.setForwardProxyKeysDraft(normalizeConversationProxyKeys(nextBinding.forwardProxyKeys));
 }
 
 function conversationPolicySourceLabel(
@@ -262,11 +235,7 @@ function conversationPolicySourceLabel(
 }
 
 function conversationPolicySourceVariant(source: string | null | undefined) {
-  return source === "conversation"
-    ? "default"
-    : source === "group"
-      ? "info"
-      : "secondary";
+  return source === "conversation" ? "default" : source === "group" ? "info" : "secondary";
 }
 
 function conversationRewriteModeLabel(
@@ -303,11 +272,7 @@ function conversationProxyValueLabel(
 }
 
 function accountCanBePromptCacheBindingTarget(account: UpstreamAccountSummary) {
-  if (
-    account.provider !== "codex" ||
-    !account.enabled ||
-    account.status !== "active"
-  ) {
+  if (account.provider !== "codex" || !account.enabled || account.status !== "active") {
     return false;
   }
   if (account.kind === "api_key_codex") {
@@ -331,10 +296,7 @@ function currentBindingLabel(
       group: binding.groupName,
     });
   }
-  if (
-    binding.bindingKind === "upstreamAccount" &&
-    binding.upstreamAccountId != null
-  ) {
+  if (binding.bindingKind === "upstreamAccount" && binding.upstreamAccountId != null) {
     return t("live.conversations.drawer.binding.currentAccount", {
       account: binding.upstreamAccountName || `#${binding.upstreamAccountId}`,
     });
@@ -342,15 +304,11 @@ function currentBindingLabel(
   return t("live.conversations.drawer.binding.currentNone");
 }
 
-function encryptedOwnerLabel(
-  binding: PromptCacheConversationBindingResponse | null,
-) {
+function encryptedOwnerLabel(binding: PromptCacheConversationBindingResponse | null) {
   if (!binding?.hasEncryptedSessionOwner) return null;
   const accountLabel =
     binding.encryptedOwnerAccountName?.trim() ||
-    (binding.encryptedOwnerAccountId != null
-      ? `#${binding.encryptedOwnerAccountId}`
-      : null);
+    (binding.encryptedOwnerAccountId != null ? `#${binding.encryptedOwnerAccountId}` : null);
   if (!accountLabel) return null;
   const groupLabel = binding.encryptedOwnerGroupName?.trim();
   return groupLabel ? `${accountLabel} · ${groupLabel}` : accountLabel;
@@ -366,9 +324,7 @@ function nextBindingWouldOverrideEncryptedOwner(
   if (nextBindingKind === "none") return false;
   if (nextBindingKind === "upstreamAccount") {
     const nextId = Number(nextBindingAccountId);
-    return (
-      Number.isFinite(nextId) && nextId !== binding.encryptedOwnerAccountId
-    );
+    return Number.isFinite(nextId) && nextId !== binding.encryptedOwnerAccountId;
   }
   if (nextBindingKind === "group") {
     return nextBindingGroupName.trim().length > 0;
@@ -382,21 +338,15 @@ function resolveUpstreamAccountLabel(
 ) {
   const trimmedName = account.upstreamAccountName?.trim();
   if (trimmedName) return trimmedName;
-  if (
-    typeof account.upstreamAccountId === "number" &&
-    Number.isFinite(account.upstreamAccountId)
-  ) {
+  if (typeof account.upstreamAccountId === "number" && Number.isFinite(account.upstreamAccountId)) {
     return fallbackAccountLabel(Math.trunc(account.upstreamAccountId));
   }
   return FALLBACK_CELL;
 }
 
-function canOpenPromptCacheUpstreamAccount(
-  account: PromptCacheConversationUpstreamAccount,
-) {
+function canOpenPromptCacheUpstreamAccount(account: PromptCacheConversationUpstreamAccount) {
   return (
-    typeof account.upstreamAccountId === "number" &&
-    Number.isFinite(account.upstreamAccountId)
+    typeof account.upstreamAccountId === "number" && Number.isFinite(account.upstreamAccountId)
   );
 }
 
@@ -433,10 +383,7 @@ function SummaryBlock({
   return (
     <div className="space-y-1.5">
       {items.map((item) => (
-        <div
-          key={item.label}
-          className="flex items-center justify-between gap-3 text-[11px]"
-        >
+        <div key={item.label} className="flex items-center justify-between gap-3 text-[11px]">
           <span className="text-base-content/60">{item.label}</span>
           <span className="text-right font-medium">{item.value}</span>
         </div>
@@ -461,23 +408,16 @@ function UpstreamAccountsBlock({
   numberFormatter: Intl.NumberFormat;
   currencyFormatter: Intl.NumberFormat;
   fallbackAccountLabel: (id: number) => string;
-  onOpenAccountDetail?: (
-    account: PromptCacheConversationUpstreamAccount,
-  ) => void;
+  onOpenAccountDetail?: (account: PromptCacheConversationUpstreamAccount) => void;
 }) {
   if (upstreamAccounts.length === 0) {
-    return (
-      <div className="text-[11px] text-base-content/55">{FALLBACK_CELL}</div>
-    );
+    return <div className="text-[11px] text-base-content/55">{FALLBACK_CELL}</div>;
   }
 
   return (
     <div className="space-y-1.5">
       {upstreamAccounts.slice(0, 3).map((account, index) => {
-        const accountLabel = resolveUpstreamAccountLabel(
-          account,
-          fallbackAccountLabel,
-        );
+        const accountLabel = resolveUpstreamAccountLabel(account, fallbackAccountLabel);
         const clickable = canOpenPromptCacheUpstreamAccount(account);
 
         return (
@@ -498,11 +438,9 @@ function UpstreamAccountsBlock({
               <span className="truncate font-medium">{accountLabel}</span>
             )}
             <span className="min-w-0 truncate text-base-content/62">
-              {formatNumber(account.requestCount, numberFormatter)}{" "}
-              {labels.requestCountCompact}
+              {formatNumber(account.requestCount, numberFormatter)} {labels.requestCountCompact}
               {" · "}
-              {labels.totalTokensCompact}{" "}
-              {formatNumber(account.totalTokens, numberFormatter)}
+              {labels.totalTokensCompact} {formatNumber(account.totalTokens, numberFormatter)}
               {" · "}
               {formatCurrency(account.totalCost, currencyFormatter)}
             </span>
@@ -602,8 +540,7 @@ function buildConversationActivityQuery(
   const base = historyQueryForConversationKey?.(conversationKey) ?? {
     promptCacheKey: conversationKey,
   };
-  const { page, pageSize, snapshotId, sortBy, sortOrder, signal, ...filters } =
-    base;
+  const { page, pageSize, snapshotId, sortBy, sortOrder, signal, ...filters } = base;
   void page;
   void pageSize;
   void snapshotId;
@@ -628,10 +565,7 @@ function formatDurationMs(value: number | null | undefined, formatter: Intl.Numb
   return `${formatter.format(Number(seconds.toFixed(maximumFractionDigits)))} s`;
 }
 
-function getConversationActivityValue(
-  record: ApiInvocation,
-  metric: ConversationActivityMetric,
-) {
+function getConversationActivityValue(record: ApiInvocation, metric: ConversationActivityMetric) {
   if (metric === "totalCost") return record.cost ?? 0;
   if (metric === "totalTokens") return record.totalTokens ?? 0;
   return 1;
@@ -839,28 +773,25 @@ function buildConversationActivityBuckets({
     hour12: false,
     hourCycle: "h23",
   });
-  const buckets: ConversationActivityBucket[] = Array.from(
-    { length: bucketCount },
-    (_, index) => {
-      const bucketStart = startMs + index * bucketMs;
-      return {
-        index,
-        label: labelFormatter.format(new Date(bucketStart)),
-        tooltipLabel: labelFormatter.format(new Date(bucketStart)),
-        success: 0,
-        failure: 0,
-        failureNegative: 0,
-        inFlight: 0,
-        neutral: 0,
-        totalCount: 0,
-        totalCost: 0,
-        totalTokens: 0,
-        totalMs: 0,
-        totalMsSamples: 0,
-        avgTotalMs: null,
-      };
-    },
-  );
+  const buckets: ConversationActivityBucket[] = Array.from({ length: bucketCount }, (_, index) => {
+    const bucketStart = startMs + index * bucketMs;
+    return {
+      index,
+      label: labelFormatter.format(new Date(bucketStart)),
+      tooltipLabel: labelFormatter.format(new Date(bucketStart)),
+      success: 0,
+      failure: 0,
+      failureNegative: 0,
+      inFlight: 0,
+      neutral: 0,
+      totalCount: 0,
+      totalCost: 0,
+      totalTokens: 0,
+      totalMs: 0,
+      totalMsSamples: 0,
+      avgTotalMs: null,
+    };
+  });
 
   for (const record of records) {
     const occurredAt = Date.parse(record.occurredAt);
@@ -890,8 +821,7 @@ function buildConversationActivityBuckets({
 
   for (const bucket of buckets) {
     bucket.failureNegative = bucket.failure > 0 ? -bucket.failure : 0;
-    bucket.avgTotalMs =
-      bucket.totalMsSamples > 0 ? bucket.totalMs / bucket.totalMsSamples : null;
+    bucket.avgTotalMs = bucket.totalMsSamples > 0 ? bucket.totalMs / bucket.totalMsSamples : null;
   }
 
   return { buckets, rangeStartMs: startMs, rangeEndMs: endMs };
@@ -991,10 +921,7 @@ function ConversationActivityTooltipContent({
       </div>
       <div className="mt-2 space-y-1.5">
         {rows.map((row) => (
-          <div
-            key={row.label}
-            className="flex items-start gap-2"
-          >
+          <div key={row.label} className="flex items-start gap-2">
             <span
               className="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full"
               style={{ backgroundColor: row.color }}
@@ -1077,18 +1004,9 @@ function ConversationActivityChart({
     });
   }, [buckets.length, viewportIdentity]);
 
-  const visibleWindow = normalizeConversationActivityViewport(
-    viewport,
-    buckets.length,
-  );
-  const visibleBuckets = buckets.slice(
-    visibleWindow.startIndex,
-    visibleWindow.endIndex + 1,
-  );
-  const visibleTotalCount = visibleBuckets.reduce(
-    (sum, bucket) => sum + bucket.totalCount,
-    0,
-  );
+  const visibleWindow = normalizeConversationActivityViewport(viewport, buckets.length);
+  const visibleBuckets = buckets.slice(visibleWindow.startIndex, visibleWindow.endIndex + 1);
+  const visibleTotalCount = visibleBuckets.reduce((sum, bucket) => sum + bucket.totalCount, 0);
   const viewportSpan = visibleWindow.endIndex - visibleWindow.startIndex + 1;
   const isZoomed = buckets.length > 0 && viewportSpan < buckets.length;
   const xDomain: [number, number] = [visibleWindow.startIndex, visibleWindow.endIndex];
@@ -1131,18 +1049,9 @@ function ConversationActivityChart({
               ),
             );
         setViewport((current) => {
-          const normalized = normalizeConversationActivityViewport(
-            current,
-            buckets.length,
-          );
-          const next = shiftConversationActivityViewport(
-            normalized,
-            buckets.length,
-            roundedDelta,
-          );
-          return isSameConversationActivityViewport(normalized, next)
-            ? current
-            : next;
+          const normalized = normalizeConversationActivityViewport(current, buckets.length);
+          const next = shiftConversationActivityViewport(normalized, buckets.length, roundedDelta);
+          return isSameConversationActivityViewport(normalized, next) ? current : next;
         });
       });
     },
@@ -1163,19 +1072,14 @@ function ConversationActivityChart({
         if (pendingDelta === 0) return;
 
         setViewport((current) => {
-          const normalized = normalizeConversationActivityViewport(
-            current,
-            buckets.length,
-          );
+          const normalized = normalizeConversationActivityViewport(current, buckets.length);
           const next = zoomConversationActivityViewport(
             normalized,
             buckets.length,
             pendingDelta * CONVERSATION_ACTIVITY_WHEEL_ZOOM_INTENSITY,
             pendingAnchorRatio,
           );
-          return isSameConversationActivityViewport(normalized, next)
-            ? current
-            : next;
+          return isSameConversationActivityViewport(normalized, next) ? current : next;
         });
       });
     },
@@ -1202,10 +1106,7 @@ function ConversationActivityChart({
         Math.abs(event.deltaX) >= CONVERSATION_ACTIVITY_WHEEL_THRESHOLD &&
         Math.abs(event.deltaX) >= Math.abs(event.deltaY) &&
         !event.ctrlKey;
-      const hasZoomIntent =
-        event.ctrlKey ||
-        event.metaKey ||
-        event.altKey;
+      const hasZoomIntent = event.ctrlKey || event.metaKey || event.altKey;
       if (!horizontalIntent && !hasZoomIntent) return;
 
       event.preventDefault();
@@ -1243,20 +1144,14 @@ function ConversationActivityChart({
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (
-        event.button !== 0 ||
-        buckets.length <= CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS
-      ) {
+      if (event.button !== 0 || buckets.length <= CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS) {
         return;
       }
       dragPreviewOffsetRef.current = 0;
       if (dragPreviewLayerRef.current) {
         dragPreviewLayerRef.current.style.transform = "";
       }
-      const normalized = normalizeConversationActivityViewport(
-        viewport,
-        buckets.length,
-      );
+      const normalized = normalizeConversationActivityViewport(viewport, buckets.length);
       dragRef.current = {
         pointerId: event.pointerId,
         startClientX: event.clientX,
@@ -1284,9 +1179,7 @@ function ConversationActivityChart({
       dragPreviewOffsetRef.current = previewOffsetPx;
       if (dragPreviewLayerRef.current) {
         dragPreviewLayerRef.current.style.transform =
-          previewOffsetPx === 0
-            ? ""
-            : `translate3d(${previewOffsetPx}px, 0, 0)`;
+          previewOffsetPx === 0 ? "" : `translate3d(${previewOffsetPx}px, 0, 0)`;
       }
     });
   }, []);
@@ -1316,8 +1209,7 @@ function ConversationActivityChart({
           return;
         } else if (
           Math.min(deltaX, deltaY) >=
-          Math.max(deltaX, deltaY) *
-            CONVERSATION_ACTIVITY_POINTER_FREE_DIAGONAL_RATIO
+          Math.max(deltaX, deltaY) * CONVERSATION_ACTIVITY_POINTER_FREE_DIAGONAL_RATIO
         ) {
           drag.axis = "free";
         } else {
@@ -1340,8 +1232,7 @@ function ConversationActivityChart({
         const width = interactionRef.current?.getBoundingClientRect().width ?? 1;
         const span = drag.viewport.endIndex - drag.viewport.startIndex + 1;
         const deltaIndexes = Math.round(
-          ((drag.startClientX - drag.currentClientX) / Math.max(1, width)) *
-            span,
+          ((drag.startClientX - drag.currentClientX) / Math.max(1, width)) * span,
         );
         setViewport((current) => {
           const next = shiftConversationActivityViewport(
@@ -1411,30 +1302,31 @@ function ConversationActivityChart({
   const renderTooltip = (bucket: ConversationActivityBucket) => [
     {
       label: legendLabels.success,
-      value: `${formatMetricValue(bucket.success)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
+      value:
+        `${formatMetricValue(bucket.success)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
       color: chartColors.success,
     },
     {
       label: legendLabels.failure,
-      value: `${formatMetricValue(bucket.failure)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
+      value:
+        `${formatMetricValue(bucket.failure)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
       color: chartColors.failure,
     },
     {
       label: legendLabels.inFlight,
-      value: `${formatMetricValue(bucket.inFlight)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
+      value:
+        `${formatMetricValue(bucket.inFlight)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
       color: chartColors.inFlight,
     },
     {
       label: legendLabels.neutral,
-      value: `${formatMetricValue(bucket.neutral)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
+      value:
+        `${formatMetricValue(bucket.neutral)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
       color: chartColors.neutral,
     },
     {
       label: legendLabels.duration,
-      value:
-        bucket.avgTotalMs == null
-          ? "-"
-          : `${numberFormatter.format(bucket.avgTotalMs)} ms`,
+      value: bucket.avgTotalMs == null ? "-" : `${numberFormatter.format(bucket.avgTotalMs)} ms`,
       color: chartColors.firstByte,
     },
   ];
@@ -1490,149 +1382,131 @@ function ConversationActivityChart({
           className="h-full w-full will-change-transform"
           style={{ transform: undefined }}
         >
-        <ResponsiveContainer width="100%" height={320}>
-          <ComposedChart
-            data={visibleBuckets}
-            margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
-            barGap="-100%"
-            stackOffset="sign"
-          >
-            <CartesianGrid
-              stroke={chartColors.gridLine}
-              strokeDasharray="3 3"
-            />
-            <XAxis
-              dataKey="index"
-              type="number"
-              domain={xDomain}
-              minTickGap={28}
-              axisLine={{ stroke: chartColors.gridLine }}
-              tickLine={{ stroke: chartColors.gridLine }}
-              tick={{ fill: chartColors.axisText, fontSize: 12 }}
-              tickFormatter={(value: number) => {
-                const bucket =
-                  buckets[
-                    Math.max(
-                      0,
-                      Math.min(buckets.length - 1, Math.round(value)),
-                    )
-                  ];
-                return bucket?.label ?? String(value);
-              }}
-            />
-            <YAxis
-              yAxisId="count"
-              domain={[-maxCount, maxCount]}
-              allowDecimals={false}
-              tickFormatter={(value) =>
-                numberFormatter.format(Math.abs(Number(value)))
-              }
-              axisLine={{ stroke: chartColors.gridLine }}
-              tickLine={{ stroke: chartColors.gridLine }}
-              tick={{ fill: chartColors.axisText, fontSize: 12 }}
-            />
-            <YAxis
-              yAxisId="latency"
-              orientation="right"
-              tickFormatter={(value) => `${numberFormatter.format(Number(value))}ms`}
-              width={72}
-              axisLine={{ stroke: chartColors.gridLine }}
-              tickLine={{ stroke: chartColors.gridLine }}
-              tick={{ fill: chartColors.axisText, fontSize: 12 }}
-            />
-            <Tooltip
-              labelFormatter={(value) => {
-                const bucket =
-                  buckets[
-                    Math.max(
-                      0,
-                      Math.min(
-                        buckets.length - 1,
-                        Math.round(Number(value)),
-                      ),
-                    )
-                  ];
-                return bucket?.tooltipLabel ?? String(value);
-              }}
-              content={(props) => (
-                <ConversationActivityTooltipContent
-                  active={props.active}
-                  label={props.label}
-                  payload={
-                    props.payload as unknown as
-                      | ConversationActivityTooltipPayloadEntry[]
-                      | undefined
-                  }
-                  renderValue={renderTooltip}
-                />
-              )}
-            />
-            <ReferenceLine yAxisId="count" y={0} stroke={chartColors.gridLine} />
-            <Bar
-              yAxisId="count"
-              dataKey="failureNegative"
-              name={legendLabels.failure}
-              stackId="positive"
-              fill={chartColors.failure}
-              barSize={barSize}
-              radius={[0, 0, 3, 3]}
-              shape={(props: ConversationActivityBarShapeProps) =>
-                renderAlignedFailureBarShape({
-                  ...props,
-                  fill: chartColors.failure,
-                })
-              }
-              isAnimationActive={false}
-            />
-            <Bar
-              yAxisId="count"
-              dataKey="success"
-              name={legendLabels.success}
-              stackId="positive"
-              fill={chartColors.success}
-              barSize={barSize}
-              radius={[0, 0, 0, 0]}
-              isAnimationActive={false}
-            />
-            <Bar
-              yAxisId="count"
-              dataKey="inFlight"
-              name={legendLabels.inFlight}
-              stackId="positive"
-              fill={chartColors.inFlight}
-              barSize={barSize}
-              radius={[0, 0, 0, 0]}
-              isAnimationActive={false}
-            />
-            <Bar
-              yAxisId="count"
-              dataKey="neutral"
-              name={legendLabels.neutral}
-              stackId="positive"
-              fill={chartColors.neutral}
-              barSize={barSize}
-              radius={[3, 3, 0, 0]}
-              isAnimationActive={false}
-            />
-            <Line
-              yAxisId="latency"
-              type="monotone"
-              dataKey="avgTotalMs"
-              name={legendLabels.duration}
-              stroke={chartColors.firstByte}
-              strokeOpacity={0.72}
-              strokeWidth={1.25}
-              dot={{
-                r: 1.25,
-                strokeWidth: 0,
-                fill: chartColors.firstByte,
-                fillOpacity: 0.72,
-              }}
-              connectNulls={false}
-              isAnimationActive={false}
-            />
-          </ComposedChart>
-        </ResponsiveContainer>
+          <ResponsiveContainer width="100%" height={320}>
+            <ComposedChart
+              data={visibleBuckets}
+              margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
+              barGap="-100%"
+              stackOffset="sign"
+            >
+              <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+              <XAxis
+                dataKey="index"
+                type="number"
+                domain={xDomain}
+                minTickGap={28}
+                axisLine={{ stroke: chartColors.gridLine }}
+                tickLine={{ stroke: chartColors.gridLine }}
+                tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                tickFormatter={(value: number) => {
+                  const bucket =
+                    buckets[Math.max(0, Math.min(buckets.length - 1, Math.round(value)))];
+                  return bucket?.label ?? String(value);
+                }}
+              />
+              <YAxis
+                yAxisId="count"
+                domain={[-maxCount, maxCount]}
+                allowDecimals={false}
+                tickFormatter={(value) => numberFormatter.format(Math.abs(Number(value)))}
+                axisLine={{ stroke: chartColors.gridLine }}
+                tickLine={{ stroke: chartColors.gridLine }}
+                tick={{ fill: chartColors.axisText, fontSize: 12 }}
+              />
+              <YAxis
+                yAxisId="latency"
+                orientation="right"
+                tickFormatter={(value) => `${numberFormatter.format(Number(value))}ms`}
+                width={72}
+                axisLine={{ stroke: chartColors.gridLine }}
+                tickLine={{ stroke: chartColors.gridLine }}
+                tick={{ fill: chartColors.axisText, fontSize: 12 }}
+              />
+              <Tooltip
+                labelFormatter={(value) => {
+                  const bucket =
+                    buckets[Math.max(0, Math.min(buckets.length - 1, Math.round(Number(value))))];
+                  return bucket?.tooltipLabel ?? String(value);
+                }}
+                content={(props) => (
+                  <ConversationActivityTooltipContent
+                    active={props.active}
+                    label={props.label}
+                    payload={
+                      props.payload as unknown as
+                        | ConversationActivityTooltipPayloadEntry[]
+                        | undefined
+                    }
+                    renderValue={renderTooltip}
+                  />
+                )}
+              />
+              <ReferenceLine yAxisId="count" y={0} stroke={chartColors.gridLine} />
+              <Bar
+                yAxisId="count"
+                dataKey="failureNegative"
+                name={legendLabels.failure}
+                stackId="positive"
+                fill={chartColors.failure}
+                barSize={barSize}
+                radius={[0, 0, 3, 3]}
+                shape={(props: ConversationActivityBarShapeProps) =>
+                  renderAlignedFailureBarShape({
+                    ...props,
+                    fill: chartColors.failure,
+                  })
+                }
+                isAnimationActive={false}
+              />
+              <Bar
+                yAxisId="count"
+                dataKey="success"
+                name={legendLabels.success}
+                stackId="positive"
+                fill={chartColors.success}
+                barSize={barSize}
+                radius={[0, 0, 0, 0]}
+                isAnimationActive={false}
+              />
+              <Bar
+                yAxisId="count"
+                dataKey="inFlight"
+                name={legendLabels.inFlight}
+                stackId="positive"
+                fill={chartColors.inFlight}
+                barSize={barSize}
+                radius={[0, 0, 0, 0]}
+                isAnimationActive={false}
+              />
+              <Bar
+                yAxisId="count"
+                dataKey="neutral"
+                name={legendLabels.neutral}
+                stackId="positive"
+                fill={chartColors.neutral}
+                barSize={barSize}
+                radius={[3, 3, 0, 0]}
+                isAnimationActive={false}
+              />
+              <Line
+                yAxisId="latency"
+                type="monotone"
+                dataKey="avgTotalMs"
+                name={legendLabels.duration}
+                stroke={chartColors.firstByte}
+                strokeOpacity={0.72}
+                strokeWidth={1.25}
+                dot={{
+                  r: 1.25,
+                  strokeWidth: 0,
+                  fill: chartColors.firstByte,
+                  fillOpacity: 0.72,
+                }}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
         </div>
         <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-base-content/70">
           <span className="inline-flex items-center gap-1.5">
@@ -1685,14 +1559,10 @@ function PromptCacheConversationActivityOverview({
   const { locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const activeRange: ConversationActivityRange = "history";
-  const [activeMetric, setActiveMetric] =
-    useState<ConversationActivityMetric>("totalCount");
-  const [summary, setSummary] =
-    useState<InvocationRecordsSummaryResponse | null>(null);
+  const [activeMetric, setActiveMetric] = useState<ConversationActivityMetric>("totalCount");
+  const [summary, setSummary] = useState<InvocationRecordsSummaryResponse | null>(null);
   const [records, setRecords] = useState<ApiInvocation[]>([]);
-  const [chartRangeStartMs, setChartRangeStartMs] = useState<number | null>(
-    null,
-  );
+  const [chartRangeStartMs, setChartRangeStartMs] = useState<number | null>(null);
   const [chartRangeEndMs, setChartRangeEndMs] = useState<number | null>(null);
   const [chartTotal, setChartTotal] = useState(0);
   const [chartIsSampled, setChartIsSampled] = useState(false);
@@ -1795,10 +1665,7 @@ function PromptCacheConversationActivityOverview({
         if (totalRecords > loaded.length && snapshotId != null) {
           const oldestPage = await fetchInvocationRecords({
             ...filters,
-            page: Math.max(
-              1,
-              Math.ceil(totalRecords / PROMPT_CACHE_ACTIVITY_PAGE_SIZE),
-            ),
+            page: Math.max(1, Math.ceil(totalRecords / PROMPT_CACHE_ACTIVITY_PAGE_SIZE)),
             pageSize: PROMPT_CACHE_ACTIVITY_PAGE_SIZE,
             sortBy: "occurredAt",
             sortOrder: "desc",
@@ -1814,9 +1681,7 @@ function PromptCacheConversationActivityOverview({
           }
         }
         setRecords(loaded);
-        setChartRangeStartMs(
-          Number.isFinite(startBoundaryMs) ? startBoundaryMs : null,
-        );
+        setChartRangeStartMs(Number.isFinite(startBoundaryMs) ? startBoundaryMs : null);
         setChartRangeEndMs(Number.isFinite(endBoundaryMs) ? endBoundaryMs : null);
         setChartTotal(totalRecords);
         setChartIsSampled(loaded.length < totalRecords);
@@ -1878,8 +1743,7 @@ function PromptCacheConversationActivityOverview({
     const now = Date.now();
     const delay = Math.max(
       0,
-      PROMPT_CACHE_ACTIVITY_RESYNC_THROTTLE_MS -
-        (now - lastRefreshAtRef.current),
+      PROMPT_CACHE_ACTIVITY_RESYNC_THROTTLE_MS - (now - lastRefreshAtRef.current),
     );
     const run = () => {
       refreshTimerRef.current = null;
@@ -1968,10 +1832,7 @@ function PromptCacheConversationActivityOverview({
     },
     {
       label: t("live.conversations.activity.metricCost"),
-      value:
-        summary == null
-          ? FALLBACK_CELL
-          : currencyFormatter.format(summary.token.totalCost),
+      value: summary == null ? FALLBACK_CELL : currencyFormatter.format(summary.token.totalCost),
       toneClass: "text-primary",
     },
     {
@@ -1984,14 +1845,8 @@ function PromptCacheConversationActivityOverview({
   return (
     <section className="space-y-3 rounded-xl border border-base-300/70 bg-base-100/55 p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <h3 className="text-sm font-semibold">
-          {t("live.conversations.activity.title")}
-        </h3>
-        <SegmentedControl
-          size="compact"
-          role="tablist"
-          aria-label={t("heatmap.metricsToggleAria")}
-        >
+        <h3 className="text-sm font-semibold">{t("live.conversations.activity.title")}</h3>
+        <SegmentedControl size="compact" role="tablist" aria-label={t("heatmap.metricsToggleAria")}>
           {CONVERSATION_ACTIVITY_METRICS.map((metric) => (
             <SegmentedControlItem
               key={metric.key}
@@ -2088,43 +1943,32 @@ export function PromptCacheConversationHistoryDrawer({
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [binding, setBinding] =
-    useState<PromptCacheConversationBindingResponse | null>(null);
-  const [bindingKind, setBindingKind] =
-    useState<ConversationBindingDraftKind>("none");
+  const [binding, setBinding] = useState<PromptCacheConversationBindingResponse | null>(null);
+  const [bindingKind, setBindingKind] = useState<ConversationBindingDraftKind>("none");
   const [bindingGroupName, setBindingGroupName] = useState("");
   const [bindingAccountId, setBindingAccountId] = useState("");
-  const [bindingAccounts, setBindingAccounts] = useState<
-    UpstreamAccountSummary[]
-  >([]);
+  const [bindingAccounts, setBindingAccounts] = useState<UpstreamAccountSummary[]>([]);
   const [bindingGroups, setBindingGroups] = useState<string[]>([]);
-  const [bindingProxyNodes, setBindingProxyNodes] = useState<
-    ForwardProxyBindingNode[]
-  >([]);
+  const [bindingProxyNodes, setBindingProxyNodes] = useState<ForwardProxyBindingNode[]>([]);
   const [bindingLoading, setBindingLoading] = useState(false);
   const [bindingSaving, setBindingSaving] = useState(false);
   const [bindingError, setBindingError] = useState<string | null>(null);
-  const [bindingTimeoutDraft, setBindingTimeoutDraft] =
-    useState<RoutingTimeoutOverrideDraft>({});
+  const [bindingTimeoutDraft, setBindingTimeoutDraft] = useState<RoutingTimeoutOverrideDraft>({});
   const [bindingTimeoutEnabledFields, setBindingTimeoutEnabledFields] =
     useState<RoutingTimeoutOverrideEnabledState>({});
   const [allowSwitchUpstreamDraft, setAllowSwitchUpstreamDraft] =
     useState<OptionalBooleanDraft>("inherit");
-  const [fastModeDraft, setFastModeDraft] =
-    useState<RewriteModeDraft>("inherit");
-  const [imageToolDraft, setImageToolDraft] =
-    useState<RewriteModeDraft>("inherit");
-  const [availableModelsMode, setAvailableModelsMode] =
-    useState<"inherit" | "override">("inherit");
+  const [fastModeDraft, setFastModeDraft] = useState<RewriteModeDraft>("inherit");
+  const [imageToolDraft, setImageToolDraft] = useState<RewriteModeDraft>("inherit");
+  const [availableModelsMode, setAvailableModelsMode] = useState<"inherit" | "override">("inherit");
   const [availableModelsDraft, setAvailableModelsDraft] = useState("");
   const [forwardProxyKeysDraft, setForwardProxyKeysDraft] = useState<string[]>([]);
-  const [expandedPolicyField, setExpandedPolicyField] =
-    useState<ConversationPolicyField | null>(null);
-  const [policySavingField, setPolicySavingField] =
-    useState<ConversationPolicyField | null>(null);
+  const [expandedPolicyField, setExpandedPolicyField] = useState<ConversationPolicyField | null>(
+    null,
+  );
+  const [policySavingField, setPolicySavingField] = useState<ConversationPolicyField | null>(null);
   const [bindingOwnerConfirmOpen, setBindingOwnerConfirmOpen] = useState(false);
-  const [activeTab, setActiveTab] =
-    useState<PromptCacheConversationDrawerTab>("overview");
+  const [activeTab, setActiveTab] = useState<PromptCacheConversationDrawerTab>("overview");
 
   useEffect(() => {
     if (!open) {
@@ -2147,10 +1991,7 @@ export function PromptCacheConversationHistoryDrawer({
   }, [records]);
 
   const runLoad = useCallback(
-    async ({
-      silent = false,
-      append = false,
-    }: { silent?: boolean; append?: boolean } = {}) => {
+    async ({ silent = false, append = false }: { silent?: boolean; append?: boolean } = {}) => {
       if (!open || !conversationKey) return;
       if (append && !historyHasMoreRef.current) return;
 
@@ -2164,9 +2005,7 @@ export function PromptCacheConversationHistoryDrawer({
       if (shouldShowLoading) setIsLoading(true);
       if (append) setIsLoadingMore(true);
       try {
-        const historyFilters = historyQueryForConversationKey?.(
-          conversationKey,
-        ) ?? {
+        const historyFilters = historyQueryForConversationKey?.(conversationKey) ?? {
           promptCacheKey: conversationKey,
         };
         const page = append ? historyNextPageRef.current : 1;
@@ -2191,31 +2030,23 @@ export function PromptCacheConversationHistoryDrawer({
           previousSnapshotId != null &&
           response.snapshotId !== previousSnapshotId;
         historySnapshotIdRef.current = response.snapshotId;
-        const loaded =
-          snapshotChanged
-            ? mergeInvocationRecordCollections(
-                response.records,
-                recordsRef.current,
-              ).slice(
-                0,
-                recordsRef.current.length + PROMPT_CACHE_HISTORY_PAGE_SIZE,
-              )
-            : append
+        const loaded = snapshotChanged
+          ? mergeInvocationRecordCollections(response.records, recordsRef.current).slice(
+              0,
+              recordsRef.current.length + PROMPT_CACHE_HISTORY_PAGE_SIZE,
+            )
+          : append
             ? mergeInvocationRecordCollections(recordsRef.current, response.records)
             : silent && hasHydratedRef.current
-              ? mergeInvocationRecordCollections(
-                  response.records,
-                  recordsRef.current,
-                ).slice(
+              ? mergeInvocationRecordCollections(response.records, recordsRef.current).slice(
                   0,
                   Math.max(recordsRef.current.length, response.records.length),
                 )
               : response.records;
         recordsRef.current = loaded;
-        historyNextPageRef.current =
-          snapshotChanged
-            ? 2
-            : append || !silent || !hasHydratedRef.current
+        historyNextPageRef.current = snapshotChanged
+          ? 2
+          : append || !silent || !hasHydratedRef.current
             ? page + 1
             : Math.max(
                 previousNextPage,
@@ -2231,9 +2062,7 @@ export function PromptCacheConversationHistoryDrawer({
         hasHydratedRef.current = true;
         const loadedStableKeys = new Set(loaded.map(invocationStableKey));
         setLiveRecords((current) =>
-          current.filter(
-            (record) => !loadedStableKeys.has(invocationStableKey(record)),
-          ),
+          current.filter((record) => !loadedStableKeys.has(invocationStableKey(record))),
         );
         setError(null);
         if (pendingOpenResyncRef.current) {
@@ -2291,8 +2120,7 @@ export function PromptCacheConversationHistoryDrawer({
     const now = Date.now();
     const delay = Math.max(
       0,
-      PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS -
-        (now - lastRefreshAtRef.current),
+      PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS - (now - lastRefreshAtRef.current),
     );
     const run = () => {
       refreshTimerRef.current = null;
@@ -2315,10 +2143,7 @@ export function PromptCacheConversationHistoryDrawer({
         return;
       }
       const now = Date.now();
-      if (
-        !force &&
-        now - lastRefreshAtRef.current < PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS
-      ) {
+      if (!force && now - lastRefreshAtRef.current < PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS) {
         return;
       }
       lastRefreshAtRef.current = now;
@@ -2396,9 +2221,7 @@ export function PromptCacheConversationHistoryDrawer({
     ])
       .then(([nextBinding, accountList]) => {
         if (controller.signal.aborted) return;
-        const accounts = accountList.items.filter(
-          accountCanBePromptCacheBindingTarget,
-        );
+        const accounts = accountList.items.filter(accountCanBePromptCacheBindingTarget);
         const groups = Array.from(
           new Set(
             accounts
@@ -2505,12 +2328,7 @@ export function PromptCacheConversationHistoryDrawer({
   useEffect(() => {
     if (!open || activeTab !== "calls" || !drawerBodyElement) return;
     const maybeLoadMore = () => {
-      if (
-        isLoading ||
-        isLoadingMore ||
-        inFlightRef.current ||
-        !historyHasMoreRef.current
-      ) {
+      if (isLoading || isLoadingMore || inFlightRef.current || !historyHasMoreRef.current) {
         return;
       }
       const remaining =
@@ -2527,15 +2345,7 @@ export function PromptCacheConversationHistoryDrawer({
     return () => {
       drawerBodyElement.removeEventListener("scroll", maybeLoadMore);
     };
-  }, [
-    activeTab,
-    drawerBodyElement,
-    isLoading,
-    isLoadingMore,
-    load,
-    open,
-    records.length,
-  ]);
+  }, [activeTab, drawerBodyElement, isLoading, isLoadingMore, load, open, records.length]);
 
   const visibleRecords = useMemo(
     () => mergeInvocationRecordCollections(liveRecords, records),
@@ -2549,8 +2359,7 @@ export function PromptCacheConversationHistoryDrawer({
   const effectiveTotal = useMemo(() => {
     const loadedStableKeys = new Set(records.map(invocationStableKey));
     const optimisticCount = liveRecords.reduce(
-      (count, record) =>
-        count + (loadedStableKeys.has(invocationStableKey(record)) ? 0 : 1),
+      (count, record) => count + (loadedStableKeys.has(invocationStableKey(record)) ? 0 : 1),
       0,
     );
     return total + optimisticCount;
@@ -2581,9 +2390,7 @@ export function PromptCacheConversationHistoryDrawer({
         responsesStreamTimeoutSecs: t(
           "accountPool.upstreamAccounts.routing.timeout.responsesStream",
         ),
-        compactStreamTimeoutSecs: t(
-          "accountPool.upstreamAccounts.routing.timeout.compactStream",
-        ),
+        compactStreamTimeoutSecs: t("accountPool.upstreamAccounts.routing.timeout.compactStream"),
       }) as const,
     [t],
   );
@@ -2602,14 +2409,8 @@ export function PromptCacheConversationHistoryDrawer({
       : binding.allowSwitchUpstream
         ? t("live.conversations.drawer.policy.cutOutAllow")
         : t("live.conversations.drawer.policy.cutOutDeny");
-  const effectiveFastMode = conversationRewriteModeLabel(
-    binding?.fastModeRewriteMode,
-    t,
-  );
-  const effectiveImageTool = conversationRewriteModeLabel(
-    binding?.imageToolRewriteMode,
-    t,
-  );
+  const effectiveFastMode = conversationRewriteModeLabel(binding?.fastModeRewriteMode, t);
+  const effectiveImageTool = conversationRewriteModeLabel(binding?.imageToolRewriteMode, t);
   const effectiveAvailableModels =
     binding?.availableModels && binding.availableModels.length > 0
       ? binding.availableModels.join(", ")
@@ -2620,8 +2421,7 @@ export function PromptCacheConversationHistoryDrawer({
     t,
   );
   const bindingOwnerConfirmLabel =
-    encryptedOwnerStatusLabel ??
-    t("live.conversations.drawer.binding.ownerConfirm.unknownOwner");
+    encryptedOwnerStatusLabel ?? t("live.conversations.drawer.binding.ownerConfirm.unknownOwner");
   const bindingKindOptions = [
     {
       value: "none",
@@ -2673,18 +2473,11 @@ export function PromptCacheConversationHistoryDrawer({
   const savePolicyField = useCallback(
     async (
       field: ConversationPolicyField,
-      value:
-        | boolean
-        | PromptCacheConversationRewriteMode
-        | string
-        | string[]
-        | null,
+      value: boolean | PromptCacheConversationRewriteMode | string | string[] | null,
     ) => {
       if (!conversationKey || !binding || policySavingField) return;
       if (field === "availableModels" && Array.isArray(value) && value.length === 0) {
-        setBindingError(
-          t("live.conversations.drawer.policy.availableModelsRequired"),
-        );
+        setBindingError(t("live.conversations.drawer.policy.availableModelsRequired"));
         return;
       }
       setPolicySavingField(field);
@@ -2702,8 +2495,7 @@ export function PromptCacheConversationHistoryDrawer({
                 groupName: binding.groupName,
                 ...fieldPatch,
               }
-            : binding.bindingKind === "upstreamAccount" &&
-                binding.upstreamAccountId != null
+            : binding.bindingKind === "upstreamAccount" && binding.upstreamAccountId != null
               ? {
                   bindingKind: "upstreamAccount",
                   upstreamAccountId: binding.upstreamAccountId,
@@ -2761,9 +2553,7 @@ export function PromptCacheConversationHistoryDrawer({
             variant={activeOverride || expanded ? "default" : "ghost"}
             className={cn(
               "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
-              activeOverride || expanded
-                ? "text-primary-content"
-                : "text-base-content/65",
+              activeOverride || expanded ? "text-primary-content" : "text-base-content/65",
             )}
             disabled={bindingLoading || bindingSaving || policySavingField != null}
             aria-pressed={activeOverride || expanded}
@@ -2815,10 +2605,7 @@ export function PromptCacheConversationHistoryDrawer({
           </p>
         </div>
         {bindingLoading ? (
-          <Spinner
-            size="sm"
-            aria-label={t("live.conversations.drawer.binding.loading")}
-          />
+          <Spinner size="sm" aria-label={t("live.conversations.drawer.binding.loading")} />
         ) : null}
       </div>
       <p className="mt-2 text-xs text-base-content/70">{bindingStatusLabel}</p>
@@ -2841,9 +2628,7 @@ export function PromptCacheConversationHistoryDrawer({
           aria-label={t("live.conversations.drawer.binding.kind")}
           size="sm"
           options={bindingKindOptions}
-          onValueChange={(value) =>
-            setBindingKind(value as ConversationBindingDraftKind)
-          }
+          onValueChange={(value) => setBindingKind(value as ConversationBindingDraftKind)}
         />
         {bindingKind === "group" ? (
           <SelectField
@@ -2973,26 +2758,19 @@ export function PromptCacheConversationHistoryDrawer({
                       options={[
                         {
                           value: "",
-                          label: t(
-                            "live.conversations.drawer.policy.proxyAddPlaceholder",
-                          ),
+                          label: t("live.conversations.drawer.policy.proxyAddPlaceholder"),
                           disabled: true,
                         },
                         ...forwardProxyOptions
                           .filter((option) => option.value !== "inherit")
                           .map((option) => ({
                             ...option,
-                            disabled: forwardProxyKeysDraft.includes(
-                              option.value,
-                            ),
+                            disabled: forwardProxyKeysDraft.includes(option.value),
                           })),
                       ]}
                       onValueChange={(value) => {
                         if (!value) return;
-                        const nextKeys = toggleConversationProxyKey(
-                          forwardProxyKeysDraft,
-                          value,
-                        );
+                        const nextKeys = toggleConversationProxyKey(forwardProxyKeysDraft, value);
                         setForwardProxyKeysDraft(nextKeys);
                         void savePolicyField("forwardProxyKey", nextKeys);
                       }}
@@ -3001,10 +2779,7 @@ export function PromptCacheConversationHistoryDrawer({
                       type="button"
                       variant="secondary"
                       size="sm"
-                      disabled={
-                        policySavingField != null ||
-                        forwardProxyKeysDraft.length === 0
-                      }
+                      disabled={policySavingField != null || forwardProxyKeysDraft.length === 0}
                       onClick={() => {
                         setForwardProxyKeysDraft([]);
                         void savePolicyField("forwardProxyKey", null);
@@ -3020,9 +2795,7 @@ export function PromptCacheConversationHistoryDrawer({
                       </span>
                     ) : (
                       forwardProxyKeysDraft.map((key) => {
-                        const node = bindingProxyNodes.find(
-                          (candidate) => candidate.key === key,
-                        );
+                        const node = bindingProxyNodes.find((candidate) => candidate.key === key);
                         return (
                           <span
                             key={key}
@@ -3035,9 +2808,7 @@ export function PromptCacheConversationHistoryDrawer({
                               type="button"
                               className="rounded-full px-1 text-base-content/55 hover:bg-base-200 hover:text-base-content"
                               disabled={policySavingField != null}
-                              aria-label={t(
-                                "live.conversations.drawer.policy.proxyRemove",
-                              )}
+                              aria-label={t("live.conversations.drawer.policy.proxyRemove")}
                               onClick={() => {
                                 const nextKeys = toggleConversationProxyKey(
                                   forwardProxyKeysDraft,
@@ -3069,9 +2840,7 @@ export function PromptCacheConversationHistoryDrawer({
                     value={availableModelsDraft}
                     disabled={policySavingField != null}
                     aria-label={t("live.conversations.drawer.policy.availableModels")}
-                    placeholder={t(
-                      "live.conversations.drawer.policy.availableModelsPlaceholder",
-                    )}
+                    placeholder={t("live.conversations.drawer.policy.availableModelsPlaceholder")}
                     className="h-9"
                     onChange={(event) => {
                       setAvailableModelsMode("override");
@@ -3086,15 +2855,9 @@ export function PromptCacheConversationHistoryDrawer({
                   <Button
                     type="button"
                     size="sm"
-                    disabled={
-                      policySavingField != null ||
-                      availableModelsOverrideList.length === 0
-                    }
+                    disabled={policySavingField != null || availableModelsOverrideList.length === 0}
                     onClick={() =>
-                      void savePolicyField(
-                        "availableModels",
-                        availableModelsOverrideList,
-                      )
+                      void savePolicyField("availableModels", availableModelsOverrideList)
                     }
                   >
                     {t("live.conversations.drawer.policy.applyField")}
@@ -3130,30 +2893,14 @@ export function PromptCacheConversationHistoryDrawer({
             disabled={bindingLoading || bindingSaving}
             surface="plain"
             labels={{
-              sectionTitle: t(
-                "accountPool.upstreamAccounts.routing.timeout.sectionTitle",
-              ),
-              inheritedValue: t(
-                "accountPool.upstreamAccounts.timeoutEditor.inherited",
-              ),
-              overrideValue: t(
-                "accountPool.upstreamAccounts.timeoutEditor.conversationOverride",
-              ),
-              clearField: t(
-                "accountPool.upstreamAccounts.effectiveRule.overrideClear",
-              ),
-              inheritField: t(
-                "accountPool.tags.dialog.availableModelsInherited",
-              ),
-              sourceRoot: t(
-                "accountPool.upstreamAccounts.effectiveRule.sourceRoot",
-              ),
-              sourceGroup: t(
-                "accountPool.upstreamAccounts.effectiveRule.sourceGroup",
-              ),
-              sourceAccount: t(
-                "accountPool.upstreamAccounts.effectiveRule.sourceAccount",
-              ),
+              sectionTitle: t("accountPool.upstreamAccounts.routing.timeout.sectionTitle"),
+              inheritedValue: t("accountPool.upstreamAccounts.timeoutEditor.inherited"),
+              overrideValue: t("accountPool.upstreamAccounts.timeoutEditor.conversationOverride"),
+              clearField: t("accountPool.upstreamAccounts.effectiveRule.overrideClear"),
+              inheritField: t("accountPool.tags.dialog.availableModelsInherited"),
+              sourceRoot: t("accountPool.upstreamAccounts.effectiveRule.sourceRoot"),
+              sourceGroup: t("accountPool.upstreamAccounts.effectiveRule.sourceGroup"),
+              sourceAccount: t("accountPool.upstreamAccounts.effectiveRule.sourceAccount"),
               sourceConversation: t(
                 "accountPool.upstreamAccounts.effectiveRule.sourceConversation",
               ),
@@ -3178,315 +2925,307 @@ export function PromptCacheConversationHistoryDrawer({
                   ? current
                   : {
                       ...current,
-                      [key]:
-                        binding.timeouts?.[key] != null
-                          ? String(binding.timeouts[key])
-                          : "",
+                      [key]: binding.timeouts?.[key] != null ? String(binding.timeouts[key]) : "",
                     },
               );
             }}
           />
         </div>
       ) : null}
-      {bindingError ? (
-        <p className="mt-2 text-xs text-error">{bindingError}</p>
-      ) : null}
+      {bindingError ? <p className="mt-2 text-xs text-error">{bindingError}</p> : null}
     </section>
   );
-  const saveBinding = useCallback(async (options?: { skipOwnerWarning?: boolean }) => {
-    if (!conversationKey || bindingSubmitDisabled) return;
-    if (
-      !options?.skipOwnerWarning &&
-      nextBindingWouldOverrideEncryptedOwner(
-        binding,
-        bindingKind,
-        bindingGroupName,
-        bindingAccountId,
-      )
-    ) {
-      setBindingOwnerConfirmOpen(true);
-      return;
-    }
-    setBindingSaving(true);
-    setBindingError(null);
-    try {
-      const parsedTimeouts = parseRoutingTimeoutOverrideDraftWithEnabledState(
-        bindingTimeoutDraft,
-        bindingTimeoutEnabledFields,
-        timeoutFieldLabels,
-      );
-      if (!parsedTimeouts.ok) {
-        setBindingError(parsedTimeouts.error);
-        setBindingSaving(false);
+  const saveBinding = useCallback(
+    async (options?: { skipOwnerWarning?: boolean }) => {
+      if (!conversationKey || bindingSubmitDisabled) return;
+      if (
+        !options?.skipOwnerWarning &&
+        nextBindingWouldOverrideEncryptedOwner(
+          binding,
+          bindingKind,
+          bindingGroupName,
+          bindingAccountId,
+        )
+      ) {
+        setBindingOwnerConfirmOpen(true);
         return;
       }
-      const baseTimeoutDraft = buildRoutingTimeoutOverrideDraftForSource(
-        binding?.timeouts,
-        binding?.timeoutFieldSources,
-        "conversation",
-      );
-      const baseTimeoutEnabledFields = buildRoutingTimeoutOverrideEnabledStateForSource(
-        binding?.timeoutFieldSources,
-        "conversation",
-      );
-      const timeoutDiff = diffRoutingTimeoutOverrideDraftWithEnabledState(
-        baseTimeoutDraft,
-        baseTimeoutEnabledFields,
-        bindingTimeoutDraft,
-        bindingTimeoutEnabledFields,
-        timeoutFieldLabels,
-      );
-      if (!timeoutDiff.ok) {
-        setBindingError(timeoutDiff.error);
-        setBindingSaving(false);
-        return;
-      }
-      const nextBinding = await updatePromptCacheConversationBinding(
-        conversationKey,
-        bindingKind === "group"
-          ? {
-              bindingKind: "group",
-              groupName: bindingGroupName,
-              timeouts: timeoutDiff.patch,
-            }
-          : bindingKind === "upstreamAccount"
+      setBindingSaving(true);
+      setBindingError(null);
+      try {
+        const parsedTimeouts = parseRoutingTimeoutOverrideDraftWithEnabledState(
+          bindingTimeoutDraft,
+          bindingTimeoutEnabledFields,
+          timeoutFieldLabels,
+        );
+        if (!parsedTimeouts.ok) {
+          setBindingError(parsedTimeouts.error);
+          setBindingSaving(false);
+          return;
+        }
+        const baseTimeoutDraft = buildRoutingTimeoutOverrideDraftForSource(
+          binding?.timeouts,
+          binding?.timeoutFieldSources,
+          "conversation",
+        );
+        const baseTimeoutEnabledFields = buildRoutingTimeoutOverrideEnabledStateForSource(
+          binding?.timeoutFieldSources,
+          "conversation",
+        );
+        const timeoutDiff = diffRoutingTimeoutOverrideDraftWithEnabledState(
+          baseTimeoutDraft,
+          baseTimeoutEnabledFields,
+          bindingTimeoutDraft,
+          bindingTimeoutEnabledFields,
+          timeoutFieldLabels,
+        );
+        if (!timeoutDiff.ok) {
+          setBindingError(timeoutDiff.error);
+          setBindingSaving(false);
+          return;
+        }
+        const nextBinding = await updatePromptCacheConversationBinding(
+          conversationKey,
+          bindingKind === "group"
             ? {
-                bindingKind: "upstreamAccount",
-                upstreamAccountId: Number(bindingAccountId),
+                bindingKind: "group",
+                groupName: bindingGroupName,
                 timeouts: timeoutDiff.patch,
               }
-            : { bindingKind: "none", timeouts: timeoutDiff.patch },
-      );
-      setBinding(nextBinding);
-      setBindingKind(nextBinding.bindingKind);
-      applyBindingPolicyDraft(nextBinding, {
-        setAllowSwitchUpstreamDraft,
-        setFastModeDraft,
-        setImageToolDraft,
-        setAvailableModelsMode,
-        setAvailableModelsDraft,
-        setForwardProxyKeysDraft,
-      });
-      setBindingTimeoutDraft(
-        buildRoutingTimeoutOverrideDraftForSource(
-          nextBinding.timeouts,
-          nextBinding.timeoutFieldSources,
-          "conversation",
-        ),
-      );
-      setBindingTimeoutEnabledFields(
-        buildRoutingTimeoutOverrideEnabledStateForSource(
-          nextBinding.timeoutFieldSources,
-          "conversation",
-        ),
-      );
-      setBindingGroupName(nextBinding.groupName ?? bindingGroups[0] ?? "");
-      setBindingAccountId(
-        nextBinding.upstreamAccountId != null
-          ? String(nextBinding.upstreamAccountId)
-          : bindingAccounts[0]
-            ? String(bindingAccounts[0].id)
-            : "",
-      );
-    } catch (err) {
-      setBindingError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBindingSaving(false);
-    }
-  }, [
-    binding,
-    bindingAccountId,
-    bindingAccounts,
-    bindingGroupName,
-    bindingGroups,
-    bindingKind,
-    bindingSubmitDisabled,
-    bindingTimeoutDraft,
-    bindingTimeoutEnabledFields,
-    conversationKey,
-    timeoutFieldLabels,
-  ]);
+            : bindingKind === "upstreamAccount"
+              ? {
+                  bindingKind: "upstreamAccount",
+                  upstreamAccountId: Number(bindingAccountId),
+                  timeouts: timeoutDiff.patch,
+                }
+              : { bindingKind: "none", timeouts: timeoutDiff.patch },
+        );
+        setBinding(nextBinding);
+        setBindingKind(nextBinding.bindingKind);
+        applyBindingPolicyDraft(nextBinding, {
+          setAllowSwitchUpstreamDraft,
+          setFastModeDraft,
+          setImageToolDraft,
+          setAvailableModelsMode,
+          setAvailableModelsDraft,
+          setForwardProxyKeysDraft,
+        });
+        setBindingTimeoutDraft(
+          buildRoutingTimeoutOverrideDraftForSource(
+            nextBinding.timeouts,
+            nextBinding.timeoutFieldSources,
+            "conversation",
+          ),
+        );
+        setBindingTimeoutEnabledFields(
+          buildRoutingTimeoutOverrideEnabledStateForSource(
+            nextBinding.timeoutFieldSources,
+            "conversation",
+          ),
+        );
+        setBindingGroupName(nextBinding.groupName ?? bindingGroups[0] ?? "");
+        setBindingAccountId(
+          nextBinding.upstreamAccountId != null
+            ? String(nextBinding.upstreamAccountId)
+            : bindingAccounts[0]
+              ? String(bindingAccounts[0].id)
+              : "",
+        );
+      } catch (err) {
+        setBindingError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBindingSaving(false);
+      }
+    },
+    [
+      binding,
+      bindingAccountId,
+      bindingAccounts,
+      bindingGroupName,
+      bindingGroups,
+      bindingKind,
+      bindingSubmitDisabled,
+      bindingTimeoutDraft,
+      bindingTimeoutEnabledFields,
+      conversationKey,
+      timeoutFieldLabels,
+    ],
+  );
 
   return (
     <>
-    <AccountDetailDrawerShell
-      open={open}
-      labelledBy={titleId}
-      closeLabel={t("live.conversations.drawer.close")}
-      onClose={onClose}
-      closeDisabled={bindingOwnerConfirmOpen}
-      onBodyElementChange={setDrawerBodyElement}
-      shellClassName="max-w-[78rem]"
-      header={
-        <div className="space-y-4">
-          <div className="space-y-3">
-            <div className="section-heading">
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
-                {t("live.conversations.drawer.eyebrow")}
-              </p>
-              <h2 id={titleId} className="section-title break-all">
-                {displayTitle}
-              </h2>
-              {shouldShowConversationKey ? (
-                <p className="break-all font-mono text-xs text-base-content/62">
-                  {conversationKey}
+      <AccountDetailDrawerShell
+        open={open}
+        labelledBy={titleId}
+        closeLabel={t("live.conversations.drawer.close")}
+        onClose={onClose}
+        closeDisabled={bindingOwnerConfirmOpen}
+        onBodyElementChange={setDrawerBodyElement}
+        shellClassName="max-w-[78rem]"
+        header={
+          <div className="space-y-4">
+            <div className="space-y-3">
+              <div className="section-heading">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
+                  {t("live.conversations.drawer.eyebrow")}
                 </p>
-              ) : null}
-              <p className="section-description">
-                {t("live.conversations.drawer.description")}
-              </p>
+                <h2 id={titleId} className="section-title break-all">
+                  {displayTitle}
+                </h2>
+                {shouldShowConversationKey ? (
+                  <p className="break-all font-mono text-xs text-base-content/62">
+                    {conversationKey}
+                  </p>
+                ) : null}
+                <p className="section-description">{t("live.conversations.drawer.description")}</p>
+              </div>
+              <div className="text-sm text-base-content/70">
+                {effectiveTotal > 0 && loadedCount >= effectiveTotal
+                  ? t("live.conversations.drawer.progressComplete", {
+                      count: effectiveTotal,
+                    })
+                  : t("live.conversations.drawer.progress", {
+                      loaded: loadedCount,
+                      total: effectiveTotal,
+                    })}
+              </div>
             </div>
-            <div className="text-sm text-base-content/70">
-              {effectiveTotal > 0 && loadedCount >= effectiveTotal
-                ? t("live.conversations.drawer.progressComplete", {
-                    count: effectiveTotal,
-                  })
-                : t("live.conversations.drawer.progress", {
-                    loaded: loadedCount,
-                    total: effectiveTotal,
-                  })}
-            </div>
+            <SegmentedControl
+              size="compact"
+              role="tablist"
+              aria-label={tabListLabel}
+              className="w-fit max-w-full overflow-x-auto"
+            >
+              <SegmentedControlItem
+                active={activeTab === "overview"}
+                role="tab"
+                aria-selected={activeTab === "overview"}
+                aria-controls={`${titleId}-panel-overview`}
+                id={`${titleId}-tab-overview`}
+                onClick={() => setActiveTab("overview")}
+              >
+                {t("live.conversations.drawer.tabs.overview")}
+              </SegmentedControlItem>
+              <SegmentedControlItem
+                active={activeTab === "calls"}
+                role="tab"
+                aria-selected={activeTab === "calls"}
+                aria-controls={`${titleId}-panel-calls`}
+                id={`${titleId}-tab-calls`}
+                onClick={() => setActiveTab("calls")}
+              >
+                {t("live.conversations.drawer.tabs.calls")}
+              </SegmentedControlItem>
+              <SegmentedControlItem
+                active={activeTab === "settings"}
+                role="tab"
+                aria-selected={activeTab === "settings"}
+                aria-controls={`${titleId}-panel-settings`}
+                id={`${titleId}-tab-settings`}
+                onClick={() => setActiveTab("settings")}
+              >
+                {t("live.conversations.drawer.tabs.settings")}
+              </SegmentedControlItem>
+            </SegmentedControl>
           </div>
-          <SegmentedControl
-            size="compact"
-            role="tablist"
-            aria-label={tabListLabel}
-            className="w-fit max-w-full overflow-x-auto"
-          >
-            <SegmentedControlItem
-              active={activeTab === "overview"}
-              role="tab"
-              aria-selected={activeTab === "overview"}
-              aria-controls={`${titleId}-panel-overview`}
-              id={`${titleId}-tab-overview`}
-              onClick={() => setActiveTab("overview")}
-            >
-              {t("live.conversations.drawer.tabs.overview")}
-            </SegmentedControlItem>
-            <SegmentedControlItem
-              active={activeTab === "calls"}
-              role="tab"
-              aria-selected={activeTab === "calls"}
-              aria-controls={`${titleId}-panel-calls`}
-              id={`${titleId}-tab-calls`}
-              onClick={() => setActiveTab("calls")}
-            >
-              {t("live.conversations.drawer.tabs.calls")}
-            </SegmentedControlItem>
-            <SegmentedControlItem
-              active={activeTab === "settings"}
-              role="tab"
-              aria-selected={activeTab === "settings"}
-              aria-controls={`${titleId}-panel-settings`}
-              id={`${titleId}-tab-settings`}
-              onClick={() => setActiveTab("settings")}
-            >
-              {t("live.conversations.drawer.tabs.settings")}
-            </SegmentedControlItem>
-          </SegmentedControl>
-        </div>
-      }
-    >
-      {activeTab === "overview" ? (
-        <div
-          id={`${titleId}-panel-overview`}
-          role="tabpanel"
-          aria-labelledby={`${titleId}-tab-overview`}
-        >
-          <PromptCacheConversationActivityOverview
-            open={open}
-            conversationKey={conversationKey}
-            disableLiveUpdates={disableLiveUpdates}
-            historyQueryForConversationKey={historyQueryForConversationKey}
-            historyRecordMatchesConversationKey={
-              historyRecordMatchesConversationKey
-            }
-            t={t}
-          />
-        </div>
-      ) : null}
-      {activeTab === "calls" ? (
-        <div
-          id={`${titleId}-panel-calls`}
-          role="tabpanel"
-          aria-labelledby={`${titleId}-tab-calls`}
-          className="space-y-3"
-        >
-          <PromptCacheConversationInvocationTable
-            records={visibleRecords}
-            isLoading={isLoading}
-            error={error}
-            emptyLabel={t("live.conversations.drawer.empty")}
-            onOpenUpstreamAccount={onOpenUpstreamAccount}
-            scrollElement={drawerBodyElement}
-          />
-          {isLoadingMore ? (
-            <div className="flex items-center justify-center gap-2 py-2 text-sm text-base-content/60">
-              <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
-              <span>{t("live.conversations.drawer.loadingMore")}</span>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      {activeTab === "settings" ? (
-        <div
-          id={`${titleId}-panel-settings`}
-          role="tabpanel"
-          aria-labelledby={`${titleId}-tab-settings`}
-        >
-          {bindingPanel}
-        </div>
-      ) : null}
-    </AccountDetailDrawerShell>
-    <Dialog
-      open={open && bindingOwnerConfirmOpen}
-      onOpenChange={(nextOpen) => {
-        if (!bindingSaving) setBindingOwnerConfirmOpen(nextOpen);
-      }}
-    >
-      <DialogContent
-        role="alertdialog"
-        container={drawerBodyElement}
-        className="space-y-5 p-5 sm:p-6"
+        }
       >
-        <DialogHeader>
-          <DialogTitle>
-            {t("live.conversations.drawer.binding.ownerConfirm.title")}
-          </DialogTitle>
-          <DialogDescription>
-            {t("live.conversations.drawer.binding.ownerConfirm.description", {
-              owner: bindingOwnerConfirmLabel,
-            })}
-          </DialogDescription>
-        </DialogHeader>
-        <p className="rounded-xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm leading-6 text-base-content/82">
-          {t("live.conversations.drawer.binding.ownerConfirm.risk")}
-        </p>
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={bindingSaving}
-            onClick={() => setBindingOwnerConfirmOpen(false)}
+        {activeTab === "overview" ? (
+          <div
+            id={`${titleId}-panel-overview`}
+            role="tabpanel"
+            aria-labelledby={`${titleId}-tab-overview`}
           >
-            {t("live.conversations.drawer.binding.ownerConfirm.cancel")}
-          </Button>
-          <Button
-            type="button"
-            variant="destructive"
-            disabled={bindingSaving}
-            onClick={() => {
-              setBindingOwnerConfirmOpen(false);
-              void saveBinding({ skipOwnerWarning: true });
-            }}
+            <PromptCacheConversationActivityOverview
+              open={open}
+              conversationKey={conversationKey}
+              disableLiveUpdates={disableLiveUpdates}
+              historyQueryForConversationKey={historyQueryForConversationKey}
+              historyRecordMatchesConversationKey={historyRecordMatchesConversationKey}
+              t={t}
+            />
+          </div>
+        ) : null}
+        {activeTab === "calls" ? (
+          <div
+            id={`${titleId}-panel-calls`}
+            role="tabpanel"
+            aria-labelledby={`${titleId}-tab-calls`}
+            className="space-y-3"
           >
-            {bindingSaving
-              ? t("live.conversations.drawer.binding.saving")
-              : t("live.conversations.drawer.binding.ownerConfirm.confirm")}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+            <PromptCacheConversationInvocationTable
+              records={visibleRecords}
+              isLoading={isLoading}
+              error={error}
+              emptyLabel={t("live.conversations.drawer.empty")}
+              onOpenUpstreamAccount={onOpenUpstreamAccount}
+              scrollElement={drawerBodyElement}
+            />
+            {isLoadingMore ? (
+              <div className="flex items-center justify-center gap-2 py-2 text-sm text-base-content/60">
+                <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
+                <span>{t("live.conversations.drawer.loadingMore")}</span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {activeTab === "settings" ? (
+          <div
+            id={`${titleId}-panel-settings`}
+            role="tabpanel"
+            aria-labelledby={`${titleId}-tab-settings`}
+          >
+            {bindingPanel}
+          </div>
+        ) : null}
+      </AccountDetailDrawerShell>
+      <Dialog
+        open={open && bindingOwnerConfirmOpen}
+        onOpenChange={(nextOpen) => {
+          if (!bindingSaving) setBindingOwnerConfirmOpen(nextOpen);
+        }}
+      >
+        <DialogContent
+          role="alertdialog"
+          container={drawerBodyElement}
+          className="space-y-5 p-5 sm:p-6"
+        >
+          <DialogHeader>
+            <DialogTitle>{t("live.conversations.drawer.binding.ownerConfirm.title")}</DialogTitle>
+            <DialogDescription>
+              {t("live.conversations.drawer.binding.ownerConfirm.description", {
+                owner: bindingOwnerConfirmLabel,
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <p className="rounded-xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm leading-6 text-base-content/82">
+            {t("live.conversations.drawer.binding.ownerConfirm.risk")}
+          </p>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={bindingSaving}
+              onClick={() => setBindingOwnerConfirmOpen(false)}
+            >
+              {t("live.conversations.drawer.binding.ownerConfirm.cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={bindingSaving}
+              onClick={() => {
+                setBindingOwnerConfirmOpen(false);
+                void saveBinding({ skipOwnerWarning: true });
+              }}
+            >
+              {bindingSaving
+                ? t("live.conversations.drawer.binding.saving")
+                : t("live.conversations.drawer.binding.ownerConfirm.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
@@ -3505,10 +3244,12 @@ export function PromptCacheConversationTable({
 }: PromptCacheConversationTableProps) {
   const { t, locale } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
-  const [historyDrawerPromptCacheKey, setHistoryDrawerPromptCacheKey] =
-    useState<string | null>(null);
-  const [internalExpandedPromptCacheKeys, setInternalExpandedPromptCacheKeys] =
-    useState<string[]>([]);
+  const [historyDrawerPromptCacheKey, setHistoryDrawerPromptCacheKey] = useState<string | null>(
+    null,
+  );
+  const [internalExpandedPromptCacheKeys, setInternalExpandedPromptCacheKeys] = useState<string[]>(
+    [],
+  );
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const isExpansionControlled = expandedPromptCacheKeys != null;
 
@@ -3524,10 +3265,7 @@ export function PromptCacheConversationTable({
     setNow(Date.now());
   }, [stats]);
 
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag),
-    [localeTag],
-  );
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat(localeTag, {
@@ -3561,10 +3299,7 @@ export function PromptCacheConversationTable({
       null,
     );
     if (earliestCreatedAt == null) return null;
-    const chartRangeStart = Math.max(
-      earliestCreatedAt,
-      now - PROMPT_CACHE_CHART_MAX_WINDOW_MS,
-    );
+    const chartRangeStart = Math.max(earliestCreatedAt, now - PROMPT_CACHE_CHART_MAX_WINDOW_MS);
     return {
       rangeStart: new Date(chartRangeStart).toISOString(),
       rangeEnd: new Date(now).toISOString(),
@@ -3572,23 +3307,12 @@ export function PromptCacheConversationTable({
   }, [now, stats]);
 
   const chartHours = useMemo(() => {
-    const rangeStartEpoch = parseEpoch(
-      chartRangeOverride?.rangeStart ?? stats?.rangeStart ?? "",
-    );
-    const rangeEndEpoch = parseEpoch(
-      chartRangeOverride?.rangeEnd ?? stats?.rangeEnd ?? "",
-    );
-    if (
-      rangeStartEpoch == null ||
-      rangeEndEpoch == null ||
-      rangeEndEpoch <= rangeStartEpoch
-    ) {
+    const rangeStartEpoch = parseEpoch(chartRangeOverride?.rangeStart ?? stats?.rangeStart ?? "");
+    const rangeEndEpoch = parseEpoch(chartRangeOverride?.rangeEnd ?? stats?.rangeEnd ?? "");
+    if (rangeStartEpoch == null || rangeEndEpoch == null || rangeEndEpoch <= rangeStartEpoch) {
       return 24;
     }
-    return Math.max(
-      1,
-      Math.ceil((rangeEndEpoch - rangeStartEpoch) / 3_600_000),
-    );
+    return Math.max(1, Math.ceil((rangeEndEpoch - rangeStartEpoch) / 3_600_000));
   }, [
     chartRangeOverride?.rangeEnd,
     chartRangeOverride?.rangeStart,
@@ -3597,25 +3321,15 @@ export function PromptCacheConversationTable({
   ]);
 
   const footerNote = useMemo(() => {
-    if (
-      !stats ||
-      stats.implicitFilter.filteredCount <= 0 ||
-      stats.implicitFilter.kind == null
-    ) {
+    if (!stats || stats.implicitFilter.filteredCount <= 0 || stats.implicitFilter.kind == null) {
       return null;
     }
     if (stats.implicitFilter.kind === "inactiveOutside24h") {
-      if (
-        stats.selectionMode === "activityWindow" &&
-        stats.selectedActivityHours != null
-      ) {
-        return t(
-          "live.conversations.implicitFilter.inactiveOutsideActivityWindow",
-          {
-            count: stats.implicitFilter.filteredCount,
-            hours: stats.selectedActivityHours,
-          },
-        );
+      if (stats.selectionMode === "activityWindow" && stats.selectedActivityHours != null) {
+        return t("live.conversations.implicitFilter.inactiveOutsideActivityWindow", {
+          count: stats.implicitFilter.filteredCount,
+          hours: stats.selectedActivityHours,
+        });
       }
       return t("live.conversations.implicitFilter.inactiveOutside24h", {
         count: stats.implicitFilter.filteredCount,
@@ -3635,8 +3349,7 @@ export function PromptCacheConversationTable({
     [t],
   );
   const chartInteractionHint = t("live.chart.tooltip.instructions");
-  const resolvedKeyColumnLabel =
-    keyColumnLabel ?? t("live.conversations.table.promptCacheKey");
+  const resolvedKeyColumnLabel = keyColumnLabel ?? t("live.conversations.table.promptCacheKey");
   const resolvedEmptyLabel = emptyLabel ?? t("live.conversations.empty");
   const chartAriaLabel = t("live.conversations.chartAria", {
     hours: chartHours,
@@ -3647,12 +3360,7 @@ export function PromptCacheConversationTable({
   const rangeStart = chartRangeOverride?.rangeStart ?? stats?.rangeStart ?? "";
   const rangeEnd = chartRangeOverride?.rangeEnd ?? stats?.rangeEnd ?? "";
   const conversationChartMax = useMemo(
-    () =>
-      findVisibleConversationChartMax(
-        stats?.conversations ?? [],
-        rangeStart,
-        rangeEnd,
-      ),
+    () => findVisibleConversationChartMax(stats?.conversations ?? [], rangeStart, rangeEnd),
     [rangeEnd, rangeStart, stats?.conversations],
   );
   const totalLabels = useMemo(
@@ -3698,15 +3406,11 @@ export function PromptCacheConversationTable({
       stats.conversations.map((conversation) => conversation.promptCacheKey),
     );
     setInternalExpandedPromptCacheKeys((current) =>
-      current.filter((promptCacheKey) =>
-        visiblePromptCacheKeys.has(promptCacheKey),
-      ),
+      current.filter((promptCacheKey) => visiblePromptCacheKeys.has(promptCacheKey)),
     );
   }, [isExpansionControlled, stats]);
 
-  const openAccountDrawer = (
-    account: PromptCacheConversationUpstreamAccount,
-  ) => {
+  const openAccountDrawer = (account: PromptCacheConversationUpstreamAccount) => {
     if (!canOpenPromptCacheUpstreamAccount(account)) return;
     setHistoryDrawerPromptCacheKey(null);
     onOpenUpstreamAccount?.(
@@ -3751,9 +3455,7 @@ export function PromptCacheConversationTable({
     return (
       <div className="space-y-2">
         <Alert>{resolvedEmptyLabel}</Alert>
-        {footerNote ? (
-          <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p>
-        ) : null}
+        {footerNote ? <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p> : null}
       </div>
     );
   }
@@ -3763,17 +3465,9 @@ export function PromptCacheConversationTable({
       <div className="overflow-hidden rounded-xl border border-base-300/75 bg-base-100/55">
         <div className="space-y-3 p-3 sm:hidden">
           {stats.conversations.map((conversation) => {
-            const createdAtLabel = formatDateLabel(
-              conversation.createdAt,
-              dateFormatter,
-            );
-            const lastActivityLabel = formatDateLabel(
-              conversation.lastActivityAt,
-              dateFormatter,
-            );
-            const isExpanded = expandedPromptCacheKeySet.has(
-              conversation.promptCacheKey,
-            );
+            const createdAtLabel = formatDateLabel(conversation.createdAt, dateFormatter);
+            const lastActivityLabel = formatDateLabel(conversation.lastActivityAt, dateFormatter);
+            const isExpanded = expandedPromptCacheKeySet.has(conversation.promptCacheKey);
 
             return (
               <article
@@ -3795,14 +3489,10 @@ export function PromptCacheConversationTable({
                         type="button"
                         className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                         aria-label={
-                          isExpanded
-                            ? previewLabels.collapseAction
-                            : previewLabels.expandAction
+                          isExpanded ? previewLabels.collapseAction : previewLabels.expandAction
                         }
                         aria-expanded={isExpanded}
-                        onClick={() =>
-                          togglePromptCachePreview(conversation.promptCacheKey)
-                        }
+                        onClick={() => togglePromptCachePreview(conversation.promptCacheKey)}
                       >
                         <AppIcon
                           name={isExpanded ? "chevron-up" : "chevron-down"}
@@ -3814,15 +3504,9 @@ export function PromptCacheConversationTable({
                         type="button"
                         className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                         aria-label={previewLabels.historyAction}
-                        onClick={() =>
-                          openHistoryDrawer(conversation.promptCacheKey)
-                        }
+                        onClick={() => openHistoryDrawer(conversation.promptCacheKey)}
                       >
-                        <AppIcon
-                          name="account-details-outline"
-                          className="h-4 w-4"
-                          aria-hidden
-                        />
+                        <AppIcon name="account-details-outline" className="h-4 w-4" aria-hidden />
                       </button>
                     </div>
                   </div>
@@ -3872,15 +3556,11 @@ export function PromptCacheConversationTable({
                   </div>
                   <dl className="space-y-1 text-xs">
                     <div className="flex items-center justify-between gap-3">
-                      <dt className="text-base-content/60">
-                        {totalLabels.createdAtShort}
-                      </dt>
+                      <dt className="text-base-content/60">{totalLabels.createdAtShort}</dt>
                       <dd className="text-right">{createdAtLabel}</dd>
                     </div>
                     <div className="flex items-center justify-between gap-3">
-                      <dt className="text-base-content/60">
-                        {totalLabels.lastActivityAtShort}
-                      </dt>
+                      <dt className="text-base-content/60">{totalLabels.lastActivityAtShort}</dt>
                       <dd className="text-right">{lastActivityLabel}</dd>
                     </div>
                   </dl>
@@ -3929,9 +3609,7 @@ export function PromptCacheConversationTable({
           </thead>
           <tbody className="divide-y divide-base-300/65">
             {stats.conversations.map((conversation) => {
-              const isExpanded = expandedPromptCacheKeySet.has(
-                conversation.promptCacheKey,
-              );
+              const isExpanded = expandedPromptCacheKeySet.has(conversation.promptCacheKey);
 
               return (
                 <Fragment key={conversation.promptCacheKey}>
@@ -3949,16 +3627,10 @@ export function PromptCacheConversationTable({
                             type="button"
                             className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                             aria-label={
-                              isExpanded
-                                ? previewLabels.collapseAction
-                                : previewLabels.expandAction
+                              isExpanded ? previewLabels.collapseAction : previewLabels.expandAction
                             }
                             aria-expanded={isExpanded}
-                            onClick={() =>
-                              togglePromptCachePreview(
-                                conversation.promptCacheKey,
-                              )
-                            }
+                            onClick={() => togglePromptCachePreview(conversation.promptCacheKey)}
                           >
                             <AppIcon
                               name={isExpanded ? "chevron-up" : "chevron-down"}
@@ -3970,9 +3642,7 @@ export function PromptCacheConversationTable({
                             type="button"
                             className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                             aria-label={previewLabels.historyAction}
-                            onClick={() =>
-                              openHistoryDrawer(conversation.promptCacheKey)
-                            }
+                            onClick={() => openHistoryDrawer(conversation.promptCacheKey)}
                           >
                             <AppIcon
                               name="account-details-outline"
@@ -4004,14 +3674,9 @@ export function PromptCacheConversationTable({
                     <td className="px-2 py-2 align-top sm:px-3 sm:py-3">
                       <div className="space-y-1.5 text-[11px]">
                         <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-2">
-                          <span className="text-base-content/60">
-                            {totalLabels.createdAtShort}
-                          </span>
+                          <span className="text-base-content/60">{totalLabels.createdAtShort}</span>
                           <span className="whitespace-nowrap font-medium tabular-nums">
-                            {formatDateLabel(
-                              conversation.createdAt,
-                              dateFormatter,
-                            )}
+                            {formatDateLabel(conversation.createdAt, dateFormatter)}
                           </span>
                         </div>
                         <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-2">
@@ -4019,10 +3684,7 @@ export function PromptCacheConversationTable({
                             {totalLabels.lastActivityAtShort}
                           </span>
                           <span className="whitespace-nowrap font-medium tabular-nums">
-                            {formatDateLabel(
-                              conversation.lastActivityAt,
-                              dateFormatter,
-                            )}
+                            {formatDateLabel(conversation.lastActivityAt, dateFormatter)}
                           </span>
                         </div>
                       </div>
@@ -4063,9 +3725,7 @@ export function PromptCacheConversationTable({
           </tbody>
         </table>
       </div>
-      {footerNote ? (
-        <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p>
-      ) : null}
+      {footerNote ? <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p> : null}
       <PromptCacheConversationHistoryDrawer
         open={historyDrawerPromptCacheKey != null}
         conversationKey={historyDrawerPromptCacheKey}
@@ -4073,9 +3733,7 @@ export function PromptCacheConversationTable({
         t={t}
         onOpenUpstreamAccount={onOpenUpstreamAccount}
         historyQueryForConversationKey={historyQueryForConversationKey}
-        historyRecordMatchesConversationKey={
-          historyRecordMatchesConversationKey
-        }
+        historyRecordMatchesConversationKey={historyRecordMatchesConversationKey}
       />
     </div>
   );

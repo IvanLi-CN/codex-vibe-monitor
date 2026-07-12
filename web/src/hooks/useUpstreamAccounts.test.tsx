@@ -1,15 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   FetchUpstreamAccountsQuery,
   ForwardProxyBindingNode,
@@ -27,24 +19,16 @@ import {
 
 const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccounts:
-    vi.fn<
-      (
-        query?: FetchUpstreamAccountsQuery,
-      ) => Promise<UpstreamAccountListResponse>
-    >(),
+    vi.fn<(query?: FetchUpstreamAccountsQuery) => Promise<UpstreamAccountListResponse>>(),
   fetchUpstreamAccountDetail:
     vi.fn<
       (
         accountId: number,
-        options?:
-          | { signal?: AbortSignal; includeRecentActions?: boolean }
-          | AbortSignal,
+        options?: { signal?: AbortSignal; includeRecentActions?: boolean } | AbortSignal,
       ) => Promise<UpstreamAccountDetail>
     >(),
   fetchUpstreamAccountWindowUsage:
-    vi.fn<
-      (accountIds: number[]) => Promise<UpstreamAccountWindowUsageResponse>
-    >(),
+    vi.fn<(accountIds: number[]) => Promise<UpstreamAccountWindowUsageResponse>>(),
   updateUpstreamAccountGroup:
     vi.fn<
       (
@@ -52,24 +36,19 @@ const apiMocks = vi.hoisted(() => ({
         payload: import("../lib/api").UpdateUpstreamAccountGroupPayload,
       ) => Promise<UpstreamAccountGroupSummary>
     >(),
-  syncUpstreamAccount:
-    vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
-  reloginUpstreamAccount:
-    vi.fn<(accountId: number) => Promise<{ loginId: string }>>(),
+  syncUpstreamAccount: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
+  reloginUpstreamAccount: vi.fn<(accountId: number) => Promise<{ loginId: string }>>(),
   deleteUpstreamAccount: vi.fn<(accountId: number) => Promise<void>>(),
   deleteUpstreamAccountGroup: vi.fn<(groupName: string) => Promise<void>>(),
 }));
 
 const sseMocks = vi.hoisted(() => ({
-  recordListeners: [] as Array<
-    (payload: { type: string; records?: unknown[] }) => void
-  >,
+  recordListeners: [] as Array<(payload: { type: string; records?: unknown[] }) => void>,
   openListeners: [] as Array<() => void>,
 }));
 
 vi.mock("../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
     fetchUpstreamAccounts: apiMocks.fetchUpstreamAccounts,
@@ -84,9 +63,7 @@ vi.mock("../lib/api", async () => {
 });
 
 vi.mock("../lib/sse", () => ({
-  subscribeToSse: (
-    listener: (payload: { type: string; records?: unknown[] }) => void,
-  ) => {
+  subscribeToSse: (listener: (payload: { type: string; records?: unknown[] }) => void) => {
     sseMocks.recordListeners.push(listener);
     return () => {
       const index = sseMocks.recordListeners.indexOf(listener);
@@ -122,9 +99,7 @@ beforeEach(() => {
   sseMocks.recordListeners.length = 0;
   sseMocks.openListeners.length = 0;
   apiMocks.fetchUpstreamAccounts.mockResolvedValue(createListResponse());
-  apiMocks.updateUpstreamAccountGroup.mockResolvedValue(
-    createGroupSummary("prod"),
-  );
+  apiMocks.updateUpstreamAccountGroup.mockResolvedValue(createGroupSummary("prod"));
   apiMocks.deleteUpstreamAccountGroup.mockResolvedValue();
 });
 
@@ -217,10 +192,7 @@ function createRateWindowActualUsage(
   };
 }
 
-function createSummary(
-  id: number,
-  displayName: string,
-): UpstreamAccountSummary {
+function createSummary(id: number, displayName: string): UpstreamAccountSummary {
   return {
     id,
     kind: "oauth_codex",
@@ -265,10 +237,7 @@ function createGroupSummary(
   };
 }
 
-function createWindowedSummary(
-  id: number,
-  displayName: string,
-): UpstreamAccountSummary {
+function createWindowedSummary(id: number, displayName: string): UpstreamAccountSummary {
   return {
     ...createSummary(id, displayName),
     primaryWindow: {
@@ -295,9 +264,7 @@ function createWindowedSummary(
   };
 }
 
-function createWindowUsageResponse(
-  accountIds: number[],
-): UpstreamAccountWindowUsageResponse {
+function createWindowUsageResponse(accountIds: number[]): UpstreamAccountWindowUsageResponse {
   return {
     items: accountIds.map((accountId, index) => ({
       accountId,
@@ -315,10 +282,7 @@ function createWindowUsageResponse(
   };
 }
 
-function createForwardProxyNode(
-  key: string,
-  displayName = "JP Edge 01",
-): ForwardProxyBindingNode {
+function createForwardProxyNode(key: string, displayName = "JP Edge 01"): ForwardProxyBindingNode {
   return {
     key,
     source: "manual",
@@ -380,17 +344,11 @@ function Probe({
   return (
     <div>
       <div data-testid="selected-id">{selectedId ?? ""}</div>
-      <div data-testid="selected-name">
-        {selectedSummary?.displayName ?? ""}
-      </div>
+      <div data-testid="selected-name">{selectedSummary?.displayName ?? ""}</div>
       <div data-testid="detail-id">{detail?.id ?? ""}</div>
       <div data-testid="detail-name">{detail?.displayName ?? ""}</div>
-      <div data-testid="detail-recent-actions-count">
-        {detail?.recentActions?.length ?? 0}
-      </div>
-      <div data-testid="detail-loading">
-        {isDetailLoading ? "true" : "false"}
-      </div>
+      <div data-testid="detail-recent-actions-count">{detail?.recentActions?.length ?? 0}</div>
+      <div data-testid="detail-loading">{isDetailLoading ? "true" : "false"}</div>
       <div data-testid="list-error">{listError ?? ""}</div>
       <div data-testid="list-freshness">{listState.freshness}</div>
       <div data-testid="list-loading-state">{listState.loadingState}</div>
@@ -398,15 +356,9 @@ function Probe({
       <div data-testid="list-has-current-query-data">
         {listState.hasCurrentQueryData ? "true" : "false"}
       </div>
-      <div data-testid="proxy-catalog-kind">
-        {forwardProxyCatalogState.kind}
-      </div>
-      <div data-testid="proxy-catalog-freshness">
-        {forwardProxyCatalogState.freshness}
-      </div>
-      <div data-testid="window-usage-pending">
-        {isWindowUsagePending ? "true" : "false"}
-      </div>
+      <div data-testid="proxy-catalog-kind">{forwardProxyCatalogState.kind}</div>
+      <div data-testid="proxy-catalog-freshness">{forwardProxyCatalogState.freshness}</div>
+      <div data-testid="window-usage-pending">{isWindowUsagePending ? "true" : "false"}</div>
       <div data-testid="first-item-id">{items[0]?.id ?? ""}</div>
       <div data-testid="first-item-primary-requests">
         {items[0]?.primaryWindow?.actualUsage?.requestCount ?? ""}
@@ -416,22 +368,23 @@ function Probe({
       </div>
       <div data-testid="detail-error">{detailError ?? ""}</div>
       <div data-testid="error">{error ?? ""}</div>
-      <button data-testid="select-beta" onClick={() => selectAccount(2)}>
+      <button type="button" data-testid="select-beta" onClick={() => selectAccount(2)}>
         select beta
       </button>
-      <button data-testid="select-alpha" onClick={() => selectAccount(1)}>
+      <button type="button" data-testid="select-alpha" onClick={() => selectAccount(1)}>
         select alpha
       </button>
-      <button data-testid="select-gamma" onClick={() => selectAccount(3)}>
+      <button type="button" data-testid="select-gamma" onClick={() => selectAccount(3)}>
         select gamma
       </button>
-      <button data-testid="sync-alpha" onClick={() => void runSync(1)}>
+      <button type="button" data-testid="sync-alpha" onClick={() => void runSync(1)}>
         sync alpha
       </button>
-      <button data-testid="refresh" onClick={() => void refresh()}>
+      <button type="button" data-testid="refresh" onClick={() => void refresh()}>
         refresh
       </button>
       <button
+        type="button"
         data-testid="load-detail-recent-actions"
         onClick={() =>
           void loadDetail(selectedId ?? null, {
@@ -443,18 +396,20 @@ function Probe({
         load detail recent actions
       </button>
       <button
+        type="button"
         data-testid="hydrate-visible"
         onClick={() => void hydrateWindowUsage(items.map((item) => item.id))}
       >
         hydrate visible
       </button>
-      <button data-testid="relogin-alpha" onClick={() => void beginRelogin(1)}>
+      <button type="button" data-testid="relogin-alpha" onClick={() => void beginRelogin(1)}>
         relogin alpha
       </button>
-      <button data-testid="remove-alpha" onClick={() => void removeAccount(1)}>
+      <button type="button" data-testid="remove-alpha" onClick={() => void removeAccount(1)}>
         remove alpha
       </button>
       <button
+        type="button"
         data-testid="save-prod-group"
         onClick={() =>
           void saveGroupNote("prod", {
@@ -498,9 +453,7 @@ describe("useUpstreamAccounts", () => {
   });
 
   it("treats grouped includeAll queries as a distinct roster key", async () => {
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(
-      createDetail(1, "Alpha"),
-    );
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
 
     render(<Probe query={{ page: 1, pageSize: 20 }} />);
     await flushAsync();
@@ -521,15 +474,10 @@ describe("useUpstreamAccounts", () => {
     const hydration = deferred<UpstreamAccountWindowUsageResponse>();
     apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
       createListResponse({
-        items: [
-          createWindowedSummary(1, "Alpha"),
-          createWindowedSummary(2, "Beta"),
-        ],
+        items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
       }),
     );
-    apiMocks.fetchUpstreamAccountWindowUsage.mockImplementationOnce(
-      async () => hydration.promise,
-    );
+    apiMocks.fetchUpstreamAccountWindowUsage.mockImplementationOnce(async () => hydration.promise);
 
     render(<Probe query={{ page: 1, pageSize: 20 }} />);
     await flushAsync();
@@ -549,10 +497,7 @@ describe("useUpstreamAccounts", () => {
   it("hydrates only the selected account for includeAll roster queries", async () => {
     apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
       createListResponse({
-        items: [
-          createWindowedSummary(1, "Alpha"),
-          createWindowedSummary(2, "Beta"),
-        ],
+        items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
       }),
     );
     apiMocks.fetchUpstreamAccountWindowUsage.mockResolvedValueOnce(
@@ -577,18 +522,10 @@ describe("useUpstreamAccounts", () => {
   it("auto-hydrates visible roster rows when the query opts out of default selection", async () => {
     apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
       createListResponse({
-        items: [
-          createWindowedSummary(1, "Alpha"),
-          createWindowedSummary(2, "Beta"),
-        ],
+        items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
       }),
     );
-    render(
-      <Probe
-        query={{ includeAll: true }}
-        options={{ fallbackToFirstItem: false }}
-      />,
-    );
+    render(<Probe query={{ includeAll: true }} options={{ fallbackToFirstItem: false }} />);
     await flushAsync();
 
     expect(text("selected-id")).toBe("");
@@ -604,9 +541,7 @@ describe("useUpstreamAccounts", () => {
     await flushAsync();
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([
-      1, 2,
-    ]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1, 2]);
     expect(text("first-item-primary-requests")).toBe("10");
     expect(text("first-item-secondary-requests")).toBe("30");
   });
@@ -616,18 +551,12 @@ describe("useUpstreamAccounts", () => {
     apiMocks.fetchUpstreamAccounts
       .mockResolvedValueOnce(
         createListResponse({
-          items: [
-            createWindowedSummary(1, "Alpha"),
-            createWindowedSummary(2, "Beta"),
-          ],
+          items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
         }),
       )
       .mockResolvedValueOnce(
         createListResponse({
-          items: [
-            createWindowedSummary(3, "Gamma"),
-            createWindowedSummary(4, "Delta"),
-          ],
+          items: [createWindowedSummary(3, "Gamma"), createWindowedSummary(4, "Delta")],
           total: 4,
           page: 2,
           pageSize: 20,
@@ -664,18 +593,12 @@ describe("useUpstreamAccounts", () => {
     apiMocks.fetchUpstreamAccounts
       .mockResolvedValueOnce(
         createListResponse({
-          items: [
-            createWindowedSummary(1, "Alpha"),
-            createWindowedSummary(2, "Beta"),
-          ],
+          items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
         }),
       )
       .mockResolvedValueOnce(
         createListResponse({
-          items: [
-            createWindowedSummary(1, "Alpha"),
-            createWindowedSummary(2, "Beta"),
-          ],
+          items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
         }),
       );
     apiMocks.fetchUpstreamAccountWindowUsage
@@ -686,19 +609,13 @@ describe("useUpstreamAccounts", () => {
     render(<Probe query={{ page: 1, pageSize: 20 }} />);
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(
-      1,
-      [1],
-    );
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(1, [1]);
     expect(text("window-usage-pending")).toBe("true");
 
     click("hydrate-visible");
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(
-      2,
-      [2],
-    );
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(2, [2]);
     expect(text("window-usage-pending")).toBe("true");
 
     firstHydration.resolve(createWindowUsageResponse([1]));
@@ -720,9 +637,7 @@ describe("useUpstreamAccounts", () => {
     apiMocks.fetchUpstreamAccounts
       .mockResolvedValueOnce(createListResponse())
       .mockImplementationOnce(async () => nextPage.promise);
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(
-      createDetail(1, "Alpha"),
-    );
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
 
     render(<Probe query={{ page: 1, pageSize: 20 }} />);
     await flushAsync();
@@ -759,9 +674,7 @@ describe("useUpstreamAccounts", () => {
   });
 
   it("does not refetch the roster when rerenders keep the same query key", async () => {
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(
-      createDetail(1, "Alpha"),
-    );
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
 
     render(<Probe query={{ page: 1, pageSize: 20 }} />);
     await flushAsync();
@@ -819,11 +732,7 @@ describe("useUpstreamAccounts", () => {
     expect(text("proxy-catalog-freshness")).toBe("fresh");
 
     act(() => {
-      (
-        host?.querySelector(
-          '[data-testid="refresh"]',
-        ) as HTMLButtonElement | null
-      )?.click();
+      (host?.querySelector('[data-testid="refresh"]') as HTMLButtonElement | null)?.click();
     });
     await flushAsync();
 
@@ -853,11 +762,7 @@ describe("useUpstreamAccounts", () => {
     expect(text("proxy-catalog-freshness")).toBe("fresh");
 
     act(() => {
-      (
-        host?.querySelector(
-          '[data-testid="refresh"]',
-        ) as HTMLButtonElement | null
-      )?.click();
+      (host?.querySelector('[data-testid="refresh"]') as HTMLButtonElement | null)?.click();
     });
     await flushAsync();
 
@@ -882,11 +787,7 @@ describe("useUpstreamAccounts", () => {
     expect(text("proxy-catalog-freshness")).toBe("fresh");
 
     act(() => {
-      (
-        host?.querySelector(
-          '[data-testid="refresh"]',
-        ) as HTMLButtonElement | null
-      )?.click();
+      (host?.querySelector('[data-testid="refresh"]') as HTMLButtonElement | null)?.click();
     });
     await flushAsync();
 
@@ -900,9 +801,7 @@ describe("useUpstreamAccounts", () => {
     apiMocks.fetchUpstreamAccounts
       .mockResolvedValueOnce(createListResponse())
       .mockImplementationOnce(async () => nextPage.promise);
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(
-      createDetail(1, "Alpha"),
-    );
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
 
     render(<Probe query={{ page: 1, pageSize: 20 }} />);
     await flushAsync();
@@ -1001,9 +900,7 @@ describe("useUpstreamAccounts", () => {
       .mockResolvedValueOnce(createDetail(1, "Alpha"))
       .mockResolvedValueOnce(createDetail(2, "Beta"))
       .mockResolvedValue(createDetail(2, "Beta"));
-    apiMocks.syncUpstreamAccount.mockImplementationOnce(
-      async () => sync.promise,
-    );
+    apiMocks.syncUpstreamAccount.mockImplementationOnce(async () => sync.promise);
 
     render(<Probe />);
     await flushAsync();
@@ -1034,9 +931,7 @@ describe("useUpstreamAccounts", () => {
       .mockResolvedValueOnce(createDetail(1, "Alpha"))
       .mockResolvedValueOnce(createDetail(2, "Beta Stale"))
       .mockResolvedValueOnce(createDetail(2, "Beta Fresh"));
-    apiMocks.syncUpstreamAccount.mockImplementationOnce(
-      async () => sync.promise,
-    );
+    apiMocks.syncUpstreamAccount.mockImplementationOnce(async () => sync.promise);
 
     render(<Probe />);
     await flushAsync();
@@ -1108,9 +1003,7 @@ describe("useUpstreamAccounts", () => {
       .mockResolvedValueOnce(createDetail(1, "Alpha"))
       .mockImplementationOnce(async () => refreshedDetail.promise)
       .mockResolvedValue(createDetail(1, "Alpha Synced"));
-    apiMocks.syncUpstreamAccount.mockImplementationOnce(
-      async () => sync.promise,
-    );
+    apiMocks.syncUpstreamAccount.mockImplementationOnce(async () => sync.promise);
 
     render(<Probe />);
     await flushAsync();
@@ -1136,9 +1029,7 @@ describe("useUpstreamAccounts", () => {
       .mockResolvedValueOnce(createDetail(1, "Alpha"))
       .mockImplementationOnce(async () => betaFailure.promise)
       .mockImplementationOnce(async () => betaRefresh.promise);
-    apiMocks.syncUpstreamAccount.mockResolvedValueOnce(
-      createDetail(1, "Alpha Synced"),
-    );
+    apiMocks.syncUpstreamAccount.mockResolvedValueOnce(createDetail(1, "Alpha Synced"));
 
     render(<Probe />);
     await flushAsync();
@@ -1210,9 +1101,7 @@ describe("useUpstreamAccounts", () => {
     apiMocks.fetchUpstreamAccounts
       .mockResolvedValueOnce(createListResponse())
       .mockRejectedValueOnce(new Error("List failed"));
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(
-      createDetail(1, "Alpha"),
-    );
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
 
     render(<Probe />);
     await flushAsync();
@@ -1279,9 +1168,7 @@ describe("useUpstreamAccounts", () => {
   });
 
   it("does not clear list errors after a non-list success", async () => {
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(
-      createDetail(1, "Alpha"),
-    );
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
     apiMocks.fetchUpstreamAccounts
       .mockResolvedValueOnce(createListResponse())
       .mockRejectedValueOnce(new Error("List failed"));
@@ -1309,9 +1196,7 @@ describe("useUpstreamAccounts", () => {
       .mockResolvedValueOnce(createDetail(2, "Beta"))
       .mockResolvedValueOnce(createDetail(2, "Beta"))
       .mockResolvedValueOnce(createDetail(1, "Alpha synced"));
-    apiMocks.syncUpstreamAccount.mockImplementationOnce(
-      async () => sync.promise,
-    );
+    apiMocks.syncUpstreamAccount.mockImplementationOnce(async () => sync.promise);
 
     render(<Probe />);
     await flushAsync();
@@ -1348,11 +1233,7 @@ describe("useUpstreamAccounts", () => {
     apiMocks.fetchUpstreamAccounts
       .mockResolvedValueOnce({
         writesEnabled: true,
-        items: [
-          createSummary(1, "Alpha"),
-          createSummary(3, "Gamma"),
-          createSummary(2, "Beta"),
-        ],
+        items: [createSummary(1, "Alpha"), createSummary(3, "Gamma"), createSummary(2, "Beta")],
         groups: [],
         hasUngroupedAccounts: false,
         routing: {
@@ -1372,9 +1253,7 @@ describe("useUpstreamAccounts", () => {
           maskedApiKey: null,
         },
       });
-    apiMocks.deleteUpstreamAccount.mockImplementationOnce(
-      async () => remove.promise,
-    );
+    apiMocks.deleteUpstreamAccount.mockImplementationOnce(async () => remove.promise);
 
     render(<Probe />);
     await flushAsync();
@@ -1475,9 +1354,7 @@ describe("useUpstreamAccounts", () => {
       .mockResolvedValueOnce(createDetail(1, "Alpha"))
       .mockImplementationOnce(async () => refreshedDetail.promise)
       .mockResolvedValue(createDetail(1, "Alpha Synced"));
-    apiMocks.syncUpstreamAccount.mockImplementationOnce(
-      async () => sync.promise,
-    );
+    apiMocks.syncUpstreamAccount.mockImplementationOnce(async () => sync.promise);
 
     render(<Probe />);
     await flushAsync();
@@ -1559,9 +1436,7 @@ describe("useUpstreamAccounts", () => {
     apiMocks.fetchUpstreamAccountDetail
       .mockResolvedValueOnce(createDetail(1, "Alpha"))
       .mockResolvedValue(createDetail(1, "Alpha Synced"));
-    apiMocks.syncUpstreamAccount.mockImplementationOnce(
-      async () => sync.promise,
-    );
+    apiMocks.syncUpstreamAccount.mockImplementationOnce(async () => sync.promise);
 
     render(<Probe />);
     await flushAsync();
@@ -1610,9 +1485,7 @@ describe("useUpstreamAccounts", () => {
   });
 
   it("does not refresh the roster after records SSE events", async () => {
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(
-      createDetail(1, "Alpha"),
-    );
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
     render(<Probe />);
     await flushAsync();
 
@@ -1641,9 +1514,7 @@ describe("useUpstreamAccounts", () => {
   });
 
   it("skips an immediate open resync after a fresh load, then resyncs after the cooldown", async () => {
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(
-      createDetail(1, "Alpha"),
-    );
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
 
     render(<Probe />);
     await flushAsync();
@@ -1673,12 +1544,8 @@ describe("useUpstreamAccounts", () => {
 
   it("does not let records SSE preempt the first roster load before the current query hydrates", async () => {
     const pendingList = deferred<UpstreamAccountListResponse>();
-    apiMocks.fetchUpstreamAccounts.mockImplementationOnce(
-      async () => pendingList.promise,
-    );
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(
-      createDetail(1, "Alpha"),
-    );
+    apiMocks.fetchUpstreamAccounts.mockImplementationOnce(async () => pendingList.promise);
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
 
     render(<Probe />);
 
@@ -1708,16 +1575,12 @@ describe("useUpstreamAccounts", () => {
 
   it("ignores same-query records SSE events even while a prior manual refresh is already running", async () => {
     const manualRefresh = deferred<UpstreamAccountListResponse>();
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(
-      createDetail(1, "Alpha"),
-    );
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
 
     render(<Probe />);
     await flushAsync();
 
-    apiMocks.fetchUpstreamAccounts.mockImplementationOnce(
-      async () => manualRefresh.promise,
-    );
+    apiMocks.fetchUpstreamAccounts.mockImplementationOnce(async () => manualRefresh.promise);
 
     vi.useFakeTimers();
     try {
@@ -1739,10 +1602,7 @@ describe("useUpstreamAccounts", () => {
 
       manualRefresh.resolve(
         createListResponse({
-          items: [
-            createSummary(1, "Alpha Refresh 1"),
-            createSummary(2, "Beta"),
-          ],
+          items: [createSummary(1, "Alpha Refresh 1"), createSummary(2, "Beta")],
         }),
       );
       await flushAsync();

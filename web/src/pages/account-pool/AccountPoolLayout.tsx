@@ -1,20 +1,20 @@
-import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
-import { useTranslation } from '../../i18n'
-import { SegmentedControl } from '../../components/ui/segmented-control'
-import { segmentedControlItemVariants } from '../../components/ui/segmented-control.variants'
+import { Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
+import { SegmentedControl } from "../../components/ui/segmented-control";
+import { segmentedControlItemVariants } from "../../components/ui/segmented-control.variants";
+import { useTranslation } from "../../i18n";
 
 const items = [
-  { to: '/account-pool/upstream-accounts', key: 'accountPool.nav.upstreamAccounts' },
-  { to: '/account-pool/groups', key: 'accountPool.nav.groups' },
-  { to: '/account-pool/maintenance-records', key: 'accountPool.nav.maintenanceRecords' },
-] as const
+  { to: "/account-pool/upstream-accounts", key: "accountPool.nav.upstreamAccounts" },
+  { to: "/account-pool/groups", key: "accountPool.nav.groups" },
+  { to: "/account-pool/maintenance-records", key: "accountPool.nav.maintenanceRecords" },
+] as const;
 
 export default function AccountPoolLayout() {
-  const { t } = useTranslation()
-  const location = useLocation()
+  const { t } = useTranslation();
+  const location = useLocation();
 
-  if (location.pathname === '/account-pool') {
-    return <Navigate to="/account-pool/upstream-accounts" replace />
+  if (location.pathname === "/account-pool") {
+    return <Navigate to="/account-pool/upstream-accounts" replace />;
   }
 
   return (
@@ -24,10 +24,10 @@ export default function AccountPoolLayout() {
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div className="section-heading">
               <span className="text-xs font-semibold uppercase tracking-[0.24em] text-primary/80">
-                {t('accountPool.eyebrow')}
+                {t("accountPool.eyebrow")}
               </span>
-              <h1 className="section-title text-2xl sm:text-3xl">{t('accountPool.title')}</h1>
-              <p className="section-description max-w-2xl">{t('accountPool.description')}</p>
+              <h1 className="section-title text-2xl sm:text-3xl">{t("accountPool.title")}</h1>
+              <p className="section-description max-w-2xl">{t("accountPool.description")}</p>
             </div>
             <SegmentedControl className="self-start">
               {items.map((item) => (
@@ -47,5 +47,5 @@ export default function AccountPoolLayout() {
       </section>
       <Outlet />
     </div>
-  )
+  );
 }

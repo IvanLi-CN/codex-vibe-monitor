@@ -145,11 +145,7 @@ describe("BatchOauthActionButton", () => {
   it("cancels a pending passive bubble when the primary action fires", () => {
     const onPrimaryAction = vi.fn();
     render(
-      <BatchOauthActionButton
-        mode="generate"
-        {...baseProps}
-        onPrimaryAction={onPrimaryAction}
-      />,
+      <BatchOauthActionButton mode="generate" {...baseProps} onPrimaryAction={onPrimaryAction} />,
     );
 
     const button = getButton(/copy oauth url/i);
@@ -171,13 +167,7 @@ describe("BatchOauthActionButton", () => {
 
   it("opens on touch long press without triggering the primary click", () => {
     const onPrimaryAction = vi.fn();
-    render(
-      <BatchOauthActionButton
-        mode="copy"
-        {...baseProps}
-        onPrimaryAction={onPrimaryAction}
-      />,
-    );
+    render(<BatchOauthActionButton mode="copy" {...baseProps} onPrimaryAction={onPrimaryAction} />);
 
     const button = getButton(/copy oauth url/i);
     act(() => {
@@ -226,9 +216,7 @@ describe("BatchOauthActionButton", () => {
     );
 
     expect(document.body.textContent).toContain("Copy manually");
-    expect(document.body.textContent).toContain(
-      "https://auth.openai.com/authorize?login=manual",
-    );
+    expect(document.body.textContent).toContain("https://auth.openai.com/authorize?login=manual");
 
     act(() => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));

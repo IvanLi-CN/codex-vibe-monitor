@@ -3301,7 +3301,7 @@ async fn build_account_sticky_keys_response_includes_recent_invocations_sorted_a
         .bind(occurred_at)
         .bind(SOURCE_PROXY)
         .bind("success")
-        .bind(100_i64 + i64::from(minutes_ago))
+        .bind(100_i64 + minutes_ago)
         .bind(0.01_f64 + (minutes_ago as f64) * 0.001_f64)
         .bind(
             json!({

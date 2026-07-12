@@ -160,9 +160,7 @@ pub(crate) fn best_effort_extract_json_string_for_patterns(
             Some(_) => return None,
         }
 
-        let Some((key, next_index)) = parse_json_string(bytes, cursor) else {
-            return None;
-        };
+        let (key, next_index) = parse_json_string(bytes, cursor)?;
         let matches_pattern = patterns
             .iter()
             .any(|pattern| key_matches_pattern(&key, pattern));

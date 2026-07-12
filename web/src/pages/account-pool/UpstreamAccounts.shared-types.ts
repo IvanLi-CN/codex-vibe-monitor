@@ -55,12 +55,7 @@ export type ActionErrorState = {
   accountMessages: Record<number, string>;
 };
 
-export type AccountBusyActionType =
-  | "save"
-  | "sync"
-  | "toggle"
-  | "relogin"
-  | "delete";
+export type AccountBusyActionType = "save" | "sync" | "toggle" | "relogin" | "delete";
 
 export type BusyActionState = {
   routing: boolean;
@@ -72,11 +67,10 @@ export const DEFAULT_GROUP_FILTER_STATE: GroupFilterState = {
   query: "",
 };
 
-export const DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS: PersistedUpstreamAccountsFilters =
-  {
-    workStatus: [],
-    enableStatus: [],
-    healthStatus: [],
-    tagIds: [],
-    groupFilters: [],
-  };
+export const DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS: PersistedUpstreamAccountsFilters = {
+  workStatus: [],
+  enableStatus: [],
+  healthStatus: [],
+  tagIds: [],
+  groupFilters: [],
+};

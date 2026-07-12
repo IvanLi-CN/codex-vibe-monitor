@@ -28,19 +28,14 @@ function buildRealisticPoint(index: number, intensity = 1) {
     8 * gaussian(hour, 9.25, 0.16) +
     5 * gaussian(hour, 10.75, 0.2) +
     4 * gaussian(hour, 11.55, 0.18);
-  const lowTrafficDrop =
-    hour < 6 && (index % 13 === 0 || index % 17 === 0) ? 1 : 0;
-  const expected =
-    (0.25 + officeRamp * 8.2 * lunchDip + deployBurst) * intensity;
-  const jitter =
-    (deterministicNoise(index, 0.4) - 0.5) * (hour < 7 ? 2 : 4.2);
+  const lowTrafficDrop = hour < 6 && (index % 13 === 0 || index % 17 === 0) ? 1 : 0;
+  const expected = (0.25 + officeRamp * 8.2 * lunchDip + deployBurst) * intensity;
+  const jitter = (deterministicNoise(index, 0.4) - 0.5) * (hour < 7 ? 2 : 4.2);
   const quietMinute =
     lowTrafficDrop > 0 ||
     (hour < 7.2 && index % 11 === 0) ||
     (hour >= 7.2 && deterministicNoise(index, 1.6) < 0.018);
-  const totalCount = quietMinute
-    ? 0
-    : Math.max(0, Math.round(expected + jitter));
+  const totalCount = quietMinute ? 0 : Math.max(0, Math.round(expected + jitter));
   const failureCount =
     totalCount <= 0
       ? 0
@@ -49,8 +44,7 @@ function buildRealisticPoint(index: number, intensity = 1) {
         : deterministicNoise(index, 3.4) > 0.91
           ? 1
           : 0;
-  const inFlightCount =
-    totalCount > failureCount && index > 690 && index % 7 === 0 ? 1 : 0;
+  const inFlightCount = totalCount > failureCount && index > 690 && index % 7 === 0 ? 1 : 0;
   const queuedInFlightCount = inFlightCount > 0 && index % 14 === 0 ? 1 : 0;
   const runningInFlightCount = Math.max(0, inFlightCount - queuedInFlightCount);
   const successCount = Math.max(totalCount - failureCount - inFlightCount, 0);
@@ -61,10 +55,7 @@ function buildRealisticPoint(index: number, intensity = 1) {
     Math.round(deterministicNoise(index, 4.2) * 360);
   const totalTokens = completedCount * avgTokens;
   const latencyBase =
-    410 +
-    officeRamp * 90 +
-    gaussian(hour, 9.25, 0.18) * 210 +
-    gaussian(hour, 11.55, 0.18) * 140;
+    410 + officeRamp * 90 + gaussian(hour, 9.25, 0.18) * 210 + gaussian(hour, 11.55, 0.18) * 140;
 
   return {
     bucketStart: bucketStart.toISOString(),
@@ -83,9 +74,7 @@ function buildRealisticPoint(index: number, intensity = 1) {
     nonSuccessCost: Number((failureCount * avgTokens * 0.000018).toFixed(4)),
     firstResponseByteTotalSampleCount: completedCount,
     firstResponseByteTotalAvgMs:
-      completedCount > 0
-        ? Math.round(latencyBase + deterministicNoise(index, 5.1) * 115)
-        : null,
+      completedCount > 0 ? Math.round(latencyBase + deterministicNoise(index, 5.1) * 115) : null,
   };
 }
 
@@ -94,15 +83,11 @@ function buildFullNaturalDayResponse(intensity = 1): TimeseriesResponse {
     rangeStart: "2026-04-08T00:00:00+08:00",
     rangeEnd: "2026-04-09T00:00:00+08:00",
     bucketSeconds: 60,
-    points: Array.from({ length: 1440 }, (_, index) =>
-      buildRealisticPoint(index, intensity),
-    ),
+    points: Array.from({ length: 1440 }, (_, index) => buildRealisticPoint(index, intensity)),
   };
 }
 
-function buildZeroNonSuccessResponse(
-  response: TimeseriesResponse,
-): TimeseriesResponse {
+function buildZeroNonSuccessResponse(response: TimeseriesResponse): TimeseriesResponse {
   return {
     ...response,
     points: response.points.map((point) => {
@@ -122,9 +107,7 @@ const sampleResponse: TimeseriesResponse = {
   rangeStart: "2026-04-08T00:00:00+08:00",
   rangeEnd: "2026-04-08T12:24:00+08:00",
   bucketSeconds: 60,
-  points: Array.from({ length: 745 }, (_, index) =>
-    buildRealisticPoint(index, 0.85),
-  ),
+  points: Array.from({ length: 745 }, (_, index) => buildRealisticPoint(index, 0.85)),
 };
 
 const latencyMinuteAlignmentResponse: TimeseriesResponse = {
@@ -193,8 +176,7 @@ const mixedOutcomeMinuteAlignmentResponse: TimeseriesResponse = {
       totalCost: Number((completedCount * 0.0166).toFixed(4)),
       nonSuccessCost: Number((failureCount * 0.0166).toFixed(4)),
       firstResponseByteTotalSampleCount: completedCount,
-      firstResponseByteTotalAvgMs:
-        completedCount > 0 ? 760 + (index - 42) * 18 : null,
+      firstResponseByteTotalAvgMs: completedCount > 0 ? 760 + (index - 42) * 18 : null,
     };
   }),
 };
@@ -366,9 +348,7 @@ export const CountBarsInteractiveViewport: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const chart = await canvas.findByTestId("dashboard-today-activity-chart");
-    const layer = await canvas.findByTestId(
-      "dashboard-today-activity-chart-interaction-layer",
-    );
+    const layer = await canvas.findByTestId("dashboard-today-activity-chart-interaction-layer");
     const rect = layer.getBoundingClientRect();
 
     layer.dispatchEvent(
@@ -394,9 +374,7 @@ export const CountBarsInteractiveViewport: Story = {
     );
 
     await waitFor(() => {
-      expect(Number(chart.getAttribute("data-visible-start-index"))).toBeGreaterThan(
-        zoomedStart,
-      );
+      expect(Number(chart.getAttribute("data-visible-start-index"))).toBeGreaterThan(zoomedStart);
     });
   },
 };

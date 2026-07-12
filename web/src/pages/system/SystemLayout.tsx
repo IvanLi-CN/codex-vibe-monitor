@@ -1,20 +1,20 @@
-import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
-import { useTranslation } from '../../i18n'
-import { cn } from '../../lib/utils'
+import { Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
+import { useTranslation } from "../../i18n";
+import { cn } from "../../lib/utils";
 
 const items = [
-  { to: '/system/status', key: 'system.nav.status' },
-  { to: '/system/tasks', key: 'system.nav.tasks' },
-  { to: '/system/settings', key: 'system.nav.settings' },
-  { to: '/system/proxy', key: 'system.nav.proxy' },
-] as const
+  { to: "/system/status", key: "system.nav.status" },
+  { to: "/system/tasks", key: "system.nav.tasks" },
+  { to: "/system/settings", key: "system.nav.settings" },
+  { to: "/system/proxy", key: "system.nav.proxy" },
+] as const;
 
 export default function SystemLayout() {
-  const { t } = useTranslation()
-  const location = useLocation()
+  const { t } = useTranslation();
+  const location = useLocation();
 
-  if (location.pathname === '/system') {
-    return <Navigate to="/system/status" replace />
+  if (location.pathname === "/system") {
+    return <Navigate to="/system/status" replace />;
   }
 
   return (
@@ -23,10 +23,10 @@ export default function SystemLayout() {
         <div className="surface-panel-body gap-5">
           <div className="section-heading">
             <span className="text-xs font-semibold uppercase tracking-[0.24em] text-primary/80">
-              {t('system.eyebrow')}
+              {t("system.eyebrow")}
             </span>
-            <h1 className="section-title text-2xl sm:text-3xl">{t('system.title')}</h1>
-            <p className="section-description max-w-3xl">{t('system.description')}</p>
+            <h1 className="section-title text-2xl sm:text-3xl">{t("system.title")}</h1>
+            <p className="section-description max-w-3xl">{t("system.description")}</p>
           </div>
         </div>
       </section>
@@ -35,25 +35,25 @@ export default function SystemLayout() {
         <aside className="surface-panel overflow-hidden">
           <div className="surface-panel-body gap-3">
             <div className="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/55">
-              {t('system.nav.label')}
+              {t("system.nav.label")}
             </div>
             <nav className="-mx-2 flex gap-2 overflow-x-auto px-2 no-scrollbar lg:mx-0 lg:flex-col lg:overflow-visible lg:px-0">
               {items.map((item) => {
-                const active = location.pathname.startsWith(item.to)
+                const active = location.pathname.startsWith(item.to);
                 return (
                   <NavLink
                     key={item.to}
                     to={item.to}
                     className={cn(
-                      'min-w-max rounded-xl border px-3.5 py-3 text-sm transition-colors lg:min-w-0',
+                      "min-w-max rounded-xl border px-3.5 py-3 text-sm transition-colors lg:min-w-0",
                       active
-                        ? 'border-primary/45 bg-primary/10 text-primary'
-                        : 'border-base-300/70 bg-base-100/72 text-base-content/78 hover:border-primary/30 hover:text-base-content',
+                        ? "border-primary/45 bg-primary/10 text-primary"
+                        : "border-base-300/70 bg-base-100/72 text-base-content/78 hover:border-primary/30 hover:text-base-content",
                     )}
                   >
                     {t(item.key)}
                   </NavLink>
-                )
+                );
               })}
             </nav>
           </div>
@@ -62,5 +62,5 @@ export default function SystemLayout() {
         <Outlet />
       </div>
     </div>
-  )
+  );
 }

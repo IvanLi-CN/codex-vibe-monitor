@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AppIcon } from "../shared/AppIcon";
+import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Dialog,
@@ -12,16 +12,6 @@ import {
 import { Input } from "../../components/ui/input";
 import { SelectField } from "../../components/ui/select-field";
 import { Switch } from "../../components/ui/switch";
-import { Badge } from "../../components/ui/badge";
-import { ConcurrencyLimitSlider } from "./ConcurrencyLimitSlider";
-import {
-  MultiSelectFilterCombobox,
-  type MultiSelectFilterOption,
-} from "./MultiSelectFilterCombobox";
-import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
-import { RoutingTimeoutOverridesEditor } from "./RoutingTimeoutOverridesEditor";
-import { StatusChangeToggleButton } from "./StatusChangeToggleButton";
-import { statusChangeReasonIconName } from "./statusChangeReasonIcons";
 import type {
   EffectiveRoutingTimeoutFieldSources,
   GroupAccountRoutingRule,
@@ -47,10 +37,20 @@ import {
   type RoutingTimeoutOverrideEnabledState,
 } from "../../lib/poolRoutingTimeouts";
 import {
-  STATUS_CHANGE_REASON_CODES,
   resolveStatusChangeReasons,
+  STATUS_CHANGE_REASON_CODES,
   type StatusChangeReasonCode,
 } from "../../lib/upstreamAccountStatusChangeReasons";
+import { AppIcon } from "../shared/AppIcon";
+import { ConcurrencyLimitSlider } from "./ConcurrencyLimitSlider";
+import {
+  MultiSelectFilterCombobox,
+  type MultiSelectFilterOption,
+} from "./MultiSelectFilterCombobox";
+import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
+import { RoutingTimeoutOverridesEditor } from "./RoutingTimeoutOverridesEditor";
+import { StatusChangeToggleButton } from "./StatusChangeToggleButton";
+import { statusChangeReasonIconName } from "./statusChangeReasonIcons";
 
 type GroupAccountRoutingRuleDraft = {
   allowCutOut: boolean;
@@ -96,9 +96,7 @@ function buildStatusChangeReasonPayload(
   if (!options?.changedFieldsOnly) {
     return { ...statusChangeReasons };
   }
-  const baseReasons = resolveStatusChangeReasons(
-    options.baseRule?.statusChangeReasons,
-  );
+  const baseReasons = resolveStatusChangeReasons(options.baseRule?.statusChangeReasons);
   const patch: Partial<Record<StatusChangeReasonCode, boolean | null>> = {};
   for (const reason of STATUS_CHANGE_REASON_CODES) {
     if (statusChangeReasons[reason] !== baseReasons[reason]) {
@@ -128,10 +126,7 @@ function buildDraft(
       )
     : buildRoutingTimeoutOverrideDraft(rule?.timeouts);
   const timeoutOverrideEnabledFields = options?.changedFieldsOnly
-    ? buildRoutingTimeoutOverrideEnabledStateForSource(
-        timeoutFieldSources,
-        timeoutOverrideSource,
-      )
+    ? buildRoutingTimeoutOverrideEnabledStateForSource(timeoutFieldSources, timeoutOverrideSource)
     : buildRoutingTimeoutOverrideEnabledState(timeoutOverrides);
   return {
     allowCutOut: rule?.allowCutOut ?? true,
@@ -188,9 +183,7 @@ function buildPayload(
       ? Math.max(1, normalizeRetryCount(draft.upstream429MaxRetries) || 1)
       : 0,
     availableModels: normalizeModelIds(draft.availableModels),
-    statusChangeReasons: buildStatusChangeReasonPayload(
-      draft.statusChangeReasons,
-    ),
+    statusChangeReasons: buildStatusChangeReasonPayload(draft.statusChangeReasons),
     timeouts: parsedTimeouts.patch,
   };
 
@@ -206,29 +199,18 @@ function buildPayload(
     if (draft.priorityTier !== (base.priorityTier ?? "normal")) {
       changedPayload.priorityTier = payload.priorityTier;
     }
-    if (
-      draft.fastModeRewriteMode !==
-      (base.fastModeRewriteMode ?? "keep_original")
-    ) {
+    if (draft.fastModeRewriteMode !== (base.fastModeRewriteMode ?? "keep_original")) {
       changedPayload.fastModeRewriteMode = payload.fastModeRewriteMode;
     }
-    if (
-      draft.imageToolRewriteMode !==
-      (base.imageToolRewriteMode ?? "keep_original")
-    ) {
+    if (draft.imageToolRewriteMode !== (base.imageToolRewriteMode ?? "keep_original")) {
       changedPayload.imageToolRewriteMode = payload.imageToolRewriteMode;
     }
-    if (
-      draft.concurrencyLimit !==
-      apiConcurrencyLimitToSliderValue(base.concurrencyLimit ?? 0)
-    ) {
+    if (draft.concurrencyLimit !== apiConcurrencyLimitToSliderValue(base.concurrencyLimit ?? 0)) {
       changedPayload.concurrencyLimit = payload.concurrencyLimit;
     }
     if (
-      draft.upstream429RetryEnabled !==
-        (base.upstream429RetryEnabled ?? false) ||
-      draft.upstream429MaxRetries !==
-        normalizeRetryCount(base.upstream429MaxRetries)
+      draft.upstream429RetryEnabled !== (base.upstream429RetryEnabled ?? false) ||
+      draft.upstream429MaxRetries !== normalizeRetryCount(base.upstream429MaxRetries)
     ) {
       changedPayload.upstream429RetryEnabled = payload.upstream429RetryEnabled;
       changedPayload.upstream429MaxRetries = payload.upstream429MaxRetries;
@@ -240,13 +222,10 @@ function buildPayload(
     ) {
       changedPayload.availableModels = payload.availableModels;
     }
-    const statusChangeReasonDiff = buildStatusChangeReasonPayload(
-      draft.statusChangeReasons,
-      {
-        changedFieldsOnly: true,
-        baseRule: base,
-      },
-    );
+    const statusChangeReasonDiff = buildStatusChangeReasonPayload(draft.statusChangeReasons, {
+      changedFieldsOnly: true,
+      baseRule: base,
+    });
     if (statusChangeReasonDiff) {
       changedPayload.statusChangeReasons = statusChangeReasonDiff;
     }
@@ -284,66 +263,66 @@ function buildPayload(
 }
 
 export interface GroupAccountRoutingRuleLabels {
-    allowCutOut: string;
-    allowCutIn: string;
-    forbidCutOut?: string;
-    forbidCutIn?: string;
-    priorityTier: string;
-    priorityPrimary: string;
-    priorityNormal: string;
-    priorityFallback: string;
-    priorityNoNew?: string;
-    fastModeRewriteMode: string;
-    fastModeKeepOriginal: string;
-    fastModeFillMissing: string;
-    fastModeForceAdd: string;
-    fastModeForceRemove: string;
-    imageToolRewriteMode: string;
-    imageToolKeepOriginal: string;
-    imageToolFillMissing: string;
-    imageToolForceAdd: string;
-    imageToolForceRemove: string;
-    imageToolRewriteHint?: string;
-    concurrencyLimit: string;
-    concurrencyHint: string;
-    currentValue: string;
-    unlimited: string;
-    upstream429Retry: string;
-    upstream429RetryHint: string;
-    upstream429RetryToggle: string;
-    upstream429RetryCount: string;
-    upstream429RetryCountOnce: string;
-    upstream429RetryCountMany: (count: number) => string;
-    availableModels: string;
-    availableModelsHint: string;
-    availableModelsSearchPlaceholder: string;
-    availableModelsEmpty: string;
-    availableModelsAll: string;
-    availableModelsCustomLabel: (value: string) => string;
-    availableModelsAddCustom: string;
-    availableModelsInherited: string;
-    availableModelsRemove: string;
-    statusChangeReasonSectionTitle?: string;
-    statusChangeReasonSectionHint?: string;
-    statusChangeReasonLabel?: (reason: StatusChangeReasonCode) => string;
-    statusChangeReasonToggleEnabled?: string;
-    statusChangeReasonToggleDisabled?: string;
-    timeoutSectionTitle: string;
-    timeoutSectionHint?: string;
-    timeoutResponsesFirstByte: string;
-    timeoutCompactFirstByte: string;
-    timeoutResponsesStream: string;
-    timeoutCompactStream: string;
-    timeoutInheritedValue: string;
-    timeoutOverrideValue: string;
-    timeoutClearField: string;
-    timeoutInheritField: string;
-    timeoutSourceGlobal?: string;
-    timeoutSourceGroup?: string;
-    timeoutSourceAccount?: string;
-    timeoutSourceConversation?: string;
-    cancel: string;
-    validation: string;
+  allowCutOut: string;
+  allowCutIn: string;
+  forbidCutOut?: string;
+  forbidCutIn?: string;
+  priorityTier: string;
+  priorityPrimary: string;
+  priorityNormal: string;
+  priorityFallback: string;
+  priorityNoNew?: string;
+  fastModeRewriteMode: string;
+  fastModeKeepOriginal: string;
+  fastModeFillMissing: string;
+  fastModeForceAdd: string;
+  fastModeForceRemove: string;
+  imageToolRewriteMode: string;
+  imageToolKeepOriginal: string;
+  imageToolFillMissing: string;
+  imageToolForceAdd: string;
+  imageToolForceRemove: string;
+  imageToolRewriteHint?: string;
+  concurrencyLimit: string;
+  concurrencyHint: string;
+  currentValue: string;
+  unlimited: string;
+  upstream429Retry: string;
+  upstream429RetryHint: string;
+  upstream429RetryToggle: string;
+  upstream429RetryCount: string;
+  upstream429RetryCountOnce: string;
+  upstream429RetryCountMany: (count: number) => string;
+  availableModels: string;
+  availableModelsHint: string;
+  availableModelsSearchPlaceholder: string;
+  availableModelsEmpty: string;
+  availableModelsAll: string;
+  availableModelsCustomLabel: (value: string) => string;
+  availableModelsAddCustom: string;
+  availableModelsInherited: string;
+  availableModelsRemove: string;
+  statusChangeReasonSectionTitle?: string;
+  statusChangeReasonSectionHint?: string;
+  statusChangeReasonLabel?: (reason: StatusChangeReasonCode) => string;
+  statusChangeReasonToggleEnabled?: string;
+  statusChangeReasonToggleDisabled?: string;
+  timeoutSectionTitle: string;
+  timeoutSectionHint?: string;
+  timeoutResponsesFirstByte: string;
+  timeoutCompactFirstByte: string;
+  timeoutResponsesStream: string;
+  timeoutCompactStream: string;
+  timeoutInheritedValue: string;
+  timeoutOverrideValue: string;
+  timeoutClearField: string;
+  timeoutInheritField: string;
+  timeoutSourceGlobal?: string;
+  timeoutSourceGroup?: string;
+  timeoutSourceAccount?: string;
+  timeoutSourceConversation?: string;
+  cancel: string;
+  validation: string;
 }
 
 interface GroupAccountRoutingRuleEditorProps {
@@ -358,23 +337,16 @@ interface GroupAccountRoutingRuleEditorProps {
   labels: GroupAccountRoutingRuleLabels;
   availableModelOptions?: string[];
   className?: string;
-  onPayloadChange?: (
-    payload: UpdateGroupAccountRoutingRulePayload | null,
-  ) => void;
+  onPayloadChange?: (payload: UpdateGroupAccountRoutingRulePayload | null) => void;
 }
 
 interface GroupAccountRoutingRuleDialogProps
-  extends Omit<
-    GroupAccountRoutingRuleEditorProps,
-    "className" | "onPayloadChange"
-  > {
+  extends Omit<GroupAccountRoutingRuleEditorProps, "className" | "onPayloadChange"> {
   title: string;
   description: string;
   submitLabel: string;
   onClose: () => void;
-  onSubmit: (
-    payload: UpdateGroupAccountRoutingRulePayload,
-  ) => Promise<void> | void;
+  onSubmit: (payload: UpdateGroupAccountRoutingRulePayload) => Promise<void> | void;
 }
 
 export function GroupAccountRoutingRuleEditor({
@@ -399,13 +371,9 @@ export function GroupAccountRoutingRuleEditor({
       timeoutOverrideSource,
     }),
   );
-  const [baseRule, setBaseRule] = useState<GroupAccountRoutingRule | null>(
-    () => rule ?? null,
-  );
+  const [baseRule, setBaseRule] = useState<GroupAccountRoutingRule | null>(() => rule ?? null);
   const previousOpenRef = useRef(open);
-  const activeResetKeyRef = useRef<string | null>(
-    open ? buildDraftResetKey(rule) : null,
-  );
+  const activeResetKeyRef = useRef<string | null>(open ? buildDraftResetKey(rule) : null);
   const resetKey = useMemo(() => buildDraftResetKey(rule), [rule]);
 
   useEffect(() => {
@@ -459,11 +427,7 @@ export function GroupAccountRoutingRuleEditor({
       timeoutFieldLabels,
     );
     return parsed.ok ? null : parsed.error;
-  }, [
-    draft.timeoutOverrideEnabledFields,
-    draft.timeoutOverrides,
-    timeoutFieldLabels,
-  ]);
+  }, [draft.timeoutOverrideEnabledFields, draft.timeoutOverrides, timeoutFieldLabels]);
 
   const payload = useMemo(
     () =>
@@ -488,13 +452,8 @@ export function GroupAccountRoutingRuleEditor({
   useEffect(() => {
     onPayloadChange?.(payload);
   }, [onPayloadChange, payload]);
-  const availableModelComboboxOptions = useMemo<
-    MultiSelectFilterOption[]
-  >(() => {
-    const values = normalizeModelIds([
-      ...availableModelOptions,
-      ...draft.availableModels,
-    ]);
+  const availableModelComboboxOptions = useMemo<MultiSelectFilterOption[]>(() => {
+    const values = normalizeModelIds([...availableModelOptions, ...draft.availableModels]);
     return values.map((value) => ({
       value,
       label: labels.availableModelsCustomLabel(value),
@@ -502,382 +461,353 @@ export function GroupAccountRoutingRuleEditor({
   }, [availableModelOptions, draft.availableModels, labels]);
   const trimmedModelInput = draft.availableModelInput.trim();
   const canAddCustomModel =
-    trimmedModelInput.length > 0 &&
-    !draft.availableModels.includes(trimmedModelInput);
+    trimmedModelInput.length > 0 && !draft.availableModels.includes(trimmedModelInput);
   const appendAvailableModel = (model: string) => {
     const normalizedModel = model.trim();
     if (!normalizedModel) return;
     setDraft((current) => ({
       ...current,
-      availableModels: normalizeModelIds([
-        ...current.availableModels,
-        normalizedModel,
-      ]),
+      availableModels: normalizeModelIds([...current.availableModels, normalizedModel]),
       availableModelInput: "",
       availableModelsTouched: true,
     }));
   };
 
   return (
-        <div className={className ?? "space-y-5"}>
-          <SelectField
-            className="field"
-            label={labels.priorityTier}
-            name="groupPriorityTier"
-            value={draft.priorityTier}
-            disabled={busy}
-            options={[
-              { value: "primary", label: labels.priorityPrimary },
-              { value: "normal", label: labels.priorityNormal },
-              { value: "fallback", label: labels.priorityFallback },
-              { value: "no_new", label: labels.priorityNoNew ?? "No new" },
-            ]}
-            onValueChange={(value) =>
-              setDraft((current) => ({
-                ...current,
-                priorityTier: value as TagPriorityTier,
-              }))
-            }
-          />
+    <div className={className ?? "space-y-5"}>
+      <SelectField
+        className="field"
+        label={labels.priorityTier}
+        name="groupPriorityTier"
+        value={draft.priorityTier}
+        disabled={busy}
+        options={[
+          { value: "primary", label: labels.priorityPrimary },
+          { value: "normal", label: labels.priorityNormal },
+          { value: "fallback", label: labels.priorityFallback },
+          { value: "no_new", label: labels.priorityNoNew ?? "No new" },
+        ]}
+        onValueChange={(value) =>
+          setDraft((current) => ({
+            ...current,
+            priorityTier: value as TagPriorityTier,
+          }))
+        }
+      />
 
-          <SelectField
-            className="field"
-            label={labels.fastModeRewriteMode}
-            name="groupFastModeRewriteMode"
-            value={draft.fastModeRewriteMode}
-            disabled={busy}
-            options={[
-              { value: "keep_original", label: labels.fastModeKeepOriginal },
-              { value: "fill_missing", label: labels.fastModeFillMissing },
-              { value: "force_add", label: labels.fastModeForceAdd },
-              { value: "force_remove", label: labels.fastModeForceRemove },
-            ]}
-            onValueChange={(value) =>
-              setDraft((current) => ({
-                ...current,
-                fastModeRewriteMode: value as TagFastModeRewriteMode,
-              }))
-            }
-          />
+      <SelectField
+        className="field"
+        label={labels.fastModeRewriteMode}
+        name="groupFastModeRewriteMode"
+        value={draft.fastModeRewriteMode}
+        disabled={busy}
+        options={[
+          { value: "keep_original", label: labels.fastModeKeepOriginal },
+          { value: "fill_missing", label: labels.fastModeFillMissing },
+          { value: "force_add", label: labels.fastModeForceAdd },
+          { value: "force_remove", label: labels.fastModeForceRemove },
+        ]}
+        onValueChange={(value) =>
+          setDraft((current) => ({
+            ...current,
+            fastModeRewriteMode: value as TagFastModeRewriteMode,
+          }))
+        }
+      />
 
-          <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
-            {labels.imageToolRewriteHint ? (
-              <p className="mb-3 text-xs leading-5 text-base-content/65">
-                {labels.imageToolRewriteHint}
-              </p>
-            ) : null}
-            <SelectField
-              label={labels.imageToolRewriteMode}
-              name="groupImageToolRewriteMode"
-              value={draft.imageToolRewriteMode}
-              disabled={busy}
-              options={[
-                { value: "keep_original", label: labels.imageToolKeepOriginal },
-                { value: "fill_missing", label: labels.imageToolFillMissing },
-                { value: "force_add", label: labels.imageToolForceAdd },
-                { value: "force_remove", label: labels.imageToolForceRemove },
-              ]}
-              onValueChange={(value) =>
+      <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
+        {labels.imageToolRewriteHint ? (
+          <p className="mb-3 text-xs leading-5 text-base-content/65">
+            {labels.imageToolRewriteHint}
+          </p>
+        ) : null}
+        <SelectField
+          label={labels.imageToolRewriteMode}
+          name="groupImageToolRewriteMode"
+          value={draft.imageToolRewriteMode}
+          disabled={busy}
+          options={[
+            { value: "keep_original", label: labels.imageToolKeepOriginal },
+            { value: "fill_missing", label: labels.imageToolFillMissing },
+            { value: "force_add", label: labels.imageToolForceAdd },
+            { value: "force_remove", label: labels.imageToolForceRemove },
+          ]}
+          onValueChange={(value) =>
+            setDraft((current) => ({
+              ...current,
+              imageToolRewriteMode: value as ImageToolRewriteMode,
+            }))
+          }
+        />
+      </div>
+
+      {effectiveTimeouts ? (
+        <RoutingTimeoutOverridesEditor
+          fields={[
+            {
+              key: "responsesFirstByteTimeoutSecs",
+              label: labels.timeoutResponsesFirstByte,
+            },
+            {
+              key: "compactFirstByteTimeoutSecs",
+              label: labels.timeoutCompactFirstByte,
+            },
+            {
+              key: "responsesStreamTimeoutSecs",
+              label: labels.timeoutResponsesStream,
+            },
+            {
+              key: "compactStreamTimeoutSecs",
+              label: labels.timeoutCompactStream,
+            },
+          ]}
+          effective={effectiveTimeouts}
+          draft={draft.timeoutOverrides}
+          enabledFields={draft.timeoutOverrideEnabledFields}
+          sources={timeoutFieldSources}
+          busy={busy}
+          disabled={busy}
+          labels={{
+            sectionTitle: labels.timeoutSectionTitle,
+            sectionHint: labels.timeoutSectionHint,
+            inheritedValue: labels.timeoutInheritedValue,
+            overrideValue: labels.timeoutOverrideValue,
+            sourceRoot: labels.timeoutSourceGlobal,
+            sourceGroup: labels.timeoutSourceGroup,
+            sourceAccount: labels.timeoutSourceAccount,
+            sourceConversation: labels.timeoutSourceConversation,
+            clearField: labels.timeoutClearField,
+            inheritField: labels.timeoutInheritField,
+            savingField: labels.validation,
+          }}
+          onDraftChange={(key, value) =>
+            setDraft((current) => ({
+              ...current,
+              timeoutOverrides: {
+                ...current.timeoutOverrides,
+                [key]: value,
+              },
+            }))
+          }
+          onFieldEnabledChange={(key, enabled) =>
+            setDraft((current) => ({
+              ...current,
+              timeoutOverrideEnabledFields: {
+                ...current.timeoutOverrideEnabledFields,
+                [key]: enabled,
+              },
+              timeoutOverrides:
+                enabled && (current.timeoutOverrides[key] ?? "").trim() === ""
+                  ? {
+                      ...current.timeoutOverrides,
+                      [key]: effectiveTimeouts?.[key] != null ? String(effectiveTimeouts[key]) : "",
+                    }
+                  : current.timeoutOverrides,
+            }))
+          }
+        />
+      ) : null}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
+          <div className="flex items-center justify-between gap-4">
+            <p className="font-medium text-base-content">
+              {labels.forbidCutOut ?? labels.allowCutOut}
+            </p>
+            <Switch
+              checked={!draft.allowCutOut}
+              onCheckedChange={(checked) =>
                 setDraft((current) => ({
                   ...current,
-                  imageToolRewriteMode: value as ImageToolRewriteMode,
+                  allowCutOut: !checked,
                 }))
               }
             />
           </div>
+        </div>
+        <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
+          <div className="flex items-center justify-between gap-4">
+            <p className="font-medium text-base-content">
+              {labels.forbidCutIn ?? labels.allowCutIn}
+            </p>
+            <Switch
+              checked={!draft.allowCutIn}
+              onCheckedChange={(checked) =>
+                setDraft((current) => ({
+                  ...current,
+                  allowCutIn: !checked,
+                }))
+              }
+            />
+          </div>
+        </div>
+      </div>
 
-          {effectiveTimeouts ? (
-            <RoutingTimeoutOverridesEditor
-              fields={[
-                {
-                  key: "responsesFirstByteTimeoutSecs",
-                  label: labels.timeoutResponsesFirstByte,
-                },
-                {
-                  key: "compactFirstByteTimeoutSecs",
-                  label: labels.timeoutCompactFirstByte,
-                },
-                {
-                  key: "responsesStreamTimeoutSecs",
-                  label: labels.timeoutResponsesStream,
-                },
-                {
-                  key: "compactStreamTimeoutSecs",
-                  label: labels.timeoutCompactStream,
-                },
-              ]}
-              effective={effectiveTimeouts}
-              draft={draft.timeoutOverrides}
-              enabledFields={draft.timeoutOverrideEnabledFields}
-              sources={timeoutFieldSources}
-              busy={busy}
+      <ConcurrencyLimitSlider
+        value={draft.concurrencyLimit}
+        disabled={busy}
+        title={labels.concurrencyLimit}
+        description={labels.concurrencyHint}
+        currentLabel={labels.currentValue}
+        unlimitedLabel={labels.unlimited}
+        onChange={(value) => setDraft((current) => ({ ...current, concurrencyLimit: value }))}
+      />
+
+      <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
+        <div className="space-y-1">
+          <p className="font-medium text-base-content">{labels.availableModels}</p>
+          <p className="text-xs leading-5 text-base-content/65">{labels.availableModelsHint}</p>
+        </div>
+        <div className="mt-4 grid gap-3">
+          <MultiSelectFilterCombobox
+            options={availableModelComboboxOptions}
+            value={draft.availableModels}
+            onValueChange={(value) =>
+              setDraft((current) => ({
+                ...current,
+                availableModels: normalizeModelIds(value),
+                availableModelsTouched: true,
+              }))
+            }
+            disabled={busy}
+            placeholder={labels.availableModelsAll}
+            searchPlaceholder={labels.availableModelsSearchPlaceholder}
+            emptyLabel={labels.availableModelsEmpty}
+            clearLabel={labels.availableModelsInherited}
+            ariaLabel={labels.availableModels}
+          />
+          <div className="flex gap-2">
+            <Input
+              name="availableModelInput"
+              value={draft.availableModelInput}
+              placeholder={labels.availableModelsAddCustom}
               disabled={busy}
-              labels={{
-                sectionTitle: labels.timeoutSectionTitle,
-                sectionHint: labels.timeoutSectionHint,
-                inheritedValue: labels.timeoutInheritedValue,
-                overrideValue: labels.timeoutOverrideValue,
-                sourceRoot: labels.timeoutSourceGlobal,
-                sourceGroup: labels.timeoutSourceGroup,
-                sourceAccount: labels.timeoutSourceAccount,
-                sourceConversation: labels.timeoutSourceConversation,
-                clearField: labels.timeoutClearField,
-                inheritField: labels.timeoutInheritField,
-                savingField: labels.validation,
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  availableModelInput: event.target.value,
+                }))
+              }
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || !canAddCustomModel) return;
+                event.preventDefault();
+                appendAvailableModel(trimmedModelInput);
               }}
-              onDraftChange={(key, value) =>
-                setDraft((current) => ({
-                  ...current,
-                  timeoutOverrides: {
-                    ...current.timeoutOverrides,
-                    [key]: value,
-                  },
-                }))
-              }
-              onFieldEnabledChange={(key, enabled) =>
-                setDraft((current) => ({
-                  ...current,
-                  timeoutOverrideEnabledFields: {
-                    ...current.timeoutOverrideEnabledFields,
-                    [key]: enabled,
-                  },
-                  timeoutOverrides:
-                    enabled &&
-                    (current.timeoutOverrides[key] ?? "").trim() === ""
-                      ? {
-                          ...current.timeoutOverrides,
-                          [key]:
-                            effectiveTimeouts?.[key] != null
-                              ? String(effectiveTimeouts[key])
-                              : "",
-                        }
-                      : current.timeoutOverrides,
-                }))
-              }
             />
-          ) : null}
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
-              <div className="flex items-center justify-between gap-4">
-                <p className="font-medium text-base-content">
-                  {labels.forbidCutOut ?? labels.allowCutOut}
-                </p>
-                <Switch
-                  checked={!draft.allowCutOut}
-                  onCheckedChange={(checked) =>
-                    setDraft((current) => ({
-                      ...current,
-                      allowCutOut: !checked,
-                    }))
-                  }
-                />
-              </div>
-            </div>
-            <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
-              <div className="flex items-center justify-between gap-4">
-                <p className="font-medium text-base-content">
-                  {labels.forbidCutIn ?? labels.allowCutIn}
-                </p>
-                <Switch
-                  checked={!draft.allowCutIn}
-                  onCheckedChange={(checked) =>
-                    setDraft((current) => ({
-                      ...current,
-                      allowCutIn: !checked,
-                    }))
-                  }
-                />
-              </div>
-            </div>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy || !canAddCustomModel}
+              onClick={() => appendAvailableModel(trimmedModelInput)}
+            >
+              <AppIcon name="plus" className="mr-2 h-4 w-4" aria-hidden />
+              {labels.availableModelsAddCustom}
+            </Button>
           </div>
-
-          <ConcurrencyLimitSlider
-            value={draft.concurrencyLimit}
-            disabled={busy}
-            title={labels.concurrencyLimit}
-            description={labels.concurrencyHint}
-            currentLabel={labels.currentValue}
-            unlimitedLabel={labels.unlimited}
-            onChange={(value) =>
-              setDraft((current) => ({ ...current, concurrencyLimit: value }))
-            }
-          />
-
-          <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
-            <div className="space-y-1">
-              <p className="font-medium text-base-content">
-                {labels.availableModels}
-              </p>
-              <p className="text-xs leading-5 text-base-content/65">
-                {labels.availableModelsHint}
-              </p>
-            </div>
-            <div className="mt-4 grid gap-3">
-              <MultiSelectFilterCombobox
-                options={availableModelComboboxOptions}
-                value={draft.availableModels}
-                onValueChange={(value) =>
-                  setDraft((current) => ({
-                    ...current,
-                    availableModels: normalizeModelIds(value),
-                    availableModelsTouched: true,
-                  }))
-                }
-                disabled={busy}
-                placeholder={labels.availableModelsAll}
-                searchPlaceholder={labels.availableModelsSearchPlaceholder}
-                emptyLabel={labels.availableModelsEmpty}
-                clearLabel={labels.availableModelsInherited}
-                ariaLabel={labels.availableModels}
-              />
-              <div className="flex gap-2">
-                <Input
-                  name="availableModelInput"
-                  value={draft.availableModelInput}
-                  placeholder={labels.availableModelsAddCustom}
-                  disabled={busy}
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      availableModelInput: event.target.value,
-                    }))
-                  }
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter" || !canAddCustomModel) return;
-                    event.preventDefault();
-                    appendAvailableModel(trimmedModelInput);
-                  }}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={busy || !canAddCustomModel}
-                  onClick={() => appendAvailableModel(trimmedModelInput)}
-                >
-                  <AppIcon name="plus" className="mr-2 h-4 w-4" aria-hidden />
-                  {labels.availableModelsAddCustom}
-                </Button>
-              </div>
-              {draft.availableModels.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {draft.availableModels.map((model) => (
-                    <Badge
-                      key={model}
-                      variant="secondary"
-                      className="gap-1 pr-1"
-                    >
-                      <span>{labels.availableModelsCustomLabel(model)}</span>
-                      <button
-                        type="button"
-                        className="rounded-full p-0.5 text-base-content/55 transition hover:bg-base-300/70 hover:text-base-content"
-                        aria-label={`${labels.availableModelsRemove} ${model}`}
-                        onClick={() =>
-                          setDraft((current) => ({
-                            ...current,
-                            availableModels: current.availableModels.filter(
-                              (value) => value !== model,
-                            ),
-                            availableModelsTouched: true,
-                          }))
-                        }
-                      >
-                        <AppIcon name="close" className="h-3 w-3" aria-hidden />
-                      </button>
-                    </Badge>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
-            <div className="space-y-1">
-              <div className="space-y-1">
-                <p className="font-medium text-base-content">
-                  {labels.upstream429Retry}
-                </p>
-                <p className="text-xs leading-5 text-base-content/65">
-                  {labels.upstream429RetryHint}
-                </p>
-              </div>
-            </div>
-            <div className="mt-4">
-              <PolicyInlineOptionGroup<number>
-                ariaLabel={labels.upstream429Retry}
-                value={
-                  draft.upstream429RetryEnabled
-                    ? Math.max(
-                        1,
-                        normalizeRetryCount(draft.upstream429MaxRetries) || 1,
-                      )
-                    : 0
-                }
-                disabled={busy}
-                options={[0, 1, 2, 3, 4, 5].map((value) => ({
-                  value,
-                  label: String(value),
-                }))}
-                onChange={(value) =>
-                  setDraft((current) => ({
-                    ...current,
-                    upstream429RetryEnabled: value > 0,
-                    upstream429MaxRetries: normalizeRetryCount(value),
-                  }))
-                }
-              />
-            </div>
-          </div>
-
-          <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
-            <div className="space-y-1">
-              <p className="font-medium text-base-content">
-                {labels.statusChangeReasonSectionTitle ??
-                  "Status change trigger reasons"}
-              </p>
-              {labels.statusChangeReasonSectionHint ? (
-                <p className="text-xs leading-5 text-base-content/65">
-                  {labels.statusChangeReasonSectionHint}
-                </p>
-              ) : null}
-            </div>
-            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:auto-rows-fr lg:grid-cols-4">
-              {STATUS_CHANGE_REASON_CODES.map((reason) => {
-                const reasonLabel =
-                  labels.statusChangeReasonLabel?.(reason) ?? reason;
-                return (
-                  <StatusChangeToggleButton
-                    key={reason}
-                    title={reasonLabel}
-                    iconName={statusChangeReasonIconName(reason)}
-                    pressed={draft.statusChangeReasons[reason]}
-                    disabled={busy}
-                    activeLabel={labels.statusChangeReasonToggleEnabled}
-                    inactiveLabel={labels.statusChangeReasonToggleDisabled}
-                    onPressedChange={(checked) =>
+          {draft.availableModels.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {draft.availableModels.map((model) => (
+                <Badge key={model} variant="secondary" className="gap-1 pr-1">
+                  <span>{labels.availableModelsCustomLabel(model)}</span>
+                  <button
+                    type="button"
+                    className="rounded-full p-0.5 text-base-content/55 transition hover:bg-base-300/70 hover:text-base-content"
+                    aria-label={`${labels.availableModelsRemove} ${model}`}
+                    onClick={() =>
                       setDraft((current) => ({
                         ...current,
-                        statusChangeReasons: {
-                          ...current.statusChangeReasons,
-                          [reason]: checked,
-                        },
+                        availableModels: current.availableModels.filter((value) => value !== model),
+                        availableModelsTouched: true,
                       }))
                     }
-                    ariaLabel={reasonLabel}
-                    className="min-h-[4rem]"
-                  />
-                );
-              })}
+                  >
+                    <AppIcon name="close" className="h-3 w-3" aria-hidden />
+                  </button>
+                </Badge>
+              ))}
             </div>
-          </div>
-
-          {error ? <p className="text-sm text-error">{error}</p> : null}
-          {timeoutValidationError ? (
-            <p className="text-sm text-error">{timeoutValidationError}</p>
-          ) : !payload ? (
-            <p className="text-sm text-warning">{labels.validation}</p>
           ) : null}
         </div>
+      </div>
+
+      <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
+        <div className="space-y-1">
+          <div className="space-y-1">
+            <p className="font-medium text-base-content">{labels.upstream429Retry}</p>
+            <p className="text-xs leading-5 text-base-content/65">{labels.upstream429RetryHint}</p>
+          </div>
+        </div>
+        <div className="mt-4">
+          <PolicyInlineOptionGroup<number>
+            ariaLabel={labels.upstream429Retry}
+            value={
+              draft.upstream429RetryEnabled
+                ? Math.max(1, normalizeRetryCount(draft.upstream429MaxRetries) || 1)
+                : 0
+            }
+            disabled={busy}
+            options={[0, 1, 2, 3, 4, 5].map((value) => ({
+              value,
+              label: String(value),
+            }))}
+            onChange={(value) =>
+              setDraft((current) => ({
+                ...current,
+                upstream429RetryEnabled: value > 0,
+                upstream429MaxRetries: normalizeRetryCount(value),
+              }))
+            }
+          />
+        </div>
+      </div>
+
+      <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
+        <div className="space-y-1">
+          <p className="font-medium text-base-content">
+            {labels.statusChangeReasonSectionTitle ?? "Status change trigger reasons"}
+          </p>
+          {labels.statusChangeReasonSectionHint ? (
+            <p className="text-xs leading-5 text-base-content/65">
+              {labels.statusChangeReasonSectionHint}
+            </p>
+          ) : null}
+        </div>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:auto-rows-fr lg:grid-cols-4">
+          {STATUS_CHANGE_REASON_CODES.map((reason) => {
+            const reasonLabel = labels.statusChangeReasonLabel?.(reason) ?? reason;
+            return (
+              <StatusChangeToggleButton
+                key={reason}
+                title={reasonLabel}
+                iconName={statusChangeReasonIconName(reason)}
+                pressed={draft.statusChangeReasons[reason]}
+                disabled={busy}
+                activeLabel={labels.statusChangeReasonToggleEnabled}
+                inactiveLabel={labels.statusChangeReasonToggleDisabled}
+                onPressedChange={(checked) =>
+                  setDraft((current) => ({
+                    ...current,
+                    statusChangeReasons: {
+                      ...current.statusChangeReasons,
+                      [reason]: checked,
+                    },
+                  }))
+                }
+                ariaLabel={reasonLabel}
+                className="min-h-[4rem]"
+              />
+            );
+          })}
+        </div>
+      </div>
+
+      {error ? <p className="text-sm text-error">{error}</p> : null}
+      {timeoutValidationError ? (
+        <p className="text-sm text-error">{timeoutValidationError}</p>
+      ) : !payload ? (
+        <p className="text-sm text-warning">{labels.validation}</p>
+      ) : null}
+    </div>
   );
 }
 
@@ -898,15 +828,11 @@ export function GroupAccountRoutingRuleDialog({
   labels,
   availableModelOptions = [],
 }: GroupAccountRoutingRuleDialogProps) {
-  const [payload, setPayload] =
-    useState<UpdateGroupAccountRoutingRulePayload | null>(null);
+  const [payload, setPayload] = useState<UpdateGroupAccountRoutingRulePayload | null>(null);
   const disabled = !payload || busy;
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => (!busy && !nextOpen ? onClose() : undefined)}
-    >
+    <Dialog open={open} onOpenChange={(nextOpen) => (!busy && !nextOpen ? onClose() : undefined)}>
       <DialogContent className="flex w-[min(48rem,calc(100vw-2rem))] max-h-[min(90vh,calc(100vh-2rem))] max-w-none flex-col overflow-hidden p-0">
         <div className="shrink-0 border-b border-base-300/80 px-6 py-5">
           <DialogHeader>
@@ -931,12 +857,7 @@ export function GroupAccountRoutingRuleDialog({
         </div>
         <div className="shrink-0 border-t border-base-300/80 px-6 py-4">
           <DialogFooter>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={onClose}
-              disabled={busy}
-            >
+            <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
               {labels.cancel}
             </Button>
             <Button

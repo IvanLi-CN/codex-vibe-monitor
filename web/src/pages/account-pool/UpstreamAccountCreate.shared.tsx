@@ -1,9 +1,4 @@
-/* eslint-disable react-refresh/only-export-components */
-import {
-  useEffect,
-  useState,
-} from "react";
-import { AppIcon } from "../../features/shared/AppIcon";
+import { useEffect, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -15,21 +10,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
-import {
-  Popover,
-  PopoverArrow,
-  PopoverContent,
-  PopoverTrigger,
-} from "../../components/ui/popover";
+import { Popover, PopoverArrow, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { Spinner } from "../../components/ui/spinner";
 import {
   IMPORT_VALIDATION_PAGE_SIZE,
   type ImportedOauthValidationDialogState,
 } from "../../features/account-pool/ImportedOauthValidationDialog";
+import { AppIcon } from "../../features/shared/AppIcon";
 import type {
-  ImportOauthCredentialFilePayload,
   ImportedOauthValidationRow,
   ImportedOauthValidationSnapshotEventPayload,
+  ImportOauthCredentialFilePayload,
   LoginSessionStatusResponse,
   OauthMailboxSession,
   OauthMailboxSessionSupported,
@@ -40,18 +31,12 @@ import type {
   UpstreamAccountSummary,
 } from "../../lib/api";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
-import {
-  normalizeMotherGroupKey,
-} from "../../lib/upstreamMother";
+import { normalizeMotherGroupKey } from "../../lib/upstreamMother";
 import { cn } from "../../lib/utils";
 
-export type CreateTab =
-  | "oauth"
-  | "batchOauth"
-  | "apiKey"
-  | "import"
-  | "importSession";
+export type CreateTab = "oauth" | "batchOauth" | "apiKey" | "import" | "importSession";
 type BatchOauthBusyAction = "generate" | "complete" | "confirm" | null;
+
 export type { ImportedOauthValidationDialogState };
 export type MailboxBusyAction = "attach" | "generate" | null;
 export type BatchOauthPersistedMetadata = {
@@ -89,8 +74,7 @@ export const OAUTH_SESSION_SYNC_DEBOUNCE_MS = 300;
 export const OAUTH_SESSION_SYNC_RETRY_MS = 1_000;
 export const MAX_SHARED_TAG_SYNC_ATTEMPTS = 2;
 export const GROUP_UPSTREAM_429_RETRY_OPTIONS = [1, 2, 3, 4, 5] as const;
-export const IMPORTED_OAUTH_DUPLICATE_DETAIL =
-  "duplicate credential in current import selection";
+export const IMPORTED_OAUTH_DUPLICATE_DETAIL = "duplicate credential in current import selection";
 
 export type PendingOauthSessionSnapshot = {
   loginId: string;
@@ -204,9 +188,7 @@ export function normalizeNumberInput(value: string): number | undefined {
 export function normalizeBoundProxyKeys(values?: string[]): string[] {
   if (!Array.isArray(values)) return [];
   return Array.from(
-    new Set(
-      values.map((value) => value.trim()).filter((value) => value.length > 0),
-    ),
+    new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)),
   );
 }
 
@@ -215,9 +197,7 @@ export function normalizeGroupUpstream429MaxRetries(value?: number | null): numb
   return Math.min(5, Math.max(0, Math.trunc(value ?? 0)));
 }
 
-export function normalizeEnabledGroupUpstream429MaxRetries(
-  value?: number | null,
-): number {
+export function normalizeEnabledGroupUpstream429MaxRetries(value?: number | null): number {
   return Math.max(1, normalizeGroupUpstream429MaxRetries(value) || 1);
 }
 
@@ -241,8 +221,7 @@ export function formatRelativeRefreshCountdown(
   now: number,
   t: (key: string, values?: Record<string, string | number>) => string,
 ) {
-  if (!nextRefreshAt)
-    return t("accountPool.upstreamAccounts.oauth.refreshScheduledUnknown");
+  if (!nextRefreshAt) return t("accountPool.upstreamAccounts.oauth.refreshScheduledUnknown");
   const seconds = Math.max(0, Math.ceil((nextRefreshAt - now) / 1000));
   return t("accountPool.upstreamAccounts.oauth.refreshIn", { seconds });
 }
@@ -261,9 +240,7 @@ export function formatCountdownClock(targetTimestamp: number, now: number) {
 }
 
 type OAuthIdentityConfirmationAlertProps = {
-  identityConfirmation: NonNullable<
-    LoginSessionStatusResponse["identityConfirmation"]
-  >;
+  identityConfirmation: NonNullable<LoginSessionStatusResponse["identityConfirmation"]>;
   fallbackDisplayName: string;
   confirmBusy: boolean;
   confirmDisabled: boolean;
@@ -282,8 +259,7 @@ export function OAuthIdentityConfirmationAlert({
   compact = false,
 }: OAuthIdentityConfirmationAlertProps) {
   const unavailable = t("accountPool.upstreamAccounts.identityUnavailable");
-  const currentName =
-    identityConfirmation.current.displayName ?? fallbackDisplayName;
+  const currentName = identityConfirmation.current.displayName ?? fallbackDisplayName;
   const incomingIdentityDetail = [
     identityConfirmation.incoming.chatgptAccountId,
     identityConfirmation.incoming.chatgptUserId,
@@ -306,14 +282,10 @@ export function OAuthIdentityConfirmationAlert({
           />
           <div className="min-w-0">
             <p className="text-sm font-semibold">
-              {t(
-                "accountPool.upstreamAccounts.batchOauth.identityConfirmation.title",
-              )}
+              {t("accountPool.upstreamAccounts.batchOauth.identityConfirmation.title")}
             </p>
             <p className="text-xs leading-5 text-base-content/72">
-              {t(
-                "accountPool.upstreamAccounts.batchOauth.identityConfirmation.body",
-              )}
+              {t("accountPool.upstreamAccounts.batchOauth.identityConfirmation.body")}
             </p>
           </div>
         </div>
@@ -328,37 +300,25 @@ export function OAuthIdentityConfirmationAlert({
           {confirmBusy ? (
             <Spinner size="sm" className="mr-2" />
           ) : (
-            <AppIcon
-              name="shield-key-outline"
-              className="mr-2 h-4 w-4"
-              aria-hidden
-            />
+            <AppIcon name="shield-key-outline" className="mr-2 h-4 w-4" aria-hidden />
           )}
-          {t(
-            "accountPool.upstreamAccounts.batchOauth.actions.confirmIdentityOverwrite",
-          )}
+          {t("accountPool.upstreamAccounts.batchOauth.actions.confirmIdentityOverwrite")}
         </Button>
       </div>
 
       <div className="grid gap-2 text-xs md:grid-cols-2">
         <div className="rounded-lg border border-warning/25 bg-base-100/70 px-3 py-2">
           <p className="font-semibold">
-            {t(
-              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.current",
-            )}
+            {t("accountPool.upstreamAccounts.batchOauth.identityConfirmation.current")}
           </p>
-          <p className="mt-1 break-words">
-            {currentName || unavailable}
-          </p>
+          <p className="mt-1 break-words">{currentName || unavailable}</p>
           <p className="break-words text-base-content/68">
             {identityConfirmation.current.email ?? unavailable}
           </p>
         </div>
         <div className="rounded-lg border border-warning/25 bg-base-100/70 px-3 py-2">
           <p className="font-semibold">
-            {t(
-              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming",
-            )}
+            {t("accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming")}
           </p>
           <p className="mt-1 break-words">
             {identityConfirmation.incoming.email ??
@@ -379,23 +339,15 @@ export function OAuthIdentityConfirmationAlert({
       >
         <p>
           <span className="font-semibold text-base-content">
-            {t(
-              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdate",
-            )}
+            {t("accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdate")}
           </span>{" "}
-          {t(
-            "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdateDetail",
-          )}
+          {t("accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdateDetail")}
         </p>
         <p>
           <span className="font-semibold text-base-content">
-            {t(
-              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeep",
-            )}
+            {t("accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeep")}
           </span>{" "}
-          {t(
-            "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeepDetail",
-          )}
+          {t("accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeepDetail")}
         </p>
       </div>
     </Alert>
@@ -406,10 +358,7 @@ export function isActivePendingOauthSession(
   session: LoginSessionStatusResponse | null | undefined,
 ) {
   return Boolean(
-    session &&
-    session.status === "pending" &&
-    session.authUrl &&
-    !isExpiredIso(session.expiresAt),
+    session && session.status === "pending" && session.authUrl && !isExpiredIso(session.expiresAt),
   );
 }
 
@@ -503,13 +452,9 @@ export function batchTagIdsEqual(
   right: number[] | null | undefined,
 ) {
   const normalizedLeft = normalizeBatchTagIds(Array.isArray(left) ? left : []);
-  const normalizedRight = normalizeBatchTagIds(
-    Array.isArray(right) ? right : [],
-  );
+  const normalizedRight = normalizeBatchTagIds(Array.isArray(right) ? right : []);
   if (normalizedLeft.length !== normalizedRight.length) return false;
-  return normalizedLeft.every(
-    (value, index) => value === normalizedRight[index],
-  );
+  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
 export function normalizeBatchOauthPersistedMetadata(
@@ -517,15 +462,11 @@ export function normalizeBatchOauthPersistedMetadata(
 ): BatchOauthPersistedMetadata | null {
   if (!value) return null;
   return {
-    displayName:
-      typeof value.displayName === "string" ? value.displayName.trim() : "",
-    groupName:
-      typeof value.groupName === "string" ? value.groupName.trim() : "",
+    displayName: typeof value.displayName === "string" ? value.displayName.trim() : "",
+    groupName: typeof value.groupName === "string" ? value.groupName.trim() : "",
     note: typeof value.note === "string" ? value.note.trim() : "",
     isMother: value.isMother === true,
-    tagIds: normalizeBatchTagIds(
-      Array.isArray(value.tagIds) ? value.tagIds : [],
-    ),
+    tagIds: normalizeBatchTagIds(Array.isArray(value.tagIds) ? value.tagIds : []),
   };
 }
 
@@ -575,19 +516,10 @@ export function didCompletedBatchOauthCommittedFieldsChange(
 ) {
   return committedFields.some((field) => {
     if (field === "tagIds") {
-      const baselineTagIds = resolveCompletedBatchOauthRowPersistedTagIds(
-        row,
-        items,
-      );
-      return baselineTagIds == null
-        ? true
-        : !batchTagIdsEqual(baselineTagIds, next.tagIds);
+      const baselineTagIds = resolveCompletedBatchOauthRowPersistedTagIds(row, items);
+      return baselineTagIds == null ? true : !batchTagIdsEqual(baselineTagIds, next.tagIds);
     }
-    const baseline = resolveCompletedBatchOauthCommittedFieldBaseline(
-      row,
-      field,
-      items,
-    );
+    const baseline = resolveCompletedBatchOauthCommittedFieldBaseline(row, field, items);
     if (baseline == null) return true;
     return baseline !== next[field];
   });
@@ -598,9 +530,7 @@ export function findCompletedBatchOauthAccount(
   items: UpstreamAccountSummary[],
 ) {
   const accountId = row.session?.accountId;
-  return accountId == null
-    ? null
-    : (items.find((item) => item.id === accountId) ?? null);
+  return accountId == null ? null : (items.find((item) => item.id === accountId) ?? null);
 }
 
 export function resolveCompletedBatchOauthRowPersistedTagIds(
@@ -611,9 +541,7 @@ export function resolveCompletedBatchOauthRowPersistedTagIds(
   if (account) {
     return normalizeBatchTagIds(account.tags.map((tag) => tag.id));
   }
-  return row.metadataPersisted
-    ? normalizeBatchTagIds(row.metadataPersisted.tagIds)
-    : null;
+  return row.metadataPersisted ? normalizeBatchTagIds(row.metadataPersisted.tagIds) : null;
 }
 
 export function resolveCompletedBatchOauthRowBaselineTagIds(
@@ -622,8 +550,7 @@ export function resolveCompletedBatchOauthRowBaselineTagIds(
   fallbackTagIds: number[],
 ) {
   return (
-    resolveCompletedBatchOauthRowPersistedTagIds(row, items) ??
-    normalizeBatchTagIds(fallbackTagIds)
+    resolveCompletedBatchOauthRowPersistedTagIds(row, items) ?? normalizeBatchTagIds(fallbackTagIds)
   );
 }
 
@@ -664,16 +591,12 @@ export function hydrateBatchOauthRow(
         ? seed.mailboxInput
         : (seed.mailboxSession?.emailAddress ?? ""),
     mailboxStatus: seed.mailboxStatus ?? null,
-    mailboxError:
-      typeof seed.mailboxError === "string" ? seed.mailboxError : null,
+    mailboxError: typeof seed.mailboxError === "string" ? seed.mailboxError : null,
     mailboxTone:
-      seed.mailboxTone === "copied" || seed.mailboxTone === "manual"
-        ? seed.mailboxTone
-        : "idle",
+      seed.mailboxTone === "copied" || seed.mailboxTone === "manual" ? seed.mailboxTone : "idle",
     mailboxCodeTone: seed.mailboxCodeTone === "copied" ? "copied" : "idle",
     mailboxBusyAction:
-      seed.mailboxBusyAction === "attach" ||
-      seed.mailboxBusyAction === "generate"
+      seed.mailboxBusyAction === "attach" || seed.mailboxBusyAction === "generate"
         ? seed.mailboxBusyAction
         : null,
     mailboxEditorOpen: seed.mailboxEditorOpen === true,
@@ -684,23 +607,15 @@ export function hydrateBatchOauthRow(
           ? seed.mailboxInput
           : (seed.mailboxSession?.emailAddress ?? ""),
     mailboxEditorError:
-      typeof seed.mailboxEditorError === "string"
-        ? seed.mailboxEditorError
-        : null,
+      typeof seed.mailboxEditorError === "string" ? seed.mailboxEditorError : null,
     mailboxRefreshBusy: seed.mailboxRefreshBusy === true,
     mailboxNextRefreshAt:
-      typeof seed.mailboxNextRefreshAt === "number"
-        ? seed.mailboxNextRefreshAt
-        : null,
+      typeof seed.mailboxNextRefreshAt === "number" ? seed.mailboxNextRefreshAt : null,
     metadataBusy: seed.metadataBusy === true,
-    metadataError:
-      typeof seed.metadataError === "string" ? seed.metadataError : null,
-    metadataPersisted: normalizeBatchOauthPersistedMetadata(
-      seed.metadataPersisted,
-    ),
+    metadataError: typeof seed.metadataError === "string" ? seed.metadataError : null,
+    metadataPersisted: normalizeBatchOauthPersistedMetadata(seed.metadataPersisted),
     email: typeof seed.email === "string" ? seed.email : "",
-    verifiedEmail:
-      typeof seed.verifiedEmail === "string" ? seed.verifiedEmail : null,
+    verifiedEmail: typeof seed.verifiedEmail === "string" ? seed.verifiedEmail : null,
     planType: typeof seed.planType === "string" ? seed.planType : null,
     emailResolution: seed.emailResolution
       ? {
@@ -728,10 +643,7 @@ export function createImportedOauthPastedFileName(serial: number) {
   return `Pasted credential #${serial}.json`;
 }
 
-export function createImportedSessionPastedFileName(
-  serial: number,
-  index?: number,
-) {
+export function createImportedSessionPastedFileName(serial: number, index?: number) {
   const suffix = index == null ? "" : `-${index + 1}`;
   return `Pasted session #${serial}${suffix}.json`;
 }
@@ -757,10 +669,7 @@ function normalizeImportedOauthRequiredString(
 
 function decodeImportedOauthBase64UrlUtf8(input: string) {
   const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(
-    normalized.length + ((4 - (normalized.length % 4)) % 4),
-    "=",
-  );
+  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
   const binary = atob(padded);
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
   return new TextDecoder().decode(bytes);
@@ -772,10 +681,7 @@ function encodeImportedOauthBase64UrlJson(value: Record<string, unknown>) {
   bytes.forEach((byte) => {
     binary += String.fromCharCode(byte);
   });
-  return btoa(binary)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function parseImportedOauthJwtPayload(
@@ -784,10 +690,7 @@ function parseImportedOauthJwtPayload(
   t: (key: string, values?: Record<string, string | number>) => string,
 ) {
   const parts = token.split(".");
-  if (
-    parts.length !== 3 ||
-    parts.some((part) => part.trim().length === 0)
-  ) {
+  if (parts.length !== 3 || parts.some((part) => part.trim().length === 0)) {
     return {
       ok: false as const,
       error: t("accountPool.upstreamAccounts.import.local.invalidJwt", {
@@ -841,11 +744,7 @@ function parseImportedOauthJwtPayloadOptional(token: string | null | undefined) 
 
 function isImportedOauthRfc3339Timestamp(value: string) {
   const normalized = value.trim();
-  if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
-      normalized,
-    )
-  ) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(normalized)) {
     return false;
   }
   return !Number.isNaN(Date.parse(normalized));
@@ -951,9 +850,7 @@ function importedEpochSecondsFromTimestamp(value: string | null | undefined) {
   return Math.floor(parsed / 1000);
 }
 
-function collectImportedWebSessionLikeObjects(
-  value: unknown,
-): ImportedWebSessionSource[] {
+function collectImportedWebSessionLikeObjects(value: unknown): ImportedWebSessionSource[] {
   const found: ImportedWebSessionSource[] = [];
   const visited = new WeakSet<object>();
 
@@ -1068,16 +965,12 @@ function convertImportedWebSessionRecord(
     credentials?.access_token,
   );
   if (!accessToken) {
-    throw new Error(
-      t("accountPool.upstreamAccounts.importSession.local.missingAccessToken"),
-    );
+    throw new Error(t("accountPool.upstreamAccounts.importSession.local.missingAccessToken"));
   }
 
   const accessPayload = parseImportedOauthJwtPayloadOptional(accessToken);
   const auth = accessPayload ? extractImportedOauthJwtAuth(accessPayload) : null;
-  const profile = getImportedObject(
-    accessPayload?.["https://api.openai.com/profile"],
-  );
+  const profile = getImportedObject(accessPayload?.["https://api.openai.com/profile"]);
 
   const inputIdToken = firstImportedNonEmptyString(
     record.idToken,
@@ -1157,9 +1050,7 @@ function convertImportedWebSessionRecord(
     normalizeImportedTimestamp(record.expired) ??
     normalizeImportedTimestamp(record.expires_at);
   if (!expiresAt) {
-    throw new Error(
-      t("accountPool.upstreamAccounts.import.local.missingExpiry"),
-    );
+    throw new Error(t("accountPool.upstreamAccounts.import.local.missingExpiry"));
   }
 
   const refreshToken = firstImportedNonEmptyString(
@@ -1292,9 +1183,7 @@ export function validateImportedOauthCredentialLocally(
     return {
       ok: false as const,
       error: t("accountPool.upstreamAccounts.import.paste.singleObjectError"),
-      errors: [
-        t("accountPool.upstreamAccounts.import.paste.singleObjectError"),
-      ],
+      errors: [t("accountPool.upstreamAccounts.import.paste.singleObjectError")],
     };
   }
 
@@ -1311,11 +1200,7 @@ export function validateImportedOauthCredentialLocally(
 
   const emailResult = normalizeImportedOauthRequiredString(record.email, "email", t);
   if (!emailResult.ok) errors.push(emailResult.error);
-  const accountIdResult = normalizeImportedOauthRequiredString(
-    record.account_id,
-    "account_id",
-    t,
-  );
+  const accountIdResult = normalizeImportedOauthRequiredString(record.account_id, "account_id", t);
   if (!accountIdResult.ok) errors.push(accountIdResult.error);
   const accessTokenResult = normalizeImportedOauthRequiredString(
     record.access_token,
@@ -1323,11 +1208,7 @@ export function validateImportedOauthCredentialLocally(
     t,
   );
   if (!accessTokenResult.ok) errors.push(accessTokenResult.error);
-  const idTokenResult = normalizeImportedOauthRequiredString(
-    record.id_token,
-    "id_token",
-    t,
-  );
+  const idTokenResult = normalizeImportedOauthRequiredString(record.id_token, "id_token", t);
   if (!idTokenResult.ok) errors.push(idTokenResult.error);
 
   if (
@@ -1344,38 +1225,25 @@ export function validateImportedOauthCredentialLocally(
   if (idTokenPayload && !idTokenPayload.ok) errors.push(idTokenPayload.error);
 
   const jwtEmail =
-    idTokenPayload?.ok === true
-      ? extractImportedOauthJwtEmail(idTokenPayload.payload)
-      : null;
-  if (
-    emailResult.ok &&
-    jwtEmail &&
-    jwtEmail.toLowerCase() !== emailResult.value.toLowerCase()
-  ) {
+    idTokenPayload?.ok === true ? extractImportedOauthJwtEmail(idTokenPayload.payload) : null;
+  if (emailResult.ok && jwtEmail && jwtEmail.toLowerCase() !== emailResult.value.toLowerCase()) {
     errors.push(t("accountPool.upstreamAccounts.import.local.emailMismatch"));
   }
 
   const jwtAccountId =
-    idTokenPayload?.ok === true
-      ? extractImportedOauthJwtAccountId(idTokenPayload.payload)
-      : null;
+    idTokenPayload?.ok === true ? extractImportedOauthJwtAccountId(idTokenPayload.payload) : null;
   if (accountIdResult.ok && jwtAccountId && jwtAccountId !== accountIdResult.value) {
-    errors.push(
-      t("accountPool.upstreamAccounts.import.local.accountIdMismatch"),
-    );
+    errors.push(t("accountPool.upstreamAccounts.import.local.accountIdMismatch"));
   }
 
-  const rawExpired =
-    typeof record.expired === "string" ? record.expired.trim() : "";
+  const rawExpired = typeof record.expired === "string" ? record.expired.trim() : "";
   if (rawExpired) {
     if (!isImportedOauthRfc3339Timestamp(rawExpired)) {
       errors.push(t("accountPool.upstreamAccounts.import.local.invalidExpired"));
     }
   } else {
     const idTokenExp =
-      idTokenPayload?.ok === true
-        ? parseImportedOauthJwtExpiration(idTokenPayload.payload)
-        : null;
+      idTokenPayload?.ok === true ? parseImportedOauthJwtExpiration(idTokenPayload.payload) : null;
     const accessTokenPayload =
       idTokenPayload?.ok === true && idTokenExp == null && accessTokenResult.ok
         ? parseImportedOauthJwtPayload(accessTokenResult.value, "access_token", t)
@@ -1383,14 +1251,11 @@ export function validateImportedOauthCredentialLocally(
     if (accessTokenPayload && !accessTokenPayload.ok) {
       errors.push(accessTokenPayload.error);
     }
-    const accessTokenExp = accessTokenPayload?.ok === true
-      ? parseImportedOauthJwtExpiration(accessTokenPayload.payload)
-      : null;
-    if (
-      idTokenPayload?.ok === true &&
-      accessTokenExp == null &&
-      idTokenExp == null
-    ) {
+    const accessTokenExp =
+      accessTokenPayload?.ok === true
+        ? parseImportedOauthJwtExpiration(accessTokenPayload.payload)
+        : null;
+    if (idTokenPayload?.ok === true && accessTokenExp == null && idTokenExp == null) {
       errors.push(t("accountPool.upstreamAccounts.import.local.missingExpiry"));
     }
   }
@@ -1404,10 +1269,7 @@ export function validateImportedOauthCredentialLocally(
     normalizedContent,
     email: emailResult.value,
     chatgptAccountId: accountIdResult.value,
-    matchKey: buildImportedOauthMatchKeyFromValues(
-      emailResult.value,
-      accountIdResult.value,
-    ),
+    matchKey: buildImportedOauthMatchKeyFromValues(emailResult.value, accountIdResult.value),
   };
 }
 
@@ -1419,15 +1281,11 @@ export function getImportedOauthValidationStatusLabel(
     case "pending":
       return t("accountPool.upstreamAccounts.import.validation.status.pending");
     case "duplicate_in_input":
-      return t(
-        "accountPool.upstreamAccounts.import.validation.status.duplicate",
-      );
+      return t("accountPool.upstreamAccounts.import.validation.status.duplicate");
     case "ok":
       return t("accountPool.upstreamAccounts.import.validation.status.ok");
     case "ok_exhausted":
-      return t(
-        "accountPool.upstreamAccounts.import.validation.status.exhausted",
-      );
+      return t("accountPool.upstreamAccounts.import.validation.status.exhausted");
     case "invalid":
       return t("accountPool.upstreamAccounts.import.validation.status.invalid");
     case "error":
@@ -1494,9 +1352,7 @@ export function buildImportedOauthStateFromRows(
   rows: ImportedOauthValidationRow[],
   items: ImportOauthCredentialFilePayload[],
 ): ImportedOauthValidationDialogState {
-  const duplicateInInput = rows.filter(
-    (row) => row.status === "duplicate_in_input",
-  ).length;
+  const duplicateInInput = rows.filter((row) => row.status === "duplicate_in_input").length;
   return {
     inputFiles: items.length,
     uniqueInInput: Math.max(0, rows.length - duplicateInInput),
@@ -1539,9 +1395,7 @@ export function buildImportedOauthMatchKey(
   return buildImportedOauthMatchKeyFromValues(row.email, row.chatgptAccountId);
 }
 
-export function applyImportedOauthDuplicateStatuses(
-  rows: ImportedOauthValidationRow[],
-) {
+export function applyImportedOauthDuplicateStatuses(rows: ImportedOauthValidationRow[]) {
   const seenKeys = new Set<string>();
   return rows.map((row) => {
     if (row.status === "pending") return row;
@@ -1565,9 +1419,7 @@ export function mergeImportedOauthValidationRows(
   nextRows: ImportedOauthValidationRow[],
   retriedSourceIds: Set<string>,
 ) {
-  const nextBySourceId = new Map(
-    nextRows.map((row) => [row.sourceId, row] as const),
-  );
+  const nextBySourceId = new Map(nextRows.map((row) => [row.sourceId, row] as const));
   return applyImportedOauthDuplicateStatuses(
     currentRows.map((row) => {
       const nextRow = nextBySourceId.get(row.sourceId);
@@ -1588,20 +1440,14 @@ export function mergeImportedOauthValidationRow(
   nextRow: ImportedOauthValidationRow,
   retriedSourceIds: Set<string>,
 ) {
-  return mergeImportedOauthValidationRows(
-    currentRows,
-    [nextRow],
-    retriedSourceIds,
-  );
+  return mergeImportedOauthValidationRows(currentRows, [nextRow], retriedSourceIds);
 }
 
 export function replaceImportedOauthValidationRows(
   currentRows: ImportedOauthValidationRow[],
   nextRows: ImportedOauthValidationRow[],
 ) {
-  const nextBySourceId = new Map(
-    nextRows.map((row) => [row.sourceId, row] as const),
-  );
+  const nextBySourceId = new Map(nextRows.map((row) => [row.sourceId, row] as const));
   return applyImportedOauthDuplicateStatuses(
     currentRows.map((row) => {
       const nextRow = nextBySourceId.get(row.sourceId);
@@ -1632,9 +1478,7 @@ export function markImportedOauthRowsAsError(
 
 export function summarizeImportedOauthBatchErrors(messages: string[]) {
   const normalized = Array.from(
-    new Set(
-      messages.map((value) => value.trim()).filter((value) => value.length > 0),
-    ),
+    new Set(messages.map((value) => value.trim()).filter((value) => value.length > 0)),
   );
   return normalized.length > 0 ? normalized.join(" | ") : null;
 }
@@ -1660,10 +1504,7 @@ export function generatedDisplayNameFromEmail(email?: string | null) {
   return normalizeEmailKey(email);
 }
 
-export function displayNameFollowsEmail(
-  displayName: string,
-  email?: string | null,
-) {
+export function displayNameFollowsEmail(displayName: string, email?: string | null) {
   const normalizedDisplayName = normalizeDisplayNameKey(displayName);
   if (!normalizedDisplayName) return true;
   const generated = generatedDisplayNameFromEmail(email);
@@ -1676,7 +1517,7 @@ export function resolveDisplayNameAfterEmailChange(
   nextEmail?: string | null,
 ) {
   return displayNameFollowsEmail(displayName, previousEmail)
-    ? (generatedDisplayNameFromEmail(nextEmail) || displayName)
+    ? generatedDisplayNameFromEmail(nextEmail) || displayName
     : displayName;
 }
 
@@ -1698,10 +1539,7 @@ export function mailboxInputMatchesSession(
   session: OauthMailboxSessionSupported | null,
 ) {
   if (!session) return false;
-  return (
-    normalizeMailboxAddressKey(input) ===
-    normalizeMailboxAddressKey(session.emailAddress)
-  );
+  return normalizeMailboxAddressKey(input) === normalizeMailboxAddressKey(session.emailAddress);
 }
 
 export function isProbablyValidEmailAddress(value: string) {
@@ -1717,9 +1555,7 @@ export function findDisplayNameConflict(
   if (!normalized) return null;
   return (
     items.find(
-      (item) =>
-        item.id !== excludeId &&
-        normalizeDisplayNameKey(item.displayName) === normalized,
+      (item) => item.id !== excludeId && normalizeDisplayNameKey(item.displayName) === normalized,
     ) ?? null
   );
 }
@@ -1736,8 +1572,7 @@ export function invalidatePendingSingleOauthSession(
 ) {
   if (
     !currentSession ||
-    (currentSession.status !== "pending" &&
-      currentSession.status !== "completed")
+    (currentSession.status !== "pending" && currentSession.status !== "completed")
   ) {
     return;
   }
@@ -1788,9 +1623,7 @@ export function buildOauthLoginSessionUpdatePayload({
     groupNodeShuntEnabled,
     groupSingleAccountRotationEnabled,
     note: note.trim(),
-    ...(normalizedGroupName && includeGroupNote
-      ? { groupNote: groupNote.trim() }
-      : {}),
+    ...(normalizedGroupName && includeGroupNote ? { groupNote: groupNote.trim() } : {}),
     ...(normalizedGroupName ? { concurrencyLimit: groupConcurrencyLimit } : {}),
     tagIds,
     isMother,
@@ -1821,17 +1654,12 @@ export function shouldRetryPendingOauthSessionSync(error: unknown) {
   return !/^Request failed: (400|401|403|404|409|410|422)\b/.test(message);
 }
 
-export function applyBatchMotherDraftRules(
-  rows: BatchOauthRow[],
-  changedRowId: string,
-) {
+export function applyBatchMotherDraftRules(rows: BatchOauthRow[], changedRowId: string) {
   const changedRow = rows.find((row) => row.id === changedRowId);
   if (!changedRow?.isMother) return rows;
   const groupKey = normalizeMotherGroupKey(changedRow.groupName);
   return rows.map((row) =>
-    row.id !== changedRowId &&
-    row.isMother &&
-    normalizeMotherGroupKey(row.groupName) === groupKey
+    row.id !== changedRowId && row.isMother && normalizeMotherGroupKey(row.groupName) === groupKey
       ? { ...row, isMother: false }
       : row,
   );
@@ -1844,8 +1672,7 @@ export function enforceBatchMotherDraftUniqueness(rows: BatchOauthRow[]) {
     winners.set(normalizeMotherGroupKey(row.groupName), row.id);
   }
   return rows.map((row) =>
-    row.isMother &&
-    winners.get(normalizeMotherGroupKey(row.groupName)) !== row.id
+    row.isMother && winners.get(normalizeMotherGroupKey(row.groupName)) !== row.id
       ? { ...row, isMother: false }
       : row,
   );
@@ -1879,13 +1706,10 @@ export function reconcileBatchOauthMotherRowsAfterSave(
   });
 }
 
-export function batchStatusVariant(
-  status: string,
-): "success" | "warning" | "error" | "secondary" {
+export function batchStatusVariant(status: string): "success" | "warning" | "error" | "secondary" {
   if (status === "completed") return "success";
   if (status === "completedNeedsRefresh") return "warning";
-  if (status === "pending" || status === "needs_identity_confirmation")
-    return "warning";
+  if (status === "pending" || status === "needs_identity_confirmation") return "warning";
   if (status === "failed" || status === "expired") return "error";
   return "secondary";
 }
@@ -1907,7 +1731,7 @@ export function canEditCompletedBatchOauthRowMetadata(row: BatchOauthRow) {
   const status = batchRowStatus(row);
   return Boolean(
     row.session?.accountId != null &&
-    (status === "completed" || status === "completedNeedsRefresh"),
+      (status === "completed" || status === "completedNeedsRefresh"),
   );
 }
 
@@ -1921,9 +1745,7 @@ export function batchRowStatusDetail(row: BatchOauthRow) {
   return null;
 }
 
-export function batchMailboxCodeVariant(
-  row: BatchOauthRow,
-): "default" | "secondary" | "outline" {
+export function batchMailboxCodeVariant(row: BatchOauthRow): "default" | "secondary" | "outline" {
   const code = row.mailboxStatus?.latestCode?.value;
   if (!code) return "secondary";
   return row.mailboxCodeTone === "copied" ? "outline" : "default";
@@ -1933,9 +1755,7 @@ export function batchMailboxCodeLabel(row: BatchOauthRow) {
   return row.mailboxStatus?.latestCode?.value ?? "------";
 }
 
-export function batchMailboxRefreshVariant(
-  row: BatchOauthRow,
-): "outline" | "secondary" {
+export function batchMailboxRefreshVariant(row: BatchOauthRow): "outline" | "secondary" {
   return row.mailboxRefreshBusy ? "secondary" : "outline";
 }
 
@@ -1965,10 +1785,7 @@ export function batchMailboxRefreshLabel(
   if (!row.mailboxNextRefreshAt) {
     return t("accountPool.upstreamAccounts.actions.fetchMailboxStatus");
   }
-  const seconds = Math.max(
-    0,
-    Math.ceil((row.mailboxNextRefreshAt - now) / 1000),
-  );
+  const seconds = Math.max(0, Math.ceil((row.mailboxNextRefreshAt - now) / 1000));
   return t("accountPool.upstreamAccounts.oauth.refreshInShort", { seconds });
 }
 
@@ -1981,9 +1798,7 @@ export function batchMailboxRefreshTooltipDetail(
     return t("accountPool.upstreamAccounts.oauth.refreshing");
   }
   const receivedAt =
-    row.mailboxStatus?.latestCode?.updatedAt ??
-    row.mailboxStatus?.invite?.updatedAt ??
-    null;
+    row.mailboxStatus?.latestCode?.updatedAt ?? row.mailboxStatus?.invite?.updatedAt ?? null;
   if (receivedAt) {
     return `${t("accountPool.upstreamAccounts.oauth.receivedAt", {
       timestamp: formatDateTime(receivedAt),
@@ -2001,16 +1816,12 @@ export function resolveMailboxIssue(
 ) {
   if (session?.supported === false) {
     if (session.reason === "invalid_format") {
-      return t(
-        "accountPool.upstreamAccounts.oauth.mailboxUnsupportedInvalidFormat",
-      );
+      return t("accountPool.upstreamAccounts.oauth.mailboxUnsupportedInvalidFormat");
     }
     if (session.reason === "unsupported_domain") {
       return t("accountPool.upstreamAccounts.oauth.mailboxUnsupportedDomain");
     }
-    return t(
-      "accountPool.upstreamAccounts.oauth.mailboxUnsupportedNotReadable",
-    );
+    return t("accountPool.upstreamAccounts.oauth.mailboxUnsupportedNotReadable");
   }
   if (isExpiredIso(expiresAt)) {
     return t("accountPool.upstreamAccounts.oauth.mailboxExpired");
@@ -2080,12 +1891,8 @@ export function DuplicateWarningPopover({
               <AppIcon name="alert-outline" className="h-4 w-4" aria-hidden />
             </div>
             <div className="min-w-0 space-y-1">
-              <p className="text-sm font-semibold leading-5 text-warning">
-                {summaryTitle}
-              </p>
-              <p className="text-[11px] leading-5 text-base-content/72">
-                {summaryBody}
-              </p>
+              <p className="text-sm font-semibold leading-5 text-warning">{summaryTitle}</p>
+              <p className="text-[11px] leading-5 text-base-content/72">{summaryBody}</p>
             </div>
           </div>
           <div className="flex justify-end">
@@ -2113,21 +1920,13 @@ export function DuplicateWarningPopover({
   );
 }
 
-export function DuplicateDetailField({
-  label,
-  value,
-}: {
-  label: string;
-  value?: string | null;
-}) {
+export function DuplicateDetailField({ label, value }: { label: string; value?: string | null }) {
   return (
     <div className="rounded-2xl border border-base-300/70 bg-base-100/82 px-3 py-3">
       <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/45">
         {label}
       </p>
-      <p className="mt-1 break-all text-sm text-base-content/82">
-        {value?.trim() ? value : "—"}
-      </p>
+      <p className="mt-1 break-all text-sm text-base-content/82">{value?.trim() ? value : "—"}</p>
     </div>
   );
 }
@@ -2167,9 +1966,7 @@ export function DuplicateAccountDetailDialog({
   description: string;
   duplicateLabel: string;
   closeLabel: string;
-  formatDuplicateReasons: (
-    duplicateInfo?: UpstreamAccountDuplicateInfo | null,
-  ) => string;
+  formatDuplicateReasons: (duplicateInfo?: UpstreamAccountDuplicateInfo | null) => string;
   statusLabel: (status: string) => string;
   kindLabel: (kind: string) => string;
   fieldLabels: {
@@ -2182,16 +1979,11 @@ export function DuplicateAccountDetailDialog({
 }) {
   const planBadge = upstreamPlanBadgeRecipe(detail?.planType ?? null);
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen: boolean) => !nextOpen && onClose()}
-    >
+    <Dialog open={open} onOpenChange={(nextOpen: boolean) => !nextOpen && onClose()}>
       <DialogContent className="max-h-[85vh] overflow-hidden p-0 sm:max-w-[38rem]">
         <div className="flex items-start justify-between gap-4 border-b border-base-300/70 px-5 py-4">
           <DialogHeader className="min-w-0">
-            <DialogTitle className="truncate">
-              {detail?.displayName ?? title}
-            </DialogTitle>
+            <DialogTitle className="truncate">{detail?.displayName ?? title}</DialogTitle>
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
           <DialogCloseIcon aria-label={closeLabel} />
@@ -2207,27 +1999,17 @@ export function DuplicateAccountDetailDialog({
                 <Badge variant={accountStatusVariant(detail.status)}>
                   {statusLabel(detail.status)}
                 </Badge>
-                <Badge variant={accountKindVariant(detail.kind)}>
-                  {kindLabel(detail.kind)}
-                </Badge>
+                <Badge variant={accountKindVariant(detail.kind)}>{kindLabel(detail.kind)}</Badge>
                 {planBadge && detail.planType ? (
                   <Badge variant={planBadge.variant}>{detail.planType}</Badge>
                 ) : null}
-                {detail.duplicateInfo ? (
-                  <Badge variant="warning">{duplicateLabel}</Badge>
-                ) : null}
+                {detail.duplicateInfo ? <Badge variant="warning">{duplicateLabel}</Badge> : null}
               </div>
               {detail.duplicateInfo ? (
                 <Alert variant="warning">
-                  <AppIcon
-                    name="alert-outline"
-                    className="mt-0.5 h-4 w-4 shrink-0"
-                    aria-hidden
-                  />
+                  <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                   <div>
-                    <p className="font-semibold text-warning">
-                      {duplicateLabel}
-                    </p>
+                    <p className="font-semibold text-warning">{duplicateLabel}</p>
                     <p className="mt-1 text-sm text-warning/90">
                       {`命中：${formatDuplicateReasons(detail.duplicateInfo)}。关联账号 ID：${detail.duplicateInfo.peerAccountIds.join(", ") || "—"}。`}
                     </p>
@@ -2239,10 +2021,7 @@ export function DuplicateAccountDetailDialog({
                   label={fieldLabels.groupName}
                   value={detail.groupName ?? ""}
                 />
-                <DuplicateDetailField
-                  label={fieldLabels.email}
-                  value={detail.email ?? ""}
-                />
+                <DuplicateDetailField label={fieldLabels.email} value={detail.email ?? ""} />
                 <DuplicateDetailField
                   label={fieldLabels.accountId}
                   value={detail.chatgptAccountId ?? detail.maskedApiKey ?? ""}

@@ -1,45 +1,44 @@
-import { useEffect, useRef, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fireEvent, userEvent, waitFor, within } from "storybook/test";
+import { type ReactNode, useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { expect, fireEvent, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type {
   ApiInvocation,
-  PromptCacheConversationInvocationPreview,
   PromptCacheConversationBindingResponse,
+  PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
   UpstreamAccountDetail,
   UpstreamAccountSummary,
 } from "../../lib/api";
 import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
 
-type StoryPromptCacheConversationPreview =
-  PromptCacheConversationInvocationPreview &
-    Partial<
-      Pick<
-        ApiInvocation,
-        | "source"
-        | "inputTokens"
-        | "outputTokens"
-        | "cacheInputTokens"
-        | "reasoningTokens"
-        | "reasoningEffort"
-        | "errorMessage"
-        | "failureKind"
-        | "isActionable"
-        | "responseContentEncoding"
-        | "requestedServiceTier"
-        | "serviceTier"
-        | "tReqReadMs"
-        | "tReqParseMs"
-        | "tUpstreamConnectMs"
-        | "tUpstreamTtfbMs"
-        | "tUpstreamStreamMs"
-        | "tRespParseMs"
-        | "tPersistMs"
-        | "tTotalMs"
-      >
-    >;
+type StoryPromptCacheConversationPreview = PromptCacheConversationInvocationPreview &
+  Partial<
+    Pick<
+      ApiInvocation,
+      | "source"
+      | "inputTokens"
+      | "outputTokens"
+      | "cacheInputTokens"
+      | "reasoningTokens"
+      | "reasoningEffort"
+      | "errorMessage"
+      | "failureKind"
+      | "isActionable"
+      | "responseContentEncoding"
+      | "requestedServiceTier"
+      | "serviceTier"
+      | "tReqReadMs"
+      | "tReqParseMs"
+      | "tUpstreamConnectMs"
+      | "tUpstreamTtfbMs"
+      | "tUpstreamStreamMs"
+      | "tRespParseMs"
+      | "tPersistMs"
+      | "tTotalMs"
+    >
+  >;
 
 const CONVERSATION_ONE_KEY = "019d2b8f-f8d0-72c3-bb67-a3f0d24a01f1";
 const CONVERSATION_TWO_KEY = "019d2b8a-2df4-7580-bffc-6b4b1d8207c2";
@@ -80,8 +79,7 @@ function buildBindingResponse(
     availableModels: overrides.availableModels ?? null,
     forwardProxyKey: overrides.forwardProxyKey ?? null,
     forwardProxyKeys:
-      overrides.forwardProxyKeys ??
-      (overrides.forwardProxyKey ? [overrides.forwardProxyKey] : []),
+      overrides.forwardProxyKeys ?? (overrides.forwardProxyKey ? [overrides.forwardProxyKey] : []),
     updatedAt: overrides.updatedAt ?? null,
   };
 }
@@ -431,9 +429,7 @@ function buildInvocationRecord(
   };
 }
 
-function buildPreviewFromRecord(
-  record: ApiInvocation,
-) : StoryPromptCacheConversationPreview {
+function buildPreviewFromRecord(record: ApiInvocation): StoryPromptCacheConversationPreview {
   return {
     id: record.id,
     invokeId: record.invokeId,
@@ -802,15 +798,9 @@ const shortSameDayHistory = shortSameDayOffsetsMs
   })
   .reverse();
 
-const conversationOnePreviews = conversationOneHistory
-  .slice(0, 5)
-  .map(buildPreviewFromRecord);
-const conversationTwoPreviews = conversationTwoHistory
-  .slice(0, 5)
-  .map(buildPreviewFromRecord);
-const shortSameDayPreviews = shortSameDayHistory
-  .slice(0, 4)
-  .map(buildPreviewFromRecord);
+const conversationOnePreviews = conversationOneHistory.slice(0, 5).map(buildPreviewFromRecord);
+const conversationTwoPreviews = conversationTwoHistory.slice(0, 5).map(buildPreviewFromRecord);
+const shortSameDayPreviews = shortSameDayHistory.slice(0, 4).map(buildPreviewFromRecord);
 const largeHistory = Array.from({ length: 15_000 }, (_, index) => {
   const isFailure = index % 41 === 0;
   const account = index % 3 === 0 ? accountSummaries[1] : accountSummaries[0];
@@ -843,30 +833,15 @@ const largeHistory = Array.from({ length: 15_000 }, (_, index) => {
 const largeHistoryPreviews = largeHistory.slice(0, 5).map(buildPreviewFromRecord);
 
 const historyRecordsByKey = new Map<string, ApiInvocation[]>([
-  [
-    CONVERSATION_ONE_KEY,
-    conversationOneHistory,
-  ],
-  [
-    CONVERSATION_TWO_KEY,
-    conversationTwoHistory,
-  ],
-  [
-    CONVERSATION_SHORT_KEY,
-    shortSameDayHistory,
-  ],
-  [
-    CONVERSATION_LARGE_HISTORY_KEY,
-    largeHistory,
-  ],
+  [CONVERSATION_ONE_KEY, conversationOneHistory],
+  [CONVERSATION_TWO_KEY, conversationTwoHistory],
+  [CONVERSATION_SHORT_KEY, shortSameDayHistory],
+  [CONVERSATION_LARGE_HISTORY_KEY, largeHistory],
 ]);
 
 function buildInvocationSummary(records: ApiInvocation[]) {
   const totalCost = records.reduce((sum, record) => sum + (record.cost ?? 0), 0);
-  const totalTokens = records.reduce(
-    (sum, record) => sum + (record.totalTokens ?? 0),
-    0,
-  );
+  const totalTokens = records.reduce((sum, record) => sum + (record.totalTokens ?? 0), 0);
   const completedRecords = records.filter((record) => record.status === "completed");
   const failedRecords = records.filter(
     (record) =>
@@ -879,8 +854,7 @@ function buildInvocationSummary(records: ApiInvocation[]) {
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   const avgTotalMs =
     durationSamples.length > 0
-      ? durationSamples.reduce((sum, value) => sum + value, 0) /
-        durationSamples.length
+      ? durationSamples.reduce((sum, value) => sum + value, 0) / durationSamples.length
       : null;
 
   return {
@@ -895,10 +869,7 @@ function buildInvocationSummary(records: ApiInvocation[]) {
       requestCount: records.length,
       totalTokens,
       avgTokensPerRequest: records.length > 0 ? totalTokens / records.length : 0,
-      cacheInputTokens: records.reduce(
-        (sum, record) => sum + (record.cacheInputTokens ?? 0),
-        0,
-      ),
+      cacheInputTokens: records.reduce((sum, record) => sum + (record.cacheInputTokens ?? 0), 0),
       totalCost,
     },
     network: {
@@ -912,22 +883,16 @@ function buildInvocationSummary(records: ApiInvocation[]) {
       serviceFailureCount: failedRecords.filter(
         (record) => record.failureClass === "service_failure",
       ).length,
-      clientFailureCount: failedRecords.filter(
-        (record) => record.failureClass === "client_failure",
-      ).length,
-      clientAbortCount: failedRecords.filter(
-        (record) => record.failureClass === "client_abort",
-      ).length,
+      clientFailureCount: failedRecords.filter((record) => record.failureClass === "client_failure")
+        .length,
+      clientAbortCount: failedRecords.filter((record) => record.failureClass === "client_abort")
+        .length,
       actionableFailureCount: failedRecords.filter((record) => record.isActionable).length,
     },
   };
 }
 
-function StorybookPromptCacheAccountMock({
-  children,
-}: {
-  children: ReactNode;
-}) {
+function StorybookPromptCacheAccountMock({ children }: { children: ReactNode }) {
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
   const originalEventSourceRef = useRef<typeof window.EventSource | null>(null);
   const installedRef = useRef(false);
@@ -938,15 +903,10 @@ function StorybookPromptCacheAccountMock({
     originalEventSourceRef.current = window.EventSource;
     window.fetch = async (input, init) => {
       const method = (
-        init?.method ||
-        (input instanceof Request ? input.method : "GET")
+        init?.method || (input instanceof Request ? input.method : "GET")
       ).toUpperCase();
       const inputUrl =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : input.url;
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const parsedUrl = new URL(inputUrl, window.location.origin);
       const bindingMatch = parsedUrl.pathname.match(
         /^\/api\/stats\/prompt-cache-conversation-bindings\/(.+)$/,
@@ -1051,9 +1011,7 @@ function StorybookPromptCacheAccountMock({
               ? payload.imageToolRewriteMode
               : current.imageToolRewriteMode,
           availableModels:
-            "availableModels" in payload
-              ? payload.availableModels
-              : current.availableModels,
+            "availableModels" in payload ? payload.availableModels : current.availableModels,
           forwardProxyKey: Array.isArray(payload.forwardProxyKeys)
             ? (payload.forwardProxyKeys[0] ?? null)
             : "forwardProxyKey" in payload
@@ -1066,8 +1024,7 @@ function StorybookPromptCacheAccountMock({
               : current.forwardProxyKeys,
           policyFieldSources: {
             ...currentPolicySources,
-            ...(Array.isArray(payload.forwardProxyKeys) ||
-            "forwardProxyKey" in payload
+            ...(Array.isArray(payload.forwardProxyKeys) || "forwardProxyKey" in payload
               ? { forwardProxyKey: "conversation" as const }
               : {}),
           },
@@ -1115,10 +1072,9 @@ function StorybookPromptCacheAccountMock({
                   timeouts: nextTimeouts,
                   timeoutFieldSources: nextTimeoutSources,
                   ...policyOverrides,
-                  updatedAt:
-                    Object.values(timeoutPatch).some((value) => value !== undefined)
-                      ? new Date().toISOString()
-                      : null,
+                  updatedAt: Object.values(timeoutPatch).some((value) => value !== undefined)
+                    ? new Date().toISOString()
+                    : null,
                 });
         bindingByPromptCacheKey.set(promptCacheKey, response);
         return jsonResponse(response);
@@ -1155,9 +1111,7 @@ function StorybookPromptCacheAccountMock({
 
       if (parsedUrl.pathname === "/api/invocations/summary" && method === "GET") {
         const promptCacheKey = parsedUrl.searchParams.get("promptCacheKey");
-        const records = promptCacheKey
-          ? historyRecordsByKey.get(promptCacheKey) ?? []
-          : [];
+        const records = promptCacheKey ? (historyRecordsByKey.get(promptCacheKey) ?? []) : [];
         return jsonResponse(buildInvocationSummary(records));
       }
 
@@ -1171,9 +1125,7 @@ function StorybookPromptCacheAccountMock({
           storyWindow.__promptCacheInvocationRequests.push(parsedUrl.search);
           const page = Number(parsedUrl.searchParams.get("page") ?? "1");
           const pageSize = Number(parsedUrl.searchParams.get("pageSize") ?? "20");
-          const snapshotId = Number(
-            parsedUrl.searchParams.get("snapshotId") ?? "8401",
-          );
+          const snapshotId = Number(parsedUrl.searchParams.get("snapshotId") ?? "8401");
           const records = historyRecordsByKey.get(promptCacheKey) ?? [];
           const start = Math.max(0, (page - 1) * pageSize);
           const pagedRecords = records.slice(start, start + pageSize);
@@ -1501,23 +1453,16 @@ const shortSameDayStats: PromptCacheConversationsResponse = {
       encryptedOwnerAccountName: "growth.6vv4@relay.example",
       encryptedOwnerGroupName: "CIII",
       requestCount: shortSameDayHistory.length,
-      totalTokens: shortSameDayHistory.reduce(
-        (sum, record) => sum + (record.totalTokens ?? 0),
-        0,
-      ),
-      totalCost: shortSameDayHistory.reduce(
-        (sum, record) => sum + (record.cost ?? 0),
-        0,
-      ),
+      totalTokens: shortSameDayHistory.reduce((sum, record) => sum + (record.totalTokens ?? 0), 0),
+      totalCost: shortSameDayHistory.reduce((sum, record) => sum + (record.cost ?? 0), 0),
       createdAt: shortSameDayHistory.at(-1)?.occurredAt ?? "",
       lastActivityAt: shortSameDayHistory[0]?.occurredAt ?? "",
       upstreamAccounts: [
         {
           upstreamAccountId: 21,
           upstreamAccountName: "growth.6vv4@relay.example",
-          requestCount: shortSameDayHistory.filter(
-            (record) => record.upstreamAccountId === 21,
-          ).length,
+          requestCount: shortSameDayHistory.filter((record) => record.upstreamAccountId === 21)
+            .length,
           totalTokens: shortSameDayHistory
             .filter((record) => record.upstreamAccountId === 21)
             .reduce((sum, record) => sum + (record.totalTokens ?? 0), 0),
@@ -1529,9 +1474,8 @@ const shortSameDayStats: PromptCacheConversationsResponse = {
         {
           upstreamAccountId: 22,
           upstreamAccountName: "mia.7rmmq@support.example",
-          requestCount: shortSameDayHistory.filter(
-            (record) => record.upstreamAccountId === 22,
-          ).length,
+          requestCount: shortSameDayHistory.filter((record) => record.upstreamAccountId === 22)
+            .length,
           totalTokens: shortSameDayHistory
             .filter((record) => record.upstreamAccountId === 22)
             .reduce((sum, record) => sum + (record.totalTokens ?? 0), 0),
@@ -1539,8 +1483,7 @@ const shortSameDayStats: PromptCacheConversationsResponse = {
             .filter((record) => record.upstreamAccountId === 22)
             .reduce((sum, record) => sum + (record.cost ?? 0), 0),
           lastActivityAt:
-            shortSameDayHistory.find((record) => record.upstreamAccountId === 22)
-              ?.occurredAt ?? "",
+            shortSameDayHistory.find((record) => record.upstreamAccountId === 22)?.occurredAt ?? "",
         },
       ],
       recentInvocations: shortSameDayPreviews,
@@ -1575,10 +1518,7 @@ const largeHistoryStats: PromptCacheConversationsResponse = {
       encryptedOwnerAccountName: null,
       encryptedOwnerGroupName: null,
       requestCount: largeHistory.length,
-      totalTokens: largeHistory.reduce(
-        (sum, record) => sum + (record.totalTokens ?? 0),
-        0,
-      ),
+      totalTokens: largeHistory.reduce((sum, record) => sum + (record.totalTokens ?? 0), 0),
       totalCost: largeHistory.reduce((sum, record) => sum + (record.cost ?? 0), 0),
       createdAt: largeHistory.at(-1)?.occurredAt ?? "",
       lastActivityAt: largeHistory[0]?.occurredAt ?? "",
@@ -1631,9 +1571,7 @@ const meta = {
           <StorybookPromptCacheAccountMock>
             <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
               <main className="app-shell-boundary space-y-4">
-                <h2 className="text-xl font-semibold">
-                  对话
-                </h2>
+                <h2 className="text-xl font-semibold">对话</h2>
                 <Story />
               </main>
             </div>
@@ -1670,9 +1608,7 @@ export const ExpandAll: Story = {
     stats,
     isLoading: false,
     error: null,
-    expandedPromptCacheKeys: stats.conversations.map(
-      (conversation) => conversation.promptCacheKey,
-    ),
+    expandedPromptCacheKeys: stats.conversations.map((conversation) => conversation.promptCacheKey),
   },
 };
 
@@ -1816,9 +1752,7 @@ export const DrawerOpen: Story = {
     await expect(
       documentScope.getByText(/已加载 6 \/ 6 条保留调用记录|Loaded 6 \/ 6 retained record\(s\)/i),
     ).toBeInTheDocument();
-    await expect(
-      documentScope.getAllByTestId("invocation-table-scroll").length,
-    ).toBeGreaterThan(0);
+    await expect(documentScope.getAllByTestId("invocation-table-scroll").length).toBeGreaterThan(0);
   },
 };
 
@@ -1851,26 +1785,16 @@ export const ShortSameDayDrawerOpen: Story = {
       await documentScope.findByText(/对话详情|Conversation details/i),
     ).toBeInTheDocument();
     const chart = await documentScope.findByTestId("conversation-activity-chart");
-    await expect(chart).toHaveAttribute(
-      "data-chart-range-start",
-      "2026-05-13T23:26:12.000Z",
-    );
-    await expect(chart).toHaveAttribute(
-      "data-chart-range-end",
-      "2026-05-13T23:40:47.000Z",
-    );
+    await expect(chart).toHaveAttribute("data-chart-range-start", "2026-05-13T23:26:12.000Z");
+    await expect(chart).toHaveAttribute("data-chart-range-end", "2026-05-13T23:40:47.000Z");
     await waitFor(() => {
       const successBars = Array.from(
-        chart.querySelectorAll<SVGGraphicsElement>(
-          'path[fill="#22c55e"], rect[fill="#22c55e"]',
-        ),
+        chart.querySelectorAll<SVGGraphicsElement>('path[fill="#22c55e"], rect[fill="#22c55e"]'),
       )
         .map((element) => element.getBBox())
         .filter((box) => box.width > 0 && box.height > 0);
       const failureBars = Array.from(
-        chart.querySelectorAll<SVGGraphicsElement>(
-          'path[fill="#f87171"], rect[fill="#f87171"]',
-        ),
+        chart.querySelectorAll<SVGGraphicsElement>('path[fill="#f87171"], rect[fill="#f87171"]'),
       )
         .map((element) => element.getBBox())
         .filter((box) => box.width > 0 && box.height > 0);
@@ -1915,14 +1839,12 @@ export const DrawerBindingControls: Story = {
     })[0];
 
     await userEvent.click(historyButton);
-    await userEvent.click(
-      await documentScope.findByRole("tab", { name: /设置|Settings/i }),
-    );
+    await userEvent.click(await documentScope.findByRole("tab", { name: /设置|Settings/i }));
+    await expect(await documentScope.findByText(/路由绑定|Route binding/i)).toBeInTheDocument();
     await expect(
-      await documentScope.findByText(/路由绑定|Route binding/i),
-    ).toBeInTheDocument();
-    await expect(
-      documentScope.getByText(/当前：账号 growth\.6vv4@relay\.example|Current: account growth\.6vv4@relay\.example/i),
+      documentScope.getByText(
+        /当前：账号 growth\.6vv4@relay\.example|Current: account growth\.6vv4@relay\.example/i,
+      ),
     ).toBeInTheDocument();
     await expect(
       documentScope.getByText(
@@ -1973,9 +1895,7 @@ export const DrawerEncryptedOwnerDangerConfirm: Story = {
 
     try {
       await userEvent.click(historyButton);
-      await userEvent.click(
-        await documentScope.findByRole("tab", { name: /设置|Settings/i }),
-      );
+      await userEvent.click(await documentScope.findByRole("tab", { name: /设置|Settings/i }));
       await expect(
         await documentScope.findByText(
           /加密会话 owner：growth\.6vv4@relay\.example · CIII|Encrypted session owner: growth\.6vv4@relay\.example · CIII/i,
@@ -1986,24 +1906,16 @@ export const DrawerEncryptedOwnerDangerConfirm: Story = {
         name: /绑定类型|Binding type/i,
       });
       await userEvent.click(bindingKindSelect);
-      await userEvent.click(
-        await documentScope.findByRole("option", { name: /分组|Group/i }),
-      );
+      await userEvent.click(await documentScope.findByRole("option", { name: /分组|Group/i }));
 
-      await userEvent.click(
-        documentScope.getByRole("button", { name: /保存|Save/i }),
-      );
+      await userEvent.click(documentScope.getByRole("button", { name: /保存|Save/i }));
 
       const confirmDialog = await documentScope.findByRole("alertdialog", {
         name: /要更改加密会话的路由绑定吗|change encrypted-session route binding/i,
       });
-      await expect(confirmDialog).toHaveTextContent(
-        /growth\.6vv4@relay\.example · CIII/i,
-      );
+      await expect(confirmDialog).toHaveTextContent(/growth\.6vv4@relay\.example · CIII/i);
       await expect(confirmDialog).toHaveTextContent(/invalid_encrypted_content/i);
-      await userEvent.click(
-        within(confirmDialog).getByRole("button", { name: /取消|Cancel/i }),
-      );
+      await userEvent.click(within(confirmDialog).getByRole("button", { name: /取消|Cancel/i }));
       await waitFor(() => {
         expect(documentScope.queryByRole("alertdialog")).toBeNull();
       });
@@ -2049,27 +1961,19 @@ export const DrawerEncryptedOwnerDangerDialogOpen: Story = {
 
     try {
       await userEvent.click(historyButton);
-      await userEvent.click(
-        await documentScope.findByRole("tab", { name: /设置|Settings/i }),
-      );
+      await userEvent.click(await documentScope.findByRole("tab", { name: /设置|Settings/i }));
       const bindingKindSelect = documentScope.getByRole("combobox", {
         name: /绑定类型|Binding type/i,
       });
       await userEvent.click(bindingKindSelect);
-      await userEvent.click(
-        await documentScope.findByRole("option", { name: /分组|Group/i }),
-      );
+      await userEvent.click(await documentScope.findByRole("option", { name: /分组|Group/i }));
 
-      await userEvent.click(
-        documentScope.getByRole("button", { name: /保存|Save/i }),
-      );
+      await userEvent.click(documentScope.getByRole("button", { name: /保存|Save/i }));
 
       const confirmDialog = await documentScope.findByRole("alertdialog", {
         name: /要更改加密会话的路由绑定吗|change encrypted-session route binding/i,
       });
-      await expect(confirmDialog).toHaveTextContent(
-        /growth\.6vv4@relay\.example · CIII/i,
-      );
+      await expect(confirmDialog).toHaveTextContent(/growth\.6vv4@relay\.example · CIII/i);
       await expect(confirmDialog).toHaveTextContent(/invalid_encrypted_content/i);
     } finally {
       window.confirm = originalConfirm;
@@ -2125,12 +2029,8 @@ export const DrawerOwnerLockWithoutManualBinding: Story = {
     })[0];
 
     await userEvent.click(historyButton);
-    await userEvent.click(
-      await documentScope.findByRole("tab", { name: /设置|Settings/i }),
-    );
-    await expect(
-      await documentScope.findByText(/路由绑定|Route binding/i),
-    ).toBeInTheDocument();
+    await userEvent.click(await documentScope.findByRole("tab", { name: /设置|Settings/i }));
+    await expect(await documentScope.findByText(/路由绑定|Route binding/i)).toBeInTheDocument();
     await expect(
       documentScope.getByText(/当前：无手工绑定|Current: no manual binding/i),
     ).toBeInTheDocument();
@@ -2199,36 +2099,22 @@ export const DrawerBindingAndTimeouts: Story = {
     })[0];
 
     await userEvent.click(historyButton);
-    await userEvent.click(
-      await documentScope.findByRole("tab", { name: /设置|Settings/i }),
-    );
-    await expect(
-      await documentScope.findByText(/路由绑定|Route binding/i),
-    ).toBeInTheDocument();
+    await userEvent.click(await documentScope.findByRole("tab", { name: /设置|Settings/i }));
+    await expect(await documentScope.findByText(/路由绑定|Route binding/i)).toBeInTheDocument();
     await expect(
       documentScope.getByText(/当前对话覆盖|Conversation overrides/i),
     ).toBeInTheDocument();
     await expect(
       documentScope.getByText(/允许换上游|Allow switching upstream/i),
     ).toBeInTheDocument();
-    await expect(
-      documentScope.getByText(/强制添加|Force add/i),
-    ).toBeInTheDocument();
-    await expect(
-      documentScope.getByText(/强制移除|Force remove/i),
-    ).toBeInTheDocument();
-    await expect(
-      documentScope.getAllByText(/对话|Conversation/i).length,
-    ).toBeGreaterThan(0);
+    await expect(documentScope.getByText(/强制添加|Force add/i)).toBeInTheDocument();
+    await expect(documentScope.getByText(/强制移除|Force remove/i)).toBeInTheDocument();
+    await expect(documentScope.getAllByText(/对话|Conversation/i).length).toBeGreaterThan(0);
     await expect(
       documentScope.getByText(/gpt-5\.1-codex-max, gpt-5\.1-codex-mini/i),
     ).toBeInTheDocument();
-    await expect(
-      documentScope.getByText(/40s/),
-    ).toBeInTheDocument();
-    await expect(
-      documentScope.getAllByText(/对话|Conversation/i).length,
-    ).toBeGreaterThan(0);
+    await expect(documentScope.getByText(/40s/)).toBeInTheDocument();
+    await expect(documentScope.getAllByText(/对话|Conversation/i).length).toBeGreaterThan(0);
   },
 };
 
@@ -2257,17 +2143,13 @@ export const LargeHistoryVirtualizedDrawer: Story = {
     })[0];
 
     await userEvent.click(historyButton);
-    await userEvent.click(
-      await documentScope.findByRole("tab", { name: /调用|Calls/i }),
-    );
+    await userEvent.click(await documentScope.findByRole("tab", { name: /调用|Calls/i }));
     await expect(
       await documentScope.findByText(
         /已加载 50 \/ 15,?000 条保留调用记录|Loaded 50 \/ 15,?000 retained record\(s\)/i,
       ),
     ).toBeInTheDocument();
-    expect(
-      canvasElement.ownerDocument.body.querySelectorAll("tbody tr").length,
-    ).toBeLessThan(90);
+    expect(canvasElement.ownerDocument.body.querySelectorAll("tbody tr").length).toBeLessThan(90);
 
     const drawerBody = canvasElement.ownerDocument.body.querySelector(".drawer-body");
     expect(drawerBody).toBeTruthy();
@@ -2277,7 +2159,9 @@ export const LargeHistoryVirtualizedDrawer: Story = {
     }
 
     await expect(
-      await documentScope.findByText(/已加载 100 \/ 15,?000 条保留调用记录|Loaded 100 \/ 15,?000 retained record\(s\)/i),
+      await documentScope.findByText(
+        /已加载 100 \/ 15,?000 条保留调用记录|Loaded 100 \/ 15,?000 retained record\(s\)/i,
+      ),
     ).toBeInTheDocument();
   },
 };

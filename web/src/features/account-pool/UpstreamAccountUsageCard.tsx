@@ -1,33 +1,43 @@
-import { AppIcon } from '../shared/AppIcon'
-import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import type { Formatter, NameType, ValueType } from 'recharts/types/component/DefaultTooltipContent'
-import { Badge } from '../../components/ui/badge'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
-import type { RateWindowSnapshot, UpstreamAccountHistoryPoint } from '../../lib/api'
+import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import type {
+  Formatter,
+  NameType,
+  ValueType,
+} from "recharts/types/component/DefaultTooltipContent";
+import { Badge } from "../../components/ui/badge";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../../components/ui/card";
+import type { RateWindowSnapshot, UpstreamAccountHistoryPoint } from "../../lib/api";
+import { AppIcon } from "../shared/AppIcon";
 
-const WINDOW_PLACEHOLDER = '-'
+const WINDOW_PLACEHOLDER = "-";
 
 interface UpstreamAccountUsageCardProps {
-  title: string
-  description: string
-  window?: RateWindowSnapshot | null
-  history: UpstreamAccountHistoryPoint[]
-  historyKey: 'primaryUsedPercent' | 'secondaryUsedPercent'
-  emptyLabel: string
-  noteLabel?: string
-  accentClassName?: string
+  title: string;
+  description: string;
+  window?: RateWindowSnapshot | null;
+  history: UpstreamAccountHistoryPoint[];
+  historyKey: "primaryUsedPercent" | "secondaryUsedPercent";
+  emptyLabel: string;
+  noteLabel?: string;
+  accentClassName?: string;
 }
 
 function historyLabel(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat(undefined, {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
     hour12: false,
-  }).format(date)
+  }).format(date);
 }
 
 export function UpstreamAccountUsageCard({
@@ -38,34 +48,34 @@ export function UpstreamAccountUsageCard({
   historyKey,
   emptyLabel,
   noteLabel,
-  accentClassName = 'text-primary',
+  accentClassName = "text-primary",
 }: UpstreamAccountUsageCardProps) {
-  const missingWindow = window == null
+  const missingWindow = window == null;
   const chartData = history
     .slice(-14)
     .map((point) => ({
       label: historyLabel(point.capturedAt),
       value: point[historyKey] ?? null,
     }))
-    .filter((point) => point.value != null)
+    .filter((point) => point.value != null);
 
-  const displayChartData = missingWindow ? [] : chartData
-  const chartEmpty = displayChartData.length === 0
-  const usedPercent = Math.max(0, Math.min(window?.usedPercent ?? 0, 100))
-  const ringValue = missingWindow ? WINDOW_PLACEHOLDER : `${Math.round(usedPercent)}%`
-  const usedLabel = missingWindow ? WINDOW_PLACEHOLDER : (window?.usedText ?? emptyLabel)
-  const limitLabel = missingWindow ? WINDOW_PLACEHOLDER : (window?.limitText ?? emptyLabel)
+  const displayChartData = missingWindow ? [] : chartData;
+  const chartEmpty = displayChartData.length === 0;
+  const usedPercent = Math.max(0, Math.min(window?.usedPercent ?? 0, 100));
+  const ringValue = missingWindow ? WINDOW_PLACEHOLDER : `${Math.round(usedPercent)}%`;
+  const usedLabel = missingWindow ? WINDOW_PLACEHOLDER : (window?.usedText ?? emptyLabel);
+  const limitLabel = missingWindow ? WINDOW_PLACEHOLDER : (window?.limitText ?? emptyLabel);
   const resetLabel = missingWindow
     ? WINDOW_PLACEHOLDER
     : window?.resetsAt
       ? historyLabel(window.resetsAt)
-      : emptyLabel
-  const chartEmptyLabel = missingWindow ? WINDOW_PLACEHOLDER : emptyLabel
+      : emptyLabel;
+  const chartEmptyLabel = missingWindow ? WINDOW_PLACEHOLDER : emptyLabel;
   const tooltipFormatter: Formatter<ValueType, NameType> = (value) => {
-    const rawValue = Array.isArray(value) ? value[0] : value
-    const numericValue = typeof rawValue === 'number' ? rawValue : Number(rawValue ?? 0)
-    return [`${Math.round(numericValue)}%`, title]
-  }
+    const rawValue = Array.isArray(value) ? value[0] : value;
+    const numericValue = typeof rawValue === "number" ? rawValue : Number(rawValue ?? 0);
+    return [`${Math.round(numericValue)}%`, title];
+  };
 
   return (
     <Card className="border-base-300/80 bg-base-100/75">
@@ -80,20 +90,40 @@ export function UpstreamAccountUsageCard({
       </CardHeader>
       <CardContent className="grid gap-4 lg:grid-cols-[auto,minmax(0,1fr)] lg:items-center">
         <div className="flex items-center gap-4">
-          <div className="progress-ring" style={{ ['--value' as string]: usedPercent }}>
-            <span className={missingWindow ? 'text-lg font-semibold text-base-content/55' : `text-lg font-semibold ${accentClassName}`}>
+          <div className="progress-ring" style={{ ["--value" as string]: usedPercent }}>
+            <span
+              className={
+                missingWindow
+                  ? "text-lg font-semibold text-base-content/55"
+                  : `text-lg font-semibold ${accentClassName}`
+              }
+            >
               {ringValue}
             </span>
           </div>
-          <div className={missingWindow ? 'space-y-1 text-sm text-base-content/55' : 'space-y-1 text-sm text-base-content/75'}>
-            <p className={missingWindow ? 'text-base font-semibold text-base-content/55' : 'text-base font-semibold text-base-content'}>
+          <div
+            className={
+              missingWindow
+                ? "space-y-1 text-sm text-base-content/55"
+                : "space-y-1 text-sm text-base-content/75"
+            }
+          >
+            <p
+              className={
+                missingWindow
+                  ? "text-base font-semibold text-base-content/55"
+                  : "text-base font-semibold text-base-content"
+              }
+            >
               {usedLabel}
             </p>
             <p>{limitLabel}</p>
             <p className="inline-flex items-center gap-1">
               <AppIcon
                 name="timer-refresh-outline"
-                className={missingWindow ? 'h-4 w-4 text-base-content/55' : 'h-4 w-4 text-base-content/50'}
+                className={
+                  missingWindow ? "h-4 w-4 text-base-content/55" : "h-4 w-4 text-base-content/50"
+                }
                 aria-hidden
               />
               <span>{resetLabel}</span>
@@ -109,17 +139,21 @@ export function UpstreamAccountUsageCard({
           ) : (
             <div className="h-28 w-full">
               <ResponsiveContainer>
-                <LineChart data={displayChartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <LineChart
+                  data={displayChartData}
+                  margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
+                >
                   <XAxis dataKey="label" hide />
                   <YAxis hide domain={[0, 100]} />
                   <Tooltip
-                    cursor={{ stroke: 'oklch(var(--color-base-content) / 0.14)', strokeWidth: 1 }}
+                    cursor={{ stroke: "oklch(var(--color-base-content) / 0.14)", strokeWidth: 1 }}
                     formatter={tooltipFormatter}
                     labelFormatter={(value) => String(value)}
                     contentStyle={{
-                      borderRadius: '0.9rem',
-                      border: '1px solid color-mix(in oklab, oklch(var(--color-base-content)) 18%, transparent)',
-                      background: 'oklch(var(--color-base-100) / 0.96)',
+                      borderRadius: "0.9rem",
+                      border:
+                        "1px solid color-mix(in oklab, oklch(var(--color-base-content)) 18%, transparent)",
+                      background: "oklch(var(--color-base-100) / 0.96)",
                     }}
                   />
                   <Line
@@ -127,7 +161,7 @@ export function UpstreamAccountUsageCard({
                     dataKey="value"
                     stroke="oklch(var(--color-primary))"
                     strokeWidth={2.5}
-                    dot={{ r: 2.5, strokeWidth: 0, fill: 'oklch(var(--color-primary))' }}
+                    dot={{ r: 2.5, strokeWidth: 0, fill: "oklch(var(--color-primary))" }}
                     activeDot={{ r: 4 }}
                     connectNulls
                   />
@@ -138,5 +172,5 @@ export function UpstreamAccountUsageCard({
         </div>
       </CardContent>
     </Card>
-  )
+  );
 }

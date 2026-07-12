@@ -1,25 +1,28 @@
-import { AppIcon } from '../../features/shared/AppIcon'
-import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { resolveTextInputAutocompleteProps, type TextInputAutocompleteOffProps } from '../../lib/form-autocomplete'
-import { cn } from '../../lib/utils'
+import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import { AppIcon } from "../../features/shared/AppIcon";
+import {
+  resolveTextInputAutocompleteProps,
+  type TextInputAutocompleteOffProps,
+} from "../../lib/form-autocomplete";
+import { cn } from "../../lib/utils";
 
 interface FilterableComboboxProps {
-  value: string
-  onValueChange: (value: string) => void
-  options: string[]
-  placeholder?: string
-  emptyText?: string
-  loading?: boolean
-  loadingText?: string
-  disabled?: boolean
-  className?: string
-  inputClassName?: string
-  listClassName?: string
-  label: string
-  name?: string
-  id?: string
-  onOpenChange?: (open: boolean) => void
-  inputAutocompleteProps?: Partial<TextInputAutocompleteOffProps>
+  value: string;
+  onValueChange: (value: string) => void;
+  options: string[];
+  placeholder?: string;
+  emptyText?: string;
+  loading?: boolean;
+  loadingText?: string;
+  disabled?: boolean;
+  className?: string;
+  inputClassName?: string;
+  listClassName?: string;
+  label: string;
+  name?: string;
+  id?: string;
+  onOpenChange?: (open: boolean) => void;
+  inputAutocompleteProps?: Partial<TextInputAutocompleteOffProps>;
 }
 
 export function FilterableCombobox({
@@ -40,74 +43,74 @@ export function FilterableCombobox({
   onOpenChange,
   inputAutocompleteProps,
 }: FilterableComboboxProps) {
-  const [open, setOpen] = useState(false)
-  const [activeIndex, setActiveIndex] = useState(-1)
-  const rootRef = useRef<HTMLDivElement | null>(null)
-  const fallbackInputId = useId()
-  const listId = useId()
-  const inputId = id ?? fallbackInputId
-  const resolvedInputAutocompleteProps = resolveTextInputAutocompleteProps(inputAutocompleteProps)
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const fallbackInputId = useId();
+  const listId = useId();
+  const inputId = id ?? fallbackInputId;
+  const resolvedInputAutocompleteProps = resolveTextInputAutocompleteProps(inputAutocompleteProps);
 
   useEffect(() => {
-    onOpenChange?.(open)
-  }, [onOpenChange, open])
+    onOpenChange?.(open);
+  }, [onOpenChange, open]);
 
   useEffect(() => {
-    if (!open) return
+    if (!open) return;
     const handlePointerDown = (event: PointerEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false)
+        setOpen(false);
       }
-    }
-    document.addEventListener('pointerdown', handlePointerDown)
-    return () => document.removeEventListener('pointerdown', handlePointerDown)
-  }, [open])
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [open]);
 
   const filteredOptions = useMemo(() => {
-    const query = value.trim().toLowerCase()
-    if (!query) return options
-    return options.filter((option) => option.toLowerCase().includes(query))
-  }, [options, value])
+    const query = value.trim().toLowerCase();
+    if (!query) return options;
+    return options.filter((option) => option.toLowerCase().includes(query));
+  }, [options, value]);
 
   useEffect(() => {
-    if (!open) return
-    setActiveIndex(filteredOptions.length > 0 ? 0 : -1)
-  }, [filteredOptions, open])
+    if (!open) return;
+    setActiveIndex(filteredOptions.length > 0 ? 0 : -1);
+  }, [filteredOptions, open]);
 
   const selectOption = (option: string) => {
-    onValueChange(option)
-    setOpen(false)
-  }
+    onValueChange(option);
+    setOpen(false);
+  };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      setOpen(true)
-      setActiveIndex((current) => Math.min(filteredOptions.length - 1, Math.max(0, current + 1)))
-      return
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex((current) => Math.min(filteredOptions.length - 1, Math.max(0, current + 1)));
+      return;
     }
-    if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      setOpen(true)
-      setActiveIndex((current) => Math.max(0, current - 1))
-      return
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex((current) => Math.max(0, current - 1));
+      return;
     }
-    if (event.key === 'Enter') {
-      if (!open) return
-      event.preventDefault()
-      const next = filteredOptions[activeIndex]
-      if (typeof next === 'string') {
-        selectOption(next)
+    if (event.key === "Enter") {
+      if (!open) return;
+      event.preventDefault();
+      const next = filteredOptions[activeIndex];
+      if (typeof next === "string") {
+        selectOption(next);
       }
-      return
+      return;
     }
-    if (event.key === 'Escape') {
-      setOpen(false)
+    if (event.key === "Escape") {
+      setOpen(false);
     }
-  }
+  };
 
   return (
-    <div ref={rootRef} className={cn('relative', className)}>
+    <div ref={rootRef} className={cn("relative", className)}>
       <input
         {...resolvedInputAutocompleteProps}
         role="combobox"
@@ -117,7 +120,7 @@ export function FilterableCombobox({
         aria-expanded={open}
         aria-controls={listId}
         aria-autocomplete="list"
-        className={cn('pr-9', inputClassName)}
+        className={cn("pr-9", inputClassName)}
         value={value}
         placeholder={placeholder}
         disabled={disabled}
@@ -127,9 +130,9 @@ export function FilterableCombobox({
         onBlur={() => {
           window.setTimeout(() => {
             if (!rootRef.current?.contains(document.activeElement)) {
-              setOpen(false)
+              setOpen(false);
             }
-          }, 0)
+          }, 0);
         }}
         onKeyDown={handleKeyDown}
       />
@@ -140,7 +143,11 @@ export function FilterableCombobox({
         className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-base-content/55 transition hover:bg-base-200/70 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
         onClick={() => setOpen((current) => !current)}
       >
-        <AppIcon name="chevron-down" className={cn('h-4 w-4 transition-transform', open && 'rotate-180')} aria-hidden />
+        <AppIcon
+          name="chevron-down"
+          className={cn("h-4 w-4 transition-transform", open && "rotate-180")}
+          aria-hidden
+        />
       </button>
 
       {open ? (
@@ -148,14 +155,18 @@ export function FilterableCombobox({
           id={listId}
           role="listbox"
           className={cn(
-            'absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-xl border border-base-300/80 bg-base-100/95 py-1 shadow-lg backdrop-blur',
+            "absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-xl border border-base-300/80 bg-base-100/95 py-1 shadow-lg backdrop-blur",
             listClassName,
           )}
         >
           {loading ? (
-            <div className="px-3 py-2 text-sm text-base-content/60">{loadingText ?? 'Loading…'}</div>
+            <div className="px-3 py-2 text-sm text-base-content/60">
+              {loadingText ?? "Loading…"}
+            </div>
           ) : filteredOptions.length === 0 ? (
-            <div className="px-3 py-2 text-sm text-base-content/60">{emptyText ?? 'No matches'}</div>
+            <div className="px-3 py-2 text-sm text-base-content/60">
+              {emptyText ?? "No matches"}
+            </div>
           ) : (
             filteredOptions.map((option, idx) => (
               <button
@@ -164,22 +175,24 @@ export function FilterableCombobox({
                 role="option"
                 aria-selected={value === option}
                 className={cn(
-                  'flex w-full items-center justify-between px-3 py-2 text-left text-sm text-base-content',
-                  idx === activeIndex ? 'bg-base-200/70' : 'hover:bg-base-200/50',
+                  "flex w-full items-center justify-between px-3 py-2 text-left text-sm text-base-content",
+                  idx === activeIndex ? "bg-base-200/70" : "hover:bg-base-200/50",
                 )}
                 // Use pointerdown to avoid losing focus before selection on some browsers.
                 onPointerDown={(event) => {
-                  event.preventDefault()
-                  selectOption(option)
+                  event.preventDefault();
+                  selectOption(option);
                 }}
                 onMouseEnter={() => setActiveIndex(idx)}
               >
-                <span className={cn('truncate', value === option && 'font-semibold')}>{option}</span>
+                <span className={cn("truncate", value === option && "font-semibold")}>
+                  {option}
+                </span>
               </button>
             ))
           )}
         </div>
       ) : null}
     </div>
-  )
+  );
 }

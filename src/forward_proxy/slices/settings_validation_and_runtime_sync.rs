@@ -1167,7 +1167,7 @@ impl ForwardProxyManager {
             FORWARD_PROXY_SOURCE_MANUAL,
         );
         let mut seen = HashSet::new();
-        for endpoint in manual.into_iter().chain(subscription_endpoints.into_iter()) {
+        for endpoint in manual.into_iter().chain(subscription_endpoints) {
             if seen.insert(endpoint.key.clone()) {
                 merged.push(endpoint);
             }

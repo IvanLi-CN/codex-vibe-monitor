@@ -1554,7 +1554,7 @@ pub(crate) async fn insert_test_pool_oauth_account_with_chatgpt_account_id(
 
 fn encrypt_test_oauth_credentials(access_token: &str) -> String {
     let key = Sha256::digest(b"test-upstream-account-secret");
-    let cipher = Aes256Gcm::new_from_slice(key.as_slice()).expect("valid aes key");
+    let cipher = Aes256Gcm::new(&key);
     let plaintext = serde_json::to_vec(&json!({
         "kind": "oauth",
         "accessToken": access_token,
@@ -1565,8 +1565,9 @@ fn encrypt_test_oauth_credentials(access_token: &str) -> String {
     .expect("serialize oauth credentials");
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
+    let nonce_value = aes_gcm::Nonce::from(nonce);
     let ciphertext = cipher
-        .encrypt(aes_gcm::Nonce::from_slice(&nonce), plaintext.as_ref())
+        .encrypt(&nonce_value, plaintext.as_ref())
         .expect("encrypt oauth credentials");
     json!({
         "v": 1,
@@ -2491,13 +2492,12 @@ async fn get_upstream_account_omits_recent_actions_by_default_and_loads_them_on_
     .expect("load upstream account detail with recent actions");
     let detail_with_recent_actions_json = serde_json::to_value(detail_with_recent_actions)
         .expect("serialize upstream account detail with recent actions");
-    assert_eq!(
+    assert!(
         detail_with_recent_actions_json["recentActions"]
             .as_array()
             .map(Vec::len)
             .unwrap_or_default()
-            >= 1,
-        true
+            >= 1
     );
     assert_eq!(
         detail_with_recent_actions_json["recentActions"]

@@ -1,17 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { RecordsNewDataButton } from "../features/records/RecordsNewDataButton";
 import { Button } from "../components/ui/button";
 import { FilterableCombobox } from "../components/ui/filterable-combobox";
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from "../components/ui/segmented-control";
+import { SegmentedControl, SegmentedControlItem } from "../components/ui/segmented-control";
 import { SelectField } from "../components/ui/select-field";
 import { InvocationRecordsSummaryCards } from "../features/records/InvocationRecordsSummaryCards";
 import { InvocationRecordsTable } from "../features/records/InvocationRecordsTable";
-import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
+import { RecordsNewDataButton } from "../features/records/RecordsNewDataButton";
 import { useInvocationRecords } from "../hooks/useInvocationRecords";
+import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useTranslation } from "../i18n";
 import {
   fetchInvocationSuggestions,
@@ -52,8 +49,7 @@ export default function RecordsPage() {
   const { t } = useTranslation();
   const [searchParams] = useSearchParams();
   const requestedInvokeId = searchParams.get("requestId")?.trim() || null;
-  const requestedRangePreset =
-    searchParams.get("rangePreset") === "7d" ? "7d" : null;
+  const requestedRangePreset = searchParams.get("rangePreset") === "7d" ? "7d" : null;
   const appliedRequestIdRef = useRef<string | null>(null);
   const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
@@ -81,8 +77,7 @@ export default function RecordsPage() {
   } = useInvocationRecords();
 
   const appliedSnapshotId = records?.snapshotId ?? summary?.snapshotId;
-  const [suggestions, setSuggestions] =
-    useState<InvocationSuggestionsResponse | null>(null);
+  const [suggestions, setSuggestions] = useState<InvocationSuggestionsResponse | null>(null);
   const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(false);
   const [activeSuggestionField, setActiveSuggestionField] =
     useState<InvocationSuggestionField | null>(null);
@@ -91,11 +86,7 @@ export default function RecordsPage() {
   const newDataRefreshSeqRef = useRef(0);
   const suggestionQuery = useMemo(
     () =>
-      buildInvocationSuggestionsQuery(
-        draft,
-        appliedSnapshotId,
-        activeSuggestionField ?? undefined,
-      ),
+      buildInvocationSuggestionsQuery(draft, appliedSnapshotId, activeSuggestionField ?? undefined),
     [activeSuggestionField, appliedSnapshotId, draft],
   );
   const suggestionsSeqRef = useRef(0);
@@ -222,12 +213,10 @@ export default function RecordsPage() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
   const visiblePages = getVisiblePages(page, totalPages);
   const isCustomRange = draft.rangePreset === "custom";
-  const visibleSummary =
-    summary && summary.snapshotId === records?.snapshotId ? summary : null;
+  const visibleSummary = summary && summary.snapshotId === records?.snapshotId ? summary : null;
   const newRecordsCount = visibleSummary?.newRecordsCount ?? 0;
   const isNewDataLoading = isNewDataRefreshPending;
-  const displayNewDataCount =
-    newRecordsCount > 0 ? newRecordsCount : cachedNewDataCount;
+  const displayNewDataCount = newRecordsCount > 0 ? newRecordsCount : cachedNewDataCount;
   const shouldShowNewDataButton =
     (!isSearching || isNewDataRefreshPending) &&
     (newRecordsCount > 0 || (isNewDataLoading && displayNewDataCount > 0));
@@ -290,13 +279,12 @@ export default function RecordsPage() {
     });
   };
 
-  const handleSuggestionOpenChange =
-    (field: InvocationSuggestionField) => (open: boolean) => {
-      setActiveSuggestionField((current) => {
-        if (open) return field;
-        return current === field ? null : current;
-      });
-    };
+  const handleSuggestionOpenChange = (field: InvocationSuggestionField) => (open: boolean) => {
+    setActiveSuggestionField((current) => {
+      if (open) return field;
+      return current === field ? null : current;
+    });
+  };
 
   const handleSortByChange = (value: InvocationSortBy) => {
     void setSort(value, sortOrder);
@@ -309,10 +297,7 @@ export default function RecordsPage() {
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
       <section
-        className={cn(
-          "surface-panel",
-          hasOpenSuggestion && "relative z-10 overflow-visible",
-        )}
+        className={cn("surface-panel", hasOpenSuggestion && "relative z-10 overflow-visible")}
         data-testid="records-filters-panel"
         data-suggestions-open={hasOpenSuggestion ? "true" : "false"}
       >
@@ -325,12 +310,8 @@ export default function RecordsPage() {
           <div className="rounded-2xl border border-base-300/70 bg-base-100/45 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="section-heading">
-                <h2 className="section-title text-base">
-                  {t("records.filters.title")}
-                </h2>
-                <p className="section-description">
-                  {t("records.filters.description")}
-                </p>
+                <h2 className="section-title text-base">{t("records.filters.title")}</h2>
+                <p className="section-description">{t("records.filters.description")}</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button
@@ -341,14 +322,8 @@ export default function RecordsPage() {
                 >
                   {t("records.filters.clearDraft")}
                 </Button>
-                <Button
-                  type="button"
-                  onClick={handleSearch}
-                  disabled={isSearching}
-                >
-                  {isSearching
-                    ? t("records.filters.searching")
-                    : t("records.filters.search")}
+                <Button type="button" onClick={handleSearch} disabled={isSearching}>
+                  {isSearching ? t("records.filters.searching") : t("records.filters.search")}
                 </Button>
               </div>
             </div>
@@ -360,9 +335,7 @@ export default function RecordsPage() {
                 name="rangePreset"
                 value={draft.rangePreset}
                 options={rangeOptions}
-                onValueChange={(value) =>
-                  handleRangePresetChange(value as InvocationRangePreset)
-                }
+                onValueChange={(value) => handleRangePresetChange(value as InvocationRangePreset)}
               />
               <label className="field">
                 <span className="field-label">{t("records.filters.from")}</span>
@@ -426,9 +399,7 @@ export default function RecordsPage() {
               />
 
               <label className="field">
-                <span className="field-label">
-                  {t("records.filters.model")}
-                </span>
+                <span className="field-label">{t("records.filters.model")}</span>
                 <FilterableCombobox
                   label={t("records.filters.model")}
                   name="model"
@@ -438,32 +409,24 @@ export default function RecordsPage() {
                   options={(modelBucket?.items ?? []).map((item) => item.value)}
                   placeholder={t("records.filters.any")}
                   emptyText={t("records.filters.noMatches")}
-                  loading={
-                    isSuggestionsLoading && activeSuggestionField === "model"
-                  }
+                  loading={isSuggestionsLoading && activeSuggestionField === "model"}
                   loadingText={t("records.filters.searching")}
                   inputClassName={inputClassName}
                   onOpenChange={handleSuggestionOpenChange("model")}
                 />
               </label>
               <label className="field">
-                <span className="field-label">
-                  {t("records.filters.endpoint")}
-                </span>
+                <span className="field-label">{t("records.filters.endpoint")}</span>
                 <FilterableCombobox
                   label={t("records.filters.endpoint")}
                   name="endpoint"
                   id="records-filter-endpoint"
                   value={draft.endpoint}
                   onValueChange={(next) => updateDraft("endpoint", next)}
-                  options={(endpointBucket?.items ?? []).map(
-                    (item) => item.value,
-                  )}
+                  options={(endpointBucket?.items ?? []).map((item) => item.value)}
                   placeholder={t("records.filters.any")}
                   emptyText={t("records.filters.noMatches")}
-                  loading={
-                    isSuggestionsLoading && activeSuggestionField === "endpoint"
-                  }
+                  loading={isSuggestionsLoading && activeSuggestionField === "endpoint"}
                   loadingText={t("records.filters.searching")}
                   inputClassName={inputClassName}
                   onOpenChange={handleSuggestionOpenChange("endpoint")}
@@ -493,111 +456,80 @@ export default function RecordsPage() {
               />
 
               <label className="field">
-                <span className="field-label">
-                  {t("records.filters.requestId")}
-                </span>
+                <span className="field-label">{t("records.filters.requestId")}</span>
                 <input
                   {...textInputAutocompleteOffProps}
                   name="requestId"
                   className={inputClassName}
                   value={draft.requestId}
-                  onChange={(event) =>
-                    updateDraft("requestId", event.target.value)
-                  }
+                  onChange={(event) => updateDraft("requestId", event.target.value)}
                 />
               </label>
 
               <label className="field">
-                <span className="field-label">
-                  {t("records.filters.failureKind")}
-                </span>
+                <span className="field-label">{t("records.filters.failureKind")}</span>
                 <FilterableCombobox
                   label={t("records.filters.failureKind")}
                   name="failureKind"
                   id="records-filter-failure-kind"
                   value={draft.failureKind}
                   onValueChange={(next) => updateDraft("failureKind", next)}
-                  options={(failureKindBucket?.items ?? []).map(
-                    (item) => item.value,
-                  )}
+                  options={(failureKindBucket?.items ?? []).map((item) => item.value)}
                   placeholder={t("records.filters.any")}
                   emptyText={t("records.filters.noMatches")}
-                  loading={
-                    isSuggestionsLoading &&
-                    activeSuggestionField === "failureKind"
-                  }
+                  loading={isSuggestionsLoading && activeSuggestionField === "failureKind"}
                   loadingText={t("records.filters.searching")}
                   inputClassName={inputClassName}
                   onOpenChange={handleSuggestionOpenChange("failureKind")}
                 />
               </label>
               <label className="field">
-                <span className="field-label">
-                  {t("records.filters.promptCacheKey")}
-                </span>
+                <span className="field-label">{t("records.filters.promptCacheKey")}</span>
                 <FilterableCombobox
                   label={t("records.filters.promptCacheKey")}
                   name="promptCacheKey"
                   id="records-filter-prompt-cache-key"
                   value={draft.promptCacheKey}
                   onValueChange={(next) => updateDraft("promptCacheKey", next)}
-                  options={(promptCacheKeyBucket?.items ?? []).map(
-                    (item) => item.value,
-                  )}
+                  options={(promptCacheKeyBucket?.items ?? []).map((item) => item.value)}
                   placeholder={t("records.filters.any")}
                   emptyText={t("records.filters.noMatches")}
-                  loading={
-                    isSuggestionsLoading &&
-                    activeSuggestionField === "promptCacheKey"
-                  }
+                  loading={isSuggestionsLoading && activeSuggestionField === "promptCacheKey"}
                   loadingText={t("records.filters.searching")}
                   inputClassName={inputClassName}
                   onOpenChange={handleSuggestionOpenChange("promptCacheKey")}
                 />
               </label>
               <label className="field">
-                <span className="field-label">
-                  {t("records.filters.requesterIp")}
-                </span>
+                <span className="field-label">{t("records.filters.requesterIp")}</span>
                 <FilterableCombobox
                   label={t("records.filters.requesterIp")}
                   name="requesterIp"
                   id="records-filter-requester-ip"
                   value={draft.requesterIp}
                   onValueChange={(next) => updateDraft("requesterIp", next)}
-                  options={(requesterIpBucket?.items ?? []).map(
-                    (item) => item.value,
-                  )}
+                  options={(requesterIpBucket?.items ?? []).map((item) => item.value)}
                   placeholder={t("records.filters.any")}
                   emptyText={t("records.filters.noMatches")}
-                  loading={
-                    isSuggestionsLoading &&
-                    activeSuggestionField === "requesterIp"
-                  }
+                  loading={isSuggestionsLoading && activeSuggestionField === "requesterIp"}
                   loadingText={t("records.filters.searching")}
                   inputClassName={inputClassName}
                   onOpenChange={handleSuggestionOpenChange("requesterIp")}
                 />
               </label>
               <label className="field">
-                <span className="field-label">
-                  {t("records.filters.keyword")}
-                </span>
+                <span className="field-label">{t("records.filters.keyword")}</span>
                 <input
                   {...textInputAutocompleteOffProps}
                   name="keyword"
                   className={inputClassName}
                   value={draft.keyword}
-                  onChange={(event) =>
-                    updateDraft("keyword", event.target.value)
-                  }
+                  onChange={(event) => updateDraft("keyword", event.target.value)}
                 />
               </label>
 
               <label className="field">
-                <span className="field-label">
-                  {t("records.filters.minTotalTokens")}
-                </span>
+                <span className="field-label">{t("records.filters.minTotalTokens")}</span>
                 <input
                   {...textInputAutocompleteOffProps}
                   name="minTotalTokens"
@@ -606,15 +538,11 @@ export default function RecordsPage() {
                   inputMode="numeric"
                   step={1}
                   value={draft.minTotalTokens}
-                  onChange={(event) =>
-                    updateDraft("minTotalTokens", event.target.value)
-                  }
+                  onChange={(event) => updateDraft("minTotalTokens", event.target.value)}
                 />
               </label>
               <label className="field">
-                <span className="field-label">
-                  {t("records.filters.maxTotalTokens")}
-                </span>
+                <span className="field-label">{t("records.filters.maxTotalTokens")}</span>
                 <input
                   {...textInputAutocompleteOffProps}
                   name="maxTotalTokens"
@@ -623,15 +551,11 @@ export default function RecordsPage() {
                   inputMode="numeric"
                   step={1}
                   value={draft.maxTotalTokens}
-                  onChange={(event) =>
-                    updateDraft("maxTotalTokens", event.target.value)
-                  }
+                  onChange={(event) => updateDraft("maxTotalTokens", event.target.value)}
                 />
               </label>
               <label className="field">
-                <span className="field-label">
-                  {t("records.filters.minTotalMs")}
-                </span>
+                <span className="field-label">{t("records.filters.minTotalMs")}</span>
                 <input
                   {...textInputAutocompleteOffProps}
                   name="minTotalMs"
@@ -639,15 +563,11 @@ export default function RecordsPage() {
                   type="number"
                   inputMode="decimal"
                   value={draft.minTotalMs}
-                  onChange={(event) =>
-                    updateDraft("minTotalMs", event.target.value)
-                  }
+                  onChange={(event) => updateDraft("minTotalMs", event.target.value)}
                 />
               </label>
               <label className="field">
-                <span className="field-label">
-                  {t("records.filters.maxTotalMs")}
-                </span>
+                <span className="field-label">{t("records.filters.maxTotalMs")}</span>
                 <input
                   {...textInputAutocompleteOffProps}
                   name="maxTotalMs"
@@ -655,9 +575,7 @@ export default function RecordsPage() {
                   type="number"
                   inputMode="decimal"
                   value={draft.maxTotalMs}
-                  onChange={(event) =>
-                    updateDraft("maxTotalMs", event.target.value)
-                  }
+                  onChange={(event) => updateDraft("maxTotalMs", event.target.value)}
                 />
               </label>
             </div>
@@ -670,9 +588,7 @@ export default function RecordsPage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="section-heading">
               <h2 className="section-title">{t("records.summary.title")}</h2>
-              <p className="section-description">
-                {t("records.summary.description")}
-              </p>
+              <p className="section-description">{t("records.summary.description")}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               {shouldShowNewDataButton ? (
@@ -682,10 +598,7 @@ export default function RecordsPage() {
                   onRefresh={handleRefreshNewData}
                 />
               ) : null}
-              <SegmentedControl
-                role="tablist"
-                aria-label={t("records.focus.label")}
-              >
+              <SegmentedControl role="tablist" aria-label={t("records.focus.label")}>
                 {focusOptions.map((option) => (
                   <SegmentedControlItem
                     key={option.value}
@@ -716,9 +629,7 @@ export default function RecordsPage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="section-heading">
               <h2 className="section-title">{t("records.list.title")}</h2>
-              <p className="section-description">
-                {t("records.list.description")}
-              </p>
+              <p className="section-description">{t("records.list.description")}</p>
             </div>
             <div className="flex flex-wrap items-end gap-3">
               <div className="rounded-full border border-base-300/70 bg-base-100/55 px-3 py-2 text-sm font-medium text-base-content/80">
@@ -745,9 +656,7 @@ export default function RecordsPage() {
                 value={sortBy}
                 disabled={listControlsDisabled}
                 options={sortOptions}
-                onValueChange={(value) =>
-                  handleSortByChange(value as InvocationSortBy)
-                }
+                onValueChange={(value) => handleSortByChange(value as InvocationSortBy)}
               />
               <SelectField
                 className="min-w-[8rem]"
@@ -760,9 +669,7 @@ export default function RecordsPage() {
                   { value: "desc", label: t("records.list.sort.desc") },
                   { value: "asc", label: t("records.list.sort.asc") },
                 ]}
-                onValueChange={(value) =>
-                  handleSortOrderChange(value as InvocationSortOrder)
-                }
+                onValueChange={(value) => handleSortOrderChange(value as InvocationSortOrder)}
               />
             </div>
           </div>
@@ -772,9 +679,7 @@ export default function RecordsPage() {
             records={records?.records ?? []}
             isLoading={tableLoading}
             error={recordsError}
-            onOpenUpstreamAccount={(accountId) =>
-              openUpstreamAccount(accountId)
-            }
+            onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
             autoExpandInvokeId={requestedInvokeId}
           />
 

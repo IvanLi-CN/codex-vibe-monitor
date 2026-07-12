@@ -1,27 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
+import { Button } from "../components/ui/button";
+import { SegmentedControl, SegmentedControlItem } from "../components/ui/segmented-control";
+import { SelectField } from "../components/ui/select-field";
 import { ForwardProxyLiveTable } from "../features/forward-proxy/ForwardProxyLiveTable";
-import { AppIcon } from "../features/shared/AppIcon";
 import { InvocationChart } from "../features/invocations/InvocationChart";
 import { InvocationTable } from "../features/invocations/InvocationTable";
 import { PromptCacheConversationTable } from "../features/prompt-cache/PromptCacheConversationTable";
+import { AppIcon } from "../features/shared/AppIcon";
 import { StatsCards } from "../features/stats/StatsCards";
-import { Button } from "../components/ui/button";
 import { useForwardProxyLiveStats } from "../hooks/useForwardProxyLiveStats";
-import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useInvocationStream } from "../hooks/useInvocations";
 import { usePromptCacheConversations } from "../hooks/usePromptCacheConversations";
 import { useSummary } from "../hooks/useStats";
-import { useTranslation } from "../i18n";
+import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import type { TranslationKey } from "../i18n";
+import { useTranslation } from "../i18n";
 import type { PromptCacheConversationSelection } from "../lib/api";
 import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
-import { SegmentedControl, SegmentedControlItem } from "../components/ui/segmented-control";
-import { SelectField } from "../components/ui/select-field";
 import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
 
 const LIMIT_OPTIONS = [20, 50, 100];
-const PROMPT_CACHE_SELECTION_STORAGE_KEY =
-  "codex-vibe-monitor.live.prompt-cache-selection";
+const PROMPT_CACHE_SELECTION_STORAGE_KEY = "codex-vibe-monitor.live.prompt-cache-selection";
 const DEFAULT_PROMPT_CACHE_SELECTION: PromptCacheConversationSelection = {
   mode: "count",
   limit: 50,
@@ -105,9 +104,7 @@ function readPromptCacheSelectionValue() {
     return DEFAULT_PROMPT_CACHE_SELECTION_VALUE;
   }
   try {
-    const cached = window.localStorage.getItem(
-      PROMPT_CACHE_SELECTION_STORAGE_KEY,
-    );
+    const cached = window.localStorage.getItem(PROMPT_CACHE_SELECTION_STORAGE_KEY);
     if (cached && PROMPT_CACHE_SELECTION_LOOKUP.has(cached)) {
       return cached;
     }
@@ -131,12 +128,10 @@ export default function LivePage() {
   const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
   const [limit, setLimit] = useState(50);
-  const [conversationSelectionValue, setConversationSelectionValue] = useState(
-    () => readPromptCacheSelectionValue(),
+  const [conversationSelectionValue, setConversationSelectionValue] = useState(() =>
+    readPromptCacheSelectionValue(),
   );
-  const [expandedPromptCacheKeys, setExpandedPromptCacheKeys] = useState<
-    string[]
-  >([]);
+  const [expandedPromptCacheKeys, setExpandedPromptCacheKeys] = useState<string[]>([]);
   const [summaryWindow, setSummaryWindow] = useState("current");
   const {
     stats: forwardProxyStats,
@@ -157,29 +152,21 @@ export default function LivePage() {
     summary,
     isLoading: summaryLoading,
     error: summaryError,
-  } = useSummary(
-    summaryWindow,
-    summaryWindow === "current" ? { limit } : undefined,
-  );
+  } = useSummary(summaryWindow, summaryWindow === "current" ? { limit } : undefined);
 
-  const { records, isLoading, error } = useInvocationStream(
-    limit,
-    undefined,
-    undefined,
-    { enableStream: true },
-  );
+  const { records, isLoading, error } = useInvocationStream(limit, undefined, undefined, {
+    enableStream: true,
+  });
   const chartRecords = useMemo(
     () =>
       records.filter((record) => {
-        const status =
-          resolveInvocationDisplayStatus(record)?.trim().toLowerCase() ?? "";
+        const status = resolveInvocationDisplayStatus(record)?.trim().toLowerCase() ?? "";
         return status !== "running" && status !== "pending";
       }),
     [records],
   );
   const conversationSelection =
-    PROMPT_CACHE_SELECTION_LOOKUP.get(conversationSelectionValue) ??
-    DEFAULT_PROMPT_CACHE_SELECTION;
+    PROMPT_CACHE_SELECTION_LOOKUP.get(conversationSelectionValue) ?? DEFAULT_PROMPT_CACHE_SELECTION;
   const {
     stats: conversationStats,
     isLoading: conversationsLoading,
@@ -197,10 +184,7 @@ export default function LivePage() {
     [t],
   );
   const visiblePromptCacheKeys = useMemo(
-    () =>
-      conversationStats?.conversations.map(
-        (conversation) => conversation.promptCacheKey,
-      ) ?? [],
+    () => conversationStats?.conversations.map((conversation) => conversation.promptCacheKey) ?? [],
     [conversationStats],
   );
   const hasVisiblePromptCacheConversations = visiblePromptCacheKeys.length > 0;
@@ -214,14 +198,10 @@ export default function LivePage() {
     if (!conversationStats) return;
 
     const visiblePromptCacheKeySet = new Set(
-      conversationStats.conversations.map(
-        (conversation) => conversation.promptCacheKey,
-      ),
+      conversationStats.conversations.map((conversation) => conversation.promptCacheKey),
     );
     setExpandedPromptCacheKeys((current) => {
-      const next = current.filter((promptCacheKey) =>
-        visiblePromptCacheKeySet.has(promptCacheKey),
-      );
+      const next = current.filter((promptCacheKey) => visiblePromptCacheKeySet.has(promptCacheKey));
       return next.length === current.length ? current : next;
     });
   }, [conversationStats]);
@@ -242,9 +222,7 @@ export default function LivePage() {
         current.includes(promptCacheKey),
       );
       if (allExpanded) {
-        return current.filter(
-          (promptCacheKey) => !visiblePromptCacheKeys.includes(promptCacheKey),
-        );
+        return current.filter((promptCacheKey) => !visiblePromptCacheKeys.includes(promptCacheKey));
       }
 
       const preserved = current.filter(
@@ -262,10 +240,7 @@ export default function LivePage() {
             <div className="section-heading">
               <h2 className="section-title">{t("live.summary.title")}</h2>
             </div>
-            <SegmentedControl
-              role="tablist"
-              aria-label={t("live.summary.title")}
-            >
+            <SegmentedControl role="tablist" aria-label={t("live.summary.title")}>
               {summaryWindows.map((option) => (
                 <SegmentedControlItem
                   key={option.value}
@@ -280,11 +255,7 @@ export default function LivePage() {
               ))}
             </SegmentedControl>
           </div>
-          <StatsCards
-            stats={summary}
-            loading={summaryLoading}
-            error={summaryError}
-          />
+          <StatsCards stats={summary} loading={summaryLoading} error={summaryError} />
         </div>
       </section>
 
@@ -307,9 +278,7 @@ export default function LivePage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="section-heading">
               <h2 className="section-title">{t("live.conversations.title")}</h2>
-              <p className="section-description">
-                {t("live.conversations.description")}
-              </p>
+              <p className="section-description">{t("live.conversations.description")}</p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Button
@@ -318,24 +287,14 @@ export default function LivePage() {
                 size="sm"
                 className="gap-2"
                 data-testid="live-prompt-cache-expand-all"
-                disabled={
-                  conversationsLoading || !hasVisiblePromptCacheConversations
-                }
+                disabled={conversationsLoading || !hasVisiblePromptCacheConversations}
                 onClick={toggleAllVisiblePromptCacheKeys}
               >
                 <AppIcon
-                  name={
-                    allVisiblePromptCacheKeysExpanded
-                      ? "chevron-up"
-                      : "chevron-down"
-                  }
+                  name={allVisiblePromptCacheKeysExpanded ? "chevron-up" : "chevron-down"}
                   className="h-4 w-4"
                   data-testid="live-prompt-cache-expand-all-icon"
-                  data-icon-name={
-                    allVisiblePromptCacheKeysExpanded
-                      ? "chevron-up"
-                      : "chevron-down"
-                  }
+                  data-icon-name={allVisiblePromptCacheKeysExpanded ? "chevron-up" : "chevron-down"}
                   aria-hidden
                 />
                 {allVisiblePromptCacheKeysExpanded

@@ -4,12 +4,9 @@ import { useSearchParams } from "react-router-dom";
 const UPSTREAM_ACCOUNT_ID_PARAM = "upstreamAccountId";
 const UPSTREAM_ACCOUNT_TAB_PARAM = "upstreamAccountTab";
 
-export type UpstreamAccountDetailRouteTab =
-  "overview" | "routing" | "healthEvents";
+export type UpstreamAccountDetailRouteTab = "overview" | "routing" | "healthEvents";
 
-function parseUpstreamAccountTab(
-  raw: string | null,
-): UpstreamAccountDetailRouteTab {
+function parseUpstreamAccountTab(raw: string | null): UpstreamAccountDetailRouteTab {
   if (raw === "routing") return "routing";
   if (raw === "healthEvents") return "healthEvents";
   return "overview";

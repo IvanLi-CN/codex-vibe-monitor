@@ -1,5 +1,5 @@
-/* eslint-disable react-refresh/only-export-components */
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useId,
@@ -7,10 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
-import { AppIcon } from "../../features/shared/AppIcon";
-import { AccountDetailDrawerShell } from "../../features/account-pool/AccountDetailDrawerShell";
 import { useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
@@ -34,39 +31,33 @@ import {
 import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import { FormFieldFeedback } from "../../components/ui/form-field-feedback";
 import { Input } from "../../components/ui/input";
-import {
-  Popover,
-  PopoverArrow,
-  PopoverContent,
-  PopoverTrigger,
-} from "../../components/ui/popover";
+import { Popover, PopoverArrow, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
+import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { SelectField } from "../../components/ui/select-field";
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from "../../components/ui/segmented-control";
+import { Spinner } from "../../components/ui/spinner";
+import { Switch } from "../../components/ui/switch";
+import { AccountDetailDrawerShell } from "../../features/account-pool/AccountDetailDrawerShell";
+import { EffectiveRoutingRuleCard } from "../../features/account-pool/EffectiveRoutingRuleCard";
 import {
   MotherAccountBadge,
   MotherAccountToggle,
 } from "../../features/account-pool/MotherAccountToggle";
-import { Spinner } from "../../components/ui/spinner";
-import { Switch } from "../../components/ui/switch";
-import { EffectiveRoutingRuleCard } from "../../features/account-pool/EffectiveRoutingRuleCard";
-import { ForwardProxyBindingSelector } from "../../features/forward-proxy/ForwardProxyBindingSelector";
-import { InvocationTable } from "../../features/invocations/InvocationTable";
-import { DashboardActivityOverview } from "../../features/dashboard/DashboardActivityOverview";
-import { ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX } from "../../features/dashboard/dashboardActivityRange";
+import { UpstreamAccountAttemptTimeline } from "../../features/account-pool/UpstreamAccountAttemptTimeline";
 import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
 import { UpstreamAccountUsageCard } from "../../features/account-pool/UpstreamAccountUsageCard";
-import { UpstreamAccountAttemptTimeline } from "../../features/account-pool/UpstreamAccountAttemptTimeline";
+import { DashboardActivityOverview } from "../../features/dashboard/DashboardActivityOverview";
+import { ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX } from "../../features/dashboard/dashboardActivityRange";
+import { ForwardProxyBindingSelector } from "../../features/forward-proxy/ForwardProxyBindingSelector";
+import { InvocationTable } from "../../features/invocations/InvocationTable";
 import { StickyKeyConversationTable } from "../../features/prompt-cache/StickyKeyConversationTable";
+import { AppIcon } from "../../features/shared/AppIcon";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useInvocationRecordsRealtime } from "../../hooks/useInvocationRecordsRealtime";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
-import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroupSettingsDialog";
 import { useUpstreamStickyConversations } from "../../hooks/useUpstreamStickyConversations";
+import { useTranslation } from "../../i18n";
 import type {
   ApiInvocation,
   ForwardProxyBindingNode,
@@ -82,10 +73,13 @@ import {
   fetchInvocationRecords,
 } from "../../lib/api";
 import { invocationStableKey } from "../../lib/invocation";
-import type {
-  StatusChangeReasonCode,
-  StatusChangeReasonFieldKey,
-} from "../../lib/upstreamAccountStatusChangeReasons";
+import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
+import {
+  type AccountDraft,
+  areAccountDraftsEqual,
+  mergeDraftAfterAccountSave,
+} from "../../lib/upstreamAccountDrafts";
+import { isUpstreamAccountNotFoundError } from "../../lib/upstreamAccountErrors";
 import {
   buildGroupOptions,
   isExistingGroup,
@@ -93,28 +87,20 @@ import {
   resolveGroupConcurrencyLimit,
   resolveGroupNote,
 } from "../../lib/upstreamAccountGroups";
-import {
-  areAccountDraftsEqual,
-  mergeDraftAfterAccountSave,
-  type AccountDraft,
-} from "../../lib/upstreamAccountDrafts";
-import { resolveDisplayNameAfterEmailChange } from "./UpstreamAccountCreate.shared";
+import type {
+  StatusChangeReasonCode,
+  StatusChangeReasonFieldKey,
+} from "../../lib/upstreamAccountStatusChangeReasons";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
 import { applyMotherUpdateToItems } from "../../lib/upstreamMother";
-import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
-import { isUpstreamAccountNotFoundError } from "../../lib/upstreamAccountErrors";
 import { cn } from "../../lib/utils";
-import { useTranslation } from "../../i18n";
+import { resolveDisplayNameAfterEmailChange } from "./UpstreamAccountCreate.shared";
 import {
-  DEFAULT_ROUTING_TIMEOUTS,
-  type AccountBusyActionType,
-  type ActionErrorState,
-  type BusyActionState,
-  type GroupFilterState,
-  type RoutingDraft,
-  type UpstreamAccountsLocationState,
-} from "./UpstreamAccounts.shared-types";
-import { UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS } from "./UpstreamAccounts.shared-types";
+  bulkSyncRowStatusVariant,
+  resolveBulkSyncCounts,
+  shouldAutoHideBulkSyncProgress,
+  withBulkSyncSnapshotStatus,
+} from "./UpstreamAccounts.bulk-sync";
 import {
   DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME,
   formatGroupFilterValue,
@@ -123,17 +109,21 @@ import {
   readPersistedUpstreamAccountFilters,
 } from "./UpstreamAccounts.filters";
 import {
-  bulkSyncRowStatusVariant,
-  resolveBulkSyncCounts,
-  shouldAutoHideBulkSyncProgress,
-  withBulkSyncSnapshotStatus,
-} from "./UpstreamAccounts.bulk-sync";
-import {
   buildRoutingDraft,
   parseRoutingPositiveInteger,
   parseRoutingTimeoutValue,
   resolveRoutingMaintenance,
 } from "./UpstreamAccounts.routing";
+import {
+  type AccountBusyActionType,
+  type ActionErrorState,
+  type BusyActionState,
+  DEFAULT_ROUTING_TIMEOUTS,
+  type GroupFilterState,
+  type RoutingDraft,
+  UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
+  type UpstreamAccountsLocationState,
+} from "./UpstreamAccounts.shared-types";
 import {
   accountHealthStatus,
   accountWorkStatus,
@@ -141,35 +131,36 @@ import {
   compactSupportLabel,
   poolCardMetric,
 } from "./UpstreamAccounts.status";
+import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroupSettingsDialog";
 
-export {
-  DEFAULT_ROUTING_TIMEOUTS,
-  UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
-  DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME,
-  formatGroupFilterValue,
-  parseGroupFilterValue,
-  persistUpstreamAccountFilters,
-  readPersistedUpstreamAccountFilters,
-  bulkSyncRowStatusVariant,
-  resolveBulkSyncCounts,
-  shouldAutoHideBulkSyncProgress,
-  withBulkSyncSnapshotStatus,
-  buildRoutingDraft,
-  parseRoutingPositiveInteger,
-  parseRoutingTimeoutValue,
-  resolveRoutingMaintenance,
-  accountHealthStatus,
-  accountWorkStatus,
-  compactSupportHint,
-  compactSupportLabel,
-  poolCardMetric,
-};
 export type {
   ActionErrorState,
   BusyActionState,
   GroupFilterState,
   RoutingDraft,
   UpstreamAccountsLocationState,
+};
+export {
+  accountHealthStatus,
+  accountWorkStatus,
+  buildRoutingDraft,
+  bulkSyncRowStatusVariant,
+  compactSupportHint,
+  compactSupportLabel,
+  DEFAULT_ROUTING_TIMEOUTS,
+  DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME,
+  formatGroupFilterValue,
+  parseGroupFilterValue,
+  parseRoutingPositiveInteger,
+  parseRoutingTimeoutValue,
+  persistUpstreamAccountFilters,
+  poolCardMetric,
+  readPersistedUpstreamAccountFilters,
+  resolveBulkSyncCounts,
+  resolveRoutingMaintenance,
+  shouldAutoHideBulkSyncProgress,
+  UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
+  withBulkSyncSnapshotStatus,
 };
 
 const ACCOUNT_RECORD_PAGE_SIZE = 50;
@@ -234,22 +225,15 @@ const STICKY_CONVERSATION_SELECTION_OPTIONS = [
     } satisfies StickyKeyConversationSelection,
   },
 ] as const;
-const STICKY_CONVERSATION_SELECTION_LOOKUP = new Map<
-  string,
-  StickyKeyConversationSelection
->(
-  STICKY_CONVERSATION_SELECTION_OPTIONS.map((option) => [
-    option.value,
-    option.selection,
-  ]),
+const STICKY_CONVERSATION_SELECTION_LOOKUP = new Map<string, StickyKeyConversationSelection>(
+  STICKY_CONVERSATION_SELECTION_OPTIONS.map((option) => [option.value, option.selection]),
 );
 type OauthRecoveryHint = {
   titleKey: string;
   bodyKey: string;
 };
 
-type AccountDetailTab =
-  "overview" | "records" | "edit" | "routing" | "healthEvents";
+type AccountDetailTab = "overview" | "records" | "edit" | "routing" | "healthEvents";
 
 type AccountRecordsMode = "latest" | "anchored";
 type AccountRecordsLocateError = {
@@ -257,10 +241,7 @@ type AccountRecordsLocateError = {
   kind: "notFound" | "request";
 };
 
-const ACCOUNT_DETAIL_TABS_REQUIRING_ROSTER_CONTEXT = new Set<AccountDetailTab>([
-  "edit",
-  "routing",
-]);
+const ACCOUNT_DETAIL_TABS_REQUIRING_ROSTER_CONTEXT = new Set<AccountDetailTab>(["edit", "routing"]);
 
 type SharedUpstreamAccountDetailDrawerCloseOptions = {
   replace?: boolean;
@@ -284,16 +265,11 @@ type PendingSaveSession = {
 function normalizeProxyKeys(values?: string[]): string[] {
   if (!Array.isArray(values)) return [];
   return Array.from(
-    new Set(
-      values.map((value) => value.trim()).filter((value) => value.length > 0),
-    ),
+    new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)),
   );
 }
 
-function proxyNodeLabel(
-  node: ForwardProxyBindingNode | undefined,
-  key: string,
-) {
+function proxyNodeLabel(node: ForwardProxyBindingNode | undefined, key: string) {
   if (node) {
     const protocol = node.protocolLabel ? ` · ${node.protocolLabel}` : "";
     return `${node.displayName}${protocol}`;
@@ -325,9 +301,7 @@ function proxyNodeTone(
 }
 
 function toggleProxyKey(keys: string[], key: string): string[] {
-  return keys.includes(key)
-    ? keys.filter((value) => value !== key)
-    : [...keys, key];
+  return keys.includes(key) ? keys.filter((value) => value !== key) : [...keys, key];
 }
 
 type RecentSaveResponseGuard = {
@@ -369,10 +343,7 @@ export function isBusyAction(
   return busyAction.accountActions.has(createBusyActionKey(type, accountId));
 }
 
-function hasBusyAccountAction(
-  busyAction: BusyActionState,
-  accountId?: number | null,
-) {
+function hasBusyAccountAction(busyAction: BusyActionState, accountId?: number | null) {
   if (typeof accountId !== "number") return false;
   const suffix = `:${accountId}`;
   for (const key of busyAction.accountActions) {
@@ -450,9 +421,7 @@ function findDisplayNameConflict(
   if (!normalized) return null;
   return (
     items.find(
-      (item) =>
-        item.id !== excludeId &&
-        normalizeDisplayNameKey(item.displayName) === normalized,
+      (item) => item.id !== excludeId && normalizeDisplayNameKey(item.displayName) === normalized,
     ) ?? null
   );
 }
@@ -467,26 +436,17 @@ function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
     upstreamBaseUrl: detail?.upstreamBaseUrl ?? "",
     tagIds: detail?.tags?.map((tag) => tag.id) ?? [],
     localPrimaryLimit:
-      detail?.localLimits?.primaryLimit == null
-        ? ""
-        : String(detail.localLimits.primaryLimit),
+      detail?.localLimits?.primaryLimit == null ? "" : String(detail.localLimits.primaryLimit),
     localSecondaryLimit:
-      detail?.localLimits?.secondaryLimit == null
-        ? ""
-        : String(detail.localLimits.secondaryLimit),
+      detail?.localLimits?.secondaryLimit == null ? "" : String(detail.localLimits.secondaryLimit),
     localLimitUnit: detail?.localLimits?.limitUnit ?? "requests",
     apiKey: "",
   };
 }
 
-function removeAccountDraftTagIds(
-  draft: AccountDraft,
-  removedTagIds: Set<number>,
-): AccountDraft {
+function removeAccountDraftTagIds(draft: AccountDraft, removedTagIds: Set<number>): AccountDraft {
   const nextTagIds = draft.tagIds.filter((tagId) => !removedTagIds.has(tagId));
-  return nextTagIds.length === draft.tagIds.length
-    ? draft
-    : { ...draft, tagIds: nextTagIds };
+  return nextTagIds.length === draft.tagIds.length ? draft : { ...draft, tagIds: nextTagIds };
 }
 
 function enableStatusVariant(status: string): "success" | "secondary" {
@@ -500,9 +460,7 @@ function workStatusVariant(status: string): "info" | "warning" | "secondary" {
   return "secondary";
 }
 
-function healthStatusVariant(
-  status: string,
-): "success" | "warning" | "error" | "secondary" {
+function healthStatusVariant(status: string): "success" | "warning" | "error" | "secondary" {
   if (status === "normal") return "success";
   if (status === "upstream_unavailable") return "warning";
   if (
@@ -565,11 +523,8 @@ function resolveOauthRecoveryHint(
 function AccountDetailSkeleton() {
   return (
     <div className="grid gap-4">
-      {Array.from({ length: 3 }).map((_, index) => (
-        <div
-          key={index}
-          className="h-28 animate-pulse rounded-[1.35rem] bg-base-200/75"
-        />
+      {["card-1", "card-2", "card-3"].map((cardKey) => (
+        <div key={cardKey} className="h-28 animate-pulse rounded-[1.35rem] bg-base-200/75" />
       ))}
     </div>
   );
@@ -683,9 +638,7 @@ export function RoutingSettingsDialog({
   return (
     <Dialog
       open={open}
-      onOpenChange={(nextOpen) =>
-        !busy ? (nextOpen ? undefined : onClose()) : undefined
-      }
+      onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}
     >
       <DialogContent
         className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden p-0 sm:max-h-[calc(100dvh-4rem)]"
@@ -719,9 +672,7 @@ export function RoutingSettingsDialog({
                   {t("accountPool.upstreamAccounts.routing.apiKeySectionTitle")}
                 </p>
                 <p className="text-sm text-base-content/68">
-                  {t(
-                    "accountPool.upstreamAccounts.routing.apiKeySectionDescription",
-                  )}
+                  {t("accountPool.upstreamAccounts.routing.apiKeySectionDescription")}
                 </p>
               </div>
               <div className="field">
@@ -739,11 +690,7 @@ export function RoutingSettingsDialog({
                     onClick={onGenerate}
                     disabled={busy || !apiKeyWritesEnabled}
                   >
-                    <AppIcon
-                      name="auto-fix"
-                      className="mr-2 h-4 w-4"
-                      aria-hidden
-                    />
+                    <AppIcon name="auto-fix" className="mr-2 h-4 w-4" aria-hidden />
                     {t("accountPool.upstreamAccounts.routing.generate")}
                   </Button>
                 </div>
@@ -754,9 +701,7 @@ export function RoutingSettingsDialog({
                   type="text"
                   value={apiKey}
                   onChange={(event) => onApiKeyChange(event.target.value)}
-                  placeholder={t(
-                    "accountPool.upstreamAccounts.routing.apiKeyPlaceholder",
-                  )}
+                  placeholder={t("accountPool.upstreamAccounts.routing.apiKeyPlaceholder")}
                   autoComplete="off"
                   autoCorrect="off"
                   autoCapitalize="none"
@@ -772,14 +717,10 @@ export function RoutingSettingsDialog({
             <div className="space-y-4 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
               <div className="space-y-1">
                 <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                  {t(
-                    "accountPool.upstreamAccounts.routing.maintenanceSectionTitle",
-                  )}
+                  {t("accountPool.upstreamAccounts.routing.maintenanceSectionTitle")}
                 </p>
                 <p className="text-sm text-base-content/68">
-                  {t(
-                    "accountPool.upstreamAccounts.routing.maintenanceSectionDescription",
-                  )}
+                  {t("accountPool.upstreamAccounts.routing.maintenanceSectionDescription")}
                 </p>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
@@ -788,9 +729,7 @@ export function RoutingSettingsDialog({
                     htmlFor={primaryInputId}
                     className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82"
                   >
-                    {t(
-                      "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel",
-                    )}
+                    {t("accountPool.upstreamAccounts.routing.primarySyncIntervalLabel")}
                   </label>
                   <Input
                     id={primaryInputId}
@@ -801,9 +740,7 @@ export function RoutingSettingsDialog({
                     step={60}
                     inputMode="numeric"
                     value={primarySyncIntervalSecs}
-                    onChange={(event) =>
-                      onPrimarySyncIntervalChange(event.target.value)
-                    }
+                    onChange={(event) => onPrimarySyncIntervalChange(event.target.value)}
                     placeholder="300"
                     disabled={busy || !timeoutWritesEnabled}
                     className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
@@ -814,9 +751,7 @@ export function RoutingSettingsDialog({
                     htmlFor={secondaryInputId}
                     className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82"
                   >
-                    {t(
-                      "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel",
-                    )}
+                    {t("accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel")}
                   </label>
                   <Input
                     id={secondaryInputId}
@@ -826,9 +761,7 @@ export function RoutingSettingsDialog({
                     step={60}
                     inputMode="numeric"
                     value={secondarySyncIntervalSecs}
-                    onChange={(event) =>
-                      onSecondarySyncIntervalChange(event.target.value)
-                    }
+                    onChange={(event) => onSecondarySyncIntervalChange(event.target.value)}
                     placeholder="1800"
                     disabled={busy || !timeoutWritesEnabled}
                     className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
@@ -850,9 +783,7 @@ export function RoutingSettingsDialog({
                   step={1}
                   inputMode="numeric"
                   value={priorityAvailableAccountCap}
-                  onChange={(event) =>
-                    onPriorityAvailableAccountCapChange(event.target.value)
-                  }
+                  onChange={(event) => onPriorityAvailableAccountCapChange(event.target.value)}
                   placeholder="100"
                   disabled={busy || !timeoutWritesEnabled}
                   className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
@@ -884,23 +815,14 @@ export function RoutingSettingsDialog({
           </div>
         </div>
         <DialogFooter className="border-t border-base-300/80 px-6 py-5">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onClose}
-            disabled={busy}
-          >
+          <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
             {cancelLabel}
           </Button>
           <Button type="button" onClick={onSave} disabled={busy || !canSave}>
             {busy ? (
               <Spinner size="sm" className="mr-2" />
             ) : (
-              <AppIcon
-                name="key-chain-variant"
-                className="mr-2 h-4 w-4"
-                aria-hidden
-              />
+              <AppIcon name="key-chain-variant" className="mr-2 h-4 w-4" aria-hidden />
             )}
             {saveLabel}
           </Button>
@@ -910,9 +832,7 @@ export function RoutingSettingsDialog({
   );
 }
 
-export function SharedUpstreamAccountDetailDrawer(
-  props: SharedUpstreamAccountDetailDrawerProps,
-) {
+export function SharedUpstreamAccountDetailDrawer(props: SharedUpstreamAccountDetailDrawerProps) {
   if (props.accountId == null) {
     return null;
   }
@@ -931,8 +851,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   const navigate = useNavigate();
   const { openUpstreamAccount } = useUpstreamAccountDetailRoute();
   const [detailTab, setDetailTab] = useState<AccountDetailTab>(initialTab);
-  const needsRosterContext =
-    open && ACCOUNT_DETAIL_TABS_REQUIRING_ROSTER_CONTEXT.has(detailTab);
+  const needsRosterContext = open && ACCOUNT_DETAIL_TABS_REQUIRING_ROSTER_CONTEXT.has(detailTab);
   const {
     items,
     groups = [],
@@ -969,59 +888,54 @@ function SharedUpstreamAccountDetailDrawerInner({
     routing: false,
     accountActions: new Set(),
   }));
-  const [inlinePolicyBusyField, setInlinePolicyBusyField] =
-    useState<InlinePolicyField | null>(null);
+  const [inlinePolicyBusyField, setInlinePolicyBusyField] = useState<InlinePolicyField | null>(
+    null,
+  );
   const [inlinePolicyErrors, setInlinePolicyErrors] = useState<
     Partial<Record<InlinePolicyField, string | null>>
   >({});
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
-  const [
-    stickyConversationSelectionValue,
-    setStickyConversationSelectionValue,
-  ] = useState(DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE);
+  const [stickyConversationSelectionValue, setStickyConversationSelectionValue] = useState(
+    DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE,
+  );
   const [expandedStickyKeys, setExpandedStickyKeys] = useState<string[]>([]);
   const [focusedAttemptId, setFocusedAttemptId] = useState<number | null>(null);
   const [accountRecords, setAccountRecords] = useState<ApiInvocation[]>([]);
-  const [accountRecordsMode, setAccountRecordsMode] =
-    useState<AccountRecordsMode>("latest");
+  const [accountRecordsMode, setAccountRecordsMode] = useState<AccountRecordsMode>("latest");
   const [accountRecordsFirstPage, setAccountRecordsFirstPage] = useState(0);
   const [accountRecordsPage, setAccountRecordsPage] = useState(0);
   const [accountRecordsTotal, setAccountRecordsTotal] = useState(0);
   const [accountRecordsHasNewer, setAccountRecordsHasNewer] = useState(false);
   const [accountRecordsHasMore, setAccountRecordsHasMore] = useState(false);
   const [accountRecordsLoading, setAccountRecordsLoading] = useState(false);
-  const [accountRecordsError, setAccountRecordsError] = useState<string | null>(
-    null,
-  );
+  const [accountRecordsError, setAccountRecordsError] = useState<string | null>(null);
   const [accountRecordsLocateError, setAccountRecordsLocateError] =
     useState<AccountRecordsLocateError | null>(null);
   const [accountRecordsScrollTarget, setAccountRecordsScrollTarget] = useState<{
     invokeId: string;
     version: number;
   } | null>(null);
-  const [detailDrawerBodyElement, setDetailDrawerBodyElement] =
-    useState<HTMLDivElement | null>(null);
-  const [groupDraftNotes, setGroupDraftNotes] = useState<
-    Record<string, string>
-  >({});
+  const [detailDrawerBodyElement, setDetailDrawerBodyElement] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({});
   const [groupDraftBoundProxyKeys, setGroupDraftBoundProxyKeys] = useState<
     Record<string, string[]>
   >({});
-  const [groupDraftConcurrencyLimits, setGroupDraftConcurrencyLimits] =
-    useState<Record<string, number>>({});
+  const [groupDraftConcurrencyLimits, setGroupDraftConcurrencyLimits] = useState<
+    Record<string, number>
+  >({});
   const [groupDraftNodeShuntEnabled, setGroupDraftNodeShuntEnabled] = useState<
     Record<string, boolean>
   >({});
-  const [
-    groupDraftSingleAccountRotationEnabled,
-    setGroupDraftSingleAccountRotationEnabled,
-  ] = useState<Record<string, boolean>>({});
-  const [
-    groupDraftUpstream429RetryEnabled,
-    setGroupDraftUpstream429RetryEnabled,
-  ] = useState<Record<string, boolean>>({});
-  const [groupDraftUpstream429MaxRetries, setGroupDraftUpstream429MaxRetries] =
-    useState<Record<string, number>>({});
+  const [groupDraftSingleAccountRotationEnabled, setGroupDraftSingleAccountRotationEnabled] =
+    useState<Record<string, boolean>>({});
+  const [groupDraftUpstream429RetryEnabled, setGroupDraftUpstream429RetryEnabled] = useState<
+    Record<string, boolean>
+  >({});
+  const [groupDraftUpstream429MaxRetries, setGroupDraftUpstream429MaxRetries] = useState<
+    Record<string, number>
+  >({});
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] =
     useState<HTMLElement | null>(null);
   const previousAccountRecordsContextRef = useRef<{
@@ -1051,18 +965,14 @@ function SharedUpstreamAccountDetailDrawerInner({
   const accountRecordsAnchorScrollGuardUntilRef = useRef(0);
   useEffect(() => {
     setFocusedAttemptId(null);
-  }, [accountId]);
+  }, []);
   const draftSessionKeyRef = useRef<string | null>(null);
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
   const latestServerDraftRef = useRef<AccountDraft>(buildDraft(null));
   const knownRemovedTagIdsRef = useRef<Set<number>>(new Set());
-  const pendingSaveSessionsRef = useRef<Map<number, PendingSaveSession>>(
-    new Map(),
-  );
-  const recentSaveResponseGuardsRef = useRef<
-    Map<number, RecentSaveResponseGuard>
-  >(new Map());
+  const pendingSaveSessionsRef = useRef<Map<number, PendingSaveSession>>(new Map());
+  const recentSaveResponseGuardsRef = useRef<Map<number, RecentSaveResponseGuard>>(new Map());
   const draftSessionSnapshotRef = useRef({
     open,
     accountId,
@@ -1124,7 +1034,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   useEffect(() => {
     if (!open) return;
     setDetailTab(initialTab);
-  }, [initialTab, open, selectedId]);
+  }, [initialTab, open]);
 
   useEffect(() => {
     const nextBaseline = removeAccountDraftTagIds(
@@ -1140,22 +1050,15 @@ function SharedUpstreamAccountDetailDrawerInner({
 
     const previousBaseline = draftBaselineRef.current;
     const previousLatestServerDraft = latestServerDraftRef.current;
-    const shouldSeedDraft =
-      draftSessionKeyRef.current !== activeDraftSessionKey;
+    const shouldSeedDraft = draftSessionKeyRef.current !== activeDraftSessionKey;
     draftSessionKeyRef.current = activeDraftSessionKey;
 
     const recentSaveResponseGuard =
-      accountId == null
-        ? null
-        : (recentSaveResponseGuardsRef.current.get(accountId) ?? null);
-    const retainedServerDraft =
-      recentSaveResponseGuard?.retainedDraft ?? previousLatestServerDraft;
+      accountId == null ? null : (recentSaveResponseGuardsRef.current.get(accountId) ?? null);
+    const retainedServerDraft = recentSaveResponseGuard?.retainedDraft ?? previousLatestServerDraft;
     const hasAcceptedFresherServerDraft =
       recentSaveResponseGuard != null &&
-      !areAccountDraftsEqual(
-        retainedServerDraft,
-        recentSaveResponseGuard.fallbackDraft,
-      );
+      !areAccountDraftsEqual(retainedServerDraft, recentSaveResponseGuard.fallbackDraft);
     const shouldIgnoreRecentSaveResponse =
       recentSaveResponseGuard != null &&
       recentSaveResponseGuard.accountId === accountId &&
@@ -1180,29 +1083,16 @@ function SharedUpstreamAccountDetailDrawerInner({
     if (shouldApplyRecentSaveResponse) {
       latestServerDraftRef.current = nextBaseline;
       setDraft((current) => {
-        const matchesSeedBaseline = areAccountDraftsEqual(
-          current,
-          previousBaseline,
-        );
-        const matchesLatestServerDraft = areAccountDraftsEqual(
-          current,
-          previousLatestServerDraft,
-        );
+        const matchesSeedBaseline = areAccountDraftsEqual(current, previousBaseline);
+        const matchesLatestServerDraft = areAccountDraftsEqual(current, previousLatestServerDraft);
         const matchesStartedDraft = areAccountDraftsEqual(
           current,
           recentSaveResponseGuard.startedDraft,
         );
-        const matchesResponseDraft = areAccountDraftsEqual(
-          current,
-          recentSaveResponseGuard.draft,
-        );
+        const matchesResponseDraft = areAccountDraftsEqual(current, recentSaveResponseGuard.draft);
         recentSaveResponseGuardsRef.current.delete(accountId);
         draftBaselineRef.current = nextBaseline;
-        if (
-          shouldSeedDraft ||
-          matchesSeedBaseline ||
-          matchesLatestServerDraft
-        ) {
+        if (shouldSeedDraft || matchesSeedBaseline || matchesLatestServerDraft) {
           return nextBaseline;
         }
         if (matchesStartedDraft || matchesResponseDraft) {
@@ -1228,14 +1118,8 @@ function SharedUpstreamAccountDetailDrawerInner({
 
     latestServerDraftRef.current = nextBaseline;
     setDraft((current) => {
-      const matchesSeedBaseline = areAccountDraftsEqual(
-        current,
-        previousBaseline,
-      );
-      const matchesLatestServerDraft = areAccountDraftsEqual(
-        current,
-        previousLatestServerDraft,
-      );
+      const matchesSeedBaseline = areAccountDraftsEqual(current, previousBaseline);
+      const matchesLatestServerDraft = areAccountDraftsEqual(current, previousLatestServerDraft);
       if (shouldSeedDraft || matchesSeedBaseline || matchesLatestServerDraft) {
         draftBaselineRef.current = nextBaseline;
         return nextBaseline;
@@ -1260,7 +1144,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   useEffect(() => {
     setDetailTab(initialTab);
     setExpandedStickyKeys([]);
-  }, [accountId, initialTab]);
+  }, [initialTab]);
 
   useEffect(() => {
     setGroupDraftNotes((current) => {
@@ -1317,29 +1201,12 @@ function SharedUpstreamAccountDetailDrawerInner({
   const availableGroups = useMemo(() => {
     const draftNames = Object.fromEntries([
       ...Object.keys(groupDraftNotes).map((groupName) => [groupName, ""]),
-      ...Object.keys(groupDraftBoundProxyKeys).map((groupName) => [
-        groupName,
-        "",
-      ]),
-      ...Object.keys(groupDraftConcurrencyLimits).map((groupName) => [
-        groupName,
-        "",
-      ]),
-      ...Object.keys(groupDraftNodeShuntEnabled).map((groupName) => [
-        groupName,
-        "",
-      ]),
-      ...Object.keys(groupDraftSingleAccountRotationEnabled).map(
-        (groupName) => [groupName, ""],
-      ),
-      ...Object.keys(groupDraftUpstream429RetryEnabled).map((groupName) => [
-        groupName,
-        "",
-      ]),
-      ...Object.keys(groupDraftUpstream429MaxRetries).map((groupName) => [
-        groupName,
-        "",
-      ]),
+      ...Object.keys(groupDraftBoundProxyKeys).map((groupName) => [groupName, ""]),
+      ...Object.keys(groupDraftConcurrencyLimits).map((groupName) => [groupName, ""]),
+      ...Object.keys(groupDraftNodeShuntEnabled).map((groupName) => [groupName, ""]),
+      ...Object.keys(groupDraftSingleAccountRotationEnabled).map((groupName) => [groupName, ""]),
+      ...Object.keys(groupDraftUpstream429RetryEnabled).map((groupName) => [groupName, ""]),
+      ...Object.keys(groupDraftUpstream429MaxRetries).map((groupName) => [groupName, ""]),
     ]);
     return {
       options: buildGroupOptions(
@@ -1362,8 +1229,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     items,
   ]);
   const formatGroupAccountCountLabel = useCallback(
-    (count: number) =>
-      t("accountPool.upstreamAccounts.groupOptionCount", { count }),
+    (count: number) => t("accountPool.upstreamAccounts.groupOptionCount", { count }),
     [t],
   );
 
@@ -1371,11 +1237,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     (groupName: string) => {
       const normalized = normalizeGroupName(groupName);
       if (!normalized) return null;
-      return (
-        groups.find(
-          (group) => normalizeGroupName(group.groupName) === normalized,
-        ) ?? null
-      );
+      return groups.find((group) => normalizeGroupName(group.groupName) === normalized) ?? null;
     },
     [groups],
   );
@@ -1387,11 +1249,7 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   const resolveGroupConcurrencyLimitForName = useCallback(
     (groupName: string) =>
-      resolveGroupConcurrencyLimit(
-        groups,
-        groupDraftConcurrencyLimits,
-        groupName,
-      ),
+      resolveGroupConcurrencyLimit(groups, groupDraftConcurrencyLimits, groupName),
     [groupDraftConcurrencyLimits, groups],
   );
 
@@ -1433,9 +1291,7 @@ function SharedUpstreamAccountDetailDrawerInner({
       if (existingGroup) {
         return existingGroup.singleAccountRotationEnabled === true;
       }
-      return (
-        groupDraftSingleAccountRotationEnabled[normalizedGroupName] === true
-      );
+      return groupDraftSingleAccountRotationEnabled[normalizedGroupName] === true;
     },
     [groupDraftSingleAccountRotationEnabled, resolveGroupSummaryForName],
   );
@@ -1561,10 +1417,8 @@ function SharedUpstreamAccountDetailDrawerInner({
             nodeShuntEnabled: resolveGroupNodeShuntEnabledForName(normalized),
             singleAccountRotationEnabled:
               resolveGroupSingleAccountRotationEnabledForName(normalized),
-            upstream429RetryEnabled:
-              resolveGroupUpstream429RetryEnabledForName(normalized),
-            upstream429MaxRetries:
-              resolveGroupUpstream429MaxRetriesForName(normalized),
+            upstream429RetryEnabled: resolveGroupUpstream429RetryEnabledForName(normalized),
+            upstream429MaxRetries: resolveGroupUpstream429MaxRetriesForName(normalized),
             routingRule: existingGroup?.routingRule,
             effectiveTimeouts: existingGroup?.effectiveTimeouts ?? null,
             timeoutFieldSources: existingGroup?.timeoutFieldSources ?? null,
@@ -1598,24 +1452,17 @@ function SharedUpstreamAccountDetailDrawerInner({
           const normalizedNodeShuntEnabled = payload.nodeShuntEnabled === true;
           const normalizedSingleAccountRotationEnabled =
             payload.singleAccountRotationEnabled === true;
-          const normalizedUpstream429RetryEnabled =
-            payload.upstream429RetryEnabled === true;
-          const normalizedUpstream429MaxRetries =
-            normalizedUpstream429RetryEnabled
-              ? normalizeEnabledGroupUpstream429MaxRetries(
-                  payload.upstream429MaxRetries,
-                )
-              : normalizeGroupUpstream429MaxRetries(
-                  payload.upstream429MaxRetries,
-                );
+          const normalizedUpstream429RetryEnabled = payload.upstream429RetryEnabled === true;
+          const normalizedUpstream429MaxRetries = normalizedUpstream429RetryEnabled
+            ? normalizeEnabledGroupUpstream429MaxRetries(payload.upstream429MaxRetries)
+            : normalizeGroupUpstream429MaxRetries(payload.upstream429MaxRetries);
 
           await saveGroupNote(normalizedGroupName, {
             note: normalizedNote || undefined,
             boundProxyKeys: normalizedBoundProxyKeys,
             concurrencyLimit: normalizedConcurrencyLimit,
             nodeShuntEnabled: normalizedNodeShuntEnabled,
-            singleAccountRotationEnabled:
-              normalizedSingleAccountRotationEnabled,
+            singleAccountRotationEnabled: normalizedSingleAccountRotationEnabled,
             upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
             upstream429MaxRetries: normalizedUpstream429MaxRetries,
             routingRule: payload.routingRule,
@@ -1629,8 +1476,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           await deleteGroupNote(groupName);
           clearDraftGroupSettings(groupName);
           setDraft((current) =>
-            normalizeGroupName(current.groupName) ===
-            normalizeGroupName(groupName)
+            normalizeGroupName(current.groupName) === normalizeGroupName(groupName)
               ? {
                   ...current,
                   groupName: "",
@@ -1665,9 +1511,10 @@ function SharedUpstreamAccountDetailDrawerInner({
   const stickyConversationSelection = STICKY_CONVERSATION_SELECTION_LOOKUP.get(
     stickyConversationSelectionValue,
   ) ??
-    STICKY_CONVERSATION_SELECTION_LOOKUP.get(
-      DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE,
-    ) ?? { mode: "count", limit: 50 };
+    STICKY_CONVERSATION_SELECTION_LOOKUP.get(DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE) ?? {
+      mode: "count",
+      limit: 50,
+    };
   const stickyConversationSelectionOptions = useMemo(
     () =>
       STICKY_CONVERSATION_SELECTION_OPTIONS.map((option) => ({
@@ -1694,29 +1541,21 @@ function SharedUpstreamAccountDetailDrawerInner({
   );
   const visibleStickyKeys = useMemo(
     () =>
-      stickyConversationStats?.conversations.map(
-        (conversation) => conversation.stickyKey,
-      ) ?? [],
+      stickyConversationStats?.conversations.map((conversation) => conversation.stickyKey) ?? [],
     [stickyConversationStats],
   );
   const hasVisibleStickyConversations = visibleStickyKeys.length > 0;
   const allVisibleStickyKeysExpanded =
     hasVisibleStickyConversations &&
-    visibleStickyKeys.every((stickyKey) =>
-      expandedStickyKeys.includes(stickyKey),
-    );
+    visibleStickyKeys.every((stickyKey) => expandedStickyKeys.includes(stickyKey));
 
   useEffect(() => {
     if (!stickyConversationStats) return;
     const visibleStickyKeySet = new Set(
-      stickyConversationStats.conversations.map(
-        (conversation) => conversation.stickyKey,
-      ),
+      stickyConversationStats.conversations.map((conversation) => conversation.stickyKey),
     );
     setExpandedStickyKeys((current) => {
-      const next = current.filter((stickyKey) =>
-        visibleStickyKeySet.has(stickyKey),
-      );
+      const next = current.filter((stickyKey) => visibleStickyKeySet.has(stickyKey));
       return next.length === current.length ? current : next;
     });
   }, [stickyConversationStats]);
@@ -1753,13 +1592,8 @@ function SharedUpstreamAccountDetailDrawerInner({
         page,
         pageSize,
         snapshotId:
-          mode === "replace"
-            ? undefined
-            : (accountRecordsSnapshotIdRef.current ?? undefined),
-        anchorId:
-          mode === "replace"
-            ? undefined
-            : (accountRecordsAnchorIdRef.current ?? undefined),
+          mode === "replace" ? undefined : (accountRecordsSnapshotIdRef.current ?? undefined),
+        anchorId: mode === "replace" ? undefined : (accountRecordsAnchorIdRef.current ?? undefined),
         sortBy: "occurredAt",
         sortOrder: "desc",
       })
@@ -1771,8 +1605,7 @@ function SharedUpstreamAccountDetailDrawerInner({
             return;
           }
           const responseSnapshotId =
-            typeof response.snapshotId === "number" &&
-            Number.isFinite(response.snapshotId)
+            typeof response.snapshotId === "number" && Number.isFinite(response.snapshotId)
               ? response.snapshotId
               : null;
           const responsePage =
@@ -1780,13 +1613,11 @@ function SharedUpstreamAccountDetailDrawerInner({
               ? response.page
               : page;
           const responsePageSize =
-            typeof response.pageSize === "number" &&
-            Number.isFinite(response.pageSize)
+            typeof response.pageSize === "number" && Number.isFinite(response.pageSize)
               ? response.pageSize
               : pageSize;
           const responseTotal =
-            typeof response.total === "number" &&
-            Number.isFinite(response.total)
+            typeof response.total === "number" && Number.isFinite(response.total)
               ? response.total
               : response.records.length;
           if (mode === "replace" && responseSnapshotId != null) {
@@ -1794,9 +1625,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           }
           setAccountRecords((current) => {
             if (mode === "replace") return response.records;
-            const seen = new Set(
-              current.map((record) => invocationStableKey(record)),
-            );
+            const seen = new Set(current.map((record) => invocationStableKey(record)));
             const incoming = response.records.filter((record) => {
               const key = invocationStableKey(record);
               if (seen.has(key)) return false;
@@ -1811,9 +1640,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           setAccountRecordsTotal(responseTotal);
           setAccountRecordsHasNewer(responsePage > 1 || mode === "append");
           if (mode !== "prepend") {
-            setAccountRecordsHasMore(
-              responsePage * responsePageSize < responseTotal,
-            );
+            setAccountRecordsHasMore(responsePage * responsePageSize < responseTotal);
           }
         })
         .catch((error) => {
@@ -1821,9 +1648,7 @@ function SharedUpstreamAccountDetailDrawerInner({
             accountRecordsPrependScrollRef.current = null;
           }
           if (requestSeq !== accountRecordsRequestSeqRef.current) return;
-          setAccountRecordsError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setAccountRecordsError(error instanceof Error ? error.message : String(error));
         })
         .finally(() => {
           if (requestSeq === accountRecordsRequestSeqRef.current) {
@@ -1849,22 +1674,13 @@ function SharedUpstreamAccountDetailDrawerInner({
     const loadedPageWindow =
       Math.ceil(accountRecordsRef.current.length / ACCOUNT_RECORD_PAGE_SIZE) *
       ACCOUNT_RECORD_PAGE_SIZE;
-    loadAccountRecordsPage(
-      1,
-      "replace",
-      Math.max(ACCOUNT_RECORD_PAGE_SIZE, loadedPageWindow),
-    );
+    loadAccountRecordsPage(1, "replace", Math.max(ACCOUNT_RECORD_PAGE_SIZE, loadedPageWindow));
   }, [loadAccountRecordsPage]);
 
   const loadMoreAccountRecords = useCallback((): void => {
     if (accountRecordsLoading || !accountRecordsHasMore) return;
     loadAccountRecordsPage(accountRecordsPage + 1, "append");
-  }, [
-    accountRecordsHasMore,
-    accountRecordsLoading,
-    accountRecordsPage,
-    loadAccountRecordsPage,
-  ]);
+  }, [accountRecordsHasMore, accountRecordsLoading, accountRecordsPage, loadAccountRecordsPage]);
 
   const loadNewerAccountRecords = useCallback((): void => {
     if (
@@ -1920,9 +1736,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           setAccountRecordsPage(response.page);
           setAccountRecordsTotal(response.total);
           setAccountRecordsHasNewer(response.page > 1);
-          setAccountRecordsHasMore(
-            response.page * response.pageSize < response.total,
-          );
+          setAccountRecordsHasMore(response.page * response.pageSize < response.total);
           setAccountRecordsScrollTarget({
             invokeId: normalizedInvokeId,
             version: requestSeq,
@@ -1939,10 +1753,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           setAccountRecordsHasMore(false);
           setAccountRecordsLocateError({
             invokeId: normalizedInvokeId,
-            kind:
-              error instanceof ApiRequestError && error.status === 404
-                ? "notFound"
-                : "request",
+            kind: error instanceof ApiRequestError && error.status === 404 ? "notFound" : "request",
           });
         })
         .finally(() => {
@@ -1959,9 +1770,8 @@ function SharedUpstreamAccountDetailDrawerInner({
     if (!pending || !detailDrawerBodyElement) return;
     accountRecordsPrependScrollRef.current = null;
     detailDrawerBodyElement.scrollTop =
-      pending.scrollTop +
-      (detailDrawerBodyElement.scrollHeight - pending.scrollHeight);
-  }, [accountRecords, detailDrawerBodyElement]);
+      pending.scrollTop + (detailDrawerBodyElement.scrollHeight - pending.scrollHeight);
+  }, [detailDrawerBodyElement]);
 
   useLayoutEffect(() => {
     if (!accountRecordsLocateError) return;
@@ -1983,8 +1793,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     previousAccountRecordsContextRef.current = next;
 
     const leftRecordsSurface =
-      previous != null &&
-      previous.open &&
+      previous?.open &&
       previous.accountId != null &&
       previous.detailTab === "records" &&
       (!open || accountId == null || detailTab !== "records");
@@ -2040,12 +1849,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     if (accountRecordsModeRef.current === "latest") {
       void reloadAccountRecords();
     }
-  }, [
-    accountId,
-    detailTab,
-    open,
-    reloadAccountRecords,
-  ]);
+  }, [accountId, detailTab, open, reloadAccountRecords]);
 
   useEffect(() => {
     if (!LEGACY_ACCOUNT_RECORDS_ENABLED) return;
@@ -2061,9 +1865,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         loadNewerAccountRecords();
       }
       const remaining =
-        scrollTarget.scrollHeight -
-        scrollTarget.scrollTop -
-        scrollTarget.clientHeight;
+        scrollTarget.scrollHeight - scrollTarget.scrollTop - scrollTarget.clientHeight;
       if (remaining < 520) {
         loadMoreAccountRecords();
       }
@@ -2097,15 +1899,11 @@ function SharedUpstreamAccountDetailDrawerInner({
           accountId != null &&
           detailTab === "records" &&
           accountRecordsMode === "latest",
-      ) &&
-      !accountRecordsLoading,
+      ) && !accountRecordsLoading,
     filters: accountId == null ? undefined : { upstreamAccountId: accountId },
     sortBy: "occurredAt",
     sortOrder: "desc",
-    limit: Math.max(
-      ACCOUNT_RECORD_PAGE_SIZE,
-      accountRecords.length + ACCOUNT_RECORD_PAGE_SIZE,
-    ),
+    limit: Math.max(ACCOUNT_RECORD_PAGE_SIZE, accountRecords.length + ACCOUNT_RECORD_PAGE_SIZE),
     getRecords: () => accountRecordsRef.current,
     onRecordsChange: (next) => {
       setAccountRecords(next);
@@ -2116,25 +1914,15 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   const selectedDetail = detail?.id === selectedId ? detail : null;
   const selected = selectedDetail ?? selectedSummary;
-  const selectedAccountProxyKeys = normalizeProxyKeys(
-    selectedDetail?.boundProxyKeys,
-  );
+  const selectedAccountProxyKeys = normalizeProxyKeys(selectedDetail?.boundProxyKeys);
   const [accountProxyEditorOpen, setAccountProxyEditorOpen] = useState(false);
-  const [accountProxyDraftKeys, setAccountProxyDraftKeys] = useState<string[]>(
-    [],
-  );
+  const [accountProxyDraftKeys, setAccountProxyDraftKeys] = useState<string[]>([]);
   const selectedGroupProxyKeys = normalizeProxyKeys(
-    selectedDetail?.groupName
-      ? resolveGroupBoundProxyKeysForName(selectedDetail.groupName)
-      : [],
+    selectedDetail?.groupName ? resolveGroupBoundProxyKeysForName(selectedDetail.groupName) : [],
   );
   const selectedEffectiveProxyKeys =
-    selectedAccountProxyKeys.length > 0
-      ? selectedAccountProxyKeys
-      : selectedGroupProxyKeys;
-  const selectedProxyNodeByKey = new Map(
-    forwardProxyNodes.map((node) => [node.key, node]),
-  );
+    selectedAccountProxyKeys.length > 0 ? selectedAccountProxyKeys : selectedGroupProxyKeys;
+  const selectedProxyNodeByKey = new Map(forwardProxyNodes.map((node) => [node.key, node]));
   const accountProxyEditorBusy = Boolean(
     selectedDetail && hasBusyAccountAction(busyAction, selectedDetail.id),
   );
@@ -2200,31 +1988,21 @@ function SharedUpstreamAccountDetailDrawerInner({
     },
   } as const;
   const visibleAccountActionError =
-    typeof selectedId === "number"
-      ? (actionError.accountMessages[selectedId] ?? null)
-      : null;
+    typeof selectedId === "number" ? (actionError.accountMessages[selectedId] ?? null) : null;
   const detailDisplayNameConflict = useMemo(
     () =>
       selectedDetail?.kind === "api_key_codex"
-        ? findDisplayNameConflict(
-            items,
-            draft.displayName,
-            selectedDetail?.id ?? null,
-          )
+        ? findDisplayNameConflict(items, draft.displayName, selectedDetail?.id ?? null)
         : null,
     [draft.displayName, items, selectedDetail?.id, selectedDetail?.kind],
   );
   const draftUpstreamBaseUrlError = useMemo(() => {
     const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl);
     if (code === "invalid_absolute_url") {
-      return t(
-        "accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid",
-      );
+      return t("accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid");
     }
     if (code === "query_or_fragment_not_allowed") {
-      return t(
-        "accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment",
-      );
+      return t("accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment");
     }
     return null;
   }, [draft.upstreamBaseUrl, t]);
@@ -2259,21 +2037,15 @@ function SharedUpstreamAccountDetailDrawerInner({
     const translated = t(key);
     return translated === key ? reason : translated;
   };
-  const formatDuplicateReasons = (
-    duplicateInfo?: UpstreamAccountDuplicateInfo | null,
-  ) => {
+  const formatDuplicateReasons = (duplicateInfo?: UpstreamAccountDuplicateInfo | null) => {
     const reasons = duplicateInfo?.reasons ?? [];
     return reasons
       .map((reason) => {
         if (reason === "sharedChatgptAccountId") {
-          return t(
-            "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId",
-          );
+          return t("accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId");
         }
         if (reason === "sharedChatgptUserId") {
-          return t(
-            "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId",
-          );
+          return t("accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId");
         }
         return reason;
       })
@@ -2299,18 +2071,12 @@ function SharedUpstreamAccountDetailDrawerInner({
   const toggleAllVisibleStickyKeys = useCallback(() => {
     if (!hasVisibleStickyConversations) return;
     setExpandedStickyKeys((current) => {
-      const allExpanded = visibleStickyKeys.every((stickyKey) =>
-        current.includes(stickyKey),
-      );
+      const allExpanded = visibleStickyKeys.every((stickyKey) => current.includes(stickyKey));
       if (allExpanded) {
-        return current.filter(
-          (stickyKey) => !visibleStickyKeys.includes(stickyKey),
-        );
+        return current.filter((stickyKey) => !visibleStickyKeys.includes(stickyKey));
       }
 
-      const preserved = current.filter(
-        (stickyKey) => !visibleStickyKeys.includes(stickyKey),
-      );
+      const preserved = current.filter((stickyKey) => !visibleStickyKeys.includes(stickyKey));
       return [...preserved, ...visibleStickyKeys];
     });
   }, [hasVisibleStickyConversations, visibleStickyKeys]);
@@ -2324,9 +2090,7 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   const handleOauthLogin = useCallback(
     async (nextAccountId: number) => {
-      navigate(
-        `/account-pool/upstream-accounts/new?accountId=${nextAccountId}`,
-      );
+      navigate(`/account-pool/upstream-accounts/new?accountId=${nextAccountId}`);
     },
     [navigate],
   );
@@ -2365,10 +2129,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         saveStartedDraft,
         knownRemovedTagIdsRef.current,
       );
-      if (
-        selectedIdRef.current === sourceId &&
-        activeDraftSessionKeyRef.current != null
-      ) {
+      if (selectedIdRef.current === sourceId && activeDraftSessionKeyRef.current != null) {
         recentSaveResponseGuardsRef.current.set(sourceId, {
           accountId: sourceId,
           sessionKey: saveDraftSessionKey,
@@ -2385,9 +2146,7 @@ function SharedUpstreamAccountDetailDrawerInner({
       ) {
         draftBaselineRef.current = responseDraft;
         latestServerDraftRef.current = responseDraft;
-        setDraft((current) =>
-          mergeDraftAfterAccountSave(current, saveStartedDraft, responseDraft),
-        );
+        setDraft((current) => mergeDraftAfterAccountSave(current, saveStartedDraft, responseDraft));
       }
       return responseDraft;
     },
@@ -2418,8 +2177,7 @@ function SharedUpstreamAccountDetailDrawerInner({
       });
       try {
         const normalizedGroupName = normalizeGroupName(draft.groupName);
-        const pendingGroupNote =
-          resolvePendingGroupNoteForName(normalizedGroupName);
+        const pendingGroupNote = resolvePendingGroupNoteForName(normalizedGroupName);
         const normalizedEmail = draft.email.trim();
         const response = await saveAccount(source.id, {
           displayName: draft.displayName.trim() || undefined,
@@ -2429,9 +2187,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           note: draft.note.trim() || undefined,
           groupNote: pendingGroupNote || undefined,
           upstreamBaseUrl:
-            source.kind === "api_key_codex"
-              ? draft.upstreamBaseUrl.trim() || null
-              : undefined,
+            source.kind === "api_key_codex" ? draft.upstreamBaseUrl.trim() || null : undefined,
           apiKey:
             source.kind === "api_key_codex" && draft.apiKey.trim()
               ? draft.apiKey.trim()
@@ -2445,9 +2201,7 @@ function SharedUpstreamAccountDetailDrawerInner({
               ? normalizeNumberInput(draft.localSecondaryLimit)
               : undefined,
           localLimitUnit:
-            source.kind === "api_key_codex"
-              ? draft.localLimitUnit.trim() || undefined
-              : undefined,
+            source.kind === "api_key_codex" ? draft.localLimitUnit.trim() || undefined : undefined,
         });
         notifyMotherChange(response);
         applySavedAccountDraftResponse(
@@ -2467,9 +2221,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           },
         }));
       } finally {
-        if (
-          pendingSaveSessionsRef.current.get(source.id) === pendingSaveSession
-        ) {
+        if (pendingSaveSessionsRef.current.get(source.id) === pendingSaveSession) {
           pendingSaveSessionsRef.current.delete(source.id);
         }
         setBusyAction((current) => {
@@ -2507,8 +2259,7 @@ function SharedUpstreamAccountDetailDrawerInner({
       });
       try {
         const response = await saveAccount(source.id, {
-          boundProxyKeys:
-            normalizedProxyKeys.length > 0 ? normalizedProxyKeys : null,
+          boundProxyKeys: normalizedProxyKeys.length > 0 ? normalizedProxyKeys : null,
         });
         notifyMotherChange(response);
         return true;
@@ -2534,10 +2285,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   );
   const applyAccountProxyEditor = useCallback(async () => {
     if (!selectedDetail) return;
-    const saved = await handleSaveAccountProxyBindings(
-      selectedDetail,
-      accountProxyDraftKeys,
-    );
+    const saved = await handleSaveAccountProxyBindings(selectedDetail, accountProxyDraftKeys);
     if (saved) {
       setAccountProxyEditorOpen(false);
     }
@@ -2548,10 +2296,7 @@ function SharedUpstreamAccountDetailDrawerInner({
       field: InlinePolicyField,
       payload: UpdateGroupAccountRoutingRulePayload,
     ) => {
-      if (
-        inlinePolicyBusyField != null ||
-        hasBusyAccountAction(busyAction, source.id)
-      ) {
+      if (inlinePolicyBusyField != null || hasBusyAccountAction(busyAction, source.id)) {
         return;
       }
       setInlinePolicyErrors((current) => ({ ...current, [field]: null }));
@@ -2568,18 +2313,10 @@ function SharedUpstreamAccountDetailDrawerInner({
           [field]: err instanceof Error ? err.message : String(err),
         }));
       } finally {
-        setInlinePolicyBusyField((current) =>
-          current === field ? null : current,
-        );
+        setInlinePolicyBusyField((current) => (current === field ? null : current));
       }
     },
-    [
-      busyAction,
-      handleNotFoundClose,
-      inlinePolicyBusyField,
-      notifyMotherChange,
-      saveAccount,
-    ],
+    [busyAction, handleNotFoundClose, inlinePolicyBusyField, notifyMotherChange, saveAccount],
   );
 
   const handleSync = useCallback(
@@ -2692,10 +2429,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   );
 
   const detailIdentity =
-    selected ??
-    (accountId != null
-      ? { id: accountId, displayName: `#${accountId}` }
-      : null);
+    selected ?? (accountId != null ? { id: accountId, displayName: `#${accountId}` } : null);
 
   return (
     <>
@@ -2715,28 +2449,16 @@ function SharedUpstreamAccountDetailDrawerInner({
               <div className="space-y-3">
                 {selected ? (
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge
-                      variant={enableStatusVariant(
-                        accountEnableStatus(selected),
-                      )}
-                    >
+                    <Badge variant={enableStatusVariant(accountEnableStatus(selected))}>
                       {accountEnableStatusLabel(accountEnableStatus(selected))}
                     </Badge>
-                    <Badge
-                      variant={workStatusVariant(accountWorkStatus(selected))}
-                    >
+                    <Badge variant={workStatusVariant(accountWorkStatus(selected))}>
                       {accountWorkStatusLabel(accountWorkStatus(selected))}
                     </Badge>
-                    <Badge
-                      variant={syncStateVariant(accountSyncState(selected))}
-                    >
+                    <Badge variant={syncStateVariant(accountSyncState(selected))}>
                       {accountSyncStateLabel(accountSyncState(selected))}
                     </Badge>
-                    <Badge
-                      variant={healthStatusVariant(
-                        accountHealthStatus(selected),
-                      )}
-                    >
+                    <Badge variant={healthStatusVariant(accountHealthStatus(selected))}>
                       {accountHealthStatusLabel(accountHealthStatus(selected))}
                     </Badge>
                     <Badge variant={kindVariant(selected.kind)}>
@@ -2758,9 +2480,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                     ) : null}
                     {selected.kind === "api_key_codex" ? (
                       <Badge variant="secondary">
-                        {t(
-                          "accountPool.upstreamAccounts.apiKey.localPlaceholder",
-                        )}
+                        {t("accountPool.upstreamAccounts.apiKey.localPlaceholder")}
                       </Badge>
                     ) : null}
                   </div>
@@ -2774,9 +2494,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       {detailIdentity?.displayName ?? `#${accountId}`}
                     </h2>
                     {selected?.isMother ? (
-                      <MotherAccountBadge
-                        label={t("accountPool.upstreamAccounts.mother.badge")}
-                      />
+                      <MotherAccountBadge label={t("accountPool.upstreamAccounts.mother.badge")} />
                     ) : null}
                   </div>
                   <p className="section-description">
@@ -2794,16 +2512,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                     </span>
                     <Switch
                       checked={selected.enabled}
-                      onCheckedChange={(checked) =>
-                        void handleToggleEnabled(selected, checked)
-                      }
-                      disabled={
-                        hasBusyAccountAction(busyAction, selected.id) ||
-                        !writesEnabled
-                      }
-                      aria-label={t(
-                        "accountPool.upstreamAccounts.actions.enable",
-                      )}
+                      onCheckedChange={(checked) => void handleToggleEnabled(selected, checked)}
+                      disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
+                      aria-label={t("accountPool.upstreamAccounts.actions.enable")}
                     />
                   </div>
                   <Button
@@ -2830,19 +2541,12 @@ function SharedUpstreamAccountDetailDrawerInner({
                       type="button"
                       variant="outline"
                       onClick={() => void handleOauthLogin(selected.id)}
-                      disabled={
-                        hasBusyAccountAction(busyAction, selected.id) ||
-                        !writesEnabled
-                      }
+                      disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
                     >
                       {isBusyAction(busyAction, "relogin", selected.id) ? (
                         <Spinner size="sm" className="mr-2" />
                       ) : (
-                        <AppIcon
-                          name="login-variant"
-                          className="mr-2 h-4 w-4"
-                          aria-hidden
-                        />
+                        <AppIcon name="login-variant" className="mr-2 h-4 w-4" aria-hidden />
                       )}
                       {t("accountPool.upstreamAccounts.actions.relogin")}
                     </Button>
@@ -2850,11 +2554,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   <Popover
                     open={isDeleteConfirmOpen}
                     onOpenChange={(nextOpen) => {
-                      if (
-                        isBusyAction(busyAction, "delete", selected.id) &&
-                        !nextOpen
-                      )
-                        return;
+                      if (isBusyAction(busyAction, "delete", selected.id) && !nextOpen) return;
                       setIsDeleteConfirmOpen(nextOpen);
                     }}
                   >
@@ -2862,24 +2562,15 @@ function SharedUpstreamAccountDetailDrawerInner({
                       <Button
                         type="button"
                         variant="destructive"
-                        disabled={
-                          hasBusyAccountAction(busyAction, selected.id) ||
-                          !writesEnabled
-                        }
+                        disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
                         aria-haspopup="dialog"
                         aria-expanded={isDeleteConfirmOpen}
-                        aria-controls={
-                          isDeleteConfirmOpen ? deleteConfirmTitleId : undefined
-                        }
+                        aria-controls={isDeleteConfirmOpen ? deleteConfirmTitleId : undefined}
                       >
                         {isBusyAction(busyAction, "delete", selected.id) ? (
                           <Spinner size="sm" className="mr-2" />
                         ) : (
-                          <AppIcon
-                            name="trash-can-outline"
-                            className="mr-2 h-4 w-4"
-                            aria-hidden
-                          />
+                          <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />
                         )}
                         {t("accountPool.upstreamAccounts.actions.delete")}
                       </Button>
@@ -2915,10 +2606,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                               id={deleteConfirmTitleId}
                               className="min-w-0 break-words pr-2 text-[15px] font-semibold leading-6 text-base-content"
                             >
-                              {t(
-                                "accountPool.upstreamAccounts.deleteConfirmTitle",
-                                { name: selected.displayName },
-                              )}
+                              {t("accountPool.upstreamAccounts.deleteConfirmTitle", {
+                                name: selected.displayName,
+                              })}
                             </p>
                           </div>
                           <div className="flex justify-end gap-2">
@@ -2938,14 +2628,11 @@ function SharedUpstreamAccountDetailDrawerInner({
                               size="sm"
                               className="rounded-full px-3.5 font-semibold shadow-sm"
                               disabled={
-                                hasBusyAccountAction(busyAction, selected.id) ||
-                                !writesEnabled
+                                hasBusyAccountAction(busyAction, selected.id) || !writesEnabled
                               }
                               onClick={() => void handleDelete(selected)}
                             >
-                              {t(
-                                "accountPool.upstreamAccounts.actions.confirmDelete",
-                              )}
+                              {t("accountPool.upstreamAccounts.actions.confirmDelete")}
                             </Button>
                           </div>
                         </div>
@@ -3106,18 +2793,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                           {t("accountPool.upstreamAccounts.duplicate.badge")}
                         </p>
                         <p className="mt-1 text-sm text-warning/90">
-                          {t(
-                            "accountPool.upstreamAccounts.duplicate.warningBody",
-                            {
-                              reasons: formatDuplicateReasons(
-                                selectedDetail.duplicateInfo,
-                              ),
-                              peers:
-                                selectedDetail.duplicateInfo.peerAccountIds.join(
-                                  ", ",
-                                ),
-                            },
-                          )}
+                          {t("accountPool.upstreamAccounts.duplicate.warningBody", {
+                            reasons: formatDuplicateReasons(selectedDetail.duplicateInfo),
+                            peers: selectedDetail.duplicateInfo.peerAccountIds.join(", "),
+                          })}
                         </p>
                       </div>
                     </Alert>
@@ -3125,25 +2804,20 @@ function SharedUpstreamAccountDetailDrawerInner({
                   <div className="rounded-xl border border-base-300/70 bg-base-100/55 px-4 py-2">
                     <div className="grid gap-x-5 gap-y-1 [grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr))]">
                       <CompactDetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.fields.groupName",
-                        )}
+                        label={t("accountPool.upstreamAccounts.fields.groupName")}
                         value={selectedDetail.groupName ?? ""}
                         title={selectedDetail.groupName ?? undefined}
                       />
                       {selectedDetail.kind === "oauth_codex" ? (
                         <CompactDetailField
-                          label={t(
-                            "accountPool.upstreamAccounts.fields.imageToolCapability",
-                          )}
+                          label={t("accountPool.upstreamAccounts.fields.imageToolCapability")}
                           value={
                             <Badge
                               variant={
-                                (selectedDetail.imageToolCapability ??
-                                  "unknown") === "supported"
+                                (selectedDetail.imageToolCapability ?? "unknown") === "supported"
                                   ? "success"
-                                  : (selectedDetail.imageToolCapability ??
-                                        "unknown") === "unsupported"
+                                  : (selectedDetail.imageToolCapability ?? "unknown") ===
+                                      "unsupported"
                                     ? "warning"
                                     : "secondary"
                               }
@@ -3160,9 +2834,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                         />
                       ) : null}
                       <CompactDetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.mother.fieldLabel",
-                        )}
+                        label={t("accountPool.upstreamAccounts.mother.fieldLabel")}
                         value={
                           selectedDetail.isMother
                             ? t("accountPool.upstreamAccounts.mother.badge")
@@ -3176,9 +2848,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       />
                       {selectedDetail.kind === "oauth_codex" ? (
                         <CompactDetailField
-                          label={t(
-                            "accountPool.upstreamAccounts.fields.verifiedEmail",
-                          )}
+                          label={t("accountPool.upstreamAccounts.fields.verifiedEmail")}
                           value={selectedDetail.verifiedEmail ?? ""}
                           title={selectedDetail.verifiedEmail ?? undefined}
                         />
@@ -3186,55 +2856,37 @@ function SharedUpstreamAccountDetailDrawerInner({
                       {selectedDetail.kind === "oauth_codex" ? (
                         <>
                           <CompactDetailField
-                            label={t(
-                              "accountPool.upstreamAccounts.fields.accountId",
-                            )}
+                            label={t("accountPool.upstreamAccounts.fields.accountId")}
                             value={selectedDetail.chatgptAccountId ?? ""}
                             title={selectedDetail.chatgptAccountId ?? undefined}
                           />
                           <CompactDetailField
-                            label={t(
-                              "accountPool.upstreamAccounts.fields.userId",
-                            )}
+                            label={t("accountPool.upstreamAccounts.fields.userId")}
                             value={selectedDetail.chatgptUserId ?? ""}
                             title={selectedDetail.chatgptUserId ?? undefined}
                           />
                         </>
                       ) : null}
                       <CompactDetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.fields.lastSuccessSync",
-                        )}
-                        value={formatDateTime(
-                          selectedDetail.lastSuccessfulSyncAt,
-                        )}
-                        title={formatDateTime(
-                          selectedDetail.lastSuccessfulSyncAt,
-                        )}
+                        label={t("accountPool.upstreamAccounts.fields.lastSuccessSync")}
+                        value={formatDateTime(selectedDetail.lastSuccessfulSyncAt)}
+                        title={formatDateTime(selectedDetail.lastSuccessfulSyncAt)}
                       />
                     </div>
                   </div>
                   {selectedDetail.kind === "oauth_codex" ? (
                     <div className="grid gap-4 lg:grid-cols-2">
                       <UpstreamAccountUsageCard
-                        title={t(
-                          "accountPool.upstreamAccounts.primaryWindowLabel",
-                        )}
-                        description={t(
-                          "accountPool.upstreamAccounts.usage.primaryDescription",
-                        )}
+                        title={t("accountPool.upstreamAccounts.primaryWindowLabel")}
+                        description={t("accountPool.upstreamAccounts.usage.primaryDescription")}
                         window={selectedDetail.primaryWindow}
                         history={selectedDetail.history}
                         historyKey="primaryUsedPercent"
                         emptyLabel={t("accountPool.upstreamAccounts.noHistory")}
                       />
                       <UpstreamAccountUsageCard
-                        title={t(
-                          "accountPool.upstreamAccounts.secondaryWindowLabel",
-                        )}
-                        description={t(
-                          "accountPool.upstreamAccounts.usage.secondaryDescription",
-                        )}
+                        title={t("accountPool.upstreamAccounts.secondaryWindowLabel")}
+                        description={t("accountPool.upstreamAccounts.usage.secondaryDescription")}
                         window={selectedDetail.secondaryWindow}
                         history={selectedDetail.history}
                         historyKey="secondaryUsedPercent"
@@ -3245,9 +2897,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   ) : null}
                   <DashboardActivityOverview
                     key={`account-activity-${accountId}`}
-                    title={t(
-                      "accountPool.upstreamAccounts.records.activityOverviewTitle",
-                    )}
+                    title={t("accountPool.upstreamAccounts.records.activityOverviewTitle")}
                     storageKey={`${ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX}.${accountId}`}
                     testId="upstream-account-records-activity-overview"
                     upstreamAccountId={accountId}
@@ -3269,125 +2919,99 @@ function SharedUpstreamAccountDetailDrawerInner({
                     />
                   ) : null}
                   <div className="hidden" aria-hidden="true">
-                  {accountRecordsMode === "anchored" ? (
-                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-info/35 bg-info/8 px-3 py-2 text-sm">
-                      <span className="text-base-content/72">
-                        {accountRecordsLocateError
-                          ? t(
-                              "accountPool.upstreamAccounts.records.locateUnavailable",
-                            )
-                          : accountRecordsScrollTarget
-                          ? t(
-                              "accountPool.upstreamAccounts.records.located",
-                              {
-                                invokeId: accountRecordsScrollTarget.invokeId,
-                              },
-                            )
-                          : t(
-                              "accountPool.upstreamAccounts.records.locating",
-                            )}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={reloadAccountRecords}
-                      >
-                        <AppIcon
-                          name="refresh"
-                          className="mr-2 h-4 w-4"
-                          aria-hidden
-                        />
-                        {t(
-                          "accountPool.upstreamAccounts.records.returnLatest",
-                        )}
-                      </Button>
-                    </div>
-                  ) : null}
-                  {accountRecordsLocateError ? (
-                    <Alert
-                      ref={accountRecordsLocateAlertRef}
-                      role="alert"
-                      tabIndex={-1}
-                      variant="warning"
-                      className="justify-between gap-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warning"
-                    >
-                      <span className="min-w-0 break-words">
-                        {t(
-                          accountRecordsLocateError.kind === "notFound"
-                            ? "accountPool.upstreamAccounts.records.locateNotFound"
-                            : "accountPool.upstreamAccounts.records.locateFailed",
-                          { invokeId: accountRecordsLocateError.invokeId },
-                        )}
-                      </span>
-                      {accountRecordsLocateError.kind === "request" ? (
+                    {accountRecordsMode === "anchored" ? (
+                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-info/35 bg-info/8 px-3 py-2 text-sm">
+                        <span className="text-base-content/72">
+                          {accountRecordsLocateError
+                            ? t("accountPool.upstreamAccounts.records.locateUnavailable")
+                            : accountRecordsScrollTarget
+                              ? t("accountPool.upstreamAccounts.records.located", {
+                                  invokeId: accountRecordsScrollTarget.invokeId,
+                                })
+                              : t("accountPool.upstreamAccounts.records.locating")}
+                        </span>
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
-                          onClick={() =>
-                            locateAccountRecord(
-                              accountRecordsLocateError.invokeId,
-                            )
-                          }
+                          onClick={reloadAccountRecords}
                         >
-                          {t(
-                            "accountPool.upstreamAccounts.records.retryLocate",
-                          )}
+                          <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
+                          {t("accountPool.upstreamAccounts.records.returnLatest")}
                         </Button>
-                      ) : null}
-                    </Alert>
-                  ) : null}
-                  <InvocationTable
-                    records={accountRecords}
-                    isLoading={
-                      accountRecordsLoading && accountRecords.length === 0
-                    }
-                    error={accountRecordsError}
-                    emptyLabel={t("accountPool.upstreamAccounts.records.empty")}
-                    onOpenUpstreamAccount={handleOpenRelatedUpstreamAccount}
-                    scrollElement={detailDrawerBodyElement}
-                    showInvokeId
-                    scrollTarget={accountRecordsScrollTarget}
-                  />
-                  {accountRecords.length > 0 ? (
-                    <div
-                      className="flex justify-center py-2 text-xs text-base-content/62"
-                      data-testid="upstream-account-records-infinite-status"
-                    >
-                      {accountRecordsLoading ? (
-                        <span className="inline-flex items-center gap-2">
-                          <Spinner size="sm" />
+                      </div>
+                    ) : null}
+                    {accountRecordsLocateError ? (
+                      <Alert
+                        ref={accountRecordsLocateAlertRef}
+                        role="alert"
+                        tabIndex={-1}
+                        variant="warning"
+                        className="justify-between gap-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warning"
+                      >
+                        <span className="min-w-0 break-words">
                           {t(
-                            "accountPool.upstreamAccounts.records.loadingMore",
+                            accountRecordsLocateError.kind === "notFound"
+                              ? "accountPool.upstreamAccounts.records.locateNotFound"
+                              : "accountPool.upstreamAccounts.records.locateFailed",
+                            { invokeId: accountRecordsLocateError.invokeId },
                           )}
                         </span>
-                      ) : accountRecordsMode === "anchored" ? (
-                        <span>
-                          {t(
-                            "accountPool.upstreamAccounts.records.anchoredLoaded",
-                            {
+                        {accountRecordsLocateError.kind === "request" ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => locateAccountRecord(accountRecordsLocateError.invokeId)}
+                          >
+                            {t("accountPool.upstreamAccounts.records.retryLocate")}
+                          </Button>
+                        ) : null}
+                      </Alert>
+                    ) : null}
+                    <InvocationTable
+                      records={accountRecords}
+                      isLoading={accountRecordsLoading && accountRecords.length === 0}
+                      error={accountRecordsError}
+                      emptyLabel={t("accountPool.upstreamAccounts.records.empty")}
+                      onOpenUpstreamAccount={handleOpenRelatedUpstreamAccount}
+                      scrollElement={detailDrawerBodyElement}
+                      showInvokeId
+                      scrollTarget={accountRecordsScrollTarget}
+                    />
+                    {accountRecords.length > 0 ? (
+                      <div
+                        className="flex justify-center py-2 text-xs text-base-content/62"
+                        data-testid="upstream-account-records-infinite-status"
+                      >
+                        {accountRecordsLoading ? (
+                          <span className="inline-flex items-center gap-2">
+                            <Spinner size="sm" />
+                            {t("accountPool.upstreamAccounts.records.loadingMore")}
+                          </span>
+                        ) : accountRecordsMode === "anchored" ? (
+                          <span>
+                            {t("accountPool.upstreamAccounts.records.anchoredLoaded", {
                               loaded: accountRecords.length,
                               total: accountRecordsTotal,
-                            },
-                          )}
-                        </span>
-                      ) : accountRecordsHasMore ? (
-                        <span>
-                          {t("accountPool.upstreamAccounts.records.loaded", {
-                            loaded: accountRecords.length,
-                            total: accountRecordsTotal,
-                          })}
-                        </span>
-                      ) : (
-                        <span>
-                          {t("accountPool.upstreamAccounts.records.allLoaded", {
-                            count: accountRecords.length,
-                          })}
-                        </span>
-                      )}
-                    </div>
-                  ) : null}
+                            })}
+                          </span>
+                        ) : accountRecordsHasMore ? (
+                          <span>
+                            {t("accountPool.upstreamAccounts.records.loaded", {
+                              loaded: accountRecords.length,
+                              total: accountRecordsTotal,
+                            })}
+                          </span>
+                        ) : (
+                          <span>
+                            {t("accountPool.upstreamAccounts.records.allLoaded", {
+                              count: accountRecords.length,
+                            })}
+                          </span>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ) : null}
@@ -3400,9 +3024,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                 >
                   <Card className="border-base-300/80 bg-base-100/72">
                     <CardHeader>
-                      <CardTitle>
-                        {t("accountPool.upstreamAccounts.editTitle")}
-                      </CardTitle>
+                      <CardTitle>{t("accountPool.upstreamAccounts.editTitle")}</CardTitle>
                       <CardDescription>
                         {t("accountPool.upstreamAccounts.editDescription")}
                       </CardDescription>
@@ -3452,15 +3074,11 @@ function SharedUpstreamAccountDetailDrawerInner({
                             }))
                           }
                         />
-                        {selectedDetail.kind === "oauth_codex" &&
-                        selectedDetail.verifiedEmail ? (
+                        {selectedDetail.kind === "oauth_codex" && selectedDetail.verifiedEmail ? (
                           <p className="mt-2 text-xs leading-5 text-base-content/70">
-                            {t(
-                              "accountPool.upstreamAccounts.edit.verifiedEmailHint",
-                              {
-                                verifiedEmail: selectedDetail.verifiedEmail,
-                              },
-                            )}
+                            {t("accountPool.upstreamAccounts.edit.verifiedEmailHint", {
+                              verifiedEmail: selectedDetail.verifiedEmail,
+                            })}
                           </p>
                         ) : null}
                       </label>
@@ -3479,19 +3097,14 @@ function SharedUpstreamAccountDetailDrawerInner({
                             searchPlaceholder={t(
                               "accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder",
                             )}
-                            emptyLabel={t(
-                              "accountPool.upstreamAccounts.fields.groupNameEmpty",
-                            )}
+                            emptyLabel={t("accountPool.upstreamAccounts.fields.groupNameEmpty")}
                             createLabel={(value) =>
-                              t(
-                                "accountPool.upstreamAccounts.fields.groupNameConfigureValue",
-                                { value },
-                              )
+                              t("accountPool.upstreamAccounts.fields.groupNameConfigureValue", {
+                                value,
+                              })
                             }
                             onCreateRequested={handleDetailGroupCreateRequest}
-                            formatAccountCountLabel={
-                              formatGroupAccountCountLabel
-                            }
+                            formatAccountCountLabel={formatGroupAccountCountLabel}
                             onValueChange={(value) =>
                               setDraft((current) => ({
                                 ...current,
@@ -3503,24 +3116,15 @@ function SharedUpstreamAccountDetailDrawerInner({
                           <Button
                             type="button"
                             size="icon"
-                            variant={
-                              hasGroupSettings(draft.groupName)
-                                ? "secondary"
-                                : "outline"
-                            }
+                            variant={hasGroupSettings(draft.groupName) ? "secondary" : "outline"}
                             className="shrink-0 rounded-full"
-                            aria-label={t(
-                              "accountPool.upstreamAccounts.groupNotes.actions.edit",
-                            )}
-                            title={t(
-                              "accountPool.upstreamAccounts.groupNotes.actions.edit",
-                            )}
+                            aria-label={t("accountPool.upstreamAccounts.groupNotes.actions.edit")}
+                            title={t("accountPool.upstreamAccounts.groupNotes.actions.edit")}
                             onClick={() =>
                               openGroupNoteEditor(draft.groupName, {
                                 onDeleted: (deletedGroupName) =>
                                   setDraft((current) =>
-                                    normalizeGroupName(current.groupName) ===
-                                    deletedGroupName
+                                    normalizeGroupName(current.groupName) === deletedGroupName
                                       ? {
                                           ...current,
                                           groupName: "",
@@ -3529,10 +3133,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   ),
                               })
                             }
-                            disabled={
-                              !writesEnabled ||
-                              !normalizeGroupName(draft.groupName)
-                            }
+                            disabled={!writesEnabled || !normalizeGroupName(draft.groupName)}
                           >
                             <AppIcon
                               name="file-document-edit-outline"
@@ -3546,12 +3147,8 @@ function SharedUpstreamAccountDetailDrawerInner({
                         <MotherAccountToggle
                           checked={draft.isMother}
                           disabled={!writesEnabled}
-                          label={t(
-                            "accountPool.upstreamAccounts.mother.toggleLabel",
-                          )}
-                          description={t(
-                            "accountPool.upstreamAccounts.mother.toggleDescription",
-                          )}
+                          label={t("accountPool.upstreamAccounts.mother.toggleLabel")}
+                          description={t("accountPool.upstreamAccounts.mother.toggleDescription")}
                           onToggle={() =>
                             setDraft((current) => ({
                               ...current,
@@ -3577,9 +3174,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                         />
                       </label>
                       <div className="field gap-3 md:col-span-2">
-                        <span className="field-label">
-                          {t("accountPool.tags.field.label")}
-                        </span>
+                        <span className="field-label">{t("accountPool.tags.field.label")}</span>
                         <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-[1.2rem] border border-base-300/80 bg-base-100/55 px-3 py-2 shadow-sm">
                           {(selectedDetail.tags ?? []).length > 0 ? (
                             selectedDetail.tags.map((tag) => (
@@ -3603,9 +3198,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                         <>
                           <label className="field">
                             <span className="field-label">
-                              {t(
-                                "accountPool.upstreamAccounts.fields.primaryLimit",
-                              )}
+                              {t("accountPool.upstreamAccounts.fields.primaryLimit")}
                             </span>
                             <Input
                               name="detailPrimaryLimit"
@@ -3620,9 +3213,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           </label>
                           <label className="field">
                             <span className="field-label">
-                              {t(
-                                "accountPool.upstreamAccounts.fields.secondaryLimit",
-                              )}
+                              {t("accountPool.upstreamAccounts.fields.secondaryLimit")}
                             </span>
                             <Input
                               name="detailSecondaryLimit"
@@ -3637,9 +3228,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           </label>
                           <label className="field">
                             <span className="field-label">
-                              {t(
-                                "accountPool.upstreamAccounts.fields.limitUnit",
-                              )}
+                              {t("accountPool.upstreamAccounts.fields.limitUnit")}
                             </span>
                             <Input
                               name="detailLimitUnit"
@@ -3654,9 +3243,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           </label>
                           <label className="field">
                             <FormFieldFeedback
-                              label={t(
-                                "accountPool.upstreamAccounts.fields.upstreamBaseUrl",
-                              )}
+                              label={t("accountPool.upstreamAccounts.fields.upstreamBaseUrl")}
                               message={draftUpstreamBaseUrlError}
                               messageClassName="md:max-w-[min(20rem,calc(100%-8rem))]"
                             />
@@ -3673,9 +3260,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 placeholder={t(
                                   "accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder",
                                 )}
-                                aria-invalid={
-                                  draftUpstreamBaseUrlError ? "true" : "false"
-                                }
+                                aria-invalid={draftUpstreamBaseUrlError ? "true" : "false"}
                                 className={cn(
                                   draftUpstreamBaseUrlError
                                     ? "border-error/70 focus-visible:ring-error"
@@ -3686,9 +3271,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           </label>
                           <label className="field">
                             <span className="field-label">
-                              {t(
-                                "accountPool.upstreamAccounts.fields.rotateApiKey",
-                              )}
+                              {t("accountPool.upstreamAccounts.fields.rotateApiKey")}
                             </span>
                             <Input
                               name="detailRotateApiKey"
@@ -3711,21 +3294,14 @@ function SharedUpstreamAccountDetailDrawerInner({
                           type="button"
                           onClick={() => void handleSave(selectedDetail)}
                           disabled={
-                            hasBusyAccountAction(
-                              busyAction,
-                              selectedDetail.id,
-                            ) ||
+                            hasBusyAccountAction(busyAction, selectedDetail.id) ||
                             !writesEnabled ||
                             detailDisplayNameConflict != null ||
                             (selectedDetail.kind === "api_key_codex" &&
                               Boolean(draftUpstreamBaseUrlError))
                           }
                         >
-                          {isBusyAction(
-                            busyAction,
-                            "save",
-                            selectedDetail.id,
-                          ) ? (
+                          {isBusyAction(busyAction, "save", selectedDetail.id) ? (
                             <Spinner size="sm" className="mr-2" />
                           ) : (
                             <AppIcon
@@ -3766,20 +3342,14 @@ function SharedUpstreamAccountDetailDrawerInner({
                       <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 sm:px-6">
                         <DialogHeader className="min-w-0">
                           <DialogTitle className="text-lg">
-                            {t(
-                              "accountPool.upstreamAccounts.proxyBindings.dialogTitle",
-                            )}
+                            {t("accountPool.upstreamAccounts.proxyBindings.dialogTitle")}
                           </DialogTitle>
                           <DialogDescription>
-                            {t(
-                              "accountPool.upstreamAccounts.proxyBindings.dialogDescription",
-                            )}
+                            {t("accountPool.upstreamAccounts.proxyBindings.dialogDescription")}
                           </DialogDescription>
                         </DialogHeader>
                         <DialogCloseIcon
-                          aria-label={t(
-                            "accountPool.upstreamAccounts.actions.closeDetails",
-                          )}
+                          aria-label={t("accountPool.upstreamAccounts.actions.closeDetails")}
                           disabled={accountProxyEditorBusy}
                         />
                       </div>
@@ -3795,15 +3365,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                             automatic: t(
                               "accountPool.upstreamAccounts.proxyBindings.dialogAutomatic",
                             ),
-                            loading: t(
-                              "accountPool.upstreamAccounts.proxyBindings.loading",
-                            ),
-                            empty: t(
-                              "accountPool.upstreamAccounts.proxyBindings.dialogEmpty",
-                            ),
-                            missing: t(
-                              "accountPool.upstreamAccounts.proxyBindings.statusMissing",
-                            ),
+                            loading: t("accountPool.upstreamAccounts.proxyBindings.loading"),
+                            empty: t("accountPool.upstreamAccounts.proxyBindings.dialogEmpty"),
+                            missing: t("accountPool.upstreamAccounts.proxyBindings.statusMissing"),
                             unavailable: t(
                               "accountPool.upstreamAccounts.proxyBindings.statusUnavailable",
                             ),
@@ -3829,9 +3393,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                               "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartInteractionHint",
                             ),
                             chartLocaleTag:
-                              typeof navigator === "undefined"
-                                ? "en-US"
-                                : navigator.language,
+                              typeof navigator === "undefined" ? "en-US" : navigator.language,
                           }}
                           scrollRegionClassName="max-h-[min(29rem,58dvh)]"
                         />
@@ -3847,11 +3409,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                         </Button>
                         <Button
                           type="button"
-                          disabled={
-                            accountProxyEditorBusy ||
-                            !writesEnabled ||
-                            !selectedDetail
-                          }
+                          disabled={accountProxyEditorBusy || !writesEnabled || !selectedDetail}
                           onClick={() => void applyAccountProxyEditor()}
                         >
                           {accountProxyEditorBusy ? (
@@ -3863,9 +3421,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                               aria-hidden
                             />
                           )}
-                          {t(
-                            "accountPool.upstreamAccounts.proxyBindings.apply",
-                          )}
+                          {t("accountPool.upstreamAccounts.proxyBindings.apply")}
                         </Button>
                       </DialogFooter>
                     </DialogContent>
@@ -3874,10 +3430,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                     rule={selectedDetail.effectiveRoutingRule}
                     identityKey={selectedDetail.id}
                     proxyBindings={{
-                      source:
-                        selectedAccountProxyKeys.length > 0
-                          ? "account"
-                          : "group",
+                      source: selectedAccountProxyKeys.length > 0 ? "account" : "group",
                       items: selectedEffectiveProxyKeys.map((key) => {
                         const node = selectedProxyNodeByKey.get(key);
                         return {
@@ -3885,39 +3438,25 @@ function SharedUpstreamAccountDetailDrawerInner({
                           label: proxyNodeLabel(node, key),
                           status: proxyNodeStatusLabel(node, key, t),
                           tone: proxyNodeTone(node, key),
-                          accountOverride:
-                            selectedAccountProxyKeys.includes(key),
+                          accountOverride: selectedAccountProxyKeys.includes(key),
                         };
                       }),
                       busy: accountProxyEditorBusy,
                       disabled: !writesEnabled,
                       onEdit: openAccountProxyEditor,
-                      onClear: () =>
-                        void handleSaveAccountProxyBindings(selectedDetail, []),
+                      onClear: () => void handleSaveAccountProxyBindings(selectedDetail, []),
                       onRemove: (key) =>
                         void handleSaveAccountProxyBindings(
                           selectedDetail,
                           toggleProxyKey(selectedAccountProxyKeys, key),
                         ),
                       labels: {
-                        field: t(
-                          "accountPool.upstreamAccounts.proxyBindings.accountTitle",
-                        ),
-                        add: t(
-                          "accountPool.upstreamAccounts.proxyBindings.addLabel",
-                        ),
-                        clear: t(
-                          "accountPool.upstreamAccounts.proxyBindings.clear",
-                        ),
-                        empty: t(
-                          "accountPool.upstreamAccounts.proxyBindings.effectiveEmpty",
-                        ),
-                        hint: t(
-                          "accountPool.upstreamAccounts.proxyBindings.failoverHint",
-                        ),
-                        remove: t(
-                          "accountPool.upstreamAccounts.proxyBindings.remove",
-                        ),
+                        field: t("accountPool.upstreamAccounts.proxyBindings.accountTitle"),
+                        add: t("accountPool.upstreamAccounts.proxyBindings.addLabel"),
+                        clear: t("accountPool.upstreamAccounts.proxyBindings.clear"),
+                        empty: t("accountPool.upstreamAccounts.proxyBindings.effectiveEmpty"),
+                        hint: t("accountPool.upstreamAccounts.proxyBindings.failoverHint"),
+                        remove: t("accountPool.upstreamAccounts.proxyBindings.remove"),
                       },
                     }}
                     editablePolicy={{
@@ -3932,30 +3471,14 @@ function SharedUpstreamAccountDetailDrawerInner({
                         ),
                     }}
                     labels={{
-                      title: t(
-                        "accountPool.upstreamAccounts.effectiveRule.title",
-                      ),
-                      description: t(
-                        "accountPool.upstreamAccounts.effectiveRule.description",
-                      ),
-                      noTags: t(
-                        "accountPool.upstreamAccounts.effectiveRule.noTags",
-                      ),
-                      allowCutOut: t(
-                        "accountPool.upstreamAccounts.effectiveRule.allowCutOut",
-                      ),
-                      denyCutOut: t(
-                        "accountPool.upstreamAccounts.effectiveRule.denyCutOut",
-                      ),
-                      allowCutIn: t(
-                        "accountPool.upstreamAccounts.effectiveRule.allowCutIn",
-                      ),
-                      denyCutIn: t(
-                        "accountPool.upstreamAccounts.effectiveRule.denyCutIn",
-                      ),
-                      sourceTags: t(
-                        "accountPool.upstreamAccounts.effectiveRule.sourceTags",
-                      ),
+                      title: t("accountPool.upstreamAccounts.effectiveRule.title"),
+                      description: t("accountPool.upstreamAccounts.effectiveRule.description"),
+                      noTags: t("accountPool.upstreamAccounts.effectiveRule.noTags"),
+                      allowCutOut: t("accountPool.upstreamAccounts.effectiveRule.allowCutOut"),
+                      denyCutOut: t("accountPool.upstreamAccounts.effectiveRule.denyCutOut"),
+                      allowCutIn: t("accountPool.upstreamAccounts.effectiveRule.allowCutIn"),
+                      denyCutIn: t("accountPool.upstreamAccounts.effectiveRule.denyCutIn"),
+                      sourceTags: t("accountPool.upstreamAccounts.effectiveRule.sourceTags"),
                       sourceBreakdownTitle: t(
                         "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle",
                       ),
@@ -3965,15 +3488,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                       fieldAllowCutIn: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn",
                       ),
-                      priorityNoNew: t(
-                        "accountPool.tags.dialog.priorityNoNew",
-                      ),
-                      fieldPriority: t(
-                        "accountPool.upstreamAccounts.effectiveRule.fieldPriority",
-                      ),
-                      fieldFastMode: t(
-                        "accountPool.upstreamAccounts.effectiveRule.fieldFastMode",
-                      ),
+                      priorityNoNew: t("accountPool.tags.dialog.priorityNoNew"),
+                      fieldPriority: t("accountPool.upstreamAccounts.effectiveRule.fieldPriority"),
+                      fieldFastMode: t("accountPool.upstreamAccounts.effectiveRule.fieldFastMode"),
                       fieldConcurrency: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency",
                       ),
@@ -3995,20 +3512,13 @@ function SharedUpstreamAccountDetailDrawerInner({
                       statusChangeReasonSectionHint: t(
                         "accountPool.upstreamAccounts.statusChangeReasons.sectionHint",
                       ),
-                      statusChangeReasonLabel: (
-                        reason: StatusChangeReasonCode,
-                      ) =>
-                        t(
-                          `accountPool.upstreamAccounts.statusChangeReasons.reasons.${reason}`,
-                        ),
-                      statusChangeReasonSummary: (
-                        enabled: number,
-                        total: number,
-                      ) =>
-                        t(
-                          "accountPool.upstreamAccounts.statusChangeReasons.summary",
-                          { enabled, total },
-                        ),
+                      statusChangeReasonLabel: (reason: StatusChangeReasonCode) =>
+                        t(`accountPool.upstreamAccounts.statusChangeReasons.reasons.${reason}`),
+                      statusChangeReasonSummary: (enabled: number, total: number) =>
+                        t("accountPool.upstreamAccounts.statusChangeReasons.summary", {
+                          enabled,
+                          total,
+                        }),
                       statusChangeReasonEnabledValue: t(
                         "accountPool.upstreamAccounts.statusChangeReasons.enabledValue",
                       ),
@@ -4030,60 +3540,35 @@ function SharedUpstreamAccountDetailDrawerInner({
                       systemDeniedModelsEmpty: t(
                         "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty",
                       ),
-                      sourceRoot: t(
-                        "accountPool.upstreamAccounts.effectiveRule.sourceRoot",
-                      ),
-                      sourceGroup: t(
-                        "accountPool.upstreamAccounts.effectiveRule.sourceGroup",
-                      ),
-                      sourceTag: t(
-                        "accountPool.upstreamAccounts.effectiveRule.sourceTag",
-                      ),
-                      sourceAccount: t(
-                        "accountPool.upstreamAccounts.effectiveRule.sourceAccount",
-                      ),
+                      sourceRoot: t("accountPool.upstreamAccounts.effectiveRule.sourceRoot"),
+                      sourceGroup: t("accountPool.upstreamAccounts.effectiveRule.sourceGroup"),
+                      sourceTag: t("accountPool.upstreamAccounts.effectiveRule.sourceTag"),
+                      sourceAccount: t("accountPool.upstreamAccounts.effectiveRule.sourceAccount"),
                       sourceConversation: t(
                         "accountPool.upstreamAccounts.effectiveRule.sourceConversation",
                       ),
-                      sourceSystem: t(
-                        "accountPool.upstreamAccounts.effectiveRule.sourceSystem",
-                      ),
-                      overrideEdit: t(
-                        "accountPool.upstreamAccounts.effectiveRule.overrideEdit",
-                      ),
+                      sourceSystem: t("accountPool.upstreamAccounts.effectiveRule.sourceSystem"),
+                      overrideEdit: t("accountPool.upstreamAccounts.effectiveRule.overrideEdit"),
                       overrideActive: t(
                         "accountPool.upstreamAccounts.effectiveRule.overrideActive",
                       ),
-                      overrideClear: t(
-                        "accountPool.upstreamAccounts.effectiveRule.overrideClear",
-                      ),
+                      overrideClear: t("accountPool.upstreamAccounts.effectiveRule.overrideClear"),
                       statusChangeReasonResetAction: t(
                         "accountPool.upstreamAccounts.statusChangeReasons.resetAction",
                       ),
                       overrideSaving: t(
                         "accountPool.upstreamAccounts.effectiveRule.overrideSaving",
                       ),
-                      inheritValue: t(
-                        "accountPool.upstreamAccounts.effectiveRule.inheritValue",
-                      ),
-                      cutOutLabel: t(
-                        "accountPool.upstreamAccounts.effectiveRule.fieldCutOut",
-                      ),
-                      cutInLabel: t(
-                        "accountPool.upstreamAccounts.effectiveRule.fieldCutIn",
-                      ),
+                      inheritValue: t("accountPool.upstreamAccounts.effectiveRule.inheritValue"),
+                      cutOutLabel: t("accountPool.upstreamAccounts.effectiveRule.fieldCutOut"),
+                      cutInLabel: t("accountPool.upstreamAccounts.effectiveRule.fieldCutIn"),
                       upstream429RetryCountValue: (count) => String(count),
                       availableModelsAddCustom: t(
                         "accountPool.tags.dialog.availableModelsAddCustom",
                       ),
                       availableModelsCustomLabel: (value) =>
-                        t(
-                          "accountPool.tags.dialog.availableModelsCustomLabel",
-                          { value },
-                        ),
-                      availableModelsRemove: t(
-                        "accountPool.tags.dialog.availableModelsRemove",
-                      ),
+                        t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
+                      availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
                       availableModelsPlaceholder: t(
                         "accountPool.tags.dialog.availableModelsSearchPlaceholder",
                       ),
@@ -4152,14 +3637,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                     <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                       <div>
                         <CardTitle>
-                          {t(
-                            "accountPool.upstreamAccounts.stickyConversations.title",
-                          )}
+                          {t("accountPool.upstreamAccounts.stickyConversations.title")}
                         </CardTitle>
                         <CardDescription>
-                          {t(
-                            "accountPool.upstreamAccounts.stickyConversations.description",
-                          )}
+                          {t("accountPool.upstreamAccounts.stickyConversations.description")}
                         </CardDescription>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -4168,18 +3649,11 @@ function SharedUpstreamAccountDetailDrawerInner({
                           variant="ghost"
                           size="sm"
                           className="gap-2"
-                          disabled={
-                            stickyConversationLoading ||
-                            !hasVisibleStickyConversations
-                          }
+                          disabled={stickyConversationLoading || !hasVisibleStickyConversations}
                           onClick={toggleAllVisibleStickyKeys}
                         >
                           <AppIcon
-                            name={
-                              allVisibleStickyKeysExpanded
-                                ? "chevron-up"
-                                : "chevron-down"
-                            }
+                            name={allVisibleStickyKeysExpanded ? "chevron-up" : "chevron-down"}
                             className="h-4 w-4"
                             aria-hidden
                           />
@@ -4195,10 +3669,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           value={stickyConversationSelectionValue}
                           options={stickyConversationSelectionOptions}
                           onValueChange={(value) => {
-                            if (
-                              !STICKY_CONVERSATION_SELECTION_LOOKUP.has(value)
-                            )
-                              return;
+                            if (!STICKY_CONVERSATION_SELECTION_LOOKUP.has(value)) return;
                             setStickyConversationSelectionValue(value);
                           }}
                         />
@@ -4229,49 +3700,32 @@ function SharedUpstreamAccountDetailDrawerInner({
                 >
                   <Card className="border-base-300/80 bg-base-100/72">
                     <CardHeader>
-                      <CardTitle>
-                        {t("accountPool.upstreamAccounts.healthTitle")}
-                      </CardTitle>
+                      <CardTitle>{t("accountPool.upstreamAccounts.healthTitle")}</CardTitle>
                       <CardDescription>
                         {t("accountPool.upstreamAccounts.healthDescription")}
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                       <DetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.fields.lastSyncedAt",
-                        )}
+                        label={t("accountPool.upstreamAccounts.fields.lastSyncedAt")}
                         value={formatDateTime(selectedDetail.lastSyncedAt)}
                       />
                       <DetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.fields.lastRefreshedAt",
-                        )}
+                        label={t("accountPool.upstreamAccounts.fields.lastRefreshedAt")}
                         value={formatDateTime(selectedDetail.lastRefreshedAt)}
                       />
                       <DetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.fields.tokenExpiresAt",
-                        )}
+                        label={t("accountPool.upstreamAccounts.fields.tokenExpiresAt")}
                         value={formatDateTime(selectedDetail.tokenExpiresAt)}
                       />
                       <DetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.fields.compactSupport",
-                        )}
+                        label={t("accountPool.upstreamAccounts.fields.compactSupport")}
                         value={
                           selectedDetail.compactSupport?.status === "supported"
-                            ? t(
-                                "accountPool.upstreamAccounts.compactSupport.status.supported",
-                              )
-                            : selectedDetail.compactSupport?.status ===
-                                "unsupported"
-                              ? t(
-                                  "accountPool.upstreamAccounts.compactSupport.status.unsupported",
-                                )
-                              : t(
-                                  "accountPool.upstreamAccounts.compactSupport.status.unknown",
-                                )
+                            ? t("accountPool.upstreamAccounts.compactSupport.status.supported")
+                            : selectedDetail.compactSupport?.status === "unsupported"
+                              ? t("accountPool.upstreamAccounts.compactSupport.status.unsupported")
+                              : t("accountPool.upstreamAccounts.compactSupport.status.unknown")
                         }
                       />
                       <DetailField
@@ -4285,17 +3739,11 @@ function SharedUpstreamAccountDetailDrawerInner({
                         }
                       />
                       <DetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.fields.compactObservedAt",
-                        )}
-                        value={formatDateTime(
-                          selectedDetail.compactSupport?.observedAt,
-                        )}
+                        label={t("accountPool.upstreamAccounts.fields.compactObservedAt")}
+                        value={formatDateTime(selectedDetail.compactSupport?.observedAt)}
                       />
                       <DetailField
-                        label={t(
-                          "accountPool.upstreamAccounts.fields.compactReason",
-                        )}
+                        label={t("accountPool.upstreamAccounts.fields.compactReason")}
                         value={
                           selectedDetail.compactSupport?.reason ??
                           t("accountPool.upstreamAccounts.unavailable")
@@ -4325,40 +3773,24 @@ function SharedUpstreamAccountDetailDrawerInner({
                         {selectedDetail.lastAction ? (
                           <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                             <DetailField
-                              label={t(
-                                "accountPool.upstreamAccounts.latestAction.fields.action",
-                              )}
+                              label={t("accountPool.upstreamAccounts.latestAction.fields.action")}
                               value={
                                 accountActionLabel(selectedDetail.lastAction) ??
-                                t(
-                                  "accountPool.upstreamAccounts.latestAction.empty",
-                                )
+                                t("accountPool.upstreamAccounts.latestAction.empty")
                               }
                             />
                             <DetailField
-                              label={t(
-                                "accountPool.upstreamAccounts.latestAction.fields.source",
-                              )}
+                              label={t("accountPool.upstreamAccounts.latestAction.fields.source")}
                               value={
-                                accountActionSourceLabel(
-                                  selectedDetail.lastActionSource,
-                                ) ??
-                                t(
-                                  "accountPool.upstreamAccounts.latestAction.unknown",
-                                )
+                                accountActionSourceLabel(selectedDetail.lastActionSource) ??
+                                t("accountPool.upstreamAccounts.latestAction.unknown")
                               }
                             />
                             <DetailField
-                              label={t(
-                                "accountPool.upstreamAccounts.latestAction.fields.reason",
-                              )}
+                              label={t("accountPool.upstreamAccounts.latestAction.fields.reason")}
                               value={
-                                accountActionReasonLabel(
-                                  selectedDetail.lastActionReasonCode,
-                                ) ??
-                                t(
-                                  "accountPool.upstreamAccounts.latestAction.unknown",
-                                )
+                                accountActionReasonLabel(selectedDetail.lastActionReasonCode) ??
+                                t("accountPool.upstreamAccounts.latestAction.unknown")
                               }
                             />
                             <DetailField
@@ -4366,27 +3798,19 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 "accountPool.upstreamAccounts.latestAction.fields.httpStatus",
                               )}
                               value={
-                                Number.isFinite(
-                                  selectedDetail.lastActionHttpStatus ?? NaN,
-                                )
+                                Number.isFinite(selectedDetail.lastActionHttpStatus ?? NaN)
                                   ? `HTTP ${selectedDetail.lastActionHttpStatus}`
-                                  : t(
-                                      "accountPool.upstreamAccounts.unavailable",
-                                    )
+                                  : t("accountPool.upstreamAccounts.unavailable")
                               }
                             />
                             <DetailField
                               label={t(
                                 "accountPool.upstreamAccounts.latestAction.fields.occurredAt",
                               )}
-                              value={formatDateTime(
-                                selectedDetail.lastActionAt,
-                              )}
+                              value={formatDateTime(selectedDetail.lastActionAt)}
                             />
                             <DetailField
-                              label={t(
-                                "accountPool.upstreamAccounts.latestAction.fields.invokeId",
-                              )}
+                              label={t("accountPool.upstreamAccounts.latestAction.fields.invokeId")}
                               value={
                                 selectedDetail.lastActionInvokeId ? (
                                   <span className="select-text break-all font-mono">
@@ -4399,9 +3823,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                             />
                             <div className="metric-cell md:col-span-2 xl:col-span-3">
                               <p className="metric-label">
-                                {t(
-                                  "accountPool.upstreamAccounts.latestAction.fields.message",
-                                )}
+                                {t("accountPool.upstreamAccounts.latestAction.fields.message")}
                               </p>
                               <p className="mt-2 break-words text-sm leading-6 text-base-content/80">
                                 {selectedDetail.lastActionReasonMessage ??
@@ -4412,9 +3834,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           </div>
                         ) : (
                           <p className="mt-2 text-sm leading-6 text-base-content/75">
-                            {t(
-                              "accountPool.upstreamAccounts.latestAction.empty",
-                            )}
+                            {t("accountPool.upstreamAccounts.latestAction.empty")}
                           </p>
                         )}
                       </div>
@@ -4423,21 +3843,15 @@ function SharedUpstreamAccountDetailDrawerInner({
 
                   <Card className="border-base-300/80 bg-base-100/72">
                     <CardHeader>
-                      <CardTitle>
-                        {t("accountPool.upstreamAccounts.recentActions.title")}
-                      </CardTitle>
+                      <CardTitle>{t("accountPool.upstreamAccounts.recentActions.title")}</CardTitle>
                       <CardDescription>
-                        {t(
-                          "accountPool.upstreamAccounts.recentActions.description",
-                        )}
+                        {t("accountPool.upstreamAccounts.recentActions.description")}
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
                       {selectedRecentActions.length === 0 ? (
                         <p className="text-sm leading-6 text-base-content/68">
-                          {t(
-                            "accountPool.upstreamAccounts.recentActions.empty",
-                          )}
+                          {t("accountPool.upstreamAccounts.recentActions.empty")}
                         </p>
                       ) : (
                         <div className="space-y-2">
@@ -4449,28 +3863,18 @@ function SharedUpstreamAccountDetailDrawerInner({
                               <div className="flex flex-wrap items-center gap-2">
                                 <Badge variant="secondary">
                                   {accountActionLabel(actionEvent.action) ??
-                                    t(
-                                      "accountPool.upstreamAccounts.latestAction.unknown",
-                                    )}
+                                    t("accountPool.upstreamAccounts.latestAction.unknown")}
                                 </Badge>
                                 <Badge variant="secondary">
-                                  {accountActionSourceLabel(
-                                    actionEvent.source,
-                                  ) ??
-                                    t(
-                                      "accountPool.upstreamAccounts.latestAction.unknown",
-                                    )}
+                                  {accountActionSourceLabel(actionEvent.source) ??
+                                    t("accountPool.upstreamAccounts.latestAction.unknown")}
                                 </Badge>
                                 {actionEvent.reasonCode ? (
                                   <Badge variant="secondary">
-                                    {accountActionReasonLabel(
-                                      actionEvent.reasonCode,
-                                    )}
+                                    {accountActionReasonLabel(actionEvent.reasonCode)}
                                   </Badge>
                                 ) : null}
-                                {Number.isFinite(
-                                  actionEvent.httpStatus ?? NaN,
-                                ) ? (
+                                {Number.isFinite(actionEvent.httpStatus ?? NaN) ? (
                                   <Badge variant="secondary">{`HTTP ${actionEvent.httpStatus}`}</Badge>
                                 ) : null}
                                 <span className="text-xs text-base-content/55">
@@ -4486,20 +3890,15 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 <button
                                   type="button"
                                   className="mt-2 block select-text break-all font-mono text-xs text-info underline decoration-info/35 underline-offset-4 transition hover:decoration-info focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                                  onClick={() =>
-                                    locateAccountAttempt(actionEvent.attemptId)
-                                  }
+                                  onClick={() => locateAccountAttempt(actionEvent.attemptId)}
                                 >
-                                  {t(
-                                    "accountPool.upstreamAccounts.latestAction.fields.invokeId",
-                                  )}
-                                  : {actionEvent.invokeId}
+                                  {t("accountPool.upstreamAccounts.latestAction.fields.invokeId")}:{" "}
+                                  {actionEvent.invokeId}
                                 </button>
                               ) : actionEvent.invokeId ? (
                                 <p className="mt-2 break-all font-mono text-xs text-base-content/55">
-                                  {t(
-                                    "accountPool.upstreamAccounts.latestAction.fields.invokeId",
-                                  )}: {actionEvent.invokeId}（历史事件未关联尝试）
+                                  {t("accountPool.upstreamAccounts.latestAction.fields.invokeId")}:{" "}
+                                  {actionEvent.invokeId}（历史事件未关联尝试）
                                 </p>
                               ) : null}
                             </div>

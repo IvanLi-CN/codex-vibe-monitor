@@ -2,11 +2,10 @@ use super::*;
 use anyhow::anyhow;
 use chrono::LocalResult;
 use chrono::Timelike;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Serialize;
 use sqlx::FromRow;
-use tokio::sync::{broadcast, watch};
-use tracing::{debug, warn};
+use tokio::sync::broadcast;
+use tracing::warn;
 
 pub(crate) fn align_reporting_bucket_epoch(
     epoch: i64,
@@ -537,12 +536,10 @@ pub(crate) fn classify_invocation_failure_with_kind(
         || is_http_5xx
     {
         FailureClass::ServiceFailure
-    } else if (status_norm == "success" || status_norm == "completed")
+    } else if matches!(status_norm.as_str(), "success" | "completed" | "http_200")
         && err.is_empty()
         && failure_kind_lower.is_empty()
     {
-        FailureClass::None
-    } else if status_norm == "http_200" && err.is_empty() && failure_kind_lower.is_empty() {
         FailureClass::None
     } else {
         // Conservative fallback: unknown non-success records are treated as service-impacting.
@@ -719,52 +716,52 @@ pub(crate) async fn fetch_error_distribution(
             display_end,
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
-        let (hourly_rows, exact_records, archive_overlap_ids) = if range_plan
-            .full_hour_range
-            .is_some()
-        {
-            let mut tx = state.pool.begin().await?;
-            let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
-            let rollup_live_cursor =
-                load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
-            let (range_start_epoch, range_end_epoch) = range_plan
-                .full_hour_range
-                .expect("full_hour_range is present when hourly rollups are enabled");
-            let hourly_rows = query_invocation_failure_hourly_rollup_range_tx(
-                tx.as_mut(),
-                range_start_epoch,
-                range_end_epoch,
-                source_scope,
-            )
-            .await?;
-            let mut exact_records = query_invocation_exact_records_tx(
-                tx.as_mut(),
-                &range_plan,
-                source_scope,
-                snapshot_id,
-            )
-            .await?;
-            let tail_records = query_invocation_full_hour_tail_records_tx(
-                tx.as_mut(),
-                &range_plan,
-                source_scope,
-                rollup_live_cursor,
-                snapshot_id,
-            )
-            .await?;
-            let archive_overlap_ids = tail_records
-                .iter()
-                .map(|record| record.id)
-                .collect::<HashSet<_>>();
-            exact_records.extend(tail_records);
-            (hourly_rows, exact_records, archive_overlap_ids)
-        } else {
-            let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
-            let exact_records =
-                query_invocation_exact_records(&state.pool, &range_plan, source_scope, snapshot_id)
-                    .await?;
-            (Vec::new(), exact_records, HashSet::new())
-        };
+        let (hourly_rows, exact_records, archive_overlap_ids) =
+            if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+                let mut tx = state.pool.begin().await?;
+                let snapshot_id =
+                    resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+                let rollup_live_cursor =
+                    load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+                let hourly_rows = query_invocation_failure_hourly_rollup_range_tx(
+                    tx.as_mut(),
+                    range_start_epoch,
+                    range_end_epoch,
+                    source_scope,
+                )
+                .await?;
+                let mut exact_records = query_invocation_exact_records_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    snapshot_id,
+                )
+                .await?;
+                let tail_records = query_invocation_full_hour_tail_records_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    rollup_live_cursor,
+                    snapshot_id,
+                )
+                .await?;
+                let archive_overlap_ids = tail_records
+                    .iter()
+                    .map(|record| record.id)
+                    .collect::<HashSet<_>>();
+                exact_records.extend(tail_records);
+                (hourly_rows, exact_records, archive_overlap_ids)
+            } else {
+                let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+                let exact_records = query_invocation_exact_records(
+                    &state.pool,
+                    &range_plan,
+                    source_scope,
+                    snapshot_id,
+                )
+                .await?;
+                (Vec::new(), exact_records, HashSet::new())
+            };
         for row in hourly_rows {
             let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
                 continue;
@@ -830,7 +827,7 @@ pub(crate) async fn fetch_error_distribution(
             .into_iter()
             .map(|(reason, count)| ErrorDistributionItem { reason, count })
             .collect();
-        items.sort_by(|a, b| b.count.cmp(&a.count));
+        items.sort_by_key(|item| std::cmp::Reverse(item.count));
         if let Some(top) = params.top {
             let limited = top.clamp(1, 50) as usize;
             if items.len() > limited {
@@ -884,7 +881,7 @@ pub(crate) async fn fetch_error_distribution(
         .into_iter()
         .map(|(reason, count)| ErrorDistributionItem { reason, count })
         .collect();
-    items.sort_by(|a, b| b.count.cmp(&a.count));
+    items.sort_by_key(|item| std::cmp::Reverse(item.count));
     if let Some(top) = params.top {
         let limited = top.clamp(1, 50) as usize;
         if items.len() > limited {
@@ -1151,52 +1148,52 @@ pub(crate) async fn fetch_failure_summary(
             display_end,
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
-        let (hourly_rows, exact_records, archive_overlap_ids) = if range_plan
-            .full_hour_range
-            .is_some()
-        {
-            let mut tx = state.pool.begin().await?;
-            let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
-            let rollup_live_cursor =
-                load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
-            let (range_start_epoch, range_end_epoch) = range_plan
-                .full_hour_range
-                .expect("full_hour_range is present when hourly rollups are enabled");
-            let hourly_rows = query_invocation_failure_hourly_rollup_range_tx(
-                tx.as_mut(),
-                range_start_epoch,
-                range_end_epoch,
-                source_scope,
-            )
-            .await?;
-            let mut exact_records = query_invocation_exact_records_tx(
-                tx.as_mut(),
-                &range_plan,
-                source_scope,
-                snapshot_id,
-            )
-            .await?;
-            let tail_records = query_invocation_full_hour_tail_records_tx(
-                tx.as_mut(),
-                &range_plan,
-                source_scope,
-                rollup_live_cursor,
-                snapshot_id,
-            )
-            .await?;
-            let archive_overlap_ids = tail_records
-                .iter()
-                .map(|record| record.id)
-                .collect::<HashSet<_>>();
-            exact_records.extend(tail_records);
-            (hourly_rows, exact_records, archive_overlap_ids)
-        } else {
-            let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
-            let exact_records =
-                query_invocation_exact_records(&state.pool, &range_plan, source_scope, snapshot_id)
-                    .await?;
-            (Vec::new(), exact_records, HashSet::new())
-        };
+        let (hourly_rows, exact_records, archive_overlap_ids) =
+            if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+                let mut tx = state.pool.begin().await?;
+                let snapshot_id =
+                    resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+                let rollup_live_cursor =
+                    load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+                let hourly_rows = query_invocation_failure_hourly_rollup_range_tx(
+                    tx.as_mut(),
+                    range_start_epoch,
+                    range_end_epoch,
+                    source_scope,
+                )
+                .await?;
+                let mut exact_records = query_invocation_exact_records_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    snapshot_id,
+                )
+                .await?;
+                let tail_records = query_invocation_full_hour_tail_records_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    rollup_live_cursor,
+                    snapshot_id,
+                )
+                .await?;
+                let archive_overlap_ids = tail_records
+                    .iter()
+                    .map(|record| record.id)
+                    .collect::<HashSet<_>>();
+                exact_records.extend(tail_records);
+                (hourly_rows, exact_records, archive_overlap_ids)
+            } else {
+                let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+                let exact_records = query_invocation_exact_records(
+                    &state.pool,
+                    &range_plan,
+                    source_scope,
+                    snapshot_id,
+                )
+                .await?;
+                (Vec::new(), exact_records, HashSet::new())
+            };
         for row in hourly_rows {
             let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
                 continue;

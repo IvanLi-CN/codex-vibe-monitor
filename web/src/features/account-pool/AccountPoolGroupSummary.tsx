@@ -1,14 +1,14 @@
-import { AppIcon } from "../shared/AppIcon";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import { cn } from "../../lib/utils";
-import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
-import {
-  resolveActiveRoutingPolicyBadges,
-  type ActiveRoutingPolicyBadgeLabels,
-} from "../../lib/tagRoutingRule";
 import type { AccountPoolGroupSummaryData } from "../../lib/accountPoolGroups";
 import type { TagRoutingRule } from "../../lib/api";
+import {
+  type ActiveRoutingPolicyBadgeLabels,
+  resolveActiveRoutingPolicyBadges,
+} from "../../lib/tagRoutingRule";
+import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
+import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
 
 export type AccountPoolGroupSummaryLabels = ActiveRoutingPolicyBadgeLabels & {
   count: (count: number) => string;
@@ -44,8 +44,7 @@ function resolveGroupRoutingRule(group: AccountPoolGroupSummaryData): TagRouting
     concurrencyLimit: routingRule?.concurrencyLimit ?? group.concurrencyLimit ?? 0,
     upstream429RetryEnabled:
       routingRule?.upstream429RetryEnabled ?? group.upstream429RetryEnabled ?? false,
-    upstream429MaxRetries:
-      routingRule?.upstream429MaxRetries ?? group.upstream429MaxRetries ?? 0,
+    upstream429MaxRetries: routingRule?.upstream429MaxRetries ?? group.upstream429MaxRetries ?? 0,
   };
 }
 
@@ -67,19 +66,12 @@ export function AccountPoolGroupSummary({
   onEditGroupSettings?: (group: AccountPoolGroupSummaryData) => void;
 }) {
   const showSettingsAction =
-    canEditGroupSettings &&
-    Boolean(group.groupName) &&
-    typeof onEditGroupSettings === "function";
-  const activePolicyBadges = resolveActiveRoutingPolicyBadges(
-    resolveGroupRoutingRule(group),
-    {
-      ...labels,
-      policyConcurrency:
-        labels.policyConcurrency ?? ((value) => labels.concurrency(value)),
-      policyRetry:
-        labels.policyRetry ?? ((count) => labels.upstream429Enabled(count)),
-    },
-  );
+    canEditGroupSettings && Boolean(group.groupName) && typeof onEditGroupSettings === "function";
+  const activePolicyBadges = resolveActiveRoutingPolicyBadges(resolveGroupRoutingRule(group), {
+    ...labels,
+    policyConcurrency: labels.policyConcurrency ?? ((value) => labels.concurrency(value)),
+    policyRetry: labels.policyRetry ?? ((count) => labels.upstream429Enabled(count)),
+  });
 
   return (
     <div
@@ -113,11 +105,7 @@ export function AccountPoolGroupSummary({
             title={labels.settingsLabel}
             onClick={() => onEditGroupSettings?.(group)}
           >
-            <AppIcon
-              name="file-document-edit-outline"
-              className="h-4 w-4"
-              aria-hidden
-            />
+            <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
           </Button>
         ) : null}
       </div>
@@ -150,10 +138,7 @@ export function AccountPoolGroupSummary({
           </Badge>
         ))}
         {group.nodeShuntEnabled ? (
-          <Badge
-            variant="info"
-            className="px-2 py-px text-[11px] font-medium leading-4"
-          >
+          <Badge variant="info" className="px-2 py-px text-[11px] font-medium leading-4">
             {labels.exclusiveNode}
           </Badge>
         ) : null}

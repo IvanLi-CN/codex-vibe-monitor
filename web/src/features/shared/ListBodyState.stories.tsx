@@ -34,7 +34,10 @@ export const LoadingSkeleton: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByTestId("storybook-list-body-state")).toHaveAttribute("aria-busy", "true");
+    await expect(canvas.getByTestId("storybook-list-body-state")).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
     await expect(canvas.getByText("Loading records")).toBeInTheDocument();
   },
 };

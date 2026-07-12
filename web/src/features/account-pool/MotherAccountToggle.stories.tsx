@@ -1,9 +1,9 @@
-import { useState, type ReactNode } from 'react'
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, within } from 'storybook/test'
-import { MotherAccountBadge, MotherAccountToggle } from './MotherAccountToggle'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { type ReactNode, useState } from "react";
+import { expect, userEvent, within } from "storybook/test";
+import { MotherAccountBadge, MotherAccountToggle } from "./MotherAccountToggle";
 
-const noop = () => undefined
+const noop = () => undefined;
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
@@ -15,7 +15,7 @@ function StorySurface({ children }: { children: ReactNode }) {
         {children}
       </div>
     </div>
-  )
+  );
 }
 
 function ThemePanel({
@@ -23,9 +23,9 @@ function ThemePanel({
   title,
   children,
 }: {
-  theme: 'vibe-light' | 'vibe-dark'
-  title: string
-  children: ReactNode
+  theme: "vibe-light" | "vibe-dark";
+  title: string;
+  children: ReactNode;
 }) {
   return (
     <section
@@ -37,7 +37,7 @@ function ThemePanel({
       </div>
       <div className="p-5">{children}</div>
     </section>
-  )
+  );
 }
 
 function OverviewGallery() {
@@ -45,8 +45,8 @@ function OverviewGallery() {
     <StorySurface>
       <div className="grid gap-5 xl:grid-cols-2">
         {[
-          { theme: 'vibe-light' as const, title: 'Light Theme' },
-          { theme: 'vibe-dark' as const, title: 'Dark Theme' },
+          { theme: "vibe-light" as const, title: "Light Theme" },
+          { theme: "vibe-dark" as const, title: "Dark Theme" },
         ].map((panel) => (
           <ThemePanel key={panel.theme} theme={panel.theme} title={panel.title}>
             <div className="space-y-5">
@@ -95,11 +95,11 @@ function OverviewGallery() {
         ))}
       </div>
     </StorySurface>
-  )
+  );
 }
 
 function ToggleHarness({ iconOnly = false }: { iconOnly?: boolean }) {
-  const [checked, setChecked] = useState(false)
+  const [checked, setChecked] = useState(false);
 
   return (
     <StorySurface>
@@ -114,34 +114,37 @@ function ToggleHarness({ iconOnly = false }: { iconOnly?: boolean }) {
             iconOnly={iconOnly}
             label="设为母号"
             description="每个分组只能保留一个母号。开启后会自动把同组旧母号的皇冠切走。"
-            ariaLabel={iconOnly ? '切换母号' : undefined}
+            ariaLabel={iconOnly ? "切换母号" : undefined}
             onToggle={() => setChecked((current) => !current)}
           />
           <div className="rounded-xl border border-base-300/70 bg-base-200/75 px-4 py-3 text-sm text-base-content/70">
             当前状态:
-            <span data-testid="mother-toggle-state" className="ml-2 font-semibold text-base-content">
-              {checked ? 'mother' : 'not-mother'}
+            <span
+              data-testid="mother-toggle-state"
+              className="ml-2 font-semibold text-base-content"
+            >
+              {checked ? "mother" : "not-mother"}
             </span>
           </div>
         </div>
       </div>
     </StorySurface>
-  )
+  );
 }
 
 const meta = {
-  title: 'Account Pool/Components/Mother Account Toggle',
+  title: "Account Pool/Components/Mother Account Toggle",
   component: MotherAccountToggle,
   subcomponents: {
     MotherAccountBadge,
   },
-  tags: ['autodocs'],
+  tags: ["autodocs"],
   parameters: {
-    layout: 'fullscreen',
+    layout: "fullscreen",
     docs: {
       description: {
         component:
-          '母号标签与切换卡的专用高对比展示。保留 amber 语义，但不再依赖低对比的 `warning-content` 文本色。',
+          "母号标签与切换卡的专用高对比展示。保留 amber 语义，但不再依赖低对比的 `warning-content` 文本色。",
       },
     },
   },
@@ -149,51 +152,51 @@ const meta = {
     checked: false,
     disabled: false,
     iconOnly: false,
-    label: '设为母号',
-    description: '每个分组只能保留一个母号。开启后会自动把同组旧母号的皇冠切走。',
+    label: "设为母号",
+    description: "每个分组只能保留一个母号。开启后会自动把同组旧母号的皇冠切走。",
     onToggle: noop,
-    ariaLabel: '切换母号',
+    ariaLabel: "切换母号",
   },
-} satisfies Meta<typeof MotherAccountToggle>
+} satisfies Meta<typeof MotherAccountToggle>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const Overview: Story = {
   render: () => <OverviewGallery />,
-}
+};
 
 export const InteractiveToggle: Story = {
   render: () => <ToggleHarness />,
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const toggle = canvas.getByRole('button', { name: /设为母号/i })
-    const state = canvas.getByTestId('mother-toggle-state')
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("button", { name: /设为母号/i });
+    const state = canvas.getByTestId("mother-toggle-state");
 
-    await expect(toggle).toHaveAttribute('aria-pressed', 'false')
-    await expect(state).toHaveTextContent('not-mother')
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(state).toHaveTextContent("not-mother");
 
-    await userEvent.click(toggle)
-    await expect(toggle).toHaveAttribute('aria-pressed', 'true')
-    await expect(state).toHaveTextContent('mother')
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await expect(state).toHaveTextContent("mother");
 
-    await userEvent.click(toggle)
-    await expect(toggle).toHaveAttribute('aria-pressed', 'false')
-    await expect(state).toHaveTextContent('not-mother')
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(state).toHaveTextContent("not-mother");
   },
-}
+};
 
 export const BatchRowIconToggle: Story = {
   render: () => <ToggleHarness iconOnly />,
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const toggle = canvas.getByRole('button', { name: /切换母号/i })
-    const state = canvas.getByTestId('mother-toggle-state')
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("button", { name: /切换母号/i });
+    const state = canvas.getByTestId("mother-toggle-state");
 
-    await expect(toggle).toHaveAttribute('aria-pressed', 'false')
-    await userEvent.click(toggle)
-    await expect(toggle).toHaveAttribute('aria-pressed', 'true')
-    await expect(state).toHaveTextContent('mother')
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await expect(state).toHaveTextContent("mother");
   },
-}
+};

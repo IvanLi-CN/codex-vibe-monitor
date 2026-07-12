@@ -1,6 +1,14 @@
-/* eslint-disable react-hooks/exhaustive-deps */
-import { useCallback, useEffect } from "react";
+// biome-ignore-all lint/correctness/useExhaustiveDependencies: synchronization effects deliberately depend on mutable refs and preserve request ordering
+
 import type { ChangeEvent, ClipboardEvent } from "react";
+import { useCallback, useEffect } from "react";
+import type { ImportedOauthValidationDialogState } from "../../features/account-pool/ImportedOauthValidationDialog";
+import type {
+  ImportedOauthValidationFailedEventPayload,
+  ImportedOauthValidationRow,
+  ImportedOauthValidationSnapshotEventPayload,
+  ImportOauthCredentialFilePayload,
+} from "../../lib/api";
 import {
   createImportedOauthValidationJobEventSource,
   normalizeImportedOauthValidationFailedEventPayload,
@@ -8,14 +16,8 @@ import {
   normalizeImportedOauthValidationSnapshotEventPayload,
 } from "../../lib/api";
 import { isExistingGroup, normalizeGroupName } from "../../lib/upstreamAccountGroups";
-import type {
-  ImportOauthCredentialFilePayload,
-  ImportedOauthValidationFailedEventPayload,
-  ImportedOauthValidationRow,
-  ImportedOauthValidationSnapshotEventPayload,
-} from "../../lib/api";
 import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
-import type { ImportedOauthValidationDialogState } from "../../features/account-pool/ImportedOauthValidationDialog";
+
 type ImportOauthAccountResult = {
   sourceId: string;
   status: string;
@@ -47,9 +49,7 @@ type LocalImportedOauthCandidate = {
   matchKey: string;
 };
 
-export function useUpstreamAccountCreateImportedOauth(
-  ctx: UpstreamAccountCreateControllerContext,
-) {
+export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreateControllerContext) {
   const {
     groupDraftConcurrencyLimits,
     groupDraftNotes,
@@ -151,20 +151,11 @@ export function useUpstreamAccountCreateImportedOauth(
         },
       ) => {
         setImportValidationState((current: ImportedOauthValidationDialogState | null) => {
-          const baselineRows =
-            current?.rows ?? buildImportedOauthPendingState(allItems).rows;
+          const baselineRows = current?.rows ?? buildImportedOauthPendingState(allItems).rows;
           const mergedRows = merge
             ? nextRows.length === 1
-              ? mergeImportedOauthValidationRow(
-                  baselineRows,
-                  nextRows[0]!,
-                  retriedSourceIds,
-                )
-              : mergeImportedOauthValidationRows(
-                  baselineRows,
-                  nextRows,
-                  retriedSourceIds,
-                )
+              ? mergeImportedOauthValidationRow(baselineRows, nextRows[0]!, retriedSourceIds)
+              : mergeImportedOauthValidationRows(baselineRows, nextRows, retriedSourceIds)
             : mergeImportedOauthValidationRows(
                 baselineRows,
                 nextRows,
@@ -188,14 +179,10 @@ export function useUpstreamAccountCreateImportedOauth(
           );
           if (merge) {
             setImportValidationState((current: ImportedOauthValidationDialogState | null) => {
-              const baselineRows =
-                current?.rows ?? buildImportedOauthPendingState(allItems).rows;
+              const baselineRows = current?.rows ?? buildImportedOauthPendingState(allItems).rows;
               return {
                 ...buildImportedOauthStateFromRows(
-                  replaceImportedOauthValidationRows(
-                    baselineRows,
-                    payload.snapshot.rows,
-                  ),
+                  replaceImportedOauthValidationRows(baselineRows, payload.snapshot.rows),
                   allItems,
                 ),
                 checking: true,
@@ -229,9 +216,7 @@ export function useUpstreamAccountCreateImportedOauth(
         if (importValidationJobIdRef.current !== jobId) return;
         const message = event as MessageEvent<string>;
         try {
-          const payload = normalizeImportedOauthValidationRowEventPayload(
-            JSON.parse(message.data),
-          );
+          const payload = normalizeImportedOauthValidationRowEventPayload(JSON.parse(message.data));
           updateRows([payload.row], { checking: true, importError: null });
         } catch (err) {
           setImportValidationState((current: ImportedOauthValidationDialogState | null) =>
@@ -331,47 +316,25 @@ export function useUpstreamAccountCreateImportedOauth(
 
       eventSource.addEventListener("snapshot", handleSnapshot as EventListener);
       eventSource.addEventListener("row", handleRow as EventListener);
-      eventSource.addEventListener(
-        "completed",
-        handleCompleted as EventListener,
-      );
+      eventSource.addEventListener("completed", handleCompleted as EventListener);
       eventSource.addEventListener("failed", handleFailed as EventListener);
-      eventSource.addEventListener(
-        "cancelled",
-        handleCancelled as EventListener,
-      );
+      eventSource.addEventListener("cancelled", handleCancelled as EventListener);
 
       importValidationEventCleanupRef.current = () => {
-        eventSource.removeEventListener(
-          "snapshot",
-          handleSnapshot as EventListener,
-        );
+        eventSource.removeEventListener("snapshot", handleSnapshot as EventListener);
         eventSource.removeEventListener("row", handleRow as EventListener);
-        eventSource.removeEventListener(
-          "completed",
-          handleCompleted as EventListener,
-        );
-        eventSource.removeEventListener(
-          "failed",
-          handleFailed as EventListener,
-        );
-        eventSource.removeEventListener(
-          "cancelled",
-          handleCancelled as EventListener,
-        );
+        eventSource.removeEventListener("completed", handleCompleted as EventListener);
+        eventSource.removeEventListener("failed", handleFailed as EventListener);
+        eventSource.removeEventListener("cancelled", handleCancelled as EventListener);
       };
     },
     [closeImportValidationEventSource],
   );
 
   const runImportValidation = useCallback(
-    async (
-      items: ImportOauthCredentialFilePayload[],
-      options?: { merge?: boolean },
-    ) => {
+    async (items: ImportOauthCredentialFilePayload[], options?: { merge?: boolean }) => {
       if (items.length === 0) return;
-      const currentImportGroupProxyState =
-        resolveRequiredGroupProxyState(importGroupName);
+      const currentImportGroupProxyState = resolveRequiredGroupProxyState(importGroupName);
       if (currentImportGroupProxyState.error) {
         setActionError(currentImportGroupProxyState.error);
         return;
@@ -388,11 +351,9 @@ export function useUpstreamAccountCreateImportedOauth(
         }
         const response = await startImportedOauthValidationJob({
           items,
-          groupName:
-            currentImportGroupProxyState.normalizedGroupName || undefined,
+          groupName: currentImportGroupProxyState.normalizedGroupName || undefined,
           groupBoundProxyKeys: currentImportGroupProxyState.boundProxyKeys,
-          groupNodeShuntEnabled:
-            currentImportGroupProxyState.nodeShuntEnabled,
+          groupNodeShuntEnabled: currentImportGroupProxyState.nodeShuntEnabled,
           groupSingleAccountRotationEnabled:
             resolveGroupSingleAccountRotationEnabledForName(importGroupName),
         });
@@ -477,9 +438,7 @@ export function useUpstreamAccountCreateImportedOauth(
         return;
       }
       setImportSelectionFeedback({
-        variant: rejected.some((item) => item.duplicate !== true)
-          ? "error"
-          : "warning",
+        variant: rejected.some((item) => item.duplicate !== true) ? "error" : "warning",
         messages: rejected.map((item) =>
           item.duplicate
             ? t("accountPool.upstreamAccounts.import.local.duplicateSkipped", {
@@ -628,9 +587,7 @@ export function useUpstreamAccountCreateImportedOauth(
         const seenKeys = collectQueuedImportedOauthMatchKeys();
         for (const item of items) {
           if (item.matchKey && seenKeys.has(item.matchKey)) {
-            setImportPasteError(
-              t("accountPool.upstreamAccounts.import.local.pasteDuplicate"),
-            );
+            setImportPasteError(t("accountPool.upstreamAccounts.import.local.pasteDuplicate"));
             return;
           }
           if (item.matchKey) seenKeys.add(item.matchKey);
@@ -645,9 +602,7 @@ export function useUpstreamAccountCreateImportedOauth(
         const refreshedSeenKeys = collectQueuedImportedOauthMatchKeys();
         for (const item of items) {
           if (item.matchKey && refreshedSeenKeys.has(item.matchKey)) {
-            setImportPasteError(
-              t("accountPool.upstreamAccounts.import.local.pasteDuplicate"),
-            );
+            setImportPasteError(t("accountPool.upstreamAccounts.import.local.pasteDuplicate"));
             return;
           }
           if (item.matchKey) refreshedSeenKeys.add(item.matchKey);
@@ -703,8 +658,7 @@ export function useUpstreamAccountCreateImportedOauth(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       event.preventDefault();
       const nextDraft =
-        event.clipboardData.getData("text/plain") ||
-        event.clipboardData.getData("text");
+        event.clipboardData.getData("text/plain") || event.clipboardData.getData("text");
       importPasteValidationTokenRef.current += 1;
       importPasteSequenceRef.current += 1;
       const serial = importPasteSequenceRef.current;
@@ -727,12 +681,7 @@ export function useUpstreamAccountCreateImportedOauth(
     await validateAndQueueImportedOauthPaste(importPasteDraft, {
       serial: importPasteDraftSerial,
     });
-  }, [
-    importPasteDraft,
-    importPasteDraftSerial,
-    validateAndQueueImportedOauthPaste,
-    writesEnabled,
-  ]);
+  }, [importPasteDraft, importPasteDraftSerial, validateAndQueueImportedOauthPaste, writesEnabled]);
 
   const handleImportFilesChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -749,16 +698,12 @@ export function useUpstreamAccountCreateImportedOauth(
         const parsedItems = await Promise.all(
           selectedFiles.map(async (file, index) => {
             const content = await file.text();
-            const sourceIdBase = createImportedOauthSourceId(
-              file,
-              sourceIdOffset + index,
-            );
+            const sourceIdBase = createImportedOauthSourceId(file, sourceIdOffset + index);
             if (isImportingWebSession) {
               const parsed = buildWebSessionCandidates({
                 content,
                 fileName: file.name,
-                createSourceId: (sessionIndex) =>
-                  `${sourceIdBase}:session:${sessionIndex}`,
+                createSourceId: (sessionIndex) => `${sourceIdBase}:session:${sessionIndex}`,
               });
               return {
                 fileName: file.name,
@@ -916,12 +861,16 @@ export function useUpstreamAccountCreateImportedOauth(
   const handleRetryImportedOauthFailed = useCallback(async () => {
     const failedSourceIds = new Set(
       (importValidationState?.rows ?? [])
-        .filter((row: ImportedOauthValidationRow) => row.status === "invalid" || row.status === "error")
+        .filter(
+          (row: ImportedOauthValidationRow) => row.status === "invalid" || row.status === "error",
+        )
         .map((row: ImportedOauthValidationRow) => row.sourceId),
     );
     if (failedSourceIds.size === 0) return;
     await runImportValidation(
-      importFiles.filter((item: ImportOauthCredentialFilePayload) => failedSourceIds.has(item.sourceId)),
+      importFiles.filter((item: ImportOauthCredentialFilePayload) =>
+        failedSourceIds.has(item.sourceId),
+      ),
       { merge: true },
     );
   }, [importFiles, importValidationState?.rows, runImportValidation]);
@@ -960,8 +909,7 @@ export function useUpstreamAccountCreateImportedOauth(
   }, [closeImportValidationEventSource, stopImportedOauthValidationJob]);
 
   const handleImportValidatedOauth = useCallback(async () => {
-    const currentImportGroupProxyState =
-      resolveRequiredGroupProxyState(importGroupName);
+    const currentImportGroupProxyState = resolveRequiredGroupProxyState(importGroupName);
     if (currentImportGroupProxyState.error) {
       setActionError(currentImportGroupProxyState.error);
       setImportValidationState((current: ImportedOauthValidationDialogState | null) =>
@@ -976,7 +924,9 @@ export function useUpstreamAccountCreateImportedOauth(
     }
     const currentRows = importValidationState?.rows ?? [];
     const validSourceIds = currentRows
-      .filter((row: ImportedOauthValidationRow) => row.status === "ok" || row.status === "ok_exhausted")
+      .filter(
+        (row: ImportedOauthValidationRow) => row.status === "ok" || row.status === "ok_exhausted",
+      )
       .map((row: ImportedOauthValidationRow) => row.sourceId);
     if (validSourceIds.length === 0) return;
     const validSourceIdSet = new Set(validSourceIds);
@@ -986,13 +936,11 @@ export function useUpstreamAccountCreateImportedOauth(
     const batches = chunkImportedOauthItems(selectedItems);
     const normalizedImportGroupName = normalizeGroupName(importGroupName);
     const importGroupNote =
-      normalizedImportGroupName &&
-      !isExistingGroup(groups, normalizedImportGroupName)
+      normalizedImportGroupName && !isExistingGroup(groups, normalizedImportGroupName)
         ? groupDraftNotes[normalizedImportGroupName]?.trim() || undefined
         : undefined;
     const importGroupConcurrencyLimit =
-      normalizedImportGroupName &&
-      !isExistingGroup(groups, normalizedImportGroupName)
+      normalizedImportGroupName && !isExistingGroup(groups, normalizedImportGroupName)
         ? (groupDraftConcurrencyLimits[normalizedImportGroupName] ?? 0)
         : 0;
     const validationJobId = importValidationJobIdRef.current ?? undefined;
@@ -1017,11 +965,9 @@ export function useUpstreamAccountCreateImportedOauth(
           items: batch,
           selectedSourceIds: batch.map((item) => item.sourceId),
           validationJobId,
-          groupName:
-            currentImportGroupProxyState.normalizedGroupName || undefined,
+          groupName: currentImportGroupProxyState.normalizedGroupName || undefined,
           groupBoundProxyKeys: currentImportGroupProxyState.boundProxyKeys,
-          groupNodeShuntEnabled:
-            currentImportGroupProxyState.nodeShuntEnabled,
+          groupNodeShuntEnabled: currentImportGroupProxyState.nodeShuntEnabled,
           groupSingleAccountRotationEnabled:
             resolveGroupSingleAccountRotationEnabledForName(importGroupName),
           groupNote: importGroupNote,
@@ -1032,8 +978,7 @@ export function useUpstreamAccountCreateImportedOauth(
           response.results
             .filter(
               (result: ImportOauthAccountResult) =>
-                result.status === "created" ||
-                result.status === "updated_existing",
+                result.status === "created" || result.status === "updated_existing",
             )
             .map((result: ImportOauthAccountResult) => result.sourceId),
         );
@@ -1046,9 +991,7 @@ export function useUpstreamAccountCreateImportedOauth(
         if (importedSourceIds.size > 0) {
           importedAny = true;
         }
-        workingItems = workingItems.filter(
-          (item) => !importedSourceIds.has(item.sourceId),
-        );
+        workingItems = workingItems.filter((item) => !importedSourceIds.has(item.sourceId));
         workingRows = workingRows
           .filter((row: ImportedOauthValidationRow) => !importedSourceIds.has(row.sourceId))
           .map((row: ImportedOauthValidationRow) => {
@@ -1077,11 +1020,7 @@ export function useUpstreamAccountCreateImportedOauth(
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         batchErrors.push(message);
-        workingRows = markImportedOauthRowsAsError(
-          workingRows,
-          batchSourceIds,
-          message,
-        );
+        workingRows = markImportedOauthRowsAsError(workingRows, batchSourceIds, message);
         setImportValidationState(() => {
           if (workingRows.length === 0) {
             return null;
@@ -1124,7 +1063,6 @@ export function useUpstreamAccountCreateImportedOauth(
     resolveGroupSingleAccountRotationEnabledForName,
     t,
   ]);
-
 
   return {
     closeImportValidationEventSource,

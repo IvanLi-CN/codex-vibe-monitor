@@ -1,12 +1,6 @@
-import type {
-  PoolRoutingMaintenanceSettings,
-  PoolRoutingTimeoutSettings,
-} from "../../lib/api";
+import type { PoolRoutingMaintenanceSettings, PoolRoutingTimeoutSettings } from "../../lib/api";
 import { DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS } from "../../lib/api";
-import {
-  DEFAULT_ROUTING_TIMEOUTS,
-  type RoutingDraft,
-} from "./UpstreamAccounts.shared-types";
+import { DEFAULT_ROUTING_TIMEOUTS, type RoutingDraft } from "./UpstreamAccounts.shared-types";
 
 const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/;
 
@@ -40,12 +34,8 @@ export function buildRoutingDraft(
     maskedApiKey: routing?.maskedApiKey ?? null,
     primarySyncIntervalSecs: String(maintenance.primarySyncIntervalSecs),
     secondarySyncIntervalSecs: String(maintenance.secondarySyncIntervalSecs),
-    priorityAvailableAccountCap: String(
-      maintenance.priorityAvailableAccountCap,
-    ),
-    responsesFirstByteTimeoutSecs: String(
-      timeouts.responsesFirstByteTimeoutSecs,
-    ),
+    priorityAvailableAccountCap: String(maintenance.priorityAvailableAccountCap),
+    responsesFirstByteTimeoutSecs: String(timeouts.responsesFirstByteTimeoutSecs),
     compactFirstByteTimeoutSecs: String(timeouts.compactFirstByteTimeoutSecs),
     responsesStreamTimeoutSecs: String(timeouts.responsesStreamTimeoutSecs),
     compactStreamTimeoutSecs: String(timeouts.compactStreamTimeoutSecs),

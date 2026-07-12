@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchInvocationRecords, fetchTimeseries } from "../lib/api";
 import type {
   ApiInvocation,
   InvocationRecordsQuery,
@@ -7,6 +6,7 @@ import type {
   TimeseriesPoint,
   TimeseriesResponse,
 } from "../lib/api";
+import { fetchInvocationRecords, fetchTimeseries } from "../lib/api";
 import { invocationStableKey } from "../lib/invocation";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
 
@@ -86,9 +86,7 @@ interface TimeseriesRemountCacheEntry {
 
 const timeseriesRemountCache = new Map<string, TimeseriesRemountCacheEntry>();
 
-function cloneTimeseriesResponse(
-  response: TimeseriesResponse,
-): TimeseriesResponse {
+function cloneTimeseriesResponse(response: TimeseriesResponse): TimeseriesResponse {
   return {
     ...response,
     points: response.points.map((point) => ({ ...point })),
@@ -99,9 +97,7 @@ function cloneLiveRecordDelta(delta: LiveRecordDelta): LiveRecordDelta {
   return { ...delta };
 }
 
-function cloneLiveRecordDeltaMap(
-  liveRecordDeltas?: ReadonlyMap<string, LiveRecordDelta> | null,
-) {
+function cloneLiveRecordDeltaMap(liveRecordDeltas?: ReadonlyMap<string, LiveRecordDelta> | null) {
   const cloned = new Map<string, LiveRecordDelta>();
   if (!liveRecordDeltas) {
     return cloned;
@@ -158,30 +154,21 @@ export function resolveTimeseriesSyncPolicy(
     };
   }
 
-  if (
-    options?.bucket === "1d" &&
-    rangeSeconds !== null &&
-    rangeSeconds >= 90 * 86_400
-  ) {
+  if (options?.bucket === "1d" && rangeSeconds !== null && rangeSeconds >= 90 * 86_400) {
     return {
       mode: "current-day-local",
       recordsRefreshThrottleMs: 0,
     };
   }
 
-  const bucketSeconds =
-    guessBucketSeconds(options?.bucket) ?? defaultBucketSecondsForRange(range);
+  const bucketSeconds = guessBucketSeconds(options?.bucket) ?? defaultBucketSecondsForRange(range);
   return {
     mode: bucketSeconds >= 86_400 ? "server" : "local",
-    recordsRefreshThrottleMs:
-      bucketSeconds >= 86_400 ? TIMESERIES_RECORDS_RESYNC_THROTTLE_MS : 0,
+    recordsRefreshThrottleMs: bucketSeconds >= 86_400 ? TIMESERIES_RECORDS_RESYNC_THROTTLE_MS : 0,
   };
 }
 
-export function shouldResyncOnRecordsEvent(
-  range: string,
-  options?: UseTimeseriesOptions,
-) {
+export function shouldResyncOnRecordsEvent(range: string, options?: UseTimeseriesOptions) {
   return resolveTimeseriesSyncPolicy(range, options).mode === "server";
 }
 
@@ -189,9 +176,7 @@ export function shouldPatchCurrentDayBucketOnRecordsEvent(
   range: string,
   options?: UseTimeseriesOptions,
 ) {
-  return (
-    resolveTimeseriesSyncPolicy(range, options).mode === "current-day-local"
-  );
+  return resolveTimeseriesSyncPolicy(range, options).mode === "current-day-local";
 }
 
 export function getTimeseriesRecordsResyncDelay(
@@ -211,10 +196,7 @@ export function shouldTriggerTimeseriesOpenResync(
   return now - lastResyncAt >= TIMESERIES_OPEN_RESYNC_COOLDOWN_MS;
 }
 
-export function getTimeseriesRemountCacheKey(
-  range: string,
-  options?: UseTimeseriesOptions,
-) {
+export function getTimeseriesRemountCacheKey(range: string, options?: UseTimeseriesOptions) {
   return JSON.stringify([
     range,
     options?.bucket ?? null,
@@ -235,9 +217,7 @@ export function readTimeseriesRemountCache(
   ttlMs = TIMESERIES_REMOUNT_CACHE_TTL_MS,
 ) {
   if (!shouldEnableTimeseriesRemountCache(range)) return null;
-  const cached = timeseriesRemountCache.get(
-    getTimeseriesRemountCacheKey(range, options),
-  );
+  const cached = timeseriesRemountCache.get(getTimeseriesRemountCacheKey(range, options));
   if (!cached) return null;
   return shouldReuseTimeseriesRemountCache(cached.cachedAt, now, ttlMs)
     ? cloneTimeseriesRemountCacheEntry(cached)
@@ -259,9 +239,7 @@ export function writeTimeseriesRemountCache(
     data: cloneTimeseriesResponse(data),
     cachedAt,
     liveRecordDeltas: cloneLiveRecordDeltaMap(liveRecordDeltas),
-    settledLiveRecordUpdatedAt: cloneSettledLiveRecordUpdatedAtMap(
-      settledLiveRecordUpdatedAt,
-    ),
+    settledLiveRecordUpdatedAt: cloneSettledLiveRecordUpdatedAtMap(settledLiveRecordUpdatedAt),
     untrackedInFlightCounts: new Map(untrackedInFlightCounts),
     untrackedInFlightClaimSnapshotId: untrackedInFlightClaimSnapshotId ?? null,
   });
@@ -286,17 +264,13 @@ export function mergePendingTimeseriesSilentOption(
   return (existingSilent ?? true) && incomingSilent;
 }
 
-export function getLocalDayStartEpoch(
-  nowEpochSeconds = Math.floor(Date.now() / 1000),
-) {
+export function getLocalDayStartEpoch(nowEpochSeconds = Math.floor(Date.now() / 1000)) {
   const value = new Date(nowEpochSeconds * 1000);
   value.setHours(0, 0, 0, 0);
   return Math.floor(value.getTime() / 1000);
 }
 
-export function getNextLocalDayStartEpoch(
-  nowEpochSeconds = Math.floor(Date.now() / 1000),
-) {
+export function getNextLocalDayStartEpoch(nowEpochSeconds = Math.floor(Date.now() / 1000)) {
   const value = new Date(nowEpochSeconds * 1000);
   value.setHours(24, 0, 0, 0);
   return Math.floor(value.getTime() / 1000);
@@ -320,9 +294,7 @@ export function getVisibilityOpenResyncMode(
   nowEpochSeconds = Math.floor(Date.now() / 1000),
 ) {
   if (range === "yesterday") {
-    return isYesterdayTimeseriesStale(data, nowEpochSeconds)
-      ? "force"
-      : "normal";
+    return isYesterdayTimeseriesStale(data, nowEpochSeconds) ? "force" : "normal";
   }
   if (range === "today" || syncMode === "current-day-local") {
     return "force";
@@ -339,16 +311,12 @@ export function getSseOpenResyncOptions(
   if (range === "yesterday") {
     return {
       bypassCooldown: true,
-      forceLoad:
-        getVisibilityOpenResyncMode(range, syncMode, data, nowEpochSeconds) ===
-        "force",
+      forceLoad: getVisibilityOpenResyncMode(range, syncMode, data, nowEpochSeconds) === "force",
     };
   }
-  return (
-    range === "today" || syncMode === "current-day-local"
-      ? { bypassCooldown: true, forceLoad: true }
-      : { bypassCooldown: false, forceLoad: false }
-  );
+  return range === "today" || syncMode === "current-day-local"
+    ? { bypassCooldown: true, forceLoad: true }
+    : { bypassCooldown: false, forceLoad: false };
 }
 
 export function getTimeseriesDayRolloverRefreshEpoch(
@@ -366,22 +334,15 @@ export function getTimeseriesDayRolloverRefreshEpoch(
   return null;
 }
 
-function getYesterdayRangeEndEpoch(
-  nowEpochSeconds = Math.floor(Date.now() / 1000),
-) {
+function getYesterdayRangeEndEpoch(nowEpochSeconds = Math.floor(Date.now() / 1000)) {
   return getLocalDayStartEpoch(nowEpochSeconds);
 }
 
-function getYesterdayRangeStartEpoch(
-  rangeEndEpoch = getYesterdayRangeEndEpoch(),
-) {
+function getYesterdayRangeStartEpoch(rangeEndEpoch = getYesterdayRangeEndEpoch()) {
   return getLocalDayStartEpoch(rangeEndEpoch - 1);
 }
 
-function getClosedNaturalDayRangeBounds(
-  range: string,
-  rangeEndEpoch: number,
-) {
+function getClosedNaturalDayRangeBounds(range: string, rangeEndEpoch: number) {
   if (range !== "yesterday") {
     return null;
   }
@@ -407,19 +368,17 @@ function getRangeStartEpoch(range: string, rangeEndEpoch: number) {
 
 function resolvePendingLoad(pending: PendingLoad | null) {
   if (!pending) return;
-  pending.waiters.forEach((resolve) => resolve());
+  pending.waiters.forEach((resolve) => {
+    resolve();
+  });
 }
 
 function createSeededTimeseries(range: string, bucket?: string) {
-  const bucketSeconds =
-    guessBucketSeconds(bucket) ?? defaultBucketSecondsForRange(range);
+  const bucketSeconds = guessBucketSeconds(bucket) ?? defaultBucketSecondsForRange(range);
   const nowEpochSeconds = Math.floor(Date.now() / 1000);
   const rangeEndEpoch =
-    range === "yesterday"
-      ? getYesterdayRangeEndEpoch(nowEpochSeconds)
-      : nowEpochSeconds;
-  const rangeStartEpoch =
-    getRangeStartEpoch(range, rangeEndEpoch) ?? rangeEndEpoch - 86_400;
+    range === "yesterday" ? getYesterdayRangeEndEpoch(nowEpochSeconds) : nowEpochSeconds;
+  const rangeStartEpoch = getRangeStartEpoch(range, rangeEndEpoch) ?? rangeEndEpoch - 86_400;
   const start = formatEpochToIso(rangeStartEpoch);
   const end = formatEpochToIso(rangeEndEpoch);
   return {
@@ -456,8 +415,7 @@ function createLiveRecordDelta(
 ): LiveRecordDelta {
   const outcome = normalizeLiveRecordOutcome(record);
   const rawTotalLatencyMs = record.tTotalMs;
-  const isTerminalOutcome =
-    outcome === "success" || outcome === "failure";
+  const isTerminalOutcome = outcome === "success" || outcome === "failure";
   const hasTotalLatencySample =
     isTerminalOutcome &&
     typeof rawTotalLatencyMs === "number" &&
@@ -482,28 +440,16 @@ function createLiveRecordDelta(
 }
 
 function getTimeseriesPointInFlightCount(
-  point: Pick<
-    TimeseriesPoint,
-    "inFlightCount" | "totalCount" | "successCount" | "failureCount"
-  >,
+  point: Pick<TimeseriesPoint, "inFlightCount" | "totalCount" | "successCount" | "failureCount">,
 ) {
-  if (
-    typeof point.inFlightCount === "number" &&
-    Number.isFinite(point.inFlightCount)
-  ) {
+  if (typeof point.inFlightCount === "number" && Number.isFinite(point.inFlightCount)) {
     return Math.max(point.inFlightCount, 0);
   }
-  return Math.max(
-    point.totalCount - point.successCount - point.failureCount,
-    0,
-  );
+  return Math.max(point.totalCount - point.successCount - point.failureCount, 0);
 }
 
 function getTimeseriesPointCallCount(
-  point: Pick<
-    TimeseriesPoint,
-    "inFlightCount" | "totalCount" | "successCount" | "failureCount"
-  >,
+  point: Pick<TimeseriesPoint, "inFlightCount" | "totalCount" | "successCount" | "failureCount">,
 ) {
   return Math.max(
     point.totalCount,
@@ -558,22 +504,13 @@ function claimUntrackedInFlightDelta(
   if (!nextDelta) {
     return null;
   }
-  if (
-    claimSnapshotId != null &&
-    Number.isFinite(record.id) &&
-    record.id <= 0
-  ) {
+  if (claimSnapshotId != null && Number.isFinite(record.id) && record.id <= 0) {
     return null;
   }
-  if (
-    claimSnapshotId != null &&
-    Number.isFinite(record.id) &&
-    record.id > claimSnapshotId
-  ) {
+  if (claimSnapshotId != null && Number.isFinite(record.id) && record.id > claimSnapshotId) {
     return null;
   }
-  const remainingCount =
-    untrackedInFlightCounts.get(nextDelta.bucketStart) ?? 0;
+  const remainingCount = untrackedInFlightCounts.get(nextDelta.bucketStart) ?? 0;
   if (remainingCount <= 0) {
     return null;
   }
@@ -590,18 +527,13 @@ function claimUntrackedInFlightDelta(
   });
 }
 
-function resolveUntrackedInFlightClaimSnapshotId(
-  response: Pick<TimeseriesResponse, "snapshotId">,
-) {
-  return typeof response.snapshotId === "number" &&
-    Number.isFinite(response.snapshotId)
+function resolveUntrackedInFlightClaimSnapshotId(response: Pick<TimeseriesResponse, "snapshotId">) {
+  return typeof response.snapshotId === "number" && Number.isFinite(response.snapshotId)
     ? response.snapshotId
     : null;
 }
 
-function createCountsOnlyLiveRecordDelta(
-  delta: LiveRecordDelta,
-): LiveRecordDelta {
+function createCountsOnlyLiveRecordDelta(delta: LiveRecordDelta): LiveRecordDelta {
   // Anonymous in-flight placeholders only prove that this bucket already counted
   // one live invocation. They do not carry enough information to safely back out
   // provisional token/cost totals, so local patching is limited to count fields.
@@ -633,11 +565,7 @@ function reconcileCountsOnlyDelta(
   if (!previousDelta?.countsOnly || !nextDelta) {
     return nextDelta;
   }
-  if (
-    nextDelta.inFlightCount > 0 &&
-    nextDelta.successCount === 0 &&
-    nextDelta.failureCount === 0
-  ) {
+  if (nextDelta.inFlightCount > 0 && nextDelta.successCount === 0 && nextDelta.failureCount === 0) {
     return createCountsOnlyLiveRecordDelta(nextDelta);
   }
   if (!currentPoint) {
@@ -647,8 +575,7 @@ function reconcileCountsOnlyDelta(
     currentPoint.totalCount === previousDelta.totalCount &&
     currentPoint.successCount === previousDelta.successCount &&
     currentPoint.failureCount === previousDelta.failureCount &&
-    getTimeseriesPointInFlightCount(currentPoint) ===
-      previousDelta.inFlightCount;
+    getTimeseriesPointInFlightCount(currentPoint) === previousDelta.inFlightCount;
   if (!bucketOnlyContainsPlaceholder) {
     return nextDelta;
   }
@@ -658,11 +585,9 @@ function reconcileCountsOnlyDelta(
     totalCost: nextDelta.totalCost - currentPoint.totalCost,
     totalLatencyMs:
       nextDelta.totalLatencyMs -
-      ((currentPoint.avgTotalMs ?? 0) *
-        Math.max(currentPoint.totalLatencySampleCount ?? 0, 0)),
+      (currentPoint.avgTotalMs ?? 0) * Math.max(currentPoint.totalLatencySampleCount ?? 0, 0),
     totalLatencySampleCount:
-      nextDelta.totalLatencySampleCount -
-      Math.max(currentPoint.totalLatencySampleCount ?? 0, 0),
+      nextDelta.totalLatencySampleCount - Math.max(currentPoint.totalLatencySampleCount ?? 0, 0),
   };
 }
 
@@ -683,8 +608,7 @@ export async function fetchTimeseriesInFlightRecords(
   const [firstStatus, ...remainingStatuses] = TIMESERIES_IN_FLIGHT_STATUSES;
   const rangeFrom = rangeOverride?.from ?? current.rangeStart;
   const rangeTo = rangeOverride?.to ?? current.rangeEnd;
-  const initialSnapshotId =
-    typeof current.snapshotId === "number" ? current.snapshotId : undefined;
+  const initialSnapshotId = typeof current.snapshotId === "number" ? current.snapshotId : undefined;
   const batches: ApiInvocation[][] = [];
   const firstBatch = await fetchAllInvocationRecordPagesWithSnapshot(
     {
@@ -739,11 +663,7 @@ export async function fetchAllInvocationRecordPages(
   ) => Promise<InvocationRecordsResponse> = fetchInvocationRecords,
   pageSize = TIMESERIES_IN_FLIGHT_SEED_PAGE_SIZE,
 ) {
-  const { records } = await fetchAllInvocationRecordPagesWithSnapshot(
-    query,
-    fetchPage,
-    pageSize,
-  );
+  const { records } = await fetchAllInvocationRecordPagesWithSnapshot(query, fetchPage, pageSize);
   return records;
 }
 
@@ -778,9 +698,7 @@ async function fetchAllInvocationRecordPagesWithSnapshot(
         ? response.pageSize
         : requestedPageSize;
     const resolvedTotal =
-      typeof response.total === "number" && response.total >= 0
-        ? response.total
-        : null;
+      typeof response.total === "number" && response.total >= 0 ? response.total : null;
 
     if (batch.length === 0) {
       break;
@@ -797,10 +715,7 @@ async function fetchAllInvocationRecordPagesWithSnapshot(
   return { records, snapshotId };
 }
 
-function sameLiveRecordDelta(
-  left: LiveRecordDelta | null,
-  right: LiveRecordDelta | null,
-) {
+function sameLiveRecordDelta(left: LiveRecordDelta | null, right: LiveRecordDelta | null) {
   if (left === right) return true;
   if (!left || !right) return false;
   return (
@@ -901,12 +816,8 @@ export function mergeFreshResponseLiveRecordDeltas(
   maxEntries = MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
 ) {
   const nextLiveRecordDeltas = new Map(seededLiveRecordDeltas);
-  const nextSettledLiveRecordUpdatedAt = new Map(
-    previousSettledLiveRecordUpdatedAt,
-  );
-  const preservedLiveRecordDeltas = cloneLiveRecordDeltaMap(
-    previousLiveRecordDeltas,
-  );
+  const nextSettledLiveRecordUpdatedAt = new Map(previousSettledLiveRecordUpdatedAt);
+  const preservedLiveRecordDeltas = cloneLiveRecordDeltaMap(previousLiveRecordDeltas);
 
   pruneTrackedTimeseriesLiveRecordDeltas(
     preservedLiveRecordDeltas,
@@ -929,7 +840,6 @@ export function mergeFreshResponseLiveRecordDeltas(
       !nextLiveRecordDeltas.has(key)
     ) {
       nextLiveRecordDeltas.set(key, cloneLiveRecordDelta(delta));
-      continue;
     }
   }
 
@@ -956,12 +866,8 @@ function restoreMissingTrackedDeltaView(
     return response;
   }
 
-  const currentPoints = new Map(
-    current.points.map((point) => [point.bucketStart, point]),
-  );
-  const responsePoints = new Map(
-    response.points.map((point) => [point.bucketStart, { ...point }]),
-  );
+  const currentPoints = new Map(current.points.map((point) => [point.bucketStart, point]));
+  const responsePoints = new Map(response.points.map((point) => [point.bucketStart, { ...point }]));
   const responseRangeStartEpoch = parseIsoEpoch(response.rangeStart);
   const responseRangeEndEpoch = parseIsoEpoch(response.rangeEnd);
   let changed = false;
@@ -985,10 +891,7 @@ function restoreMissingTrackedDeltaView(
       continue;
     }
     const responsePoint = responsePoints.get(bucketStart);
-    const totalCountDiff = Math.max(
-      0,
-      currentPoint.totalCount - (responsePoint?.totalCount ?? 0),
-    );
+    const totalCountDiff = Math.max(0, currentPoint.totalCount - (responsePoint?.totalCount ?? 0));
     const successCountDiff = Math.max(
       0,
       currentPoint.successCount - (responsePoint?.successCount ?? 0),
@@ -1016,10 +919,7 @@ function restoreMissingTrackedDeltaView(
       0,
       currentPoint.totalTokens - (responsePoint?.totalTokens ?? 0),
     );
-    const totalCostDiff = Math.max(
-      0,
-      currentPoint.totalCost - (responsePoint?.totalCost ?? 0),
-    );
+    const totalCostDiff = Math.max(0, currentPoint.totalCost - (responsePoint?.totalCost ?? 0));
 
     if (
       totalCountDiff === 0 &&
@@ -1046,8 +946,7 @@ function restoreMissingTrackedDeltaView(
     nextPoint.totalCount += totalCountDiff;
     nextPoint.successCount += successCountDiff;
     nextPoint.failureCount += failureCountDiff;
-    nextPoint.inFlightCount =
-      getTimeseriesPointInFlightCount(nextPoint) + inFlightCountDiff;
+    nextPoint.inFlightCount = getTimeseriesPointInFlightCount(nextPoint) + inFlightCountDiff;
     nextPoint.totalTokens += totalTokensDiff;
     nextPoint.totalCost += totalCostDiff;
     responsePoints.set(bucketStart, nextPoint);
@@ -1068,15 +967,8 @@ function restoreMissingTrackedDeltaView(
   };
 }
 
-function adjustTimeseriesPoint(
-  point: TimeseriesPoint,
-  delta: LiveRecordDelta,
-  sign: 1 | -1,
-) {
-  const previousLatencySampleCount = Math.max(
-    point.totalLatencySampleCount ?? 0,
-    0,
-  );
+function adjustTimeseriesPoint(point: TimeseriesPoint, delta: LiveRecordDelta, sign: 1 | -1) {
+  const previousLatencySampleCount = Math.max(point.totalLatencySampleCount ?? 0, 0);
   const previousLatencyTotal =
     previousLatencySampleCount > 0 &&
     typeof point.avgTotalMs === "number" &&
@@ -1088,10 +980,7 @@ function adjustTimeseriesPoint(
   point.totalCount += sign * delta.totalCount;
   point.successCount += sign * delta.successCount;
   point.failureCount += sign * delta.failureCount;
-  point.inFlightCount = Math.max(
-    (point.inFlightCount ?? 0) + sign * delta.inFlightCount,
-    0,
-  );
+  point.inFlightCount = Math.max((point.inFlightCount ?? 0) + sign * delta.inFlightCount, 0);
   point.totalTokens += sign * delta.totalTokens;
   point.totalCost += sign * delta.totalCost;
   const nextLatencySampleCount = Math.max(
@@ -1100,8 +989,7 @@ function adjustTimeseriesPoint(
   );
   const nextLatencyTotal = previousLatencyTotal + sign * delta.totalLatencyMs;
   point.totalLatencySampleCount = nextLatencySampleCount;
-  point.avgTotalMs =
-    nextLatencySampleCount > 0 ? nextLatencyTotal / nextLatencySampleCount : null;
+  point.avgTotalMs = nextLatencySampleCount > 0 ? nextLatencyTotal / nextLatencySampleCount : null;
   sanitizeTimeseriesPointLatency(point);
 }
 
@@ -1170,17 +1058,13 @@ export function upsertCurrentDayLiveRecord(
 
   const nextPoints = current.points.map((point) => ({ ...point }));
   if (previousDelta) {
-    const previousPoint = nextPoints.find(
-      (item) => item.bucketStart === previousDelta.bucketStart,
-    );
+    const previousPoint = nextPoints.find((item) => item.bucketStart === previousDelta.bucketStart);
     if (previousPoint) {
       adjustTimeseriesPoint(previousPoint, previousDelta, -1);
     }
   }
   if (nextDelta) {
-    const nextPoint = nextPoints.find(
-      (item) => item.bucketStart === nextDelta.bucketStart,
-    );
+    const nextPoint = nextPoints.find((item) => item.bucketStart === nextDelta.bucketStart);
     if (!nextPoint) {
       return { next: current, delta: previousDelta };
     }
@@ -1209,33 +1093,18 @@ function buildTimeseriesLiveRecordDelta(
   const occurredEpoch = parseIsoEpoch(record.occurredAt);
   if (occurredEpoch == null) return null;
 
-  const latestRangeEndEpoch =
-    parseIsoEpoch(current.rangeEnd) ?? occurredEpoch + bucketSeconds;
-  const closedRange = getClosedNaturalDayRangeBounds(
-    context.range,
-    latestRangeEndEpoch,
-  );
-  if (
-    closedRange &&
-    (occurredEpoch < closedRange.start || occurredEpoch >= closedRange.end)
-  ) {
+  const latestRangeEndEpoch = parseIsoEpoch(current.rangeEnd) ?? occurredEpoch + bucketSeconds;
+  const closedRange = getClosedNaturalDayRangeBounds(context.range, latestRangeEndEpoch);
+  if (closedRange && (occurredEpoch < closedRange.start || occurredEpoch >= closedRange.end)) {
     return null;
   }
-  const earliestAllowed = getRangeStartEpoch(
-    context.range,
-    latestRangeEndEpoch,
-  );
+  const earliestAllowed = getRangeStartEpoch(context.range, latestRangeEndEpoch);
   if (earliestAllowed != null && occurredEpoch < earliestAllowed) {
     return null;
   }
 
-  const offsetSeconds =
-    bucketSeconds >= 86_400 ? (context.settlementHour ?? 0) * 3_600 : 0;
-  const bucketStartEpoch = alignBucketEpoch(
-    occurredEpoch,
-    bucketSeconds,
-    offsetSeconds,
-  );
+  const offsetSeconds = bucketSeconds >= 86_400 ? (context.settlementHour ?? 0) * 3_600 : 0;
+  const bucketStartEpoch = alignBucketEpoch(occurredEpoch, bucketSeconds, offsetSeconds);
   const bucketEndEpoch = bucketStartEpoch + bucketSeconds;
   return createLiveRecordDelta(record, bucketStartEpoch, bucketEndEpoch);
 }
@@ -1332,9 +1201,7 @@ export function upsertTimeseriesLiveRecord(
   }
 
   const currentPoint = previousDelta
-    ? (current.points.find(
-        (point) => point.bucketStart === previousDelta.bucketStart,
-      ) ?? null)
+    ? (current.points.find((point) => point.bucketStart === previousDelta.bucketStart) ?? null)
     : null;
   let nextDelta = buildTimeseriesLiveRecordDelta(record, current, context);
   nextDelta = reconcileCountsOnlyDelta(previousDelta, nextDelta, currentPoint);
@@ -1396,17 +1263,11 @@ export function upsertTimeseriesLiveRecord(
     nextDelta?.bucketEndEpoch ?? 0,
   );
   const nextRangeEnd =
-    nextRangeEndEpoch > 0
-      ? formatEpochToIso(nextRangeEndEpoch)
-      : current.rangeEnd;
+    nextRangeEndEpoch > 0 ? formatEpochToIso(nextRangeEndEpoch) : current.rangeEnd;
   const nextRangeStartEpoch =
-    nextRangeEndEpoch > 0
-      ? getRangeStartEpoch(context.range, nextRangeEndEpoch)
-      : null;
+    nextRangeEndEpoch > 0 ? getRangeStartEpoch(context.range, nextRangeEndEpoch) : null;
   const nextRangeStart =
-    nextRangeStartEpoch != null
-      ? formatEpochToIso(nextRangeStartEpoch)
-      : current.rangeStart;
+    nextRangeStartEpoch != null ? formatEpochToIso(nextRangeStartEpoch) : current.rangeStart;
 
   while (nextRangeStartEpoch != null && sortedPoints.length > 0) {
     const first = sortedPoints[0];
@@ -1432,14 +1293,11 @@ export function upsertTimeseriesLiveRecord(
 export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const initialCachedTimeseries = readTimeseriesRemountCache(range, options);
   const initialLiveRecordDeltas =
-    initialCachedTimeseries?.liveRecordDeltas ??
-    new Map<string, LiveRecordDelta>();
+    initialCachedTimeseries?.liveRecordDeltas ?? new Map<string, LiveRecordDelta>();
   const [data, setData] = useState<TimeseriesResponse | null>(
     () => initialCachedTimeseries?.data ?? null,
   );
-  const [isLoading, setIsLoading] = useState(
-    () => initialCachedTimeseries == null,
-  );
+  const [isLoading, setIsLoading] = useState(() => initialCachedTimeseries == null);
   const [error, setError] = useState<string | null>(null);
   const bucket = options?.bucket;
   const settlementHour = options?.settlementHour;
@@ -1452,18 +1310,12 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const requestSeqRef = useRef(0);
   const activeRequestControllerRef = useRef<AbortController | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dayRolloverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const dayRolloverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastRecordsRefreshAtRef = useRef(0);
   const lastOpenResyncAtRef = useRef(0);
   const localRevisionRef = useRef(0);
-  const dataRef = useRef<TimeseriesResponse | null>(
-    initialCachedTimeseries?.data ?? null,
-  );
-  const liveRecordDeltaRef = useRef<Map<string, LiveRecordDelta>>(
-    initialLiveRecordDeltas,
-  );
+  const dataRef = useRef<TimeseriesResponse | null>(initialCachedTimeseries?.data ?? null);
+  const liveRecordDeltaRef = useRef<Map<string, LiveRecordDelta>>(initialLiveRecordDeltas);
   const settledLiveRecordUpdatedAtRef = useRef<Map<string, number>>(
     initialCachedTimeseries?.settledLiveRecordUpdatedAt ?? new Map(),
   );
@@ -1542,15 +1394,9 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
             if (seedErr instanceof Error && seedErr.name === "AbortError") {
               throw seedErr;
             }
-            console.warn(
-              "Failed to seed in-flight timeseries deltas after load",
-              seedErr,
-            );
+            console.warn("Failed to seed in-flight timeseries deltas after load", seedErr);
           }
-          untrackedInFlightCounts = buildUntrackedInFlightCounts(
-            response,
-            seededLiveRecordDeltas,
-          );
+          untrackedInFlightCounts = buildUntrackedInFlightCounts(response, seededLiveRecordDeltas);
         }
         if (requestSeq !== requestSeqRef.current) {
           return;
@@ -1576,11 +1422,9 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
                 mergedLiveRecordDeltas.liveRecordDeltas,
               )
             : response;
-        const claimSnapshotId =
-          resolveUntrackedInFlightClaimSnapshotId(response);
+        const claimSnapshotId = resolveUntrackedInFlightClaimSnapshotId(response);
         liveRecordDeltaRef.current = mergedLiveRecordDeltas.liveRecordDeltas;
-        settledLiveRecordUpdatedAtRef.current =
-          mergedLiveRecordDeltas.settledLiveRecordUpdatedAt;
+        settledLiveRecordUpdatedAtRef.current = mergedLiveRecordDeltas.settledLiveRecordUpdatedAt;
         untrackedInFlightCountsRef.current = untrackedInFlightCounts;
         untrackedInFlightClaimSnapshotIdRef.current = claimSnapshotId;
         dataRef.current = responseWithPreservedLiveDeltas;
@@ -1623,10 +1467,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
           hasHydratedRef.current = true;
           return;
         }
-        const fallback = createSeededTimeseries(
-          range,
-          normalizedOptions.bucket,
-        );
+        const fallback = createSeededTimeseries(range, normalizedOptions.bucket);
         liveRecordDeltaRef.current = new Map();
         settledLiveRecordUpdatedAtRef.current = new Map();
         untrackedInFlightCountsRef.current = new Map();
@@ -1641,16 +1482,15 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
         if (requestSeq === requestSeqRef.current && shouldShowLoading) {
           setIsLoading(false);
         }
-        activeLoadCountRef.current = Math.max(
-          0,
-          activeLoadCountRef.current - 1,
-        );
+        activeLoadCountRef.current = Math.max(0, activeLoadCountRef.current - 1);
         if (activeLoadCountRef.current === 0) {
           const pendingLoad = pendingLoadRef.current;
           if (pendingLoad) {
             pendingLoadRef.current = null;
             void runLoad({ silent: pendingLoad.silent }).finally(() => {
-              pendingLoad.waiters.forEach((resolve) => resolve());
+              pendingLoad.waiters.forEach((resolve) => {
+                resolve();
+              });
             });
           }
         }
@@ -1691,11 +1531,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   );
 
   const triggerRecordsResync = useCallback(() => {
-    if (
-      typeof document !== "undefined" &&
-      document.visibilityState !== "visible"
-    )
-      return;
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
     const now = Date.now();
     const delay = getTimeseriesRecordsResyncDelay(
       lastRecordsRefreshAtRef.current,
@@ -1721,22 +1557,13 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   }, [clearPendingRefreshTimer, load, syncPolicy.recordsRefreshThrottleMs]);
 
   const triggerOpenResync = useCallback(
-    ({
-      bypassCooldown = false,
-      forceLoad = false,
-    }: TimeseriesOpenResyncOptions = {}) => {
+    ({ bypassCooldown = false, forceLoad = false }: TimeseriesOpenResyncOptions = {}) => {
       if (!hasHydratedRef.current) {
         pendingOpenResyncRef.current = true;
         return;
       }
       const now = Date.now();
-      if (
-        !shouldTriggerTimeseriesOpenResync(
-          lastOpenResyncAtRef.current,
-          now,
-          bypassCooldown,
-        )
-      ) {
+      if (!shouldTriggerTimeseriesOpenResync(lastOpenResyncAtRef.current, now, bypassCooldown)) {
         return;
       }
       lastOpenResyncAtRef.current = now;
@@ -1746,10 +1573,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   );
 
   useEffect(() => {
-    const cachedTimeseries = readTimeseriesRemountCache(
-      range,
-      normalizedOptions,
-    );
+    const cachedTimeseries = readTimeseriesRemountCache(range, normalizedOptions);
     requestSeqRef.current += 1;
     activeRequestControllerRef.current?.abort();
     activeRequestControllerRef.current = null;
@@ -1762,12 +1586,10 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     lastOpenResyncAtRef.current = 0;
     localRevisionRef.current = 0;
     dataRef.current = cachedTimeseries?.data ?? null;
-    liveRecordDeltaRef.current =
-      cachedTimeseries?.liveRecordDeltas ?? new Map();
+    liveRecordDeltaRef.current = cachedTimeseries?.liveRecordDeltas ?? new Map();
     settledLiveRecordUpdatedAtRef.current =
       cachedTimeseries?.settledLiveRecordUpdatedAt ?? new Map();
-    untrackedInFlightCountsRef.current =
-      cachedTimeseries?.untrackedInFlightCounts ?? new Map();
+    untrackedInFlightCountsRef.current = cachedTimeseries?.untrackedInFlightCounts ?? new Map();
     untrackedInFlightClaimSnapshotIdRef.current =
       cachedTimeseries?.untrackedInFlightClaimSnapshotId ?? null;
     clearPendingLoad();
@@ -1825,8 +1647,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
           for (const record of scopedRecords) {
             const key = invocationStableKey(record);
             const trackedDelta = liveRecordDeltaRef.current.get(key) ?? null;
-            const currentBucket =
-              next != null ? getCurrentDayBucket(next, nowEpochSeconds) : null;
+            const currentBucket = next != null ? getCurrentDayBucket(next, nowEpochSeconds) : null;
             const previousDelta =
               trackedDelta ??
               (next != null
@@ -1839,12 +1660,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
                     untrackedInFlightClaimSnapshotIdRef.current,
                   )
                 : null);
-            const result = upsertCurrentDayLiveRecord(
-              next,
-              record,
-              previousDelta,
-              nowEpochSeconds,
-            );
+            const result = upsertCurrentDayLiveRecord(next, record, previousDelta, nowEpochSeconds);
             next = result.next;
             trackTimeseriesLiveRecordDelta(
               liveRecordDeltaRef.current,
@@ -1876,8 +1692,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       }
 
       setData((current) => {
-        let next =
-          current ?? createSeededTimeseries(range, normalizedOptions.bucket);
+        let next = current ?? createSeededTimeseries(range, normalizedOptions.bucket);
         for (const record of scopedRecords) {
           const key = invocationStableKey(record);
           const trackedDelta = liveRecordDeltaRef.current.get(key) ?? null;
@@ -1893,16 +1708,11 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
               untrackedInFlightCountsRef.current,
               untrackedInFlightClaimSnapshotIdRef.current,
             );
-          const result = upsertTimeseriesLiveRecord(
-            next,
-            record,
-            previousDelta,
-            {
-              range,
-              bucketSeconds: next.bucketSeconds,
-              settlementHour: normalizedOptions.settlementHour,
-            },
-          );
+          const result = upsertTimeseriesLiveRecord(next, record, previousDelta, {
+            range,
+            bucketSeconds: next.bucketSeconds,
+            settlementHour: normalizedOptions.settlementHour,
+          });
           next = result.next ?? next;
           trackTimeseriesLiveRecordDelta(
             liveRecordDeltaRef.current,
@@ -1946,15 +1756,9 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   useEffect(() => {
     if (typeof document === "undefined") return;
     const resyncOnOpen = () => {
-      const resyncMode = getVisibilityOpenResyncMode(
-        range,
-        syncPolicy.mode,
-        dataRef.current,
-      );
+      const resyncMode = getVisibilityOpenResyncMode(range, syncPolicy.mode, dataRef.current);
       triggerOpenResync(
-        resyncMode === "force"
-          ? { bypassCooldown: true, forceLoad: true }
-          : undefined,
+        resyncMode === "force" ? { bypassCooldown: true, forceLoad: true } : undefined,
       );
     };
     const onVisibilityChange = () => {
@@ -1975,24 +1779,14 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
-      triggerOpenResync(
-        getSseOpenResyncOptions(
-          range,
-          syncPolicy.mode,
-          dataRef.current,
-        ),
-      );
+      triggerOpenResync(getSseOpenResyncOptions(range, syncPolicy.mode, dataRef.current));
     });
     return unsubscribe;
   }, [range, syncPolicy.mode, triggerOpenResync]);
 
   useEffect(() => {
     clearDayRolloverTimer();
-    const refreshEpoch = getTimeseriesDayRolloverRefreshEpoch(
-      range,
-      syncPolicy.mode,
-      data,
-    );
+    const refreshEpoch = getTimeseriesDayRolloverRefreshEpoch(range, syncPolicy.mode, data);
     if (refreshEpoch == null) {
       return;
     }
@@ -2044,20 +1838,14 @@ export function shouldResyncForCurrentDayBucket(
   return getCurrentDayBucket(current, nowEpochSeconds) == null;
 }
 
-function getCurrentDayBucket(
-  current: TimeseriesResponse | null,
-  nowEpochSeconds: number,
-) {
+function getCurrentDayBucket(current: TimeseriesResponse | null, nowEpochSeconds: number) {
   if (!current) return null;
   for (let index = current.points.length - 1; index >= 0; index -= 1) {
     const point = current.points[index];
     const bucketStartEpoch = parseIsoEpoch(point.bucketStart);
     const bucketEndEpoch = parseIsoEpoch(point.bucketEnd);
     if (bucketStartEpoch == null || bucketEndEpoch == null) continue;
-    if (
-      nowEpochSeconds >= bucketStartEpoch &&
-      nowEpochSeconds < bucketEndEpoch
-    ) {
+    if (nowEpochSeconds >= bucketStartEpoch && nowEpochSeconds < bucketEndEpoch) {
       return point;
     }
   }
@@ -2087,9 +1875,7 @@ export function applyRecordsToCurrentDayBucket(
   const nextPoints = current.points.map((point) =>
     point.bucketStart === currentBucket.bucketStart ? { ...point } : point,
   );
-  const nextBucket = nextPoints.find(
-    (point) => point.bucketStart === currentBucket.bucketStart,
-  );
+  const nextBucket = nextPoints.find((point) => point.bucketStart === currentBucket.bucketStart);
   if (!nextBucket) {
     return current;
   }
@@ -2142,8 +1928,7 @@ export function applyRecordsToTimeseries(
     return current;
   }
 
-  const offsetSeconds =
-    bucketSeconds >= 86_400 ? (context.settlementHour ?? 0) * 3_600 : 0;
+  const offsetSeconds = bucketSeconds >= 86_400 ? (context.settlementHour ?? 0) * 3_600 : 0;
   const points = new Map<string, TimeseriesPoint>();
   for (const point of current.points) {
     points.set(point.bucketStart, { ...point });
@@ -2161,30 +1946,17 @@ export function applyRecordsToTimeseries(
     }
 
     if (latestRangeEndEpoch != null) {
-      const closedRange = getClosedNaturalDayRangeBounds(
-        context.range,
-        latestRangeEndEpoch,
-      );
-      if (
-        closedRange &&
-        (occurredEpoch < closedRange.start || occurredEpoch >= closedRange.end)
-      ) {
+      const closedRange = getClosedNaturalDayRangeBounds(context.range, latestRangeEndEpoch);
+      if (closedRange && (occurredEpoch < closedRange.start || occurredEpoch >= closedRange.end)) {
         continue;
       }
-      const earliestAllowed = getRangeStartEpoch(
-        context.range,
-        latestRangeEndEpoch,
-      );
+      const earliestAllowed = getRangeStartEpoch(context.range, latestRangeEndEpoch);
       if (earliestAllowed != null && occurredEpoch < earliestAllowed) {
         continue;
       }
     }
 
-    const bucketStartEpoch = alignBucketEpoch(
-      occurredEpoch,
-      bucketSeconds,
-      offsetSeconds,
-    );
+    const bucketStartEpoch = alignBucketEpoch(occurredEpoch, bucketSeconds, offsetSeconds);
     const bucketEndEpoch = bucketStartEpoch + bucketSeconds;
     const bucketStart = formatEpochToIso(bucketStartEpoch);
     const bucketEnd = formatEpochToIso(bucketEndEpoch);
@@ -2234,10 +2006,7 @@ export function applyRecordsToTimeseries(
   });
 
   if (latestRangeEndEpoch != null) {
-    const earliestAllowed = getRangeStartEpoch(
-      context.range,
-      latestRangeEndEpoch,
-    );
+    const earliestAllowed = getRangeStartEpoch(context.range, latestRangeEndEpoch);
     while (earliestAllowed != null && sortedPoints.length > 0) {
       const first = sortedPoints[0];
       const firstEndEpoch = parseIsoEpoch(first.bucketEnd);
@@ -2249,20 +2018,13 @@ export function applyRecordsToTimeseries(
     }
   }
 
-  const nextRangeEndEpoch =
-    latestRangeEndEpoch ?? parseIsoEpoch(current.rangeEnd);
+  const nextRangeEndEpoch = latestRangeEndEpoch ?? parseIsoEpoch(current.rangeEnd);
   const nextRangeEnd =
-    nextRangeEndEpoch != null
-      ? formatEpochToIso(nextRangeEndEpoch)
-      : current.rangeEnd;
+    nextRangeEndEpoch != null ? formatEpochToIso(nextRangeEndEpoch) : current.rangeEnd;
   const nextRangeStartEpoch =
-    nextRangeEndEpoch != null
-      ? getRangeStartEpoch(context.range, nextRangeEndEpoch)
-      : null;
+    nextRangeEndEpoch != null ? getRangeStartEpoch(context.range, nextRangeEndEpoch) : null;
   const nextRangeStart =
-    nextRangeStartEpoch != null
-      ? formatEpochToIso(nextRangeStartEpoch)
-      : current.rangeStart;
+    nextRangeStartEpoch != null ? formatEpochToIso(nextRangeStartEpoch) : current.rangeStart;
 
   return {
     ...current,
@@ -2292,14 +2054,9 @@ function parseRangeSpec(range: string) {
   }
 }
 
-function alignBucketEpoch(
-  epochSeconds: number,
-  bucketSeconds: number,
-  offsetSeconds: number,
-) {
+function alignBucketEpoch(epochSeconds: number, bucketSeconds: number, offsetSeconds: number) {
   const adjusted = epochSeconds - offsetSeconds;
-  const aligned =
-    Math.floor(adjusted / bucketSeconds) * bucketSeconds + offsetSeconds;
+  const aligned = Math.floor(adjusted / bucketSeconds) * bucketSeconds + offsetSeconds;
   return aligned;
 }
 

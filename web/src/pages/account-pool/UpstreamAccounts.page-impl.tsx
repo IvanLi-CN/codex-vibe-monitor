@@ -1,13 +1,4 @@
-/* eslint-disable react-hooks/exhaustive-deps */
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { AppIcon } from "../../features/shared/AppIcon";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
@@ -29,11 +20,8 @@ import {
   DialogTitle,
 } from "../../components/ui/dialog";
 import { formFieldSpanVariants } from "../../components/ui/form-control";
+import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { SelectField } from "../../components/ui/select-field";
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from "../../components/ui/segmented-control";
 import { Spinner } from "../../components/ui/spinner";
 import { AccountTagFilterCombobox } from "../../features/account-pool/AccountTagFilterCombobox";
 import { MultiSelectFilterCombobox } from "../../features/account-pool/MultiSelectFilterCombobox";
@@ -46,15 +34,18 @@ import {
   UpstreamAccountsTable,
   type UpstreamAccountsTableLabels,
 } from "../../features/account-pool/UpstreamAccountsTable";
+import { AppIcon } from "../../features/shared/AppIcon";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
+import { useTranslation } from "../../i18n";
+import { buildAccountPoolGroupSummaries } from "../../lib/accountPoolGroups";
 import type {
   BulkUpstreamAccountActionPayload,
   BulkUpstreamAccountSyncCounts,
   BulkUpstreamAccountSyncSnapshot,
-  PoolRoutingMaintenanceSettings,
   FetchUpstreamAccountsQuery,
+  PoolRoutingMaintenanceSettings,
   PoolRoutingTimeoutSettings,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
@@ -65,42 +56,38 @@ import {
   normalizeBulkUpstreamAccountSyncRowEventPayload,
   normalizeBulkUpstreamAccountSyncSnapshotEventPayload,
 } from "../../lib/api";
-import {
-  buildGroupNameSuggestions,
-  buildGroupOptions,
-} from "../../lib/upstreamAccountGroups";
 import { generatePoolRoutingKey } from "../../lib/poolRouting";
-import { buildAccountPoolGroupSummaries } from "../../lib/accountPoolGroups";
+import { buildGroupNameSuggestions, buildGroupOptions } from "../../lib/upstreamAccountGroups";
 import { cn } from "../../lib/utils";
-import { useTranslation } from "../../i18n";
 import {
+  type ActionErrorState,
+  accountHealthStatus,
+  accountWorkStatus,
+  type BusyActionState,
+  buildRoutingDraft,
+  bulkSyncRowStatusVariant,
+  compactSupportHint,
+  compactSupportLabel,
   DEFAULT_ROUTING_TIMEOUTS,
   DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME,
-  UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
   type GroupFilterState,
-  type UpstreamAccountsLocationState,
-  type ActionErrorState,
-  type BusyActionState,
-  readPersistedUpstreamAccountFilters,
-  persistUpstreamAccountFilters,
   isBusyAction,
-  resolveRoutingMaintenance,
-  buildRoutingDraft,
-  accountWorkStatus,
-  accountHealthStatus,
   parseRoutingPositiveInteger,
-  bulkSyncRowStatusVariant,
-  resolveBulkSyncCounts,
-  withBulkSyncSnapshotStatus,
-  shouldAutoHideBulkSyncProgress,
-  compactSupportLabel,
-  compactSupportHint,
   parseRoutingTimeoutValue,
+  persistUpstreamAccountFilters,
   poolCardMetric,
   RoutingSettingsDialog,
+  readPersistedUpstreamAccountFilters,
+  resolveBulkSyncCounts,
+  resolveRoutingMaintenance,
   SharedUpstreamAccountDetailDrawer,
+  shouldAutoHideBulkSyncProgress,
+  UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
+  type UpstreamAccountsLocationState,
+  withBulkSyncSnapshotStatus,
 } from "./UpstreamAccounts.page-local-shared";
 import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroupSettingsDialog";
+
 export { SharedUpstreamAccountDetailDrawer } from "./UpstreamAccounts.page-local-shared";
 
 type AccountRosterViewMode = "flat" | "grouped" | "grid";
@@ -120,19 +107,14 @@ function parseListQueryIncludeAll(queryKey: string | null): boolean | null {
   }
 }
 
-function sanitizePresetGroupFilter(
-  value?: GroupFilterState | null,
-): GroupFilterState | null {
+function sanitizePresetGroupFilter(value?: GroupFilterState | null): GroupFilterState | null {
   if (value?.mode === "ungrouped") {
     return {
       mode: "ungrouped",
       query: "",
     };
   }
-  if (
-    (value?.mode === "search" || value?.mode === "exact") &&
-    value.query.trim()
-  ) {
+  if ((value?.mode === "search" || value?.mode === "exact") && value.query.trim()) {
     return {
       mode: value.mode,
       query: value.query.trim(),
@@ -141,9 +123,7 @@ function sanitizePresetGroupFilter(
   return null;
 }
 
-function groupFilterStateToGroupFilters(
-  value?: GroupFilterState | null,
-): string[] {
+function groupFilterStateToGroupFilters(value?: GroupFilterState | null): string[] {
   const preset = sanitizePresetGroupFilter(value);
   if (!preset) return [];
   if (preset.mode === "ungrouped") return [DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME];
@@ -160,33 +140,21 @@ export default function UpstreamAccountsPage() {
   const location = useLocation();
   const locationState = location.state as UpstreamAccountsLocationState | null;
   const navigate = useNavigate();
-  const {
-    upstreamAccountId,
-    upstreamAccountTab,
-    openUpstreamAccount,
-    closeUpstreamAccount,
-  } = useUpstreamAccountDetailRoute();
-  const [initialFilters] = useState(() =>
-    readPersistedUpstreamAccountFilters(),
-  );
+  const { upstreamAccountId, upstreamAccountTab, openUpstreamAccount, closeUpstreamAccount } =
+    useUpstreamAccountDetailRoute();
+  const [initialFilters] = useState(() => readPersistedUpstreamAccountFilters());
   const initialGroupFilters = useMemo(
     () =>
-      groupFilterStateToGroupFilters(locationState?.presetGroupFilter).length >
-      0
+      groupFilterStateToGroupFilters(locationState?.presetGroupFilter).length > 0
         ? groupFilterStateToGroupFilters(locationState?.presetGroupFilter)
         : initialFilters.groupFilters,
     [initialFilters.groupFilters, locationState?.presetGroupFilter],
   );
-  const [hasTransientPresetGroupFilter, setHasTransientPresetGroupFilter] =
-    useState(
-      () => sanitizePresetGroupFilter(locationState?.presetGroupFilter) != null,
-    );
-  const [groupFilters, setGroupFilters] = useState<string[]>(
-    () => initialGroupFilters,
+  const [hasTransientPresetGroupFilter, setHasTransientPresetGroupFilter] = useState(
+    () => sanitizePresetGroupFilter(locationState?.presetGroupFilter) != null,
   );
-  const [selectedTagIds, setSelectedTagIds] = useState<number[]>(
-    () => initialFilters.tagIds,
-  );
+  const [groupFilters, setGroupFilters] = useState<string[]>(() => initialGroupFilters);
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>(() => initialFilters.tagIds);
   const [workStatusFilter, setWorkStatusFilter] = useState<string[]>(
     () => initialFilters.workStatus,
   );
@@ -198,37 +166,22 @@ export default function UpstreamAccountsPage() {
   );
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [rosterViewMode, setRosterViewMode] =
-    useState<AccountRosterViewMode>("grid");
-  const [visibleGroupedAccountIds, setVisibleGroupedAccountIds] = useState<
-    number[]
-  >([]);
+  const [rosterViewMode, setRosterViewMode] = useState<AccountRosterViewMode>("grid");
+  const [visibleGroupedAccountIds, setVisibleGroupedAccountIds] = useState<number[]>([]);
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
-  const [, setSelectedAccountSummaries] = useState<
-    Record<number, UpstreamAccountSummary>
-  >({});
+  const [, setSelectedAccountSummaries] = useState<Record<number, UpstreamAccountSummary>>({});
   const persistedGroupFiltersRef = useRef(initialFilters.groupFilters);
-  const {
-    items: tagItems,
-    isLoading: isTagCatalogLoading,
-    error: tagCatalogError,
-  } = usePoolTags();
-  const validTagIds = useMemo(
-    () => new Set(tagItems.map((tag) => tag.id)),
-    [tagItems],
-  );
+  const { items: tagItems, isLoading: isTagCatalogLoading, error: tagCatalogError } = usePoolTags();
+  const validTagIds = useMemo(() => new Set(tagItems.map((tag) => tag.id)), [tagItems]);
   const visibleSelectedTagIds = useMemo(
     () => selectedTagIds.filter((tagId) => validTagIds.has(tagId)),
     [selectedTagIds, validTagIds],
   );
-  const canSanitizeSelectedTagIds =
-    !isTagCatalogLoading && tagCatalogError == null;
+  const canSanitizeSelectedTagIds = !isTagCatalogLoading && tagCatalogError == null;
   const canApplySelectedTagIds =
     !isTagCatalogLoading &&
-    (tagCatalogError == null ||
-      visibleSelectedTagIds.length === selectedTagIds.length);
-  const shouldDeferRosterQuery =
-    selectedTagIds.length > 0 && isTagCatalogLoading;
+    (tagCatalogError == null || visibleSelectedTagIds.length === selectedTagIds.length);
+  const shouldDeferRosterQuery = selectedTagIds.length > 0 && isTagCatalogLoading;
   const appliedSelectedTagIds = useMemo(() => {
     if (!canApplySelectedTagIds) {
       return [];
@@ -248,15 +201,10 @@ export default function UpstreamAccountsPage() {
     return {
       groupExact: groupFilters.length > 0 ? groupFilters : undefined,
       workStatus: workStatusFilter.length > 0 ? workStatusFilter : undefined,
-      enableStatus:
-        enableStatusFilter.length > 0 ? enableStatusFilter : undefined,
-      healthStatus:
-        healthStatusFilter.length > 0 ? healthStatusFilter : undefined,
-      ...(rosterViewMode === "flat"
-        ? { page, pageSize }
-        : { includeAll: true }),
-      tagIds:
-        appliedSelectedTagIds.length > 0 ? appliedSelectedTagIds : undefined,
+      enableStatus: enableStatusFilter.length > 0 ? enableStatusFilter : undefined,
+      healthStatus: healthStatusFilter.length > 0 ? healthStatusFilter : undefined,
+      ...(rosterViewMode === "flat" ? { page, pageSize } : { includeAll: true }),
+      tagIds: appliedSelectedTagIds.length > 0 ? appliedSelectedTagIds : undefined,
     };
   }, [
     appliedSelectedTagIds,
@@ -319,9 +267,7 @@ export default function UpstreamAccountsPage() {
       },
       {
         value: "upstream_unavailable",
-        label: t(
-          "accountPool.upstreamAccounts.healthStatus.upstream_unavailable",
-        ),
+        label: t("accountPool.upstreamAccounts.healthStatus.upstream_unavailable"),
       },
       {
         value: "upstream_rejected",
@@ -372,9 +318,7 @@ export default function UpstreamAccountsPage() {
     total,
     metrics: listMetrics,
   } = useUpstreamAccounts(accountListQuery);
-  const [routingDraft, setRoutingDraft] = useState(() =>
-    buildRoutingDraft(null),
-  );
+  const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null));
   const [actionError, setActionError] = useState<ActionErrorState>(() => ({
     routing: null,
     accountMessages: {},
@@ -384,42 +328,31 @@ export default function UpstreamAccountsPage() {
     accountActions: new Set(),
   }));
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false);
-  const [isRoutingDialogInspectOnly, setIsRoutingDialogInspectOnly] =
-    useState(false);
-  const [postCreateWarning, setPostCreateWarning] = useState<string | null>(
-    null,
-  );
+  const [isRoutingDialogInspectOnly, setIsRoutingDialogInspectOnly] = useState(false);
+  const [postCreateWarning, setPostCreateWarning] = useState<string | null>(null);
   const [duplicateWarning, setDuplicateWarning] =
     useState<UpstreamAccountsLocationState["duplicateWarning"]>(null);
-  const [pendingInitialDeleteConfirm, setPendingInitialDeleteConfirm] =
-    useState(false);
+  const [pendingInitialDeleteConfirm, setPendingInitialDeleteConfirm] = useState(false);
   const [bulkActionBusy, setBulkActionBusy] = useState<string | null>(null);
-  const [bulkActionMessage, setBulkActionMessage] = useState<string | null>(
-    null,
-  );
+  const [bulkActionMessage, setBulkActionMessage] = useState<string | null>(null);
   const [bulkActionError, setBulkActionError] = useState<string | null>(null);
   const [bulkGroupDialogOpen, setBulkGroupDialogOpen] = useState(false);
   const [bulkGroupName, setBulkGroupName] = useState("");
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
-  const [bulkSyncSnapshot, setBulkSyncSnapshot] =
-    useState<BulkUpstreamAccountSyncSnapshot | null>(null);
-  const [bulkSyncCounts, setBulkSyncCounts] =
-    useState<BulkUpstreamAccountSyncCounts | null>(null);
+  const [bulkSyncSnapshot, setBulkSyncSnapshot] = useState<BulkUpstreamAccountSyncSnapshot | null>(
+    null,
+  );
+  const [bulkSyncCounts, setBulkSyncCounts] = useState<BulkUpstreamAccountSyncCounts | null>(null);
   const [bulkSyncError, setBulkSyncError] = useState<string | null>(null);
   const [isBulkSyncStarting, setIsBulkSyncStarting] = useState(false);
-  const [isStaleRosterGraceExpired, setIsStaleRosterGraceExpired] =
-    useState(false);
+  const [isStaleRosterGraceExpired, setIsStaleRosterGraceExpired] = useState(false);
   const bulkSyncEventSourceRef = useRef<EventSource | null>(null);
   const rosterRegionRef = useRef<HTMLDivElement | null>(null);
-  const [lastStableRosterRegionHeight, setLastStableRosterRegionHeight] =
-    useState<number | null>(null);
-  const selectedAccountIdSet = useMemo(
-    () => new Set(selectedAccountIds),
-    [selectedAccountIds],
+  const [lastStableRosterRegionHeight, setLastStableRosterRegionHeight] = useState<number | null>(
+    null,
   );
-  const routingWritesEnabled = routing
-    ? (routing.writesEnabled ?? writesEnabled)
-    : false;
+  const selectedAccountIdSet = useMemo(() => new Set(selectedAccountIds), [selectedAccountIds]);
+  const routingWritesEnabled = routing ? (routing.writesEnabled ?? writesEnabled) : false;
   const currentRosterViewRequiresIncludeAll = rosterViewMode !== "flat";
   const activeDataQueryIncludeAll = useMemo(
     () => parseListQueryIncludeAll(listState.dataQueryKey),
@@ -438,8 +371,7 @@ export default function UpstreamAccountsPage() {
     shouldBlockSwitchingRoster ||
     (listState.loadingState === "switching" && isStaleRosterGraceExpired);
   const showBlockingRosterError = listState.status === "error";
-  const showBlockingRosterState =
-    showBlockingRosterLoading || showBlockingRosterError;
+  const showBlockingRosterState = showBlockingRosterLoading || showBlockingRosterError;
   const visibleRosterItems = showBlockingRosterLoading
     ? shouldBlockSwitchingRoster
       ? []
@@ -447,49 +379,30 @@ export default function UpstreamAccountsPage() {
     : showBlockingRosterError && !showGraceRoster
       ? []
       : items;
-  const visibleListWarning =
-    listState.hasCurrentQueryData && listError ? listError : null;
+  const visibleListWarning = listState.hasCurrentQueryData && listError ? listError : null;
   const hideRosterDerivedUi = showBlockingRosterState && !showGraceRoster;
   const visibleHydrationAccountIds = useMemo(() => {
     if (rosterViewMode === "flat") {
       return visibleRosterItems.map((item) => item.id);
     }
-    const visibleRosterIdSet = new Set(
-      visibleRosterItems.map((item) => item.id),
-    );
+    const visibleRosterIdSet = new Set(visibleRosterItems.map((item) => item.id));
     return Array.from(
-      new Set(
-        visibleGroupedAccountIds.filter((accountId) =>
-          visibleRosterIdSet.has(accountId),
-        ),
-      ),
+      new Set(visibleGroupedAccountIds.filter((accountId) => visibleRosterIdSet.has(accountId))),
     );
   }, [rosterViewMode, visibleGroupedAccountIds, visibleRosterItems]);
-  const visibleHydrationAccountIdsKey = useMemo(
-    () =>
-      [...visibleHydrationAccountIds]
-        .sort((left, right) => left - right)
-        .join(","),
-    [visibleHydrationAccountIds],
-  );
   const effectiveMetrics = listMetrics ?? {
     total: items.length,
     oauth: items.filter((item) => item.kind === "oauth_codex").length,
     apiKey: items.filter((item) => item.kind === "api_key_codex").length,
     attention: items.filter(
       (item) =>
-        accountHealthStatus(item) !== "normal" ||
-        accountWorkStatus(item) === "rate_limited",
+        accountHealthStatus(item) !== "normal" || accountWorkStatus(item) === "rate_limited",
     ).length,
   };
   const visibleMetrics = hideRosterDerivedUi ? null : effectiveMetrics;
-  const effectiveTotal = hideRosterDerivedUi
-    ? null
-    : (total ?? effectiveMetrics.total);
+  const effectiveTotal = hideRosterDerivedUi ? null : (total ?? effectiveMetrics.total);
   const pageCount =
-    effectiveTotal == null
-      ? null
-      : Math.max(1, Math.ceil(effectiveTotal / Math.max(pageSize, 1)));
+    effectiveTotal == null ? null : Math.max(1, Math.ceil(effectiveTotal / Math.max(pageSize, 1)));
   const nextPageLimit = pageCount ?? page;
   const showPaginationFooter =
     rosterViewMode === "flat" && (pageCount != null || showBlockingRosterState);
@@ -543,7 +456,6 @@ export default function UpstreamAccountsPage() {
     listState.hasCurrentQueryData,
     showBlockingRosterState,
     visibleHydrationAccountIds,
-    visibleHydrationAccountIdsKey,
   ]);
   const handleWorkStatusFilterChange = useCallback(
     (value: string[]) => {
@@ -705,7 +617,7 @@ export default function UpstreamAccountsPage() {
     }, UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [listState.dataQueryKey, listState.loadingState, listState.queryKey]);
+  }, [listState.loadingState]);
 
   useLayoutEffect(() => {
     if (hideRosterDerivedUi) return;
@@ -713,20 +625,8 @@ export default function UpstreamAccountsPage() {
     if (!region) return;
     const nextHeight = Math.ceil(region.getBoundingClientRect().height);
     if (!(nextHeight > 0)) return;
-    setLastStableRosterRegionHeight((current) =>
-      current === nextHeight ? current : nextHeight,
-    );
-  }, [
-    bulkActionError,
-    bulkActionMessage,
-    hideRosterDerivedUi,
-    page,
-    pageCount,
-    pageSize,
-    selectedAccountIds.length,
-    visibleListWarning,
-    visibleRosterItems,
-  ]);
+    setLastStableRosterRegionHeight((current) => (current === nextHeight ? current : nextHeight));
+  }, [hideRosterDerivedUi]);
 
   useEffect(() => {
     if (
@@ -745,9 +645,7 @@ export default function UpstreamAccountsPage() {
     if (!state) return;
 
     const nextSearchParams = new URLSearchParams(location.search);
-    const presetGroupFilters = groupFilterStateToGroupFilters(
-      state.presetGroupFilter,
-    );
+    const presetGroupFilters = groupFilterStateToGroupFilters(state.presetGroupFilter);
     if (
       presetGroupFilters.length > 0 &&
       !areGroupFilterValuesEqual(groupFilters, presetGroupFilters)
@@ -758,10 +656,7 @@ export default function UpstreamAccountsPage() {
       clearBulkSelection();
     }
     if (typeof state.selectedAccountId === "number" && state.openDetail) {
-      nextSearchParams.set(
-        "upstreamAccountId",
-        String(state.selectedAccountId),
-      );
+      nextSearchParams.set("upstreamAccountId", String(state.selectedAccountId));
       nextSearchParams.delete("upstreamAccountTab");
       openUpstreamAccount(state.selectedAccountId, { replace: true });
     }
@@ -773,9 +668,7 @@ export default function UpstreamAccountsPage() {
     navigate(
       {
         pathname: location.pathname,
-        search: nextSearchParams.toString()
-          ? `?${nextSearchParams.toString()}`
-          : "",
+        search: nextSearchParams.toString() ? `?${nextSearchParams.toString()}` : "",
       },
       { replace: true, state: null },
     );
@@ -791,11 +684,7 @@ export default function UpstreamAccountsPage() {
 
   useEffect(() => {
     if (!duplicateWarning) return;
-    if (
-      upstreamAccountId == null ||
-      duplicateWarning.accountId === upstreamAccountId
-    )
-      return;
+    if (upstreamAccountId == null || duplicateWarning.accountId === upstreamAccountId) return;
     setDuplicateWarning(null);
   }, [duplicateWarning, upstreamAccountId]);
 
@@ -850,10 +739,7 @@ export default function UpstreamAccountsPage() {
     };
   }, [groups, hasUngroupedAccounts, visibleRosterItems]);
   const groupFilterOptions = useMemo(() => {
-    const optionMap = new Map<
-      string,
-      { value: string; label: string; trailingLabel: string }
-    >();
+    const optionMap = new Map<string, { value: string; label: string; trailingLabel: string }>();
     for (const group of groups) {
       const groupName = normalizeRosterGroupName(group.groupName);
       const accountCount = Math.max(0, Math.trunc(group.accountCount ?? 0));
@@ -880,8 +766,7 @@ export default function UpstreamAccountsPage() {
     );
   }, [groupFilters, groups]);
   const formatGroupAccountCountLabel = useCallback(
-    (count: number) =>
-      t("accountPool.upstreamAccounts.groupOptionCount", { count }),
+    (count: number) => t("accountPool.upstreamAccounts.groupOptionCount", { count }),
     [t],
   );
 
@@ -919,9 +804,7 @@ export default function UpstreamAccountsPage() {
   ]);
   const routingDraftValidationError = useMemo(() => {
     if (parsedRoutingMaintenance == null) {
-      return t(
-        "accountPool.upstreamAccounts.routing.validation.integerRequired",
-      );
+      return t("accountPool.upstreamAccounts.routing.validation.integerRequired");
     }
     if (parsedRoutingMaintenance.primarySyncIntervalSecs < 60) {
       return t("accountPool.upstreamAccounts.routing.validation.primaryMin");
@@ -933,14 +816,10 @@ export default function UpstreamAccountsPage() {
       parsedRoutingMaintenance.secondarySyncIntervalSecs <
       parsedRoutingMaintenance.primarySyncIntervalSecs
     ) {
-      return t(
-        "accountPool.upstreamAccounts.routing.validation.secondaryAtLeastPrimary",
-      );
+      return t("accountPool.upstreamAccounts.routing.validation.secondaryAtLeastPrimary");
     }
     if (parsedRoutingMaintenance.priorityAvailableAccountCap < 1) {
-      return t(
-        "accountPool.upstreamAccounts.routing.validation.priorityCapMin",
-      );
+      return t("accountPool.upstreamAccounts.routing.validation.priorityCapMin");
     }
     return null;
   }, [parsedRoutingMaintenance, t]);
@@ -963,67 +842,76 @@ export default function UpstreamAccountsPage() {
       String(resolvedRoutingTimeouts.responsesStreamTimeoutSecs) ||
     routingDraft.compactStreamTimeoutSecs.trim() !==
       String(resolvedRoutingTimeouts.compactStreamTimeoutSecs);
-  const routingDialogCanEdit =
-    routingWritesEnabled && !isRoutingDialogInspectOnly;
+  const routingDialogCanEdit = routingWritesEnabled && !isRoutingDialogInspectOnly;
   const routingCanSave =
     routingDialogCanEdit &&
     !routingDraftValidationError &&
-    (routingHasMaintenanceChange ||
-      routingHasTimeoutChange ||
-      routingHasApiKeyChange);
-  const formatDuplicateReasons = (
-    duplicateInfo?: UpstreamAccountDuplicateInfo | null,
-  ) => {
+    (routingHasMaintenanceChange || routingHasTimeoutChange || routingHasApiKeyChange);
+  const formatDuplicateReasons = (duplicateInfo?: UpstreamAccountDuplicateInfo | null) => {
     const reasons = duplicateInfo?.reasons ?? [];
     return reasons
       .map((reason) => {
         if (reason === "sharedChatgptAccountId") {
-          return t(
-            "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId",
-          );
+          return t("accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId");
         }
         if (reason === "sharedChatgptUserId") {
-          return t(
-            "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId",
-          );
+          return t("accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId");
         }
         return reason;
       })
       .join(" / ");
   };
-  const accountEnableStatusLabel = (status: string) =>
-    t(`accountPool.upstreamAccounts.enableStatus.${status}`);
-  const accountWorkStatusLabel = (status: string) =>
-    t(`accountPool.upstreamAccounts.workStatus.${status}`);
-  const accountWorkingCountLabel = (count: number) =>
-    t("accountPool.upstreamAccounts.workStatus.workingWithCount", { count });
-  const accountHealthStatusLabel = (status: string) =>
-    t(`accountPool.upstreamAccounts.healthStatus.${status}`);
-  const accountSyncStateLabel = (status: string) =>
-    t(`accountPool.upstreamAccounts.syncState.${status}`);
-  const accountActionLabel = (action?: string | null) => {
-    if (!action) return null;
-    const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`;
-    const translated = t(key);
-    return translated === key ? action : translated;
-  };
-  const accountActionSourceLabel = (source?: string | null) => {
-    if (!source) return null;
-    const key = `accountPool.upstreamAccounts.latestAction.sources.${source}`;
-    const translated = t(key);
-    return translated === key ? source : translated;
-  };
-  const accountActionReasonLabel = (reason?: string | null) => {
-    if (!reason) return null;
-    const key = `accountPool.upstreamAccounts.latestAction.reasons.${reason}`;
-    const translated = t(key);
-    return translated === key ? reason : translated;
-  };
+  const accountEnableStatusLabel = useCallback(
+    (status: string) => t(`accountPool.upstreamAccounts.enableStatus.${status}`),
+    [t],
+  );
+  const accountWorkStatusLabel = useCallback(
+    (status: string) => t(`accountPool.upstreamAccounts.workStatus.${status}`),
+    [t],
+  );
+  const accountWorkingCountLabel = useCallback(
+    (count: number) => t("accountPool.upstreamAccounts.workStatus.workingWithCount", { count }),
+    [t],
+  );
+  const accountHealthStatusLabel = useCallback(
+    (status: string) => t(`accountPool.upstreamAccounts.healthStatus.${status}`),
+    [t],
+  );
+  const accountSyncStateLabel = useCallback(
+    (status: string) => t(`accountPool.upstreamAccounts.syncState.${status}`),
+    [t],
+  );
+  const accountActionLabel = useCallback(
+    (action?: string | null) => {
+      if (!action) return null;
+      const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`;
+      const translated = t(key);
+      return translated === key ? action : translated;
+    },
+    [t],
+  );
+  const accountActionSourceLabel = useCallback(
+    (source?: string | null) => {
+      if (!source) return null;
+      const key = `accountPool.upstreamAccounts.latestAction.sources.${source}`;
+      const translated = t(key);
+      return translated === key ? source : translated;
+    },
+    [t],
+  );
+  const accountActionReasonLabel = useCallback(
+    (reason?: string | null) => {
+      if (!reason) return null;
+      const key = `accountPool.upstreamAccounts.latestAction.reasons.${reason}`;
+      const translated = t(key);
+      return translated === key ? reason : translated;
+    },
+    [t],
+  );
   const accountRosterLabels = useMemo<UpstreamAccountsTableLabels>(
     () => ({
       selectPage: t("accountPool.upstreamAccounts.bulk.selectPage"),
-      selectRow: (name) =>
-        t("accountPool.upstreamAccounts.bulk.selectRow", { name }),
+      selectRow: (name) => t("accountPool.upstreamAccounts.bulk.selectRow", { name }),
       account: t("accountPool.upstreamAccounts.table.account"),
       sync: t("accountPool.upstreamAccounts.table.syncAndCall"),
       lastSuccess: t("accountPool.upstreamAccounts.table.lastSuccessShort"),
@@ -1035,25 +923,15 @@ export default function UpstreamAccountsPage() {
       primary: t("accountPool.upstreamAccounts.primaryWindowLabel"),
       primaryShort: t("accountPool.upstreamAccounts.primaryWindowShortLabel"),
       secondary: t("accountPool.upstreamAccounts.secondaryWindowLabel"),
-      secondaryShort: t(
-        "accountPool.upstreamAccounts.secondaryWindowShortLabel",
-      ),
+      secondaryShort: t("accountPool.upstreamAccounts.secondaryWindowShortLabel"),
       nextReset: t("accountPool.upstreamAccounts.table.nextReset"),
-      nextResetCompact: t(
-        "accountPool.upstreamAccounts.table.nextResetCompact",
-      ),
+      nextResetCompact: t("accountPool.upstreamAccounts.table.nextResetCompact"),
       requestsMetric: t("accountPool.upstreamAccounts.table.requestsMetric"),
       tokensMetric: t("accountPool.upstreamAccounts.table.tokensMetric"),
       costMetric: t("accountPool.upstreamAccounts.table.costMetric"),
-      inputTokensMetric: t(
-        "accountPool.upstreamAccounts.table.inputTokensMetric",
-      ),
-      outputTokensMetric: t(
-        "accountPool.upstreamAccounts.table.outputTokensMetric",
-      ),
-      cacheInputTokensMetric: t(
-        "accountPool.upstreamAccounts.table.cacheInputTokensMetric",
-      ),
+      inputTokensMetric: t("accountPool.upstreamAccounts.table.inputTokensMetric"),
+      outputTokensMetric: t("accountPool.upstreamAccounts.table.outputTokensMetric"),
+      cacheInputTokensMetric: t("accountPool.upstreamAccounts.table.cacheInputTokensMetric"),
       unknown: t("accountPool.upstreamAccounts.latestAction.unknown"),
       unavailable: t("accountPool.upstreamAccounts.unavailable"),
       oauth: t("accountPool.upstreamAccounts.kind.oauth"),
@@ -1074,44 +952,22 @@ export default function UpstreamAccountsPage() {
       action: accountActionLabel,
       compactSupport: (item) => compactSupportLabel(item.compactSupport, t),
       compactSupportHint: (item) => compactSupportHint(item.compactSupport, t),
-      actionSource: (
-        value: UpstreamAccountSummary | string | null | undefined,
-      ) =>
+      actionSource: (value: UpstreamAccountSummary | string | null | undefined) =>
         accountActionSourceLabel(
-          typeof value === "string" || value == null
-            ? value
-            : value.lastActionSource,
+          typeof value === "string" || value == null ? value : value.lastActionSource,
         ),
-      actionReason: (
-        value: UpstreamAccountSummary | string | null | undefined,
-      ) =>
+      actionReason: (value: UpstreamAccountSummary | string | null | undefined) =>
         accountActionReasonLabel(
-          typeof value === "string" || value == null
-            ? value
-            : value.lastActionReasonCode,
+          typeof value === "string" || value == null ? value : value.lastActionReasonCode,
         ),
-      latestActionFieldAction: t(
-        "accountPool.upstreamAccounts.latestAction.fields.action",
-      ),
-      latestActionFieldSource: t(
-        "accountPool.upstreamAccounts.latestAction.fields.source",
-      ),
-      latestActionFieldReason: t(
-        "accountPool.upstreamAccounts.latestAction.fields.reason",
-      ),
-      latestActionFieldHttpStatus: t(
-        "accountPool.upstreamAccounts.latestAction.fields.httpStatus",
-      ),
-      latestActionFieldOccurredAt: t(
-        "accountPool.upstreamAccounts.latestAction.fields.occurredAt",
-      ),
-      latestActionFieldMessage: t(
-        "accountPool.upstreamAccounts.latestAction.fields.message",
-      ),
+      latestActionFieldAction: t("accountPool.upstreamAccounts.latestAction.fields.action"),
+      latestActionFieldSource: t("accountPool.upstreamAccounts.latestAction.fields.source"),
+      latestActionFieldReason: t("accountPool.upstreamAccounts.latestAction.fields.reason"),
+      latestActionFieldHttpStatus: t("accountPool.upstreamAccounts.latestAction.fields.httpStatus"),
+      latestActionFieldOccurredAt: t("accountPool.upstreamAccounts.latestAction.fields.occurredAt"),
+      latestActionFieldMessage: t("accountPool.upstreamAccounts.latestAction.fields.message"),
       forwardProxyPending: t("accountPool.upstreamAccounts.proxy.pending"),
-      forwardProxyUnconfigured: t(
-        "accountPool.upstreamAccounts.proxy.unconfigured",
-      ),
+      forwardProxyUnconfigured: t("accountPool.upstreamAccounts.proxy.unconfigured"),
       policyPriorityPrimary: t("accountPool.policyBadges.primary"),
       policyPriorityFallback: t("accountPool.policyBadges.fallback"),
       policyFastFillMissing: t("accountPool.policyBadges.fastFill"),
@@ -1120,8 +976,7 @@ export default function UpstreamAccountsPage() {
       policyForbidCutOut: t("accountPool.policyBadges.forbidCutOut"),
       policyForbidCutIn: t("accountPool.policyBadges.forbidCutIn"),
       policyForbidNewConversation: t("accountPool.policyBadges.forbidNew"),
-      policyConcurrency: (count) =>
-        t("accountPool.policyBadges.concurrency", { count }),
+      policyConcurrency: (count) => t("accountPool.policyBadges.concurrency", { count }),
       policyRetry: (count) => t("accountPool.policyBadges.retry", { count }),
     }),
     [
@@ -1155,9 +1010,7 @@ export default function UpstreamAccountsPage() {
     },
     [t],
   );
-  const groupedRosterGroups = useMemo<
-    UpstreamAccountsGroupedRosterGroup[]
-  >(() => {
+  const groupedRosterGroups = useMemo<UpstreamAccountsGroupedRosterGroup[]>(() => {
     if (hideRosterDerivedUi) {
       return [];
     }
@@ -1171,14 +1024,7 @@ export default function UpstreamAccountsPage() {
           ? t("accountPool.upstreamAccounts.grouped.apiBadge")
           : groupedPlanLabel(planType),
     });
-  }, [
-    forwardProxyNodes,
-    groupedPlanLabel,
-    groups,
-    hideRosterDerivedUi,
-    t,
-    visibleRosterItems,
-  ]);
+  }, [forwardProxyNodes, groupedPlanLabel, groups, hideRosterDerivedUi, t, visibleRosterItems]);
   const { openEditor: openGroupSettingsEditor, dialog: groupSettingsDialog } =
     useUpstreamAccountGroupSettingsDialog({
       writesEnabled,
@@ -1187,8 +1033,7 @@ export default function UpstreamAccountsPage() {
           const normalizedGroupName = normalizeRosterGroupName(groupName);
           if (!normalizedGroupName) return null;
           const groupSummary =
-            groups.find((group) => group.groupName === normalizedGroupName) ??
-            null;
+            groups.find((group) => group.groupName === normalizedGroupName) ?? null;
           return {
             groupName: normalizedGroupName,
             note: groupSummary?.note ?? "",
@@ -1197,10 +1042,8 @@ export default function UpstreamAccountsPage() {
             concurrencyLimit: groupSummary?.concurrencyLimit ?? 0,
             boundProxyKeys: groupSummary?.boundProxyKeys ?? [],
             nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
-            singleAccountRotationEnabled:
-              groupSummary?.singleAccountRotationEnabled ?? false,
-            upstream429RetryEnabled:
-              groupSummary?.upstream429RetryEnabled ?? false,
+            singleAccountRotationEnabled: groupSummary?.singleAccountRotationEnabled ?? false,
+            upstream429RetryEnabled: groupSummary?.upstream429RetryEnabled ?? false,
             upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
           };
         },
@@ -1262,9 +1105,7 @@ export default function UpstreamAccountsPage() {
       }));
       return;
     }
-    const timeoutEntries: Array<
-      [keyof PoolRoutingTimeoutSettings, string, string]
-    > = [
+    const timeoutEntries: Array<[keyof PoolRoutingTimeoutSettings, string, string]> = [
       [
         "responsesFirstByteTimeoutSecs",
         t("accountPool.upstreamAccounts.routing.timeout.responsesFirstByte"),
@@ -1335,19 +1176,14 @@ export default function UpstreamAccountsPage() {
   const isBulkSyncRunning = bulkSyncSnapshot?.status === "running";
   const isBulkSyncBusy = isBulkSyncRunning || isBulkSyncStarting;
 
-  const handleToggleSelectedAccount = useCallback(
-    (accountId: number, checked: boolean) => {
-      setSelectedAccountIds((current) => {
-        if (checked) {
-          return current.includes(accountId)
-            ? current
-            : [...current, accountId];
-        }
-        return current.filter((value) => value !== accountId);
-      });
-    },
-    [],
-  );
+  const handleToggleSelectedAccount = useCallback((accountId: number, checked: boolean) => {
+    setSelectedAccountIds((current) => {
+      if (checked) {
+        return current.includes(accountId) ? current : [...current, accountId];
+      }
+      return current.filter((value) => value !== accountId);
+    });
+  }, []);
 
   const handleToggleSelectAllCurrentPage = useCallback(
     (checked: boolean) => {
@@ -1355,9 +1191,13 @@ export default function UpstreamAccountsPage() {
       setSelectedAccountIds((current) => {
         const next = new Set(current);
         if (checked) {
-          currentPageIds.forEach((accountId) => next.add(accountId));
+          currentPageIds.forEach((accountId) => {
+            next.add(accountId);
+          });
         } else {
-          currentPageIds.forEach((accountId) => next.delete(accountId));
+          currentPageIds.forEach((accountId) => {
+            next.delete(accountId);
+          });
         }
         return Array.from(next);
       });
@@ -1394,11 +1234,7 @@ export default function UpstreamAccountsPage() {
       setBulkActionMessage(null);
       try {
         const response = await runBulkAction(payload);
-        summarizeBulkAction(
-          response.action,
-          response.succeededCount,
-          response.failedCount,
-        );
+        summarizeBulkAction(response.action, response.succeededCount, response.failedCount);
         options?.onSuccess?.();
         if (options?.clearSelection !== false) {
           clearBulkSelection();
@@ -1409,12 +1245,7 @@ export default function UpstreamAccountsPage() {
         setBulkActionBusy(null);
       }
     },
-    [
-      clearBulkSelection,
-      runBulkAction,
-      selectedAccountIds.length,
-      summarizeBulkAction,
-    ],
+    [clearBulkSelection, runBulkAction, selectedAccountIds.length, summarizeBulkAction],
   );
 
   const applyBulkSyncTerminalState = useCallback(
@@ -1429,14 +1260,8 @@ export default function UpstreamAccountsPage() {
       const resolvedSnapshot = options?.status
         ? withBulkSyncSnapshotStatus(nextSnapshot, options.status)
         : nextSnapshot;
-      const resolvedCounts = resolveBulkSyncCounts(
-        resolvedSnapshot,
-        nextCounts,
-      );
-      const shouldHide = shouldAutoHideBulkSyncProgress(
-        resolvedSnapshot,
-        resolvedCounts,
-      );
+      const resolvedCounts = resolveBulkSyncCounts(resolvedSnapshot, nextCounts);
+      const shouldHide = shouldAutoHideBulkSyncProgress(resolvedSnapshot, resolvedCounts);
 
       closeBulkSyncEventSource();
       if (shouldHide) {
@@ -1464,9 +1289,7 @@ export default function UpstreamAccountsPage() {
       });
       setBulkSyncSnapshot(created.snapshot);
       setBulkSyncCounts(created.counts);
-      const eventSource = createBulkUpstreamAccountSyncJobEventSource(
-        created.jobId,
-      );
+      const eventSource = createBulkUpstreamAccountSyncJobEventSource(created.jobId);
       bulkSyncEventSourceRef.current = eventSource;
 
       eventSource.addEventListener("snapshot", (event) => {
@@ -1506,36 +1329,21 @@ export default function UpstreamAccountsPage() {
         const payload = normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
           JSON.parse((event as MessageEvent<string>).data),
         );
-        handleTerminalEvent(
-          payload.snapshot,
-          payload.counts,
-          undefined,
-          "completed",
-        );
+        handleTerminalEvent(payload.snapshot, payload.counts, undefined, "completed");
       });
 
       eventSource.addEventListener("cancelled", (event) => {
         const payload = normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
           JSON.parse((event as MessageEvent<string>).data),
         );
-        handleTerminalEvent(
-          payload.snapshot,
-          payload.counts,
-          undefined,
-          "cancelled",
-        );
+        handleTerminalEvent(payload.snapshot, payload.counts, undefined, "cancelled");
       });
 
       eventSource.addEventListener("failed", (event) => {
         const payload = normalizeBulkUpstreamAccountSyncFailedEventPayload(
           JSON.parse((event as MessageEvent<string>).data),
         );
-        handleTerminalEvent(
-          payload.snapshot,
-          payload.counts,
-          payload.error,
-          "failed",
-        );
+        handleTerminalEvent(payload.snapshot, payload.counts, payload.error, "failed");
       });
 
       eventSource.onerror = () => {
@@ -1563,14 +1371,12 @@ export default function UpstreamAccountsPage() {
     closeBulkSyncEventSource,
     getBulkSyncJob,
     isBulkSyncBusy,
-    refresh,
     selectedAccountIds,
     startBulkSyncJob,
   ]);
 
   const handleCancelBulkSync = useCallback(async () => {
-    if (!bulkSyncSnapshot?.jobId || bulkSyncSnapshot.status !== "running")
-      return;
+    if (!bulkSyncSnapshot?.jobId || bulkSyncSnapshot.status !== "running") return;
     try {
       await stopBulkSyncJob(bulkSyncSnapshot.jobId);
     } catch (err) {
@@ -1651,18 +1457,12 @@ export default function UpstreamAccountsPage() {
                 className="flex flex-col gap-1 rounded-xl border border-base-300/60 px-3 py-2 text-sm"
               >
                 <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium text-base-content">
-                    {row.displayName}
-                  </span>
+                  <span className="font-medium text-base-content">{row.displayName}</span>
                   <Badge variant={bulkSyncRowStatusVariant(row.status)}>
-                    {t(
-                      `accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`,
-                    )}
+                    {t(`accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`)}
                   </Badge>
                 </div>
-                {row.detail ? (
-                  <p className="text-xs text-base-content/68">{row.detail}</p>
-                ) : null}
+                {row.detail ? <p className="text-xs text-base-content/68">{row.detail}</p> : null}
               </div>
             ))}
           </div>
@@ -1678,9 +1478,7 @@ export default function UpstreamAccountsPage() {
           <div className="surface-panel-body gap-5">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div className="section-heading">
-                <h2 className="section-title">
-                  {t("accountPool.upstreamAccounts.title")}
-                </h2>
+                <h2 className="section-title">{t("accountPool.upstreamAccounts.title")}</h2>
                 <p className="section-description">
                   {t("accountPool.upstreamAccounts.description")}
                 </p>
@@ -1692,31 +1490,19 @@ export default function UpstreamAccountsPage() {
                   onClick={() => void refresh()}
                   disabled={isBusyAction(busyAction, "routing")}
                 >
-                  <AppIcon
-                    name="refresh"
-                    className="mr-2 h-4 w-4"
-                    aria-hidden
-                  />
+                  <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
                   {t("accountPool.upstreamAccounts.actions.refresh")}
                 </Button>
                 {writesEnabled ? (
                   <Button asChild>
                     <Link to="/account-pool/upstream-accounts/new">
-                      <AppIcon
-                        name="plus-circle-outline"
-                        className="mr-2 h-4 w-4"
-                        aria-hidden
-                      />
+                      <AppIcon name="plus-circle-outline" className="mr-2 h-4 w-4" aria-hidden />
                       {t("accountPool.upstreamAccounts.actions.addAccount")}
                     </Link>
                   </Button>
                 ) : (
                   <Button type="button" disabled>
-                    <AppIcon
-                      name="plus-circle-outline"
-                      className="mr-2 h-4 w-4"
-                      aria-hidden
-                    />
+                    <AppIcon name="plus-circle-outline" className="mr-2 h-4 w-4" aria-hidden />
                     {t("accountPool.upstreamAccounts.actions.addAccount")}
                   </Button>
                 )}
@@ -1754,11 +1540,7 @@ export default function UpstreamAccountsPage() {
 
             {duplicateWarning ? (
               <Alert variant="warning">
-                <AppIcon
-                  name="alert-outline"
-                  className="mt-0.5 h-4 w-4 shrink-0"
-                  aria-hidden
-                />
+                <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                 <div className="flex min-w-0 flex-1 flex-col gap-2">
                   <p className="font-medium">
                     {t("accountPool.upstreamAccounts.duplicate.warningTitle", {
@@ -1781,20 +1563,14 @@ export default function UpstreamAccountsPage() {
                   size="sm"
                   onClick={() => setDuplicateWarning(null)}
                 >
-                  {t(
-                    "accountPool.upstreamAccounts.actions.dismissDuplicateWarning",
-                  )}
+                  {t("accountPool.upstreamAccounts.actions.dismissDuplicateWarning")}
                 </Button>
               </Alert>
             ) : null}
 
             {postCreateWarning ? (
               <Alert variant="warning">
-                <AppIcon
-                  name="alert-outline"
-                  className="mt-0.5 h-4 w-4 shrink-0"
-                  aria-hidden
-                />
+                <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                 <div className="flex min-w-0 flex-1 flex-col gap-2">
                   <p className="font-medium">
                     {t("accountPool.upstreamAccounts.partialSuccess.title")}
@@ -1807,19 +1583,14 @@ export default function UpstreamAccountsPage() {
                   size="sm"
                   onClick={() => setPostCreateWarning(null)}
                 >
-                  {t(
-                    "accountPool.upstreamAccounts.actions.dismissDuplicateWarning",
-                  )}
+                  {t("accountPool.upstreamAccounts.actions.dismissDuplicateWarning")}
                 </Button>
               </Alert>
             ) : null}
 
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {metrics.map((metric) => (
-                <Card
-                  key={metric.label}
-                  className="border-base-300/80 bg-base-100/72"
-                >
+                <Card key={metric.label} className="border-base-300/80 bg-base-100/72">
                   <CardContent className="flex items-center gap-4 p-5">
                     <div
                       className={cn(
@@ -1827,11 +1598,7 @@ export default function UpstreamAccountsPage() {
                         metric.accent,
                       )}
                     >
-                      <AppIcon
-                        name={metric.icon}
-                        className="h-6 w-6"
-                        aria-hidden
-                      />
+                      <AppIcon name={metric.icon} className="h-6 w-6" aria-hidden />
                     </div>
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-base-content/55">
@@ -1851,9 +1618,7 @@ export default function UpstreamAccountsPage() {
         <div className="grid gap-4">
           <Card className="border-base-300/80 bg-base-100/72">
             <CardHeader>
-              <CardTitle>
-                {t("accountPool.upstreamAccounts.routing.title")}
-              </CardTitle>
+              <CardTitle>{t("accountPool.upstreamAccounts.routing.title")}</CardTitle>
               <CardDescription>
                 {t("accountPool.upstreamAccounts.routing.description")}
               </CardDescription>
@@ -1869,9 +1634,7 @@ export default function UpstreamAccountsPage() {
                       {routing?.apiKeyConfigured
                         ? (routing?.maskedApiKey ??
                           t("accountPool.upstreamAccounts.routing.configured"))
-                        : t(
-                            "accountPool.upstreamAccounts.routing.notConfigured",
-                          )}
+                        : t("accountPool.upstreamAccounts.routing.notConfigured")}
                     </p>
                   </div>
                   <Button
@@ -1881,11 +1644,7 @@ export default function UpstreamAccountsPage() {
                     onClick={handleOpenRoutingDialog}
                     disabled={!routing}
                   >
-                    <AppIcon
-                      name="pencil-outline"
-                      className="h-4 w-4"
-                      aria-hidden
-                    />
+                    <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
                     <span className="sr-only">
                       {t("accountPool.upstreamAccounts.routing.edit")}
                     </span>
@@ -1903,9 +1662,7 @@ export default function UpstreamAccountsPage() {
             <div className="space-y-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="section-heading">
-                  <h2 className="section-title">
-                    {t("accountPool.upstreamAccounts.listTitle")}
-                  </h2>
+                  <h2 className="section-title">{t("accountPool.upstreamAccounts.listTitle")}</h2>
                   <p className="section-description">
                     {t("accountPool.upstreamAccounts.listDescription")}
                   </p>
@@ -1914,9 +1671,7 @@ export default function UpstreamAccountsPage() {
                   <SegmentedControl
                     size="compact"
                     role="tablist"
-                    aria-label={t(
-                      "accountPool.upstreamAccounts.viewToggleAria",
-                    )}
+                    aria-label={t("accountPool.upstreamAccounts.viewToggleAria")}
                   >
                     <SegmentedControlItem
                       type="button"
@@ -1958,12 +1713,7 @@ export default function UpstreamAccountsPage() {
               </div>
 
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-12">
-                <label
-                  className={cn(
-                    "field min-w-0",
-                    formFieldSpanVariants({ size: "compact" }),
-                  )}
-                >
+                <label className={cn("field min-w-0", formFieldSpanVariants({ size: "compact" }))}>
                   <span className="field-label">
                     {t("accountPool.upstreamAccounts.workStatusFilterLabel")}
                   </span>
@@ -1971,31 +1721,18 @@ export default function UpstreamAccountsPage() {
                     size="filter"
                     options={workStatusFilterOptions}
                     value={workStatusFilter}
-                    placeholder={t(
-                      "accountPool.upstreamAccounts.workStatusFilter.all",
-                    )}
+                    placeholder={t("accountPool.upstreamAccounts.workStatusFilter.all")}
                     searchPlaceholder={t(
                       "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder",
                     )}
-                    emptyLabel={t(
-                      "accountPool.upstreamAccounts.workStatusFilter.empty",
-                    )}
-                    clearLabel={t(
-                      "accountPool.upstreamAccounts.workStatusFilter.clear",
-                    )}
-                    ariaLabel={t(
-                      "accountPool.upstreamAccounts.workStatusFilterLabel",
-                    )}
+                    emptyLabel={t("accountPool.upstreamAccounts.workStatusFilter.empty")}
+                    clearLabel={t("accountPool.upstreamAccounts.workStatusFilter.clear")}
+                    ariaLabel={t("accountPool.upstreamAccounts.workStatusFilterLabel")}
                     triggerClassName="border-base-300/90 bg-base-100"
                     onValueChange={handleWorkStatusFilterChange}
                   />
                 </label>
-                <label
-                  className={cn(
-                    "field min-w-0",
-                    formFieldSpanVariants({ size: "compact" }),
-                  )}
-                >
+                <label className={cn("field min-w-0", formFieldSpanVariants({ size: "compact" }))}>
                   <span className="field-label">
                     {t("accountPool.upstreamAccounts.enableStatusFilterLabel")}
                   </span>
@@ -2003,31 +1740,18 @@ export default function UpstreamAccountsPage() {
                     size="filter"
                     options={enableStatusFilterOptions}
                     value={enableStatusFilter}
-                    placeholder={t(
-                      "accountPool.upstreamAccounts.enableStatusFilter.all",
-                    )}
+                    placeholder={t("accountPool.upstreamAccounts.enableStatusFilter.all")}
                     searchPlaceholder={t(
                       "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder",
                     )}
-                    emptyLabel={t(
-                      "accountPool.upstreamAccounts.enableStatusFilter.empty",
-                    )}
-                    clearLabel={t(
-                      "accountPool.upstreamAccounts.enableStatusFilter.clear",
-                    )}
-                    ariaLabel={t(
-                      "accountPool.upstreamAccounts.enableStatusFilterLabel",
-                    )}
+                    emptyLabel={t("accountPool.upstreamAccounts.enableStatusFilter.empty")}
+                    clearLabel={t("accountPool.upstreamAccounts.enableStatusFilter.clear")}
+                    ariaLabel={t("accountPool.upstreamAccounts.enableStatusFilterLabel")}
                     triggerClassName="border-base-300/90 bg-base-100"
                     onValueChange={handleEnableStatusFilterChange}
                   />
                 </label>
-                <label
-                  className={cn(
-                    "field min-w-0",
-                    formFieldSpanVariants({ size: "compact" }),
-                  )}
-                >
+                <label className={cn("field min-w-0", formFieldSpanVariants({ size: "compact" }))}>
                   <span className="field-label">
                     {t("accountPool.upstreamAccounts.healthStatusFilterLabel")}
                   </span>
@@ -2035,31 +1759,18 @@ export default function UpstreamAccountsPage() {
                     size="filter"
                     options={healthStatusFilterOptions}
                     value={healthStatusFilter}
-                    placeholder={t(
-                      "accountPool.upstreamAccounts.healthStatusFilter.all",
-                    )}
+                    placeholder={t("accountPool.upstreamAccounts.healthStatusFilter.all")}
                     searchPlaceholder={t(
                       "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder",
                     )}
-                    emptyLabel={t(
-                      "accountPool.upstreamAccounts.healthStatusFilter.empty",
-                    )}
-                    clearLabel={t(
-                      "accountPool.upstreamAccounts.healthStatusFilter.clear",
-                    )}
-                    ariaLabel={t(
-                      "accountPool.upstreamAccounts.healthStatusFilterLabel",
-                    )}
+                    emptyLabel={t("accountPool.upstreamAccounts.healthStatusFilter.empty")}
+                    clearLabel={t("accountPool.upstreamAccounts.healthStatusFilter.clear")}
+                    ariaLabel={t("accountPool.upstreamAccounts.healthStatusFilterLabel")}
                     triggerClassName="border-base-300/90 bg-base-100"
                     onValueChange={handleHealthStatusFilterChange}
                   />
                 </label>
-                <label
-                  className={cn(
-                    "field min-w-0",
-                    formFieldSpanVariants({ size: "wide" }),
-                  )}
-                >
+                <label className={cn("field min-w-0", formFieldSpanVariants({ size: "wide" }))}>
                   <span className="field-label">
                     {t("accountPool.upstreamAccounts.groupFilterLabel")}
                   </span>
@@ -2067,31 +1778,18 @@ export default function UpstreamAccountsPage() {
                     size="filter"
                     options={groupFilterOptions}
                     value={groupFilters}
-                    placeholder={t(
-                      "accountPool.upstreamAccounts.groupFilterPlaceholder",
-                    )}
+                    placeholder={t("accountPool.upstreamAccounts.groupFilterPlaceholder")}
                     searchPlaceholder={t(
                       "accountPool.upstreamAccounts.groupFilterSearchPlaceholder",
                     )}
-                    emptyLabel={t(
-                      "accountPool.upstreamAccounts.groupFilterEmpty",
-                    )}
-                    clearLabel={t(
-                      "accountPool.upstreamAccounts.groupFilterClear",
-                    )}
-                    ariaLabel={t(
-                      "accountPool.upstreamAccounts.groupFilterLabel",
-                    )}
+                    emptyLabel={t("accountPool.upstreamAccounts.groupFilterEmpty")}
+                    clearLabel={t("accountPool.upstreamAccounts.groupFilterClear")}
+                    ariaLabel={t("accountPool.upstreamAccounts.groupFilterLabel")}
                     triggerClassName="border-base-300/90 bg-base-100"
                     onValueChange={handleGroupFilterChange}
                   />
                 </label>
-                <label
-                  className={cn(
-                    "field min-w-0",
-                    formFieldSpanVariants({ size: "wide" }),
-                  )}
-                >
+                <label className={cn("field min-w-0", formFieldSpanVariants({ size: "wide" }))}>
                   <span className="field-label">
                     {t("accountPool.upstreamAccounts.tagFilterLabel")}
                   </span>
@@ -2099,21 +1797,11 @@ export default function UpstreamAccountsPage() {
                     size="filter"
                     tags={tagItems}
                     value={appliedSelectedTagIds}
-                    placeholder={t(
-                      "accountPool.upstreamAccounts.tagFilterPlaceholder",
-                    )}
-                    searchPlaceholder={t(
-                      "accountPool.upstreamAccounts.tagFilterSearchPlaceholder",
-                    )}
-                    emptyLabel={t(
-                      "accountPool.upstreamAccounts.tagFilterEmpty",
-                    )}
-                    clearLabel={t(
-                      "accountPool.upstreamAccounts.tagFilterClear",
-                    )}
-                    ariaLabel={t(
-                      "accountPool.upstreamAccounts.tagFilterAriaLabel",
-                    )}
+                    placeholder={t("accountPool.upstreamAccounts.tagFilterPlaceholder")}
+                    searchPlaceholder={t("accountPool.upstreamAccounts.tagFilterSearchPlaceholder")}
+                    emptyLabel={t("accountPool.upstreamAccounts.tagFilterEmpty")}
+                    clearLabel={t("accountPool.upstreamAccounts.tagFilterClear")}
+                    ariaLabel={t("accountPool.upstreamAccounts.tagFilterAriaLabel")}
                     triggerClassName="border-base-300/90 bg-base-100"
                     onValueChange={handleTagFilterChange}
                   />
@@ -2125,11 +1813,7 @@ export default function UpstreamAccountsPage() {
               ref={rosterRegionRef}
               data-testid="upstream-accounts-roster-region"
               className="flex flex-col gap-4"
-              style={
-                rosterRegionMinHeight
-                  ? { minHeight: rosterRegionMinHeight }
-                  : undefined
-              }
+              style={rosterRegionMinHeight ? { minHeight: rosterRegionMinHeight } : undefined}
             >
               {selectedAccountIds.length > 0 &&
               !hideRosterDerivedUi &&
@@ -2152,11 +1836,7 @@ export default function UpstreamAccountsPage() {
                             action: "enable",
                           })
                         }
-                        disabled={
-                          Boolean(bulkActionBusy) ||
-                          isBulkSyncBusy ||
-                          !writesEnabled
-                        }
+                        disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
                       >
                         {t("accountPool.upstreamAccounts.bulk.enable")}
                       </Button>
@@ -2170,11 +1850,7 @@ export default function UpstreamAccountsPage() {
                             action: "disable",
                           })
                         }
-                        disabled={
-                          Boolean(bulkActionBusy) ||
-                          isBulkSyncBusy ||
-                          !writesEnabled
-                        }
+                        disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
                       >
                         {t("accountPool.upstreamAccounts.bulk.disable")}
                       </Button>
@@ -2186,11 +1862,7 @@ export default function UpstreamAccountsPage() {
                           setBulkGroupName("");
                           setBulkGroupDialogOpen(true);
                         }}
-                        disabled={
-                          Boolean(bulkActionBusy) ||
-                          isBulkSyncBusy ||
-                          !writesEnabled
-                        }
+                        disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
                       >
                         {t("accountPool.upstreamAccounts.bulk.setGroup")}
                       </Button>
@@ -2201,9 +1873,7 @@ export default function UpstreamAccountsPage() {
                         onClick={() => void handleStartBulkSync()}
                         disabled={Boolean(bulkActionBusy) || isBulkSyncBusy}
                       >
-                        {isBulkSyncStarting ? (
-                          <Spinner size="sm" className="mr-2" />
-                        ) : null}
+                        {isBulkSyncStarting ? <Spinner size="sm" className="mr-2" /> : null}
                         {t("accountPool.upstreamAccounts.bulk.sync")}
                       </Button>
                       <Button
@@ -2211,11 +1881,7 @@ export default function UpstreamAccountsPage() {
                         size="sm"
                         variant="destructive"
                         onClick={() => setBulkDeleteDialogOpen(true)}
-                        disabled={
-                          Boolean(bulkActionBusy) ||
-                          isBulkSyncBusy ||
-                          !writesEnabled
-                        }
+                        disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
                       >
                         {t("accountPool.upstreamAccounts.bulk.delete")}
                       </Button>
@@ -2261,9 +1927,7 @@ export default function UpstreamAccountsPage() {
                   isLoading={showBlockingRosterLoading}
                   error={showBlockingRosterError ? listError : null}
                   loadingTitle={t("accountPool.upstreamAccounts.loadingTitle")}
-                  loadingDescription={t(
-                    "accountPool.upstreamAccounts.loadingDescription",
-                  )}
+                  loadingDescription={t("accountPool.upstreamAccounts.loadingDescription")}
                   errorTitle={t("accountPool.upstreamAccounts.listErrorTitle")}
                   retryLabel={t("accountPool.upstreamAccounts.listRetry")}
                   onRetry={() => void refresh()}
@@ -2271,13 +1935,9 @@ export default function UpstreamAccountsPage() {
                   selectedAccountIds={selectedAccountIdSet}
                   onSelect={handleSelectAccount}
                   onToggleSelected={handleToggleSelectedAccount}
-                  onToggleSelectAllCurrentPage={
-                    handleToggleSelectAllCurrentPage
-                  }
+                  onToggleSelectAllCurrentPage={handleToggleSelectAllCurrentPage}
                   emptyTitle={t("accountPool.upstreamAccounts.emptyTitle")}
-                  emptyDescription={t(
-                    "accountPool.upstreamAccounts.emptyDescription",
-                  )}
+                  emptyDescription={t("accountPool.upstreamAccounts.emptyDescription")}
                   labels={accountRosterLabels}
                 />
               ) : (
@@ -2286,9 +1946,7 @@ export default function UpstreamAccountsPage() {
                   isLoading={showBlockingRosterLoading}
                   error={showBlockingRosterError ? listError : null}
                   loadingTitle={t("accountPool.upstreamAccounts.loadingTitle")}
-                  loadingDescription={t(
-                    "accountPool.upstreamAccounts.loadingDescription",
-                  )}
+                  loadingDescription={t("accountPool.upstreamAccounts.loadingDescription")}
                   errorTitle={t("accountPool.upstreamAccounts.listErrorTitle")}
                   retryLabel={t("accountPool.upstreamAccounts.listRetry")}
                   onRetry={() => void refresh()}
@@ -2296,19 +1954,13 @@ export default function UpstreamAccountsPage() {
                   selectedAccountIds={selectedAccountIdSet}
                   onSelect={handleSelectAccount}
                   onToggleSelected={
-                    rosterViewMode === "grouped"
-                      ? handleToggleSelectedAccount
-                      : undefined
+                    rosterViewMode === "grouped" ? handleToggleSelectedAccount : undefined
                   }
                   onToggleSelectAllVisible={
-                    rosterViewMode === "grouped"
-                      ? handleToggleSelectAllCurrentPage
-                      : undefined
+                    rosterViewMode === "grouped" ? handleToggleSelectAllCurrentPage : undefined
                   }
                   emptyTitle={t("accountPool.upstreamAccounts.emptyTitle")}
-                  emptyDescription={t(
-                    "accountPool.upstreamAccounts.emptyDescription",
-                  )}
+                  emptyDescription={t("accountPool.upstreamAccounts.emptyDescription")}
                   labels={accountRosterLabels}
                   memberLayout={rosterViewMode === "grid" ? "grid" : "list"}
                   selectionMode={rosterViewMode === "grid" ? "none" : "multi"}
@@ -2327,61 +1979,28 @@ export default function UpstreamAccountsPage() {
                       t("accountPool.upstreamAccounts.grouped.concurrency", {
                         value,
                       }),
-                    exclusiveNode: t(
-                      "accountPool.upstreamAccounts.grouped.exclusiveNode",
-                    ),
-                    selectVisible: t(
-                      "accountPool.upstreamAccounts.bulk.selectFiltered",
-                    ),
-                    infoTitle: t(
-                      "accountPool.upstreamAccounts.grouped.infoTitle",
-                    ),
-                    noteLabel: t(
-                      "accountPool.upstreamAccounts.grouped.noteLabel",
-                    ),
-                    noteEmpty: t(
-                      "accountPool.upstreamAccounts.grouped.noteEmpty",
-                    ),
-                    proxiesLabel: t(
-                      "accountPool.upstreamAccounts.grouped.proxiesLabel",
-                    ),
-                    proxiesEmpty: t(
-                      "accountPool.upstreamAccounts.grouped.proxiesEmpty",
-                    ),
-                    settingsLabel: t(
-                      "accountPool.upstreamAccounts.groupNotes.actions.edit",
-                    ),
+                    exclusiveNode: t("accountPool.upstreamAccounts.grouped.exclusiveNode"),
+                    selectVisible: t("accountPool.upstreamAccounts.bulk.selectFiltered"),
+                    infoTitle: t("accountPool.upstreamAccounts.grouped.infoTitle"),
+                    noteLabel: t("accountPool.upstreamAccounts.grouped.noteLabel"),
+                    noteEmpty: t("accountPool.upstreamAccounts.grouped.noteEmpty"),
+                    proxiesLabel: t("accountPool.upstreamAccounts.grouped.proxiesLabel"),
+                    proxiesEmpty: t("accountPool.upstreamAccounts.grouped.proxiesEmpty"),
+                    settingsLabel: t("accountPool.upstreamAccounts.groupNotes.actions.edit"),
                     upstream429Enabled: (count) =>
                       t("accountPool.groups.upstream429Enabled", { count }),
-                    upstream429Disabled: t(
-                      "accountPool.groups.upstream429Disabled",
-                    ),
-                    policyPriorityPrimary: t(
-                      "accountPool.policyBadges.primary",
-                    ),
-                    policyPriorityFallback: t(
-                      "accountPool.policyBadges.fallback",
-                    ),
-                    policyFastFillMissing: t(
-                      "accountPool.policyBadges.fastFill",
-                    ),
+                    upstream429Disabled: t("accountPool.groups.upstream429Disabled"),
+                    policyPriorityPrimary: t("accountPool.policyBadges.primary"),
+                    policyPriorityFallback: t("accountPool.policyBadges.fallback"),
+                    policyFastFillMissing: t("accountPool.policyBadges.fastFill"),
                     policyFastForceAdd: t("accountPool.policyBadges.fastAdd"),
-                    policyFastForceRemove: t(
-                      "accountPool.policyBadges.fastRemove",
-                    ),
-                    policyForbidCutOut: t(
-                      "accountPool.policyBadges.forbidCutOut",
-                    ),
-                    policyForbidCutIn: t(
-                      "accountPool.policyBadges.forbidCutIn",
-                    ),
-                    policyForbidNewConversation: t(
-                      "accountPool.policyBadges.forbidNew",
-                    ),
+                    policyFastForceRemove: t("accountPool.policyBadges.fastRemove"),
+                    policyForbidCutOut: t("accountPool.policyBadges.forbidCutOut"),
+                    policyForbidCutIn: t("accountPool.policyBadges.forbidCutIn"),
+                    policyForbidNewConversation: t("accountPool.policyBadges.forbidNew"),
                     policyConcurrency: (count) =>
                       t("accountPool.policyBadges.concurrency", { count }),
-                    policyRetry: (count) =>
-                      t("accountPool.policyBadges.retry", { count }),
+                    policyRetry: (count) => t("accountPool.policyBadges.retry", { count }),
                   }}
                 />
               )}
@@ -2428,11 +2047,7 @@ export default function UpstreamAccountsPage() {
                         {showBlockingRosterLoading ? (
                           <Spinner size="sm" className="h-4 w-4" />
                         ) : (
-                          <AppIcon
-                            name="alert-circle-outline"
-                            className="h-4 w-4"
-                            aria-hidden
-                          />
+                          <AppIcon name="alert-circle-outline" className="h-4 w-4" aria-hidden />
                         )}
                         <span>{paginationStatusText}</span>
                       </div>
@@ -2450,12 +2065,8 @@ export default function UpstreamAccountsPage() {
                         size="sm"
                         disabled={showBlockingRosterLoading}
                         triggerClassName="h-10 rounded-xl border-base-300/90 bg-base-100 px-3 text-sm"
-                        aria-label={t(
-                          "accountPool.upstreamAccounts.pagination.pageSize",
-                        )}
-                        onValueChange={(value) =>
-                          handlePageSizeChange(Number(value))
-                        }
+                        aria-label={t("accountPool.upstreamAccounts.pagination.pageSize")}
+                        onValueChange={(value) => handlePageSizeChange(Number(value))}
                       />
                     </div>
                     <div className="flex items-center gap-2">
@@ -2464,9 +2075,7 @@ export default function UpstreamAccountsPage() {
                         variant="outline"
                         size="sm"
                         className="h-10 rounded-xl px-4"
-                        onClick={() =>
-                          setPage((current) => Math.max(1, current - 1))
-                        }
+                        onClick={() => setPage((current) => Math.max(1, current - 1))}
                         disabled={showBlockingRosterLoading || page <= 1}
                       >
                         {t("accountPool.upstreamAccounts.pagination.previous")}
@@ -2476,15 +2085,9 @@ export default function UpstreamAccountsPage() {
                         variant="outline"
                         size="sm"
                         className="h-10 rounded-xl px-4"
-                        onClick={() =>
-                          setPage((current) =>
-                            Math.min(nextPageLimit, current + 1),
-                          )
-                        }
+                        onClick={() => setPage((current) => Math.min(nextPageLimit, current + 1))}
                         disabled={
-                          showBlockingRosterLoading ||
-                          pageCount == null ||
-                          page >= pageCount
+                          showBlockingRosterLoading || pageCount == null || page >= pageCount
                         }
                       >
                         {t("accountPool.upstreamAccounts.pagination.next")}
@@ -2502,16 +2105,12 @@ export default function UpstreamAccountsPage() {
 
       <Dialog
         open={bulkGroupDialogOpen}
-        onOpenChange={(open) =>
-          !bulkActionBusy ? setBulkGroupDialogOpen(open) : undefined
-        }
+        onOpenChange={(open) => (!bulkActionBusy ? setBulkGroupDialogOpen(open) : undefined)}
       >
         <DialogContent className="p-0">
           <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
             <DialogHeader className="min-w-0 max-w-[28rem]">
-              <DialogTitle>
-                {t("accountPool.upstreamAccounts.bulk.groupDialogTitle")}
-              </DialogTitle>
+              <DialogTitle>{t("accountPool.upstreamAccounts.bulk.groupDialogTitle")}</DialogTitle>
               <DialogDescription>
                 {t("accountPool.upstreamAccounts.bulk.groupDialogDescription")}
               </DialogDescription>
@@ -2529,20 +2128,13 @@ export default function UpstreamAccountsPage() {
               <UpstreamAccountGroupCombobox
                 value={bulkGroupName}
                 options={availableGroups.options}
-                placeholder={t(
-                  "accountPool.upstreamAccounts.bulk.groupPlaceholder",
-                )}
-                searchPlaceholder={t(
-                  "accountPool.upstreamAccounts.groupFilterSearchPlaceholder",
-                )}
+                placeholder={t("accountPool.upstreamAccounts.bulk.groupPlaceholder")}
+                searchPlaceholder={t("accountPool.upstreamAccounts.groupFilterSearchPlaceholder")}
                 emptyLabel={t("accountPool.upstreamAccounts.groupFilterEmpty")}
                 createLabel={(value) =>
-                  t(
-                    "accountPool.upstreamAccounts.fields.groupNameConfigureValue",
-                    {
-                      value,
-                    },
-                  )
+                  t("accountPool.upstreamAccounts.fields.groupNameConfigureValue", {
+                    value,
+                  })
                 }
                 onCreateRequested={handleBulkGroupCreateRequest}
                 formatAccountCountLabel={formatGroupAccountCountLabel}
@@ -2582,21 +2174,16 @@ export default function UpstreamAccountsPage() {
 
       <Dialog
         open={bulkDeleteDialogOpen}
-        onOpenChange={(open) =>
-          !bulkActionBusy ? setBulkDeleteDialogOpen(open) : undefined
-        }
+        onOpenChange={(open) => (!bulkActionBusy ? setBulkDeleteDialogOpen(open) : undefined)}
       >
         <DialogContent className="p-0">
           <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
             <DialogHeader className="min-w-0 max-w-[28rem]">
-              <DialogTitle>
-                {t("accountPool.upstreamAccounts.bulk.deleteDialogTitle")}
-              </DialogTitle>
+              <DialogTitle>{t("accountPool.upstreamAccounts.bulk.deleteDialogTitle")}</DialogTitle>
               <DialogDescription>
-                {t(
-                  "accountPool.upstreamAccounts.bulk.deleteDialogDescription",
-                  { count: selectedAccountIds.length },
-                )}
+                {t("accountPool.upstreamAccounts.bulk.deleteDialogDescription", {
+                  count: selectedAccountIds.length,
+                })}
               </DialogDescription>
             </DialogHeader>
             <DialogCloseIcon
@@ -2633,9 +2220,7 @@ export default function UpstreamAccountsPage() {
       <RoutingSettingsDialog
         open={isRoutingDialogOpen}
         title={t("accountPool.upstreamAccounts.routing.dialogTitle")}
-        description={t(
-          "accountPool.upstreamAccounts.routing.dialogDescription",
-        )}
+        description={t("accountPool.upstreamAccounts.routing.dialogDescription")}
         closeLabel={t("accountPool.upstreamAccounts.routing.close")}
         cancelLabel={t("accountPool.upstreamAccounts.actions.cancel")}
         saveLabel={t("accountPool.upstreamAccounts.routing.save")}
@@ -2643,15 +2228,11 @@ export default function UpstreamAccountsPage() {
         primarySyncIntervalSecs={routingDraft.primarySyncIntervalSecs}
         secondarySyncIntervalSecs={routingDraft.secondarySyncIntervalSecs}
         priorityAvailableAccountCap={routingDraft.priorityAvailableAccountCap}
-        timeoutSectionTitle={t(
-          "accountPool.upstreamAccounts.routing.timeout.sectionTitle",
-        )}
+        timeoutSectionTitle={t("accountPool.upstreamAccounts.routing.timeout.sectionTitle")}
         timeoutFields={[
           {
             key: "responsesFirstByteTimeoutSecs",
-            label: t(
-              "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte",
-            ),
+            label: t("accountPool.upstreamAccounts.routing.timeout.responsesFirstByte"),
             value: routingDraft.responsesFirstByteTimeoutSecs,
             onChange: (value) =>
               setRoutingDraft((current) => ({
@@ -2661,9 +2242,7 @@ export default function UpstreamAccountsPage() {
           },
           {
             key: "compactFirstByteTimeoutSecs",
-            label: t(
-              "accountPool.upstreamAccounts.routing.timeout.compactFirstByte",
-            ),
+            label: t("accountPool.upstreamAccounts.routing.timeout.compactFirstByte"),
             value: routingDraft.compactFirstByteTimeoutSecs,
             onChange: (value) =>
               setRoutingDraft((current) => ({
@@ -2673,9 +2252,7 @@ export default function UpstreamAccountsPage() {
           },
           {
             key: "responsesStreamTimeoutSecs",
-            label: t(
-              "accountPool.upstreamAccounts.routing.timeout.responsesStream",
-            ),
+            label: t("accountPool.upstreamAccounts.routing.timeout.responsesStream"),
             value: routingDraft.responsesStreamTimeoutSecs,
             onChange: (value) =>
               setRoutingDraft((current) => ({
@@ -2685,9 +2262,7 @@ export default function UpstreamAccountsPage() {
           },
           {
             key: "compactStreamTimeoutSecs",
-            label: t(
-              "accountPool.upstreamAccounts.routing.timeout.compactStream",
-            ),
+            label: t("accountPool.upstreamAccounts.routing.timeout.compactStream"),
             value: routingDraft.compactStreamTimeoutSecs,
             onChange: (value) =>
               setRoutingDraft((current) => ({
@@ -2700,9 +2275,7 @@ export default function UpstreamAccountsPage() {
         apiKeyWritesEnabled={routingDialogCanEdit}
         timeoutWritesEnabled={routingDialogCanEdit}
         canSave={routingCanSave}
-        onApiKeyChange={(value) =>
-          setRoutingDraft((current) => ({ ...current, apiKey: value }))
-        }
+        onApiKeyChange={(value) => setRoutingDraft((current) => ({ ...current, apiKey: value }))}
         onGenerate={() =>
           setRoutingDraft((current) => ({
             ...current,
@@ -2740,9 +2313,7 @@ export default function UpstreamAccountsPage() {
         accountId={upstreamAccountId}
         initialTab={upstreamAccountTab}
         initialDeleteConfirmOpen={pendingInitialDeleteConfirm}
-        onInitialDeleteConfirmHandled={() =>
-          setPendingInitialDeleteConfirm(false)
-        }
+        onInitialDeleteConfirmHandled={() => setPendingInitialDeleteConfirm(false)}
         onClose={closeUpstreamAccount}
       />
 

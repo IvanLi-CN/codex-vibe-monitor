@@ -1,15 +1,15 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "../../i18n";
 import type {
   EffectiveRoutingRule,
   ForwardProxyBindingNode,
   UpstreamAccountGroupSummary,
   UpstreamAccountSummary,
 } from "../../lib/api";
-import { I18nProvider } from "../../i18n";
 import AccountPoolLayout from "./AccountPoolLayout";
 import GroupsPage from "./Groups";
 import type { UpstreamAccountsLocationState } from "./UpstreamAccounts.shared-types";
@@ -307,10 +307,7 @@ function render(initialEntry = "/account-pool/groups") {
           <Routes>
             <Route path="/account-pool" element={<AccountPoolLayout />}>
               <Route path="groups" element={<GroupsPage />} />
-              <Route
-                path="upstream-accounts"
-                element={<UpstreamAccountsStateEcho />}
-              />
+              <Route path="upstream-accounts" element={<UpstreamAccountsStateEcho />} />
               <Route
                 path="upstream-accounts/new"
                 element={<div data-testid="groups-test-create">create</div>}
@@ -351,17 +348,10 @@ describe("GroupsPage", () => {
     expect(document.body.textContent).toContain("production");
     expect(document.body.textContent).toContain("Premium traffic group.");
 
-    const activeLink = document.body.querySelector(
-      'a[href="/account-pool/groups"]',
-    );
+    const activeLink = document.body.querySelector('a[href="/account-pool/groups"]');
     expect(activeLink?.getAttribute("aria-current")).toBe("page");
-    expect(
-      document.body.querySelectorAll('[data-testid="account-pool-group-row"]')
-        .length,
-    ).toBe(2);
-    expect(
-      document.body.querySelector('[data-testid="account-pool-groups-list"]'),
-    ).not.toBeNull();
+    expect(document.body.querySelectorAll('[data-testid="account-pool-group-row"]').length).toBe(2);
+    expect(document.body.querySelector('[data-testid="account-pool-groups-list"]')).not.toBeNull();
   });
 
   it("opens the existing group settings dialog from the edit action", async () => {
@@ -392,10 +382,9 @@ describe("GroupsPage", () => {
     });
     await flushAsync();
 
-    expect(
-      document.body.querySelector('[data-testid="groups-test-state"]')
-        ?.textContent,
-    ).toBe("exact:production");
+    expect(document.body.querySelector('[data-testid="groups-test-state"]')?.textContent).toBe(
+      "exact:production",
+    );
   });
 
   it("keeps the ungrouped card read-only and passes the ungrouped preset", async () => {
@@ -443,9 +432,8 @@ describe("GroupsPage", () => {
     });
     await flushAsync();
 
-    expect(
-      document.body.querySelector('[data-testid="groups-test-state"]')
-        ?.textContent,
-    ).toBe("ungrouped:");
+    expect(document.body.querySelector('[data-testid="groups-test-state"]')?.textContent).toBe(
+      "ungrouped:",
+    );
   });
 });

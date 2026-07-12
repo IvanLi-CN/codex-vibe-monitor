@@ -346,7 +346,7 @@ where
         shutdown_relay_signal.await;
         begin_runtime_shutdown(&shutdown_cancel);
     });
-    let mut poller_handle = None;
+    let poller_handle = None;
     let mut upstream_accounts_handle = None;
     let mut forward_proxy_handle = None;
     let mut pool_orphan_recovery_handle = None;

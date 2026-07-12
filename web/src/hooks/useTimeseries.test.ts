@@ -1,14 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiInvocation, TimeseriesResponse } from "../lib/api";
 import {
-  clearTimeseriesRemountCache,
-  MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
-  TIMESERIES_OPEN_RESYNC_COOLDOWN_MS,
-  TIMESERIES_REMOUNT_CACHE_TTL_MS,
-  TIMESERIES_RECORDS_RESYNC_THROTTLE_MS,
-  TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
   applyRecordsToCurrentDayBucket,
   applyRecordsToTimeseries,
+  clearTimeseriesRemountCache,
   fetchAllInvocationRecordPages,
   fetchTimeseriesInFlightRecords,
   getCurrentDayBucketEndEpoch,
@@ -16,24 +11,29 @@ import {
   getNextLocalDayStartEpoch,
   getSseOpenResyncOptions,
   getTimeseriesDayRolloverRefreshEpoch,
-  getTimeseriesRemountCacheKey,
   getTimeseriesRecordsResyncDelay,
+  getTimeseriesRemountCacheKey,
   getVisibilityOpenResyncMode,
+  MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
   mergeFreshResponseLiveRecordDeltas,
   mergePendingTimeseriesSilentOption,
+  pruneTrackedTimeseriesLiveRecordDeltas,
   readTimeseriesRemountCache,
-  resolveTimeseriesSyncPolicy,
   resolveCurrentDayLiveSeedEpoch,
+  resolveTimeseriesSyncPolicy,
+  seedCurrentDayLiveRecordDeltas,
+  seedTimeseriesLiveRecordDeltas,
   shouldEnableTimeseriesRemountCache,
-  shouldReuseTimeseriesRemountCache,
   shouldPatchCurrentDayBucketOnRecordsEvent,
   shouldResyncForCurrentDayBucket,
   shouldResyncOnRecordsEvent,
+  shouldReuseTimeseriesRemountCache,
   shouldTriggerTimeseriesOpenResync,
-  seedCurrentDayLiveRecordDeltas,
-  seedTimeseriesLiveRecordDeltas,
+  TIMESERIES_OPEN_RESYNC_COOLDOWN_MS,
+  TIMESERIES_RECORDS_RESYNC_THROTTLE_MS,
+  TIMESERIES_REMOUNT_CACHE_TTL_MS,
+  TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
   trackTimeseriesLiveRecordDelta,
-  pruneTrackedTimeseriesLiveRecordDeltas,
   upsertCurrentDayLiveRecord,
   upsertTimeseriesLiveRecord,
   writeTimeseriesRemountCache,
@@ -45,26 +45,18 @@ afterEach(() => {
 
 describe("useTimeseries records sync strategy", () => {
   it("uses explicit local incremental policy for dashboard 24h heatmap", () => {
-    expect(resolveTimeseriesSyncPolicy("1d", { bucket: "1m" }).mode).toBe(
-      "local",
-    );
+    expect(resolveTimeseriesSyncPolicy("1d", { bucket: "1m" }).mode).toBe("local");
     expect(shouldResyncOnRecordsEvent("1d", { bucket: "1m" })).toBe(false);
   });
 
   it("uses explicit local incremental policy for dashboard 7d heatmap", () => {
-    expect(resolveTimeseriesSyncPolicy("7d", { bucket: "1h" }).mode).toBe(
-      "local",
-    );
+    expect(resolveTimeseriesSyncPolicy("7d", { bucket: "1h" }).mode).toBe("local");
     expect(shouldResyncOnRecordsEvent("7d", { bucket: "1h" })).toBe(false);
   });
 
   it("uses current-day patch policy for dashboard history calendar", () => {
-    expect(resolveTimeseriesSyncPolicy("6mo", { bucket: "1d" }).mode).toBe(
-      "current-day-local",
-    );
-    expect(
-      shouldPatchCurrentDayBucketOnRecordsEvent("6mo", { bucket: "1d" }),
-    ).toBe(true);
+    expect(resolveTimeseriesSyncPolicy("6mo", { bucket: "1d" }).mode).toBe("current-day-local");
+    expect(shouldPatchCurrentDayBucketOnRecordsEvent("6mo", { bucket: "1d" })).toBe(true);
     expect(shouldResyncOnRecordsEvent("6mo", { bucket: "1d" })).toBe(false);
   });
 
@@ -84,9 +76,7 @@ describe("useTimeseries records sync strategy", () => {
   });
 
   it("derives local-day boundaries for the today dashboard range", () => {
-    const noonEpoch = Math.floor(
-      new Date(2026, 3, 8, 12, 34, 56).getTime() / 1000,
-    );
+    const noonEpoch = Math.floor(new Date(2026, 3, 8, 12, 34, 56).getTime() / 1000);
     expect(getLocalDayStartEpoch(noonEpoch)).toBe(
       Math.floor(new Date(2026, 3, 8, 0, 0, 0).getTime() / 1000),
     );
@@ -96,9 +86,7 @@ describe("useTimeseries records sync strategy", () => {
   });
 
   it("falls back to server resync for other daily buckets", () => {
-    expect(resolveTimeseriesSyncPolicy("30d", { bucket: "1d" }).mode).toBe(
-      "server",
-    );
+    expect(resolveTimeseriesSyncPolicy("30d", { bucket: "1d" }).mode).toBe("server");
     expect(shouldResyncOnRecordsEvent("30d", { bucket: "1d" })).toBe(true);
   });
 });
@@ -175,8 +163,7 @@ describe("useTimeseries current-day bucket patching", () => {
           invokeId: "today-running",
           occurredAt: "2026-03-06T08:31:00Z",
           status: "running",
-          errorMessage:
-            "[upstream_response_failed] upstream response stream reported failure",
+          errorMessage: "[upstream_response_failed] upstream response stream reported failure",
           failureKind: "upstream_response_failed",
           failureClass: "service_failure",
           totalTokens: 0,
@@ -188,8 +175,7 @@ describe("useTimeseries current-day bucket patching", () => {
           invokeId: "today-pending",
           occurredAt: "2026-03-06T08:32:00Z",
           status: "pending",
-          errorMessage:
-            "[downstream_closed] downstream closed while streaming upstream response",
+          errorMessage: "[downstream_closed] downstream closed while streaming upstream response",
           failureKind: "downstream_closed",
           failureClass: "client_abort",
           totalTokens: 0,
@@ -309,8 +295,7 @@ describe("useTimeseries current-day bucket patching", () => {
           invokeId: "today-blank-downstream-only",
           occurredAt: "2026-03-06T08:34:30Z",
           status: "",
-          downstreamErrorMessage:
-            "downstream closed while streaming upstream response",
+          downstreamErrorMessage: "downstream closed while streaming upstream response",
           totalTokens: 12,
           cost: 0.12,
           createdAt: "2026-03-06T08:34:30Z",
@@ -399,9 +384,7 @@ describe("useTimeseries current-day bucket patching", () => {
       recordId: 40,
       bucketStart: base.points[0].bucketStart,
       bucketEnd: base.points[0].bucketEnd,
-      bucketStartEpoch: Math.floor(
-        Date.parse(base.points[0].bucketStart) / 1000,
-      ),
+      bucketStartEpoch: Math.floor(Date.parse(base.points[0].bucketStart) / 1000),
       bucketEndEpoch: Math.floor(Date.parse(base.points[0].bucketEnd) / 1000),
       totalCount: 1,
       successCount: 0,
@@ -456,36 +439,25 @@ describe("useTimeseries current-day bucket patching", () => {
       resolveCurrentDayLiveSeedEpoch(base),
     );
 
-    expect(seeded.get("today-running-seed-2026-03-06T08:31:00Z")).toMatchObject(
-      {
-        totalCount: 1,
-        successCount: 0,
-        failureCount: 0,
-      },
-    );
+    expect(seeded.get("today-running-seed-2026-03-06T08:31:00Z")).toMatchObject({
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 0,
+    });
   });
 
   it("requests a full resync when the current day is no longer covered", () => {
     expect(
-      shouldResyncForCurrentDayBucket(
-        base,
-        Math.floor(Date.parse("2026-03-07T01:00:00Z") / 1000),
-      ),
+      shouldResyncForCurrentDayBucket(base, Math.floor(Date.parse("2026-03-07T01:00:00Z") / 1000)),
     ).toBe(true);
     expect(
-      getCurrentDayBucketEndEpoch(
-        base,
-        Math.floor(Date.parse("2026-03-06T12:00:00Z") / 1000),
-      ),
+      getCurrentDayBucketEndEpoch(base, Math.floor(Date.parse("2026-03-06T12:00:00Z") / 1000)),
     ).toBe(Math.floor(Date.parse("2026-03-07T00:00:00Z") / 1000));
   });
 
   it("requests a full resync when there is no current-day bucket to patch yet", () => {
     expect(
-      shouldResyncForCurrentDayBucket(
-        null,
-        Math.floor(Date.parse("2026-03-06T12:00:00Z") / 1000),
-      ),
+      shouldResyncForCurrentDayBucket(null, Math.floor(Date.parse("2026-03-06T12:00:00Z") / 1000)),
     ).toBe(true);
     expect(
       shouldResyncForCurrentDayBucket(
@@ -510,12 +482,8 @@ describe("useTimeseries natural-day range patching", () => {
       bucketSeconds: 60,
       points: [
         {
-          bucketStart: new Date(2026, 3, 7, 23, 59, 0)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
-          bucketEnd: new Date(2026, 3, 8, 0, 0, 0)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          bucketStart: new Date(2026, 3, 7, 23, 59, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
+          bucketEnd: new Date(2026, 3, 8, 0, 0, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
           totalCount: 1,
           successCount: 1,
           failureCount: 0,
@@ -531,28 +499,20 @@ describe("useTimeseries natural-day range patching", () => {
         {
           id: 1,
           invokeId: "yesterday",
-          occurredAt: new Date(2026, 3, 7, 23, 59, 30)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          occurredAt: new Date(2026, 3, 7, 23, 59, 30).toISOString().replace(/\.\d{3}Z$/, "Z"),
           status: "success",
           totalTokens: 10,
           cost: 0.1,
-          createdAt: new Date(2026, 3, 7, 23, 59, 30)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          createdAt: new Date(2026, 3, 7, 23, 59, 30).toISOString().replace(/\.\d{3}Z$/, "Z"),
         },
         {
           id: 2,
           invokeId: "today",
-          occurredAt: new Date(2026, 3, 8, 0, 1, 15)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          occurredAt: new Date(2026, 3, 8, 0, 1, 15).toISOString().replace(/\.\d{3}Z$/, "Z"),
           status: "failed",
           totalTokens: 25,
           cost: 0.2,
-          createdAt: new Date(2026, 3, 8, 0, 1, 15)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          createdAt: new Date(2026, 3, 8, 0, 1, 15).toISOString().replace(/\.\d{3}Z$/, "Z"),
         },
       ],
       {
@@ -561,14 +521,10 @@ describe("useTimeseries natural-day range patching", () => {
       },
     );
 
-    expect(next?.rangeStart).toBe(
-      currentDayStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
-    );
+    expect(next?.rangeStart).toBe(currentDayStart.toISOString().replace(/\.\d{3}Z$/, "Z"));
     expect(next?.points).toHaveLength(1);
     expect(next?.points[0]).toMatchObject({
-      bucketStart: new Date(2026, 3, 8, 0, 1, 0)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
+      bucketStart: new Date(2026, 3, 8, 0, 1, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
       totalCount: 1,
       successCount: 0,
       failureCount: 1,
@@ -587,12 +543,8 @@ describe("useTimeseries natural-day range patching", () => {
       bucketSeconds: 60,
       points: [
         {
-          bucketStart: new Date(2026, 3, 7, 23, 58, 0)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
-          bucketEnd: new Date(2026, 3, 7, 23, 59, 0)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          bucketStart: new Date(2026, 3, 7, 23, 58, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
+          bucketEnd: new Date(2026, 3, 7, 23, 59, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
           totalCount: 1,
           successCount: 1,
           failureCount: 0,
@@ -608,28 +560,20 @@ describe("useTimeseries natural-day range patching", () => {
         {
           id: 3,
           invokeId: "yesterday-success",
-          occurredAt: new Date(2026, 3, 7, 23, 59, 15)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          occurredAt: new Date(2026, 3, 7, 23, 59, 15).toISOString().replace(/\.\d{3}Z$/, "Z"),
           status: "success",
           totalTokens: 20,
           cost: 0.3,
-          createdAt: new Date(2026, 3, 7, 23, 59, 15)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          createdAt: new Date(2026, 3, 7, 23, 59, 15).toISOString().replace(/\.\d{3}Z$/, "Z"),
         },
         {
           id: 4,
           invokeId: "today-should-ignore",
-          occurredAt: new Date(2026, 3, 8, 0, 1, 15)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          occurredAt: new Date(2026, 3, 8, 0, 1, 15).toISOString().replace(/\.\d{3}Z$/, "Z"),
           status: "failed",
           totalTokens: 25,
           cost: 0.2,
-          createdAt: new Date(2026, 3, 8, 0, 1, 15)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          createdAt: new Date(2026, 3, 8, 0, 1, 15).toISOString().replace(/\.\d{3}Z$/, "Z"),
         },
       ],
       {
@@ -638,17 +582,11 @@ describe("useTimeseries natural-day range patching", () => {
       },
     );
 
-    expect(next?.rangeStart).toBe(
-      yesterdayStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
-    );
-    expect(next?.rangeEnd).toBe(
-      todayStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
-    );
+    expect(next?.rangeStart).toBe(yesterdayStart.toISOString().replace(/\.\d{3}Z$/, "Z"));
+    expect(next?.rangeEnd).toBe(todayStart.toISOString().replace(/\.\d{3}Z$/, "Z"));
     expect(next?.points).toHaveLength(2);
     expect(next?.points.at(-1)).toMatchObject({
-      bucketStart: new Date(2026, 3, 7, 23, 59, 0)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
+      bucketStart: new Date(2026, 3, 7, 23, 59, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
       totalCount: 1,
       successCount: 1,
       failureCount: 0,
@@ -659,12 +597,8 @@ describe("useTimeseries natural-day range patching", () => {
 
   it("counts running local live records toward totals without painting provisional failure metadata as failures", () => {
     const current: TimeseriesResponse = {
-      rangeStart: new Date(2026, 3, 8, 0, 0, 0)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
-      rangeEnd: new Date(2026, 3, 8, 0, 3, 0)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
+      rangeStart: new Date(2026, 3, 8, 0, 0, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
+      rangeEnd: new Date(2026, 3, 8, 0, 3, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
       bucketSeconds: 60,
       points: [],
     };
@@ -675,19 +609,14 @@ describe("useTimeseries natural-day range patching", () => {
         {
           id: 11,
           invokeId: "live-running",
-          occurredAt: new Date(2026, 3, 8, 0, 1, 15)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          occurredAt: new Date(2026, 3, 8, 0, 1, 15).toISOString().replace(/\.\d{3}Z$/, "Z"),
           status: "running",
-          errorMessage:
-            "[upstream_response_failed] upstream response stream reported failure",
+          errorMessage: "[upstream_response_failed] upstream response stream reported failure",
           failureKind: "upstream_response_failed",
           failureClass: "service_failure",
           totalTokens: 0,
           cost: 0,
-          createdAt: new Date(2026, 3, 8, 0, 1, 15)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          createdAt: new Date(2026, 3, 8, 0, 1, 15).toISOString().replace(/\.\d{3}Z$/, "Z"),
         },
       ],
       {
@@ -705,12 +634,8 @@ describe("useTimeseries natural-day range patching", () => {
 
   it("keeps a running SSE row with provisional failure metadata out of local failure buckets", () => {
     const current: TimeseriesResponse = {
-      rangeStart: new Date(2026, 3, 8, 0, 0, 0)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
-      rangeEnd: new Date(2026, 3, 8, 0, 3, 0)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
+      rangeStart: new Date(2026, 3, 8, 0, 0, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
+      rangeEnd: new Date(2026, 3, 8, 0, 3, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
       bucketSeconds: 60,
       points: [],
     };
@@ -720,19 +645,14 @@ describe("useTimeseries natural-day range patching", () => {
       {
         id: 12,
         invokeId: "live-running-sse",
-        occurredAt: new Date(2026, 3, 8, 0, 1, 30)
-          .toISOString()
-          .replace(/\.\d{3}Z$/, "Z"),
+        occurredAt: new Date(2026, 3, 8, 0, 1, 30).toISOString().replace(/\.\d{3}Z$/, "Z"),
         status: "running",
-        errorMessage:
-          "[upstream_response_failed] upstream response stream reported failure",
+        errorMessage: "[upstream_response_failed] upstream response stream reported failure",
         failureKind: "upstream_response_failed",
         failureClass: "service_failure",
         totalTokens: 0,
         cost: 0,
-        createdAt: new Date(2026, 3, 8, 0, 1, 30)
-          .toISOString()
-          .replace(/\.\d{3}Z$/, "Z"),
+        createdAt: new Date(2026, 3, 8, 0, 1, 30).toISOString().replace(/\.\d{3}Z$/, "Z"),
       },
       null,
       {
@@ -789,12 +709,8 @@ describe("useTimeseries natural-day range patching", () => {
 
   it("treats downstream-only live SSE rows as failures immediately", () => {
     const current: TimeseriesResponse = {
-      rangeStart: new Date(2026, 3, 8, 0, 0, 0)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
-      rangeEnd: new Date(2026, 3, 8, 0, 3, 0)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
+      rangeStart: new Date(2026, 3, 8, 0, 0, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
+      rangeEnd: new Date(2026, 3, 8, 0, 3, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
       bucketSeconds: 60,
       points: [],
     };
@@ -804,17 +720,13 @@ describe("useTimeseries natural-day range patching", () => {
       {
         id: 13,
         invokeId: "live-http-200-downstream-only",
-        occurredAt: new Date(2026, 3, 8, 0, 1, 45)
-          .toISOString()
-          .replace(/\.\d{3}Z$/, "Z"),
+        occurredAt: new Date(2026, 3, 8, 0, 1, 45).toISOString().replace(/\.\d{3}Z$/, "Z"),
         status: "http_200",
         downstreamStatusCode: 502,
         downstreamErrorMessage: "socket closed after response",
         totalTokens: 17,
         cost: 0.17,
-        createdAt: new Date(2026, 3, 8, 0, 1, 45)
-          .toISOString()
-          .replace(/\.\d{3}Z$/, "Z"),
+        createdAt: new Date(2026, 3, 8, 0, 1, 45).toISOString().replace(/\.\d{3}Z$/, "Z"),
       },
       null,
       {
@@ -834,21 +746,13 @@ describe("useTimeseries natural-day range patching", () => {
 
   it("replaces a seeded in-flight local delta when the same invocation settles", () => {
     const current: TimeseriesResponse = {
-      rangeStart: new Date(2026, 3, 8, 0, 0, 0)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
-      rangeEnd: new Date(2026, 3, 8, 0, 3, 0)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
+      rangeStart: new Date(2026, 3, 8, 0, 0, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
+      rangeEnd: new Date(2026, 3, 8, 0, 3, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
       bucketSeconds: 60,
       points: [
         {
-          bucketStart: new Date(2026, 3, 8, 0, 1, 0)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
-          bucketEnd: new Date(2026, 3, 8, 0, 2, 0)
-            .toISOString()
-            .replace(/\.\d{3}Z$/, "Z"),
+          bucketStart: new Date(2026, 3, 8, 0, 1, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
+          bucketEnd: new Date(2026, 3, 8, 0, 2, 0).toISOString().replace(/\.\d{3}Z$/, "Z"),
           totalCount: 1,
           successCount: 0,
           failureCount: 0,
@@ -860,15 +764,11 @@ describe("useTimeseries natural-day range patching", () => {
     const runningRecord = {
       id: 41,
       invokeId: "live-running",
-      occurredAt: new Date(2026, 3, 8, 0, 1, 15)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
+      occurredAt: new Date(2026, 3, 8, 0, 1, 15).toISOString().replace(/\.\d{3}Z$/, "Z"),
       status: "running",
       totalTokens: 0,
       cost: 0,
-      createdAt: new Date(2026, 3, 8, 0, 1, 15)
-        .toISOString()
-        .replace(/\.\d{3}Z$/, "Z"),
+      createdAt: new Date(2026, 3, 8, 0, 1, 15).toISOString().replace(/\.\d{3}Z$/, "Z"),
     };
     const settledRecord = {
       ...runningRecord,
@@ -886,8 +786,7 @@ describe("useTimeseries natural-day range patching", () => {
     const result = upsertTimeseriesLiveRecord(
       current,
       settledRecord,
-      seeded.get(settledRecord.invokeId + "-" + settledRecord.occurredAt) ??
-        null,
+      seeded.get(`${settledRecord.invokeId}-${settledRecord.occurredAt}`) ?? null,
       {
         range: "today",
         bucketSeconds: 60,
@@ -1325,10 +1224,7 @@ describe("useTimeseries in-flight seeding pagination", () => {
       fetchPage,
     );
 
-    expect(records.map((record) => record.invokeId)).toEqual([
-      "running-1",
-      "pending-1",
-    ]);
+    expect(records.map((record) => record.invokeId)).toEqual(["running-1", "pending-1"]);
     expect(fetchPage).toHaveBeenNthCalledWith(1, {
       from: "2026-03-08T00:00:00Z",
       to: "2026-03-08T00:03:00Z",
@@ -1360,10 +1256,7 @@ describe("useTimeseries refresh coordination helpers", () => {
       TIMESERIES_RECORDS_RESYNC_THROTTLE_MS - 250,
     );
     expect(
-      getTimeseriesRecordsResyncDelay(
-        20_000,
-        20_000 + TIMESERIES_RECORDS_RESYNC_THROTTLE_MS,
-      ),
+      getTimeseriesRecordsResyncDelay(20_000, 20_000 + TIMESERIES_RECORDS_RESYNC_THROTTLE_MS),
     ).toBe(0);
   });
 
@@ -1375,10 +1268,7 @@ describe("useTimeseries refresh coordination helpers", () => {
 
   it("throttles reconnect resync unless the caller forces it", () => {
     expect(
-      shouldTriggerTimeseriesOpenResync(
-        30_000,
-        30_000 + TIMESERIES_OPEN_RESYNC_COOLDOWN_MS - 1,
-      ),
+      shouldTriggerTimeseriesOpenResync(30_000, 30_000 + TIMESERIES_OPEN_RESYNC_COOLDOWN_MS - 1),
     ).toBe(false);
     expect(shouldTriggerTimeseriesOpenResync(30_000, 30_250, true)).toBe(true);
   });
@@ -1392,9 +1282,7 @@ describe("useTimeseries refresh coordination helpers", () => {
     };
 
     expect(getVisibilityOpenResyncMode("today", "local", null)).toBe("force");
-    expect(
-      getVisibilityOpenResyncMode("6mo", "current-day-local", null),
-    ).toBe("force");
+    expect(getVisibilityOpenResyncMode("6mo", "current-day-local", null)).toBe("force");
     expect(
       getVisibilityOpenResyncMode(
         "yesterday",
@@ -1459,18 +1347,11 @@ describe("useTimeseries refresh coordination helpers", () => {
   });
 
   it("schedules yesterday rollover refresh at the next local midnight", () => {
-    const noonEpoch = Math.floor(
-      new Date(2026, 3, 8, 12, 34, 56).getTime() / 1000,
-    );
+    const noonEpoch = Math.floor(new Date(2026, 3, 8, 12, 34, 56).getTime() / 1000);
 
-    expect(
-      getTimeseriesDayRolloverRefreshEpoch(
-        "yesterday",
-        "local",
-        null,
-        noonEpoch,
-      ),
-    ).toBe(getNextLocalDayStartEpoch(noonEpoch));
+    expect(getTimeseriesDayRolloverRefreshEpoch("yesterday", "local", null, noonEpoch)).toBe(
+      getNextLocalDayStartEpoch(noonEpoch),
+    );
   });
 
   it("stores remount cache entries by range and options", () => {
@@ -1497,9 +1378,7 @@ describe("useTimeseries refresh coordination helpers", () => {
         },
       ],
     ]);
-    const settledLiveRecordUpdatedAt = new Map([
-      ["invoke-1-2026-04-08T00:00:30Z", 12_340],
-    ]);
+    const settledLiveRecordUpdatedAt = new Map([["invoke-1-2026-04-08T00:00:30Z", 12_340]]);
 
     writeTimeseriesRemountCache(
       "1d",
@@ -1520,9 +1399,7 @@ describe("useTimeseries refresh coordination helpers", () => {
         bucket: "1m",
         upstreamAccountId: 42,
       }),
-    ).toBe(
-      JSON.stringify(["1d", "1m", null, false, 42]),
-    );
+    ).toBe(JSON.stringify(["1d", "1m", null, false, 42]));
     const cached = readTimeseriesRemountCache("1d", { bucket: "1m" }, 12_346);
     expect(cached).toEqual({
       data: response,
@@ -1534,14 +1411,12 @@ describe("useTimeseries refresh coordination helpers", () => {
     });
     expect(cached?.data).not.toBe(response);
     expect(cached?.liveRecordDeltas).not.toBe(liveRecordDeltas);
-    expect(cached?.settledLiveRecordUpdatedAt).not.toBe(
-      settledLiveRecordUpdatedAt,
-    );
-    liveRecordDeltas.get("invoke-1-2026-04-08T00:00:30Z")!.failureCount = 99;
-    expect(
-      cached?.liveRecordDeltas.get("invoke-1-2026-04-08T00:00:30Z")
-        ?.failureCount,
-    ).toBe(0);
+    expect(cached?.settledLiveRecordUpdatedAt).not.toBe(settledLiveRecordUpdatedAt);
+    const originalDelta = liveRecordDeltas.get("invoke-1-2026-04-08T00:00:30Z");
+    expect(originalDelta).toBeDefined();
+    if (!originalDelta) throw new Error("Expected live record delta");
+    originalDelta.failureCount = 99;
+    expect(cached?.liveRecordDeltas.get("invoke-1-2026-04-08T00:00:30Z")?.failureCount).toBe(0);
     settledLiveRecordUpdatedAt.set("invoke-2", 999);
     expect(cached?.settledLiveRecordUpdatedAt.has("invoke-2")).toBe(false);
   });
@@ -1573,9 +1448,7 @@ describe("useTimeseries refresh coordination helpers", () => {
       },
       1_000,
     );
-    expect(
-      readTimeseriesRemountCache("today", { bucket: "1m" }, 1_001),
-    ).toBeNull();
+    expect(readTimeseriesRemountCache("today", { bucket: "1m" }, 1_001)).toBeNull();
     writeTimeseriesRemountCache(
       "yesterday",
       { bucket: "1m" },
@@ -1587,9 +1460,7 @@ describe("useTimeseries refresh coordination helpers", () => {
       },
       1_000,
     );
-    expect(
-      readTimeseriesRemountCache("yesterday", { bucket: "1m" }, 1_001),
-    ).toBeNull();
+    expect(readTimeseriesRemountCache("yesterday", { bucket: "1m" }, 1_001)).toBeNull();
   });
 
   it("reuses remount cache only inside the ttl window", () => {
@@ -1597,17 +1468,11 @@ describe("useTimeseries refresh coordination helpers", () => {
       TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
     );
     expect(
-      shouldReuseTimeseriesRemountCache(
-        5_000,
-        5_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS - 1,
-      ),
+      shouldReuseTimeseriesRemountCache(5_000, 5_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS - 1),
     ).toBe(true);
-    expect(
-      shouldReuseTimeseriesRemountCache(
-        5_000,
-        5_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS,
-      ),
-    ).toBe(false);
+    expect(shouldReuseTimeseriesRemountCache(5_000, 5_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS)).toBe(
+      false,
+    );
   });
 
   it("does not hydrate from stale timeseries remount cache entries", () => {
@@ -1620,11 +1485,7 @@ describe("useTimeseries refresh coordination helpers", () => {
     writeTimeseriesRemountCache("1d", { bucket: "1m" }, response, 2_000);
 
     expect(
-      readTimeseriesRemountCache(
-        "1d",
-        { bucket: "1m" },
-        2_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS,
-      ),
+      readTimeseriesRemountCache("1d", { bucket: "1m" }, 2_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS),
     ).toBeNull();
   });
 
@@ -1742,19 +1603,11 @@ describe("useTimeseries refresh coordination helpers", () => {
       10_000,
     );
 
-    expect(liveRecordDeltas.get("pending-live-2026-04-08T00:00:10Z")).toEqual(
-      pendingDelta,
-    );
-    expect(liveRecordDeltas.get("settled-live-2026-04-08T00:00:20Z")).toEqual(
-      settledDelta,
-    );
+    expect(liveRecordDeltas.get("pending-live-2026-04-08T00:00:10Z")).toEqual(pendingDelta);
+    expect(liveRecordDeltas.get("settled-live-2026-04-08T00:00:20Z")).toEqual(settledDelta);
     expect(settledLiveRecordUpdatedAt.size).toBe(1);
-    expect(
-      settledLiveRecordUpdatedAt.has("pending-live-2026-04-08T00:00:10Z"),
-    ).toBe(false);
-    expect(
-      settledLiveRecordUpdatedAt.has("settled-live-2026-04-08T00:00:20Z"),
-    ).toBe(true);
+    expect(settledLiveRecordUpdatedAt.has("pending-live-2026-04-08T00:00:10Z")).toBe(false);
+    expect(settledLiveRecordUpdatedAt.has("settled-live-2026-04-08T00:00:20Z")).toBe(true);
 
     pruneTrackedTimeseriesLiveRecordDeltas(
       liveRecordDeltas,
@@ -1762,12 +1615,8 @@ describe("useTimeseries refresh coordination helpers", () => {
       10_000 + TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS + 1,
     );
 
-    expect(liveRecordDeltas.has("pending-live-2026-04-08T00:00:10Z")).toBe(
-      true,
-    );
-    expect(liveRecordDeltas.has("settled-live-2026-04-08T00:00:20Z")).toBe(
-      false,
-    );
+    expect(liveRecordDeltas.has("pending-live-2026-04-08T00:00:10Z")).toBe(true);
+    expect(liveRecordDeltas.has("settled-live-2026-04-08T00:00:20Z")).toBe(false);
     expect(settledLiveRecordUpdatedAt.size).toBe(0);
   });
 
@@ -1813,11 +1662,7 @@ describe("useTimeseries refresh coordination helpers", () => {
       totalCost: index / 100,
     });
 
-    for (
-      let index = 0;
-      index <= MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS;
-      index += 1
-    ) {
+    for (let index = 0; index <= MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS; index += 1) {
       const key = `settled-${index}`;
       trackTimeseriesLiveRecordDelta(
         liveRecordDeltas,
@@ -1831,14 +1676,10 @@ describe("useTimeseries refresh coordination helpers", () => {
       );
     }
 
-    expect(settledLiveRecordUpdatedAt.size).toBe(
-      MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
-    );
+    expect(settledLiveRecordUpdatedAt.size).toBe(MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS);
     expect(liveRecordDeltas.size).toBe(MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS);
     expect(liveRecordDeltas.has("settled-0")).toBe(false);
-    expect(
-      liveRecordDeltas.has(`settled-${MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS}`),
-    ).toBe(true);
+    expect(liveRecordDeltas.has(`settled-${MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS}`)).toBe(true);
   });
 
   it("drops in-flight transient id zero deltas after a fresh snapshot", () => {

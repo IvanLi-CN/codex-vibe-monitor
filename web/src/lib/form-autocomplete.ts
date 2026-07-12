@@ -1,21 +1,27 @@
-import type { InputHTMLAttributes, SelectHTMLAttributes } from 'react'
+import type { InputHTMLAttributes, SelectHTMLAttributes } from "react";
 
-type NativeAutocompleteProps = 'autoComplete'
-type TextAssistProps = NativeAutocompleteProps | 'autoCapitalize' | 'autoCorrect' | 'spellCheck'
+type NativeAutocompleteProps = "autoComplete";
+type TextAssistProps = NativeAutocompleteProps | "autoCapitalize" | "autoCorrect" | "spellCheck";
 
-export type NativeFormAutocompleteOffProps = Pick<SelectHTMLAttributes<HTMLSelectElement>, NativeAutocompleteProps>
-export type TextInputAutocompleteOffProps = Pick<InputHTMLAttributes<HTMLInputElement>, TextAssistProps>
+export type NativeFormAutocompleteOffProps = Pick<
+  SelectHTMLAttributes<HTMLSelectElement>,
+  NativeAutocompleteProps
+>;
+export type TextInputAutocompleteOffProps = Pick<
+  InputHTMLAttributes<HTMLInputElement>,
+  TextAssistProps
+>;
 
 export const nativeFormAutocompleteOffProps = {
-  autoComplete: 'off',
-} satisfies NativeFormAutocompleteOffProps
+  autoComplete: "off",
+} satisfies NativeFormAutocompleteOffProps;
 
 export const textInputAutocompleteOffProps = {
   ...nativeFormAutocompleteOffProps,
-  autoCapitalize: 'none',
-  autoCorrect: 'off',
+  autoCapitalize: "none",
+  autoCorrect: "off",
   spellCheck: false,
-} satisfies TextInputAutocompleteOffProps
+} satisfies TextInputAutocompleteOffProps;
 
 export function resolveTextInputAutocompleteProps(
   overrides?: Partial<TextInputAutocompleteOffProps>,
@@ -23,5 +29,5 @@ export function resolveTextInputAutocompleteProps(
   return {
     ...textInputAutocompleteOffProps,
     ...overrides,
-  }
+  };
 }

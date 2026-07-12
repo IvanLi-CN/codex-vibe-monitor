@@ -1,5 +1,5 @@
-import { Tooltip } from "./ui/tooltip";
 import { cn } from "../lib/utils";
+import { Tooltip } from "./ui/tooltip";
 
 export interface InvocationErrorSummaryProps {
   message: string;

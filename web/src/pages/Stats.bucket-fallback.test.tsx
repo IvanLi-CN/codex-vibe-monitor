@@ -1,77 +1,77 @@
 /** @vitest-environment jsdom */
-import * as React from 'react'
-import { act } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { FailureSummaryResponse, TimeseriesResponse } from '../lib/api'
-import StatsPage from './Stats'
+import * as React from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { FailureSummaryResponse, TimeseriesResponse } from "../lib/api";
+import StatsPage from "./Stats";
 
 const hookMocks = vi.hoisted(() => ({
   useSummary: vi.fn(),
   useTimeseries: vi.fn(),
   useErrorDistribution: vi.fn(),
   useFailureSummary: vi.fn(),
-}))
+}));
 
 const SelectContext = React.createContext<{
-  value?: string
-  onValueChange?: (value: string) => void
-} | null>(null)
+  value?: string;
+  onValueChange?: (value: string) => void;
+} | null>(null);
 
-vi.mock('../hooks/useStats', () => ({
+vi.mock("../hooks/useStats", () => ({
   useSummary: hookMocks.useSummary,
-}))
+}));
 
-vi.mock('../hooks/useTimeseries', () => ({
+vi.mock("../hooks/useTimeseries", () => ({
   useTimeseries: hookMocks.useTimeseries,
-}))
+}));
 
-vi.mock('../hooks/useErrorDistribution', () => ({
+vi.mock("../hooks/useErrorDistribution", () => ({
   useErrorDistribution: hookMocks.useErrorDistribution,
-}))
+}));
 
-vi.mock('../hooks/useFailureSummary', () => ({
+vi.mock("../hooks/useFailureSummary", () => ({
   useFailureSummary: hookMocks.useFailureSummary,
-}))
+}));
 
-vi.mock('../components/ui/select', () => ({
+vi.mock("../components/ui/select", () => ({
   Select: ({
     value,
     onValueChange,
     children,
   }: {
-    value?: string
-    onValueChange?: (value: string) => void
-    children: React.ReactNode
+    value?: string;
+    onValueChange?: (value: string) => void;
+    children: React.ReactNode;
   }) => (
     <SelectContext.Provider value={{ value, onValueChange }}>
       <div>{children}</div>
     </SelectContext.Provider>
   ),
-  SelectTrigger: ({
-    children,
-    ...props
-  }: React.ButtonHTMLAttributes<HTMLButtonElement>) => {
-    const ctx = React.useContext(SelectContext)
+  SelectTrigger: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => {
+    const ctx = React.useContext(SelectContext);
     return (
-      <button type="button" role="combobox" data-value={ctx?.value} {...props}>
+      <button
+        type="button"
+        role="combobox"
+        aria-expanded="false"
+        aria-controls="stats-bucket-fallback-options"
+        data-value={ctx?.value}
+        {...props}
+      >
         {children}
       </button>
-    )
+    );
   },
   SelectValue: () => {
-    const ctx = React.useContext(SelectContext)
-    return <span>{ctx?.value}</span>
+    const ctx = React.useContext(SelectContext);
+    return <span>{ctx?.value}</span>;
   },
-  SelectContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  SelectItem: ({
-    value,
-    children,
-  }: {
-    value: string
-    children: React.ReactNode
-  }) => {
-    const ctx = React.useContext(SelectContext)
+  SelectContent: ({ children }: { children: React.ReactNode }) => (
+    <div id="stats-bucket-fallback-options">{children}</div>
+  ),
+  SelectItem: ({ value, children }: { value: string; children: React.ReactNode }) => {
+    const ctx = React.useContext(SelectContext);
     return (
       <button
         type="button"
@@ -80,236 +80,230 @@ vi.mock('../components/ui/select', () => ({
       >
         {children}
       </button>
-    )
+    );
   },
-}))
+}));
 
-vi.mock('../i18n', () => ({
+vi.mock("../i18n", () => ({
   useTranslation: () => ({
-    locale: 'zh',
+    locale: "zh",
     t: (key: string) => key,
   }),
-}))
+}));
 
-vi.mock('../features/stats/StatsCards', () => ({
+vi.mock("../features/stats/StatsCards", () => ({
   StatsCards: () => <div data-testid="stats-cards" />,
-}))
+}));
 
-vi.mock('../features/stats/TimeseriesChart', () => ({
+vi.mock("../features/stats/TimeseriesChart", () => ({
   TimeseriesChart: () => <div data-testid="timeseries-chart" />,
-}))
+}));
 
-vi.mock('../features/stats/SuccessFailureChart', () => ({
+vi.mock("../features/stats/SuccessFailureChart", () => ({
   SuccessFailureChart: () => <div data-testid="success-failure-chart" />,
-}))
+}));
 
-vi.mock('../features/stats/ErrorReasonPieChart', () => ({
+vi.mock("../features/stats/ErrorReasonPieChart", () => ({
   ErrorReasonPieChart: () => <div data-testid="error-reason-pie-chart" />,
-}))
+}));
 
-vi.mock('../components/ui/alert', () => ({
+vi.mock("../components/ui/alert", () => ({
   Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
-}))
+}));
 
-let host: HTMLDivElement | null = null
-let root: Root | null = null
+let host: HTMLDivElement | null = null;
+let root: Root | null = null;
 
 beforeAll(() => {
-  Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
     writable: true,
     value: true,
-  })
-})
+  });
+});
 
 afterEach(() => {
   act(() => {
-    root?.unmount()
-  })
-  host?.remove()
-  host = null
-  root = null
-  vi.clearAllMocks()
-})
+    root?.unmount();
+  });
+  host?.remove();
+  host = null;
+  root = null;
+  vi.clearAllMocks();
+});
 
 function render(ui: React.ReactNode) {
-  host = document.createElement('div')
-  document.body.appendChild(host)
-  root = createRoot(host)
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
   act(() => {
-    root?.render(ui)
-  })
+    root?.render(ui);
+  });
 }
 
 async function flushAsync() {
   await act(async () => {
-    await Promise.resolve()
-    await Promise.resolve()
-  })
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
-function createTimeseriesResponse(
-  overrides: Partial<TimeseriesResponse> = {},
-): TimeseriesResponse {
+function createTimeseriesResponse(overrides: Partial<TimeseriesResponse> = {}): TimeseriesResponse {
   return {
-    rangeStart: '2026-03-18T00:00:00Z',
-    rangeEnd: '2026-03-19T00:00:00Z',
+    rangeStart: "2026-03-18T00:00:00Z",
+    rangeEnd: "2026-03-19T00:00:00Z",
     bucketSeconds: 900,
-    effectiveBucket: '15m',
-    availableBuckets: ['1m', '15m', '30m', '1h', '6h'],
+    effectiveBucket: "15m",
+    availableBuckets: ["1m", "15m", "30m", "1h", "6h"],
     bucketLimitedToDaily: false,
     points: [],
     ...overrides,
-  }
+  };
 }
 
 function createFailureSummary(): FailureSummaryResponse {
   return {
-    rangeStart: '2026-03-18T00:00:00Z',
-    rangeEnd: '2026-03-19T00:00:00Z',
+    rangeStart: "2026-03-18T00:00:00Z",
+    rangeEnd: "2026-03-19T00:00:00Z",
     totalFailures: 0,
     serviceFailureCount: 0,
     clientFailureCount: 0,
     clientAbortCount: 0,
     actionableFailureCount: 0,
     actionableFailureRate: 0,
-  }
+  };
 }
 
-describe('StatsPage archived bucket fallback', () => {
-  it('keeps the newly requested bucket selected while an older response is still rendered', async () => {
+describe("StatsPage archived bucket fallback", () => {
+  it("keeps the newly requested bucket selected while an older response is still rendered", async () => {
     hookMocks.useSummary.mockReturnValue({
       summary: null,
       isLoading: false,
       error: null,
-    })
+    });
     hookMocks.useErrorDistribution.mockReturnValue({
       data: { items: [] },
       isLoading: false,
       error: null,
-    })
+    });
     hookMocks.useFailureSummary.mockReturnValue({
       data: createFailureSummary(),
       isLoading: false,
       error: null,
-    })
-    hookMocks.useTimeseries.mockImplementation(
-      (range: string, options?: { bucket?: string }) => {
-        if (range === '7d') {
-          return {
-            data: createTimeseriesResponse({
-              bucketSeconds: 3600,
-              effectiveBucket: options?.bucket === '1d' ? '1h' : (options?.bucket ?? '1h'),
-              availableBuckets: ['1h', '6h', '12h', '1d'],
-            }),
-            isLoading: false,
-            error: null,
-          }
-        }
-
+    });
+    hookMocks.useTimeseries.mockImplementation((range: string, options?: { bucket?: string }) => {
+      if (range === "7d") {
         return {
           data: createTimeseriesResponse({
-            bucketSeconds: options?.bucket === '1m' ? 60 : 900,
-            effectiveBucket: options?.bucket ?? '15m',
+            bucketSeconds: 3600,
+            effectiveBucket: options?.bucket === "1d" ? "1h" : (options?.bucket ?? "1h"),
+            availableBuckets: ["1h", "6h", "12h", "1d"],
           }),
           isLoading: false,
           error: null,
-        }
-      },
-    )
+        };
+      }
 
-    render(<StatsPage />)
+      return {
+        data: createTimeseriesResponse({
+          bucketSeconds: options?.bucket === "1m" ? 60 : 900,
+          effectiveBucket: options?.bucket ?? "15m",
+        }),
+        isLoading: false,
+        error: null,
+      };
+    });
 
-    const rangeItem = host?.querySelector('[data-testid="select-item-7d"]')
+    render(<StatsPage />);
+
+    const rangeItem = host?.querySelector('[data-testid="select-item-7d"]');
     if (!(rangeItem instanceof HTMLButtonElement)) {
-      throw new Error('missing 7d range item')
+      throw new Error("missing 7d range item");
     }
     act(() => {
-      rangeItem.click()
-    })
-    await flushAsync()
+      rangeItem.click();
+    });
+    await flushAsync();
 
-    const bucketItems = host?.querySelectorAll('[data-testid="select-item-1d"]')
-    const bucketItem = bucketItems?.[1]
+    const bucketItems = host?.querySelectorAll('[data-testid="select-item-1d"]');
+    const bucketItem = bucketItems?.[1];
     if (!(bucketItem instanceof HTMLButtonElement)) {
-      throw new Error('missing 1d bucket item for the bucket select')
+      throw new Error("missing 1d bucket item for the bucket select");
     }
     act(() => {
-      bucketItem.click()
-    })
-    await flushAsync()
+      bucketItem.click();
+    });
+    await flushAsync();
 
-    const bucketTrigger = host?.querySelector('[data-testid="stats-bucket-select-trigger"]')
+    const bucketTrigger = host?.querySelector('[data-testid="stats-bucket-select-trigger"]');
     if (!(bucketTrigger instanceof HTMLButtonElement)) {
-      throw new Error('missing bucket trigger')
+      throw new Error("missing bucket trigger");
     }
 
-    expect(bucketTrigger.getAttribute('data-value')).toBe('1d')
-  })
+    expect(bucketTrigger.getAttribute("data-value")).toBe("1d");
+  });
 
-  it('re-requests daily buckets after the backend limits an archived range to daily granularity', async () => {
-    const calls: Array<{ range: string; bucket?: string }> = []
+  it("re-requests daily buckets after the backend limits an archived range to daily granularity", async () => {
+    const calls: Array<{ range: string; bucket?: string }> = [];
 
     hookMocks.useSummary.mockReturnValue({
       summary: null,
       isLoading: false,
       error: null,
-    })
+    });
     hookMocks.useErrorDistribution.mockReturnValue({
       data: { items: [] },
       isLoading: false,
       error: null,
-    })
+    });
     hookMocks.useFailureSummary.mockReturnValue({
       data: createFailureSummary(),
       isLoading: false,
       error: null,
-    })
-    hookMocks.useTimeseries.mockImplementation(
-      (range: string, options?: { bucket?: string }) => {
-        calls.push({ range, bucket: options?.bucket })
-        if (range === '1mo') {
-          return {
-            data: createTimeseriesResponse({
-              bucketSeconds: 86_400,
-              effectiveBucket: '1d',
-              availableBuckets: ['1d'],
-              bucketLimitedToDaily: true,
-            }),
-            isLoading: false,
-            error: null,
-          }
-        }
-
+    });
+    hookMocks.useTimeseries.mockImplementation((range: string, options?: { bucket?: string }) => {
+      calls.push({ range, bucket: options?.bucket });
+      if (range === "1mo") {
         return {
           data: createTimeseriesResponse({
-            bucketSeconds: options?.bucket === '1m' ? 60 : 900,
-            effectiveBucket: options?.bucket ?? '15m',
+            bucketSeconds: 86_400,
+            effectiveBucket: "1d",
+            availableBuckets: ["1d"],
+            bucketLimitedToDaily: true,
           }),
           isLoading: false,
           error: null,
-        }
-      },
-    )
+        };
+      }
 
-    render(<StatsPage />)
+      return {
+        data: createTimeseriesResponse({
+          bucketSeconds: options?.bucket === "1m" ? 60 : 900,
+          effectiveBucket: options?.bucket ?? "15m",
+        }),
+        isLoading: false,
+        error: null,
+      };
+    });
 
-    const rangeItem = host?.querySelector('[data-testid="select-item-1mo"]')
+    render(<StatsPage />);
+
+    const rangeItem = host?.querySelector('[data-testid="select-item-1mo"]');
     if (!(rangeItem instanceof HTMLButtonElement)) {
-      throw new Error('missing 1mo range item')
+      throw new Error("missing 1mo range item");
     }
     act(() => {
-      rangeItem.click()
-    })
-    await flushAsync()
+      rangeItem.click();
+    });
+    await flushAsync();
 
-    const bucketTrigger = host?.querySelector('[data-testid="stats-bucket-select-trigger"]')
+    const bucketTrigger = host?.querySelector('[data-testid="stats-bucket-select-trigger"]');
     if (!(bucketTrigger instanceof HTMLButtonElement)) {
-      throw new Error('missing bucket trigger')
+      throw new Error("missing bucket trigger");
     }
 
-    expect(bucketTrigger.getAttribute('data-value')).toBe('1d')
-    expect(calls).toContainEqual({ range: '1mo', bucket: '6h' })
-    expect(calls).toContainEqual({ range: '1mo', bucket: '1d' })
-  })
-})
+    expect(bucketTrigger.getAttribute("data-value")).toBe("1d");
+    expect(calls).toContainEqual({ range: "1mo", bucket: "6h" });
+    expect(calls).toContainEqual({ range: "1mo", bucket: "1d" });
+  });
+});

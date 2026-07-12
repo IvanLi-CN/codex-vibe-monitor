@@ -31,10 +31,7 @@ export interface DashboardPerformanceDiagnosticsSnapshot {
   parallelWorkLastUpdatedAt: string | null;
 }
 
-type DashboardPatchMetrics = Map<
-  string,
-  Map<string, { totalTokens: number; cost: number }>
->;
+type DashboardPatchMetrics = Map<string, Map<string, { totalTokens: number; cost: number }>>;
 
 interface DashboardPerformanceDiagnosticsMetrics {
   workingConversationPatchBucketCount: number;
@@ -82,9 +79,7 @@ let stopDiagnosticsEnabledSync: (() => void) | null = null;
 function readDiagnosticsEnabled() {
   if (typeof window === "undefined") return false;
   try {
-    const rawValue = window.localStorage.getItem(
-      DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
-    );
+    const rawValue = window.localStorage.getItem(DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY);
     return rawValue === "1" || rawValue === "true";
   } catch {
     return false;
@@ -139,7 +134,9 @@ function syncWindowSnapshot() {
 
 function emitDiagnosticsSnapshot() {
   syncWindowSnapshot();
-  listeners.forEach((listener) => listener());
+  listeners.forEach((listener) => {
+    listener();
+  });
 }
 
 export function syncDashboardPerformanceDiagnosticsEnabled() {
@@ -184,9 +181,7 @@ export function isDashboardPerformanceDiagnosticsEnabled() {
   return readDiagnosticsEnabled();
 }
 
-export function publishWorkingConversationPatchMetrics(
-  patchMetrics: DashboardPatchMetrics,
-) {
+export function publishWorkingConversationPatchMetrics(patchMetrics: DashboardPatchMetrics) {
   updateMetricsSnapshot((current, timestamp) => {
     let patchEntryCount = 0;
     patchMetrics.forEach((invocations) => {
@@ -262,8 +257,7 @@ export function recordTodayChartRender(signature?: string | null) {
 export function recordWorkingConversationHeadFetch() {
   updateMetricsSnapshot((current, timestamp) => ({
     ...current,
-    workingConversationHeadFetchCount:
-      current.workingConversationHeadFetchCount + 1,
+    workingConversationHeadFetchCount: current.workingConversationHeadFetchCount + 1,
     workingConversationHeadFetchLastUpdatedAt: timestamp,
   }));
 }
@@ -271,8 +265,7 @@ export function recordWorkingConversationHeadFetch() {
 export function recordParallelWorkFetch(kind: "full" | "notModified") {
   updateMetricsSnapshot((current, timestamp) => ({
     ...current,
-    parallelWorkFullFetchCount:
-      current.parallelWorkFullFetchCount + (kind === "full" ? 1 : 0),
+    parallelWorkFullFetchCount: current.parallelWorkFullFetchCount + (kind === "full" ? 1 : 0),
     parallelWorkNotModifiedCount:
       current.parallelWorkNotModifiedCount + (kind === "notModified" ? 1 : 0),
     parallelWorkLastUpdatedAt: timestamp,
@@ -282,8 +275,7 @@ export function recordParallelWorkFetch(kind: "full" | "notModified") {
 export function recordUpstreamAccountActivityRefresh() {
   updateMetricsSnapshot((current, timestamp) => ({
     ...current,
-    upstreamAccountActivityRefreshCount:
-      current.upstreamAccountActivityRefreshCount + 1,
+    upstreamAccountActivityRefreshCount: current.upstreamAccountActivityRefreshCount + 1,
     upstreamAccountActivityRefreshLastUpdatedAt: timestamp,
   }));
 }
@@ -291,8 +283,7 @@ export function recordUpstreamAccountActivityRefresh() {
 export function recordUpstreamAccountActivityOpenResync() {
   updateMetricsSnapshot((current, timestamp) => ({
     ...current,
-    upstreamAccountActivityOpenResyncCount:
-      current.upstreamAccountActivityOpenResyncCount + 1,
+    upstreamAccountActivityOpenResyncCount: current.upstreamAccountActivityOpenResyncCount + 1,
     upstreamAccountActivityOpenResyncLastUpdatedAt: timestamp,
   }));
 }
@@ -317,13 +308,11 @@ function ensureDashboardDiagnosticsStorageBridge() {
     clear: Storage["clear"];
   };
   const storageTarget =
-    Object.prototype.hasOwnProperty.call(storage, "setItem") ||
-    Object.prototype.hasOwnProperty.call(storage, "removeItem") ||
-    Object.prototype.hasOwnProperty.call(storage, "clear")
+    Object.hasOwn(storage, "setItem") ||
+    Object.hasOwn(storage, "removeItem") ||
+    Object.hasOwn(storage, "clear")
       ? storage
-      : ((Object.getPrototypeOf(storage) as
-          | typeof storage
-          | null) ?? storage);
+      : ((Object.getPrototypeOf(storage) as typeof storage | null) ?? storage);
   const originalSetItem = storageTarget.setItem;
   const originalRemoveItem = storageTarget.removeItem;
   const originalClear = storageTarget.clear;
@@ -336,10 +325,7 @@ function ensureDashboardDiagnosticsStorageBridge() {
     );
   };
 
-  storageTarget.setItem = function patchedSetItem(
-    key: string,
-    value: string,
-  ) {
+  storageTarget.setItem = function patchedSetItem(key: string, value: string) {
     originalSetItem.call(this, key, value);
     dispatchStorageEvent(key);
   };
@@ -368,7 +354,9 @@ function ensureDashboardDiagnosticsStorageBridge() {
 }
 
 function emitDiagnosticsEnabledListeners() {
-  diagnosticsEnabledListeners.forEach((listener) => listener());
+  diagnosticsEnabledListeners.forEach((listener) => {
+    listener();
+  });
 }
 
 function ensureDashboardDiagnosticsEnabledSync() {
@@ -382,10 +370,7 @@ function ensureDashboardDiagnosticsEnabledSync() {
   };
   const releaseStorageBridge = ensureDashboardDiagnosticsStorageBridge();
   const onStorage = (event: StorageEvent) => {
-    if (
-      event.key !== null &&
-      event.key !== DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY
-    ) {
+    if (event.key !== null && event.key !== DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY) {
       return;
     }
     sync();
@@ -402,10 +387,7 @@ function ensureDashboardDiagnosticsEnabledSync() {
   };
 
   window.addEventListener("storage", onStorage);
-  window.addEventListener(
-    DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_EVENT,
-    onSameTabStorageChange,
-  );
+  window.addEventListener(DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_EVENT, onSameTabStorageChange);
   sync();
 
   stopDiagnosticsEnabledSync = () => {

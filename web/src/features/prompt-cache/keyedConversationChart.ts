@@ -1,7 +1,4 @@
-import type {
-  ConversationRequestOutcome,
-  ConversationRequestPoint,
-} from "../../lib/api";
+import type { ConversationRequestOutcome, ConversationRequestPoint } from "../../lib/api";
 import { resolveConversationRequestPointOutcome } from "../../lib/conversationRequestPoint";
 
 export interface KeyedConversationChartRecord {
@@ -25,17 +22,10 @@ function parseEpoch(raw?: string | null) {
   return Math.floor(epoch / 1000);
 }
 
-export function resolveConversationRangeEpochs(
-  rangeStart: string,
-  rangeEnd: string,
-) {
+export function resolveConversationRangeEpochs(rangeStart: string, rangeEnd: string) {
   const rangeStartEpoch = parseEpoch(rangeStart);
   const rangeEndEpoch = parseEpoch(rangeEnd);
-  if (
-    rangeStartEpoch == null ||
-    rangeEndEpoch == null ||
-    rangeEndEpoch <= rangeStartEpoch
-  ) {
+  if (rangeStartEpoch == null || rangeEndEpoch == null || rangeEndEpoch <= rangeStartEpoch) {
     return null;
   }
   return { rangeStartEpoch, rangeEndEpoch };
@@ -59,13 +49,8 @@ export function buildConversationSegments(
     const next = sorted[index + 1];
     const currentEpoch = parseEpoch(current.occurredAt);
     if (currentEpoch == null) continue;
-    const startEpoch = Math.max(
-      rangeStartEpoch,
-      Math.min(rangeEndEpoch, currentEpoch),
-    );
-    const nextEpoch = next
-      ? (parseEpoch(next.occurredAt) ?? rangeEndEpoch)
-      : rangeEndEpoch;
+    const startEpoch = Math.max(rangeStartEpoch, Math.min(rangeEndEpoch, currentEpoch));
+    const nextEpoch = next ? (parseEpoch(next.occurredAt) ?? rangeEndEpoch) : rangeEndEpoch;
     const endEpoch = Math.max(startEpoch, Math.min(rangeEndEpoch, nextEpoch));
     if (endEpoch <= startEpoch) continue;
 
@@ -81,9 +66,11 @@ export function buildConversationSegments(
   return segments;
 }
 
-export function findVisibleConversationChartMax<
-  TConversation extends KeyedConversationChartRecord,
->(conversations: TConversation[], rangeStart: string, rangeEnd: string) {
+export function findVisibleConversationChartMax<TConversation extends KeyedConversationChartRecord>(
+  conversations: TConversation[],
+  rangeStart: string,
+  rangeEnd: string,
+) {
   const range = resolveConversationRangeEpochs(rangeStart, rangeEnd);
   if (!range) return 0;
   return Math.max(

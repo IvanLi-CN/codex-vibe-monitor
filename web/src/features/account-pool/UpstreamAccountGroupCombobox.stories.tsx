@@ -1,8 +1,8 @@
-import { useState } from 'react'
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, within } from 'storybook/test'
-import { UpstreamAccountGroupCombobox } from './UpstreamAccountGroupCombobox'
-import type { UpstreamAccountGroupOption } from '../../lib/upstreamAccountGroups'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useState } from "react";
+import { expect, userEvent, within } from "storybook/test";
+import type { UpstreamAccountGroupOption } from "../../lib/upstreamAccountGroups";
+import { UpstreamAccountGroupCombobox } from "./UpstreamAccountGroupCombobox";
 
 function ComboboxHarness({
   value: initialValue,
@@ -13,16 +13,16 @@ function ComboboxHarness({
   onCreateRequested,
   formatAccountCountLabel,
 }: {
-  value: string
-  suggestions: string[]
-  options?: UpstreamAccountGroupOption[]
-  placeholder?: string
-  createLabel?: (value: string) => string
-  onCreateRequested?: (value: string) => void
-  formatAccountCountLabel?: (count: number) => string
+  value: string;
+  suggestions: string[];
+  options?: UpstreamAccountGroupOption[];
+  placeholder?: string;
+  createLabel?: (value: string) => string;
+  onCreateRequested?: (value: string) => void;
+  formatAccountCountLabel?: (count: number) => string;
 }) {
-  const [value, setValue] = useState(initialValue)
-  const [lastCreateRequest, setLastCreateRequest] = useState<string | null>(null)
+  const [value, setValue] = useState(initialValue);
+  const [lastCreateRequest, setLastCreateRequest] = useState<string | null>(null);
   return (
     <div className="min-h-screen bg-base-200 px-6 py-8 text-base-content">
       <div className="mx-auto max-w-md">
@@ -34,36 +34,36 @@ function ComboboxHarness({
           createLabel={createLabel}
           onValueChange={setValue}
           onCreateRequested={(nextValue) => {
-            setLastCreateRequest(nextValue)
-            onCreateRequested?.(nextValue)
+            setLastCreateRequest(nextValue);
+            onCreateRequested?.(nextValue);
           }}
           formatAccountCountLabel={formatAccountCountLabel}
         />
         <p className="mt-3 text-sm text-base-content/70">
-          Last create request: {lastCreateRequest ?? 'none'}
+          Last create request: {lastCreateRequest ?? "none"}
         </p>
       </div>
     </div>
-  )
+  );
 }
 
 const meta = {
-  title: 'Account Pool/Components/Upstream Account Group Combobox',
+  title: "Account Pool/Components/Upstream Account Group Combobox",
   component: UpstreamAccountGroupCombobox,
-  tags: ['autodocs'],
+  tags: ["autodocs"],
   parameters: {
-    layout: 'fullscreen',
+    layout: "fullscreen",
   },
   args: {
-    value: '',
+    value: "",
     onValueChange: () => undefined,
-    suggestions: ['production', 'staging', 'shared-services'],
+    suggestions: ["production", "staging", "shared-services"],
     options: [
-      { groupName: 'production', accountCount: 8, isPersisted: true },
-      { groupName: 'staging', accountCount: 2, isPersisted: true },
-      { groupName: 'shared-services', accountCount: 0, isPersisted: true },
+      { groupName: "production", accountCount: 8, isPersisted: true },
+      { groupName: "staging", accountCount: 2, isPersisted: true },
+      { groupName: "shared-services", accountCount: 0, isPersisted: true },
     ],
-    placeholder: 'Select or type a group',
+    placeholder: "Select or type a group",
     createLabel: (value: string) => `Configure "${value}"`,
     formatAccountCountLabel: (count: number) => `${count} accounts`,
   },
@@ -78,59 +78,59 @@ const meta = {
       formatAccountCountLabel={args.formatAccountCountLabel}
     />
   ),
-} satisfies Meta<typeof UpstreamAccountGroupCombobox>
+} satisfies Meta<typeof UpstreamAccountGroupCombobox>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {}
+export const Default: Story = {};
 
 export const WithExistingValue: Story = {
   args: {
-    value: 'production',
+    value: "production",
   },
-}
+};
 
 export const CreateRequestFlow: Story = {
   args: {
-    value: 'production',
+    value: "production",
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const documentScope = within(canvasElement.ownerDocument.body)
+    const canvas = within(canvasElement);
+    const documentScope = within(canvasElement.ownerDocument.body);
 
-    await userEvent.click(canvas.getByRole('combobox'))
-    const searchInput = documentScope.getByRole('textbox')
-    await userEvent.type(searchInput, 'launch-team')
-    await userEvent.click(documentScope.getByText(/configure "launch-team"/i))
+    await userEvent.click(canvas.getByRole("combobox"));
+    const searchInput = documentScope.getByRole("textbox");
+    await userEvent.type(searchInput, "launch-team");
+    await userEvent.click(documentScope.getByText(/configure "launch-team"/i));
 
-    await expect(canvas.getByText(/last create request: launch-team/i)).toBeInTheDocument()
-    await expect(canvas.getByRole('combobox')).toHaveTextContent('production')
+    await expect(canvas.getByText(/last create request: launch-team/i)).toBeInTheDocument();
+    await expect(canvas.getByRole("combobox")).toHaveTextContent("production");
   },
-}
+};
 
 export const CaseDistinctOptions: Story = {
   args: {
-    suggestions: ['Prod', 'prod'],
+    suggestions: ["Prod", "prod"],
     options: [
-      { groupName: 'Prod', accountCount: 2, isPersisted: true },
-      { groupName: 'prod', accountCount: 1, isPersisted: true },
+      { groupName: "Prod", accountCount: 2, isPersisted: true },
+      { groupName: "prod", accountCount: 1, isPersisted: true },
     ],
     formatAccountCountLabel: (count: number) => `${count} accounts`,
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const documentScope = within(canvasElement.ownerDocument.body)
+    const canvas = within(canvasElement);
+    const documentScope = within(canvasElement.ownerDocument.body);
 
-    await userEvent.click(canvas.getByRole('combobox'))
+    await userEvent.click(canvas.getByRole("combobox"));
 
-    await expect(documentScope.getByText(/^Prod$/)).toBeInTheDocument()
-    await expect(documentScope.getByText(/^prod$/)).toBeInTheDocument()
+    await expect(documentScope.getByText(/^Prod$/)).toBeInTheDocument();
+    await expect(documentScope.getByText(/^prod$/)).toBeInTheDocument();
 
-    const searchInput = documentScope.getByRole('textbox')
-    await userEvent.clear(searchInput)
-    await userEvent.type(searchInput, 'PROD')
-    await expect(documentScope.getByText(/configure "PROD"/i)).toBeInTheDocument()
+    const searchInput = documentScope.getByRole("textbox");
+    await userEvent.clear(searchInput);
+    await userEvent.type(searchInput, "PROD");
+    await expect(documentScope.getByText(/configure "PROD"/i)).toBeInTheDocument();
   },
-}
+};

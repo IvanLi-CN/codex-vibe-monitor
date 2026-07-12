@@ -1,15 +1,15 @@
-import { FloatingFieldBubble, type FloatingFieldBubblePlacement } from './floating-field-bubble'
+import { FloatingFieldBubble, type FloatingFieldBubblePlacement } from "./floating-field-bubble";
 
 interface FloatingFieldErrorProps {
-  message: string
-  className?: string
-  placement?: FloatingFieldBubblePlacement
+  message: string;
+  className?: string;
+  placement?: FloatingFieldBubblePlacement;
 }
 
 export function FloatingFieldError({
   message,
   className,
-  placement = 'input-corner',
+  placement = "input-corner",
 }: FloatingFieldErrorProps) {
   return (
     <FloatingFieldBubble
@@ -18,5 +18,5 @@ export function FloatingFieldError({
       className={className}
       placement={placement}
     />
-  )
+  );
 }

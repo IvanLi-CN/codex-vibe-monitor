@@ -1,6 +1,4 @@
 use super::*;
-use anyhow::{anyhow, bail};
-use sqlx::FromRow;
 use tracing::warn;
 
 pub(crate) async fn refresh_archive_upstream_activity_manifest(

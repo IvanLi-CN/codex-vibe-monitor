@@ -1,12 +1,12 @@
 import {
   memo,
+  type ReactElement,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
-  type ReactElement,
 } from "react";
 import {
   Area,
@@ -22,26 +22,26 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { Alert } from "../../components/ui/alert";
 import { useTranslation } from "../../i18n";
+import type { TimeseriesResponse } from "../../lib/api";
 import {
   chartBaseTokens,
   chartStatusTokens,
   metricAccent,
   withOpacity,
 } from "../../lib/chartTheme";
-import { formatTokensShort } from "../../lib/numberFormatters";
-import { useTheme } from "../../theme";
-import type { MetricKey } from "./Last24hTenMinuteHeatmap";
-import { Alert } from "../../components/ui/alert";
-import type { TimeseriesResponse } from "../../lib/api";
-import {
-  buildTodayMinuteChartData,
-  type DashboardTodayMinuteDatum,
-} from "./dashboardTodayActivityChartData";
 import {
   recordTodayChartRender,
   useDashboardPerformanceDiagnosticsEnabled,
 } from "../../lib/dashboardPerformanceDiagnostics";
+import { formatTokensShort } from "../../lib/numberFormatters";
+import { useTheme } from "../../theme";
+import {
+  buildTodayMinuteChartData,
+  type DashboardTodayMinuteDatum,
+} from "./dashboardTodayActivityChartData";
+import type { MetricKey } from "./Last24hTenMinuteHeatmap";
 
 export interface DashboardTodayActivityChartProps {
   response: TimeseriesResponse | null;
@@ -99,11 +99,7 @@ function buildChartRenderSignature({
   });
 }
 
-function formatCountValue(
-  value: number,
-  unitLabel: string,
-  formatter: Intl.NumberFormat,
-) {
+function formatCountValue(value: number, unitLabel: string, formatter: Intl.NumberFormat) {
   return `${formatter.format(value)} ${unitLabel}`;
 }
 
@@ -126,10 +122,7 @@ function clampValue(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function normalizeViewport(
-  viewport: ChartViewport,
-  pointCount: number,
-): ChartViewport {
+function normalizeViewport(viewport: ChartViewport, pointCount: number): ChartViewport {
   if (pointCount <= 0) {
     return { startIndex: 0, endIndex: 0 };
   }
@@ -168,10 +161,7 @@ function shiftViewport(
 }
 
 function isSameViewport(left: ChartViewport, right: ChartViewport) {
-  return (
-    left.startIndex === right.startIndex &&
-    left.endIndex === right.endIndex
-  );
+  return left.startIndex === right.startIndex && left.endIndex === right.endIndex;
 }
 
 function zoomViewport(
@@ -310,10 +300,7 @@ function ChartTooltipContent({
       </div>
       <div className="mt-2 space-y-1 text-xs">
         {rows.map((row) => (
-          <div
-            key={row.label}
-            className="flex items-center justify-between gap-4"
-          >
+          <div key={row.label} className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-2">
               <span
                 className="inline-block h-2.5 w-2.5 rounded-full"
@@ -349,14 +336,7 @@ function DashboardTodayActivityChartImpl({
             closedNaturalDay,
           })
         : null,
-    [
-      closedNaturalDay,
-      diagnosticsEnabled,
-      error,
-      loading,
-      metric,
-      response,
-    ],
+    [closedNaturalDay, diagnosticsEnabled, error, loading, metric, response],
   );
 
   useEffect(() => {
@@ -385,9 +365,8 @@ function DashboardTodayActivityChartImpl({
   const chartColors = useMemo(() => {
     const base = chartBaseTokens(themeMode);
     const status = chartStatusTokens(themeMode);
-    const accent = metric === "trend"
-      ? metricAccent("totalTokens", themeMode)
-      : metricAccent(metric, themeMode);
+    const accent =
+      metric === "trend" ? metricAccent("totalTokens", themeMode) : metricAccent(metric, themeMode);
     const spend = metricAccent("totalCost", themeMode);
     return {
       ...base,
@@ -465,8 +444,7 @@ function DashboardTodayActivityChartImpl({
     }),
     [t],
   );
-  const areaSeriesName =
-    metric === "totalCost" ? t("chart.totalCost") : t("chart.totalTokens");
+  const areaSeriesName = metric === "totalCost" ? t("chart.totalCost") : t("chart.totalTokens");
   const costSeriesNames = useMemo(
     () => ({
       success: t("stats.cards.success"),
@@ -483,30 +461,18 @@ function DashboardTodayActivityChartImpl({
     [t],
   );
   const chartData =
-    data.length > 0
-      ? data
-      : buildTodayMinuteChartData(response, { localeTag, closedNaturalDay });
+    data.length > 0 ? data : buildTodayMinuteChartData(response, { localeTag, closedNaturalDay });
   const visibleWindow = normalizeViewport(viewport, chartData.length);
-  const visibleChartData = chartData.slice(
-    visibleWindow.startIndex,
-    visibleWindow.endIndex + 1,
-  );
+  const visibleChartData = chartData.slice(visibleWindow.startIndex, visibleWindow.endIndex + 1);
   const tenMinuteTrendData = chartData.filter(
-    (point) =>
-      point.chartTokensPerMinute != null || point.chartSpendRate != null,
+    (point) => point.chartTokensPerMinute != null || point.chartSpendRate != null,
   );
   const visibleTenMinuteTrendData = tenMinuteTrendData.filter(
-    (point) =>
-      point.index >= visibleWindow.startIndex &&
-      point.index <= visibleWindow.endIndex,
+    (point) => point.index >= visibleWindow.startIndex && point.index <= visibleWindow.endIndex,
   );
-  const viewportSpan =
-    visibleWindow.endIndex - visibleWindow.startIndex + 1;
+  const viewportSpan = visibleWindow.endIndex - visibleWindow.startIndex + 1;
   const isZoomed = chartData.length > 0 && viewportSpan < chartData.length;
-  const xDomain: [number, number] = [
-    visibleWindow.startIndex,
-    visibleWindow.endIndex,
-  ];
+  const xDomain: [number, number] = [visibleWindow.startIndex, visibleWindow.endIndex];
   const countBarSize = useMemo(() => {
     if (chartData.length <= 0) return 1;
     const zoomFactor = chartData.length / Math.max(1, viewportSpan);
@@ -516,11 +482,7 @@ function DashboardTodayActivityChartImpl({
   const countAxisBound = useMemo(() => {
     const maxValue = chartData.reduce(
       (current, item) =>
-        Math.max(
-          current,
-          item.successCount + item.inFlightCount,
-          item.failureCount,
-        ),
+        Math.max(current, item.successCount + item.inFlightCount, item.failureCount),
       0,
     );
     return Math.max(1, maxValue);
@@ -549,11 +511,7 @@ function DashboardTodayActivityChartImpl({
             Math.max(1, Math.round(WHEEL_PAN_INTENSITY * MIN_VISIBLE_MINUTES));
         setViewport((current) => {
           const normalized = normalizeViewport(current, chartData.length);
-          const next = shiftViewport(
-            normalized,
-            chartData.length,
-            roundedDelta,
-          );
+          const next = shiftViewport(normalized, chartData.length, roundedDelta);
           return isSameViewport(normalized, next) ? current : next;
         });
       });
@@ -681,9 +639,7 @@ function DashboardTodayActivityChartImpl({
       dragPreviewOffsetRef.current = previewOffsetPx;
       if (dragPreviewLayerRef.current) {
         dragPreviewLayerRef.current.style.transform =
-          previewOffsetPx === 0
-            ? ""
-            : `translate3d(${previewOffsetPx}px, 0, 0)`;
+          previewOffsetPx === 0 ? "" : `translate3d(${previewOffsetPx}px, 0, 0)`;
       }
     });
   }, []);
@@ -783,22 +739,14 @@ function DashboardTodayActivityChartImpl({
 
   const animate = false;
   const chartMode =
-    metric === "totalCount"
-      ? "count-bars"
-      : metric === "trend"
-        ? "trend-area"
-        : "cumulative-area";
+    metric === "totalCount" ? "count-bars" : metric === "trend" ? "trend-area" : "cumulative-area";
   const renderCountTooltip = (point: DashboardTodayMinuteDatum) =>
     point.chartSuccessCount == null || point.chartFailureCountNegative == null
       ? []
       : [
           {
             label: countSeriesNames.success,
-            value: formatCountValue(
-              point.chartSuccessCount,
-              countUnit,
-              numberFormatter,
-            ),
+            value: formatCountValue(point.chartSuccessCount, countUnit, numberFormatter),
             color: chartColors.success,
           },
           {
@@ -812,20 +760,12 @@ function DashboardTodayActivityChartImpl({
           },
           {
             label: countSeriesNames.running,
-            value: formatCountValue(
-              point.runningInFlightCount,
-              countUnit,
-              numberFormatter,
-            ),
+            value: formatCountValue(point.runningInFlightCount, countUnit, numberFormatter),
             color: chartColors.running,
           },
           {
             label: countSeriesNames.queued,
-            value: formatCountValue(
-              point.queuedInFlightCount,
-              countUnit,
-              numberFormatter,
-            ),
+            value: formatCountValue(point.queuedInFlightCount, countUnit, numberFormatter),
             color: chartColors.queued,
           },
           {
@@ -921,352 +861,296 @@ function DashboardTodayActivityChartImpl({
           style={{ transform: undefined }}
         >
           <ResponsiveContainer>
-          {metric === "totalCount" ? (
-            <ComposedChart
-              data={visibleChartData}
-              margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
-              barGap="-100%"
-              stackOffset="sign"
-            >
-              <CartesianGrid
-                stroke={chartColors.gridLine}
-                strokeDasharray="3 3"
-              />
-              <XAxis
-                dataKey="index"
-                type="number"
-                domain={xDomain}
-                minTickGap={28}
-                axisLine={{ stroke: chartColors.gridLine }}
-                tickLine={{ stroke: chartColors.gridLine }}
-                tick={{ fill: chartColors.axisText, fontSize: 12 }}
-                tickFormatter={(value: number) => {
-                  const item =
-                    chartData[
-                      Math.max(
-                        0,
-                        Math.min(chartData.length - 1, Math.round(value)),
-                      )
-                    ];
-                  return item?.label ?? String(value);
-                }}
-              />
-              <YAxis
-                yAxisId="count"
-                domain={[-countAxisBound, countAxisBound]}
-                allowDecimals={false}
-                tickFormatter={(value) =>
-                  numberFormatter.format(Math.abs(Number(value)))
-                }
-                axisLine={{ stroke: chartColors.gridLine }}
-                tickLine={{ stroke: chartColors.gridLine }}
-                tick={{ fill: chartColors.axisText, fontSize: 12 }}
-              />
-              <YAxis
-                yAxisId="latency"
-                orientation="right"
-                tickFormatter={(value) => `${numberFormatter.format(Number(value))}ms`}
-                width={72}
-                axisLine={{ stroke: chartColors.gridLine }}
-                tickLine={{ stroke: chartColors.gridLine }}
-                tick={{ fill: chartColors.axisText, fontSize: 12 }}
-              />
-              <Tooltip
-                labelFormatter={(value) => {
-                  const item =
-                    chartData[
-                      Math.max(
-                        0,
-                        Math.min(
-                          chartData.length - 1,
-                          Math.round(Number(value)),
-                        ),
-                      )
-                    ];
-                  return item?.tooltipLabel ?? String(value);
-                }}
-                content={(props) => (
-                  <ChartTooltipContent
-                    active={props.active}
-                    label={props.label}
-                    payload={
-                      props.payload as unknown as
-                        | TooltipPayloadEntry[]
-                        | undefined
-                    }
-                    theme={chartColors}
-                    renderValue={renderCountTooltip}
-                  />
-                )}
-              />
-              <Legend wrapperStyle={{ color: chartColors.axisText }} />
-              <ReferenceLine yAxisId="count" y={0} stroke={chartColors.gridLine} />
-              <Bar
-                yAxisId="count"
-                dataKey="chartSuccessCount"
-                name={countSeriesNames.success}
-                stackId="positive"
-                fill={chartColors.success}
-                barSize={countBarSize}
-                radius={[0, 0, 0, 0]}
-                isAnimationActive={animate}
-              />
-              <Bar
-                yAxisId="count"
-                dataKey="chartRunningInFlightCount"
-                name={countSeriesNames.running}
-                stackId="positive"
-                fill={chartColors.running}
-                barSize={countBarSize}
-                radius={[0, 0, 0, 0]}
-                isAnimationActive={animate}
-              />
-              <Bar
-                yAxisId="count"
-                dataKey="chartQueuedInFlightCount"
-                name={countSeriesNames.queued}
-                stackId="positive"
-                fill={chartColors.queued}
-                barSize={countBarSize}
-                radius={[3, 3, 0, 0]}
-                isAnimationActive={animate}
-              />
-              <Bar
-                yAxisId="count"
-                dataKey="chartFailureCountNegative"
-                name={countSeriesNames.failures}
-                stackId="positive"
-                fill={chartColors.failure}
-                barSize={countBarSize}
-                shape={<NegativeFailureBarShape />}
-                isAnimationActive={animate}
-              />
-              <Line
-                yAxisId="latency"
-                type="monotone"
-                dataKey="chartFirstResponseByteTotalAvgMs"
-                name={countSeriesNames.firstByteTotal}
-                stroke={chartColors.firstByte}
-                strokeOpacity={0.72}
-                strokeWidth={1.25}
-                dot={{
-                  r: 1.25,
-                  strokeWidth: 0,
-                  fill: chartColors.firstByte,
-                  fillOpacity: 0.72,
-                }}
-                connectNulls={false}
-                isAnimationActive={animate}
-              />
-            </ComposedChart>
-          ) : metric === "trend" ? (
-            <ComposedChart
-              data={visibleTenMinuteTrendData}
-              margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
-            >
-              <CartesianGrid
-                stroke={chartColors.gridLine}
-                strokeDasharray="3 3"
-              />
-              <XAxis
-                dataKey="index"
-                type="number"
-                domain={xDomain}
-                minTickGap={28}
-                axisLine={{ stroke: chartColors.gridLine }}
-                tickLine={{ stroke: chartColors.gridLine }}
-                tick={{ fill: chartColors.axisText, fontSize: 12 }}
-                tickFormatter={(value: number) => {
-                  const item =
-                    chartData[
-                      Math.max(
-                        0,
-                        Math.min(chartData.length - 1, Math.round(value)),
-                      )
-                    ];
-                  return item?.label ?? String(value);
-                }}
-              />
-              <YAxis
-                yAxisId="tokens"
-                tickFormatter={(value) => formatTokensShort(Number(value), localeTag)}
-                width={80}
-                axisLine={{ stroke: chartColors.gridLine }}
-                tickLine={{ stroke: chartColors.gridLine }}
-                tick={{ fill: chartColors.axisText, fontSize: 12 }}
-              />
-              <YAxis
-                yAxisId="spend"
-                orientation="right"
-                tickFormatter={(value) => currencyFormatter.format(Number(value))}
-                width={90}
-                axisLine={{ stroke: chartColors.gridLine }}
-                tickLine={{ stroke: chartColors.gridLine }}
-                tick={{ fill: chartColors.axisText, fontSize: 12 }}
-              />
-              <Tooltip
-                labelFormatter={(value) => {
-                  const item =
-                    chartData[
-                      Math.max(
-                        0,
-                        Math.min(
-                          chartData.length - 1,
-                          Math.round(Number(value)),
-                        ),
-                      )
-                    ];
-                  return item?.tooltipLabel ?? String(value);
-                }}
-                content={(props) => (
-                  <ChartTooltipContent
-                    active={props.active}
-                    label={props.label}
-                    payload={
-                      props.payload as unknown as
-                        | TooltipPayloadEntry[]
-                        | undefined
-                    }
-                    theme={chartColors}
-                    renderValue={renderTrendTooltip}
-                  />
-                )}
-              />
-              <Legend wrapperStyle={{ color: chartColors.axisText }} />
-              <Area
-                yAxisId="tokens"
-                type="monotone"
-                dataKey="chartTokensPerMinute"
-                name={trendSeriesNames.tokensPerMinute}
-                stroke={chartColors.accent}
-                fill={chartColors.accentFill}
-                fillOpacity={1}
-                strokeWidth={2}
-                dot={false}
-                connectNulls={false}
-                isAnimationActive={animate}
-              />
-              <Area
-                yAxisId="spend"
-                type="monotone"
-                dataKey="chartSpendRate"
-                name={trendSeriesNames.spendRate}
-                stroke={chartColors.spend}
-                fill={chartColors.spendFill}
-                fillOpacity={1}
-                strokeWidth={2}
-                dot={false}
-                connectNulls={false}
-                isAnimationActive={animate}
-              />
-            </ComposedChart>
-          ) : (
-            <AreaChart
-              data={visibleChartData}
-              margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
-            >
-              <CartesianGrid
-                stroke={chartColors.gridLine}
-                strokeDasharray="3 3"
-              />
-              <XAxis
-                dataKey="index"
-                type="number"
-                domain={xDomain}
-                minTickGap={28}
-                axisLine={{ stroke: chartColors.gridLine }}
-                tickLine={{ stroke: chartColors.gridLine }}
-                tick={{ fill: chartColors.axisText, fontSize: 12 }}
-                tickFormatter={(value: number) => {
-                  const item =
-                    chartData[
-                      Math.max(
-                        0,
-                        Math.min(chartData.length - 1, Math.round(value)),
-                      )
-                    ];
-                  return item?.label ?? String(value);
-                }}
-              />
-              <YAxis
-                tickFormatter={(value) =>
-                  metric === "totalCost"
-                    ? currencyFormatter.format(Number(value))
-                    : formatTokensShort(Number(value), localeTag)
-                }
-                width={metric === "totalCost" ? 90 : 80}
-                axisLine={{ stroke: chartColors.gridLine }}
-                tickLine={{ stroke: chartColors.gridLine }}
-                tick={{ fill: chartColors.axisText, fontSize: 12 }}
-              />
-              <Tooltip
-                labelFormatter={(value) => {
-                  const item =
-                    chartData[
-                      Math.max(
-                        0,
-                        Math.min(
-                          chartData.length - 1,
-                          Math.round(Number(value)),
-                        ),
-                      )
-                    ];
-                  return item?.tooltipLabel ?? String(value);
-                }}
-                content={(props) => (
-                  <ChartTooltipContent
-                    active={props.active}
-                    label={props.label}
-                    payload={
-                      props.payload as unknown as
-                        | TooltipPayloadEntry[]
-                        | undefined
-                    }
-                    theme={chartColors}
-                    renderValue={renderAreaTooltip}
-                  />
-                )}
-              />
-              {metric === "totalCost" ? (
-                <>
-                  <Legend wrapperStyle={{ color: chartColors.axisText }} />
-                  <Area
-                    type="monotone"
-                    dataKey="chartCumulativeSuccessCost"
-                    name={costSeriesNames.success}
-                    stackId="cost"
-                    stroke={chartColors.success}
-                    fill={chartColors.successFill}
-                    fillOpacity={1}
-                    strokeWidth={2}
-                    isAnimationActive={animate}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="chartCumulativeNonSuccessCost"
-                    name={costSeriesNames.nonSuccess}
-                    stackId="cost"
-                    stroke={chartColors.failure}
-                    fill={chartColors.failureFill}
-                    fillOpacity={1}
-                    strokeWidth={2}
-                    isAnimationActive={animate}
-                  />
-                </>
-              ) : (
-                <Area
+            {metric === "totalCount" ? (
+              <ComposedChart
+                data={visibleChartData}
+                margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
+                barGap="-100%"
+                stackOffset="sign"
+              >
+                <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="index"
+                  type="number"
+                  domain={xDomain}
+                  minTickGap={28}
+                  axisLine={{ stroke: chartColors.gridLine }}
+                  tickLine={{ stroke: chartColors.gridLine }}
+                  tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                  tickFormatter={(value: number) => {
+                    const item =
+                      chartData[Math.max(0, Math.min(chartData.length - 1, Math.round(value)))];
+                    return item?.label ?? String(value);
+                  }}
+                />
+                <YAxis
+                  yAxisId="count"
+                  domain={[-countAxisBound, countAxisBound]}
+                  allowDecimals={false}
+                  tickFormatter={(value) => numberFormatter.format(Math.abs(Number(value)))}
+                  axisLine={{ stroke: chartColors.gridLine }}
+                  tickLine={{ stroke: chartColors.gridLine }}
+                  tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                />
+                <YAxis
+                  yAxisId="latency"
+                  orientation="right"
+                  tickFormatter={(value) => `${numberFormatter.format(Number(value))}ms`}
+                  width={72}
+                  axisLine={{ stroke: chartColors.gridLine }}
+                  tickLine={{ stroke: chartColors.gridLine }}
+                  tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                />
+                <Tooltip
+                  labelFormatter={(value) => {
+                    const item =
+                      chartData[
+                        Math.max(0, Math.min(chartData.length - 1, Math.round(Number(value))))
+                      ];
+                    return item?.tooltipLabel ?? String(value);
+                  }}
+                  content={(props) => (
+                    <ChartTooltipContent
+                      active={props.active}
+                      label={props.label}
+                      payload={props.payload as unknown as TooltipPayloadEntry[] | undefined}
+                      theme={chartColors}
+                      renderValue={renderCountTooltip}
+                    />
+                  )}
+                />
+                <Legend wrapperStyle={{ color: chartColors.axisText }} />
+                <ReferenceLine yAxisId="count" y={0} stroke={chartColors.gridLine} />
+                <Bar
+                  yAxisId="count"
+                  dataKey="chartSuccessCount"
+                  name={countSeriesNames.success}
+                  stackId="positive"
+                  fill={chartColors.success}
+                  barSize={countBarSize}
+                  radius={[0, 0, 0, 0]}
+                  isAnimationActive={animate}
+                />
+                <Bar
+                  yAxisId="count"
+                  dataKey="chartRunningInFlightCount"
+                  name={countSeriesNames.running}
+                  stackId="positive"
+                  fill={chartColors.running}
+                  barSize={countBarSize}
+                  radius={[0, 0, 0, 0]}
+                  isAnimationActive={animate}
+                />
+                <Bar
+                  yAxisId="count"
+                  dataKey="chartQueuedInFlightCount"
+                  name={countSeriesNames.queued}
+                  stackId="positive"
+                  fill={chartColors.queued}
+                  barSize={countBarSize}
+                  radius={[3, 3, 0, 0]}
+                  isAnimationActive={animate}
+                />
+                <Bar
+                  yAxisId="count"
+                  dataKey="chartFailureCountNegative"
+                  name={countSeriesNames.failures}
+                  stackId="positive"
+                  fill={chartColors.failure}
+                  barSize={countBarSize}
+                  shape={<NegativeFailureBarShape />}
+                  isAnimationActive={animate}
+                />
+                <Line
+                  yAxisId="latency"
                   type="monotone"
-                  dataKey="chartCumulativeTokens"
-                  name={areaSeriesName}
+                  dataKey="chartFirstResponseByteTotalAvgMs"
+                  name={countSeriesNames.firstByteTotal}
+                  stroke={chartColors.firstByte}
+                  strokeOpacity={0.72}
+                  strokeWidth={1.25}
+                  dot={{
+                    r: 1.25,
+                    strokeWidth: 0,
+                    fill: chartColors.firstByte,
+                    fillOpacity: 0.72,
+                  }}
+                  connectNulls={false}
+                  isAnimationActive={animate}
+                />
+              </ComposedChart>
+            ) : metric === "trend" ? (
+              <ComposedChart
+                data={visibleTenMinuteTrendData}
+                margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
+              >
+                <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="index"
+                  type="number"
+                  domain={xDomain}
+                  minTickGap={28}
+                  axisLine={{ stroke: chartColors.gridLine }}
+                  tickLine={{ stroke: chartColors.gridLine }}
+                  tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                  tickFormatter={(value: number) => {
+                    const item =
+                      chartData[Math.max(0, Math.min(chartData.length - 1, Math.round(value)))];
+                    return item?.label ?? String(value);
+                  }}
+                />
+                <YAxis
+                  yAxisId="tokens"
+                  tickFormatter={(value) => formatTokensShort(Number(value), localeTag)}
+                  width={80}
+                  axisLine={{ stroke: chartColors.gridLine }}
+                  tickLine={{ stroke: chartColors.gridLine }}
+                  tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                />
+                <YAxis
+                  yAxisId="spend"
+                  orientation="right"
+                  tickFormatter={(value) => currencyFormatter.format(Number(value))}
+                  width={90}
+                  axisLine={{ stroke: chartColors.gridLine }}
+                  tickLine={{ stroke: chartColors.gridLine }}
+                  tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                />
+                <Tooltip
+                  labelFormatter={(value) => {
+                    const item =
+                      chartData[
+                        Math.max(0, Math.min(chartData.length - 1, Math.round(Number(value))))
+                      ];
+                    return item?.tooltipLabel ?? String(value);
+                  }}
+                  content={(props) => (
+                    <ChartTooltipContent
+                      active={props.active}
+                      label={props.label}
+                      payload={props.payload as unknown as TooltipPayloadEntry[] | undefined}
+                      theme={chartColors}
+                      renderValue={renderTrendTooltip}
+                    />
+                  )}
+                />
+                <Legend wrapperStyle={{ color: chartColors.axisText }} />
+                <Area
+                  yAxisId="tokens"
+                  type="monotone"
+                  dataKey="chartTokensPerMinute"
+                  name={trendSeriesNames.tokensPerMinute}
                   stroke={chartColors.accent}
                   fill={chartColors.accentFill}
                   fillOpacity={1}
                   strokeWidth={2}
+                  dot={false}
+                  connectNulls={false}
                   isAnimationActive={animate}
                 />
-              )}
-            </AreaChart>
-          )}
+                <Area
+                  yAxisId="spend"
+                  type="monotone"
+                  dataKey="chartSpendRate"
+                  name={trendSeriesNames.spendRate}
+                  stroke={chartColors.spend}
+                  fill={chartColors.spendFill}
+                  fillOpacity={1}
+                  strokeWidth={2}
+                  dot={false}
+                  connectNulls={false}
+                  isAnimationActive={animate}
+                />
+              </ComposedChart>
+            ) : (
+              <AreaChart
+                data={visibleChartData}
+                margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
+              >
+                <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="index"
+                  type="number"
+                  domain={xDomain}
+                  minTickGap={28}
+                  axisLine={{ stroke: chartColors.gridLine }}
+                  tickLine={{ stroke: chartColors.gridLine }}
+                  tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                  tickFormatter={(value: number) => {
+                    const item =
+                      chartData[Math.max(0, Math.min(chartData.length - 1, Math.round(value)))];
+                    return item?.label ?? String(value);
+                  }}
+                />
+                <YAxis
+                  tickFormatter={(value) =>
+                    metric === "totalCost"
+                      ? currencyFormatter.format(Number(value))
+                      : formatTokensShort(Number(value), localeTag)
+                  }
+                  width={metric === "totalCost" ? 90 : 80}
+                  axisLine={{ stroke: chartColors.gridLine }}
+                  tickLine={{ stroke: chartColors.gridLine }}
+                  tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                />
+                <Tooltip
+                  labelFormatter={(value) => {
+                    const item =
+                      chartData[
+                        Math.max(0, Math.min(chartData.length - 1, Math.round(Number(value))))
+                      ];
+                    return item?.tooltipLabel ?? String(value);
+                  }}
+                  content={(props) => (
+                    <ChartTooltipContent
+                      active={props.active}
+                      label={props.label}
+                      payload={props.payload as unknown as TooltipPayloadEntry[] | undefined}
+                      theme={chartColors}
+                      renderValue={renderAreaTooltip}
+                    />
+                  )}
+                />
+                {metric === "totalCost" ? (
+                  <>
+                    <Legend wrapperStyle={{ color: chartColors.axisText }} />
+                    <Area
+                      type="monotone"
+                      dataKey="chartCumulativeSuccessCost"
+                      name={costSeriesNames.success}
+                      stackId="cost"
+                      stroke={chartColors.success}
+                      fill={chartColors.successFill}
+                      fillOpacity={1}
+                      strokeWidth={2}
+                      isAnimationActive={animate}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="chartCumulativeNonSuccessCost"
+                      name={costSeriesNames.nonSuccess}
+                      stackId="cost"
+                      stroke={chartColors.failure}
+                      fill={chartColors.failureFill}
+                      fillOpacity={1}
+                      strokeWidth={2}
+                      isAnimationActive={animate}
+                    />
+                  </>
+                ) : (
+                  <Area
+                    type="monotone"
+                    dataKey="chartCumulativeTokens"
+                    name={areaSeriesName}
+                    stroke={chartColors.accent}
+                    fill={chartColors.accentFill}
+                    fillOpacity={1}
+                    strokeWidth={2}
+                    isAnimationActive={animate}
+                  />
+                )}
+              </AreaChart>
+            )}
           </ResponsiveContainer>
         </div>
       </div>

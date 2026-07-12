@@ -1,5 +1,4 @@
 use super::*;
-use anyhow::{anyhow, bail};
 use sqlx::FromRow;
 use tracing::warn;
 
@@ -354,15 +353,14 @@ pub(crate) async fn cleanup_expired_archive_batches(
         {
             continue;
         }
-        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
-            if candidate
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && candidate
                 .coverage_end_at
                 .as_deref()
                 .map(|coverage_end_at| coverage_end_at >= invocation_archive_cutoff.as_str())
                 .unwrap_or(true)
-            {
-                continue;
-            }
+        {
+            continue;
         }
         eligible_candidates.push(candidate);
     }
@@ -879,49 +877,6 @@ pub(crate) fn historical_rollup_materialization_budget_exhausted(
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{thread, time::Duration};
-
-    #[test]
-    fn historical_rollup_materialization_remaining_budget_clamps_to_zero_when_elapsed() {
-        let started_at = Instant::now();
-        thread::sleep(Duration::from_millis(10));
-
-        let remaining = historical_rollup_materialization_remaining_budget(
-            started_at,
-            Some(Duration::from_millis(1)),
-        );
-
-        assert_eq!(remaining, Some(Duration::ZERO));
-    }
-
-    #[test]
-    fn historical_rollup_materialization_remaining_budget_preserves_unbounded_mode() {
-        assert_eq!(
-            historical_rollup_materialization_remaining_budget(Instant::now(), None),
-            None
-        );
-    }
-
-    #[test]
-    fn historical_rollup_materialization_budget_exhausted_only_when_bounded_budget_is_zero() {
-        assert!(historical_rollup_materialization_budget_exhausted(
-            Instant::now(),
-            Some(Duration::ZERO),
-        ));
-        assert!(!historical_rollup_materialization_budget_exhausted(
-            Instant::now(),
-            None,
-        ));
-        assert!(!historical_rollup_materialization_budget_exhausted(
-            Instant::now(),
-            Some(Duration::from_secs(1)),
-        ));
-    }
-}
-
 pub(crate) async fn prune_archive_batches(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -1047,4 +1002,47 @@ pub(crate) async fn compact_old_quota_snapshots(
     }
 
     Ok((rows_archived, archive_batches))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{thread, time::Duration};
+
+    #[test]
+    fn historical_rollup_materialization_remaining_budget_clamps_to_zero_when_elapsed() {
+        let started_at = Instant::now();
+        thread::sleep(Duration::from_millis(10));
+
+        let remaining = historical_rollup_materialization_remaining_budget(
+            started_at,
+            Some(Duration::from_millis(1)),
+        );
+
+        assert_eq!(remaining, Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn historical_rollup_materialization_remaining_budget_preserves_unbounded_mode() {
+        assert_eq!(
+            historical_rollup_materialization_remaining_budget(Instant::now(), None),
+            None
+        );
+    }
+
+    #[test]
+    fn historical_rollup_materialization_budget_exhausted_only_when_bounded_budget_is_zero() {
+        assert!(historical_rollup_materialization_budget_exhausted(
+            Instant::now(),
+            Some(Duration::ZERO),
+        ));
+        assert!(!historical_rollup_materialization_budget_exhausted(
+            Instant::now(),
+            None,
+        ));
+        assert!(!historical_rollup_materialization_budget_exhausted(
+            Instant::now(),
+            Some(Duration::from_secs(1)),
+        ));
+    }
 }

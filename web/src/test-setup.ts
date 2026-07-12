@@ -1,5 +1,5 @@
-import React from 'react'
-import { vi } from 'vitest'
+import React from "react";
+import { vi } from "vitest";
 
 class ResizeObserverMock {
   observe() {}
@@ -9,34 +9,34 @@ class ResizeObserverMock {
   disconnect() {}
 }
 
-if (!('ResizeObserver' in globalThis)) {
-  Object.defineProperty(globalThis, 'ResizeObserver', {
+if (!("ResizeObserver" in globalThis)) {
+  Object.defineProperty(globalThis, "ResizeObserver", {
     configurable: true,
     writable: true,
     value: ResizeObserverMock,
-  })
+  });
 }
 
-Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
   configurable: true,
   writable: true,
   value: true,
-})
+});
 
 // Iconify schedules async DOM updates that outlive jsdom teardown in Vitest.
 // Replace it with a stable test double so UI tests stay deterministic.
-vi.mock('@iconify/react', () => {
+vi.mock("@iconify/react", () => {
   function Icon({
     icon,
     ...props
   }: {
-    icon?: string
+    icon?: string;
   } & React.HTMLAttributes<HTMLSpanElement>) {
-    return React.createElement('span', {
+    return React.createElement("span", {
       ...props,
-      'data-icon': icon ?? '',
-    })
+      "data-icon": icon ?? "",
+    });
   }
 
-  return { Icon }
-})
+  return { Icon };
+});

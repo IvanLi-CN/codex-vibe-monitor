@@ -1,24 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS,
   createForwardProxyNodesLatencyTestEventSource,
   createOauthMailboxSession,
+  DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS,
+  fetchDashboardActivity,
+  fetchForwardProxyBindingNodes,
+  fetchForwardProxyLiveStats,
+  fetchForwardProxyTimeseries,
   fetchInvocationRecordLocation,
   fetchInvocationRecords,
-  fetchForwardProxyLiveStats,
-  fetchForwardProxyBindingNodes,
-  fetchForwardProxyTimeseries,
   fetchParallelWorkStats,
   fetchParallelWorkStatsConditional,
   fetchPromptCacheConversationBinding,
   fetchPromptCacheConversations,
-  fetchTimeseries,
   fetchSettings,
   fetchSummary,
-  fetchDashboardActivity,
-  fetchUpstreamAccountDetail,
+  fetchTimeseries,
   fetchUpstreamAccountActivity,
   fetchUpstreamAccountAttempts,
+  fetchUpstreamAccountDetail,
   fetchUpstreamAccounts,
   fetchUpstreamAccountWindowUsage,
   fetchUpstreamStickyConversations,
@@ -74,9 +74,7 @@ describe("validateForwardProxyCandidate timeout split", () => {
       value: "https://example.com/subscription",
     });
 
-    const assertion = expect(pending).rejects.toThrow(
-      "validation request timed out after 60s",
-    );
+    const assertion = expect(pending).rejects.toThrow("validation request timed out after 60s");
     await vi.advanceTimersByTimeAsync(60_000);
     await assertion;
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -92,9 +90,7 @@ describe("validateForwardProxyCandidate timeout split", () => {
       value: "socks5://127.0.0.1:1080",
     });
 
-    const assertion = expect(pending).rejects.toThrow(
-      "validation request timed out after 5s",
-    );
+    const assertion = expect(pending).rejects.toThrow("validation request timed out after 5s");
     await vi.advanceTimersByTimeAsync(5_000);
     await assertion;
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -325,10 +321,10 @@ describe("upstream account attempts", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         requestedUrls.push(String(input));
-        return new Response(
-          JSON.stringify({ items: [], total: 0, page: 1, pageSize: 25 }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
+        return new Response(JSON.stringify({ items: [], total: 0, page: 1, pageSize: 25 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }) as typeof fetch,
     );
 
@@ -524,10 +520,7 @@ describe("forward proxy manual latency API", () => {
       }
       close() {}
     }
-    vi.stubGlobal(
-      "EventSource",
-      MockEventSource as unknown as typeof EventSource,
-    );
+    vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
 
     createForwardProxyNodesLatencyTestEventSource(["node-a", "node-b"]);
     const url = new URL(MockEventSource.latestUrl, "http://localhost");
@@ -826,10 +819,7 @@ describe("fetchParallelWorkStats", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as
-      | RequestInfo
-      | URL
-      | undefined;
+    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as RequestInfo | URL | undefined;
     expect(firstArg).toBeDefined();
     expect(String(firstArg)).toBe(
       "/api/stats/parallel-work?range=7d&bucket=1h&timeZone=Asia%2FKolkata",
@@ -882,14 +872,9 @@ describe("fetchParallelWorkStats", () => {
     await fetchParallelWorkStats({ timeZone: "Australia/Lord_Howe" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as
-      | RequestInfo
-      | URL
-      | undefined;
+    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as RequestInfo | URL | undefined;
     expect(firstArg).toBeDefined();
-    expect(String(firstArg)).toBe(
-      "/api/stats/parallel-work?timeZone=Australia%2FLord_Howe",
-    );
+    expect(String(firstArg)).toBe("/api/stats/parallel-work?timeZone=Australia%2FLord_Howe");
   });
 
   it("adds upstreamAccountId to parallel-work query parameters", async () => {
@@ -954,10 +939,7 @@ describe("fetchParallelWorkStats", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as
-      | RequestInfo
-      | URL
-      | undefined;
+    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as RequestInfo | URL | undefined;
     expect(firstArg).toBeDefined();
     expect(String(firstArg)).toBe(
       "/api/stats/parallel-work?range=today&bucket=1m&upstreamAccountId=42&timeZone=UTC",
@@ -1162,16 +1144,14 @@ describe("fetchSummary", () => {
   });
 
   it("forwards request signal to fetch for caller-managed cancellation", async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) => {
-        void _input;
-        void _init;
-        return new Response(JSON.stringify({}), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      },
-    );
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      void _input;
+      void _init;
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
     const controller = new AbortController();
@@ -1291,9 +1271,7 @@ describe("createOauthMailboxSession", () => {
       }) as typeof fetch,
     );
 
-    await expect(
-      createOauthMailboxSession({ emailAddress: "" }),
-    ).resolves.toEqual({
+    await expect(createOauthMailboxSession({ emailAddress: "" })).resolves.toEqual({
       supported: false,
       emailAddress: "",
       reason: "invalid_format",
@@ -1504,11 +1482,7 @@ describe("settings normalization", () => {
               {
                 groupName: "production",
                 note: "Premium traffic",
-                boundProxyKeys: [
-                  "fpb_jp_edge_01",
-                  "fpb_sg_edge_02",
-                  "fpb_jp_edge_01",
-                ],
+                boundProxyKeys: ["fpb_jp_edge_01", "fpb_sg_edge_02", "fpb_jp_edge_01"],
                 upstream429RetryEnabled: true,
                 upstream429MaxRetries: 3,
                 singleAccountRotationEnabled: true,
@@ -1569,17 +1543,13 @@ describe("settings normalization", () => {
     expect(response.groups[0].upstream429MaxRetries).toBe(3);
     expect(response.groups[0].singleAccountRotationEnabled).toBe(true);
     expect(response.groups[0].routingRule?.priorityTier).toBe("primary");
-    expect(response.groups[0].routingRule?.fastModeRewriteMode).toBe(
-      "force_add",
-    );
+    expect(response.groups[0].routingRule?.fastModeRewriteMode).toBe("force_add");
     expect(response.groups[0].routingRule?.concurrencyLimit).toBe(4);
     expect(response.groups[0].routingRule?.upstream429RetryEnabled).toBe(true);
     expect(response.groups[0].routingRule?.upstream429MaxRetries).toBe(2);
     expect(response.forwardProxyNodes ?? []).toHaveLength(2);
     expect(response.forwardProxyNodes?.[0]?.protocolLabel).toBe("HTTP");
-    expect(response.forwardProxyNodes?.[0]?.aliasKeys).toEqual([
-      "fpn_jp_edge_runtime",
-    ]);
+    expect(response.forwardProxyNodes?.[0]?.aliasKeys).toEqual(["fpn_jp_edge_runtime"]);
     expect(response.forwardProxyNodes?.[1]?.selectable).toBe(false);
     expect(response.forwardProxyNodes?.[1]?.protocolLabel).toBe("UNKNOWN");
     expect(response.forwardProxyNodes?.[1]?.displayName).toBe("历史东京中继");
@@ -1765,8 +1735,7 @@ describe("account pool frontend API helpers", () => {
       apiKeyConfigured: true,
       maskedApiKey: "pool-live••••••c0de",
       maintenance: {
-        primarySyncIntervalSecs:
-          DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.primarySyncIntervalSecs,
+        primarySyncIntervalSecs: DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.primarySyncIntervalSecs,
         secondarySyncIntervalSecs:
           DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.secondarySyncIntervalSecs,
         priorityAvailableAccountCap:
@@ -1876,8 +1845,7 @@ describe("account pool frontend API helpers", () => {
                 compactSupport: {
                   status: "unsupported",
                   observedAt: "2026-03-16T02:08:00.000Z",
-                  reason:
-                    "No available channel for compact model gpt-5.4-openai-compact",
+                  reason: "No available channel for compact model gpt-5.4-openai-compact",
                 },
               },
             ],
@@ -1993,9 +1961,7 @@ describe("account pool frontend API helpers", () => {
 
     await fetchUpstreamAccountDetail(9, { includeRecentActions: true });
 
-    expect(requestedUrl).toContain(
-      "/api/pool/upstream-accounts/9?includeRecentActions=true",
-    );
+    expect(requestedUrl).toContain("/api/pool/upstream-accounts/9?includeRecentActions=true");
   });
 
   it("normalizes tag fast mode values from upstream account roster payloads", async () => {
@@ -2050,18 +2016,10 @@ describe("account pool frontend API helpers", () => {
 
     const response = await fetchUpstreamAccounts();
 
-    expect(response.items[0]?.tags?.[0]?.routingRule.fastModeRewriteMode).toBe(
-      "force_add",
-    );
-    expect(response.items[0]?.effectiveRoutingRule?.fastModeRewriteMode).toBe(
-      "force_remove",
-    );
-    expect(
-      response.items[0]?.effectiveRoutingRule?.upstream429RetryEnabled,
-    ).toBe(true);
-    expect(response.items[0]?.effectiveRoutingRule?.upstream429MaxRetries).toBe(
-      5,
-    );
+    expect(response.items[0]?.tags?.[0]?.routingRule.fastModeRewriteMode).toBe("force_add");
+    expect(response.items[0]?.effectiveRoutingRule?.fastModeRewriteMode).toBe("force_remove");
+    expect(response.items[0]?.effectiveRoutingRule?.upstream429RetryEnabled).toBe(true);
+    expect(response.items[0]?.effectiveRoutingRule?.upstream429MaxRetries).toBe(5);
   });
 
   it("falls back to keep_original when upstream account detail fast mode is missing or invalid", async () => {
@@ -2105,12 +2063,8 @@ describe("account pool frontend API helpers", () => {
 
     const response = await fetchUpstreamAccountDetail(9);
 
-    expect(response.tags[0]?.routingRule.fastModeRewriteMode).toBe(
-      "keep_original",
-    );
-    expect(response.effectiveRoutingRule?.fastModeRewriteMode).toBe(
-      "keep_original",
-    );
+    expect(response.tags[0]?.routingRule.fastModeRewriteMode).toBe("keep_original");
+    expect(response.effectiveRoutingRule?.fastModeRewriteMode).toBe("keep_original");
   });
 
   it("normalizes window actual usage from upstream account roster payloads", async () => {
@@ -2190,46 +2144,42 @@ describe("account pool frontend API helpers", () => {
   });
 
   it("serializes window-usage batch requests and normalizes the response", async () => {
-    const fetchMock = vi.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        expect(String(input)).toContain(
-          "/api/pool/upstream-accounts/window-usage",
-        );
-        expect(init?.method).toBe("POST");
-        expect(init?.body).toBe(JSON.stringify({ accountIds: [3, 7] }));
-        return new Response(
-          JSON.stringify({
-            items: [
-              {
-                accountId: 3,
-                primaryActualUsage: {
-                  requestCount: 11,
-                  totalTokens: 64120,
-                  totalCost: 0.6123,
-                  inputTokens: 38200,
-                  outputTokens: 21120,
-                  cacheInputTokens: 4800,
-                },
-                secondaryActualUsage: null,
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toContain("/api/pool/upstream-accounts/window-usage");
+      expect(init?.method).toBe("POST");
+      expect(init?.body).toBe(JSON.stringify({ accountIds: [3, 7] }));
+      return new Response(
+        JSON.stringify({
+          items: [
+            {
+              accountId: 3,
+              primaryActualUsage: {
+                requestCount: 11,
+                totalTokens: 64120,
+                totalCost: 0.6123,
+                inputTokens: 38200,
+                outputTokens: 21120,
+                cacheInputTokens: 4800,
               },
-              {
-                accountId: 7,
-                primaryActualUsage: null,
-                secondaryActualUsage: {
-                  requestCount: 52,
-                  totalTokens: 201440,
-                  totalCost: 1.8821,
-                  inputTokens: 110200,
-                  outputTokens: 78240,
-                  cacheInputTokens: 13000,
-                },
+              secondaryActualUsage: null,
+            },
+            {
+              accountId: 7,
+              primaryActualUsage: null,
+              secondaryActualUsage: {
+                requestCount: 52,
+                totalTokens: 201440,
+                totalCost: 1.8821,
+                inputTokens: 110200,
+                outputTokens: 78240,
+                cacheInputTokens: 13000,
               },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      },
-    );
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
     const response = await fetchUpstreamAccountWindowUsage([3, 7]);
@@ -2494,39 +2444,37 @@ describe("account pool frontend API helpers", () => {
   });
 
   it("saves pool routing settings through the dedicated endpoint", async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, init?: RequestInit) => {
-        expect(String(_input)).toContain("/api/pool/routing-settings");
-        expect(init?.method).toBe("PUT");
-        expect(JSON.parse(String(init?.body))).toEqual({
-          apiKey: "pool-secret",
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(_input)).toContain("/api/pool/routing-settings");
+      expect(init?.method).toBe("PUT");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        apiKey: "pool-secret",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 180,
+          compactFirstByteTimeoutSecs: 420,
+          responsesStreamTimeoutSecs: 360,
+          compactStreamTimeoutSecs: 540,
+        },
+      });
+      return new Response(
+        JSON.stringify({
+          apiKeyConfigured: true,
+          maskedApiKey: "pool-live••••••cret",
+          maintenance: {
+            primarySyncIntervalSecs: 300,
+            secondarySyncIntervalSecs: 1800,
+            priorityAvailableAccountCap: 100,
+          },
           timeouts: {
             responsesFirstByteTimeoutSecs: 180,
             compactFirstByteTimeoutSecs: 420,
             responsesStreamTimeoutSecs: 360,
             compactStreamTimeoutSecs: 540,
           },
-        });
-        return new Response(
-          JSON.stringify({
-            apiKeyConfigured: true,
-            maskedApiKey: "pool-live••••••cret",
-            maintenance: {
-              primarySyncIntervalSecs: 300,
-              secondarySyncIntervalSecs: 1800,
-              priorityAvailableAccountCap: 100,
-            },
-            timeouts: {
-              responsesFirstByteTimeoutSecs: 180,
-              compactFirstByteTimeoutSecs: 420,
-              responsesStreamTimeoutSecs: 360,
-              compactStreamTimeoutSecs: 540,
-            },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      },
-    );
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
     const response = await updatePoolRoutingSettings({
@@ -2559,9 +2507,7 @@ describe("account pool frontend API helpers", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
-        expect(String(input)).toContain(
-          "/api/pool/upstream-accounts/101/sticky-keys?limit=20",
-        );
+        expect(String(input)).toContain("/api/pool/upstream-accounts/101/sticky-keys?limit=20");
         return new Response(
           JSON.stringify({
             rangeStart: "2026-03-10T00:00:00Z",
@@ -2643,22 +2589,14 @@ describe("account pool frontend API helpers", () => {
     expect(response.selectedActivityHours).toBeNull();
     expect(response.conversations).toHaveLength(1);
     expect(response.conversations[0]?.stickyKey).toBe("sticky-001");
-    expect(response.conversations[0]?.recentInvocations[0]?.invokeId).toBe(
-      "sticky-invoke-101",
-    );
-    expect(
-      response.conversations[0]?.last24hRequests[0]?.cumulativeTokens,
-    ).toBe(30);
-    expect(response.conversations[0]?.last24hRequests[0]?.outcome).toBe(
-      "success",
-    );
+    expect(response.conversations[0]?.recentInvocations[0]?.invokeId).toBe("sticky-invoke-101");
+    expect(response.conversations[0]?.last24hRequests[0]?.cumulativeTokens).toBe(30);
+    expect(response.conversations[0]?.last24hRequests[0]?.outcome).toBe("success");
   });
 
   it("sends activity-window prompt cache conversation queries and normalizes metadata", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      expect(String(input)).toContain(
-        "/api/stats/prompt-cache-conversations?activityHours=3",
-      );
+      expect(String(input)).toContain("/api/stats/prompt-cache-conversations?activityHours=3");
       return new Response(
         JSON.stringify({
           rangeStart: "2026-03-10T21:00:00Z",
@@ -2748,94 +2686,44 @@ describe("account pool frontend API helpers", () => {
     expect(response.implicitFilter.kind).toBe("cappedTo50");
     expect(response.implicitFilter.filteredCount).toBe(7);
     expect(response.conversations[0]?.promptCacheKey).toBe("pck-001");
-    expect(
-      response.conversations[0]?.upstreamAccounts[0]?.upstreamAccountName,
-    ).toBe("Pool Alpha");
-    expect(response.conversations[0]?.recentInvocations[0]?.invokeId).toBe(
-      "invoke-17",
+    expect(response.conversations[0]?.upstreamAccounts[0]?.upstreamAccountName).toBe("Pool Alpha");
+    expect(response.conversations[0]?.recentInvocations[0]?.invokeId).toBe("invoke-17");
+    expect(response.conversations[0]?.recentInvocations[0]?.failureClass).toBe("none");
+    expect(response.conversations[0]?.recentInvocations[0]?.routeMode).toBe("pool");
+    expect(response.conversations[0]?.recentInvocations[0]?.endpoint).toBe("/v1/responses");
+    expect(response.conversations[0]?.recentInvocations[0]?.upstreamAccountPlanType).toBe(
+      "enterprise",
     );
-    expect(response.conversations[0]?.recentInvocations[0]?.failureClass).toBe(
-      "none",
-    );
-    expect(response.conversations[0]?.recentInvocations[0]?.routeMode).toBe(
-      "pool",
-    );
-    expect(response.conversations[0]?.recentInvocations[0]?.endpoint).toBe(
-      "/v1/responses",
-    );
-    expect(
-      response.conversations[0]?.recentInvocations[0]?.upstreamAccountPlanType,
-    ).toBe("enterprise");
-    expect(response.conversations[0]?.recentInvocations[0]?.source).toBe(
-      "proxy",
-    );
-    expect(response.conversations[0]?.recentInvocations[0]?.inputTokens).toBe(
-      18,
-    );
-    expect(response.conversations[0]?.recentInvocations[0]?.outputTokens).toBe(
-      12,
-    );
-    expect(
-      response.conversations[0]?.recentInvocations[0]?.cacheInputTokens,
-    ).toBe(6);
-    expect(
-      response.conversations[0]?.recentInvocations[0]?.reasoningTokens,
-    ).toBe(3);
-    expect(
-      response.conversations[0]?.recentInvocations[0]?.reasoningEffort,
-    ).toBe("high");
+    expect(response.conversations[0]?.recentInvocations[0]?.source).toBe("proxy");
+    expect(response.conversations[0]?.recentInvocations[0]?.inputTokens).toBe(18);
+    expect(response.conversations[0]?.recentInvocations[0]?.outputTokens).toBe(12);
+    expect(response.conversations[0]?.recentInvocations[0]?.cacheInputTokens).toBe(6);
+    expect(response.conversations[0]?.recentInvocations[0]?.reasoningTokens).toBe(3);
+    expect(response.conversations[0]?.recentInvocations[0]?.reasoningEffort).toBe("high");
     expect(response.conversations[0]?.recentInvocations[0]?.failureKind).toBe(
       "upstream_response_failed",
     );
-    expect(
-      response.conversations[0]?.recentInvocations[0]?.downstreamStatusCode,
-    ).toBe(502);
-    expect(
-      response.conversations[0]?.recentInvocations[0]?.downstreamErrorMessage,
-    ).toBe(
+    expect(response.conversations[0]?.recentInvocations[0]?.downstreamStatusCode).toBe(502);
+    expect(response.conversations[0]?.recentInvocations[0]?.downstreamErrorMessage).toBe(
       "pool upstream responded with 502: failed to contact oauth codex upstream",
     );
-    expect(response.conversations[0]?.recentInvocations[0]?.isActionable).toBe(
-      true,
-    );
-    expect(
-      response.conversations[0]?.recentInvocations[0]?.responseContentEncoding,
-    ).toBe("br");
-    expect(
-      response.conversations[0]?.recentInvocations[0]?.requestedServiceTier,
-    ).toBe("flex");
-    expect(response.conversations[0]?.recentInvocations[0]?.serviceTier).toBe(
-      "scale",
-    );
-    expect(response.conversations[0]?.recentInvocations[0]?.tReqReadMs).toBe(
-      10,
-    );
-    expect(response.conversations[0]?.recentInvocations[0]?.tReqParseMs).toBe(
-      11,
-    );
-    expect(
-      response.conversations[0]?.recentInvocations[0]?.tUpstreamConnectMs,
-    ).toBe(12);
-    expect(
-      response.conversations[0]?.recentInvocations[0]?.tUpstreamTtfbMs,
-    ).toBe(13);
-    expect(
-      response.conversations[0]?.recentInvocations[0]?.tUpstreamStreamMs,
-    ).toBe(14);
-    expect(response.conversations[0]?.recentInvocations[0]?.tRespParseMs).toBe(
-      15,
-    );
-    expect(response.conversations[0]?.recentInvocations[0]?.tPersistMs).toBe(
-      16,
-    );
+    expect(response.conversations[0]?.recentInvocations[0]?.isActionable).toBe(true);
+    expect(response.conversations[0]?.recentInvocations[0]?.responseContentEncoding).toBe("br");
+    expect(response.conversations[0]?.recentInvocations[0]?.requestedServiceTier).toBe("flex");
+    expect(response.conversations[0]?.recentInvocations[0]?.serviceTier).toBe("scale");
+    expect(response.conversations[0]?.recentInvocations[0]?.tReqReadMs).toBe(10);
+    expect(response.conversations[0]?.recentInvocations[0]?.tReqParseMs).toBe(11);
+    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamConnectMs).toBe(12);
+    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamTtfbMs).toBe(13);
+    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamStreamMs).toBe(14);
+    expect(response.conversations[0]?.recentInvocations[0]?.tRespParseMs).toBe(15);
+    expect(response.conversations[0]?.recentInvocations[0]?.tPersistMs).toBe(16);
     expect(response.conversations[0]?.recentInvocations[0]?.tTotalMs).toBe(91);
   });
 
   it("supports the precise 5-minute working-conversation query contract", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      expect(String(input)).toContain(
-        "/api/stats/prompt-cache-conversations?activityMinutes=5",
-      );
+      expect(String(input)).toContain("/api/stats/prompt-cache-conversations?activityMinutes=5");
       return new Response(
         JSON.stringify({
           rangeStart: "2026-03-10T23:55:00Z",
@@ -2866,60 +2754,53 @@ describe("account pool frontend API helpers", () => {
   });
 
   it("reads and updates prompt-cache conversation bindings by encoded key", async () => {
-    const fetchMock = vi.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        expect(url).toContain(
-          "/api/stats/prompt-cache-conversation-bindings/pck%2Fwith%20space",
-        );
-        if (init?.method === "PATCH") {
-          expect(JSON.parse(String(init.body))).toEqual({
-            bindingKind: "upstreamAccount",
-            upstreamAccountId: 42,
-          });
-          return new Response(
-            JSON.stringify({
-              promptCacheKey: "pck/with space",
-              bindingKind: "upstreamAccount",
-              groupName: null,
-              upstreamAccountId: 42,
-              upstreamAccountName: "Pool Alpha",
-              hasEncryptedSessionOwner: true,
-              encryptedOwnerAccountId: 17,
-              encryptedOwnerAccountName: "Owner One",
-              encryptedOwnerGroupName: "prod",
-              updatedAt: "2026-03-10T23:59:00Z",
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
-        }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      expect(url).toContain("/api/stats/prompt-cache-conversation-bindings/pck%2Fwith%20space");
+      if (init?.method === "PATCH") {
+        expect(JSON.parse(String(init.body))).toEqual({
+          bindingKind: "upstreamAccount",
+          upstreamAccountId: 42,
+        });
         return new Response(
           JSON.stringify({
             promptCacheKey: "pck/with space",
-            bindingKind: "none",
+            bindingKind: "upstreamAccount",
             groupName: null,
-            upstreamAccountId: null,
-            upstreamAccountName: null,
-            hasEncryptedSessionOwner: false,
-            encryptedOwnerAccountId: null,
-            encryptedOwnerAccountName: null,
-            encryptedOwnerGroupName: null,
-            updatedAt: null,
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+            hasEncryptedSessionOwner: true,
+            encryptedOwnerAccountId: 17,
+            encryptedOwnerAccountName: "Owner One",
+            encryptedOwnerGroupName: "prod",
+            updatedAt: "2026-03-10T23:59:00Z",
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
-      },
-    );
+      }
+      return new Response(
+        JSON.stringify({
+          promptCacheKey: "pck/with space",
+          bindingKind: "none",
+          groupName: null,
+          upstreamAccountId: null,
+          upstreamAccountName: null,
+          hasEncryptedSessionOwner: false,
+          encryptedOwnerAccountId: null,
+          encryptedOwnerAccountName: null,
+          encryptedOwnerGroupName: null,
+          updatedAt: null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
     const initial = await fetchPromptCacheConversationBinding("pck/with space");
-    const updated = await updatePromptCacheConversationBinding(
-      "pck/with space",
-      {
-        bindingKind: "upstreamAccount",
-        upstreamAccountId: 42,
-      },
-    );
+    const updated = await updatePromptCacheConversationBinding("pck/with space", {
+      bindingKind: "upstreamAccount",
+      upstreamAccountId: 42,
+    });
 
     expect(initial.bindingKind).toBe("none");
     expect(initial.hasEncryptedSessionOwner).toBe(false);

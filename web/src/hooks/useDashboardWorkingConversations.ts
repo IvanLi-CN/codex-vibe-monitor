@@ -1,17 +1,14 @@
+import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type MutableRefObject,
-} from "react";
-import {
-  fetchPromptCacheConversationsPage,
   type ApiInvocation,
+  fetchPromptCacheConversationsPage,
   type PromptCacheConversation,
   type PromptCacheConversationsResponse,
 } from "../lib/api";
+import {
+  publishWorkingConversationPatchMetrics,
+  recordWorkingConversationHeadFetch,
+} from "../lib/dashboardPerformanceDiagnostics";
 import {
   DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
   DASHBOARD_WORKING_CONVERSATIONS_SELECTION,
@@ -19,10 +16,6 @@ import {
 } from "../lib/dashboardWorkingConversations";
 import { buildPromptCachePreviewFromInvocation } from "../lib/promptCacheLive";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
-import {
-  publishWorkingConversationPatchMetrics,
-  recordWorkingConversationHeadFetch,
-} from "../lib/dashboardPerformanceDiagnostics";
 
 export const DASHBOARD_WORKING_CONVERSATIONS_VISIBLE_PATCH_BATCH_MS = 1_000;
 export const DASHBOARD_WORKING_CONVERSATIONS_REFRESH_THROTTLE_MS = 5_000;
@@ -72,10 +65,7 @@ function clampRecentPreviewLimit(value: number) {
   }
   return Math.min(
     DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
-    Math.max(
-      DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
-      Math.trunc(value),
-    ),
+    Math.max(DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN, Math.trunc(value)),
   );
 }
 
@@ -94,10 +84,7 @@ export function resolveDashboardWorkingConversationsRecentPreviewLimit(
       if (ageMs < 0 || ageMs > WORKING_SET_WINDOW_MS) continue;
       recentInFlightCount += 1;
     }
-    maxRecentInFlightCount = Math.max(
-      maxRecentInFlightCount,
-      recentInFlightCount,
-    );
+    maxRecentInFlightCount = Math.max(maxRecentInFlightCount, recentInFlightCount);
   }
   return clampRecentPreviewLimit(maxRecentInFlightCount);
 }
@@ -118,19 +105,11 @@ function resolveConversationSortAnchor(
 function compareConversationsByVisibleSetOrder(
   left: Pick<
     PromptCacheConversation,
-    | "createdAt"
-    | "promptCacheKey"
-    | "lastTerminalAt"
-    | "lastInFlightAt"
-    | "lastActivityAt"
+    "createdAt" | "promptCacheKey" | "lastTerminalAt" | "lastInFlightAt" | "lastActivityAt"
   >,
   right: Pick<
     PromptCacheConversation,
-    | "createdAt"
-    | "promptCacheKey"
-    | "lastTerminalAt"
-    | "lastInFlightAt"
-    | "lastActivityAt"
+    "createdAt" | "promptCacheKey" | "lastTerminalAt" | "lastInFlightAt" | "lastActivityAt"
   >,
 ) {
   const leftSortAnchor = resolveConversationSortAnchor(left);
@@ -151,16 +130,10 @@ function dedupeAndSortConversations(conversations: PromptCacheConversation[]) {
       deduped.set(conversation.promptCacheKey, conversation);
     }
   }
-  return Array.from(deduped.values()).sort(
-    compareConversationsByVisibleSetOrder,
-  );
+  return Array.from(deduped.values()).sort(compareConversationsByVisibleSetOrder);
 }
 
-function getPreviewStableKey(preview: {
-  invokeId: string;
-  occurredAt: string;
-  id?: number;
-}) {
+function getPreviewStableKey(preview: { invokeId: string; occurredAt: string; id?: number }) {
   const invokeId = preview.invokeId.trim();
   if (invokeId) return invokeId;
   return `${preview.occurredAt}::${preview.id ?? ""}`;
@@ -172,10 +145,7 @@ function buildRecentInvocations(
   recentPreviewLimit: number,
 ) {
   const nextPreview = buildPromptCachePreviewFromInvocation(record);
-  const nextByKey = new Map<
-    string,
-    PromptCacheConversation["recentInvocations"][number]
-  >();
+  const nextByKey = new Map<string, PromptCacheConversation["recentInvocations"][number]>();
   for (const preview of [nextPreview, ...previews]) {
     const key = getPreviewStableKey(preview);
     if (!nextByKey.has(key)) {
@@ -186,17 +156,12 @@ function buildRecentInvocations(
     .sort((left, right) => {
       const occurredCompare = right.occurredAt.localeCompare(left.occurredAt);
       if (occurredCompare !== 0) return occurredCompare;
-      return (
-        (right.id ?? Number.MIN_SAFE_INTEGER) -
-        (left.id ?? Number.MIN_SAFE_INTEGER)
-      );
+      return (right.id ?? Number.MIN_SAFE_INTEGER) - (left.id ?? Number.MIN_SAFE_INTEGER);
     })
     .slice(0, clampRecentPreviewLimit(recentPreviewLimit));
 }
 
-function resolveVisibleLastInFlightAt(
-  previews: PromptCacheConversation["recentInvocations"],
-) {
+function resolveVisibleLastInFlightAt(previews: PromptCacheConversation["recentInvocations"]) {
   return (
     previews
       .filter((item) => isInFlightStatus(item.status))
@@ -232,10 +197,7 @@ function resolveWorkingSetReferenceMs(
 }
 
 function publishPatchDiagnostics(
-  patchedPostSnapshotInvocations: Map<
-    string,
-    Map<string, { totalTokens: number; cost: number }>
-  >,
+  patchedPostSnapshotInvocations: Map<string, Map<string, { totalTokens: number; cost: number }>>,
 ) {
   publishWorkingConversationPatchMetrics(patchedPostSnapshotInvocations);
 }
@@ -263,8 +225,7 @@ function getOrCreatePatchedConversationInvocations(
   >,
   promptCacheKey: string,
 ) {
-  const existing =
-    patchedPostSnapshotInvocationsRef.current.get(promptCacheKey) ?? null;
+  const existing = patchedPostSnapshotInvocationsRef.current.get(promptCacheKey) ?? null;
   if (existing) {
     return existing;
   }
@@ -274,10 +235,7 @@ function getOrCreatePatchedConversationInvocations(
 }
 
 function prunePatchedPostSnapshotInvocations(
-  patchedPostSnapshotInvocations: Map<
-    string,
-    Map<string, { totalTokens: number; cost: number }>
-  >,
+  patchedPostSnapshotInvocations: Map<string, Map<string, { totalTokens: number; cost: number }>>,
   {
     retainedKeys,
     refreshedKeys,
@@ -333,10 +291,8 @@ function patchConversationWithRecord(
   const previewTotalTokens = Math.max(0, preview.totalTokens ?? 0);
   const existingTotalTokens = Math.max(0, existingPreview?.totalTokens ?? 0);
   const previewCost = typeof preview.cost === "number" ? preview.cost : 0;
-  const existingCost =
-    typeof existingPreview?.cost === "number" ? existingPreview.cost : 0;
-  const existingPatched =
-    patchedPostSnapshotInvocations.get(record.invokeId) ?? null;
+  const existingCost = typeof existingPreview?.cost === "number" ? existingPreview.cost : 0;
+  const existingPatched = patchedPostSnapshotInvocations.get(record.invokeId) ?? null;
   const isWithinSnapshotRecord = isRecordWithinSnapshotBoundary(record, snapshotAt);
   const isPostSnapshotRecord = snapshotAt != null && !isWithinSnapshotRecord;
   const isVisibleAfterPatch = nextRecentInvocations.some(
@@ -377,16 +333,13 @@ function patchConversationWithRecord(
       cost: previewCost,
     });
   }
-  const nextVisibleLastInFlightAt = resolveVisibleLastInFlightAt(
-    nextRecentInvocations,
-  );
+  const nextVisibleLastInFlightAt = resolveVisibleLastInFlightAt(nextRecentInvocations);
   const currentHiddenLastInFlightAt = conversation.lastInFlightAt ?? null;
   const normalizedRecordOccurredAt = record.occurredAt?.trim() ?? "";
   const shouldPreserveHiddenInFlightAnchor =
     nextVisibleLastInFlightAt == null &&
     currentHiddenLastInFlightAt != null &&
-    (isInFlightStatus(record.status) ||
-      normalizedRecordOccurredAt !== currentHiddenLastInFlightAt);
+    (isInFlightStatus(record.status) || normalizedRecordOccurredAt !== currentHiddenLastInFlightAt);
   const lastInFlightAt = shouldPreserveHiddenInFlightAnchor
     ? currentHiddenLastInFlightAt
     : (nextVisibleLastInFlightAt ?? null);
@@ -424,9 +377,7 @@ function mergeFreshSnapshotKeysState(
 ): FreshSnapshotKeysState {
   const normalizedSnapshotAt = snapshotAt ?? null;
   const nextKeys =
-    current.snapshotAt === normalizedSnapshotAt
-      ? new Set(current.keys)
-      : new Set<string>();
+    current.snapshotAt === normalizedSnapshotAt ? new Set(current.keys) : new Set<string>();
   for (const conversation of conversations) {
     nextKeys.add(conversation.promptCacheKey);
   }
@@ -442,10 +393,7 @@ function resolveDesiredFreshSnapshotCount(
   refreshTargetCount: number,
 ) {
   const totalMatched = response.totalMatched ?? response.conversations.length;
-  return Math.min(
-    totalMatched,
-    Math.max(refreshTargetCount, loadedFreshSnapshotCount),
-  );
+  return Math.min(totalMatched, Math.max(refreshTargetCount, loadedFreshSnapshotCount));
 }
 
 function shouldBackfillFreshSnapshot(
@@ -458,11 +406,7 @@ function shouldBackfillFreshSnapshot(
   if (!response.hasMore || !response.nextCursor) return false;
   return (
     freshSnapshotKeys.keys.size <
-    resolveDesiredFreshSnapshotCount(
-      response,
-      freshSnapshotKeys.keys.size,
-      refreshTargetCount,
-    )
+    resolveDesiredFreshSnapshotCount(response, freshSnapshotKeys.keys.size, refreshTargetCount)
   );
 }
 
@@ -480,11 +424,7 @@ function reconcileFreshSnapshotRows(
   const shouldKeepRetainedTail =
     response.hasMore &&
     freshSnapshotKeys.keys.size <
-      resolveDesiredFreshSnapshotCount(
-        response,
-        freshSnapshotKeys.keys.size,
-        refreshTargetCount,
-      );
+      resolveDesiredFreshSnapshotCount(response, freshSnapshotKeys.keys.size, refreshTargetCount);
   if (shouldKeepRetainedTail) {
     return response;
   }
@@ -503,9 +443,7 @@ function reconcileFreshSnapshotRows(
     ...response,
     conversations,
     nextCursor: response.hasMore
-      ? (response.nextCursor ??
-        conversations[conversations.length - 1]?.cursor ??
-        null)
+      ? (response.nextCursor ?? conversations[conversations.length - 1]?.cursor ?? null)
       : null,
   } satisfies PromptCacheConversationsResponse;
 }
@@ -516,9 +454,7 @@ function mergeHeadPage(
   nowMs: number,
 ) {
   const totalMatched =
-    incoming.totalMatched ??
-    current?.totalMatched ??
-    incoming.conversations.length;
+    incoming.totalMatched ?? current?.totalMatched ?? incoming.conversations.length;
   const snapshotChanged =
     current?.snapshotAt != null &&
     incoming.snapshotAt != null &&
@@ -526,10 +462,7 @@ function mergeHeadPage(
   const incomingKeys = new Set(
     incoming.conversations.map((conversation) => conversation.promptCacheKey),
   );
-  const retainedCapacity = Math.max(
-    0,
-    totalMatched - incoming.conversations.length,
-  );
+  const retainedCapacity = Math.max(0, totalMatched - incoming.conversations.length);
   const retainedTail = (current?.conversations ?? [])
     .filter((conversation) => !incomingKeys.has(conversation.promptCacheKey))
     .slice(0, retainedCapacity);
@@ -548,8 +481,7 @@ function mergeHeadPage(
       totalMatched,
       hasMore,
       nextCursor: hasMore
-        ? (incoming.nextCursor ??
-          (snapshotChanged ? null : (current?.nextCursor ?? null)))
+        ? (incoming.nextCursor ?? (snapshotChanged ? null : (current?.nextCursor ?? null)))
         : null,
       conversations,
     } satisfies PromptCacheConversationsResponse,
@@ -570,14 +502,10 @@ function appendPage(
     nowMs,
   );
   const conversations = pruneExpiredWorkingConversations(
-    dedupeAndSortConversations([
-      ...incoming.conversations,
-      ...current.conversations,
-    ]),
+    dedupeAndSortConversations([...incoming.conversations, ...current.conversations]),
     referenceMs,
   );
-  const totalMatched =
-    incoming.totalMatched ?? current.totalMatched ?? conversations.length;
+  const totalMatched = incoming.totalMatched ?? current.totalMatched ?? conversations.length;
   const hasMore = incoming.hasMore ?? incoming.nextCursor != null;
   return {
     ...current,
@@ -592,16 +520,13 @@ function appendPage(
 }
 
 export function useDashboardWorkingConversations() {
-  const [response, setResponse] =
-    useState<PromptCacheConversationsResponse | null>(null);
+  const [response, setResponse] = useState<PromptCacheConversationsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const responseRef = useRef<PromptCacheConversationsResponse | null>(null);
-  const refreshTargetCountRef = useRef(
-    DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
-  );
+  const refreshTargetCountRef = useRef(DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE);
   const freshSnapshotKeysRef = useRef<FreshSnapshotKeysState>({
     snapshotAt: null,
     keys: new Set(),
@@ -613,22 +538,16 @@ export function useDashboardWorkingConversations() {
   const requestSeqRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const visiblePatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const visiblePatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingVisiblePatchRecordsRef = useRef<ApiInvocation[]>([]);
-  const runHeadLoadRef = useRef<((silent?: boolean) => Promise<void>) | null>(
-    null,
-  );
+  const runHeadLoadRef = useRef<((silent?: boolean) => Promise<void>) | null>(null);
   const runLoadMoreRef = useRef<(() => Promise<void>) | null>(null);
   const patchedPostSnapshotInvocationsRef = useRef<
     Map<string, Map<string, { totalTokens: number; cost: number }>>
   >(new Map());
   const lastHeadRefreshAtRef = useRef(0);
   const lastOpenResyncAtRef = useRef(0);
-  const recentPreviewLimitRef = useRef(
-    DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
-  );
+  const recentPreviewLimitRef = useRef(DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX);
 
   useEffect(() => {
     responseRef.current = response;
@@ -675,19 +594,17 @@ export function useDashboardWorkingConversations() {
           {
             pageSize: DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
             detail: "compact",
-            recentInvocationLimit:
-              DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+            recentInvocationLimit: DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
             signal: controller.signal,
           },
         );
         if (requestSeq !== requestSeqRef.current) return;
         recordWorkingConversationHeadFetch();
         const nowMs = Date.now();
-        recentPreviewLimitRef.current =
-          resolveDashboardWorkingConversationsRecentPreviewLimit(
-            nextResponse.conversations,
-            resolveWorkingSetReferenceMs(nextResponse.snapshotAt, nowMs),
-          );
+        recentPreviewLimitRef.current = resolveDashboardWorkingConversationsRecentPreviewLimit(
+          nextResponse.conversations,
+          resolveWorkingSetReferenceMs(nextResponse.snapshotAt, nowMs),
+        );
         const { response: mergedResponse } = mergeHeadPage(
           responseRef.current,
           nextResponse,
@@ -713,21 +630,14 @@ export function useDashboardWorkingConversations() {
         ) {
           pendingLoadMoreRef.current = true;
         }
-        prunePatchedPostSnapshotInvocations(
-          patchedPostSnapshotInvocationsRef.current,
-          {
-            retainedKeys: new Set(
-              merged.conversations.map(
-                (conversation) => conversation.promptCacheKey,
-              ),
-            ),
-            refreshedKeys: new Set(
-              nextResponse.conversations.map(
-                (conversation) => conversation.promptCacheKey,
-              ),
-            ),
-          },
-        );
+        prunePatchedPostSnapshotInvocations(patchedPostSnapshotInvocationsRef.current, {
+          retainedKeys: new Set(
+            merged.conversations.map((conversation) => conversation.promptCacheKey),
+          ),
+          refreshedKeys: new Set(
+            nextResponse.conversations.map((conversation) => conversation.promptCacheKey),
+          ),
+        });
         responseRef.current = merged;
         setResponse(merged);
         hasHydratedRef.current = true;
@@ -780,31 +690,25 @@ export function useDashboardWorkingConversations() {
           cursor: current.nextCursor,
           snapshotAt: current.snapshotAt,
           detail: "compact",
-          recentInvocationLimit:
-            DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+          recentInvocationLimit: DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
           signal: controller.signal,
         },
       );
       if (requestSeq !== requestSeqRef.current) return;
       const nowMs = Date.now();
-      recentPreviewLimitRef.current =
-        resolveDashboardWorkingConversationsRecentPreviewLimit(
-          [...(responseRef.current?.conversations ?? []), ...nextResponse.conversations],
-          resolveWorkingSetReferenceMs(
-            nextResponse.snapshotAt ?? responseRef.current?.snapshotAt,
-            nowMs,
-          ),
-        );
+      recentPreviewLimitRef.current = resolveDashboardWorkingConversationsRecentPreviewLimit(
+        [...(responseRef.current?.conversations ?? []), ...nextResponse.conversations],
+        resolveWorkingSetReferenceMs(
+          nextResponse.snapshotAt ?? responseRef.current?.snapshotAt,
+          nowMs,
+        ),
+      );
       freshSnapshotKeysRef.current = mergeFreshSnapshotKeysState(
         freshSnapshotKeysRef.current,
         nextResponse.snapshotAt,
         nextResponse.conversations,
       );
-      const mergedResponse = appendPage(
-        responseRef.current,
-        nextResponse,
-        nowMs,
-      );
+      const mergedResponse = appendPage(responseRef.current, nextResponse, nowMs);
       const merged = reconcileFreshSnapshotRows(
         mergedResponse,
         freshSnapshotKeysRef.current,
@@ -820,19 +724,14 @@ export function useDashboardWorkingConversations() {
       ) {
         pendingLoadMoreRef.current = true;
       }
-      prunePatchedPostSnapshotInvocations(
-        patchedPostSnapshotInvocationsRef.current,
-        {
-          retainedKeys: new Set(
-            merged.conversations.map((conversation) => conversation.promptCacheKey),
-          ),
-          refreshedKeys: new Set(
-            nextResponse.conversations.map(
-              (conversation) => conversation.promptCacheKey,
-            ),
-          ),
-        },
-      );
+      prunePatchedPostSnapshotInvocations(patchedPostSnapshotInvocationsRef.current, {
+        retainedKeys: new Set(
+          merged.conversations.map((conversation) => conversation.promptCacheKey),
+        ),
+        refreshedKeys: new Set(
+          nextResponse.conversations.map((conversation) => conversation.promptCacheKey),
+        ),
+      });
       responseRef.current = merged;
       setResponse(merged);
       hasHydratedRef.current = true;
@@ -886,10 +785,7 @@ export function useDashboardWorkingConversations() {
 
   const triggerThrottledHeadRefresh = useCallback(
     (force = false) => {
-      if (
-        typeof document !== "undefined" &&
-        document.visibilityState !== "visible"
-      ) {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
         return;
       }
       const now = Date.now();
@@ -926,9 +822,7 @@ export function useDashboardWorkingConversations() {
     let shouldRefreshHead = false;
     let didPatchLoaded = false;
     const loadedKeys = new Set(
-      current.conversations.map(
-        (conversation) => conversation.promptCacheKey,
-      ),
+      current.conversations.map((conversation) => conversation.promptCacheKey),
     );
     const nextConversations = current.conversations.map((conversation) => {
       let nextConversation = conversation;
@@ -940,11 +834,10 @@ export function useDashboardWorkingConversations() {
           continue;
         }
         if (promptCacheKey !== conversation.promptCacheKey) continue;
-        const patchedPostSnapshotInvocations =
-          getOrCreatePatchedConversationInvocations(
-            patchedPostSnapshotInvocationsRef,
-            conversation.promptCacheKey,
-          );
+        const patchedPostSnapshotInvocations = getOrCreatePatchedConversationInvocations(
+          patchedPostSnapshotInvocationsRef,
+          conversation.promptCacheKey,
+        );
         const patchResult = patchConversationWithRecord(
           nextConversation,
           record,
@@ -966,10 +859,7 @@ export function useDashboardWorkingConversations() {
     });
 
     if (didPatchLoaded) {
-      const referenceMs = resolveWorkingSetReferenceMs(
-        current.snapshotAt,
-        Date.now(),
-      );
+      const referenceMs = resolveWorkingSetReferenceMs(current.snapshotAt, Date.now());
       const patched = {
         ...current,
         conversations: pruneExpiredWorkingConversations(
@@ -978,19 +868,14 @@ export function useDashboardWorkingConversations() {
         ),
       } satisfies PromptCacheConversationsResponse;
       patched.hasMore = current.hasMore ?? false;
-      patched.nextCursor = patched.hasMore
-        ? (current.nextCursor ?? null)
-        : null;
+      patched.nextCursor = patched.hasMore ? (current.nextCursor ?? null) : null;
       responseRef.current = patched;
       setResponse(patched);
-      prunePatchedPostSnapshotInvocations(
-        patchedPostSnapshotInvocationsRef.current,
-        {
-          retainedKeys: new Set(
-            patched.conversations.map((conversation) => conversation.promptCacheKey),
-          ),
-        },
-      );
+      prunePatchedPostSnapshotInvocations(patchedPostSnapshotInvocationsRef.current, {
+        retainedKeys: new Set(
+          patched.conversations.map((conversation) => conversation.promptCacheKey),
+        ),
+      });
     }
 
     if (shouldRefreshHead) {
@@ -1023,8 +908,7 @@ export function useDashboardWorkingConversations() {
     abortControllerRef.current = null;
     responseRef.current = null;
     refreshTargetCountRef.current = DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE;
-    recentPreviewLimitRef.current =
-      DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX;
+    recentPreviewLimitRef.current = DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX;
     freshSnapshotKeysRef.current = {
       snapshotAt: null,
       keys: new Set(),
@@ -1083,8 +967,7 @@ export function useDashboardWorkingConversations() {
       triggerThrottledHeadRefresh(true);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
-    return () =>
-      document.removeEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, [triggerThrottledHeadRefresh]);
 
   useEffect(
@@ -1093,8 +976,7 @@ export function useDashboardWorkingConversations() {
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
       refreshTargetCountRef.current = DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE;
-      recentPreviewLimitRef.current =
-        DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX;
+      recentPreviewLimitRef.current = DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX;
       freshSnapshotKeysRef.current = {
         snapshotAt: null,
         keys: new Set(),
@@ -1111,10 +993,7 @@ export function useDashboardWorkingConversations() {
     [clearPendingRefreshTimer, clearPendingVisiblePatchTimer],
   );
 
-  const cards = useMemo(
-    () => mapPromptCacheConversationsToDashboardCards(response),
-    [response],
-  );
+  const cards = useMemo(() => mapPromptCacheConversationsToDashboardCards(response), [response]);
   const recentPreviewLimit = useMemo(
     () =>
       resolveDashboardWorkingConversationsRecentPreviewLimit(
@@ -1138,11 +1017,7 @@ export function useDashboardWorkingConversations() {
       const current = responseRef.current;
       if (
         !current ||
-        !shouldBackfillFreshSnapshot(
-          current,
-          freshSnapshotKeysRef.current,
-          nextCount,
-        )
+        !shouldBackfillFreshSnapshot(current, freshSnapshotKeysRef.current, nextCount)
       ) {
         return;
       }

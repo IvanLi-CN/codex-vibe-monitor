@@ -6,10 +6,13 @@
   "scripts": {
     "check:bun-first": "bash .github/scripts/check-bun-first.sh",
     "hooks:install": "bash scripts/install-hooks.sh",
+    "lint:docs": "biome check docs-site",
+    "lint:web": "biome check web",
     "worktree:bootstrap": "bash scripts/worktree-bootstrap.sh",
     "worktree:setup": "bash scripts/worktree-setup.sh"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
     "@commitlint/cli": "^20.1.0",
     "@commitlint/config-conventional": "^20.0.0",
     "commitlint-plugin-function-rules": "^4.1.0",

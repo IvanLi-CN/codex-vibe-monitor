@@ -1,13 +1,13 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import {
+  type ReactNode,
   useEffect,
   useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
-import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider, useTranslation } from "../../i18n";
 import type {
@@ -21,15 +21,15 @@ import type {
   UpstreamAccountActivityResponse,
 } from "../../lib/api";
 import {
+  type DashboardWorkingConversationInvocationSelection,
   formatDashboardWorkingConversationSequenceId,
   hashDashboardWorkingConversationKey,
   mapPromptCacheConversationsToDashboardCards,
-  type DashboardWorkingConversationInvocationSelection,
 } from "../../lib/dashboardWorkingConversations";
+import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
+import { PromptCacheConversationHistoryDrawer } from "../prompt-cache/PromptCacheConversationTable";
 import { DashboardInvocationDetailDrawer } from "./DashboardInvocationDetailDrawer";
 import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversationsSection";
-import { PromptCacheConversationHistoryDrawer } from "../prompt-cache/PromptCacheConversationTable";
-import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import { DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY } from "./dashboardActivityRange";
 
 function StorySurface({ children }: { children: ReactNode }) {
@@ -56,8 +56,7 @@ function ForcedWorkspaceViewStory({
 function useStoryTheme(theme?: "vibe-light" | "vibe-dark") {
   useLayoutEffect(() => {
     if (!theme) return;
-    const previousHtmlTheme =
-      document.documentElement.getAttribute("data-theme");
+    const previousHtmlTheme = document.documentElement.getAttribute("data-theme");
     const previousBodyTheme = document.body.getAttribute("data-theme");
     document.documentElement.setAttribute("data-theme", theme);
     document.body.setAttribute("data-theme", theme);
@@ -96,18 +95,14 @@ function createPreview(
   return {
     id: overrides.id,
     invokeId: overrides.invokeId,
-    promptCacheKey:
-      "promptCacheKey" in overrides ? (overrides.promptCacheKey ?? null) : null,
+    promptCacheKey: "promptCacheKey" in overrides ? (overrides.promptCacheKey ?? null) : null,
     occurredAt: overrides.occurredAt,
     status: overrides.status,
     livePhase: overrides.livePhase ?? null,
     failureClass: overrides.failureClass ?? "none",
     routeMode: overrides.routeMode ?? "pool",
     model: overrides.model ?? "gpt-5.4",
-    requestModel:
-      "requestModel" in overrides
-        ? (overrides.requestModel ?? null)
-        : "gpt-5.4",
+    requestModel: "requestModel" in overrides ? (overrides.requestModel ?? null) : "gpt-5.4",
     responseModel:
       "responseModel" in overrides
         ? (overrides.responseModel ?? null)
@@ -115,13 +110,9 @@ function createPreview(
     totalTokens: overrides.totalTokens ?? 240,
     cost: overrides.cost ?? 0.0182,
     proxyDisplayName:
-      "proxyDisplayName" in overrides
-        ? (overrides.proxyDisplayName ?? null)
-        : "tokyo-edge-01",
+      "proxyDisplayName" in overrides ? (overrides.proxyDisplayName ?? null) : "tokyo-edge-01",
     upstreamAccountId:
-      "upstreamAccountId" in overrides
-        ? (overrides.upstreamAccountId ?? null)
-        : 42,
+      "upstreamAccountId" in overrides ? (overrides.upstreamAccountId ?? null) : 42,
     upstreamAccountName:
       "upstreamAccountName" in overrides
         ? (overrides.upstreamAccountName ?? null)
@@ -168,9 +159,7 @@ function createConversation(
   recentInvocations: PromptCacheConversationInvocationPreview[],
   overrides: Partial<PromptCacheConversation> = {},
 ): PromptCacheConversation {
-  const lastInFlightPreview = recentInvocations.find((preview) =>
-    isInFlightStatus(preview.status),
-  );
+  const lastInFlightPreview = recentInvocations.find((preview) => isInFlightStatus(preview.status));
   const lastTerminalPreview = recentInvocations.find(
     (preview) => !isInFlightStatus(preview.status),
   );
@@ -183,29 +172,18 @@ function createConversation(
     requestCount: overrides.requestCount ?? recentInvocations.length,
     totalTokens:
       overrides.totalTokens ??
-      recentInvocations.reduce(
-        (sum, preview) => sum + Math.max(0, preview.totalTokens),
-        0,
-      ),
+      recentInvocations.reduce((sum, preview) => sum + Math.max(0, preview.totalTokens), 0),
     totalCost:
       overrides.totalCost ??
-      Number(
-        recentInvocations
-          .reduce((sum, preview) => sum + (preview.cost ?? 0), 0)
-          .toFixed(4),
-      ),
+      Number(recentInvocations.reduce((sum, preview) => sum + (preview.cost ?? 0), 0).toFixed(4)),
     createdAt:
       overrides.createdAt ??
       recentInvocations[recentInvocations.length - 1]?.occurredAt ??
       "2026-04-04T10:00:00Z",
     lastActivityAt:
-      overrides.lastActivityAt ??
-      recentInvocations[0]?.occurredAt ??
-      "2026-04-04T10:00:00Z",
-    lastTerminalAt:
-      overrides.lastTerminalAt ?? lastTerminalPreview?.occurredAt ?? null,
-    lastInFlightAt:
-      overrides.lastInFlightAt ?? lastInFlightPreview?.occurredAt ?? null,
+      overrides.lastActivityAt ?? recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
+    lastTerminalAt: overrides.lastTerminalAt ?? lastTerminalPreview?.occurredAt ?? null,
+    lastInFlightAt: overrides.lastInFlightAt ?? lastInFlightPreview?.occurredAt ?? null,
     cursor: overrides.cursor ?? promptCacheKey,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations,
@@ -232,9 +210,7 @@ function createRelativeStoryIso(offsetMs: number) {
   return new Date(Date.now() + offsetMs).toISOString();
 }
 
-function buildRecordFromPreview(
-  preview: PromptCacheConversationInvocationPreview,
-): ApiInvocation {
+function buildRecordFromPreview(preview: PromptCacheConversationInvocationPreview): ApiInvocation {
   return {
     id: preview.id,
     invokeId: preview.invokeId,
@@ -283,9 +259,7 @@ function buildRecordFromPreview(
 function createUpstreamAccountActivityStoryResponse(
   recentInvocationCount = 4,
   routingRuleOverrides: Partial<
-    NonNullable<
-      UpstreamAccountActivityResponse["accounts"][number]["effectiveRoutingRule"]
-    >
+    NonNullable<UpstreamAccountActivityResponse["accounts"][number]["effectiveRoutingRule"]>
   > = {},
 ): UpstreamAccountActivityResponse {
   const promptCacheKeys = [
@@ -330,8 +304,7 @@ function createUpstreamAccountActivityStoryResponse(
       createPreview({
         id: 9901 + index,
         invokeId: `story-account-${index + 1}`,
-        promptCacheKey:
-          promptCacheKeys[index] ?? `pck-story-account-${index + 1}`,
+        promptCacheKey: promptCacheKeys[index] ?? `pck-story-account-${index + 1}`,
         occurredAt: `2026-04-04T10:${String(Math.max(0, 5 - index)).padStart(2, "0")}:00Z`,
         status: statuses[index] ?? "success",
         livePhase:
@@ -398,7 +371,14 @@ function createUpstreamAccountActivityStoryResponse(
               cacheWriteTokens: 1200,
               cacheReadTokens: 600,
               outputTokens: 620,
-              costs: { input: 0.12, cacheWrite: 0.1, cacheRead: 0.04, output: 0.21, reasoning: 0.05, unknown: 0 },
+              costs: {
+                input: 0.12,
+                cacheWrite: 0.1,
+                cacheRead: 0.04,
+                output: 0.21,
+                reasoning: 0.05,
+                unknown: 0,
+              },
             },
             {
               model: "gpt-5.4-mini",
@@ -406,7 +386,14 @@ function createUpstreamAccountActivityStoryResponse(
               cacheWriteTokens: 400,
               cacheReadTokens: 200,
               outputTokens: 180,
-              costs: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0.2 },
+              costs: {
+                input: 0,
+                cacheWrite: 0,
+                cacheRead: 0,
+                output: 0,
+                reasoning: 0,
+                unknown: 0.2,
+              },
             },
           ],
         },
@@ -610,8 +597,7 @@ const accountPlanBadgeResponse = createResponse([
       invokeId: "invoke-plan-enterprise",
       occurredAt: "2026-04-04T10:04:58Z",
       status: "running",
-      upstreamAccountName:
-        "maximiliano.joseph8832.enterprise-routing-lab@example.com",
+      upstreamAccountName: "maximiliano.joseph8832.enterprise-routing-lab@example.com",
       upstreamAccountPlanType: "enterprise",
       reasoningEffort: "high",
       tTotalMs: null,
@@ -621,8 +607,7 @@ const accountPlanBadgeResponse = createResponse([
       invokeId: "invoke-plan-team",
       occurredAt: "2026-04-04T10:02:40Z",
       status: "completed",
-      upstreamAccountName:
-        "maximiliano.joseph8832.enterprise-routing-lab@example.com",
+      upstreamAccountName: "maximiliano.joseph8832.enterprise-routing-lab@example.com",
       upstreamAccountPlanType: "team",
       model: "gpt-5.4-mini",
     }),
@@ -966,16 +951,13 @@ function buildDashboardHistoryEvidenceFixtures() {
     for (let index = 0; index < slot.count; index += 1) {
       const recordIndex = fillerRecords.length;
       const id = fillerId;
-      const occurredAt = new Date(
-        slotStartMs - index * slot.spacingMs,
-      ).toISOString();
+      const occurredAt = new Date(slotStartMs - index * slot.spacingMs).toISOString();
       const cycle = recordIndex % 6;
       const upstreamAccountId = 320 + (recordIndex % 4);
       const baseTokens = 82_000 + (recordIndex % 11) * 3_700;
       const totalTokens = baseTokens + (cycle % 2 === 0 ? 37 : 348);
       const cost = Number((0.062 + (recordIndex % 7) * 0.0037).toFixed(4));
-      const durationBase =
-        slot.kind === "first" || slotIndex > 0 ? 46_000 : 17_000;
+      const durationBase = slot.kind === "first" || slotIndex > 0 ? 46_000 : 17_000;
 
       if (slot.kind === "first") {
         fillerRecords.push(
@@ -1112,22 +1094,18 @@ function buildDashboardHistoryEvidenceFixtures() {
     }
   }
 
-  const historyInvocations = [...topRecords, ...fillerRecords].map(
-    (preview) => ({
-      ...preview,
-      upstreamAccountId: 311,
-      upstreamAccountName: "CIII",
-      proxyDisplayName: null,
-    }),
-  );
+  const historyInvocations = [...topRecords, ...fillerRecords].map((preview) => ({
+    ...preview,
+    upstreamAccountId: 311,
+    upstreamAccountName: "CIII",
+    proxyDisplayName: null,
+  }));
   const totalTokens = historyInvocations.reduce(
     (sum, preview) => sum + Math.max(0, preview.totalTokens),
     0,
   );
   const totalCost = Number(
-    historyInvocations
-      .reduce((sum, preview) => sum + (preview.cost ?? 0), 0)
-      .toFixed(4),
+    historyInvocations.reduce((sum, preview) => sum + (preview.cost ?? 0), 0).toFixed(4),
   );
   const dashboardPreviewInvocations = historyInvocations.slice(0, 2);
   return {
@@ -1150,9 +1128,7 @@ function buildDashboardHistoryEvidenceFixtures() {
         ],
       }),
     ]),
-    historyInvocationsByPromptCacheKey: new Map([
-      [promptCacheKey, historyInvocations],
-    ]),
+    historyInvocationsByPromptCacheKey: new Map([[promptCacheKey, historyInvocations]]),
   };
 }
 
@@ -1165,8 +1141,7 @@ const interruptedRecoveryResponse = createResponse([
       status: "interrupted",
       failureClass: "service_failure",
       failureKind: "proxy_interrupted",
-      errorMessage:
-        "proxy request was interrupted before completion and was recovered on startup",
+      errorMessage: "proxy request was interrupted before completion and was recovered on startup",
       upstreamAccountId: 77,
       upstreamAccountName: "pool-account-77@example.com",
       endpoint: "/v1/responses",
@@ -1231,8 +1206,7 @@ const assignedAccountFailureSemanticsResponse = createResponse([
       status: "failed",
       failureClass: "service_failure",
       failureKind: "pool_no_available_account",
-      errorMessage:
-        "[pool_no_available_account] no assignable upstream account remains",
+      errorMessage: "[pool_no_available_account] no assignable upstream account remains",
       upstreamAccountId: null,
       upstreamAccountName: null,
       proxyDisplayName: null,
@@ -1499,14 +1473,10 @@ function buildVirtualizedLargeResponse(
   total: number,
 ): PromptCacheConversationsResponse {
   const conversations = Array.from({ length: total }, (_, index) => {
-    const currentAt = new Date(
-      Date.UTC(2026, 3, 4, 10, 59, 0) - index * 70_000,
-    ).toISOString();
+    const currentAt = new Date(Date.UTC(2026, 3, 4, 10, 59, 0) - index * 70_000).toISOString();
     const previousAt = new Date(Date.parse(currentAt) - 160_000).toISOString();
-    const inFlight =
-      index % 7 === 0 ? "running" : index % 5 === 0 ? "pending" : null;
-    const currentStatus =
-      inFlight ?? (index % 6 === 0 ? "http_429" : "completed");
+    const inFlight = index % 7 === 0 ? "running" : index % 5 === 0 ? "pending" : null;
+    const currentStatus = inFlight ?? (index % 6 === 0 ? "http_429" : "completed");
     return createConversation(
       `${prefix}-${String(index + 1).padStart(3, "0")}`,
       [
@@ -1553,12 +1523,8 @@ function buildCards(response: PromptCacheConversationsResponse) {
   return mapPromptCacheConversationsToDashboardCards(response);
 }
 
-const createdAtDescendingOrderCards = buildCards(
-  createdAtDescendingOrderResponse,
-);
-const createdAtDescendingOrderKeys = [
-  ...createdAtDescendingOrderResponse.conversations,
-]
+const createdAtDescendingOrderCards = buildCards(createdAtDescendingOrderResponse);
+const createdAtDescendingOrderKeys = [...createdAtDescendingOrderResponse.conversations]
   .sort(
     (left, right) =>
       right.createdAt.localeCompare(left.createdAt) ||
@@ -1572,23 +1538,13 @@ function getStorySequenceIdForPromptCacheKey(promptCacheKey: string) {
   );
 }
 
-const virtualizedLargeDatasetResponse = buildVirtualizedLargeResponse(
-  "pck-virtual",
-  72,
-);
-const virtualizedLargeDatasetCards = buildCards(
-  virtualizedLargeDatasetResponse,
-);
+const virtualizedLargeDatasetResponse = buildVirtualizedLargeResponse("pck-virtual", 72);
+const virtualizedLargeDatasetCards = buildCards(virtualizedLargeDatasetResponse);
 const headInsertBaseResponse = buildVirtualizedLargeResponse("pck-anchor", 56);
 
 function HeadInsertAnchorStory() {
-  const baseConversations = useMemo(
-    () => headInsertBaseResponse.conversations,
-    [],
-  );
-  const [cards, setCards] = useState(() =>
-    buildCards(createResponse(baseConversations)),
-  );
+  const baseConversations = useMemo(() => headInsertBaseResponse.conversations, []);
+  const [cards, setCards] = useState(() => buildCards(createResponse(baseConversations)));
   const [status, setStatus] = useState("waiting");
 
   useEffect(() => {
@@ -1669,14 +1625,8 @@ function buildStoryMockData(
   const recordsByInvokeId = new Map<string, ApiInvocation>();
   const recordsByPromptCacheKey = new Map<string, ApiInvocation[]>();
   const detailByRecordId = new Map<number, ApiInvocationRecordDetailResponse>();
-  const responseBodyByRecordId = new Map<
-    number,
-    ApiInvocationResponseBodyResponse
-  >();
-  const poolAttemptsByInvokeId = new Map<
-    string,
-    ApiPoolUpstreamRequestAttempt[]
-  >();
+  const responseBodyByRecordId = new Map<number, ApiInvocationResponseBodyResponse>();
+  const poolAttemptsByInvokeId = new Map<string, ApiPoolUpstreamRequestAttempt[]>();
 
   const ingestPreview = (
     conversation: PromptCacheConversation,
@@ -1791,21 +1741,16 @@ function buildStoryInvocationSummary(records: ApiInvocation[]) {
         (status === "http_200" && errorMessage === ""))
     );
   };
-  const failureRecords = records.filter(
-    (record) => resolvedFailureClass(record) !== "none",
-  );
+  const failureRecords = records.filter((record) => resolvedFailureClass(record) !== "none");
   const successRecords = records.filter(isSuccessRecord);
   const totalMsRecords = records.filter(
-    (record) =>
-      typeof record.tTotalMs === "number" && Number.isFinite(record.tTotalMs),
+    (record) => typeof record.tTotalMs === "number" && Number.isFinite(record.tTotalMs),
   );
   const avgTotalMs =
     totalMsRecords.length === 0
       ? null
-      : totalMsRecords.reduce(
-          (sum, record) => sum + (record.tTotalMs ?? 0),
-          0,
-        ) / totalMsRecords.length;
+      : totalMsRecords.reduce((sum, record) => sum + (record.tTotalMs ?? 0), 0) /
+        totalMsRecords.length;
 
   return {
     snapshotId: 1,
@@ -1814,27 +1759,15 @@ function buildStoryInvocationSummary(records: ApiInvocation[]) {
     successCount: successRecords.length,
     failureCount: failureRecords.length,
     totalCost: records.reduce((sum, record) => sum + (record.cost ?? 0), 0),
-    totalTokens: records.reduce(
-      (sum, record) => sum + (record.totalTokens ?? 0),
-      0,
-    ),
+    totalTokens: records.reduce((sum, record) => sum + (record.totalTokens ?? 0), 0),
     token: {
       requestCount: records.length,
-      totalTokens: records.reduce(
-        (sum, record) => sum + (record.totalTokens ?? 0),
-        0,
-      ),
+      totalTokens: records.reduce((sum, record) => sum + (record.totalTokens ?? 0), 0),
       avgTokensPerRequest:
         records.length === 0
           ? 0
-          : records.reduce(
-              (sum, record) => sum + (record.totalTokens ?? 0),
-              0,
-            ) / records.length,
-      cacheInputTokens: records.reduce(
-        (sum, record) => sum + (record.cacheInputTokens ?? 0),
-        0,
-      ),
+          : records.reduce((sum, record) => sum + (record.totalTokens ?? 0), 0) / records.length,
+      cacheInputTokens: records.reduce((sum, record) => sum + (record.cacheInputTokens ?? 0), 0),
       totalCost: records.reduce((sum, record) => sum + (record.cost ?? 0), 0),
     },
     network: {
@@ -1869,14 +1802,10 @@ function resolveInitialSelection(
   },
 ): DashboardWorkingConversationInvocationSelection | null {
   if (!target) return null;
-  const card = cards.find(
-    (candidate) => candidate.promptCacheKey === target.promptCacheKey,
-  );
+  const card = cards.find((candidate) => candidate.promptCacheKey === target.promptCacheKey);
   if (!card) return null;
   const invocation =
-    target.slotKind === "previous"
-      ? card.previousInvocation
-      : card.currentInvocation;
+    target.slotKind === "previous" ? card.previousInvocation : card.currentInvocation;
   if (!invocation) return null;
   return {
     slotKind: target.slotKind,
@@ -1916,15 +1845,10 @@ function StoryAccountDrawer({
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/70">
               Shared Account Drawer
             </p>
-            <h2
-              id={titleId}
-              className="text-xl font-semibold text-base-content"
-            >
+            <h2 id={titleId} className="text-xl font-semibold text-base-content">
               {account.label}
             </h2>
-            <p className="font-mono text-sm text-base-content/60">
-              Account ID {account.id}
-            </p>
+            <p className="font-mono text-sm text-base-content/60">Account ID {account.id}</p>
             <p
               data-testid="story-account-drawer-tab"
               className="font-mono text-sm text-base-content/60"
@@ -1933,9 +1857,8 @@ function StoryAccountDrawer({
             </p>
           </div>
           <p className="text-sm leading-6 text-base-content/70">
-            Mock shared account detail drawer used to verify that Dashboard
-            account clicks switch away from the invocation drawer without
-            opening both drawers at once.
+            Mock shared account detail drawer used to verify that Dashboard account clicks switch
+            away from the invocation drawer without opening both drawers at once.
           </p>
         </div>
       ) : null}
@@ -1952,14 +1875,10 @@ class StoryNoopEventSource implements EventTarget {
   readonly withCredentials = false;
   readyState = StoryNoopEventSource.CONNECTING;
   onerror: ((this: EventSource, ev: Event) => unknown) | null = null;
-  onmessage: ((this: EventSource, ev: MessageEvent<string>) => unknown) | null =
-    null;
+  onmessage: ((this: EventSource, ev: MessageEvent<string>) => unknown) | null = null;
   onopen: ((this: EventSource, ev: Event) => unknown) | null = null;
 
-  private listeners = new Map<
-    string,
-    Set<EventListenerOrEventListenerObject>
-  >();
+  private listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
 
   constructor(url: string | URL) {
     this.url = typeof url === "string" ? url : url.toString();
@@ -1970,21 +1889,14 @@ class StoryNoopEventSource implements EventTarget {
     }, 0);
   }
 
-  addEventListener(
-    type: string,
-    listener: EventListenerOrEventListenerObject | null,
-  ) {
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
     if (!listener) return;
-    const bucket =
-      this.listeners.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+    const bucket = this.listeners.get(type) ?? new Set<EventListenerOrEventListenerObject>();
     bucket.add(listener);
     this.listeners.set(type, bucket);
   }
 
-  removeEventListener(
-    type: string,
-    listener: EventListenerOrEventListenerObject | null,
-  ) {
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
     if (!listener) return;
     this.listeners.get(type)?.delete(listener);
   }
@@ -1994,10 +1906,7 @@ class StoryNoopEventSource implements EventTarget {
       this.onopen?.call(this as unknown as EventSource, event);
     }
     if (event.type === "message") {
-      this.onmessage?.call(
-        this as unknown as EventSource,
-        event as MessageEvent<string>,
-      );
+      this.onmessage?.call(this as unknown as EventSource, event as MessageEvent<string>);
     }
     if (event.type === "error") {
       this.onerror?.call(this as unknown as EventSource, event);
@@ -2032,10 +1941,7 @@ function DrawerPreviewStory({
     slotKind: "current" | "previous";
   };
   initialConversationKey?: string;
-  historyInvocationsByPromptCacheKey?: Map<
-    string,
-    PromptCacheConversationInvocationPreview[]
-  >;
+  historyInvocationsByPromptCacheKey?: Map<string, PromptCacheConversationInvocationPreview[]>;
   upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
   recentPreviewLimit?: number;
   theme?: "vibe-light" | "vibe-dark";
@@ -2057,9 +1963,7 @@ function DrawerPreviewStory({
     conversationSequenceId: string;
     promptCacheKey: string;
   } | null>(() => {
-    const initialCard = cards.find(
-      (card) => card.promptCacheKey === initialConversationKey,
-    );
+    const initialCard = cards.find((card) => card.promptCacheKey === initialConversationKey);
     return initialCard
       ? {
           conversationSequenceId: initialCard.conversationSequenceId,
@@ -2075,9 +1979,7 @@ function DrawerPreviewStory({
 
   useEffect(() => {
     setSelectedInvocation(resolveInitialSelection(cards, initialSelection));
-    const initialCard = cards.find(
-      (card) => card.promptCacheKey === initialConversationKey,
-    );
+    const initialCard = cards.find((card) => card.promptCacheKey === initialConversationKey);
     setSelectedConversation(
       initialCard
         ? {
@@ -2091,8 +1993,7 @@ function DrawerPreviewStory({
 
   useLayoutEffect(() => {
     originalEventSourceRef.current = window.EventSource;
-    window.EventSource =
-      StoryNoopEventSource as unknown as typeof window.EventSource;
+    window.EventSource = StoryNoopEventSource as unknown as typeof window.EventSource;
     return () => {
       if (originalEventSourceRef.current) {
         window.EventSource = originalEventSourceRef.current;
@@ -2105,26 +2006,19 @@ function DrawerPreviewStory({
     if (!originalFetchRef.current) {
       originalFetchRef.current = window.fetch.bind(window);
     }
-    (
-      window as typeof window & { __dashboardStoryFetchLog?: string[] }
-    ).__dashboardStoryFetchLog = [];
+    (window as typeof window & { __dashboardStoryFetchLog?: string[] }).__dashboardStoryFetchLog =
+      [];
     (
       window as typeof window & { __dashboardStoryPolicyPatchLog?: string[] }
     ).__dashboardStoryPolicyPatchLog = [];
 
     window.fetch = async (input, init) => {
       const request =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : input.url;
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const url = new URL(request, window.location.origin);
       (
         window as typeof window & { __dashboardStoryFetchLog?: string[] }
-      ).__dashboardStoryFetchLog?.push(
-        `${url.pathname}?${url.searchParams.toString()}`,
-      );
+      ).__dashboardStoryFetchLog?.push(`${url.pathname}?${url.searchParams.toString()}`);
 
       const upstreamAccountPatchMatch = url.pathname.match(
         /^\/api\/pool\/upstream-accounts\/(\d+)$/,
@@ -2165,17 +2059,10 @@ function DrawerPreviewStory({
         const promptCacheKey = url.searchParams.get("promptCacheKey")?.trim();
         if (promptCacheKey) {
           const page = Math.max(1, Number(url.searchParams.get("page") ?? "1"));
-          const pageSize = Math.max(
-            1,
-            Number(url.searchParams.get("pageSize") ?? "200"),
-          );
-          const records = (
-            storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? []
-          )
+          const pageSize = Math.max(1, Number(url.searchParams.get("pageSize") ?? "200"));
+          const records = (storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? [])
             .slice()
-            .sort((left, right) =>
-              right.occurredAt.localeCompare(left.occurredAt),
-            );
+            .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt));
           const start = (page - 1) * pageSize;
           return jsonResponse({
             snapshotId: 1,
@@ -2214,8 +2101,7 @@ function DrawerPreviewStory({
           rangeEnd: "2026-04-04T10:05:00Z",
           accounts: [],
         };
-        const includeAccounts =
-          url.searchParams.get("includeAccounts") !== "false";
+        const includeAccounts = url.searchParams.get("includeAccounts") !== "false";
         return jsonResponse({
           range: activity.range,
           rangeStart: activity.rangeStart,
@@ -2229,10 +2115,7 @@ function DrawerPreviewStory({
           },
           summary: {
             stats: {
-              totalCount: activity.accounts.reduce(
-                (sum, account) => sum + account.requestCount,
-                0,
-              ),
+              totalCount: activity.accounts.reduce((sum, account) => sum + account.requestCount, 0),
               successCount: activity.accounts.reduce(
                 (sum, account) => sum + account.successCount,
                 0,
@@ -2241,17 +2124,10 @@ function DrawerPreviewStory({
                 (sum, account) => sum + account.failureCount,
                 0,
               ),
-              totalCost: activity.accounts.reduce(
-                (sum, account) => sum + account.totalCost,
-                0,
-              ),
-              totalTokens: activity.accounts.reduce(
-                (sum, account) => sum + account.totalTokens,
-                0,
-              ),
+              totalCost: activity.accounts.reduce((sum, account) => sum + account.totalCost, 0),
+              totalTokens: activity.accounts.reduce((sum, account) => sum + account.totalTokens, 0),
               inProgressConversationCount: activity.accounts.reduce(
-                (sum, account) =>
-                  sum + (account.inProgressInvocationCount ?? 0),
+                (sum, account) => sum + (account.inProgressInvocationCount ?? 0),
                 0,
               ),
             },
@@ -2268,9 +2144,7 @@ function DrawerPreviewStory({
         });
       }
 
-      const detailMatch = url.pathname.match(
-        /^\/api\/invocations\/(\d+)\/detail$/,
-      );
+      const detailMatch = url.pathname.match(/^\/api\/invocations\/(\d+)\/detail$/);
       if (detailMatch) {
         const recordId = Number(detailMatch[1]);
         return jsonResponse(
@@ -2281,9 +2155,7 @@ function DrawerPreviewStory({
         );
       }
 
-      const responseBodyMatch = url.pathname.match(
-        /^\/api\/invocations\/(\d+)\/response-body$/,
-      );
+      const responseBodyMatch = url.pathname.match(/^\/api\/invocations\/(\d+)\/response-body$/);
       if (responseBodyMatch) {
         const recordId = Number(responseBodyMatch[1]);
         return jsonResponse(
@@ -2294,21 +2166,14 @@ function DrawerPreviewStory({
         );
       }
 
-      const attemptsMatch = url.pathname.match(
-        /^\/api\/invocations\/([^/]+)\/pool-attempts$/,
-      );
+      const attemptsMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/pool-attempts$/);
       if (attemptsMatch) {
         const invokeId = decodeURIComponent(attemptsMatch[1] ?? "");
-        return jsonResponse(
-          storyMocks.poolAttemptsByInvokeId.get(invokeId) ?? [],
-        );
+        return jsonResponse(storyMocks.poolAttemptsByInvokeId.get(invokeId) ?? []);
       }
 
       if (originalFetchRef.current) {
-        return originalFetchRef.current(
-          input as Parameters<typeof fetch>[0],
-          init,
-        );
+        return originalFetchRef.current(input as Parameters<typeof fetch>[0], init);
       }
 
       throw new Error(`Unhandled Storybook request: ${url.pathname}`);
@@ -2397,10 +2262,7 @@ function DrawerPreviewStory({
           });
         }}
       />
-      <StoryAccountDrawer
-        account={selectedAccount}
-        onClose={() => setSelectedAccount(null)}
-      />
+      <StoryAccountDrawer account={selectedAccount} onClose={() => setSelectedAccount(null)} />
       <div className="rounded-xl border border-base-300/75 bg-base-100/70 px-4 py-3 text-sm text-base-content/75">
         <span className="font-semibold">Drawer state:</span>{" "}
         <span data-testid="story-drawer-state" className="font-mono">
@@ -2460,10 +2322,7 @@ export const CurrentAndPrevious: Story = {
     const responseLatency = currentSlot.querySelector(
       '[data-testid="dashboard-compact-latency-response-time"]',
     );
-    if (
-      !(firstByteLatency instanceof HTMLElement) ||
-      !(responseLatency instanceof HTMLElement)
-    ) {
+    if (!(firstByteLatency instanceof HTMLElement) || !(responseLatency instanceof HTMLElement)) {
       throw new Error("missing compact latency readings");
     }
     const slotHeader = currentSlot.querySelector(
@@ -2473,17 +2332,13 @@ export const CurrentAndPrevious: Story = {
       throw new Error("missing slot header");
     }
     await expect(
-      slotHeader.querySelector(
-        '[data-testid="dashboard-working-conversation-slot-label"]',
-      ),
+      slotHeader.querySelector('[data-testid="dashboard-working-conversation-slot-label"]'),
     ).toHaveTextContent(/当前调用|Current invocation/);
     await expect(slotHeader).toContainElement(firstByteLatency);
     await expect(slotHeader).toContainElement(responseLatency);
     await expect(firstByteLatency.className).not.toMatch(/rounded|border|bg-/);
     await expect(responseLatency.className).not.toMatch(/rounded|border|bg-/);
-    const imageBadge = currentSlot.querySelector(
-      '[data-testid="dashboard-image-tool-icon-badge"]',
-    );
+    const imageBadge = currentSlot.querySelector('[data-testid="dashboard-image-tool-icon-badge"]');
     if (!(imageBadge instanceof HTMLElement)) {
       throw new Error("missing image tool icon badge");
     }
@@ -2529,13 +2384,9 @@ export const RunningOnlyConversation: Story = {
     );
     expect(currentSlotHeader).toBeInstanceOf(HTMLElement);
     expect(currentSlotHeader?.className).toContain("grid");
-    expect(currentSlotHeader?.className).toContain(
-      "grid-cols-[auto_minmax(0,1fr)]",
-    );
+    expect(currentSlotHeader?.className).toContain("grid-cols-[auto_minmax(0,1fr)]");
     expect(
-      currentSlotHeader?.querySelector(
-        '[data-testid="invocation-phase-badge"]',
-      ),
+      currentSlotHeader?.querySelector('[data-testid="invocation-phase-badge"]'),
     ).toBeInstanceOf(HTMLElement);
 
     const phaseLabels = Array.from(
@@ -2557,9 +2408,7 @@ export const RunningOnlyConversation: Story = {
       '[data-testid="invocation-phase-badge"][data-phase="responding"]',
     );
     expect(respondingBadge).toBeInstanceOf(HTMLElement);
-    const respondingIcon = respondingBadge?.querySelector(
-      '[data-testid="invocation-phase-icon"]',
-    );
+    const respondingIcon = respondingBadge?.querySelector('[data-testid="invocation-phase-icon"]');
     expect(respondingIcon?.className).toContain("animate-spin");
   },
 };
@@ -2590,23 +2439,13 @@ export const RequestingConversation: Story = {
     if (!(requestingBadge instanceof HTMLElement)) {
       throw new Error("missing requesting phase badge");
     }
-    await expect(requestingBadge).toHaveAttribute(
-      "data-phase-label-visible",
-      "false",
-    );
-    await expect(requestingBadge).toHaveAttribute(
-      "data-phase-motion",
-      "dynamic",
-    );
-    const requestingIcon = requestingBadge.querySelector(
-      '[data-testid="invocation-phase-icon"]',
-    );
+    await expect(requestingBadge).toHaveAttribute("data-phase-label-visible", "false");
+    await expect(requestingBadge).toHaveAttribute("data-phase-motion", "dynamic");
+    const requestingIcon = requestingBadge.querySelector('[data-testid="invocation-phase-icon"]');
     if (!(requestingIcon instanceof HTMLElement)) {
       throw new Error("missing requesting phase icon");
     }
-    await expect(requestingIcon.className).toContain(
-      "animate-invocation-phase-requesting",
-    );
+    await expect(requestingIcon.className).toContain("animate-invocation-phase-requesting");
     await expect(currentSlot).not.toHaveTextContent(/请求中|Requesting/);
   },
 };
@@ -2633,15 +2472,11 @@ export const PoolRoutingAccountStates: Story = {
       name: "pool-alpha@example.com",
     });
     const runningAccount = accountButtons[0]!;
-    await expect(runningAccount.className).toContain(
-      "invocation-account-routing-in-progress",
-    );
+    await expect(runningAccount.className).toContain("invocation-account-routing-in-progress");
     await expect(canvas.getByText(/号池路由中|pool routing/i)).toBeInTheDocument();
 
     const terminalAccount = accountButtons[accountButtons.length - 1];
-    await expect(terminalAccount.className).not.toContain(
-      "invocation-account-routing-in-progress",
-    );
+    await expect(terminalAccount.className).not.toContain("invocation-account-routing-in-progress");
 
     await userEvent.click(runningAccount);
     await waitFor(() => {
@@ -2678,18 +2513,13 @@ export const FailedStatusIconDedup: Story = {
     if (!(statusIcon instanceof HTMLElement)) {
       throw new Error("missing compact failed status icon");
     }
-    await expect(statusIcon).toHaveAttribute(
-      "aria-label",
-      expect.stringContaining("失败"),
-    );
+    await expect(statusIcon).toHaveAttribute("aria-label", expect.stringContaining("失败"));
     await expect(statusIcon).toHaveAttribute(
       "aria-label",
       expect.stringContaining("upstream gateway closed before first byte"),
     );
     expect(
-      slotHeader.querySelectorAll(
-        '[title*="upstream gateway closed before first byte"]',
-      ),
+      slotHeader.querySelectorAll('[title*="upstream gateway closed before first byte"]'),
     ).toHaveLength(1);
     await expect(currentSlot).not.toHaveTextContent(/^失败$/);
   },
@@ -2720,18 +2550,14 @@ export const AccountPlanBadges: Story = {
   },
   play: async ({ canvasElement }) => {
     const badges = Array.from(
-      canvasElement.querySelectorAll(
-        '[data-testid="dashboard-working-conversation-account-plan"]',
-      ),
+      canvasElement.querySelectorAll('[data-testid="dashboard-working-conversation-account-plan"]'),
     );
     expect(badges.map((badge) => badge.textContent)).toEqual(
       expect.arrayContaining(["Ent", "Team", "Plus", "Free"]),
     );
-    expect(
-      badges
-        .find((badge) => badge.textContent === "Ent")
-        ?.getAttribute("title"),
-    ).toBe("enterprise");
+    expect(badges.find((badge) => badge.textContent === "Ent")?.getAttribute("title")).toBe(
+      "enterprise",
+    );
   },
 };
 
@@ -2751,14 +2577,11 @@ export const TransportBadgeMixed: Story = {
     },
   },
   play: async ({ canvasElement }) => {
-    const badges = canvasElement.querySelectorAll(
-      '[data-testid="invocation-transport-badge"]',
-    );
+    const badges = canvasElement.querySelectorAll('[data-testid="invocation-transport-badge"]');
     expect(badges.length).toBeGreaterThanOrEqual(1);
     expect(
       Array.from(badges).every(
-        (badge) =>
-          badge.querySelector('[aria-hidden="true"]')?.textContent === "WS",
+        (badge) => badge.querySelector('[aria-hidden="true"]')?.textContent === "WS",
       ),
     ).toBe(true);
   },
@@ -2908,9 +2731,7 @@ export const FailedWithClickableAccount: Story = {
         "Mock shared account detail drawer used to verify",
       );
     });
-    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
-      "account:77:overview",
-    );
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent("account:77:overview");
   },
 };
 
@@ -2926,9 +2747,7 @@ export const SequenceButtonOpensConversationHistory: Story = {
     return (
       <DrawerPreviewStory
         response={fixtures.dashboardResponse}
-        historyInvocationsByPromptCacheKey={
-          fixtures.historyInvocationsByPromptCacheKey
-        }
+        historyInvocationsByPromptCacheKey={fixtures.historyInvocationsByPromptCacheKey}
         theme="vibe-dark"
       />
     );
@@ -2944,33 +2763,24 @@ export const SequenceButtonOpensConversationHistory: Story = {
 
     await waitFor(() => {
       expect(
-        document.body.querySelector('[data-testid="story-drawer-state"]')
-          ?.textContent,
+        document.body.querySelector('[data-testid="story-drawer-state"]')?.textContent,
       ).toContain("conversation:pck-dashboard-history-realistic");
     });
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
       "conversation:pck-dashboard-history-realistic",
     );
-    expect(document.body.textContent ?? "").toContain(
-      sequenceButton.textContent ?? "",
-    );
-    expect(document.body.textContent ?? "").toContain(
-      "pck-dashboard-history-realistic",
-    );
+    expect(document.body.textContent ?? "").toContain(sequenceButton.textContent ?? "");
+    expect(document.body.textContent ?? "").toContain("pck-dashboard-history-realistic");
     await expect(
       within(document.body).getByText(/对话详情|Conversation details/i),
     ).toBeInTheDocument();
     await waitFor(() => {
-      expect(document.body.textContent ?? "").toMatch(
-        /共 316 条保留调用记录|316 retained calls/i,
-      );
+      expect(document.body.textContent ?? "").toMatch(/共 316 条保留调用记录|316 retained calls/i);
     });
     const dialog = within(document.body).getByRole("dialog");
     expect(within(dialog).queryByRole("button", { name: "今日" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "昨日" })).toBeNull();
-    expect(
-      within(dialog).queryByRole("button", { name: "24 小时" }),
-    ).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "24 小时" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "7 日" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "历史" })).toBeNull();
     await waitFor(() => {
@@ -3010,9 +2820,7 @@ export const ConversationHistoryDrawerOpen: Story = {
     return (
       <DrawerPreviewStory
         response={fixtures.dashboardResponse}
-        historyInvocationsByPromptCacheKey={
-          fixtures.historyInvocationsByPromptCacheKey
-        }
+        historyInvocationsByPromptCacheKey={fixtures.historyInvocationsByPromptCacheKey}
         initialConversationKey="pck-dashboard-history-realistic"
         theme="vibe-dark"
       />
@@ -3058,13 +2866,11 @@ export const UpstreamAccountTab: Story = {
     await userEvent.click(accountTab);
     await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
     await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
+    await expect(canvas.getByTestId("dashboard-upstream-account-header-row")).not.toHaveTextContent(
+      "#42",
+    );
     await expect(
-      canvas.getByTestId("dashboard-upstream-account-header-row"),
-    ).not.toHaveTextContent("#42");
-    await expect(
-      canvasElement.querySelector(
-        '[data-testid="dashboard-upstream-account-status"]',
-      ),
+      canvasElement.querySelector('[data-testid="dashboard-upstream-account-status"]'),
     ).toBeNull();
     await expect(canvas.getByText("上游拒绝")).toBeInTheDocument();
     await expect(canvas.getByText("限流")).toBeInTheDocument();
@@ -3072,38 +2878,30 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("强制Fast")).toBeInTheDocument();
     await expect(canvas.getByText("禁入")).toBeInTheDocument();
     await expect(canvas.getByText("进行中")).toBeInTheDocument();
-    const recentBreakdown = canvas.getByTestId(
-      "dashboard-upstream-account-recent-breakdown",
-    );
+    const recentBreakdown = canvas.getByTestId("dashboard-upstream-account-recent-breakdown");
     await expect(recentBreakdown).toHaveTextContent(/排队中\s*2/);
     await expect(recentBreakdown).toHaveTextContent(/请求中\s*3/);
     await expect(recentBreakdown).toHaveTextContent(/响应中\s*4/);
     await expect(recentBreakdown).toHaveTextContent(/成功\s*6/);
     const phaseSegments = Array.from(
-      recentBreakdown.querySelectorAll(
-        '[data-testid="invocation-phase-segment"]',
-      ),
+      recentBreakdown.querySelectorAll('[data-testid="invocation-phase-segment"]'),
     );
     expect(phaseSegments).toHaveLength(3);
     for (const phaseSegment of phaseSegments) {
       expect(phaseSegment.getAttribute("data-phase-motion")).toBe("static");
-      const icon = phaseSegment.querySelector(
-        '[data-testid="invocation-phase-icon"]',
-      );
+      const icon = phaseSegment.querySelector('[data-testid="invocation-phase-icon"]');
       expect(icon).toBeInstanceOf(HTMLElement);
       expect(icon?.className).not.toContain("animate-invocation-phase-requesting");
       expect(icon?.className).not.toContain("animate-pulse");
       expect(icon?.className).not.toContain("animate-spin");
     }
-    await expect(
-      canvas.getByTestId("dashboard-upstream-account-policy-badges"),
-    ).toHaveTextContent("禁出");
+    await expect(canvas.getByTestId("dashboard-upstream-account-policy-badges")).toHaveTextContent(
+      "禁出",
+    );
     await expect(canvas.getByText("story-account-1")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5-mini")).toBeInTheDocument();
     await expect(canvas.getByText("gpt-5.5")).toBeInTheDocument();
-    const firstRecentRow = canvas.getAllByTestId(
-      "dashboard-upstream-account-recent-row",
-    )[0];
+    const firstRecentRow = canvas.getAllByTestId("dashboard-upstream-account-recent-row")[0];
     if (!(firstRecentRow instanceof HTMLElement)) {
       throw new Error("missing first upstream recent row");
     }
@@ -3113,10 +2911,7 @@ export const UpstreamAccountTab: Story = {
     const responseLatency = firstRecentRow.querySelector(
       '[data-testid="dashboard-compact-latency-response-time"]',
     );
-    if (
-      !(firstByteLatency instanceof HTMLElement) ||
-      !(responseLatency instanceof HTMLElement)
-    ) {
+    if (!(firstByteLatency instanceof HTMLElement) || !(responseLatency instanceof HTMLElement)) {
       throw new Error("missing upstream compact latency readings");
     }
     await expect(firstByteLatency.className).not.toMatch(/rounded|border|bg-/);
@@ -3137,18 +2932,12 @@ export const UpstreamAccountTab: Story = {
     await expect(
       canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip"),
     ).toHaveLength(4);
-    const identityChips = canvas.getAllByTestId(
-      "dashboard-upstream-account-recent-identity-chip",
-    );
-    await expect(
-      new Set(identityChips.map((chip) => chip.className)).size,
-    ).toBe(4);
+    const identityChips = canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip");
+    await expect(new Set(identityChips.map((chip) => chip.className)).size).toBe(4);
     await expect(canvas.queryByText("按调用计数，不按对话去重")).toBeNull();
     await expect(canvas.queryByText("仍在重试链路中的调用")).toBeNull();
     await expect(
-      canvas.queryByText(
-        "最近 4 条调用里仍有活动或异常，优先从下方最近记录继续排查。",
-      ),
+      canvas.queryByText("最近 4 条调用里仍有活动或异常，优先从下方最近记录继续排查。"),
     ).toBeNull();
     const identityChip = canvas.getAllByTestId(
       "dashboard-upstream-account-recent-identity-chip",
@@ -3200,16 +2989,12 @@ export const UpstreamAccountPhaseBreakdownStatic: Story = {
       "dashboard-upstream-account-recent-breakdown",
     );
     const phaseSegments = Array.from(
-      recentBreakdown.querySelectorAll(
-        '[data-testid="invocation-phase-segment"]',
-      ),
+      recentBreakdown.querySelectorAll('[data-testid="invocation-phase-segment"]'),
     );
     expect(phaseSegments).toHaveLength(3);
     for (const phaseSegment of phaseSegments) {
       expect(phaseSegment.getAttribute("data-phase-motion")).toBe("static");
-      const icon = phaseSegment.querySelector(
-        '[data-testid="invocation-phase-icon"]',
-      );
+      const icon = phaseSegment.querySelector('[data-testid="invocation-phase-icon"]');
       expect(icon).toBeInstanceOf(HTMLElement);
       expect(icon?.className).not.toContain("animate-invocation-phase-requesting");
       expect(icon?.className).not.toContain("animate-pulse");
@@ -3258,29 +3043,21 @@ export const UpstreamAccountHeaderActions: Story = {
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
       "account:42:healthEvents",
     );
-    await expect(
-      within(document.body).getByTestId("story-account-drawer-tab"),
-    ).toHaveTextContent("Tab healthEvents");
+    await expect(within(document.body).getByTestId("story-account-drawer-tab")).toHaveTextContent(
+      "Tab healthEvents",
+    );
 
-    const settingsButton = await canvas.findByTestId(
-      "dashboard-upstream-account-routing-settings",
-    );
+    const settingsButton = await canvas.findByTestId("dashboard-upstream-account-routing-settings");
     await userEvent.click(settingsButton);
-    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
-      "account:42:routing",
-    );
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent("account:42:routing");
     await userEvent.click(
       within(document.body).getByRole("button", {
         name: "Close account drawer",
       }),
     );
-    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
-      "none",
-    );
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent("none");
 
-    const policyBadges = await canvas.findAllByTestId(
-      "dashboard-upstream-account-policy-badge",
-    );
+    const policyBadges = await canvas.findAllByTestId("dashboard-upstream-account-policy-badge");
     await userEvent.click(policyBadges[0]!);
     await expect(policyBadges[1]!).toHaveTextContent("强制Fast");
     await expect(policyBadges[1]!).toHaveAttribute(
@@ -3288,9 +3065,7 @@ export const UpstreamAccountHeaderActions: Story = {
       expect.stringContaining("Fast 改写策略：强制Fast"),
     );
     await userEvent.click(policyBadges[1]!);
-    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
-      "none",
-    );
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent("none");
     await waitFor(
       () => {
         const patchLog = (
@@ -3320,15 +3095,19 @@ async function assertQuickPolicyTonePalette(canvasElement: HTMLElement) {
   const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
   await userEvent.click(accountTab);
 
-  const policyBadges = await canvas.findAllByTestId(
-    "dashboard-upstream-account-policy-badge",
-  );
-  await expect(policyBadges.map((badge) => badge.textContent?.trim())).toEqual(
-    ["兜底", "Fast", "禁出", "禁入"],
-  );
-  await expect(
-    policyBadges.map((badge) => badge.getAttribute("data-policy-tone")),
-  ).toEqual(["success", "primary", "warning", "neutral"]);
+  const policyBadges = await canvas.findAllByTestId("dashboard-upstream-account-policy-badge");
+  await expect(policyBadges.map((badge) => badge.textContent?.trim())).toEqual([
+    "兜底",
+    "Fast",
+    "禁出",
+    "禁入",
+  ]);
+  await expect(policyBadges.map((badge) => badge.getAttribute("data-policy-tone"))).toEqual([
+    "success",
+    "primary",
+    "warning",
+    "neutral",
+  ]);
 }
 
 export const UpstreamAccountQuickPolicyTonePalette: Story = {
@@ -3355,8 +3134,7 @@ export const UpstreamAccountQuickPolicyTonePalette: Story = {
       })}
     />
   ),
-  play: async ({ canvasElement }) =>
-    assertQuickPolicyTonePalette(canvasElement),
+  play: async ({ canvasElement }) => assertQuickPolicyTonePalette(canvasElement),
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
     docs: {
@@ -3393,8 +3171,7 @@ export const UpstreamAccountQuickPolicyTonePaletteDark: Story = {
       theme="vibe-dark"
     />
   ),
-  play: async ({ canvasElement }) =>
-    assertQuickPolicyTonePalette(canvasElement),
+  play: async ({ canvasElement }) => assertQuickPolicyTonePalette(canvasElement),
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
     docs: {
@@ -3430,9 +3207,7 @@ export const UpstreamAccountMetricTooltips: Story = {
     const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
     await userEvent.click(accountTab);
 
-    const triggers = await canvas.findAllByTestId(
-      "dashboard-upstream-account-metric-card",
-    );
+    const triggers = await canvas.findAllByTestId("dashboard-upstream-account-metric-card");
     await expect(triggers).toHaveLength(4);
 
     const tpmInlineMetric = canvas.getByLabelText("TPM 640");
@@ -3442,10 +3217,7 @@ export const UpstreamAccountMetricTooltips: Story = {
     });
     await userEvent.click(tpmInlineMetric);
 
-    const assertMetricTooltip = async (
-      metric: string,
-      expectedTexts: string[],
-    ) => {
+    const assertMetricTooltip = async (metric: string, expectedTexts: string[]) => {
       const trigger = canvasElement.querySelector(
         `[data-testid="dashboard-upstream-account-metric-card"][data-metric="${metric}"]`,
       );
@@ -3463,18 +3235,8 @@ export const UpstreamAccountMetricTooltips: Story = {
       await userEvent.unhover(trigger);
     };
 
-    await assertMetricTooltip("latency", [
-      "首字用时",
-      "2.87 s",
-      "响应时间",
-      "阶段首字节",
-    ]);
-    await assertMetricTooltip("requests", [
-      "请求数",
-      "成功率",
-      "75%",
-      "非成功率",
-    ]);
+    await assertMetricTooltip("latency", ["首字用时", "2.87 s", "响应时间", "阶段首字节"]);
+    await assertMetricTooltip("requests", ["请求数", "成功率", "75%", "非成功率"]);
     await assertMetricTooltip("cost", [
       "成本",
       "0.72",
@@ -3484,19 +3246,12 @@ export const UpstreamAccountMetricTooltips: Story = {
       "未知",
       "gpt-5.6",
     ]);
-    await assertMetricTooltip("token", [
-      "Token",
-      "缓存写入",
-      "缓存命中 Token",
-      "输出",
-      "gpt-5.6",
-    ]);
+    await assertMetricTooltip("token", ["Token", "缓存写入", "缓存命中 Token", "输出", "gpt-5.6"]);
 
     const finalTrigger = canvasElement.querySelector(
       '[data-testid="dashboard-upstream-account-metric-card"][data-metric="cost"]',
     );
-    if (finalTrigger instanceof HTMLElement)
-      await userEvent.click(finalTrigger);
+    if (finalTrigger instanceof HTMLElement) await userEvent.click(finalTrigger);
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
@@ -3606,9 +3361,7 @@ export const ErrorSummaryTooltips: Story = {
       throw new Error("missing failed current slot");
     }
 
-    const slotErrorSummary = currentSlot.querySelector(
-      '[data-testid="invocation-error-summary"]',
-    );
+    const slotErrorSummary = currentSlot.querySelector('[data-testid="invocation-error-summary"]');
     const slotErrorTrigger = slotErrorSummary?.parentElement;
     if (!(slotErrorSummary instanceof HTMLElement) || !(slotErrorTrigger instanceof HTMLElement)) {
       throw new Error("missing current slot error summary trigger");
@@ -3616,8 +3369,8 @@ export const ErrorSummaryTooltips: Story = {
 
     await userEvent.hover(slotErrorTrigger);
     await waitFor(() => {
-      const tooltip = Array.from(document.body.querySelectorAll("[data-side]")).find(
-        (node) => node.textContent?.includes(LONG_ERROR_SUMMARY),
+      const tooltip = Array.from(document.body.querySelectorAll("[data-side]")).find((node) =>
+        node.textContent?.includes(LONG_ERROR_SUMMARY),
       );
       expect(tooltip?.textContent).toContain(LONG_ERROR_SUMMARY);
       expect(tooltip?.getAttribute("data-side")).toBe("bottom");
@@ -3628,30 +3381,25 @@ export const ErrorSummaryTooltips: Story = {
     const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
     await userEvent.click(accountTab);
 
-    const recentRow = await canvas.findByTestId(
-      "dashboard-upstream-account-recent-row",
-    );
-    const recentErrorSummary = recentRow.querySelector(
-      '[data-testid="invocation-error-summary"]',
-    );
+    const recentRow = await canvas.findByTestId("dashboard-upstream-account-recent-row");
+    const recentErrorSummary = recentRow.querySelector('[data-testid="invocation-error-summary"]');
     const recentErrorTrigger = recentErrorSummary?.parentElement;
-    if (!(recentErrorSummary instanceof HTMLElement) || !(recentErrorTrigger instanceof HTMLElement)) {
+    if (
+      !(recentErrorSummary instanceof HTMLElement) ||
+      !(recentErrorTrigger instanceof HTMLElement)
+    ) {
       throw new Error("missing recent row error summary trigger");
     }
 
     const accountGrid = canvasElement.querySelector(
       '[data-testid="dashboard-upstream-account-grid"]',
     );
-    const accountCard = recentRow.closest(
-      '[data-testid="dashboard-upstream-account-card"]',
-    );
+    const accountCard = recentRow.closest('[data-testid="dashboard-upstream-account-card"]');
     if (!(accountGrid instanceof HTMLElement) || !(accountCard instanceof HTMLElement)) {
       throw new Error("missing upstream account layout shrink chain");
     }
 
-    expect(accountGrid.className).toContain(
-      "desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]",
-    );
+    expect(accountGrid.className).toContain("desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]");
     expect(accountCard.className).toContain("min-w-0");
     expect(recentRow.className).toContain("min-w-0");
     expect(recentErrorTrigger.className).toContain("w-full");
@@ -3659,8 +3407,8 @@ export const ErrorSummaryTooltips: Story = {
 
     await userEvent.hover(recentErrorTrigger);
     await waitFor(() => {
-      const tooltip = Array.from(document.body.querySelectorAll("[data-side]")).find(
-        (node) => node.textContent?.includes(LONG_ERROR_SUMMARY),
+      const tooltip = Array.from(document.body.querySelectorAll("[data-side]")).find((node) =>
+        node.textContent?.includes(LONG_ERROR_SUMMARY),
       );
       expect(tooltip?.textContent).toContain(LONG_ERROR_SUMMARY);
       expect(tooltip?.getAttribute("data-side")).toBe("bottom");
@@ -3711,17 +3459,14 @@ export const UpstreamAccountRecentIdentityChipOpensConversation: Story = {
     await userEvent.click(identityChip);
     await waitFor(() => {
       expect(
-        document.body.querySelector('[data-testid="story-drawer-state"]')
-          ?.textContent,
+        document.body.querySelector('[data-testid="story-drawer-state"]')?.textContent,
       ).toContain("conversation:pck-upstream-running");
     });
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
       "conversation:pck-upstream-running",
     );
 
-    const firstRow = canvas.getAllByTestId(
-      "dashboard-upstream-account-recent-row",
-    )[0];
+    const firstRow = canvas.getAllByTestId("dashboard-upstream-account-recent-row")[0];
     if (!(firstRow instanceof HTMLButtonElement)) {
       throw new Error("expected upstream recent row button");
     }
@@ -3729,8 +3474,7 @@ export const UpstreamAccountRecentIdentityChipOpensConversation: Story = {
     await userEvent.click(firstRow);
     await waitFor(() => {
       expect(
-        document.body.querySelector('[data-testid="story-drawer-state"]')
-          ?.textContent,
+        document.body.querySelector('[data-testid="story-drawer-state"]')?.textContent,
       ).toContain("invocation:acct-invoke-1");
     });
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
@@ -3777,12 +3521,8 @@ export const UpstreamAccountTabDynamicSeven: Story = {
     await expect(
       canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip"),
     ).toHaveLength(7);
-    const identityChips = canvas.getAllByTestId(
-      "dashboard-upstream-account-recent-identity-chip",
-    );
-    await expect(
-      new Set(identityChips.map((chip) => chip.className)).size,
-    ).toBeGreaterThan(3);
+    const identityChips = canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip");
+    await expect(new Set(identityChips.map((chip) => chip.className)).size).toBeGreaterThan(3);
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
@@ -3856,9 +3596,7 @@ export const DrawerInteractionFlow: Story = {
 
     await waitFor(() => {
       expect(
-        document.body.querySelector(
-          '[data-testid="dashboard-invocation-detail-drawer"]',
-        ),
+        document.body.querySelector('[data-testid="dashboard-invocation-detail-drawer"]'),
       ).not.toBeNull();
     });
 
@@ -3872,9 +3610,7 @@ export const DrawerInteractionFlow: Story = {
     await userEvent.click(drawerAccountButton);
 
     await waitFor(() => {
-      expect(
-        document.body.querySelector('[data-testid="story-account-drawer"]'),
-      ).not.toBeNull();
+      expect(document.body.querySelector('[data-testid="story-account-drawer"]')).not.toBeNull();
     });
   },
 };
@@ -3975,16 +3711,13 @@ export const VirtualizedLargeDataset: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const container = await canvas.findByTestId(
-      "dashboard-working-conversations-grid",
-    );
+    const container = await canvas.findByTestId("dashboard-working-conversations-grid");
     const storyWindow = canvasElement.ownerDocument.defaultView;
     if (!storyWindow) {
       throw new Error("missing story window");
     }
 
-    const scrollTarget =
-      container.getBoundingClientRect().top + storyWindow.scrollY + 1_600;
+    const scrollTarget = container.getBoundingClientRect().top + storyWindow.scrollY + 1_600;
     storyWindow.scrollTo({ top: scrollTarget });
 
     await waitFor(() => {
@@ -4019,16 +3752,13 @@ export const HeadInsertAnchorCompensation: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const container = await canvas.findByTestId(
-      "dashboard-working-conversations-grid",
-    );
+    const container = await canvas.findByTestId("dashboard-working-conversations-grid");
     const storyWindow = canvasElement.ownerDocument.defaultView;
     if (!storyWindow) {
       throw new Error("missing story window");
     }
 
-    const scrollTarget =
-      container.getBoundingClientRect().top + storyWindow.scrollY + 1_600;
+    const scrollTarget = container.getBoundingClientRect().top + storyWindow.scrollY + 1_600;
     storyWindow.scrollTo({ top: scrollTarget });
     storyWindow.dispatchEvent(new Event("scroll"));
 
@@ -4043,12 +3773,8 @@ export const HeadInsertAnchorCompensation: Story = {
     });
 
     const anchorSequenceId = anchorCard?.dataset.conversationSequenceId ?? "";
-    const containerTopBoundary = Math.max(
-      0,
-      container.getBoundingClientRect().top,
-    );
-    const anchorTop =
-      (anchorCard?.getBoundingClientRect().top ?? 0) - containerTopBoundary;
+    const containerTopBoundary = Math.max(0, container.getBoundingClientRect().top);
+    const anchorTop = (anchorCard?.getBoundingClientRect().top ?? 0) - containerTopBoundary;
 
     await waitFor(() => {
       expect(canvas.getByTestId("story-head-insert-status")).toHaveTextContent(
@@ -4061,13 +3787,9 @@ export const HeadInsertAnchorCompensation: Story = {
         container.querySelectorAll<HTMLElement>(
           '[data-testid="dashboard-working-conversation-card"]',
         ),
-      ).find(
-        (candidate) =>
-          candidate.dataset.conversationSequenceId === anchorSequenceId,
-      );
+      ).find((candidate) => candidate.dataset.conversationSequenceId === anchorSequenceId);
       expect(nextAnchor).toBeDefined();
-      const nextTop =
-        (nextAnchor?.getBoundingClientRect().top ?? 0) - containerTopBoundary;
+      const nextTop = (nextAnchor?.getBoundingClientRect().top ?? 0) - containerTopBoundary;
       expect(Math.abs(nextTop - anchorTop)).toBeLessThanOrEqual(12);
     });
   },
@@ -4082,12 +3804,8 @@ export const CreatedAtDescendingOrder: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const cards = await canvas.findAllByTestId(
-      "dashboard-working-conversation-card",
-    );
-    expect(
-      cards.map((card) => card.getAttribute("data-conversation-sequence-id")),
-    ).toEqual(
+    const cards = await canvas.findAllByTestId("dashboard-working-conversation-card");
+    expect(cards.map((card) => card.getAttribute("data-conversation-sequence-id"))).toEqual(
       createdAtDescendingOrderKeys.map(getStorySequenceIdForPromptCacheKey),
     );
   },

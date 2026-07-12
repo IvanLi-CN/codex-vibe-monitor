@@ -1,8 +1,5 @@
 import type { TimeseriesResponse } from "../../lib/api";
-import {
-  parseDateInput,
-  resolveClosedNaturalDayEnd,
-} from "./dashboardNaturalDayWindow";
+import { parseDateInput, resolveClosedNaturalDayEnd } from "./dashboardNaturalDayWindow";
 
 const MINUTE_MS = 60_000;
 const TREND_CHART_BUCKET_MINUTES = 10;
@@ -51,11 +48,7 @@ export function buildTodayMinuteChartData(
 ): DashboardTodayMinuteDatum[] {
   const localeTag = options?.localeTag ?? "en-US";
   const fallbackNow = options?.now ?? new Date();
-  const anchor = resolveRangeAnchor(
-    response,
-    fallbackNow,
-    options?.closedNaturalDay ?? false,
-  );
+  const anchor = resolveRangeAnchor(response, fallbackNow, options?.closedNaturalDay ?? false);
   const start = startOfLocalDay(anchor);
   const end = endOfLocalDay(anchor);
 
@@ -119,13 +112,10 @@ export function buildTodayMinuteChartData(
     const phaseCounts = point.inFlightPhaseCounts ?? null;
     const queuedInFlightCount = Math.max(phaseCounts?.queued ?? 0, 0);
     const explicitRunningInFlightCount =
-      Math.max(phaseCounts?.requesting ?? 0, 0) +
-      Math.max(phaseCounts?.responding ?? 0, 0);
+      Math.max(phaseCounts?.requesting ?? 0, 0) + Math.max(phaseCounts?.responding ?? 0, 0);
     const phaseTotal = queuedInFlightCount + explicitRunningInFlightCount;
     const runningInFlightCount =
-      phaseTotal > 0 || pointInFlightCount <= 0
-        ? explicitRunningInFlightCount
-        : pointInFlightCount;
+      phaseTotal > 0 || pointInFlightCount <= 0 ? explicitRunningInFlightCount : pointInFlightCount;
     current.queuedInFlightCount += queuedInFlightCount;
     current.runningInFlightCount += runningInFlightCount;
     current.inFlightCount += Math.max(
@@ -160,11 +150,7 @@ export function buildTodayMinuteChartData(
   let cumulativeNonSuccessCost = 0;
   let cumulativeTokens = 0;
 
-  for (
-    let epochMs = startMs, index = 0;
-    epochMs <= endMs;
-    epochMs += MINUTE_MS, index += 1
-  ) {
+  for (let epochMs = startMs, index = 0; epochMs <= endMs; epochMs += MINUTE_MS, index += 1) {
     const point = pointMap.get(epochMs);
     const isFuture = epochMs > anchor.getTime();
     const successCount = point?.successCount ?? 0;
@@ -194,8 +180,7 @@ export function buildTodayMinuteChartData(
     const firstResponseByteTotalAvgMs =
       point == null || point.firstResponseByteTotalSampleCount <= 0
         ? null
-        : point.firstResponseByteTotalWeightedMs /
-          point.firstResponseByteTotalSampleCount;
+        : point.firstResponseByteTotalWeightedMs / point.firstResponseByteTotalSampleCount;
     cumulativeCost += totalCost;
     cumulativeSuccessCost += successCost;
     cumulativeNonSuccessCost += nonSuccessCost;
@@ -206,9 +191,7 @@ export function buildTodayMinuteChartData(
       index,
       epochMs,
       label: normalizeFormattedMidnight(timeFormatter.format(currentDate)),
-      tooltipLabel: normalizeFormattedMidnight(
-        tooltipFormatter.format(currentDate),
-      ),
+      tooltipLabel: normalizeFormattedMidnight(tooltipFormatter.format(currentDate)),
       successCount,
       failureCount,
       inFlightCount,
@@ -219,11 +202,7 @@ export function buildTodayMinuteChartData(
       chartInFlightCount: isFuture ? null : inFlightCount,
       chartQueuedInFlightCount: isFuture ? null : queuedInFlightCount,
       chartRunningInFlightCount: isFuture ? null : runningInFlightCount,
-      chartFailureCountNegative: isFuture
-        ? null
-        : failureCount > 0
-          ? -failureCount
-          : 0,
+      chartFailureCountNegative: isFuture ? null : failureCount > 0 ? -failureCount : 0,
       totalCount,
       totalCost,
       successCost,
@@ -237,9 +216,7 @@ export function buildTodayMinuteChartData(
         : (point?.firstResponseByteTotalSampleCount ?? 0),
       chartTokensPerMinute: null,
       chartSpendRate: null,
-      chartFirstResponseByteTotalAvgMs: isFuture
-        ? null
-        : firstResponseByteTotalAvgMs,
+      chartFirstResponseByteTotalAvgMs: isFuture ? null : firstResponseByteTotalAvgMs,
       cumulativeCost: isFuture ? null : cumulativeCost,
       cumulativeSuccessCost: isFuture ? null : cumulativeSuccessCost,
       cumulativeNonSuccessCost: isFuture ? null : cumulativeNonSuccessCost,
@@ -257,15 +234,8 @@ export function buildTodayMinuteChartData(
 }
 
 function applyTenMinuteChartBuckets(data: DashboardTodayMinuteDatum[]) {
-  for (
-    let bucketStart = 0;
-    bucketStart < data.length;
-    bucketStart += TREND_CHART_BUCKET_MINUTES
-  ) {
-    const bucket = data.slice(
-      bucketStart,
-      bucketStart + TREND_CHART_BUCKET_MINUTES,
-    );
+  for (let bucketStart = 0; bucketStart < data.length; bucketStart += TREND_CHART_BUCKET_MINUTES) {
+    const bucket = data.slice(bucketStart, bucketStart + TREND_CHART_BUCKET_MINUTES);
     const bucketAnchor = bucket[0];
     if (!bucketAnchor || bucketAnchor.tokensPerMinute == null) continue;
 
@@ -282,8 +252,7 @@ function applyTenMinuteChartBuckets(data: DashboardTodayMinuteDatum[]) {
 
     bucketAnchor.chartTokensPerMinute =
       rateSampleMinutes > 0 ? totalTokens / rateSampleMinutes : null;
-    bucketAnchor.chartSpendRate =
-      rateSampleMinutes > 0 ? totalCost / rateSampleMinutes : null;
+    bucketAnchor.chartSpendRate = rateSampleMinutes > 0 ? totalCost / rateSampleMinutes : null;
   }
 }
 
@@ -315,10 +284,7 @@ function resolveRangeAnchor(
     return floorToMinute(fallbackNow);
   }
 
-  const closedNaturalDayEnd = resolveClosedNaturalDayEnd(
-    response,
-    closedNaturalDay,
-  );
+  const closedNaturalDayEnd = resolveClosedNaturalDayEnd(response, closedNaturalDay);
   if (closedNaturalDayEnd) {
     return new Date(closedNaturalDayEnd.getTime() - MINUTE_MS);
   }

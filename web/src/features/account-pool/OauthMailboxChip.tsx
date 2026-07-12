@@ -1,13 +1,19 @@
-import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { AppIcon } from '../shared/AppIcon'
-import { Button } from '../../components/ui/button'
-import { Input } from '../../components/ui/input'
-import { Popover, PopoverAnchor, PopoverArrow, PopoverContent } from '../../components/ui/popover'
-import { Tooltip } from '../../components/ui/tooltip'
-import { cn } from '../../lib/utils'
+import {
+  type ChangeEvent,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
+import { Popover, PopoverAnchor, PopoverArrow, PopoverContent } from "../../components/ui/popover";
+import { Tooltip } from "../../components/ui/tooltip";
+import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
 
-const LONG_PRESS_DELAY_MS = 360
-const HOVER_CLOSE_DELAY_MS = 140
+const LONG_PRESS_DELAY_MS = 360;
+const HOVER_CLOSE_DELAY_MS = 140;
 
 function buildMailboxTooltip(copyLabel: string, emailAddress: string) {
   return (
@@ -17,11 +23,11 @@ function buildMailboxTooltip(copyLabel: string, emailAddress: string) {
         {emailAddress}
       </code>
     </div>
-  )
+  );
 }
 
 function buildMailboxCopiedTooltip(copiedLabel: string) {
-  return <span className="whitespace-nowrap text-[11px] font-medium">{copiedLabel}</span>
+  return <span className="whitespace-nowrap text-[11px] font-medium">{copiedLabel}</span>;
 }
 
 function buildEditableMailboxHint(copyLabel: string, emailAddress: string | null | undefined) {
@@ -34,18 +40,18 @@ function buildEditableMailboxHint(copyLabel: string, emailAddress: string | null
         </code>
       ) : null}
     </div>
-  )
+  );
 }
 
 function selectManualCopyText(target: HTMLDivElement | null) {
-  if (!target) return
-  target.focus()
-  const selection = target.ownerDocument.getSelection?.()
-  if (!selection) return
-  const range = target.ownerDocument.createRange()
-  range.selectNodeContents(target)
-  selection.removeAllRanges()
-  selection.addRange(range)
+  if (!target) return;
+  target.focus();
+  const selection = target.ownerDocument.getSelection?.();
+  if (!selection) return;
+  const range = target.ownerDocument.createRange();
+  range.selectNodeContents(target);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function buildMailboxManualTooltip(
@@ -74,40 +80,40 @@ function buildMailboxManualTooltip(
         <span className="whitespace-nowrap">{emailAddress}</span>
       </div>
     </div>
-  )
+  );
 }
 
 interface OauthMailboxChipProps {
-  emailAddress: string | null | undefined
-  emptyLabel: string
-  copyAriaLabel: string
-  copyHintLabel: string
-  copiedLabel: string
-  manualCopyLabel: string
-  manualBadgeLabel: string
-  tone?: 'idle' | 'copied' | 'manual'
-  onCopy: () => void
-  className?: string
+  emailAddress: string | null | undefined;
+  emptyLabel: string;
+  copyAriaLabel: string;
+  copyHintLabel: string;
+  copiedLabel: string;
+  manualCopyLabel: string;
+  manualBadgeLabel: string;
+  tone?: "idle" | "copied" | "manual";
+  onCopy: () => void;
+  className?: string;
   editor?: {
-    draftValue: string
-    inputName?: string
-    inputAriaLabel: string
-    inputPlaceholder: string
-    editAriaLabel: string
-    editHintLabel: string
-    submitAriaLabel: string
-    cancelAriaLabel: string
-    startEditing: () => void
-    onDraftValueChange: (value: string) => void
-    onSubmit: () => void
-    onCancel: () => void
-    editing: boolean
-    busy?: boolean
-    inputInvalid?: boolean
-    inputError?: string | null
-    disabled?: boolean
-    submitDisabled?: boolean
-  }
+    draftValue: string;
+    inputName?: string;
+    inputAriaLabel: string;
+    inputPlaceholder: string;
+    editAriaLabel: string;
+    editHintLabel: string;
+    submitAriaLabel: string;
+    cancelAriaLabel: string;
+    startEditing: () => void;
+    onDraftValueChange: (value: string) => void;
+    onSubmit: () => void;
+    onCancel: () => void;
+    editing: boolean;
+    busy?: boolean;
+    inputInvalid?: boolean;
+    inputError?: string | null;
+    disabled?: boolean;
+    submitDisabled?: boolean;
+  };
 }
 
 export function OauthMailboxChip({
@@ -118,111 +124,114 @@ export function OauthMailboxChip({
   copiedLabel,
   manualCopyLabel,
   manualBadgeLabel,
-  tone = 'idle',
+  tone = "idle",
   onCopy,
   className,
   editor,
 }: OauthMailboxChipProps) {
-  const longPressTimerRef = useRef<number | null>(null)
-  const hoverCloseTimerRef = useRef<number | null>(null)
-  const manualCopyValueRef = useRef<HTMLDivElement | null>(null)
-  const [longPressOpen, setLongPressOpen] = useState(false)
-  const [hoverOpen, setHoverOpen] = useState(false)
+  const longPressTimerRef = useRef<number | null>(null);
+  const hoverCloseTimerRef = useRef<number | null>(null);
+  const manualCopyValueRef = useRef<HTMLDivElement | null>(null);
+  const [longPressOpen, setLongPressOpen] = useState(false);
+  const [hoverOpen, setHoverOpen] = useState(false);
 
   useEffect(() => {
     return () => {
       if (longPressTimerRef.current != null) {
-        window.clearTimeout(longPressTimerRef.current)
+        window.clearTimeout(longPressTimerRef.current);
       }
       if (hoverCloseTimerRef.current != null) {
-        window.clearTimeout(hoverCloseTimerRef.current)
+        window.clearTimeout(hoverCloseTimerRef.current);
       }
-    }
-  }, [])
+    };
+  }, []);
 
   useEffect(() => {
-    if (tone !== 'manual') return
+    if (tone !== "manual") return;
     const timerId = window.setTimeout(() => {
-      selectManualCopyText(manualCopyValueRef.current)
-    }, 0)
+      selectManualCopyText(manualCopyValueRef.current);
+    }, 0);
     return () => {
-      window.clearTimeout(timerId)
-    }
-  }, [tone])
+      window.clearTimeout(timerId);
+    };
+  }, [tone]);
 
   const clearLongPressTimer = () => {
     if (longPressTimerRef.current != null) {
-      window.clearTimeout(longPressTimerRef.current)
-      longPressTimerRef.current = null
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
     }
-  }
+  };
 
   const clearHoverCloseTimer = () => {
     if (hoverCloseTimerRef.current != null) {
-      window.clearTimeout(hoverCloseTimerRef.current)
-      hoverCloseTimerRef.current = null
+      window.clearTimeout(hoverCloseTimerRef.current);
+      hoverCloseTimerRef.current = null;
     }
-  }
+  };
 
   const openHoverPopover = () => {
-    clearHoverCloseTimer()
-    setHoverOpen(true)
-  }
+    clearHoverCloseTimer();
+    setHoverOpen(true);
+  };
 
   const scheduleHoverPopoverClose = () => {
-    clearHoverCloseTimer()
+    clearHoverCloseTimer();
     hoverCloseTimerRef.current = window.setTimeout(() => {
-      setHoverOpen(false)
-      hoverCloseTimerRef.current = null
-    }, HOVER_CLOSE_DELAY_MS)
-  }
+      setHoverOpen(false);
+      hoverCloseTimerRef.current = null;
+    }, HOVER_CLOSE_DELAY_MS);
+  };
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0) return
-    clearLongPressTimer()
+    if (event.button !== 0) return;
+    clearLongPressTimer();
     longPressTimerRef.current = window.setTimeout(() => {
-      setLongPressOpen(true)
-      longPressTimerRef.current = null
-    }, LONG_PRESS_DELAY_MS)
-  }
+      setLongPressOpen(true);
+      longPressTimerRef.current = null;
+    }, LONG_PRESS_DELAY_MS);
+  };
 
   const handlePointerRelease = () => {
-    clearLongPressTimer()
-    setLongPressOpen(false)
-  }
+    clearLongPressTimer();
+    setLongPressOpen(false);
+  };
 
   if (editor) {
-    const showCopiedTooltip = tone === 'copied'
-    const showManualPanel = tone === 'manual'
-    const resolvedOpen = editor.editing || showManualPanel || ((hoverOpen || longPressOpen) && !showCopiedTooltip)
-    const canCopy = Boolean(emailAddress)
+    const showCopiedTooltip = tone === "copied";
+    const showManualPanel = tone === "manual";
+    const resolvedOpen =
+      editor.editing || showManualPanel || ((hoverOpen || longPressOpen) && !showCopiedTooltip);
+    const canCopy = Boolean(emailAddress);
     const handleEditorDraftChange = (event: ChangeEvent<HTMLInputElement>) => {
-      editor.onDraftValueChange(event.target.value)
-    }
+      editor.onDraftValueChange(event.target.value);
+    };
 
     const trigger = (
       <button
         type="button"
         className={cn(
-          'inline-flex h-7 min-w-0 max-w-full items-center justify-start rounded-full px-2.5 font-mono text-xs',
-          'border border-base-300/80 bg-base-100 text-base-content/80 shadow-sm transition-[border-color,background-color,color,box-shadow]',
-          canCopy && 'cursor-copy hover:border-primary/55 hover:bg-primary/5 hover:text-primary hover:shadow-sm',
-          canCopy && 'focus-visible:border-primary/55 focus-visible:bg-primary/5 focus-visible:text-primary focus-visible:shadow-sm',
-          !canCopy && 'cursor-default text-base-content/55',
-          tone === 'manual' && 'border-warning/35 bg-base-100 text-base-content shadow-sm',
+          "inline-flex h-7 min-w-0 max-w-full items-center justify-start rounded-full px-2.5 font-mono text-xs",
+          "border border-base-300/80 bg-base-100 text-base-content/80 shadow-sm transition-[border-color,background-color,color,box-shadow]",
+          canCopy &&
+            "cursor-copy hover:border-primary/55 hover:bg-primary/5 hover:text-primary hover:shadow-sm",
+          canCopy &&
+            "focus-visible:border-primary/55 focus-visible:bg-primary/5 focus-visible:text-primary focus-visible:shadow-sm",
+          !canCopy && "cursor-default text-base-content/55",
+          tone === "manual" && "border-warning/35 bg-base-100 text-base-content shadow-sm",
           className,
         )}
         aria-label={canCopy ? copyAriaLabel : editor.editAriaLabel}
         onBlur={() => {
           if (!editor.editing) {
-            scheduleHoverPopoverClose()
+            scheduleHoverPopoverClose();
           }
         }}
         onFocus={openHoverPopover}
         onMouseEnter={openHoverPopover}
         onMouseLeave={() => {
           if (!editor.editing) {
-            scheduleHoverPopoverClose()
+            scheduleHoverPopoverClose();
           }
         }}
         onPointerDown={handlePointerDown}
@@ -231,19 +240,19 @@ export function OauthMailboxChip({
         onPointerLeave={handlePointerRelease}
         onClick={() => {
           if (canCopy) {
-            onCopy()
+            onCopy();
           }
         }}
       >
         <span className="truncate text-left">{emailAddress || emptyLabel}</span>
-        {tone === 'manual' ? (
+        {tone === "manual" ? (
           <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
             <AppIcon name="alert-circle-outline" className="h-3.5 w-3.5" aria-hidden />
             {manualBadgeLabel}
           </span>
         ) : null}
       </button>
-    )
+    );
 
     const buttonWithCopiedTooltip = showCopiedTooltip ? (
       <Tooltip
@@ -259,10 +268,10 @@ export function OauthMailboxChip({
       </Tooltip>
     ) : (
       trigger
-    )
+    );
 
     if (showCopiedTooltip) {
-      return buttonWithCopiedTooltip
+      return buttonWithCopiedTooltip;
     }
 
     return (
@@ -273,23 +282,26 @@ export function OauthMailboxChip({
           side="top"
           sideOffset={8}
           className={cn(
-            'rounded-2xl border border-base-300/90 bg-base-100/98 p-2 shadow-[0_12px_32px_rgba(15,23,42,0.12)] backdrop-blur-sm',
+            "rounded-2xl border border-base-300/90 bg-base-100/98 p-2 shadow-[0_12px_32px_rgba(15,23,42,0.12)] backdrop-blur-sm",
             editor.editing
-              ? 'w-[min(30rem,calc(100vw-1rem))]'
+              ? "w-[min(30rem,calc(100vw-1rem))]"
               : showManualPanel
-                ? 'w-[min(24rem,calc(100vw-1rem))]'
-                : 'w-fit min-w-[15rem] max-w-[min(30rem,calc(100vw-1rem))]',
+                ? "w-[min(24rem,calc(100vw-1rem))]"
+                : "w-fit min-w-[15rem] max-w-[min(30rem,calc(100vw-1rem))]",
           )}
           onMouseEnter={openHoverPopover}
           onMouseLeave={() => {
             if (!editor.editing) {
-              scheduleHoverPopoverClose()
+              scheduleHoverPopoverClose();
             }
           }}
           onFocusCapture={openHoverPopover}
           onBlurCapture={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null) && !editor.editing) {
-              scheduleHoverPopoverClose()
+            if (
+              !event.currentTarget.contains(event.relatedTarget as Node | null) &&
+              !editor.editing
+            ) {
+              scheduleHoverPopoverClose();
             }
           }}
         >
@@ -310,7 +322,7 @@ export function OauthMailboxChip({
                   data-form-type="other"
                   name={editor.inputName}
                   aria-label={editor.inputAriaLabel}
-                  aria-invalid={editor.inputInvalid ? 'true' : 'false'}
+                  aria-invalid={editor.inputInvalid ? "true" : "false"}
                   placeholder={editor.inputPlaceholder}
                   value={editor.draftValue}
                   onChange={handleEditorDraftChange}
@@ -345,13 +357,19 @@ export function OauthMailboxChip({
                   )}
                 </Button>
               </div>
-              {editor.inputError ? <p className="text-xs leading-5 text-error">{editor.inputError}</p> : null}
+              {editor.inputError ? (
+                <p className="text-xs leading-5 text-error">{editor.inputError}</p>
+              ) : null}
             </div>
           ) : (
             <div className="flex min-w-0 items-center gap-2">
               <div className="min-w-0 flex-1">
                 {showManualPanel
-                  ? buildMailboxManualTooltip(manualCopyLabel, emailAddress ?? editor.draftValue, manualCopyValueRef)
+                  ? buildMailboxManualTooltip(
+                      manualCopyLabel,
+                      emailAddress ?? editor.draftValue,
+                      manualCopyValueRef,
+                    )
                   : buildEditableMailboxHint(copyHintLabel, emailAddress)}
               </div>
               <Button
@@ -368,42 +386,53 @@ export function OauthMailboxChip({
               </Button>
             </div>
           )}
-          <PopoverArrow className="fill-base-100/96 stroke-base-300/80 stroke-[0.6]" width={14} height={8} />
+          <PopoverArrow
+            className="fill-base-100/96 stroke-base-300/80 stroke-[0.6]"
+            width={14}
+            height={8}
+          />
         </PopoverContent>
       </Popover>
-    )
+    );
   }
 
   if (!emailAddress) {
-    return <span className={cn('min-w-0 flex-1 truncate text-right text-xs text-base-content/50', className)}>{emptyLabel}</span>
+    return (
+      <span
+        className={cn("min-w-0 flex-1 truncate text-right text-xs text-base-content/50", className)}
+      >
+        {emptyLabel}
+      </span>
+    );
   }
 
   return (
     <Tooltip
-      className={cn('min-w-0 max-w-full shrink', className)}
+      className={cn("min-w-0 max-w-full shrink", className)}
       content={
-        tone === 'manual'
+        tone === "manual"
           ? buildMailboxManualTooltip(manualCopyLabel, emailAddress, manualCopyValueRef)
-          : tone === 'copied'
+          : tone === "copied"
             ? buildMailboxCopiedTooltip(copiedLabel)
             : buildMailboxTooltip(copyHintLabel, emailAddress)
       }
       contentClassName={cn(
-        'max-w-[min(42rem,calc(100vw-1rem))]',
-        tone === 'copied' && 'w-fit max-w-none rounded-md border-transparent bg-base-content px-2 py-1 text-base-100 shadow-lg',
-        tone === 'manual' && 'border-warning/35 bg-warning/8',
+        "max-w-[min(42rem,calc(100vw-1rem))]",
+        tone === "copied" &&
+          "w-fit max-w-none rounded-md border-transparent bg-base-content px-2 py-1 text-base-100 shadow-lg",
+        tone === "manual" && "border-warning/35 bg-warning/8",
       )}
-      arrowClassName={tone === 'copied' ? 'fill-base-content stroke-base-content' : undefined}
-      open={tone === 'copied' || tone === 'manual' || hoverOpen || longPressOpen}
+      arrowClassName={tone === "copied" ? "fill-base-content stroke-base-content" : undefined}
+      open={tone === "copied" || tone === "manual" || hoverOpen || longPressOpen}
     >
       <button
         type="button"
         className={cn(
-          'inline-flex h-7 min-w-0 max-w-full cursor-copy items-center justify-start rounded-full px-2.5 font-mono text-xs',
-          'border border-base-300/80 bg-base-100 text-base-content/80 shadow-sm transition-[border-color,background-color,color,box-shadow]',
-          'hover:border-primary/55 hover:bg-primary/5 hover:text-primary hover:shadow-sm',
-          'focus-visible:border-primary/55 focus-visible:bg-primary/5 focus-visible:text-primary focus-visible:shadow-sm focus-visible:outline-none',
-          tone === 'manual' && 'border-warning/35 bg-base-100 text-base-content shadow-sm',
+          "inline-flex h-7 min-w-0 max-w-full cursor-copy items-center justify-start rounded-full px-2.5 font-mono text-xs",
+          "border border-base-300/80 bg-base-100 text-base-content/80 shadow-sm transition-[border-color,background-color,color,box-shadow]",
+          "hover:border-primary/55 hover:bg-primary/5 hover:text-primary hover:shadow-sm",
+          "focus-visible:border-primary/55 focus-visible:bg-primary/5 focus-visible:text-primary focus-visible:shadow-sm focus-visible:outline-none",
+          tone === "manual" && "border-warning/35 bg-base-100 text-base-content shadow-sm",
         )}
         aria-label={copyAriaLabel}
         onBlur={() => setHoverOpen(false)}
@@ -417,7 +446,7 @@ export function OauthMailboxChip({
         onClick={onCopy}
       >
         <span className="truncate text-left">{emailAddress}</span>
-        {tone === 'manual' ? (
+        {tone === "manual" ? (
           <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
             <AppIcon name="alert-circle-outline" className="h-3.5 w-3.5" aria-hidden />
             {manualBadgeLabel}
@@ -425,5 +454,5 @@ export function OauthMailboxChip({
         ) : null}
       </button>
     </Tooltip>
-  )
+  );
 }

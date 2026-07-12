@@ -13,25 +13,29 @@ import { useSettings } from "./useSettings";
 
 const apiMocks = vi.hoisted(() => ({
   fetchSettings: vi.fn<() => Promise<SettingsPayload>>(),
-  updateProxySettings: vi.fn<(payload: {
-    hijackEnabled: boolean;
-    mergeUpstreamEnabled: boolean;
-    fastModeRewriteMode?: "disabled" | "fill_missing" | "force_priority";
-    upstream429MaxRetries: number;
-    websocketEnabled: boolean;
-    upstreamWebsocketDefaultEnabled: boolean;
-    requestBodyLoggingEnabled: boolean;
-    responseBodyLoggingEnabled: boolean;
-    encryptedSessionOwnerRoutingEnabled: boolean;
-    enabledModels: string[];
-  }) => Promise<ProxySettings>>(),
-  updateForwardProxySettings: vi.fn<
-    (payload: {
-      proxyUrls: string[];
-      subscriptionUrls: string[];
-      subscriptionUpdateIntervalSecs: number;
-    }) => Promise<ForwardProxySettings>
-  >(),
+  updateProxySettings:
+    vi.fn<
+      (payload: {
+        hijackEnabled: boolean;
+        mergeUpstreamEnabled: boolean;
+        fastModeRewriteMode?: "disabled" | "fill_missing" | "force_priority";
+        upstream429MaxRetries: number;
+        websocketEnabled: boolean;
+        upstreamWebsocketDefaultEnabled: boolean;
+        requestBodyLoggingEnabled: boolean;
+        responseBodyLoggingEnabled: boolean;
+        encryptedSessionOwnerRoutingEnabled: boolean;
+        enabledModels: string[];
+      }) => Promise<ProxySettings>
+    >(),
+  updateForwardProxySettings:
+    vi.fn<
+      (payload: {
+        proxyUrls: string[];
+        subscriptionUrls: string[];
+        subscriptionUpdateIntervalSecs: number;
+      }) => Promise<ForwardProxySettings>
+    >(),
   updatePricingSettings: vi.fn<(payload: PricingSettings) => Promise<PricingSettings>>(),
 }));
 
@@ -61,9 +65,7 @@ function createForwardProxySettings(
   };
 }
 
-function createSettingsPayload(
-  overrides: Partial<SettingsPayload> = {},
-): SettingsPayload {
+function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): SettingsPayload {
   return {
     proxy: {
       hijackEnabled: false,
@@ -77,7 +79,14 @@ function createSettingsPayload(
       encryptedSessionOwnerRoutingEnabled: false,
       defaultHijackEnabled: false,
       models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
-      enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
+      enabledModels: [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-5.5-pro",
+      ],
     },
     forwardProxy: createForwardProxySettings(),
     pricing: {
@@ -129,9 +138,7 @@ function Probe() {
     <div>
       <div data-testid="loading">{String(isLoading)}</div>
       <div data-testid="error">{error ?? ""}</div>
-      <div data-testid="proxy-enabled-models">
-        {settings?.proxy.enabledModels.join(",") ?? ""}
-      </div>
+      <div data-testid="proxy-enabled-models">{settings?.proxy.enabledModels.join(",") ?? ""}</div>
       <div data-testid="proxy-body-logging">
         {settings
           ? `${settings.proxy.requestBodyLoggingEnabled}/${settings.proxy.responseBodyLoggingEnabled}`
@@ -140,13 +147,12 @@ function Probe() {
       <div data-testid="proxy-encrypted-owner-routing">
         {settings ? String(settings.proxy.encryptedSessionOwnerRoutingEnabled) : ""}
       </div>
-      <div data-testid="proxy-urls">
-        {settings?.forwardProxy.proxyUrls.join(",") ?? ""}
-      </div>
+      <div data-testid="proxy-urls">{settings?.forwardProxy.proxyUrls.join(",") ?? ""}</div>
       <div data-testid="pricing-models">
         {settings?.pricing.entries.map((entry) => entry.model).join(",") ?? ""}
       </div>
       <button
+        type="button"
         data-testid="save-proxy"
         disabled={!settings}
         onClick={() => {
@@ -165,6 +171,7 @@ function Probe() {
         save proxy
       </button>
       <button
+        type="button"
         data-testid="save-forward-proxy"
         disabled={!settings}
         onClick={() => {
@@ -182,6 +189,7 @@ function Probe() {
         save
       </button>
       <button
+        type="button"
         data-testid="save-pricing"
         disabled={!settings}
         onClick={() => {
@@ -224,9 +232,7 @@ beforeEach(() => {
   apiMocks.fetchSettings.mockResolvedValue(createSettingsPayload());
   apiMocks.updateProxySettings.mockImplementation(async (payload) => ({
     hijackEnabled: payload.hijackEnabled,
-    mergeUpstreamEnabled: payload.hijackEnabled
-      ? payload.mergeUpstreamEnabled
-      : false,
+    mergeUpstreamEnabled: payload.hijackEnabled ? payload.mergeUpstreamEnabled : false,
     fastModeRewriteMode: payload.fastModeRewriteMode ?? "disabled",
     upstream429MaxRetries: payload.upstream429MaxRetries,
     websocketEnabled: payload.websocketEnabled,
@@ -235,14 +241,7 @@ beforeEach(() => {
     responseBodyLoggingEnabled: payload.responseBodyLoggingEnabled,
     encryptedSessionOwnerRoutingEnabled: payload.encryptedSessionOwnerRoutingEnabled,
     defaultHijackEnabled: false,
-    models: [
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
-      "gpt-5.4",
-      "gpt-5.5",
-      "gpt-5.5-pro",
-    ],
+    models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
     enabledModels: payload.enabledModels,
   }));
   apiMocks.updatePricingSettings.mockImplementation(async (payload) => ({
@@ -327,17 +326,12 @@ describe("useSettings", () => {
       expect(text("proxy-urls")).toContain("http://refreshed-proxy.example.com");
       expect(text("error")).toBe("");
     } finally {
-      window.removeEventListener(
-        UPSTREAM_ACCOUNTS_CHANGED_EVENT,
-        handleChanged,
-      );
+      window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
     }
   });
 
   it("does not emit the invalidation event when saving forward-proxy settings fails", async () => {
-    apiMocks.updateForwardProxySettings.mockRejectedValueOnce(
-      new Error("save failed"),
-    );
+    apiMocks.updateForwardProxySettings.mockRejectedValueOnce(new Error("save failed"));
 
     let eventCount = 0;
     const handleChanged = () => {
@@ -357,10 +351,7 @@ describe("useSettings", () => {
       expect(text("error")).toBe("save failed");
       expect(text("proxy-urls")).toContain("http://initial-proxy.example.com");
     } finally {
-      window.removeEventListener(
-        UPSTREAM_ACCOUNTS_CHANGED_EVENT,
-        handleChanged,
-      );
+      window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
     }
   });
 

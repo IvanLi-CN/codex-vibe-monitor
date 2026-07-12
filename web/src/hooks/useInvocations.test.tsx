@@ -9,12 +9,7 @@ import { useInvocationStream } from "./useInvocations";
 
 const apiMocks = vi.hoisted(() => ({
   fetchInvocations:
-    vi.fn<
-      (
-        limit: number,
-        params?: { model?: string; status?: string },
-      ) => Promise<ListResponse>
-    >(),
+    vi.fn<(limit: number, params?: { model?: string; status?: string }) => Promise<ListResponse>>(),
 }));
 
 const sseMocks = vi.hoisted(() => ({
@@ -23,8 +18,7 @@ const sseMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
     fetchInvocations: apiMocks.fetchInvocations,
@@ -119,16 +113,10 @@ function StreamProbe({ limit = 20 }: { limit?: number }) {
       <div data-testid="first-key">
         {records[0] ? `${records[0].invokeId}@${records[0].occurredAt}` : ""}
       </div>
-      <div data-testid="first-upstream-request-id">
-        {records[0]?.upstreamRequestId ?? ""}
-      </div>
-      <div data-testid="first-terminal-reason">
-        {records[0]?.poolAttemptTerminalReason ?? ""}
-      </div>
+      <div data-testid="first-upstream-request-id">{records[0]?.upstreamRequestId ?? ""}</div>
+      <div data-testid="first-terminal-reason">{records[0]?.poolAttemptTerminalReason ?? ""}</div>
       <div data-testid="keys">
-        {records
-          .map((record) => `${record.invokeId}:${record.status}`)
-          .join("|")}
+        {records.map((record) => `${record.invokeId}:${record.status}`).join("|")}
       </div>
     </div>
   );
@@ -164,18 +152,12 @@ function PoolFailoverProbe() {
 
   return (
     <div>
-      <div data-testid="first-pool-attempt-count">
-        {first?.poolAttemptCount ?? ""}
-      </div>
+      <div data-testid="first-pool-attempt-count">{first?.poolAttemptCount ?? ""}</div>
       <div data-testid="first-pool-distinct-account-count">
         {first?.poolDistinctAccountCount ?? ""}
       </div>
-      <div data-testid="first-pool-account-id">
-        {first?.upstreamAccountId ?? ""}
-      </div>
-      <div data-testid="first-pool-account-name">
-        {first?.upstreamAccountName ?? ""}
-      </div>
+      <div data-testid="first-pool-account-id">{first?.upstreamAccountId ?? ""}</div>
+      <div data-testid="first-pool-account-name">{first?.upstreamAccountName ?? ""}</div>
     </div>
   );
 }
@@ -519,8 +501,7 @@ describe("useInvocationStream", () => {
             status: "failed",
             failureClass: "service_failure",
             failureKind: "pool_no_available_account",
-            errorMessage:
-              "[pool_no_available_account] no assignable upstream account remains",
+            errorMessage: "[pool_no_available_account] no assignable upstream account remains",
           },
         ],
       });

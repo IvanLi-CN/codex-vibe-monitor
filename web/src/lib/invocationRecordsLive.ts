@@ -4,12 +4,12 @@ import type {
   InvocationSortBy,
   InvocationSortOrder,
 } from "./api";
+import { invocationStableKey } from "./invocation";
 import {
   mergeInvocationRecordCollections,
   mergeInvocationRecordDetails,
 } from "./invocationLiveMerge";
 import { resolveInvocationDisplayStatus } from "./invocationStatus";
-import { invocationStableKey } from "./invocation";
 
 function normalizeText(value: string | null | undefined) {
   const normalized = value?.trim().toLowerCase() ?? "";
@@ -99,10 +99,7 @@ function isInFlightStatus(record: ApiInvocation) {
   return status === "running" || status === "pending";
 }
 
-function mergeIncomingWindowRecord(
-  current: ApiInvocation | undefined,
-  incoming: ApiInvocation,
-) {
+function mergeIncomingWindowRecord(current: ApiInvocation | undefined, incoming: ApiInvocation) {
   if (!current) return incoming;
 
   const currentInFlight = isInFlightStatus(current);
@@ -189,10 +186,7 @@ export function matchesInvocationLiveFilters(
   ) {
     return false;
   }
-  if (
-    filters.stickyKey &&
-    resolveStickyFilterValue(record) !== normalizeText(filters.stickyKey)
-  ) {
+  if (filters.stickyKey && resolveStickyFilterValue(record) !== normalizeText(filters.stickyKey)) {
     return false;
   }
   if (
@@ -309,7 +303,6 @@ export function compareInvocationRecordsForWindow(
         );
       }
       break;
-    case "occurredAt":
     default: {
       const leftMs = Date.parse(left.occurredAt);
       const rightMs = Date.parse(right.occurredAt);

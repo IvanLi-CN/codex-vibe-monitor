@@ -1,17 +1,17 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
-import { AppIcon } from "../../features/shared/AppIcon";
-import { ListBodyState } from "../../features/shared/ListBodyState";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { SelectField } from "../../components/ui/select-field";
 import { Tooltip } from "../../components/ui/tooltip";
+import { AppIcon } from "../../features/shared/AppIcon";
+import { ListBodyState } from "../../features/shared/ListBodyState";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import { useTranslation } from "../../i18n";
 import {
-  fetchUpstreamAccountActionEvents,
   type FetchUpstreamAccountActionEventsQuery,
+  fetchUpstreamAccountActionEvents,
   type UpstreamAccountActionEvent,
 } from "../../lib/api";
 import { cn } from "../../lib/utils";
@@ -227,10 +227,13 @@ export default function MaintenanceRecordsPage() {
         event.forwardProxyKey ??
         t("accountPool.upstreamAccounts.maintenanceEvents.unknownProxy");
       return retryAfter
-        ? t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottledWithSeconds", {
-            proxy: proxyName,
-            seconds: retryAfter,
-          })
+        ? t(
+            "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottledWithSeconds",
+            {
+              proxy: proxyName,
+              seconds: retryAfter,
+            },
+          )
         : t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottled", {
             proxy: proxyName,
           });
@@ -247,9 +250,7 @@ export default function MaintenanceRecordsPage() {
     if (event.action === "status_change_suppressed") {
       const parts = [
         reasonLabel(event.reasonCode) ?? event.reasonCode,
-        Number.isFinite(event.httpStatus ?? NaN)
-          ? `HTTP ${event.httpStatus}`
-          : null,
+        Number.isFinite(event.httpStatus ?? NaN) ? `HTTP ${event.httpStatus}` : null,
         event.reasonMessage ?? event.resultDescription,
       ].filter((value): value is string => Boolean(value));
       return parts.join(" · ") || t("accountPool.upstreamAccounts.maintenanceEvents.noDescription");
@@ -315,7 +316,9 @@ export default function MaintenanceRecordsPage() {
                 setAccountFilter(event.target.value);
                 setPage(1);
               }}
-              placeholder={t("accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder")}
+              placeholder={t(
+                "accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder",
+              )}
               className="h-11 border-base-300/90 bg-base-100 lg:h-10"
             />
           </label>
@@ -329,7 +332,9 @@ export default function MaintenanceRecordsPage() {
                 setGroupFilter(event.target.value);
                 setPage(1);
               }}
-              placeholder={t("accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder")}
+              placeholder={t(
+                "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder",
+              )}
               className="h-11 border-base-300/90 bg-base-100 lg:h-10"
             />
           </label>
@@ -392,12 +397,12 @@ export default function MaintenanceRecordsPage() {
             </div>
           ) : null}
           {loading && events.length > 0 ? (
-            <Alert
-              variant="info"
-              className="m-4"
-              data-testid="maintenance-records-refreshing"
-            >
-              <AppIcon name="loading" className="mt-0.5 h-4 w-4 shrink-0 animate-spin" aria-hidden />
+            <Alert variant="info" className="m-4" data-testid="maintenance-records-refreshing">
+              <AppIcon
+                name="loading"
+                className="mt-0.5 h-4 w-4 shrink-0 animate-spin"
+                aria-hidden
+              />
               <div>{t("accountPool.upstreamAccounts.loadingTitle")}</div>
             </Alert>
           ) : null}
@@ -518,7 +523,11 @@ export default function MaintenanceRecordsPage() {
                             )}
                           </td>
                           <td className="min-w-0 px-3 pb-3 pt-0 align-baseline">
-                            {renderTruncatedValue(groupLabel, groupLabel, "text-xs leading-4 text-base-content/60")}
+                            {renderTruncatedValue(
+                              groupLabel,
+                              groupLabel,
+                              "text-xs leading-4 text-base-content/60",
+                            )}
                           </td>
                           <td className="min-w-0 px-3 pb-3 pt-0 align-baseline">
                             {renderTruncatedValue(
@@ -527,7 +536,10 @@ export default function MaintenanceRecordsPage() {
                               "font-mono text-xs leading-4 tabular-nums text-base-content/60",
                             )}
                           </td>
-                          <td className="min-w-0 px-3 pb-3 pt-0 align-baseline text-xs leading-4 text-base-content/65" colSpan={2}>
+                          <td
+                            className="min-w-0 px-3 pb-3 pt-0 align-baseline text-xs leading-4 text-base-content/65"
+                            colSpan={2}
+                          >
                             {renderTruncatedValue(
                               eventDescriptionLabel,
                               eventDescriptionLabel,

@@ -1,11 +1,5 @@
-/* eslint-disable react-hooks/exhaustive-deps */
+// biome-ignore-all lint/correctness/useExhaustiveDependencies: draft settings preserve state-machine ordering across controlled group dialogs
 import { useCallback, useMemo } from "react";
-import {
-  isExistingGroup,
-  normalizeGroupName,
-  resolveGroupConcurrencyLimit,
-  resolveGroupNote,
-} from "../../lib/upstreamAccountGroups";
 import {
   apiConcurrencyLimitToSliderValue,
   sliderConcurrencyLimitToApiValue,
@@ -14,6 +8,12 @@ import {
   resolvePersistedGroupNodeShuntEnabled,
   resolvePersistedGroupSingleAccountRotationEnabled,
 } from "../../lib/upstreamAccountGroupDrafts";
+import {
+  isExistingGroup,
+  normalizeGroupName,
+  resolveGroupConcurrencyLimit,
+  resolveGroupNote,
+} from "../../lib/upstreamAccountGroups";
 import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
 import {
   type BatchOauthRow,
@@ -44,9 +44,7 @@ type ForwardProxyNodeLike = {
   aliasKeys?: string[] | null;
 };
 
-export function useUpstreamAccountCreateGroupDrafts(
-  ctx: UpstreamAccountCreateControllerContext,
-) {
+export function useUpstreamAccountCreateGroupDrafts(ctx: UpstreamAccountCreateControllerContext) {
   const {
     apiKeyGroupName,
     batchDefaultGroupName,
@@ -104,11 +102,7 @@ export function useUpstreamAccountCreateGroupDrafts(
     return resolveGroupNote(groups, groupDraftNotes, groupName);
   }
   function resolveGroupConcurrencyLimitForName(groupName: string) {
-    return resolveGroupConcurrencyLimit(
-      groups,
-      groupDraftConcurrencyLimits,
-      groupName,
-    );
+    return resolveGroupConcurrencyLimit(groups, groupDraftConcurrencyLimits, groupName);
   }
   function resolveGroupBoundProxyKeysForName(groupName: string) {
     return (
@@ -161,6 +155,12 @@ export function useUpstreamAccountCreateGroupDrafts(
   function resolvePendingGroupNoteForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
     if (!normalized) return "";
+    if (
+      normalizeGroupName(groupNoteEditor.groupName) === normalized &&
+      groupNoteEditor.onSaved === null
+    ) {
+      return groupNoteEditor.note.trim();
+    }
     if (isExistingGroup(groups, normalized)) {
       return persistedGroupNoteSyncDrafts[normalized]?.trim() ?? "";
     }
@@ -169,6 +169,12 @@ export function useUpstreamAccountCreateGroupDrafts(
   function shouldIncludePendingGroupNoteForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
     if (!normalized) return false;
+    if (
+      normalizeGroupName(groupNoteEditor.groupName) === normalized &&
+      groupNoteEditor.onSaved === null
+    ) {
+      return true;
+    }
     if (isExistingGroup(groups, normalized)) {
       return normalized in persistedGroupNoteSyncDrafts;
     }
@@ -226,15 +232,11 @@ export function useUpstreamAccountCreateGroupDrafts(
           normalizedGroupName: "",
           boundProxyKeys: [] as string[],
           nodeShuntEnabled: false,
-          error: isChinese
-            ? "必须先选择一个分组。"
-            : "Select a group before continuing.",
+          error: isChinese ? "必须先选择一个分组。" : "Select a group before continuing.",
         };
       }
-      const boundProxyKeys =
-        resolvePendingGroupBoundProxyKeysForName(normalizedGroupName);
-      const nodeShuntEnabled =
-        resolveGroupNodeShuntEnabledForName(normalizedGroupName);
+      const boundProxyKeys = resolvePendingGroupBoundProxyKeysForName(normalizedGroupName);
+      const nodeShuntEnabled = resolveGroupNodeShuntEnabledForName(normalizedGroupName);
       if (boundProxyKeys.length === 0) {
         return {
           normalizedGroupName,
@@ -248,9 +250,7 @@ export function useUpstreamAccountCreateGroupDrafts(
       if (
         hasLoadedForwardProxyCatalog &&
         !nodeShuntEnabled &&
-        !boundProxyKeys.some((proxyKey: string) =>
-          selectableForwardProxyKeys.has(proxyKey),
-        )
+        !boundProxyKeys.some((proxyKey: string) => selectableForwardProxyKeys.has(proxyKey))
       ) {
         return {
           normalizedGroupName,
@@ -315,14 +315,12 @@ export function useUpstreamAccountCreateGroupDrafts(
       delete next[normalized];
       return next;
     });
-    setGroupDraftSingleAccountRotationEnabled(
-      (current: Record<string, boolean>) => {
-        if (!(normalized in current)) return current;
-        const next = { ...current };
-        delete next[normalized];
-        return next;
-      },
-    );
+    setGroupDraftSingleAccountRotationEnabled((current: Record<string, boolean>) => {
+      if (!(normalized in current)) return current;
+      const next = { ...current };
+      delete next[normalized];
+      return next;
+    });
     setGroupDraftConcurrencyLimits((current: Record<string, number>) => {
       if (!(normalized in current)) return current;
       const next = { ...current };
@@ -356,16 +354,14 @@ export function useUpstreamAccountCreateGroupDrafts(
       if (normalizeGroupName(apiKeyGroupName) === normalizedGroupName) {
         setApiKeyGroupName("");
       }
-      const deletedDefaultGroup =
-        normalizeGroupName(batchDefaultGroupName) === normalizedGroupName;
+      const deletedDefaultGroup = normalizeGroupName(batchDefaultGroupName) === normalizedGroupName;
       if (deletedDefaultGroup) {
         setBatchDefaultGroupName("");
       }
       if (
         Array.isArray(batchRows) &&
         batchRows.some(
-          (row: BatchOauthRow) =>
-            normalizeGroupName(row.groupName) === normalizedGroupName,
+          (row: BatchOauthRow) => normalizeGroupName(row.groupName) === normalizedGroupName,
         )
       ) {
         setBatchRows((current: BatchOauthRow[]) =>
@@ -376,8 +372,7 @@ export function useUpstreamAccountCreateGroupDrafts(
             return {
               ...row,
               groupName: "",
-              inheritsDefaultGroup:
-                deletedDefaultGroup && row.inheritsDefaultGroup === true,
+              inheritsDefaultGroup: deletedDefaultGroup && row.inheritsDefaultGroup === true,
               metadataError: null,
               actionError: null,
             };
@@ -404,18 +399,14 @@ export function useUpstreamAccountCreateGroupDrafts(
       const normalizedGroupName = normalizeGroupName(groupName);
       if (!normalizedGroupName) return;
       const hasDraftNote = normalizedGroupName in groupDraftNotes;
-      const hasDraftBoundProxyKeys =
-        normalizedGroupName in groupDraftBoundProxyKeys;
-      const hasDraftConcurrencyLimit =
-        normalizedGroupName in groupDraftConcurrencyLimits;
-      const hasDraftNodeShuntEnabled =
-        normalizedGroupName in groupDraftNodeShuntEnabled;
+      const hasDraftBoundProxyKeys = normalizedGroupName in groupDraftBoundProxyKeys;
+      const hasDraftConcurrencyLimit = normalizedGroupName in groupDraftConcurrencyLimits;
+      const hasDraftNodeShuntEnabled = normalizedGroupName in groupDraftNodeShuntEnabled;
       const hasDraftSingleAccountRotationEnabled =
         normalizedGroupName in groupDraftSingleAccountRotationEnabled;
       const hasDraftUpstream429RetryEnabled =
         normalizedGroupName in groupDraftUpstream429RetryEnabled;
-      const hasDraftUpstream429MaxRetries =
-        normalizedGroupName in groupDraftUpstream429MaxRetries;
+      const hasDraftUpstream429MaxRetries = normalizedGroupName in groupDraftUpstream429MaxRetries;
       if (
         !hasDraftNote &&
         !hasDraftBoundProxyKeys &&
@@ -454,9 +445,7 @@ export function useUpstreamAccountCreateGroupDrafts(
         ? normalizeEnabledGroupUpstream429MaxRetries(
             groupDraftUpstream429MaxRetries[normalizedGroupName],
           )
-        : normalizeGroupUpstream429MaxRetries(
-            groupDraftUpstream429MaxRetries[normalizedGroupName],
-          );
+        : normalizeGroupUpstream429MaxRetries(groupDraftUpstream429MaxRetries[normalizedGroupName]);
       await saveGroupNote(normalizedGroupName, {
         note: normalizedNote || undefined,
         boundProxyKeys: normalizedBoundProxyKeys,
@@ -483,10 +472,7 @@ export function useUpstreamAccountCreateGroupDrafts(
     ],
   );
 
-  const openGroupNoteEditor = (
-    groupName: string,
-    options?: OpenGroupNoteEditorOptions,
-  ) => {
+  const openGroupNoteEditor = (groupName: string, options?: OpenGroupNoteEditorOptions) => {
     if (!writesEnabled) return;
     const normalized = normalizeGroupName(groupName);
     if (!normalized) return;
@@ -502,19 +488,15 @@ export function useUpstreamAccountCreateGroupDrafts(
         resolveGroupConcurrencyLimitForName(normalized),
       ),
       boundProxyKeys:
-        existingGroup?.boundProxyKeys ??
-        resolvePendingGroupBoundProxyKeysForName(normalized),
+        existingGroup?.boundProxyKeys ?? resolvePendingGroupBoundProxyKeysForName(normalized),
       nodeShuntEnabled: resolveGroupNodeShuntEnabledForName(normalized),
-      singleAccountRotationEnabled:
-        resolveGroupSingleAccountRotationEnabledForName(normalized),
+      singleAccountRotationEnabled: resolveGroupSingleAccountRotationEnabledForName(normalized),
       upstream429RetryEnabled:
         existingGroup?.upstream429RetryEnabled ??
         resolveGroupUpstream429RetryEnabledForName(normalized),
       upstream429MaxRetries:
         existingGroup?.upstream429RetryEnabled === true
-          ? normalizeEnabledGroupUpstream429MaxRetries(
-              existingGroup.upstream429MaxRetries,
-            )
+          ? normalizeEnabledGroupUpstream429MaxRetries(existingGroup.upstream429MaxRetries)
           : resolveGroupUpstream429MaxRetriesForName(normalized),
       onSaved: options?.onSaved ?? null,
       onDeleted: options?.onDeleted ?? null,
@@ -535,31 +517,21 @@ export function useUpstreamAccountCreateGroupDrafts(
     const normalizedConcurrencyLimit = sliderConcurrencyLimitToApiValue(
       groupNoteEditor.concurrencyLimit,
     );
-    const normalizedBoundProxyKeys = normalizeBoundProxyKeys(
-      groupNoteEditor.boundProxyKeys,
-    );
-    const normalizedNodeShuntEnabled =
-      groupNoteEditor.nodeShuntEnabled === true;
+    const normalizedBoundProxyKeys = normalizeBoundProxyKeys(groupNoteEditor.boundProxyKeys);
+    const normalizedNodeShuntEnabled = groupNoteEditor.nodeShuntEnabled === true;
     const normalizedSingleAccountRotationEnabled =
       groupNoteEditor.singleAccountRotationEnabled === true;
-    const normalizedUpstream429RetryEnabled =
-      groupNoteEditor.upstream429RetryEnabled === true;
+    const normalizedUpstream429RetryEnabled = groupNoteEditor.upstream429RetryEnabled === true;
     const normalizedUpstream429MaxRetries = normalizedUpstream429RetryEnabled
-      ? normalizeEnabledGroupUpstream429MaxRetries(
-          groupNoteEditor.upstream429MaxRetries,
-        )
-      : normalizeGroupUpstream429MaxRetries(
-          groupNoteEditor.upstream429MaxRetries,
-        );
+      ? normalizeEnabledGroupUpstream429MaxRetries(groupNoteEditor.upstream429MaxRetries)
+      : normalizeGroupUpstream429MaxRetries(groupNoteEditor.upstream429MaxRetries);
     const currentOauthGroupName = normalizeGroupName(oauthGroupName);
-    const currentOauthGroupNote =
-      resolvePendingGroupNoteForName(oauthGroupName).trim();
+    const currentOauthGroupNote = resolvePendingGroupNoteForName(oauthGroupName).trim();
     const currentOauthGroupConcurrencyLimit =
       resolvePendingGroupConcurrencyLimitForName(oauthGroupName);
     const currentOauthGroupBoundProxyKeys =
       resolvePendingGroupBoundProxyKeysForName(oauthGroupName);
-    const currentOauthGroupNodeShuntEnabled =
-      resolveGroupNodeShuntEnabledForName(oauthGroupName);
+    const currentOauthGroupNodeShuntEnabled = resolveGroupNodeShuntEnabledForName(oauthGroupName);
     const shouldInvalidateSingleOauthSessionForGroupMetadataChange =
       currentOauthGroupName === normalizedGroupName &&
       (currentOauthGroupNote !== normalizedNote ||
@@ -567,8 +539,7 @@ export function useUpstreamAccountCreateGroupDrafts(
         currentOauthGroupNodeShuntEnabled !== normalizedNodeShuntEnabled ||
         resolveGroupSingleAccountRotationEnabledForName(oauthGroupName) !==
           normalizedSingleAccountRotationEnabled ||
-        currentOauthGroupBoundProxyKeys.length !==
-          normalizedBoundProxyKeys.length ||
+        currentOauthGroupBoundProxyKeys.length !== normalizedBoundProxyKeys.length ||
         currentOauthGroupBoundProxyKeys.some(
           (value: string, index: number) => value !== normalizedBoundProxyKeys[index],
         ));
@@ -584,7 +555,7 @@ export function useUpstreamAccountCreateGroupDrafts(
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
-      if (groupNoteEditor.existing) {
+      if (groupNoteEditor.existing || groupNoteEditor.onSaved === null) {
         setPersistedGroupNoteSyncDrafts((current: Record<string, string>) => ({
           ...current,
           [normalizedGroupName]: normalizedNote,
@@ -635,7 +606,6 @@ export function useUpstreamAccountCreateGroupDrafts(
       setGroupNoteBusy(false);
     }
   };
-
 
   return {
     resolveGroupSummaryForName,

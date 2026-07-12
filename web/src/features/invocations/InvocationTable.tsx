@@ -1,3 +1,4 @@
+import { useVirtualizer, useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
   Fragment,
   type ReactNode,
@@ -8,29 +9,28 @@ import {
   useRef,
   useState,
 } from "react";
-import { useVirtualizer, useWindowVirtualizer } from "@tanstack/react-virtual";
-import { AppIcon } from "../shared/AppIcon";
-import { ListBodyState } from "../shared/ListBodyState";
+import { Badge } from "../../components/ui/badge";
+import type { TranslationKey } from "../../i18n";
+import { useTranslation } from "../../i18n";
 import type { ApiInvocation } from "../../lib/api";
 import {
-  invocationStableKey,
-  invocationStableDomKey,
   type FastIndicatorState,
   type InvocationEndpointDisplay,
   type InvocationImageIntentDisplay,
+  invocationStableDomKey,
+  invocationStableKey,
 } from "../../lib/invocation";
-import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
 import { resolveInvocationLivePhase } from "../../lib/invocationPhase";
-import { useTranslation } from "../../i18n";
-import type { TranslationKey } from "../../i18n";
-import { Badge } from "../../components/ui/badge";
-import { InvocationPhaseBadge } from "./InvocationPhaseBadge";
+import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
 import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
+import { ListBodyState } from "../shared/ListBodyState";
+import { InvocationPhaseBadge } from "./InvocationPhaseBadge";
 import {
+  buildInvocationDetailViewModel,
   FALLBACK_CELL,
   INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   InvocationExpandedDetails,
-  buildInvocationDetailViewModel,
   renderEndpointSummary,
   renderFastIndicator,
   renderImageIntentBadge,
@@ -58,10 +58,7 @@ type StatusMeta = {
   label?: string;
 };
 
-const STATUS_META: Record<
-  string,
-  { variant: StatusMeta["variant"]; labelKey: TranslationKey }
-> = {
+const STATUS_META: Record<string, { variant: StatusMeta["variant"]; labelKey: TranslationKey }> = {
   success: { variant: "success", labelKey: "table.status.success" },
   completed: { variant: "success", labelKey: "table.status.success" },
   failed: { variant: "error", labelKey: "table.status.failed" },
@@ -72,13 +69,7 @@ const STATUS_META: Record<
 
 const INVOCATION_ID_BASE_FONT_SIZE_PX = 10;
 
-function FittedInvocationId({
-  invokeId,
-  className,
-}: {
-  invokeId: string;
-  className?: string;
-}) {
+function FittedInvocationId({ invokeId, className }: { invokeId: string; className?: string }) {
   const containerRef = useRef<HTMLSpanElement>(null);
   const textRef = useRef<HTMLSpanElement>(null);
 
@@ -92,8 +83,7 @@ function FittedInvocationId({
     const requiredWidth = text.scrollWidth;
     if (availableWidth <= 0 || requiredWidth <= availableWidth) return;
 
-    const fittedSize =
-      INVOCATION_ID_BASE_FONT_SIZE_PX * (availableWidth / requiredWidth) * 0.98;
+    const fittedSize = INVOCATION_ID_BASE_FONT_SIZE_PX * (availableWidth / requiredWidth) * 0.98;
     text.style.fontSize = `${Math.max(1, fittedSize)}px`;
   }, []);
 
@@ -103,7 +93,7 @@ function FittedInvocationId({
     const observer = new ResizeObserver(fitText);
     if (containerRef.current) observer.observe(containerRef.current);
     return () => observer.disconnect();
-  }, [fitText, invokeId]);
+  }, [fitText]);
 
   return (
     <span
@@ -142,8 +132,7 @@ function resolveStatusMeta(status?: string | null): StatusMeta {
   if (!raw) return { variant: "secondary", labelKey: "table.status.unknown" };
   if (lower.startsWith("http_4"))
     return { variant: "warning", label: formatStatusLabel(raw) ?? raw };
-  if (lower.startsWith("http_5"))
-    return { variant: "error", label: formatStatusLabel(raw) ?? raw };
+  if (lower.startsWith("http_5")) return { variant: "error", label: formatStatusLabel(raw) ?? raw };
   if (lower.startsWith("http_"))
     return { variant: "secondary", label: formatStatusLabel(raw) ?? raw };
   return { variant: "secondary", label: raw };
@@ -159,7 +148,6 @@ function statusTextClassName(variant: StatusMeta["variant"]) {
       return "text-error";
     case "default":
       return "text-info";
-    case "secondary":
     default:
       return "text-base-content/70";
   }
@@ -224,29 +212,19 @@ export function InvocationTable({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [isXlUp, setIsXlUp] = useState(() => {
-    if (
-      typeof window === "undefined" ||
-      typeof window.matchMedia !== "function"
-    )
-      return false;
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
     return window.matchMedia("(min-width: 1280px)").matches;
   });
   const [isMdUp, setIsMdUp] = useState(() => {
     if (typeof window === "undefined") return false;
     if (typeof window.matchMedia === "function") {
-      return (
-        window.matchMedia("(min-width: 768px)").matches ||
-        window.innerWidth >= 768
-      );
+      return window.matchMedia("(min-width: 768px)").matches || window.innerWidth >= 768;
     }
     return window.innerWidth >= 768;
   });
-  const [containerElement, setContainerElement] =
-    useState<HTMLDivElement | null>(null);
+  const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);
   const [scrollMargin, setScrollMargin] = useState(0);
-  const [highlightedInvokeId, setHighlightedInvokeId] = useState<string | null>(
-    null,
-  );
+  const [highlightedInvokeId, setHighlightedInvokeId] = useState<string | null>(null);
   const measureRefs = useRef(new Map<number, HTMLElement>());
   const handledScrollTargetVersionRef = useRef<number | null>(null);
   const highlightTimeoutRef = useRef<number | null>(null);
@@ -320,18 +298,12 @@ export function InvocationTable({
   useEffect(() => {
     setExpandedId((current) => {
       if (current === null) return current;
-      return records.some((record) => invocationStableKey(record) === current)
-        ? current
-        : null;
+      return records.some((record) => invocationStableKey(record) === current) ? current : null;
     });
   }, [records]);
 
   useEffect(() => {
-    if (
-      typeof window === "undefined" ||
-      typeof window.matchMedia !== "function"
-    )
-      return;
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
     const mediaQuery = window.matchMedia("(min-width: 1280px)");
     const sync = () => {
       setIsXlUp(mediaQuery.matches);
@@ -354,9 +326,7 @@ export function InvocationTable({
   useEffect(() => {
     if (typeof window === "undefined") return;
     const mediaQuery =
-      typeof window.matchMedia === "function"
-        ? window.matchMedia("(min-width: 768px)")
-        : null;
+      typeof window.matchMedia === "function" ? window.matchMedia("(min-width: 768px)") : null;
     const sync = () => {
       setIsMdUp((mediaQuery?.matches ?? false) || window.innerWidth >= 768);
     };
@@ -401,10 +371,7 @@ export function InvocationTable({
       }),
     [localeTag],
   );
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag),
-    [localeTag],
-  );
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat(localeTag, {
@@ -429,15 +396,10 @@ export function InvocationTable({
           ? t(meta.labelKey)
           : (meta.label ?? t("table.status.unknown"));
         const recordId = record.id;
-        const isInFlight =
-          normalizedStatus === "running" || normalizedStatus === "pending";
+        const isInFlight = normalizedStatus === "running" || normalizedStatus === "pending";
         const occurredValid = !Number.isNaN(occurred.getTime());
-        const occurredTime = occurredValid
-          ? timeFormatter.format(occurred)
-          : record.occurredAt;
-        const occurredDate = occurredValid
-          ? dateFormatter.format(occurred)
-          : FALLBACK_CELL;
+        const occurredTime = occurredValid ? timeFormatter.format(occurred) : record.occurredAt;
+        const occurredDate = occurredValid ? dateFormatter.format(occurred) : FALLBACK_CELL;
         const detailView = buildInvocationDetailViewModel({
           record,
           normalizedStatus,
@@ -477,10 +439,7 @@ export function InvocationTable({
     ],
   );
 
-  const hasInFlightRows = useMemo(
-    () => rows.some((row) => row.isInFlight),
-    [rows],
-  );
+  const hasInFlightRows = useMemo(() => rows.some((row) => row.isInFlight), [rows]);
   const expandedRecord = useMemo(
     () => rows.find((row) => row.rowKey === expandedId)?.record ?? null,
     [expandedId, rows],
@@ -488,13 +447,7 @@ export function InvocationTable({
   const poolAttemptsState = useInvocationPoolAttempts(expandedRecord);
   const estimateRowSize = useCallback(
     (index: number) =>
-      expandedId === rows[index]?.rowKey
-        ? isMdUp
-          ? 320
-          : 430
-        : isMdUp
-          ? 74
-          : 285,
+      expandedId === rows[index]?.rowKey ? (isMdUp ? 320 : 430) : isMdUp ? 74 : 285,
     [expandedId, isMdUp, rows],
   );
   const measureVirtualItemElement = useCallback(
@@ -576,9 +529,7 @@ export function InvocationTable({
       }
       const containerRect = containerElement.getBoundingClientRect();
       const nextScrollMargin = scrollElement
-        ? containerRect.top -
-          scrollElement.getBoundingClientRect().top +
-          scrollElement.scrollTop
+        ? containerRect.top - scrollElement.getBoundingClientRect().top + scrollElement.scrollTop
         : containerRect.top + window.scrollY;
       setScrollMargin((current) =>
         Math.abs(current - nextScrollMargin) > 0.5 ? nextScrollMargin : current,
@@ -612,32 +563,25 @@ export function InvocationTable({
 
   useLayoutEffect(() => {
     const element = expandedId
-      ? measureRefs.current.get(
-          rows.findIndex((row) => row.rowKey === expandedId),
-        )
+      ? measureRefs.current.get(rows.findIndex((row) => row.rowKey === expandedId))
       : null;
     if (element) rowVirtualizer.measureElement(element);
   }, [expandedId, rowVirtualizer, rows]);
 
   useLayoutEffect(() => {
-    if (
-      !scrollTarget ||
-      handledScrollTargetVersionRef.current === scrollTarget.version
-    ) {
+    if (!scrollTarget || handledScrollTargetVersionRef.current === scrollTarget.version) {
       return;
     }
-    const targetIndex = rows.findIndex(
-      (row) => row.record.invokeId === scrollTarget.invokeId,
-    );
+    const targetIndex = rows.findIndex((row) => row.record.invokeId === scrollTarget.invokeId);
     if (targetIndex < 0) return;
 
     handledScrollTargetVersionRef.current = scrollTarget.version;
     rowVirtualizer.scrollToIndex(targetIndex, { align: "center" });
     setHighlightedInvokeId(scrollTarget.invokeId);
 
-    focusFrameRefs.current.forEach((frame) =>
-      window.cancelAnimationFrame(frame),
-    );
+    focusFrameRefs.current.forEach((frame) => {
+      window.cancelAnimationFrame(frame);
+    });
     focusFrameRefs.current = [];
     const firstFrame = window.requestAnimationFrame(() => {
       const secondFrame = window.requestAnimationFrame(() => {
@@ -650,18 +594,16 @@ export function InvocationTable({
       window.clearTimeout(highlightTimeoutRef.current);
     }
     highlightTimeoutRef.current = window.setTimeout(() => {
-      setHighlightedInvokeId((current) =>
-        current === scrollTarget.invokeId ? null : current,
-      );
+      setHighlightedInvokeId((current) => (current === scrollTarget.invokeId ? null : current));
       highlightTimeoutRef.current = null;
     }, 2_000);
   }, [rowVirtualizer, rows, scrollTarget]);
 
   useEffect(
     () => () => {
-      focusFrameRefs.current.forEach((frame) =>
-        window.cancelAnimationFrame(frame),
-      );
+      focusFrameRefs.current.forEach((frame) => {
+        window.cancelAnimationFrame(frame);
+      });
       if (highlightTimeoutRef.current != null) {
         window.clearTimeout(highlightTimeoutRef.current);
       }
@@ -671,9 +613,7 @@ export function InvocationTable({
 
   useLayoutEffect(() => {
     if (!highlightedInvokeId) return;
-    const targetIndex = rows.findIndex(
-      (row) => row.record.invokeId === highlightedInvokeId,
-    );
+    const targetIndex = rows.findIndex((row) => row.record.invokeId === highlightedInvokeId);
     if (targetIndex < 0) return;
     const frame = window.requestAnimationFrame(() => {
       measureRefs.current.get(targetIndex)?.focus({ preventScroll: true });
@@ -721,11 +661,8 @@ export function InvocationTable({
   }
 
   const firstVirtualRow = fallbackVirtualRows[0] ?? null;
-  const lastVirtualRow =
-    fallbackVirtualRows[fallbackVirtualRows.length - 1] ?? null;
-  const paddingTop = firstVirtualRow
-    ? Math.max(0, firstVirtualRow.start - scrollMargin)
-    : 0;
+  const lastVirtualRow = fallbackVirtualRows[fallbackVirtualRows.length - 1] ?? null;
+  const paddingTop = firstVirtualRow ? Math.max(0, firstVirtualRow.start - scrollMargin) : 0;
   const paddingBottom = lastVirtualRow
     ? Math.max(0, totalVirtualSize - (lastVirtualRow.end - scrollMargin))
     : 0;
@@ -734,9 +671,7 @@ export function InvocationTable({
     return (
       <div className="space-y-3" ref={setContainerElement}>
         <div className="space-y-3" data-testid="invocation-list">
-          {paddingTop > 0 ? (
-            <div aria-hidden="true" style={{ height: paddingTop }} />
-          ) : null}
+          {paddingTop > 0 ? <div aria-hidden="true" style={{ height: paddingTop }} /> : null}
           {fallbackVirtualRows.map((virtualRow) => {
             const row = rows[virtualRow.index];
             if (!row) return null;
@@ -744,9 +679,7 @@ export function InvocationTable({
             const isExpanded = expandedId === row.rowKey;
             const isHighlighted = highlightedInvokeId === row.record.invokeId;
             const handleToggle = () => {
-              setExpandedId((current) =>
-                current === row.rowKey ? null : row.rowKey,
-              );
+              setExpandedId((current) => (current === row.rowKey ? null : row.rowKey));
             };
 
             return (
@@ -769,20 +702,14 @@ export function InvocationTable({
                 aria-current={isHighlighted ? "true" : undefined}
                 className={cn(
                   "rounded-lg border border-base-300/70 px-3 py-3 outline-none transition-colors motion-reduce:transition-none",
-                  virtualRow.index % 2 === 0
-                    ? "bg-base-100/40"
-                    : "bg-base-200/24",
+                  virtualRow.index % 2 === 0 ? "bg-base-100/40" : "bg-base-200/24",
                   isHighlighted && "border-primary/55 bg-primary/10",
                 )}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold">
-                      {row.occurredTime}
-                    </div>
-                    <div className="truncate text-xs text-base-content/65">
-                      {row.occurredDate}
-                    </div>
+                    <div className="truncate text-sm font-semibold">{row.occurredTime}</div>
+                    <div className="truncate text-xs text-base-content/65">{row.occurredDate}</div>
                     {showInvokeId && row.record.invokeId ? (
                       <FittedInvocationId
                         invokeId={row.record.invokeId}
@@ -796,9 +723,7 @@ export function InvocationTable({
                     onClick={handleToggle}
                     aria-expanded={isExpanded}
                     aria-controls={listDetailId}
-                    aria-label={
-                      isExpanded ? toggleLabels.hide : toggleLabels.show
-                    }
+                    aria-label={isExpanded ? toggleLabels.hide : toggleLabels.show}
                   >
                     <AppIcon
                       name={isExpanded ? "chevron-down" : "chevron-right"}
@@ -806,9 +731,7 @@ export function InvocationTable({
                       aria-hidden
                     />
                     <span className="sr-only">
-                      {isExpanded
-                        ? toggleLabels.expanded
-                        : toggleLabels.collapsed}
+                      {isExpanded ? toggleLabels.expanded : toggleLabels.collapsed}
                     </span>
                   </button>
                 </div>
@@ -859,9 +782,7 @@ export function InvocationTable({
                 </div>
 
                 <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-                  <dt className="text-base-content/65">
-                    {t("table.column.model")}
-                  </dt>
+                  <dt className="text-base-content/65">{t("table.column.model")}</dt>
                   <dd className="min-w-0">
                     {row.modelHasMismatch ? (
                       renderInvocationModelRoutingSummary({
@@ -892,32 +813,16 @@ export function InvocationTable({
                       </div>
                     )}
                   </dd>
-                  <dt className="text-base-content/65">
-                    {t("table.column.costUsd")}
-                  </dt>
-                  <dd className="truncate text-right font-mono">
-                    {row.costValue}
-                  </dd>
-                  <dt className="text-base-content/65">
-                    {t("table.column.inputTokens")}
-                  </dt>
-                  <dd className="truncate text-right font-mono">
-                    {row.inputTokensValue}
-                  </dd>
-                  <dt className="text-base-content/65">
-                    {t("table.column.cacheInputTokens")}
-                  </dt>
-                  <dd className="truncate text-right font-mono">
-                    {row.cacheInputTokensValue}
-                  </dd>
-                  <dt className="text-base-content/65">
-                    {t("table.column.outputTokens")}
-                  </dt>
+                  <dt className="text-base-content/65">{t("table.column.costUsd")}</dt>
+                  <dd className="truncate text-right font-mono">{row.costValue}</dd>
+                  <dt className="text-base-content/65">{t("table.column.inputTokens")}</dt>
+                  <dd className="truncate text-right font-mono">{row.inputTokensValue}</dd>
+                  <dt className="text-base-content/65">{t("table.column.cacheInputTokens")}</dt>
+                  <dd className="truncate text-right font-mono">{row.cacheInputTokensValue}</dd>
+                  <dt className="text-base-content/65">{t("table.column.outputTokens")}</dt>
                   <dd className="text-right">
                     <div className="flex flex-col items-end gap-0.5 leading-tight">
-                      <span className="truncate font-mono">
-                        {row.outputTokensValue}
-                      </span>
+                      <span className="truncate font-mono">{row.outputTokensValue}</span>
                       <span
                         className="truncate text-[11px] text-base-content/70"
                         title={`${t("table.details.reasoningTokens")}: ${row.reasoningTokensValue}`}
@@ -926,15 +831,9 @@ export function InvocationTable({
                       </span>
                     </div>
                   </dd>
-                  <dt className="text-base-content/65">
-                    {t("table.column.totalTokens")}
-                  </dt>
-                  <dd className="truncate text-right font-mono">
-                    {row.totalTokensValue}
-                  </dd>
-                  <dt className="text-base-content/65">
-                    {t("table.column.reasoningEffort")}
-                  </dt>
+                  <dt className="text-base-content/65">{t("table.column.totalTokens")}</dt>
+                  <dd className="truncate text-right font-mono">{row.totalTokensValue}</dd>
+                  <dt className="text-base-content/65">{t("table.column.reasoningEffort")}</dt>
                   <dd className="flex justify-end">
                     {renderReasoningEffortBadge(row.reasoningEffortValue)}
                   </dd>
@@ -952,10 +851,7 @@ export function InvocationTable({
                       "h-5 border-transparent bg-base-100/70 px-2 text-[10px] shadow-none",
                     )}
                   </div>
-                  <div
-                    className="truncate text-xs"
-                    title={row.collapsedErrorSummary || undefined}
-                  >
+                  <div className="truncate text-xs" title={row.collapsedErrorSummary || undefined}>
                     {row.collapsedErrorSummary || FALLBACK_CELL}
                   </div>
                 </div>
@@ -978,9 +874,7 @@ export function InvocationTable({
               </article>
             );
           })}
-          {paddingBottom > 0 ? (
-            <div aria-hidden="true" style={{ height: paddingBottom }} />
-          ) : null}
+          {paddingBottom > 0 ? <div aria-hidden="true" style={{ height: paddingBottom }} /> : null}
         </div>
       </div>
     );
@@ -1097,11 +991,8 @@ export function InvocationTable({
             </thead>
             <tbody className="divide-y divide-base-300/65">
               {paddingTop > 0 ? (
-                <tr aria-hidden="true">
-                  <td
-                    colSpan={isXlUp ? 9 : 8}
-                    style={{ height: paddingTop, padding: 0 }}
-                  />
+                <tr>
+                  <td colSpan={isXlUp ? 9 : 8} style={{ height: paddingTop, padding: 0 }} />
                 </tr>
               ) : null}
               {fallbackVirtualRows.map((virtualRow) => {
@@ -1109,12 +1000,9 @@ export function InvocationTable({
                 if (!row) return null;
                 const tableDetailId = `invocation-table-details-${invocationStableDomKey(row.rowKey)}`;
                 const isExpanded = expandedId === row.rowKey;
-                const isHighlighted =
-                  highlightedInvokeId === row.record.invokeId;
+                const isHighlighted = highlightedInvokeId === row.record.invokeId;
                 const handleToggle = () => {
-                  setExpandedId((current) =>
-                    current === row.rowKey ? null : row.rowKey,
-                  );
+                  setExpandedId((current) => (current === row.rowKey ? null : row.rowKey));
                 };
 
                 return (
@@ -1122,9 +1010,7 @@ export function InvocationTable({
                     <tr
                       ref={(node) => {
                         if (node) {
-                          if (
-                            measureRefs.current.get(virtualRow.index) !== node
-                          ) {
+                          if (measureRefs.current.get(virtualRow.index) !== node) {
                             measureRefs.current.set(virtualRow.index, node);
                             scheduleMeasureElement(node);
                           }
@@ -1138,11 +1024,8 @@ export function InvocationTable({
                       aria-current={isHighlighted ? "true" : undefined}
                       className={cn(
                         "outline-none transition-colors hover:bg-primary/6 motion-reduce:transition-none",
-                        virtualRow.index % 2 === 0
-                          ? "bg-base-100/38"
-                          : "bg-base-200/22",
-                        isHighlighted &&
-                          "bg-primary/10 ring-1 ring-inset ring-primary/45",
+                        virtualRow.index % 2 === 0 ? "bg-base-100/38" : "bg-base-200/22",
+                        isHighlighted && "bg-primary/10 ring-1 ring-inset ring-primary/45",
                       )}
                     >
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
@@ -1228,8 +1111,7 @@ export function InvocationTable({
                             {renderInvocationModelBadge(row.modelValue, {
                               t,
                               hasMismatch: row.modelHasMismatch,
-                              textClassName:
-                                "whitespace-nowrap text-base-content/85",
+                              textClassName: "whitespace-nowrap text-base-content/85",
                               testId: "invocation-table-model",
                             })}
                             {renderInvocationTransportBadge(row.record)}
@@ -1269,9 +1151,7 @@ export function InvocationTable({
                             {row.totalTokensValue}
                           </span>
                           <div className="flex w-full justify-end">
-                            {renderReasoningEffortBadge(
-                              row.reasoningEffortValue,
-                            )}
+                            {renderReasoningEffortBadge(row.reasoningEffortValue)}
                           </div>
                         </div>
                       </td>
@@ -1300,9 +1180,7 @@ export function InvocationTable({
                           onClick={handleToggle}
                           aria-expanded={isExpanded}
                           aria-controls={tableDetailId}
-                          aria-label={
-                            isExpanded ? toggleLabels.hide : toggleLabels.show
-                          }
+                          aria-label={isExpanded ? toggleLabels.hide : toggleLabels.show}
                         >
                           <AppIcon
                             name={isExpanded ? "chevron-down" : "chevron-right"}
@@ -1310,9 +1188,7 @@ export function InvocationTable({
                             aria-hidden
                           />
                           <span className="sr-only">
-                            {isExpanded
-                              ? toggleLabels.expanded
-                              : toggleLabels.collapsed}
+                            {isExpanded ? toggleLabels.expanded : toggleLabels.collapsed}
                           </span>
                         </button>
                       </td>
@@ -1341,11 +1217,8 @@ export function InvocationTable({
                 );
               })}
               {paddingBottom > 0 ? (
-                <tr aria-hidden="true">
-                  <td
-                    colSpan={isXlUp ? 9 : 8}
-                    style={{ height: paddingBottom, padding: 0 }}
-                  />
+                <tr>
+                  <td colSpan={isXlUp ? 9 : 8} style={{ height: paddingBottom, padding: 0 }} />
                 </tr>
               ) : null}
             </tbody>

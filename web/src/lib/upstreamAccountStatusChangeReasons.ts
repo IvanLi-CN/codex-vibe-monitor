@@ -1,32 +1,23 @@
 import {
-  STATUS_CHANGE_REASON_CODES,
   buildDefaultStatusChangeReasonFieldSources,
   buildDefaultStatusChangeReasons,
   type EffectiveRoutingRuleSource,
+  STATUS_CHANGE_REASON_CODES,
   type StatusChangeReasonCode,
   type StatusChangeReasonFieldSources,
   type StatusChangeReasons,
 } from "./api/core-upstream";
 
+export type { StatusChangeReasonCode, StatusChangeReasonFieldSources, StatusChangeReasons };
 export {
-  STATUS_CHANGE_REASON_CODES,
   buildDefaultStatusChangeReasonFieldSources,
   buildDefaultStatusChangeReasons,
+  STATUS_CHANGE_REASON_CODES,
 };
 
-export type {
-  StatusChangeReasonCode,
-  StatusChangeReasonFieldSources,
-  StatusChangeReasons,
-};
+export type StatusChangeReasonGroupId = "auth" | "quota" | "availability";
 
-export type StatusChangeReasonGroupId =
-  | "auth"
-  | "quota"
-  | "availability";
-
-export type StatusChangeReasonFieldKey =
-  `statusChangeReason:${StatusChangeReasonCode}`;
+export type StatusChangeReasonFieldKey = `statusChangeReason:${StatusChangeReasonCode}`;
 
 export const STATUS_CHANGE_REASON_GROUPS: Array<{
   id: StatusChangeReasonGroupId;
@@ -34,12 +25,7 @@ export const STATUS_CHANGE_REASON_GROUPS: Array<{
 }> = [
   {
     id: "auth",
-    reasonCodes: [
-      "upstream_http_401",
-      "upstream_http_402",
-      "upstream_http_403",
-      "reauth_required",
-    ],
+    reasonCodes: ["upstream_http_401", "upstream_http_402", "upstream_http_403", "reauth_required"],
   },
   {
     id: "quota",
@@ -52,11 +38,7 @@ export const STATUS_CHANGE_REASON_GROUPS: Array<{
   },
   {
     id: "availability",
-    reasonCodes: [
-      "transport_failure",
-      "upstream_server_overloaded",
-      "upstream_http_5xx",
-    ],
+    reasonCodes: ["transport_failure", "upstream_server_overloaded", "upstream_http_5xx"],
   },
 ];
 
@@ -95,15 +77,11 @@ export function statusChangeReasonFieldKey(
   return `statusChangeReason:${reason}`;
 }
 
-export function statusChangeReasonFromFieldKey(
-  field: string,
-): StatusChangeReasonCode | null {
+export function statusChangeReasonFromFieldKey(field: string): StatusChangeReasonCode | null {
   const prefix = "statusChangeReason:";
   if (!field.startsWith(prefix)) return null;
   const reason = field.slice(prefix.length);
-  return STATUS_CHANGE_REASON_CODE_SET.has(reason)
-    ? (reason as StatusChangeReasonCode)
-    : null;
+  return STATUS_CHANGE_REASON_CODE_SET.has(reason) ? (reason as StatusChangeReasonCode) : null;
 }
 
 export function countEnabledStatusChangeReasons(

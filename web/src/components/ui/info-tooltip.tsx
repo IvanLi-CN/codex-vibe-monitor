@@ -1,106 +1,111 @@
-import { AppIcon } from '../../features/shared/AppIcon'
-import * as PopoverPrimitive from '@radix-ui/react-popover'
-import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import * as PopoverPrimitive from "@radix-ui/react-popover";
+import {
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
+import { AppIcon } from "../../features/shared/AppIcon";
+import { cn } from "../../lib/utils";
 import {
   bubbleArrowClassName,
   bubbleArrowStyle,
   bubbleContentClassName,
   bubbleSurfaceStyle,
-} from './bubble'
-import { PopoverArrow, PopoverContent } from './popover'
-import { cn } from '../../lib/utils'
-import { usePortaledTheme } from './use-portaled-theme'
+} from "./bubble";
+import { PopoverArrow, PopoverContent } from "./popover";
+import { usePortaledTheme } from "./use-portaled-theme";
 
 interface InfoTooltipProps {
-  content: string
-  label: string
-  className?: string
+  content: string;
+  label: string;
+  className?: string;
 }
 
 export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
-  const [open, setOpen] = useState(false)
-  const [pinned, setPinned] = useState(false)
-  const [rootElement, setRootElement] = useState<HTMLSpanElement | null>(null)
-  const tooltipId = useId()
-  const rootRef = useRef<HTMLSpanElement | null>(null)
-  const tooltipRef = useRef<HTMLDivElement | null>(null)
-  const closeTimerRef = useRef<number | null>(null)
-  const portalTheme = usePortaledTheme(rootElement)
+  const [open, setOpen] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [rootElement, setRootElement] = useState<HTMLSpanElement | null>(null);
+  const tooltipId = useId();
+  const rootRef = useRef<HTMLSpanElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
+  const portalTheme = usePortaledTheme(rootElement);
 
-  const clearCloseTimer = () => {
-    if (closeTimerRef.current === null) return
-    window.clearTimeout(closeTimerRef.current)
-    closeTimerRef.current = null
-  }
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current === null) return;
+    window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+  }, []);
 
   const isWithinTooltipCluster = (target: EventTarget | null) => {
-    if (!(target instanceof Node)) return false
-    return Boolean(rootRef.current?.contains(target) || tooltipRef.current?.contains(target))
-  }
+    if (!(target instanceof Node)) return false;
+    return Boolean(rootRef.current?.contains(target) || tooltipRef.current?.contains(target));
+  };
 
   const scheduleClose = () => {
-    if (pinned) return
-    clearCloseTimer()
+    if (pinned) return;
+    clearCloseTimer();
     closeTimerRef.current = window.setTimeout(() => {
-      setOpen(false)
-      closeTimerRef.current = null
-    }, 100)
-  }
+      setOpen(false);
+      closeTimerRef.current = null;
+    }, 100);
+  };
 
   const handlePointerEnter = () => {
-    clearCloseTimer()
-    if (!pinned) setOpen(true)
-  }
+    clearCloseTimer();
+    if (!pinned) setOpen(true);
+  };
 
   const handlePointerLeave = (event: ReactMouseEvent<HTMLElement>) => {
     if (isWithinTooltipCluster(event.relatedTarget)) {
-      clearCloseTimer()
-      return
+      clearCloseTimer();
+      return;
     }
-    scheduleClose()
-  }
+    scheduleClose();
+  };
 
   useEffect(() => {
-    if (open) return
-    setPinned(false)
-  }, [open])
+    if (open) return;
+    setPinned(false);
+  }, [open]);
 
-  useEffect(() => () => clearCloseTimer(), [])
+  useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
 
   useEffect(() => {
-    if (!open) return
+    if (!open) return;
 
     const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null
-      const tooltip = document.getElementById(tooltipId)
+      const target = event.target as Node | null;
+      const tooltip = document.getElementById(tooltipId);
       if (target && (rootRef.current?.contains(target) || tooltip?.contains(target))) {
-        return
+        return;
       }
-      setPinned(false)
-      setOpen(false)
-    }
+      setPinned(false);
+      setOpen(false);
+    };
 
-    document.addEventListener('pointerdown', handlePointerDown)
-    return () => document.removeEventListener('pointerdown', handlePointerDown)
-  }, [open, tooltipId])
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [open, tooltipId]);
 
   return (
     <PopoverPrimitive.Root
       open={open}
       modal={false}
       onOpenChange={(nextOpen) => {
-        setOpen(nextOpen)
-        if (!nextOpen) setPinned(false)
+        setOpen(nextOpen);
+        if (!nextOpen) setPinned(false);
       }}
     >
       <span
         ref={(node) => {
-          rootRef.current = node
-          setRootElement(node)
+          rootRef.current = node;
+          setRootElement(node);
         }}
-        className={cn('inline-flex items-center', className)}
-        onMouseEnter={handlePointerEnter}
-        onMouseLeave={handlePointerLeave}
+        className={cn("inline-flex items-center", className)}
       >
         <PopoverPrimitive.Anchor asChild>
           <button
@@ -108,23 +113,28 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
             aria-label={label}
             aria-describedby={open ? tooltipId : undefined}
             className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[inherit] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            onMouseEnter={handlePointerEnter}
+            onMouseLeave={handlePointerLeave}
             onClick={() => {
-              clearCloseTimer()
+              clearCloseTimer();
               setPinned((current) => {
-                const nextPinned = !current
-                setOpen(nextPinned)
-                return nextPinned
-              })
+                const nextPinned = !current;
+                setOpen(nextPinned);
+                return nextPinned;
+              });
             }}
             onFocus={() => {
-              clearCloseTimer()
-              setOpen(true)
+              clearCloseTimer();
+              setOpen(true);
             }}
             onBlur={() => {
-              if (!pinned) scheduleClose()
+              if (!pinned) scheduleClose();
             }}
           >
-            <span className="inline-flex h-[18px] w-[18px] items-center justify-center text-[inherit]" aria-hidden>
+            <span
+              className="inline-flex h-[18px] w-[18px] items-center justify-center text-[inherit]"
+              aria-hidden
+            >
               <AppIcon name="help-circle-outline" className="h-full w-full" />
             </span>
           </button>
@@ -132,12 +142,12 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
       </span>
       <PopoverContent
         data-theme={portalTheme}
-        style={bubbleSurfaceStyle('neutral', portalTheme)}
+        style={bubbleSurfaceStyle("neutral", portalTheme)}
         forceMount
         ref={tooltipRef}
         id={tooltipId}
         role="tooltip"
-        aria-hidden={open ? 'false' : 'true'}
+        aria-hidden={open ? "false" : "true"}
         onOpenAutoFocus={(event) => event.preventDefault()}
         onCloseAutoFocus={(event) => event.preventDefault()}
         side="top"
@@ -145,9 +155,9 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
         avoidCollisions
         collisionPadding={8}
         className={cn(
-          bubbleContentClassName('neutral'),
-          'w-64 max-w-[calc(100vw-1rem)]',
-          open ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0',
+          bubbleContentClassName("neutral"),
+          "w-64 max-w-[calc(100vw-1rem)]",
+          open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
         )}
         onMouseEnter={handlePointerEnter}
         onMouseLeave={handlePointerLeave}
@@ -159,9 +169,9 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
           width={14}
           height={7}
           className={bubbleArrowClassName()}
-          style={bubbleArrowStyle('neutral', portalTheme)}
+          style={bubbleArrowStyle("neutral", portalTheme)}
         />
       </PopoverContent>
     </PopoverPrimitive.Root>
-  )
+  );
 }

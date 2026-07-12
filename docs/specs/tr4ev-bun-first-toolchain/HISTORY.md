@@ -8,10 +8,16 @@
 ## Key Decisions
 
 - No separate historical decision record was present before this migration.
+- Biome owns the two JavaScript/TypeScript/CSS surfaces from the repository root while dprint remains the Markdown formatter; generated MSW worker output is excluded and Tailwind directives use parser support rather than blanket lint suppression.
+- The required `Lint & Format Check` job name is preserved while Clippy is promoted from an advisory local check to `--all-targets --all-features -D warnings` in CI and pre-commit.
 
 ## Migrated Change History
 
 ## 变更记录（Change log）
+
+- 2026-07-12: 根目录引入 Biome `2.5.3`，移除 web ESLint 配置与依赖，统一 `web/`、`docs-site/` lint/format/import organization 入口；完成全量前端格式化和阻断诊断收敛。
+- 2026-07-13: 对 unsafe Hook 自动修复引发的行为回归完成测试收敛；保留 recommended 规则报告，将现存行为敏感诊断以 warning 呈现，并把历史 Hook 例外迁移为带理由的文件级 Biome suppression。
+- 2026-07-12: `Lint & Format Check` 和 pre-commit 改为严格 Clippy，清理 Rust 诊断并验证 `cargo clippy --locked --all-targets --all-features -- -D warnings`；required-check 名称与 quality-gates contract 保持不变。
 
 - 2026-06-23: GitHub Actions 与本地 / 容器 toolchain 基线刷新为 Bun `1.3.14`、Rust `1.96.0`、x64 `ubuntu-24.04`、arm `ubuntu-24.04-arm`，并将受控 action majors 升级到 `checkout@v7`、`cache@v5`、`github-script@v9`、`upload-artifact@v7`、`download-artifact@v8`、`configure-pages@v6`、`upload-pages-artifact@v5`、`deploy-pages@v5`、`setup-buildx-action@v4`、`login-action@v4`、`build-push-action@v7`。
 - 2026-03-12: 创建 spec，冻结“Bun-first direct execution surface”定义、允许残留项与 PR 阶段 Docker smoke 要求。

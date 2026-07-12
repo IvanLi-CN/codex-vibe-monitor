@@ -1,25 +1,6 @@
-import { useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { AppIcon } from "../shared/AppIcon";
-import { ConcurrencyLimitSlider } from "./ConcurrencyLimitSlider";
-import type { ForwardProxyBindingNode } from "../../lib/api";
-import { apiConcurrencyLimitToSliderValue } from "../../lib/concurrencyLimit";
-import { cn } from "../../lib/utils";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Button } from "../../components/ui/button";
-import {
-  ForwardProxyBindingSelector,
-} from "../forward-proxy/ForwardProxyBindingSelector";
-import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
-import {
-  canonicalizeForwardProxyBindingKeys,
-  hasSelectableForwardProxyBindingSelection,
-  normalizeForwardProxyBindingKeys,
-  resolveForwardProxyBindingOptions,
-} from "../forward-proxy/forwardProxyBindingSelectorUtils";
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from "../../components/ui/segmented-control";
 import {
   Dialog,
   DialogCloseIcon,
@@ -30,7 +11,21 @@ import {
   DialogTitle,
 } from "../../components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
+import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { Switch } from "../../components/ui/switch";
+import type { ForwardProxyBindingNode } from "../../lib/api";
+import { apiConcurrencyLimitToSliderValue } from "../../lib/concurrencyLimit";
+import { cn } from "../../lib/utils";
+import { ForwardProxyBindingSelector } from "../forward-proxy/ForwardProxyBindingSelector";
+import {
+  canonicalizeForwardProxyBindingKeys,
+  hasSelectableForwardProxyBindingSelection,
+  normalizeForwardProxyBindingKeys,
+  resolveForwardProxyBindingOptions,
+} from "../forward-proxy/forwardProxyBindingSelectorUtils";
+import { AppIcon } from "../shared/AppIcon";
+import { ConcurrencyLimitSlider } from "./ConcurrencyLimitSlider";
+import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
 
 interface UpstreamAccountGroupNoteDialogProps {
   open: boolean;
@@ -122,10 +117,7 @@ interface UpstreamAccountGroupNoteDialogProps {
 type GroupSettingsTab = "info" | "routing" | "proxy";
 
 function sameOrderedKeys(left: string[], right: string[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every((value, index) => value === right[index])
-  );
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function normalizeUpstream429MaxRetries(value?: number | null): number {
@@ -215,15 +207,11 @@ export function UpstreamAccountGroupNoteDialog({
   proxyBindingsChartInteractionHint,
   proxyBindingsChartLocaleTag,
 }: UpstreamAccountGroupNoteDialogProps) {
-  const normalizedBoundProxyKeys =
-    normalizeForwardProxyBindingKeys(boundProxyKeys);
+  const normalizedBoundProxyKeys = normalizeForwardProxyBindingKeys(boundProxyKeys);
   const normalizedNodeShuntEnabled = nodeShuntEnabled === true;
-  const normalizedSingleAccountRotationEnabled =
-    singleAccountRotationEnabled === true;
+  const normalizedSingleAccountRotationEnabled = singleAccountRotationEnabled === true;
   const normalizedUpstream429RetryEnabled = upstream429RetryEnabled === true;
-  const normalizedUpstream429MaxRetries = normalizeUpstream429MaxRetries(
-    upstream429MaxRetries,
-  );
+  const normalizedUpstream429MaxRetries = normalizeUpstream429MaxRetries(upstream429MaxRetries);
   const selectedRetryCount = normalizedUpstream429RetryEnabled
     ? Math.max(1, normalizedUpstream429MaxRetries || 1)
     : 0;
@@ -241,39 +229,25 @@ export function UpstreamAccountGroupNoteDialog({
     onUpstream429MaxRetriesChange?.(normalizedValue);
   };
   const canonicalBoundProxyKeys = useMemo(
-    () =>
-      canonicalizeForwardProxyBindingKeys(
-        normalizedBoundProxyKeys,
-        availableProxyNodes,
-      ),
+    () => canonicalizeForwardProxyBindingKeys(normalizedBoundProxyKeys, availableProxyNodes),
     [availableProxyNodes, normalizedBoundProxyKeys],
   );
   useEffect(() => {
     if (!open || !onBoundProxyKeysChange) return;
-    if (sameOrderedKeys(canonicalBoundProxyKeys, normalizedBoundProxyKeys))
-      return;
+    if (sameOrderedKeys(canonicalBoundProxyKeys, normalizedBoundProxyKeys)) return;
     onBoundProxyKeysChange(canonicalBoundProxyKeys);
-  }, [
-    canonicalBoundProxyKeys,
-    normalizedBoundProxyKeys,
-    onBoundProxyKeysChange,
-    open,
-  ]);
+  }, [canonicalBoundProxyKeys, normalizedBoundProxyKeys, onBoundProxyKeysChange, open]);
   const proxyOptions = useMemo(() => {
-    return resolveForwardProxyBindingOptions(
-      canonicalBoundProxyKeys,
-      availableProxyNodes,
-    );
+    return resolveForwardProxyBindingOptions(canonicalBoundProxyKeys, availableProxyNodes);
   }, [availableProxyNodes, canonicalBoundProxyKeys]);
   const showProxyBindings =
     Boolean(onBoundProxyKeysChange) ||
     proxyOptions.length > 0 ||
     canonicalBoundProxyKeys.length > 0;
-  const hasSelectableBoundProxySelection =
-    hasSelectableForwardProxyBindingSelection(
-      canonicalBoundProxyKeys,
-      proxyOptions,
-    );
+  const hasSelectableBoundProxySelection = hasSelectableForwardProxyBindingSelection(
+    canonicalBoundProxyKeys,
+    proxyOptions,
+  );
   const blockingBindingSelection =
     showProxyBindings &&
     !normalizedNodeShuntEnabled &&
@@ -285,16 +259,10 @@ export function UpstreamAccountGroupNoteDialog({
   const deleteBlockedByMembers = accountCount > 0;
   const deleteBusyDisabled = busy;
   const deleteBlockedPopoverEnabled =
-    showDelete &&
-    deleteBlockedByMembers &&
-    !deleteBusyDisabled &&
-    Boolean(deleteDisabledHint);
-  const [deleteBlockedPopoverOpen, setDeleteBlockedPopoverOpen] =
-    useState(false);
+    showDelete && deleteBlockedByMembers && !deleteBusyDisabled && Boolean(deleteDisabledHint);
+  const [deleteBlockedPopoverOpen, setDeleteBlockedPopoverOpen] = useState(false);
   const showNodeShuntSection =
-    Boolean(onNodeShuntEnabledChange) ||
-    Boolean(nodeShuntLabel) ||
-    Boolean(nodeShuntHint);
+    Boolean(onNodeShuntEnabledChange) || Boolean(nodeShuntLabel) || Boolean(nodeShuntHint);
   const showSingleAccountRotationSection =
     Boolean(onSingleAccountRotationEnabledChange) ||
     Boolean(singleAccountRotationLabel) ||
@@ -345,9 +313,7 @@ export function UpstreamAccountGroupNoteDialog({
   return (
     <Dialog
       open={open}
-      onOpenChange={(nextOpen) =>
-        !busy ? (nextOpen ? undefined : onClose()) : undefined
-      }
+      onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}
     >
       <DialogContent
         container={container}
@@ -364,9 +330,7 @@ export function UpstreamAccountGroupNoteDialog({
             <DialogDescription>
               {existing ? existingDescription : draftDescription}
             </DialogDescription>
-            <p className="text-sm font-semibold text-base-content">
-              {groupName}
-            </p>
+            <p className="text-sm font-semibold text-base-content">{groupName}</p>
           </DialogHeader>
           <DialogCloseIcon aria-label={closeLabel} disabled={busy} />
         </div>
@@ -433,9 +397,7 @@ export function UpstreamAccountGroupNoteDialog({
                   <p className="text-xs font-semibold text-base-content/55">
                     {accountCountLabel ?? "Accounts"}
                   </p>
-                  <p className="mt-1 text-sm font-semibold text-base-content">
-                    {accountCount}
-                  </p>
+                  <p className="mt-1 text-sm font-semibold text-base-content">{accountCount}</p>
                 </div>
                 <div>
                   <p className="text-xs font-semibold text-base-content/55">
@@ -446,16 +408,16 @@ export function UpstreamAccountGroupNoteDialog({
                   </p>
                 </div>
               </div>
-            <label className="field">
-              <span className="field-label">{noteLabel}</span>
-              <textarea
-                className="min-h-32 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
-                value={note}
-                placeholder={notePlaceholder}
-                disabled={busy}
-                onChange={(event) => onNoteChange(event.target.value)}
-              />
-            </label>
+              <label className="field">
+                <span className="field-label">{noteLabel}</span>
+                <textarea
+                  className="min-h-32 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
+                  value={note}
+                  placeholder={notePlaceholder}
+                  disabled={busy}
+                  onChange={(event) => onNoteChange(event.target.value)}
+                />
+              </label>
             </div>
 
             <div
@@ -465,81 +427,75 @@ export function UpstreamAccountGroupNoteDialog({
               hidden={activeTab !== "routing"}
               className="space-y-4"
             >
-            <ConcurrencyLimitSlider
-              value={concurrencyLimit}
-              disabled={busy}
-              title={concurrencyLimitLabel ?? "Concurrency limit"}
-              description={
-                concurrencyLimitHint ??
-                "Use 1-30 to cap fresh assignments for this group. The last step means unlimited."
-              }
-              currentLabel={concurrencyLimitCurrentLabel ?? "Current"}
-              unlimitedLabel={concurrencyLimitUnlimitedLabel ?? "Unlimited"}
-              onChange={onConcurrencyLimitChange}
-            />
-            {showSingleAccountRotationSection ? (
-              <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
-                <div className="space-y-1">
-                  <h3 className="text-sm font-semibold text-base-content">
-                    {singleAccountRotationLabel ?? "Single-account rotation"}
-                  </h3>
-                  <p className="text-xs leading-5 text-base-content/68">
-                    {singleAccountRotationHint ??
-                      "Keep each conversation on its current account, then move only that conversation to the next candidate after the account finally returns 429."}
-                  </p>
-                </div>
-
-                <div className="flex items-center justify-between gap-3 rounded-xl border border-base-300/80 bg-base-100/75 px-3 py-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-base-content">
-                      {singleAccountRotationToggleLabel ??
-                        "Bind conversations until final 429"}
+              <ConcurrencyLimitSlider
+                value={concurrencyLimit}
+                disabled={busy}
+                title={concurrencyLimitLabel ?? "Concurrency limit"}
+                description={
+                  concurrencyLimitHint ??
+                  "Use 1-30 to cap fresh assignments for this group. The last step means unlimited."
+                }
+                currentLabel={concurrencyLimitCurrentLabel ?? "Current"}
+                unlimitedLabel={concurrencyLimitUnlimitedLabel ?? "Unlimited"}
+                onChange={onConcurrencyLimitChange}
+              />
+              {showSingleAccountRotationSection ? (
+                <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-semibold text-base-content">
+                      {singleAccountRotationLabel ?? "Single-account rotation"}
+                    </h3>
+                    <p className="text-xs leading-5 text-base-content/68">
+                      {singleAccountRotationHint ??
+                        "Keep each conversation on its current account, then move only that conversation to the next candidate after the account finally returns 429."}
                     </p>
                   </div>
-                  <Switch
-                    checked={normalizedSingleAccountRotationEnabled}
-                    onCheckedChange={(checked) =>
-                      onSingleAccountRotationEnabledChange?.(checked)
-                    }
-                    disabled={busy || !onSingleAccountRotationEnabledChange}
-                    aria-label={
-                      singleAccountRotationToggleLabel ??
-                      "Bind conversations until final 429"
-                    }
-                  />
-                </div>
-              </section>
-            ) : null}
-            {showUpstream429RetrySection ? (
-              <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
-                <div className="space-y-1">
-                  <h3 className="text-sm font-semibold text-base-content">
-                    {upstream429RetryLabel ?? "Upstream 429 retry"}
-                  </h3>
-                  <p className="text-xs leading-5 text-base-content/68">
-                    {upstream429RetryHint ??
-                      "Allow this group to keep the same account and retry after upstream 429 responses."}
-                  </p>
-                </div>
 
-                <PolicyInlineOptionGroup<number>
-                  ariaLabel={
-                    upstream429RetryLabel ??
-                    upstream429RetryToggleLabel ??
-                    upstream429RetryCountLabel ??
-                    "Upstream 429 retry"
-                  }
-                  value={selectedRetryCount}
-                  disabled={
-                    busy ||
-                    (!onUpstream429RetryEnabledChange &&
-                      !onUpstream429MaxRetriesChange)
-                  }
-                  options={retryCountOptions}
-                  onChange={handleUpstream429RetryCountChange}
-                />
-              </section>
-            ) : null}
+                  <div className="flex items-center justify-between gap-3 rounded-xl border border-base-300/80 bg-base-100/75 px-3 py-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-base-content">
+                        {singleAccountRotationToggleLabel ?? "Bind conversations until final 429"}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={normalizedSingleAccountRotationEnabled}
+                      onCheckedChange={(checked) => onSingleAccountRotationEnabledChange?.(checked)}
+                      disabled={busy || !onSingleAccountRotationEnabledChange}
+                      aria-label={
+                        singleAccountRotationToggleLabel ?? "Bind conversations until final 429"
+                      }
+                    />
+                  </div>
+                </section>
+              ) : null}
+              {showUpstream429RetrySection ? (
+                <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-semibold text-base-content">
+                      {upstream429RetryLabel ?? "Upstream 429 retry"}
+                    </h3>
+                    <p className="text-xs leading-5 text-base-content/68">
+                      {upstream429RetryHint ??
+                        "Allow this group to keep the same account and retry after upstream 429 responses."}
+                    </p>
+                  </div>
+
+                  <PolicyInlineOptionGroup<number>
+                    ariaLabel={
+                      upstream429RetryLabel ??
+                      upstream429RetryToggleLabel ??
+                      upstream429RetryCountLabel ??
+                      "Upstream 429 retry"
+                    }
+                    value={selectedRetryCount}
+                    disabled={
+                      busy || (!onUpstream429RetryEnabledChange && !onUpstream429MaxRetriesChange)
+                    }
+                    options={retryCountOptions}
+                    onChange={handleUpstream429RetryCountChange}
+                  />
+                </section>
+              ) : null}
               {routingPolicyEditor ? (
                 <section className="rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
                   <div className="mb-4 space-y-1">
@@ -554,28 +510,28 @@ export function UpstreamAccountGroupNoteDialog({
                   {routingPolicyEditor}
                 </section>
               ) : null}
-            {onRoutingPolicyEdit ? (
-              <section className="flex items-center justify-between gap-4 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
-                <div className="min-w-0 space-y-1">
-                  <h3 className="text-sm font-semibold text-base-content">
-                    {routingPolicyLabel ?? "Routing policy"}
-                  </h3>
-                  <p className="text-xs leading-5 text-base-content/68">
-                    {routingPolicyHint ??
-                      "Customize priority, FAST mode, block-new-conversations, cut-in/cut-out, concurrency, and upstream 429 retry for this group."}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  disabled={busy}
-                  onClick={onRoutingPolicyEdit}
-                >
-                  {routingPolicyEditLabel ?? "Edit policy"}
-                </Button>
-              </section>
-            ) : null}
+              {onRoutingPolicyEdit ? (
+                <section className="flex items-center justify-between gap-4 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+                  <div className="min-w-0 space-y-1">
+                    <h3 className="text-sm font-semibold text-base-content">
+                      {routingPolicyLabel ?? "Routing policy"}
+                    </h3>
+                    <p className="text-xs leading-5 text-base-content/68">
+                      {routingPolicyHint ??
+                        "Customize priority, FAST mode, block-new-conversations, cut-in/cut-out, concurrency, and upstream 429 retry for this group."}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    disabled={busy}
+                    onClick={onRoutingPolicyEdit}
+                  >
+                    {routingPolicyEditLabel ?? "Edit policy"}
+                  </Button>
+                </section>
+              ) : null}
             </div>
 
             <div
@@ -585,95 +541,89 @@ export function UpstreamAccountGroupNoteDialog({
               hidden={activeTab !== "proxy"}
               className="space-y-4"
             >
-            {showProxyBindings ? (
-              <section className="flex min-h-0 flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
-                <div className="space-y-1">
-                  <h3 className="text-sm font-semibold text-base-content">
-                    {proxyBindingsLabel ?? "Bound proxy nodes"}
-                  </h3>
-                  <p className="text-xs leading-5 text-base-content/68">
-                    {proxyBindingsHint ??
-                      "Leave empty to use automatic routing."}
-                  </p>
-                </div>
-
-                {canonicalBoundProxyKeys.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
-                    {proxyBindingsAutomaticLabel ??
-                      "No nodes bound. This group uses automatic routing."}
-                  </div>
-                ) : null}
-
-                {blockingBindingSelection ? (
-                  <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
-                    Select at least one available proxy node or clear bindings
-                    before saving.
-                  </div>
-                ) : null}
-
-                <ForwardProxyBindingSelector
-                  selectedKeys={canonicalBoundProxyKeys}
-                  availableProxyNodes={availableProxyNodes}
-                  disabled={busy}
-                  catalogKind={proxyBindingsCatalogKind}
-                  catalogFreshness={proxyBindingsCatalogFreshness}
-                  showAutomaticNotice={false}
-                  onChange={onBoundProxyKeysChange}
-                  labels={{
-                    loading: proxyBindingsLoadingLabel,
-                    empty: proxyBindingsEmptyLabel,
-                    missing: proxyBindingsMissingLabel,
-                    unavailable: proxyBindingsUnavailableLabel,
-                    chartLabel: proxyBindingsChartLabel,
-                    chartSuccess: proxyBindingsChartSuccessLabel,
-                    chartFailure: proxyBindingsChartFailureLabel,
-                    chartEmpty: proxyBindingsChartEmptyLabel,
-                    chartTotal: proxyBindingsChartTotalLabel,
-                    chartAriaLabel: proxyBindingsChartAriaLabel,
-                    chartInteractionHint: proxyBindingsChartInteractionHint,
-                    chartLocaleTag: proxyBindingsChartLocaleTag,
-                  }}
-                />
-              </section>
-            ) : null}
-            {showNodeShuntSection ? (
-              <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
-                <div className="space-y-1">
-                  <h3 className="text-sm font-semibold text-base-content">
-                    {nodeShuntLabel ?? "Node shunt strategy"}
-                  </h3>
-                  <p className="text-xs leading-5 text-base-content/68">
-                    {nodeShuntHint ??
-                      "Each selected node becomes an exclusive slot. If a group selects 3 nodes, the group can provide 3 upstream accounts at the same time."}
-                  </p>
-                </div>
-
-                <div className="flex items-center justify-between gap-3 rounded-xl border border-base-300/80 bg-base-100/75 px-3 py-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-base-content">
-                      {nodeShuntToggleLabel ?? "Enable node shunt strategy"}
+              {showProxyBindings ? (
+                <section className="flex min-h-0 flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-semibold text-base-content">
+                      {proxyBindingsLabel ?? "Bound proxy nodes"}
+                    </h3>
+                    <p className="text-xs leading-5 text-base-content/68">
+                      {proxyBindingsHint ?? "Leave empty to use automatic routing."}
                     </p>
                   </div>
-                  <Switch
-                    checked={normalizedNodeShuntEnabled}
-                    onCheckedChange={(checked) =>
-                      onNodeShuntEnabledChange?.(checked)
-                    }
-                    disabled={busy || !onNodeShuntEnabledChange}
-                    aria-label={
-                      nodeShuntToggleLabel ?? "Enable node shunt strategy"
-                    }
-                  />
-                </div>
 
-                {blockingNodeShuntSelection ? (
-                  <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
-                    {nodeShuntWarning ??
-                      "Enable this strategy only after binding at least one node (including Direct)."}
+                  {canonicalBoundProxyKeys.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
+                      {proxyBindingsAutomaticLabel ??
+                        "No nodes bound. This group uses automatic routing."}
+                    </div>
+                  ) : null}
+
+                  {blockingBindingSelection ? (
+                    <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
+                      Select at least one available proxy node or clear bindings before saving.
+                    </div>
+                  ) : null}
+
+                  <ForwardProxyBindingSelector
+                    selectedKeys={canonicalBoundProxyKeys}
+                    availableProxyNodes={availableProxyNodes}
+                    disabled={busy}
+                    catalogKind={proxyBindingsCatalogKind}
+                    catalogFreshness={proxyBindingsCatalogFreshness}
+                    showAutomaticNotice={false}
+                    onChange={onBoundProxyKeysChange}
+                    labels={{
+                      loading: proxyBindingsLoadingLabel,
+                      empty: proxyBindingsEmptyLabel,
+                      missing: proxyBindingsMissingLabel,
+                      unavailable: proxyBindingsUnavailableLabel,
+                      chartLabel: proxyBindingsChartLabel,
+                      chartSuccess: proxyBindingsChartSuccessLabel,
+                      chartFailure: proxyBindingsChartFailureLabel,
+                      chartEmpty: proxyBindingsChartEmptyLabel,
+                      chartTotal: proxyBindingsChartTotalLabel,
+                      chartAriaLabel: proxyBindingsChartAriaLabel,
+                      chartInteractionHint: proxyBindingsChartInteractionHint,
+                      chartLocaleTag: proxyBindingsChartLocaleTag,
+                    }}
+                  />
+                </section>
+              ) : null}
+              {showNodeShuntSection ? (
+                <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-semibold text-base-content">
+                      {nodeShuntLabel ?? "Node shunt strategy"}
+                    </h3>
+                    <p className="text-xs leading-5 text-base-content/68">
+                      {nodeShuntHint ??
+                        "Each selected node becomes an exclusive slot. If a group selects 3 nodes, the group can provide 3 upstream accounts at the same time."}
+                    </p>
                   </div>
-                ) : null}
-              </section>
-            ) : null}
+
+                  <div className="flex items-center justify-between gap-3 rounded-xl border border-base-300/80 bg-base-100/75 px-3 py-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-base-content">
+                        {nodeShuntToggleLabel ?? "Enable node shunt strategy"}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={normalizedNodeShuntEnabled}
+                      onCheckedChange={(checked) => onNodeShuntEnabledChange?.(checked)}
+                      disabled={busy || !onNodeShuntEnabledChange}
+                      aria-label={nodeShuntToggleLabel ?? "Enable node shunt strategy"}
+                    />
+                  </div>
+
+                  {blockingNodeShuntSelection ? (
+                    <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
+                      {nodeShuntWarning ??
+                        "Enable this strategy only after binding at least one node (including Direct)."}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
             </div>
           </div>
         </div>
@@ -683,11 +633,7 @@ export function UpstreamAccountGroupNoteDialog({
             {showDelete ? (
               <Popover
                 open={deleteBlockedPopoverEnabled ? deleteBlockedPopoverOpen : false}
-                onOpenChange={
-                  deleteBlockedPopoverEnabled
-                    ? setDeleteBlockedPopoverOpen
-                    : undefined
-                }
+                onOpenChange={deleteBlockedPopoverEnabled ? setDeleteBlockedPopoverOpen : undefined}
               >
                 <PopoverTrigger asChild>
                   <Button
@@ -703,17 +649,9 @@ export function UpstreamAccountGroupNoteDialog({
                     )}
                   >
                     {deleting ? (
-                      <AppIcon
-                        name="loading"
-                        className="mr-2 h-4 w-4 animate-spin"
-                        aria-hidden
-                      />
+                      <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
                     ) : (
-                      <AppIcon
-                        name="trash-can-outline"
-                        className="mr-2 h-4 w-4"
-                        aria-hidden
-                      />
+                      <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />
                     )}
                     {deleteLabel ?? "Delete group"}
                   </Button>
@@ -727,15 +665,9 @@ export function UpstreamAccountGroupNoteDialog({
                   >
                     <div className="flex items-start gap-3">
                       <div className="mt-0.5 rounded-full bg-error/10 p-1 text-error">
-                        <AppIcon
-                          name="information-outline"
-                          className="h-4 w-4"
-                          aria-hidden
-                        />
+                        <AppIcon name="information-outline" className="h-4 w-4" aria-hidden />
                       </div>
-                      <p className="text-sm leading-6 text-base-content/78">
-                        {deleteDisabledHint}
-                      </p>
+                      <p className="text-sm leading-6 text-base-content/78">{deleteDisabledHint}</p>
                     </div>
                   </PopoverContent>
                 ) : null}
@@ -743,12 +675,7 @@ export function UpstreamAccountGroupNoteDialog({
             ) : null}
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={onClose}
-              disabled={busy}
-            >
+            <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
               <AppIcon name="close" className="mr-2 h-4 w-4" aria-hidden />
               {cancelLabel}
             </Button>
@@ -756,25 +683,14 @@ export function UpstreamAccountGroupNoteDialog({
               type="button"
               onClick={onSave}
               disabled={
-                busy ||
-                saveDisabled ||
-                blockingBindingSelection ||
-                blockingNodeShuntSelection
+                busy || saveDisabled || blockingBindingSelection || blockingNodeShuntSelection
               }
             >
               {busy && !deleting ? (
-                <AppIcon
-                  name="loading"
-                  className="mr-2 h-4 w-4 animate-spin"
-                  aria-hidden
-                />
+                <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
               ) : (
                 <AppIcon
-                  name={
-                    existing
-                      ? "content-save-outline"
-                      : "content-save-plus-outline"
-                  }
+                  name={existing ? "content-save-outline" : "content-save-plus-outline"}
                   className="mr-2 h-4 w-4"
                   aria-hidden
                 />

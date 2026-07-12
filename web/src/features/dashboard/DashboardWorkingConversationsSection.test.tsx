@@ -1,16 +1,9 @@
 /** @vitest-environment jsdom */
+
+import { fireEvent, waitFor } from "@testing-library/dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
-import { fireEvent, waitFor } from "@testing-library/dom";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import type {
   PromptCacheConversation,
@@ -19,14 +12,14 @@ import type {
   UpstreamAccountActivityResponse,
 } from "../../lib/api";
 import {
+  type DashboardWorkingConversationCardModel,
   formatDashboardWorkingConversationSequenceId,
   hashDashboardWorkingConversationKey,
   mapPromptCacheConversationsToDashboardCards,
-  type DashboardWorkingConversationCardModel,
 } from "../../lib/dashboardWorkingConversations";
 import {
-  DashboardWorkingConversationsSection,
   type DashboardOpenUpstreamAccountOptions,
+  DashboardWorkingConversationsSection,
 } from "./DashboardWorkingConversationsSection";
 import {
   DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY,
@@ -102,8 +95,7 @@ vi.mock("../../hooks/useDashboardUpstreamAccountActivity", () => ({
       recentInvocationLimit:
         upstreamAccountActivityMock.resolvedRecentInvocationLimit ??
         recentInvocationLimit ??
-        upstreamAccountActivityMock.data?.accounts[0]?.recentInvocations
-          .length ??
+        upstreamAccountActivityMock.data?.accounts[0]?.recentInvocations.length ??
         4,
       hasActivated: enabled,
       reload: vi.fn(),
@@ -122,17 +114,13 @@ function createPreview(
   return {
     id: overrides.id,
     invokeId: overrides.invokeId,
-    promptCacheKey:
-      "promptCacheKey" in overrides ? (overrides.promptCacheKey ?? null) : null,
+    promptCacheKey: "promptCacheKey" in overrides ? (overrides.promptCacheKey ?? null) : null,
     occurredAt: overrides.occurredAt,
     status: overrides.status,
     failureClass: overrides.failureClass ?? "none",
     routeMode: overrides.routeMode ?? "pool",
     model: overrides.model ?? "gpt-5.4",
-    requestModel:
-      "requestModel" in overrides
-        ? (overrides.requestModel ?? null)
-        : "gpt-5.4",
+    requestModel: "requestModel" in overrides ? (overrides.requestModel ?? null) : "gpt-5.4",
     responseModel:
       "responseModel" in overrides
         ? (overrides.responseModel ?? null)
@@ -140,13 +128,9 @@ function createPreview(
     totalTokens: overrides.totalTokens ?? 200,
     cost: overrides.cost ?? 0.02,
     proxyDisplayName:
-      "proxyDisplayName" in overrides
-        ? (overrides.proxyDisplayName ?? null)
-        : "tokyo-edge-01",
+      "proxyDisplayName" in overrides ? (overrides.proxyDisplayName ?? null) : "tokyo-edge-01",
     upstreamAccountId:
-      "upstreamAccountId" in overrides
-        ? (overrides.upstreamAccountId ?? null)
-        : 42,
+      "upstreamAccountId" in overrides ? (overrides.upstreamAccountId ?? null) : 42,
     upstreamAccountName:
       "upstreamAccountName" in overrides
         ? (overrides.upstreamAccountName ?? null)
@@ -192,8 +176,7 @@ function createConversation(
     totalTokens: 200,
     totalCost: 0.02,
     createdAt:
-      recentInvocations[recentInvocations.length - 1]?.occurredAt ??
-      "2026-04-04T10:00:00Z",
+      recentInvocations[recentInvocations.length - 1]?.occurredAt ?? "2026-04-04T10:00:00Z",
     lastActivityAt: recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
     upstreamAccounts: [],
     recentInvocations,
@@ -263,14 +246,28 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
               cacheWriteTokens: 1200,
               cacheReadTokens: 600,
               outputTokens: 620,
-              costs: { input: 0.12, cacheWrite: 0.1, cacheRead: 0.04, output: 0.21, reasoning: 0.05, unknown: 0 },
+              costs: {
+                input: 0.12,
+                cacheWrite: 0.1,
+                cacheRead: 0.04,
+                output: 0.21,
+                reasoning: 0.05,
+                unknown: 0,
+              },
             },
             {
               model: "gpt-5.4-mini",
               cacheWriteTokens: 400,
               cacheReadTokens: 200,
               outputTokens: 180,
-              costs: { input: 0.06, cacheWrite: 0.04, cacheRead: 0.02, output: 0.07, reasoning: 0.01, unknown: 0 },
+              costs: {
+                input: 0.06,
+                cacheWrite: 0.04,
+                cacheRead: 0.02,
+                output: 0.07,
+                reasoning: 0.01,
+                unknown: 0,
+              },
             },
           ],
         },
@@ -458,10 +455,7 @@ function renderSection(
     }) => void;
   },
 ) {
-  return renderSectionWithCards(
-    mapPromptCacheConversationsToDashboardCards(response),
-    options,
-  );
+  return renderSectionWithCards(mapPromptCacheConversationsToDashboardCards(response), options);
 }
 
 function renderSectionWithCards(
@@ -538,9 +532,7 @@ describe("DashboardWorkingConversationsSection model routing", () => {
 
     expect(host?.textContent).toContain("gpt-5.5");
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-working-conversation-model-routing-indicator"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-working-conversation-model-routing-indicator"]'),
     ).not.toBeNull();
   });
 });
@@ -574,10 +566,7 @@ function rerenderSection(
     }) => void;
   },
 ) {
-  return rerenderSectionWithCards(
-    mapPromptCacheConversationsToDashboardCards(response),
-    options,
-  );
+  return rerenderSectionWithCards(mapPromptCacheConversationsToDashboardCards(response), options);
 }
 
 function rerenderSectionWithCards(
@@ -659,9 +648,9 @@ describe("DashboardWorkingConversationsSection", () => {
     });
     expect(host?.textContent).toContain("当前对话 1 条");
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -681,12 +670,9 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(host?.textContent).toContain("最近 4 条调用");
     expect(host?.textContent).not.toContain("账号状态");
+    expect(host?.querySelector('[data-testid="dashboard-upstream-account-status"]')).toBeNull();
     expect(
-      host?.querySelector('[data-testid="dashboard-upstream-account-status"]'),
-    ).toBeNull();
-    expect(
-      host?.querySelector('[data-testid="dashboard-upstream-account-card"]')
-        ?.className,
+      host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.className,
     ).toContain("desktop1660:min-h-[31.5rem]");
     expect(host?.textContent).not.toContain("繁忙");
     expect(host?.textContent).not.toContain("关注");
@@ -697,24 +683,17 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(host?.textContent).not.toContain("仍在重试链路中的调用");
     expect(host?.textContent).not.toContain("最近 4 条调用里仍有活动或异常");
     expect(
-      host?.querySelectorAll(
-        '[data-testid="dashboard-upstream-account-recent-row"]',
-      ).length,
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]').length,
     ).toBe(4);
     expect(
-      host?.querySelectorAll(
-        '[data-testid="dashboard-upstream-account-recent-identity-chip"]',
-      ).length,
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-identity-chip"]')
+        .length,
     ).toBe(4);
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-upstream-account-header-row"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-upstream-account-header-row"]'),
     ).not.toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-upstream-account-header-row"]',
-      )?.textContent,
+      host?.querySelector('[data-testid="dashboard-upstream-account-header-row"]')?.textContent,
     ).not.toContain("#42");
     const firstRecentRow = host?.querySelector(
       '[data-testid="dashboard-upstream-account-recent-row"]',
@@ -725,24 +704,18 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(firstRecentRow?.textContent).not.toContain("UP ");
     expect(firstRecentRow?.textContent).not.toContain("ED ");
     expect(
-      firstRecentRow?.querySelector(
-        '[data-testid="dashboard-compact-latency-first-byte"]',
-      ),
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]'),
     ).not.toBeNull();
     expect(
-      firstRecentRow?.querySelector(
-        '[data-testid="dashboard-compact-latency-response-time"]',
-      ),
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-response-time"]'),
     ).not.toBeNull();
     expect(
-      firstRecentRow?.querySelector(
-        '[data-testid="dashboard-compact-latency-first-byte"]',
-      )?.className,
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
+        ?.className,
     ).not.toMatch(/rounded|border|bg-/);
     expect(
-      firstRecentRow?.querySelector(
-        '[data-testid="dashboard-compact-latency-response-time"]',
-      )?.className,
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
+        ?.className,
     ).not.toMatch(/rounded|border|bg-/);
     expect(
       firstRecentRow
@@ -751,9 +724,7 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toMatch(/首字用时|Time to first byte/i);
 
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-upstream-account-live-call-breakdown"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-upstream-account-live-call-breakdown"]'),
     ).toBeNull();
     const accountHeader = host?.querySelector(
       '[data-testid="dashboard-upstream-account-header-row"]',
@@ -766,21 +737,14 @@ describe("DashboardWorkingConversationsSection", () => {
       ".upstream-plan-badge[data-plan='enterprise']",
     );
     expect(headerPlanBadge?.textContent).toBe("Ent");
-    expect(
-      accountHeader?.querySelector('[aria-label="进行中 3"]'),
-    ).not.toBeNull();
-    expect(
-      accountHeader?.querySelector('[aria-label="TPM 640"]'),
-    ).not.toBeNull();
-    expect(
-      accountHeader?.querySelector('[aria-label="消费速率 0.12"]'),
-    ).not.toBeNull();
+    expect(accountHeader?.querySelector('[aria-label="进行中 3"]')).not.toBeNull();
+    expect(accountHeader?.querySelector('[aria-label="TPM 640"]')).not.toBeNull();
+    expect(accountHeader?.querySelector('[aria-label="消费速率 0.12"]')).not.toBeNull();
     const latencyBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-latency-breakdown"]',
     );
     expect(
-      host?.querySelector('[data-testid="dashboard-upstream-account-card"]')
-        ?.textContent,
+      host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.textContent,
     ).toContain("2.87 s");
     expect(latencyBreakdown?.textContent).toContain("860");
 
@@ -794,23 +758,16 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(requestBreakdown?.textContent).not.toContain("非");
 
     const requestSegments = Array.from(
-      requestBreakdown?.querySelectorAll(
-        '[data-testid="dashboard-upstream-account-segment"]',
-      ) ?? [],
+      requestBreakdown?.querySelectorAll('[data-testid="dashboard-upstream-account-segment"]') ??
+        [],
     );
     expect(requestSegments).toHaveLength(3);
     expect(requestSegments[0]?.textContent).toContain("6");
     expect(requestSegments[1]?.textContent).toContain("2");
     expect(requestSegments[2]?.textContent).toContain("0");
-    expect(
-      requestSegments[0]?.parentElement?.getAttribute("aria-label"),
-    ).toContain("成功 6");
-    expect(
-      requestSegments[1]?.parentElement?.getAttribute("aria-label"),
-    ).toContain("失败 2");
-    expect(
-      requestSegments[2]?.parentElement?.getAttribute("aria-label"),
-    ).toContain("其他 0");
+    expect(requestSegments[0]?.parentElement?.getAttribute("aria-label")).toContain("成功 6");
+    expect(requestSegments[1]?.parentElement?.getAttribute("aria-label")).toContain("失败 2");
+    expect(requestSegments[2]?.parentElement?.getAttribute("aria-label")).toContain("其他 0");
 
     const costBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-cost-breakdown"]',
@@ -823,14 +780,10 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(costBreakdown?.textContent).toContain("$0.22");
     expect(costBreakdown?.textContent).toContain("30.6%");
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-upstream-account-cost-icon"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-upstream-account-cost-icon"]'),
     ).not.toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-upstream-account-token-icon"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-upstream-account-token-icon"]'),
     ).not.toBeNull();
 
     const tokenBreakdown = host?.querySelector(
@@ -851,16 +804,12 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(recentBreakdown?.textContent).toContain("6");
     expect(recentBreakdown?.textContent).toContain("1");
     const phaseSegments = Array.from(
-      recentBreakdown?.querySelectorAll(
-        '[data-testid="invocation-phase-segment"]',
-      ) ?? [],
+      recentBreakdown?.querySelectorAll('[data-testid="invocation-phase-segment"]') ?? [],
     );
     expect(phaseSegments).toHaveLength(3);
     for (const phaseSegment of phaseSegments) {
       expect(phaseSegment.getAttribute("data-phase-motion")).toBe("static");
-      const icon = phaseSegment.querySelector(
-        '[data-testid="invocation-phase-icon"]',
-      );
+      const icon = phaseSegment.querySelector('[data-testid="invocation-phase-icon"]');
       expect(icon).toBeInstanceOf(HTMLElement);
       expect(icon?.className).not.toContain("animate-invocation-phase-requesting");
       expect(icon?.className).not.toContain("animate-pulse");
@@ -896,9 +845,9 @@ describe("DashboardWorkingConversationsSection", () => {
       { activeRange: "yesterday" },
     );
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -911,9 +860,7 @@ describe("DashboardWorkingConversationsSection", () => {
       '[data-testid="dashboard-upstream-account-header-row"]',
     );
     const accountHeaderText = accountHeader?.textContent;
-    expect(
-      accountHeader?.querySelector('[aria-label="进行中 —"]'),
-    ).not.toBeNull();
+    expect(accountHeader?.querySelector('[aria-label="进行中 —"]')).not.toBeNull();
     expect(accountHeaderText).toContain("—");
     expect(accountHeaderText).not.toContain("并行对话");
   });
@@ -934,9 +881,9 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -946,9 +893,7 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     expect(
-      host?.querySelectorAll(
-        '[data-testid="dashboard-upstream-account-metric-card"]',
-      ),
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-metric-card"]'),
     ).toHaveLength(4);
 
     const costTrigger = host?.querySelector(
@@ -1057,9 +1002,9 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -1073,7 +1018,6 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(costBreakdown?.textContent).toContain("$0.00");
     expect(costBreakdown?.textContent).toContain("0%");
-
   });
 
   it("passes the dynamic recent preview limit into upstream account activity", () => {
@@ -1093,9 +1037,9 @@ describe("DashboardWorkingConversationsSection", () => {
       { recentPreviewLimit: 7 },
     );
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -1148,9 +1092,9 @@ describe("DashboardWorkingConversationsSection", () => {
       { recentPreviewLimit: 4 },
     );
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -1161,9 +1105,7 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(host?.textContent).toContain("最近 9 条调用");
     expect(
-      host?.querySelectorAll(
-        '[data-testid="dashboard-upstream-account-recent-row"]',
-      ),
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]'),
     ).toHaveLength(9);
   });
 
@@ -1183,9 +1125,9 @@ describe("DashboardWorkingConversationsSection", () => {
 
     renderSection(response);
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -1200,9 +1142,9 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     expect(host?.textContent).toContain("当前对话 1 条");
-    const accountTabAfter = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTabAfter = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
     expect(accountTabAfter?.disabled).toBe(true);
   });
 
@@ -1222,9 +1164,9 @@ describe("DashboardWorkingConversationsSection", () => {
 
     renderSection(response);
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -1233,9 +1175,9 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    expect(
-      readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY),
-    ).toBe("upstreamAccounts");
+    expect(readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY)).toBe(
+      "upstreamAccounts",
+    );
 
     act(() => {
       root?.unmount();
@@ -1266,9 +1208,9 @@ describe("DashboardWorkingConversationsSection", () => {
 
     renderSection(response);
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -1279,15 +1221,15 @@ describe("DashboardWorkingConversationsSection", () => {
 
     rerenderSection(response, { activeRange: "usage" });
     expect(host?.textContent).toContain("当前对话 1 条");
-    expect(
-      readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY),
-    ).toBe("upstreamAccounts");
+    expect(readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY)).toBe(
+      "upstreamAccounts",
+    );
 
     rerenderSection(response, { activeRange: "today" });
     expect(host?.textContent).toContain("当前活动账号 1 个");
-    const restoredAccountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const restoredAccountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
     expect(restoredAccountTab?.getAttribute("aria-selected")).toBe("true");
   });
 
@@ -1311,9 +1253,9 @@ describe("DashboardWorkingConversationsSection", () => {
       "展示最近 5 分钟内有终态调用，或当前仍处于运行中 / 排队中的对话。",
     );
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -1349,9 +1291,9 @@ describe("DashboardWorkingConversationsSection", () => {
       { onOpenConversation, onOpenInvocation },
     );
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -1361,9 +1303,7 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     const rows = Array.from(
-      host?.querySelectorAll(
-        '[data-testid="dashboard-upstream-account-recent-row"]',
-      ) ?? [],
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]') ?? [],
     );
     const firstRow = rows[0];
     if (!(firstRow instanceof HTMLButtonElement)) {
@@ -1414,9 +1354,7 @@ describe("DashboardWorkingConversationsSection", () => {
         promptCacheKey: "pck-upstream-running",
       }),
     );
-    expect(onOpenInvocation.mock.calls[0]?.[0]?.promptCacheKey).not.toBe(
-      "acct-invoke-1",
-    );
+    expect(onOpenInvocation.mock.calls[0]?.[0]?.promptCacheKey).not.toBe("acct-invoke-1");
     expect(onOpenConversation).not.toHaveBeenCalled();
   });
 
@@ -1439,9 +1377,9 @@ describe("DashboardWorkingConversationsSection", () => {
       { onOpenConversation, onOpenInvocation },
     );
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -1458,9 +1396,7 @@ describe("DashboardWorkingConversationsSection", () => {
     }
 
     expect(identityChip.getAttribute("aria-label")).toContain("打开对话详情");
-    expect(identityChip.getAttribute("aria-label")).toContain(
-      "pck-upstream-running",
-    );
+    expect(identityChip.getAttribute("aria-label")).toContain("pck-upstream-running");
 
     act(() => {
       identityChip.click();
@@ -1476,9 +1412,7 @@ describe("DashboardWorkingConversationsSection", () => {
     onOpenInvocation.mockClear();
 
     act(() => {
-      identityChip.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-      );
+      identityChip.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
     expect(onOpenConversation).toHaveBeenCalledTimes(1);
@@ -1487,9 +1421,7 @@ describe("DashboardWorkingConversationsSection", () => {
     onOpenConversation.mockClear();
 
     act(() => {
-      identityChip.dispatchEvent(
-        new KeyboardEvent("keydown", { key: " ", bubbles: true }),
-      );
+      identityChip.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
     });
 
     expect(onOpenConversation).toHaveBeenCalledTimes(1);
@@ -1522,19 +1454,17 @@ describe("DashboardWorkingConversationsSection", () => {
           spendRate: 0.12,
           firstByteAvgMs: 420,
           avgTotalMs: 860,
-          inProgressInvocationCount:
-            UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
+          inProgressInvocationCount: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
           retryInvocationCount: 0,
-          recentInvocations: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.map(
-            (promptCacheKey, index) =>
-              createPreview({
-                id: 9100 + index,
-                invokeId: `acct-tone-${index + 1}`,
-                promptCacheKey,
-                occurredAt: `2026-04-04T10:0${5 - index}:00Z`,
-                status: "running",
-                upstreamAccountName: "Pool Alpha",
-              }),
+          recentInvocations: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.map((promptCacheKey, index) =>
+            createPreview({
+              id: 9100 + index,
+              invokeId: `acct-tone-${index + 1}`,
+              promptCacheKey,
+              occurredAt: `2026-04-04T10:0${5 - index}:00Z`,
+              status: "running",
+              upstreamAccountName: "Pool Alpha",
+            }),
           ),
         },
       ],
@@ -1554,9 +1484,9 @@ describe("DashboardWorkingConversationsSection", () => {
       { recentPreviewLimit: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length },
     );
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -1566,20 +1496,15 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     const identityChips = Array.from(
-      host?.querySelectorAll(
-        '[data-testid="dashboard-upstream-account-recent-identity-chip"]',
-      ) ?? [],
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-identity-chip"]') ??
+        [],
     );
-    expect(identityChips).toHaveLength(
-      UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
-    );
+    expect(identityChips).toHaveLength(UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length);
 
     const toneClassNames = identityChips.map((chip) => chip.className);
     expect(new Set(toneClassNames).size).toBeGreaterThanOrEqual(4);
 
-    const renderedShortIds = identityChips.map((chip) =>
-      chip.textContent?.trim(),
-    );
+    const renderedShortIds = identityChips.map((chip) => chip.textContent?.trim());
     for (const promptCacheKey of UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS) {
       const expectedShortId = formatDashboardWorkingConversationSequenceId(
         `WC-${hashDashboardWorkingConversationKey(promptCacheKey).slice(0, 6)}`,
@@ -1610,13 +1535,9 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const badges = host?.querySelectorAll(
-      '[data-testid="invocation-transport-badge"]',
-    );
+    const badges = host?.querySelectorAll('[data-testid="invocation-transport-badge"]');
     expect(badges).toHaveLength(1);
-    expect(
-      badges?.[0]?.querySelector('[aria-hidden="true"]')?.textContent,
-    ).toBe("WS");
+    expect(badges?.[0]?.querySelector('[aria-hidden="true"]')?.textContent).toBe("WS");
     expect(badges?.[0]?.textContent).toContain("WebSocket transport");
     expect(badges?.[0]?.getAttribute("title")).toBe("WebSocket");
   });
@@ -1635,9 +1556,7 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const card = host?.querySelector(
-      '[data-testid="dashboard-working-conversation-card"]',
-    );
+    const card = host?.querySelector('[data-testid="dashboard-working-conversation-card"]');
     if (!(card instanceof HTMLElement)) {
       throw new Error("missing working conversation card");
     }
@@ -1656,9 +1575,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(currentPhaseBadge).toBeInstanceOf(HTMLElement);
     expect(currentPhaseBadge?.getAttribute("aria-label")).toBe("响应中");
-    expect(currentPhaseBadge?.getAttribute("data-phase-label-visible")).toBe(
-      "false",
-    );
+    expect(currentPhaseBadge?.getAttribute("data-phase-label-visible")).toBe("false");
     expect(card.textContent).toContain(expectedSortAnchorLabel);
     expect(card.textContent).toContain("请求");
     expect(card.textContent).toContain("Token");
@@ -1666,13 +1583,9 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(card.textContent).not.toContain("累计请求");
     expect(card.textContent).not.toContain("对话 Tokens");
     expect(card.textContent).not.toContain("对话成本");
-    expect(card.textContent).toContain(
-      cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
-    );
+    expect(card.textContent).toContain(cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "");
     expect(card.textContent).not.toContain("WC-");
-    expect(card.textContent).not.toContain(
-      "019d68a9-9c32-7482-a353-71e4b6265f09",
-    );
+    expect(card.textContent).not.toContain("019d68a9-9c32-7482-a353-71e4b6265f09");
     expect(card.getAttribute("data-prompt-cache-key")).toBeNull();
     expect(card.getAttribute("data-anchor-prompt-cache-key")).toBeNull();
     expect(card.getAttribute("data-conversation-sequence-id")).toBe(
@@ -1697,11 +1610,7 @@ describe("DashboardWorkingConversationsSection", () => {
       },
     );
 
-    expect(
-      host?.querySelector(
-        '[data-testid="dashboard-working-conversation-card"]',
-      ),
-    ).toBeTruthy();
+    expect(host?.querySelector('[data-testid="dashboard-working-conversation-card"]')).toBeTruthy();
     expect(host?.textContent).toContain("load more temporarily unavailable");
     expect(host?.textContent).toContain("运行中");
   });
@@ -1736,9 +1645,7 @@ describe("DashboardWorkingConversationsSection", () => {
     const reasoningEffort = currentSlot.querySelector(
       '[data-testid="dashboard-working-conversation-reasoning-effort"]',
     );
-    const fastIcon = currentSlot.querySelector(
-      '[data-testid="invocation-fast-icon"]',
-    );
+    const fastIcon = currentSlot.querySelector('[data-testid="invocation-fast-icon"]');
     if (
       !(modelName instanceof HTMLElement) ||
       !(reasoningEffort instanceof HTMLElement) ||
@@ -1749,12 +1656,10 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(reasoningEffort.textContent).toContain("medium");
     expect(
-      modelName.compareDocumentPosition(reasoningEffort) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+      modelName.compareDocumentPosition(reasoningEffort) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
     expect(
-      reasoningEffort.compareDocumentPosition(fastIcon) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+      reasoningEffort.compareDocumentPosition(fastIcon) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
   });
 
@@ -1767,8 +1672,7 @@ describe("DashboardWorkingConversationsSection", () => {
             invokeId: "invoke-account-inline-compact",
             occurredAt: "2026-04-04T10:04:00Z",
             status: "running",
-            upstreamAccountName:
-              "paisleeeinar5710 Team sandbox workflow monitor",
+            upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
             upstreamAccountPlanType: "team",
             endpoint: "/v1/responses/compact",
             reasoningEffort: "medium",
@@ -1819,8 +1723,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(accountName.className).not.toContain("line-clamp-2");
     expect(accountName.className).not.toContain("break-all");
     expect(
-      accountChip.compareDocumentPosition(accountMeta) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+      accountChip.compareDocumentPosition(accountMeta) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
     expect(compactBadge.textContent).toMatch(/远程压缩|Compact/);
     expect(currentSlot.textContent).toContain("Team");
@@ -1829,24 +1732,17 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(currentSlot.textContent).not.toContain("ED ");
     expect(currentSlot.textContent).not.toContain("TT ");
     expect(
-      currentSlot.querySelector(
-        '[data-testid="dashboard-compact-latency-first-byte"]',
-      ),
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-first-byte"]'),
     ).not.toBeNull();
     expect(
-      currentSlot.querySelector(
-        '[data-testid="dashboard-compact-latency-response-time"]',
-      ),
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-response-time"]'),
     ).not.toBeNull();
     expect(
-      currentSlot.querySelector(
-        '[data-testid="dashboard-compact-latency-first-byte"]',
-      )?.className,
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')?.className,
     ).not.toMatch(/rounded|border|bg-/);
     expect(
-      currentSlot.querySelector(
-        '[data-testid="dashboard-compact-latency-response-time"]',
-      )?.className,
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
+        ?.className,
     ).not.toMatch(/rounded|border|bg-/);
   });
 
@@ -1902,13 +1798,9 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const badges = host?.querySelectorAll(
-      '[data-testid="dashboard-image-tool-icon-badge"]',
-    );
+    const badges = host?.querySelectorAll('[data-testid="dashboard-image-tool-icon-badge"]');
     expect(badges?.length ?? 0).toBe(1);
-    expect(badges?.[0]?.getAttribute("aria-label")).toMatch(
-      /图片工具|Image tool/,
-    );
+    expect(badges?.[0]?.getAttribute("aria-label")).toMatch(/图片工具|Image tool/);
     expect(badges?.[0]?.textContent).not.toMatch(/图片工具|Image tool/);
     expect(badges?.[0]?.className).toContain("rounded-full");
     expect(badges?.[0]?.className).toContain("border");
@@ -1938,17 +1830,12 @@ describe("DashboardWorkingConversationsSection", () => {
       '[data-testid="dashboard-image-tool-icon-badge"][data-image-intent-kind="direct_image"]',
     );
 
-    if (
-      !(remoteBadge instanceof HTMLElement) ||
-      !(imageBadge instanceof HTMLElement)
-    ) {
+    if (!(remoteBadge instanceof HTMLElement) || !(imageBadge instanceof HTMLElement)) {
       throw new Error("missing mixed-signal badges");
     }
 
     expect(remoteBadge.textContent).toMatch(/远程压缩V2|Remote compaction V2/);
-    expect(imageBadge.getAttribute("aria-label")).toMatch(
-      /图片工具|Image tool/,
-    );
+    expect(imageBadge.getAttribute("aria-label")).toMatch(/图片工具|Image tool/);
     expect(imageBadge.textContent).not.toMatch(/图片工具|Image tool/);
   });
 
@@ -2009,21 +1896,15 @@ describe("DashboardWorkingConversationsSection", () => {
     );
 
     const planBadges = Array.from(
-      host?.querySelectorAll(
-        '[data-testid="dashboard-working-conversation-account-plan"]',
-      ) ?? [],
+      host?.querySelectorAll('[data-testid="dashboard-working-conversation-account-plan"]') ?? [],
     );
     const labels = planBadges.map((badge) => badge.textContent);
 
-    expect(labels).toEqual(
-      expect.arrayContaining(["Ent", "Plus", "Free", "Pro"]),
-    );
+    expect(labels).toEqual(expect.arrayContaining(["Ent", "Plus", "Free", "Pro"]));
     expect(labels).not.toContain("enterprise");
     expect(labels).not.toContain("local");
 
-    const enterpriseBadge = planBadges.find(
-      (badge) => badge.textContent === "Ent",
-    );
+    const enterpriseBadge = planBadges.find((badge) => badge.textContent === "Ent");
     expect(enterpriseBadge?.getAttribute("title")).toBe("enterprise");
     expect(enterpriseBadge?.getAttribute("data-plan")).toBe("enterprise");
   });
@@ -2042,9 +1923,7 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const grid = host?.querySelector(
-      '[data-testid="dashboard-working-conversations-grid"]',
-    );
+    const grid = host?.querySelector('[data-testid="dashboard-working-conversations-grid"]');
     if (!(grid instanceof HTMLDivElement)) {
       throw new Error("missing working conversations grid");
     }
@@ -2079,16 +1958,12 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const grid = host?.querySelector(
-      '[data-testid="dashboard-working-conversations-grid"]',
-    );
+    const grid = host?.querySelector('[data-testid="dashboard-working-conversations-grid"]');
     if (!(grid instanceof HTMLDivElement)) {
       throw new Error("missing working conversations grid");
     }
 
-    const rowGrid = grid.querySelector(
-      '[data-testid="dashboard-working-conversations-row"] > div',
-    );
+    const rowGrid = grid.querySelector('[data-testid="dashboard-working-conversations-row"] > div');
     if (!(rowGrid instanceof HTMLDivElement)) {
       throw new Error("missing row grid");
     }
@@ -2179,40 +2054,35 @@ describe("DashboardWorkingConversationsSection", () => {
     vi.useFakeTimers();
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(700);
-    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
-      1680,
-    );
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversations-grid"
-        ) {
-          return {
-            x: 0,
-            y: 0,
-            top: 0,
-            bottom: 1480,
-            left: 0,
-            right: 1200,
-            width: 1200,
-            height: 1480,
-            toJSON: () => ({}),
-          } satisfies DOMRect;
-        }
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(1680);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
         return {
           x: 0,
           y: 0,
           top: 0,
-          bottom: 0,
+          bottom: 1480,
           left: 0,
-          right: 0,
-          width: 0,
-          height: 0,
+          right: 1200,
+          width: 1200,
+          height: 1480,
           toJSON: () => ({}),
         } satisfies DOMRect;
-      },
-    );
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } satisfies DOMRect;
+    });
     const onLoadMore = vi.fn();
 
     renderSection(
@@ -2246,40 +2116,35 @@ describe("DashboardWorkingConversationsSection", () => {
     vi.useFakeTimers();
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(900);
-    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
-      640,
-    );
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversations-grid"
-        ) {
-          return {
-            x: 0,
-            y: 0,
-            top: 0,
-            bottom: 640,
-            left: 0,
-            right: 1200,
-            width: 1200,
-            height: 640,
-            toJSON: () => ({}),
-          } satisfies DOMRect;
-        }
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(640);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
         return {
           x: 0,
           y: 0,
           top: 0,
-          bottom: 0,
+          bottom: 640,
           left: 0,
-          right: 0,
-          width: 0,
-          height: 0,
+          right: 1200,
+          width: 1200,
+          height: 640,
           toJSON: () => ({}),
         } satisfies DOMRect;
-      },
-    );
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } satisfies DOMRect;
+    });
     const onLoadMore = vi.fn();
 
     renderSection(
@@ -2313,37 +2178,34 @@ describe("DashboardWorkingConversationsSection", () => {
     vi.useFakeTimers();
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(900);
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversations-grid"
-        ) {
-          return {
-            x: 0,
-            y: 1_120,
-            top: 1_120,
-            bottom: 1_760,
-            left: 0,
-            right: 1200,
-            width: 1200,
-            height: 640,
-            toJSON: () => ({}),
-          } satisfies DOMRect;
-        }
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
         return {
           x: 0,
-          y: 0,
-          top: 0,
-          bottom: 0,
+          y: 1_120,
+          top: 1_120,
+          bottom: 1_760,
           left: 0,
-          right: 0,
-          width: 0,
-          height: 0,
+          right: 1200,
+          width: 1200,
+          height: 640,
           toJSON: () => ({}),
         } satisfies DOMRect;
-      },
-    );
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } satisfies DOMRect;
+    });
     const onLoadMore = vi.fn();
 
     renderSection(
@@ -2377,37 +2239,34 @@ describe("DashboardWorkingConversationsSection", () => {
     vi.useFakeTimers();
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(900);
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversations-grid"
-        ) {
-          return {
-            x: 0,
-            y: -260,
-            top: -260,
-            bottom: 1_160,
-            left: 0,
-            right: 1200,
-            width: 1200,
-            height: 1_420,
-            toJSON: () => ({}),
-          } satisfies DOMRect;
-        }
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
         return {
           x: 0,
-          y: 0,
-          top: 0,
-          bottom: 0,
+          y: -260,
+          top: -260,
+          bottom: 1_160,
           left: 0,
-          right: 0,
-          width: 0,
-          height: 0,
+          right: 1200,
+          width: 1200,
+          height: 1_420,
           toJSON: () => ({}),
         } satisfies DOMRect;
-      },
-    );
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } satisfies DOMRect;
+    });
     const onLoadMore = vi.fn();
 
     renderSection(
@@ -2441,37 +2300,34 @@ describe("DashboardWorkingConversationsSection", () => {
     vi.useFakeTimers();
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(900);
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversations-grid"
-        ) {
-          return {
-            x: 0,
-            y: -1_320,
-            top: -1_320,
-            bottom: -40,
-            left: 0,
-            right: 1200,
-            width: 1200,
-            height: 1_280,
-            toJSON: () => ({}),
-          } satisfies DOMRect;
-        }
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
         return {
           x: 0,
-          y: 0,
-          top: 0,
-          bottom: 0,
+          y: -1_320,
+          top: -1_320,
+          bottom: -40,
           left: 0,
-          right: 0,
-          width: 0,
-          height: 0,
+          right: 1200,
+          width: 1200,
+          height: 1_280,
           toJSON: () => ({}),
         } satisfies DOMRect;
-      },
-    );
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } satisfies DOMRect;
+    });
     const onLoadMore = vi.fn();
 
     renderSection(
@@ -2644,15 +2500,10 @@ describe("DashboardWorkingConversationsSection", () => {
       },
     );
 
-    const accountButton = Array.from(
-      host?.querySelectorAll("button") ?? [],
-    ).find((button) => {
+    const accountButton = Array.from(host?.querySelectorAll("button") ?? []).find((button) => {
       const text = button.textContent ?? "";
       const title = button.getAttribute("title") ?? "";
-      return (
-        text.includes("pool-account-77") ||
-        title.includes("pool-account-77@example.com")
-      );
+      return text.includes("pool-account-77") || title.includes("pool-account-77@example.com");
     });
     if (!(accountButton instanceof HTMLButtonElement)) {
       throw new Error("missing account button");
@@ -2662,10 +2513,7 @@ describe("DashboardWorkingConversationsSection", () => {
       accountButton.click();
     });
 
-    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(
-      77,
-      "pool-account-77@example.com",
-    );
+    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(77, "pool-account-77@example.com");
     expect(onOpenInvocation).not.toHaveBeenCalled();
   });
 
@@ -2679,10 +2527,8 @@ describe("DashboardWorkingConversationsSection", () => {
       onOpenInvocation,
     });
 
-    const upstreamAccountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) =>
-      /上游账号|upstream account/i.test(candidate.textContent ?? ""),
+    const upstreamAccountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /上游账号|upstream account/i.test(candidate.textContent ?? ""),
     );
     if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
@@ -2719,10 +2565,8 @@ describe("DashboardWorkingConversationsSection", () => {
       onOpenInvocation,
     });
 
-    const upstreamAccountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) =>
-      /上游账号|upstream account/i.test(candidate.textContent ?? ""),
+    const upstreamAccountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /上游账号|upstream account/i.test(candidate.textContent ?? ""),
     );
     if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
@@ -2775,9 +2619,7 @@ describe("DashboardWorkingConversationsSection", () => {
 
       const upstreamAccountTab = Array.from(
         host?.querySelectorAll('button[role="tab"]') ?? [],
-      ).find((candidate) =>
-        /上游账号|upstream account/i.test(candidate.textContent ?? ""),
-      );
+      ).find((candidate) => /上游账号|upstream account/i.test(candidate.textContent ?? ""));
       if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
         throw new Error("missing upstream account tab");
       }
@@ -2850,9 +2692,7 @@ describe("DashboardWorkingConversationsSection", () => {
 
       const upstreamAccountTab = Array.from(
         host?.querySelectorAll('button[role="tab"]') ?? [],
-      ).find((candidate) =>
-        /上游账号|upstream account/i.test(candidate.textContent ?? ""),
-      );
+      ).find((candidate) => /上游账号|upstream account/i.test(candidate.textContent ?? ""));
       if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
         throw new Error("missing upstream account tab");
       }
@@ -2871,9 +2711,7 @@ describe("DashboardWorkingConversationsSection", () => {
       expect(fastBadge.textContent?.trim()).toBe("强制Fast");
       expect(fastBadge.dataset.policyTone).toBe("primary");
       expect(fastBadge.getAttribute("title")).toContain("Fast 改写策略");
-      expect(fastBadge.getAttribute("aria-label")).toContain(
-        "Fast 改写策略：强制Fast",
-      );
+      expect(fastBadge.getAttribute("aria-label")).toContain("Fast 改写策略：强制Fast");
 
       act(() => {
         fastBadge.click();
@@ -2887,9 +2725,7 @@ describe("DashboardWorkingConversationsSection", () => {
       });
       expect(fastBadge.textContent?.trim()).toBe("不改Fast");
       expect(fastBadge.dataset.policyTone).toBe("neutral");
-      expect(fastBadge.getAttribute("aria-label")).toContain(
-        "Fast 改写策略：不改Fast",
-      );
+      expect(fastBadge.getAttribute("aria-label")).toContain("Fast 改写策略：不改Fast");
       expect(fastBadge.disabled).toBe(false);
       expect(fetchMock).not.toHaveBeenCalled();
 
@@ -2900,9 +2736,7 @@ describe("DashboardWorkingConversationsSection", () => {
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
       const [, init] = fetchMock.mock.calls[0]!;
       expect(String(init?.body)).toContain('"routingRule"');
-      expect(String(init?.body)).toContain(
-        '"fastModeRewriteMode":"keep_original"',
-      );
+      expect(String(init?.body)).toContain('"fastModeRewriteMode":"keep_original"');
     } finally {
       globalThis.fetch = originalFetch;
       vi.useRealTimers();
@@ -2935,9 +2769,7 @@ describe("DashboardWorkingConversationsSection", () => {
 
       const upstreamAccountTab = Array.from(
         host?.querySelectorAll('button[role="tab"]') ?? [],
-      ).find((candidate) =>
-        /上游账号|upstream account/i.test(candidate.textContent ?? ""),
-      );
+      ).find((candidate) => /上游账号|upstream account/i.test(candidate.textContent ?? ""));
       if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
         throw new Error("missing upstream account tab");
       }
@@ -3004,13 +2836,9 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const accountLabel = host?.querySelector(
-      '[title="sticky-account-52@example.com"]',
-    );
+    const accountLabel = host?.querySelector('[title="sticky-account-52@example.com"]');
     expect(accountLabel).not.toBeNull();
-    expect(accountLabel?.className).not.toContain(
-      "invocation-account-routing-in-progress",
-    );
+    expect(accountLabel?.className).not.toContain("invocation-account-routing-in-progress");
     expect(host?.textContent ?? "").not.toContain("未分配上游账号");
   });
 
@@ -3030,13 +2858,9 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const accountLabel = host?.querySelector(
-      '[title="sticky-account-52@example.com"]',
-    );
+    const accountLabel = host?.querySelector('[title="sticky-account-52@example.com"]');
     expect(accountLabel).not.toBeNull();
-    expect(accountLabel?.className).toContain(
-      "invocation-account-routing-in-progress",
-    );
+    expect(accountLabel?.className).toContain("invocation-account-routing-in-progress");
     expect(host?.textContent ?? "").not.toContain("号池路由中");
   });
 
@@ -3051,8 +2875,7 @@ describe("DashboardWorkingConversationsSection", () => {
             status: "failed",
             failureClass: "service_failure",
             failureKind: "pool_no_available_account",
-            errorMessage:
-              "[pool_no_available_account] no assignable upstream account remains",
+            errorMessage: "[pool_no_available_account] no assignable upstream account remains",
             upstreamAccountId: null,
             upstreamAccountName: null,
             proxyDisplayName: null,
@@ -3120,14 +2943,12 @@ describe("DashboardWorkingConversationsSection", () => {
         promptCacheKey: "pck-slot-open",
       }),
     );
-    expect(
-      onOpenInvocation.mock.calls[0]?.[0]?.invocation?.record?.invokeId,
-    ).toBe("invoke-slot-current");
+    expect(onOpenInvocation.mock.calls[0]?.[0]?.invocation?.record?.invokeId).toBe(
+      "invoke-slot-current",
+    );
 
     act(() => {
-      currentSlot.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-      );
+      currentSlot.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
     expect(onOpenInvocation).toHaveBeenCalledTimes(2);
@@ -3170,15 +2991,9 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(sequenceButton.getAttribute("aria-label")).toContain(
       cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
     );
-    expect(sequenceButton.getAttribute("aria-label")).not.toContain(
-      "invoke-sequence-current",
-    );
-    expect(sequenceButton.getAttribute("aria-label")).not.toContain(
-      "invoke-sequence-previous",
-    );
-    expect(sequenceButton.getAttribute("aria-label")).toContain(
-      "pck-sequence-open",
-    );
+    expect(sequenceButton.getAttribute("aria-label")).not.toContain("invoke-sequence-current");
+    expect(sequenceButton.getAttribute("aria-label")).not.toContain("invoke-sequence-previous");
+    expect(sequenceButton.getAttribute("aria-label")).toContain("pck-sequence-open");
     expect(sequenceButton.type).toBe("button");
 
     act(() => {
@@ -3197,9 +3012,7 @@ describe("DashboardWorkingConversationsSection", () => {
     onOpenConversation.mockClear();
     onOpenInvocation.mockClear();
 
-    const card = host?.querySelector(
-      '[data-testid="dashboard-working-conversation-card"]',
-    );
+    const card = host?.querySelector('[data-testid="dashboard-working-conversation-card"]');
     if (!(card instanceof HTMLElement)) {
       throw new Error("missing dashboard card");
     }
@@ -3218,40 +3031,26 @@ describe("DashboardWorkingConversationsSection", () => {
     }
     expect(slotHeader.className).toContain("grid");
     expect(slotHeader.className).toContain("grid-cols-[auto_minmax(0,1fr)]");
-    const statusLabel = currentSlot.querySelector(
-      '[data-testid="invocation-phase-badge"]',
-    );
+    const statusLabel = currentSlot.querySelector('[data-testid="invocation-phase-badge"]');
     if (!(statusLabel instanceof HTMLElement)) {
-      throw new Error(
-        `missing phase label in slot: ${currentSlot.textContent ?? ""}`,
-      );
+      throw new Error(`missing phase label in slot: ${currentSlot.textContent ?? ""}`);
     }
     expect(
       slotHeader
-        .querySelector(
-          '[data-testid="dashboard-working-conversation-slot-label"]',
-        )
+        .querySelector('[data-testid="dashboard-working-conversation-slot-label"]')
         ?.textContent?.trim(),
     ).toBe("当前调用");
-    expect(
-      slotHeader.querySelector('[data-testid="invocation-phase-badge"]'),
-    ).toBe(statusLabel);
+    expect(slotHeader.querySelector('[data-testid="invocation-phase-badge"]')).toBe(statusLabel);
     expect(statusLabel.getAttribute("data-phase-label-visible")).toBe("false");
     expect(statusLabel.getAttribute("data-phase-motion")).toBe("dynamic");
     expect(
-      slotHeader.querySelector(
-        '[data-testid="dashboard-compact-latency-first-byte"]',
-      ),
+      slotHeader.querySelector('[data-testid="dashboard-compact-latency-first-byte"]'),
     ).toBeInstanceOf(HTMLElement);
     expect(
-      slotHeader.querySelector(
-        '[data-testid="dashboard-compact-latency-response-time"]',
-      ),
+      slotHeader.querySelector('[data-testid="dashboard-compact-latency-response-time"]'),
     ).toBeInstanceOf(HTMLElement);
 
-    const phaseLabels = Array.from(
-      card.querySelectorAll('[data-testid="invocation-phase-badge"]'),
-    );
+    const phaseLabels = Array.from(card.querySelectorAll('[data-testid="invocation-phase-badge"]'));
     expect(phaseLabels.length).toBeGreaterThanOrEqual(2);
     for (const phaseLabel of phaseLabels) {
       expect(phaseLabel.className).toContain("inline-flex");
@@ -3261,12 +3060,8 @@ describe("DashboardWorkingConversationsSection", () => {
       expect(phaseLabel.getAttribute("data-phase-motion")).toBe("dynamic");
       expect(phaseLabel.getAttribute("data-phase-label-visible")).toBe("false");
     }
-    const phaseIcons = Array.from(
-      card.querySelectorAll('[data-testid="invocation-phase-icon"]'),
-    );
-    expect(
-      phaseIcons.some((icon) => icon.className.includes("animate-spin")),
-    ).toBe(true);
+    const phaseIcons = Array.from(card.querySelectorAll('[data-testid="invocation-phase-icon"]'));
+    expect(phaseIcons.some((icon) => icon.className.includes("animate-spin"))).toBe(true);
 
     const requestMetric = Array.from(card.querySelectorAll("span")).find(
       (node) => node.textContent === "请求",
@@ -3314,21 +3109,15 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const card = host?.querySelector(
-      '[data-testid="dashboard-working-conversation-card"]',
-    );
+    const card = host?.querySelector('[data-testid="dashboard-working-conversation-card"]');
     const placeholder = host?.querySelector(
       '[data-testid="dashboard-working-conversation-placeholder"]',
     );
-    const placeholderLine = host?.querySelector(
-      ".working-conversation-placeholder-line",
-    );
+    const placeholderLine = host?.querySelector(".working-conversation-placeholder-line");
 
     expect(card?.className).toContain("working-conversation-card-surface");
     expect(card?.className).not.toContain("bg-[linear-gradient");
-    expect(placeholder?.className).toContain(
-      "working-conversation-slot-surface",
-    );
+    expect(placeholder?.className).toContain("working-conversation-slot-surface");
     expect(placeholderLine).not.toBeNull();
   });
 
@@ -3346,9 +3135,7 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const grid = host?.querySelector(
-      '[data-testid="dashboard-working-conversations-grid"]',
-    );
+    const grid = host?.querySelector('[data-testid="dashboard-working-conversations-grid"]');
 
     expect(grid).not.toBeNull();
     expect(grid?.className).toContain("xl:grid-cols-2");
@@ -3370,9 +3157,7 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const grid = host?.querySelector(
-      '[data-testid="dashboard-working-conversations-grid"]',
-    );
+    const grid = host?.querySelector('[data-testid="dashboard-working-conversations-grid"]');
     if (!(grid instanceof HTMLDivElement)) {
       throw new Error("missing working conversations grid");
     }
@@ -3425,37 +3210,34 @@ describe("DashboardWorkingConversationsSection", () => {
       },
     ];
     virtualizerMocks.totalSize = 960;
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversations-grid"
-        ) {
-          return {
-            x: 0,
-            y: 240,
-            top: 240,
-            bottom: 840,
-            left: 0,
-            right: 1200,
-            width: 1200,
-            height: 600,
-            toJSON: () => ({}),
-          } satisfies DOMRect;
-        }
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
         return {
           x: 0,
-          y: 0,
-          top: 0,
-          bottom: 0,
+          y: 240,
+          top: 240,
+          bottom: 840,
           left: 0,
-          right: 0,
-          width: 0,
-          height: 0,
+          right: 1200,
+          width: 1200,
+          height: 600,
           toJSON: () => ({}),
         } satisfies DOMRect;
-      },
-    );
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } satisfies DOMRect;
+    });
 
     renderSection(
       createResponse(
@@ -3617,34 +3399,28 @@ describe("DashboardWorkingConversationsSection", () => {
         toJSON: () => ({}),
       }) satisfies DOMRect;
 
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversations-grid"
-        ) {
-          return rectFor(0, 600);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+        return rectFor(0, 600);
+      }
+      if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
+        switch (this.getAttribute("data-conversation-sequence-id")) {
+          case "COLLIDE-A":
+            return rectFor(-220);
+          case "COLLIDE-B":
+            return rectFor(40);
+          case "COLLIDE-A-1":
+            return rectFor(-20);
+          case "COLLIDE-B-1":
+            return rectFor(220);
+          default:
+            return rectFor(720);
         }
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversation-card"
-        ) {
-          switch (this.getAttribute("data-conversation-sequence-id")) {
-            case "COLLIDE-A":
-              return rectFor(-220);
-            case "COLLIDE-B":
-              return rectFor(40);
-            case "COLLIDE-A-1":
-              return rectFor(-20);
-            case "COLLIDE-B-1":
-              return rectFor(220);
-            default:
-              return rectFor(720);
-          }
-        }
-        return rectFor(0, 0);
-      },
-    );
+      }
+      return rectFor(0, 0);
+    });
 
     renderSectionWithCards(initialCards);
 
@@ -3709,42 +3485,36 @@ describe("DashboardWorkingConversationsSection", () => {
         toJSON: () => ({}),
       }) satisfies DOMRect;
 
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversations-grid"
-        ) {
-          return rectFor(0, 600);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+        return rectFor(0, 600);
+      }
+      if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
+        switch (this.getAttribute("data-conversation-sequence-id")) {
+          case "PRUNED-3":
+            return rectFor(40);
+          case "PRUNED-4":
+            return rectFor(220);
+          case "PRUNED-5":
+            return rectFor(400);
+          case "PRUNED-6":
+            return rectFor(580);
+          case "PRUNED-NEXT-3":
+            return rectFor(220);
+          case "PRUNED-NEXT-4":
+            return rectFor(400);
+          case "PRUNED-NEXT-5":
+            return rectFor(580);
+          case "PRUNED-NEXT-6":
+            return rectFor(760);
+          default:
+            return rectFor(920);
         }
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversation-card"
-        ) {
-          switch (this.getAttribute("data-conversation-sequence-id")) {
-            case "PRUNED-3":
-              return rectFor(40);
-            case "PRUNED-4":
-              return rectFor(220);
-            case "PRUNED-5":
-              return rectFor(400);
-            case "PRUNED-6":
-              return rectFor(580);
-            case "PRUNED-NEXT-3":
-              return rectFor(220);
-            case "PRUNED-NEXT-4":
-              return rectFor(400);
-            case "PRUNED-NEXT-5":
-              return rectFor(580);
-            case "PRUNED-NEXT-6":
-              return rectFor(760);
-            default:
-              return rectFor(920);
-          }
-        }
-        return rectFor(0, 0);
-      },
-    );
+      }
+      return rectFor(0, 0);
+    });
 
     renderSectionWithCards(initialCards);
 
@@ -3806,38 +3576,32 @@ describe("DashboardWorkingConversationsSection", () => {
         toJSON: () => ({}),
       }) satisfies DOMRect;
 
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversations-grid"
-        ) {
-          return rectFor(0, 600);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+        return rectFor(0, 600);
+      }
+      if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
+        switch (this.getAttribute("data-conversation-sequence-id")) {
+          case "PARTIAL-1":
+            return rectFor(-24);
+          case "PARTIAL-2":
+            return rectFor(180);
+          case "PARTIAL-3":
+            return rectFor(360);
+          case "PARTIAL-NEXT-1":
+            return rectFor(156);
+          case "PARTIAL-NEXT-2":
+            return rectFor(360);
+          case "PARTIAL-NEXT-3":
+            return rectFor(540);
+          default:
+            return rectFor(720);
         }
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversation-card"
-        ) {
-          switch (this.getAttribute("data-conversation-sequence-id")) {
-            case "PARTIAL-1":
-              return rectFor(-24);
-            case "PARTIAL-2":
-              return rectFor(180);
-            case "PARTIAL-3":
-              return rectFor(360);
-            case "PARTIAL-NEXT-1":
-              return rectFor(156);
-            case "PARTIAL-NEXT-2":
-              return rectFor(360);
-            case "PARTIAL-NEXT-3":
-              return rectFor(540);
-            default:
-              return rectFor(720);
-          }
-        }
-        return rectFor(0, 0);
-      },
-    );
+      }
+      return rectFor(0, 0);
+    });
 
     renderSectionWithCards(initialCards);
 
@@ -3927,36 +3691,30 @@ describe("DashboardWorkingConversationsSection", () => {
         toJSON: () => ({}),
       }) satisfies DOMRect;
 
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversations-grid"
-        ) {
-          return rectFor(0, 600);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+        return rectFor(0, 600);
+      }
+      if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
+        switch (this.getAttribute("data-conversation-sequence-id")) {
+          case "VISIBLE-A":
+            return rectFor(40);
+          case "VISIBLE-B":
+            return rectFor(220);
+          case "VISIBLE-C":
+            return rectFor(40);
+          case "VISIBLE-A-1":
+            return rectFor(220);
+          case "VISIBLE-B-1":
+            return rectFor(400);
+          default:
+            return rectFor(720);
         }
-        if (
-          this.getAttribute("data-testid") ===
-          "dashboard-working-conversation-card"
-        ) {
-          switch (this.getAttribute("data-conversation-sequence-id")) {
-            case "VISIBLE-A":
-              return rectFor(40);
-            case "VISIBLE-B":
-              return rectFor(220);
-            case "VISIBLE-C":
-              return rectFor(40);
-            case "VISIBLE-A-1":
-              return rectFor(220);
-            case "VISIBLE-B-1":
-              return rectFor(400);
-            default:
-              return rectFor(720);
-          }
-        }
-        return rectFor(0, 0);
-      },
-    );
+      }
+      return rectFor(0, 0);
+    });
 
     renderSectionWithCards(initialCards);
 
@@ -4007,9 +3765,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(statusIcon.getAttribute("aria-label")).toContain("失败");
     expect(statusIcon.getAttribute("aria-label")).toContain(LONG_ERROR_SUMMARY);
     expect(
-      slotHeader.querySelectorAll(
-        `[title*="${LONG_ERROR_SUMMARY.slice(0, 48)}"]`,
-      ),
+      slotHeader.querySelectorAll(`[title*="${LONG_ERROR_SUMMARY.slice(0, 48)}"]`),
     ).toHaveLength(1);
   });
 
@@ -4037,12 +3793,8 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error("missing slot for tooltip test");
     }
 
-    const errorSummary = currentSlot.querySelector(
-      '[data-testid="invocation-error-summary"]',
-    );
-    const errorText = currentSlot.querySelector(
-      '[data-testid="invocation-error-summary-text"]',
-    );
+    const errorSummary = currentSlot.querySelector('[data-testid="invocation-error-summary"]');
+    const errorText = currentSlot.querySelector('[data-testid="invocation-error-summary-text"]');
     const errorTrigger = errorSummary?.parentElement;
     if (
       !(errorSummary instanceof HTMLElement) ||
@@ -4065,9 +3817,9 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     await waitFor(() => {
-      const tooltip = Array.from(
-        document.body.querySelectorAll('[role="tooltip"]'),
-      ).find((node) => node.textContent?.includes(LONG_ERROR_SUMMARY));
+      const tooltip = Array.from(document.body.querySelectorAll('[role="tooltip"]')).find((node) =>
+        node.textContent?.includes(LONG_ERROR_SUMMARY),
+      );
       expect(tooltip).toBeInstanceOf(HTMLElement);
     });
   });
@@ -4167,9 +3919,9 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const accountTab = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((node) => node.textContent?.includes("上游账号"));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
     if (!(accountTab instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account tab");
     }
@@ -4178,32 +3930,19 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    const recentRow = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-recent-row"]',
-    );
+    const recentRow = host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]');
     if (!(recentRow instanceof HTMLElement)) {
       throw new Error("missing recent row for tooltip test");
     }
 
-    const accountGrid = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-grid"]',
-    );
-    const accountCard = recentRow.closest(
-      '[data-testid="dashboard-upstream-account-card"]',
-    );
-    if (
-      !(accountGrid instanceof HTMLElement) ||
-      !(accountCard instanceof HTMLElement)
-    ) {
+    const accountGrid = host?.querySelector('[data-testid="dashboard-upstream-account-grid"]');
+    const accountCard = recentRow.closest('[data-testid="dashboard-upstream-account-card"]');
+    if (!(accountGrid instanceof HTMLElement) || !(accountCard instanceof HTMLElement)) {
       throw new Error("missing account layout shrink chain");
     }
 
-    const errorSummary = recentRow.querySelector(
-      '[data-testid="invocation-error-summary"]',
-    );
-    const errorText = recentRow.querySelector(
-      '[data-testid="invocation-error-summary-text"]',
-    );
+    const errorSummary = recentRow.querySelector('[data-testid="invocation-error-summary"]');
+    const errorText = recentRow.querySelector('[data-testid="invocation-error-summary-text"]');
     const errorTrigger = errorSummary?.parentElement;
     if (
       !(errorSummary instanceof HTMLElement) ||
@@ -4219,9 +3958,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(errorText.className).toContain("whitespace-nowrap");
     expect(errorTrigger.getAttribute("tabindex")).toBe("0");
     expect(errorTrigger.getAttribute("aria-label")).toBe(LONG_ERROR_SUMMARY);
-    expect(accountGrid.className).toContain(
-      "desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]",
-    );
+    expect(accountGrid.className).toContain("desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]");
     expect(accountCard.className).toContain("min-w-0");
     expect(recentRow.className).toContain("min-w-0");
     expect(errorTrigger.className).toContain("w-full");
@@ -4232,9 +3969,9 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     await waitFor(() => {
-      const tooltip = Array.from(
-        document.body.querySelectorAll('[role="tooltip"]'),
-      ).find((node) => node.textContent?.includes(LONG_ERROR_SUMMARY));
+      const tooltip = Array.from(document.body.querySelectorAll('[role="tooltip"]')).find((node) =>
+        node.textContent?.includes(LONG_ERROR_SUMMARY),
+      );
       expect(tooltip).toBeInstanceOf(HTMLElement);
     });
   });
@@ -4276,9 +4013,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
 
     const readings = Array.from(
-      host?.querySelectorAll(
-        '[data-testid="dashboard-working-conversation-slot-readings"]',
-      ) ?? [],
+      host?.querySelectorAll('[data-testid="dashboard-working-conversation-slot-readings"]') ?? [],
     )
       .map((element) => element.textContent ?? "")
       .join(" ");

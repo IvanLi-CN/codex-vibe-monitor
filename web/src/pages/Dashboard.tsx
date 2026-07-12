@@ -1,48 +1,42 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 import { DashboardActivityOverview } from "../features/dashboard/DashboardActivityOverview";
 import { DashboardInvocationDetailDrawer } from "../features/dashboard/DashboardInvocationDetailDrawer";
-import {
-  DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
-  persistDashboardActivityRange,
-  readPersistedDashboardActivityRange,
-  type DashboardActivityRangeKey,
-} from "../features/dashboard/dashboardActivityRange";
 import { DashboardPerformanceDiagnostics } from "../features/dashboard/DashboardPerformanceDiagnostics";
-import { DashboardWorkingConversationsSection } from "../features/dashboard/DashboardWorkingConversationsSection";
-import { PromptCacheConversationHistoryDrawer } from "../features/prompt-cache/PromptCacheConversationTable";
-import { useDashboardWorkingConversations } from "../hooks/useDashboardWorkingConversations";
-import { useDashboardActivitySnapshot } from "../hooks/useDashboardUpstreamAccountActivity";
-import { resetDashboardPerformanceDiagnostics } from "../lib/dashboardPerformanceDiagnostics";
-import {
-  formatDashboardWorkingConversationSequenceId,
-  type DashboardWorkingConversationInvocationSelection,
-} from "../lib/dashboardWorkingConversations";
 import type {
   DashboardOpenUpstreamAccountOptions,
   DashboardWorkingConversationSelection,
 } from "../features/dashboard/DashboardWorkingConversationsSection";
-import { useTranslation } from "../i18n";
+import { DashboardWorkingConversationsSection } from "../features/dashboard/DashboardWorkingConversationsSection";
+import {
+  DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
+  type DashboardActivityRangeKey,
+  persistDashboardActivityRange,
+  readPersistedDashboardActivityRange,
+} from "../features/dashboard/dashboardActivityRange";
+import { PromptCacheConversationHistoryDrawer } from "../features/prompt-cache/PromptCacheConversationTable";
+import { useDashboardActivitySnapshot } from "../hooks/useDashboardUpstreamAccountActivity";
+import { useDashboardWorkingConversations } from "../hooks/useDashboardWorkingConversations";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
+import { useTranslation } from "../i18n";
+import { resetDashboardPerformanceDiagnostics } from "../lib/dashboardPerformanceDiagnostics";
+import {
+  type DashboardWorkingConversationInvocationSelection,
+  formatDashboardWorkingConversationSequenceId,
+} from "../lib/dashboardWorkingConversations";
 import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
 
 export default function DashboardPage() {
   const { t } = useTranslation();
-  const [activeRange, setActiveRange] = useState<DashboardActivityRangeKey>(
-    () =>
-      readPersistedDashboardActivityRange(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY),
+  const [activeRange, setActiveRange] = useState<DashboardActivityRangeKey>(() =>
+    readPersistedDashboardActivityRange(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY),
   );
   const [selectedInvocation, setSelectedInvocation] =
     useState<DashboardWorkingConversationInvocationSelection | null>(null);
   const [selectedConversation, setSelectedConversation] =
     useState<DashboardWorkingConversationSelection | null>(null);
-  const [includeUpstreamAccountActivity, setIncludeUpstreamAccountActivity] =
-    useState(false);
-  const {
-    upstreamAccountId,
-    upstreamAccountTab,
-    openUpstreamAccount,
-    closeUpstreamAccount,
-  } = useUpstreamAccountDetailRoute();
+  const [includeUpstreamAccountActivity, setIncludeUpstreamAccountActivity] = useState(false);
+  const { upstreamAccountId, upstreamAccountTab, openUpstreamAccount, closeUpstreamAccount } =
+    useUpstreamAccountDetailRoute();
   const {
     cards,
     totalMatched,
@@ -80,10 +74,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    persistDashboardActivityRange(
-      DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
-      activeRange,
-    );
+    persistDashboardActivityRange(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, activeRange);
   }, [activeRange]);
 
   const handleOpenUpstreamAccount = (
@@ -142,9 +133,7 @@ export default function DashboardPage() {
         upstreamAccountActivityLoading={dashboardActivityLoading}
         upstreamAccountActivityError={dashboardActivityError}
         upstreamAccountRecentPreviewLimit={upstreamAccountRecentPreviewLimit}
-        onUpstreamAccountActivityEnabledChange={
-          setIncludeUpstreamAccountActivity
-        }
+        onUpstreamAccountActivityEnabledChange={setIncludeUpstreamAccountActivity}
         onUpstreamAccountPolicyChanged={() => {
           void reloadDashboardActivity({ silent: true });
         }}
