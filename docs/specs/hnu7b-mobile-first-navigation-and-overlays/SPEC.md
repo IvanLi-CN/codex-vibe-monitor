@@ -184,6 +184,17 @@
 
 ![Web Demo dashboard KPI two-column mobile](./assets/dashboard-kpi-two-column-mobile430.png)
 
+### `390x844` Dashboard Activity Dropdown Controls
+
+- source_type: `ui_demo`
+  source_revision: `28bfddead8f0cfb40376ff89f73765658f1be042`
+  target_program: mock-only Web Demo (`VITE_APP_RUNTIME=demo`)
+  sensitive_exclusion: demo fixtures only; no production account, secret, or backend request
+
+验证 Dashboard 在移动端将时间范围和指标切换收口为左右等宽的两个下拉。截图展示“昨日 / Tokens”切换后的状态；下拉更新对应数据视图，页面无横向溢出。桌面端维持 segmented controls。
+
+![Web Demo dashboard mobile dropdown controls](./assets/dashboard-mobile-dropdown-controls-390.png)
+
 ## 风险 / 开放问题 / 假设
 
 - 复杂详情页面在 768px 以下页面化，避免在半宽 drawer 中压缩多标签工作区。

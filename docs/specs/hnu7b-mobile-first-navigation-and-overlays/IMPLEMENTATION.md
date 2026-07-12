@@ -19,6 +19,7 @@
 - Records 的筛选编辑改为共享响应式 drawer：桌面为右侧工作抽屉，紧凑视口为全高 bottom sheet；页面主体只显示已提交的筛选条件，并支持逐项移除后立即刷新快照。
 - Dashboard 今天活动图在紧凑视口聚合密集分钟柱、保留失败向下的符号语义、移除移动端延迟轴；当前对话区将说明与 workspace controls 分行，避免窄列断行。
 - Dashboard KPI 网格在 `400px` 起切换为两列，Token 等长数值跨满两列；窄于该阈值保持单列，桌面既有多列网格不变。
+- Dashboard 活动总览在紧凑视口将时间范围与指标 segmented controls 收口为左右并排的两个下拉；复用既有状态与数据加载 contract，宽屏保留 segmented controls。
 - 所有页面级 `surface-panel` 在移动端扁平化为结构容器，保持单一 `12px` 页面 gutter；Settings 与 External API Keys 的外层 Card 同步扁平化，内部数据项保留紧凑 card。
 - 移动端移除桌面装饰背景；Dashboard Working Conversations 不再向扁平页面容器重复注入内边距。
 - App shell、账号详情、Dashboard、Settings 和 Prompt Cache 的 Storybook 移动状态已更新。
