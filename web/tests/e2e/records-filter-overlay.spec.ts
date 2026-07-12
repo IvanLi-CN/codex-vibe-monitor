@@ -173,14 +173,12 @@ type OverlayViewport = {
   label: string
   width: number
   height: number
-  overlapMarginRem: number
-  minimumOverlapPx: number
 }
 
 const OVERLAY_VIEWPORTS: OverlayViewport[] = [
-  { label: 'desktop', width: 1440, height: 960, overlapMarginRem: 11, minimumOverlapPx: 12 },
+  { label: 'desktop', width: 1440, height: 960 },
   // 1279px stays below Tailwind's xl breakpoint, so Records collapses from 4 columns to 2.
-  { label: 'narrow-desktop', width: 1279, height: 1500, overlapMarginRem: 18, minimumOverlapPx: 12 },
+  { label: 'narrow-desktop', width: 1279, height: 1500 },
 ]
 
 async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: OverlayViewport) {
@@ -190,39 +188,52 @@ async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: Overl
 
   const filtersPanel = page.getByTestId('records-filters-panel')
   const summaryPanel = page.getByTestId('records-summary-panel')
+  const openFiltersButton = page.getByTestId('records-open-filters')
+  const filtersDrawer = page.getByTestId('records-filters-drawer')
+  const drawerDialog = page.getByRole('dialog')
   const promptCacheKeyInput = page.locator('#records-filter-prompt-cache-key')
 
   await expect(filtersPanel).toBeVisible()
   await expect(summaryPanel).toBeVisible()
+  await openFiltersButton.click()
+  await expect(filtersDrawer).toBeVisible()
+  await expect(drawerDialog).toHaveAttribute('aria-modal', 'true')
   await expect(promptCacheKeyInput).toBeVisible()
   await promptCacheKeyInput.scrollIntoViewIfNeeded()
 
   await promptCacheKeyInput.click()
 
-  const listbox = filtersPanel.locator('[role="listbox"]')
+  const listbox = filtersDrawer.locator('[role="listbox"]')
   await expect(listbox).toBeVisible()
   await expect(listbox.getByRole('option').first()).toBeVisible()
-  await expect(filtersPanel).toHaveAttribute('data-suggestions-open', 'true')
+  await expect(filtersDrawer).toHaveAttribute('data-suggestions-open', 'true')
 
-  // Force an overlap scenario after the populated listbox opens so layout shifts do not block the click target itself.
-  await page.addStyleTag({
-    content: `
-      [data-testid="records-summary-panel"] {
-        margin-top: -${viewport.overlapMarginRem}rem !important;
-      }
-    `,
+  // Position the background summary beneath the portalized drawer listbox to prove the list keeps priority.
+  await page.evaluate(() => {
+    const summary = document.querySelector('[data-testid="records-summary-panel"]') as HTMLElement | null
+    const listboxNode = document.querySelector('[data-testid="records-filters-drawer"] [role="listbox"]') as HTMLElement | null
+    if (!summary || !listboxNode) return
+
+    const listRect = listboxNode.getBoundingClientRect()
+    Object.assign(summary.style, {
+      position: 'fixed',
+      left: `${listRect.left}px`,
+      top: `${listRect.top}px`,
+      width: `${listRect.width}px`,
+      height: `${listRect.height}px`,
+      zIndex: '1',
+    })
   })
   await page.waitForTimeout(100)
 
   const overlayState = await page.evaluate(() => {
-    const panel = document.querySelector('[data-testid="records-filters-panel"]') as HTMLElement | null
+    const drawer = document.querySelector('[data-testid="records-filters-drawer"]') as HTMLElement | null
     const summary = document.querySelector('[data-testid="records-summary-panel"]') as HTMLElement | null
-    const listboxNode = panel?.querySelector('[role="listbox"]') as HTMLElement | null
-    if (!panel || !summary || !listboxNode) {
+    const listboxNode = drawer?.querySelector('[role="listbox"]') as HTMLElement | null
+    if (!drawer || !summary || !listboxNode) {
       return null
     }
 
-    const panelStyles = window.getComputedStyle(panel)
     const listRect = listboxNode.getBoundingClientRect()
     const summaryRect = summary.getBoundingClientRect()
     const overlapTop = Math.max(listRect.top, summaryRect.top)
@@ -233,7 +244,6 @@ async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: Overl
     const topNode = document.elementFromPoint(probeX, probeY) as HTMLElement | null
 
     return {
-      panelZIndex: panelStyles.zIndex,
       listBottom: listRect.bottom,
       summaryTop: summaryRect.top,
       overlapY,
@@ -242,9 +252,8 @@ async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: Overl
   })
 
   expect(overlayState).not.toBeNull()
-  expect(overlayState?.panelZIndex).toBe('10')
   expect(overlayState?.listBottom).toBeGreaterThan(overlayState?.summaryTop ?? 0)
-  expect(overlayState?.overlapY).toBeGreaterThan(viewport.minimumOverlapPx)
+  expect(overlayState?.overlapY).toBeGreaterThan(12)
   expect(overlayState?.topNodeInsideListbox).toBe(true)
 }
 
