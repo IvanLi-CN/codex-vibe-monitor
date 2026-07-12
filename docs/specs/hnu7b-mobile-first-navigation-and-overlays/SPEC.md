@@ -188,6 +188,7 @@
 
 - source_type: `ui_demo`
   source_revision: `28bfddead8f0cfb40376ff89f73765658f1be042`
+  PR: include
   target_program: mock-only Web Demo (`VITE_APP_RUNTIME=demo`)
   sensitive_exclusion: demo fixtures only; no production account, secret, or backend request
 
