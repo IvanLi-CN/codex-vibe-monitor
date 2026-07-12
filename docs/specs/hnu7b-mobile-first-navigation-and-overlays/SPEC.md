@@ -173,6 +173,17 @@
 
 ![Web Demo dashboard readable chart mobile](./assets/dashboard-chart-readable-mobile390.png)
 
+### `430x932` Dashboard KPI Two-Column Grid
+
+- source_type: `ui_demo`
+  source_revision: `e703c83d6e9f0b560f3baa5c229770ff25a9860d`
+  target_program: mock-only Web Demo (`VITE_APP_RUNTIME=demo`)
+  sensitive_exclusion: demo fixtures only; no production account, secret, or backend request
+
+验证大屏手机在 `400px` 起将短 KPI 以两列展示，长 Token 数值保持跨两列完整可读；`390px` 以下继续单列，两个断点都不存在主体横向溢出。
+
+![Web Demo dashboard KPI two-column mobile](./assets/dashboard-kpi-two-column-mobile430.png)
+
 ## 风险 / 开放问题 / 假设
 
 - 复杂详情页面在 768px 以下页面化，避免在半宽 drawer 中压缩多标签工作区。
