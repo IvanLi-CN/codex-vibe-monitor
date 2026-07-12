@@ -307,9 +307,15 @@ export function useDashboardActivitySnapshot(
         if (current && payload.snapshot.revision <= current.revision) return;
         latestLiveSnapshotRef.current = payload.snapshot;
         if (rangeRef.current === "yesterday") return;
-        setData((currentData) =>
-          currentData ? mergeDashboardActivityLiveSnapshot(currentData, payload.snapshot) : currentData,
-        );
+        setData((currentData) => {
+          if (
+            !currentData ||
+            payload.snapshot.revision <= (currentData.liveRevision ?? 0)
+          ) {
+            return currentData;
+          }
+          return mergeDashboardActivityLiveSnapshot(currentData, payload.snapshot);
+        });
         return;
       }
       if (payload.type !== "records") return;

@@ -402,6 +402,32 @@ describe("useDashboardUpstreamAccountActivity", () => {
     expect(text("summary-live-count")).toBe("0");
   });
 
+  it("does not let an SSE seed overwrite an equal-revision HTTP snapshot", async () => {
+    apiMocks.fetchDashboardActivity.mockResolvedValue({
+      ...createAccountResponse(3, []),
+      liveRevision: 7,
+    });
+    render(<SnapshotProbe includeAccounts />);
+    await flushAsync();
+
+    act(() => {
+      sseMocks.listener?.({
+        type: "dashboardActivityLive",
+        snapshot: {
+          revision: 7,
+          generatedAt: "2026-04-04T10:05:01Z",
+          inProgressInvocationCount: 0,
+          inProgressPhaseCounts: { queued: 0, requesting: 0, responding: 0 },
+          retryInvocationCount: 0,
+          accounts: [],
+        },
+      });
+    });
+
+    expect(text("live-count")).toBe("3");
+    expect(text("summary-live-count")).toBe("3");
+  });
+
   it("can fetch a summary-only dashboard snapshot without account details", async () => {
     apiMocks.fetchDashboardActivity.mockResolvedValue({
       ...createAccountResponse(0, []),
