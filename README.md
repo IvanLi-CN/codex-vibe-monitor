@@ -283,7 +283,7 @@ bun run worktree:setup
 - **Backend**：Rust、Axum、Tokio、SQLx、SQLite、SSE
 - **Frontend**：React 19、Vite 7、TypeScript、Tailwind 风格 UI、Recharts
 - **Docs / Review**：Rspress、Storybook 10
-- **Tooling**：Bun、Vitest、Playwright、ESLint
+- **Tooling**：Bun、Biome、Vitest、Playwright
 - **Delivery**：Docker、GitHub Actions、GHCR、GitHub Pages
 
 ## 仓库结构
@@ -306,7 +306,7 @@ bun run worktree:setup
 
 ```bash
 cargo fmt
-cargo check
+cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test
 cargo run
 ```
@@ -316,7 +316,7 @@ cargo run
 ```bash
 cd web
 bun install
-bun run lint
+bun run lint:web
 bun run test
 bun run build
 bun run demo:build

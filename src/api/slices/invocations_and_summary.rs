@@ -1,16 +1,11 @@
 use super::*;
 use anyhow::anyhow;
-use chrono::LocalResult;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 use sqlx::FromRow;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, watch};
-use tracing::{debug, warn};
-
-use chrono::Offset;
-use chrono::Timelike;
+use tracing::debug;
 
 pub(crate) const INVOCATION_PROXY_DISPLAY_SQL: &str = "NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), '')";
 pub(crate) const INVOCATION_ENDPOINT_SQL: &str =
@@ -76,14 +71,13 @@ fn store_invocation_anchor_snapshot(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     snapshots.retain(|_, snapshot| snapshot.expires_at > now);
-    if snapshots.len() >= INVOCATION_ANCHOR_CACHE_LIMIT {
-        if let Some(oldest_id) = snapshots
+    if snapshots.len() >= INVOCATION_ANCHOR_CACHE_LIMIT
+        && let Some(oldest_id) = snapshots
             .iter()
             .min_by_key(|(_, snapshot)| snapshot.expires_at)
             .map(|(id, _)| id.clone())
-        {
-            snapshots.remove(&oldest_id);
-        }
+    {
+        snapshots.remove(&oldest_id);
     }
     snapshots.insert(
         anchor_id.clone(),
@@ -2508,7 +2502,7 @@ pub(crate) fn resolve_response_body_text_from_row(
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 let raw_preview = row.raw_response.trim();
-                let preview_len = row.raw_response.as_bytes().len() as i64;
+                let preview_len = row.raw_response.len() as i64;
                 if !raw_preview.is_empty()
                     && row.response_raw_size.unwrap_or(preview_len) <= preview_len
                 {
@@ -2518,7 +2512,7 @@ pub(crate) fn resolve_response_body_text_from_row(
             }
             Err(err) => {
                 let raw_preview = row.raw_response.trim();
-                let preview_len = row.raw_response.as_bytes().len() as i64;
+                let preview_len = row.raw_response.len() as i64;
                 if !raw_preview.is_empty()
                     && row.response_raw_size.unwrap_or(preview_len) <= preview_len
                 {
@@ -2534,7 +2528,7 @@ pub(crate) fn resolve_response_body_text_from_row(
         return Err(raw_response_fallback_reason(row));
     }
 
-    let preview_len = row.raw_response.as_bytes().len() as i64;
+    let preview_len = row.raw_response.len() as i64;
     let fits_in_preview = row.response_raw_size.unwrap_or(preview_len) <= preview_len;
     if fits_in_preview && row.response_raw_truncated.unwrap_or_default() == 0 {
         return Ok((row.raw_response.clone(), false));
@@ -4867,11 +4861,9 @@ pub(crate) fn validate_dashboard_activity_params(
     }
 
     match recent_limit {
-        Some(value) if !(1..=16).contains(&value) => {
-            return Err(ApiError::bad_request(anyhow!(
-                "recentLimit must be between 1 and 16"
-            )));
-        }
+        Some(value) if !(1..=16).contains(&value) => Err(ApiError::bad_request(anyhow!(
+            "recentLimit must be between 1 and 16"
+        ))),
         Some(value) => Ok(value as usize),
         None => Ok(4),
     }

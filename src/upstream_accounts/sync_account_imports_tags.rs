@@ -315,9 +315,7 @@ pub(crate) async fn sync_upstream_account_by_id(
         }
         _ => bail!("unsupported account kind: {}", row.kind),
     };
-    if let Err(err) = sync_result {
-        return Err(err);
-    }
+    sync_result?;
 
     let detail = load_upstream_account_detail_with_actual_usage(state, id)
         .await?
@@ -2421,7 +2419,7 @@ pub(crate) async fn sync_account_tag_links(
     tag_ids: &[i64],
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
-    sync_account_tag_links_with_executor(&mut *tx, account_id, tag_ids).await?;
+    sync_account_tag_links_with_executor(&mut tx, account_id, tag_ids).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -2642,7 +2640,7 @@ pub(crate) async fn load_upstream_account_summaries_for_query(
     let account_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
     let tag_map = load_account_tag_map(pool, &account_ids).await?;
     let active_conversation_count_map =
-        load_account_active_conversation_count_map(pool, &account_ids, now.clone()).await?;
+        load_account_active_conversation_count_map(pool, &account_ids, now).await?;
     let latest_sample_map = load_latest_usage_sample_map(pool, &account_ids).await?;
 
     let mut items = Vec::with_capacity(rows.len());
@@ -2659,7 +2657,7 @@ pub(crate) async fn load_upstream_account_summaries_for_query(
                 .get(&row.id)
                 .copied()
                 .unwrap_or_default(),
-            now.clone(),
+            now,
         ));
     }
     apply_effective_routing_rules_to_summaries(pool, config, &mut items).await?;
@@ -2892,7 +2890,7 @@ pub(crate) async fn load_upstream_account_window_usage_summaries(
                 Vec::new(),
                 None,
                 0,
-                now.clone(),
+                now,
             )
         })
         .collect::<Vec<_>>();
@@ -3125,7 +3123,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
     let duplicate_info = load_duplicate_info_for_account(pool, row.id).await?;
     let now = Utc::now();
     let active_conversation_count =
-        load_account_active_conversation_count_map(pool, &[row.id], now.clone())
+        load_account_active_conversation_count_map(pool, &[row.id], now)
             .await?
             .get(&row.id)
             .copied()

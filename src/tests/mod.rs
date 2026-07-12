@@ -7,7 +7,6 @@ mod lightweight;
 mod stateful_sqlite;
 mod support;
 
-pub(crate) use archive_file_io::*;
 pub(crate) use lightweight::*;
 pub(crate) use stateful_sqlite::*;
 pub(crate) use support::*;
@@ -30,6 +29,10 @@ async fn resolve_pool_account_for_request(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Test compatibility adapter mirrors the production resolver signature."
+)]
 async fn resolve_pool_account_for_request_with_wait(
     state: &crate::AppState,
     sticky_key: Option<&str>,

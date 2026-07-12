@@ -2,10 +2,7 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { I18nProvider } from "../../i18n";
-import {
-  InvocationPhaseBadge,
-  InvocationPhaseSegments,
-} from "./InvocationPhaseBadge";
+import { InvocationPhaseBadge, InvocationPhaseSegments } from "./InvocationPhaseBadge";
 
 function renderMarkup(element: ReactNode) {
   return renderToStaticMarkup(<I18nProvider>{element}</I18nProvider>);
@@ -32,9 +29,7 @@ describe("InvocationPhaseBadge", () => {
   });
 
   it("renders responding badges with dynamic spin motion when labels stay visible", () => {
-    const html = renderMarkup(
-      <InvocationPhaseBadge phase="responding" motion="dynamic" />,
-    );
+    const html = renderMarkup(<InvocationPhaseBadge phase="responding" motion="dynamic" />);
 
     expect(html).toContain('data-phase="responding"');
     expect(html).toContain('data-phase-motion="dynamic"');
@@ -54,9 +49,7 @@ describe("InvocationPhaseSegments", () => {
       />,
     );
 
-    expect((html.match(/data-testid="invocation-phase-segment"/g) ?? []).length).toBe(
-      3,
-    );
+    expect((html.match(/data-testid="invocation-phase-segment"/g) ?? []).length).toBe(3);
     expect(html).toContain('data-phase-motion="static"');
     expect(html).toContain('data-phase-icon-name="navigation-variant"');
     expect(html).toContain('data-phase-icon-name="chat-processing-outline"');

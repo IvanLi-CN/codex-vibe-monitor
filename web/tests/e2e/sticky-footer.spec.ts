@@ -1,16 +1,18 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from "@playwright/test";
 
-test.describe('Sticky footer layout', () => {
+test.describe("Sticky footer layout", () => {
   for (const viewport of [
     { width: 1280, height: 900 },
     { width: 1660, height: 900 },
   ]) {
-    test(`keeps footer pinned to viewport bottom when main content is short at ${viewport.width}px`, async ({ page }) => {
-      await page.setViewportSize(viewport)
-      await page.goto('/#/stats')
+    test(`keeps footer pinned to viewport bottom when main content is short at ${viewport.width}px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize(viewport);
+      await page.goto("/#/stats");
 
-      const footer = page.getByTestId('app-footer')
-      await expect(footer).toBeAttached()
+      const footer = page.getByTestId("app-footer");
+      await expect(footer).toBeAttached();
 
       // Force the "short content" scenario without depending on backend data volume.
       await page.addStyleTag({
@@ -18,50 +20,52 @@ test.describe('Sticky footer layout', () => {
           .app-shell > main > * { display: none !important; }
           .app-shell > main { padding: 0 !important; }
         `,
-      })
+      });
 
-      await expect(footer).toBeVisible()
+      await expect(footer).toBeVisible();
 
       await expect
         .poll(async () => {
           return footer.evaluate((node) => {
-            const rect = (node as HTMLElement).getBoundingClientRect()
-            return Math.abs(window.innerHeight - rect.bottom)
-          })
+            const rect = (node as HTMLElement).getBoundingClientRect();
+            return Math.abs(window.innerHeight - rect.bottom);
+          });
         })
-        .toBeLessThanOrEqual(2)
-    })
+        .toBeLessThanOrEqual(2);
+    });
 
-    test(`keeps footer off-viewport on long pages until scrolled to bottom at ${viewport.width}px`, async ({ page }) => {
-      await page.setViewportSize(viewport)
-      await page.goto('/#/stats')
+    test(`keeps footer off-viewport on long pages until scrolled to bottom at ${viewport.width}px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize(viewport);
+      await page.goto("/#/stats");
 
-      const footer = page.getByTestId('app-footer')
-      await expect(footer).toBeAttached()
+      const footer = page.getByTestId("app-footer");
+      await expect(footer).toBeAttached();
 
       // Make the page tall using CSS (avoids mutating the React-managed DOM).
       await page.addStyleTag({
         content: `
           .app-shell > main::after { content: ''; display: block; height: 200vh; }
         `,
-      })
+      });
 
-      await expect(footer).not.toBeInViewport()
+      await expect(footer).not.toBeInViewport();
 
       await page.evaluate(() => {
-        const scrollingElement = document.scrollingElement ?? document.documentElement
-        window.scrollTo(0, scrollingElement.scrollHeight)
-      })
+        const scrollingElement = document.scrollingElement ?? document.documentElement;
+        window.scrollTo(0, scrollingElement.scrollHeight);
+      });
 
-      await expect(footer).toBeInViewport()
+      await expect(footer).toBeInViewport();
       await expect
         .poll(async () => {
           return footer.evaluate((node) => {
-            const rect = (node as HTMLElement).getBoundingClientRect()
-            return Math.abs(window.innerHeight - rect.bottom)
-          })
+            const rect = (node as HTMLElement).getBoundingClientRect();
+            return Math.abs(window.innerHeight - rect.bottom);
+          });
         })
-        .toBeLessThanOrEqual(2)
-    })
+        .toBeLessThanOrEqual(2);
+    });
   }
-})
+});

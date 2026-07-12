@@ -1,7 +1,7 @@
-import { useEffect, useRef, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { type ReactNode, useEffect, useRef } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { expect, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type {
   EffectiveRoutingRule,
@@ -10,9 +10,9 @@ import type {
   UpstreamAccountListResponse,
   UpstreamAccountSummary,
 } from "../../lib/api";
-import type { UpstreamAccountsLocationState } from "../../pages/account-pool/UpstreamAccounts.shared-types";
 import AccountPoolLayout from "../../pages/account-pool/AccountPoolLayout";
 import GroupsPage from "../../pages/account-pool/Groups";
+import type { UpstreamAccountsLocationState } from "../../pages/account-pool/UpstreamAccounts.shared-types";
 
 type StoryScenario = "default" | "ungrouped-only" | "empty";
 
@@ -42,9 +42,7 @@ function buildAccount(
   };
 }
 
-function buildScenarioPayload(
-  scenario: StoryScenario,
-): UpstreamAccountListResponse {
+function buildScenarioPayload(scenario: StoryScenario): UpstreamAccountListResponse {
   const forwardProxyNodes: ForwardProxyBindingNode[] = [
     {
       key: "__direct__",
@@ -226,33 +224,23 @@ function StorybookGroupsMock({
         init?.method || (input instanceof Request ? input.method : "GET")
       ).toUpperCase();
       const inputUrl =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : input.url;
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const url = new URL(inputUrl, window.location.origin);
 
       if (url.pathname === "/api/pool/upstream-accounts" && method === "GET") {
         return jsonResponse(buildScenarioPayload(scenario));
       }
 
-      if (
-        url.pathname === "/api/pool/forward-proxy-binding-nodes" &&
-        method === "GET"
-      ) {
+      if (url.pathname === "/api/pool/forward-proxy-binding-nodes" && method === "GET") {
         return jsonResponse([]);
       }
 
-      const groupMatch = url.pathname.match(
-        /^\/api\/pool\/upstream-account-groups\/([^/]+)$/,
-      );
+      const groupMatch = url.pathname.match(/^\/api\/pool\/upstream-account-groups\/([^/]+)$/);
       if (groupMatch && method === "PUT") {
         const groupName = decodeURIComponent(groupMatch[1]);
         const existing =
-          buildScenarioPayload(scenario).groups.find(
-            (group) => group.groupName === groupName,
-          ) ?? null;
+          buildScenarioPayload(scenario).groups.find((group) => group.groupName === groupName) ??
+          null;
         return jsonResponse(
           existing ?? {
             groupName,
@@ -301,20 +289,13 @@ function UpstreamAccountsStateEcho() {
   );
 }
 
-function GroupsPageRouter({
-  initialEntry = "/account-pool/groups",
-}: {
-  initialEntry?: string;
-}) {
+function GroupsPageRouter({ initialEntry = "/account-pool/groups" }: { initialEntry?: string }) {
   return (
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route path="/account-pool" element={<AccountPoolLayout />}>
           <Route path="groups" element={<GroupsPage />} />
-          <Route
-            path="upstream-accounts"
-            element={<UpstreamAccountsStateEcho />}
-          />
+          <Route path="upstream-accounts" element={<UpstreamAccountsStateEcho />} />
           <Route
             path="upstream-accounts/new"
             element={<div data-testid="groups-story-create-page">create</div>}
@@ -353,13 +334,9 @@ export const Default: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      canvas.findByRole("heading", { name: "分组总览" }),
-    ).resolves.toBeTruthy();
+    await expect(canvas.findByRole("heading", { name: "分组总览" })).resolves.toBeTruthy();
     await expect(canvas.findByText("production")).resolves.toBeTruthy();
-    await expect(
-      canvas.findByTestId("account-pool-groups-list"),
-    ).resolves.toBeTruthy();
+    await expect(canvas.findByTestId("account-pool-groups-list")).resolves.toBeTruthy();
 
     const viewAccountsLink = await canvas.findByRole("link", {
       name: "查看上游账号",
@@ -367,9 +344,9 @@ export const Default: Story = {
     await userEvent.click(viewAccountsLink);
 
     const updatedCanvas = within(canvasElement);
-    await expect(
-      updatedCanvas.findByTestId("groups-story-state"),
-    ).resolves.toHaveTextContent("exact:production");
+    await expect(updatedCanvas.findByTestId("groups-story-state")).resolves.toHaveTextContent(
+      "exact:production",
+    );
   },
 };
 
@@ -381,12 +358,8 @@ export const UngroupedOnly: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      canvas.findByText("未分组"),
-    ).resolves.toBeTruthy();
-    await expect(
-      canvas.findByTestId("account-pool-group-row-ungrouped"),
-    ).resolves.toBeTruthy();
+    await expect(canvas.findByText("未分组")).resolves.toBeTruthy();
+    await expect(canvas.findByTestId("account-pool-group-row-ungrouped")).resolves.toBeTruthy();
   },
 };
 
@@ -398,11 +371,7 @@ export const EmptyState: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      canvas.findByTestId("account-pool-groups-empty"),
-    ).resolves.toBeTruthy();
-    await expect(
-      canvas.findByRole("link", { name: "创建上游账号" }),
-    ).resolves.toBeTruthy();
+    await expect(canvas.findByTestId("account-pool-groups-empty")).resolves.toBeTruthy();
+    await expect(canvas.findByRole("link", { name: "创建上游账号" })).resolves.toBeTruthy();
   },
 };

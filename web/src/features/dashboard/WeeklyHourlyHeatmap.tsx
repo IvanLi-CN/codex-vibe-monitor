@@ -1,97 +1,104 @@
-import { useMemo, useState } from 'react'
-import { useTimeseries } from '../../hooks/useTimeseries'
-import type { TimeseriesPoint } from '../../lib/api'
-import { useTranslation } from '../../i18n'
-import type { TranslationKey } from '../../i18n'
-import { formatTokensShort } from '../../lib/numberFormatters'
-import { heatmapLevels, metricAccent } from '../../lib/chartTheme'
-import { useTheme } from '../../theme'
-import { Alert } from '../../components/ui/alert'
-import type { MetricKey } from './Last24hTenMinuteHeatmap'
-import { SegmentedControl, SegmentedControlItem } from '../../components/ui/segmented-control'
+import { useMemo, useState } from "react";
+import { Alert } from "../../components/ui/alert";
+import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
+import { useTimeseries } from "../../hooks/useTimeseries";
+import type { TranslationKey } from "../../i18n";
+import { useTranslation } from "../../i18n";
+import type { TimeseriesPoint } from "../../lib/api";
+import { heatmapLevels, metricAccent } from "../../lib/chartTheme";
+import { formatTokensShort } from "../../lib/numberFormatters";
+import { useTheme } from "../../theme";
+import type { MetricKey } from "./Last24hTenMinuteHeatmap";
 
-type Cell = { date: string; hour: number; value: number }
+type Cell = { date: string; hour: number; value: number };
 
 interface MetricOption {
-  key: MetricKey
-  labelKey: TranslationKey
+  key: MetricKey;
+  labelKey: TranslationKey;
 }
 
 const METRIC_OPTIONS: MetricOption[] = [
-  { key: 'totalCount', labelKey: 'metric.totalCount' },
-  { key: 'totalCost', labelKey: 'metric.totalCost' },
-  { key: 'totalTokens', labelKey: 'metric.totalTokens' },
-]
+  { key: "totalCount", labelKey: "metric.totalCount" },
+  { key: "totalCost", labelKey: "metric.totalCost" },
+  { key: "totalTokens", labelKey: "metric.totalTokens" },
+];
+const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 
 export interface WeeklyHourlyHeatmapProps {
-  metric?: MetricKey
-  onChangeMetric?: (metric: MetricKey) => void
-  showHeader?: boolean
-  showSurface?: boolean
-  upstreamAccountId?: number
+  metric?: MetricKey;
+  onChangeMetric?: (metric: MetricKey) => void;
+  showHeader?: boolean;
+  showSurface?: boolean;
+  upstreamAccountId?: number;
 }
 
 function parseDateTimeParts(value: string) {
-  if (value.includes('T')) {
-    const d = new Date(value)
-    return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours() }
+  if (value.includes("T")) {
+    const d = new Date(value);
+    return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours() };
   }
-  const [datePart, timePart] = value.split(' ')
-  const [year, month, day] = (datePart ?? '').split('-').map(Number)
-  const [hour] = (timePart ?? '').split(':').map(Number)
-  return { year, month, day, hour: Number.isFinite(hour) ? hour : 0 }
+  const [datePart, timePart] = value.split(" ");
+  const [year, month, day] = (datePart ?? "").split("-").map(Number);
+  const [hour] = (timePart ?? "").split(":").map(Number);
+  return { year, month, day, hour: Number.isFinite(hour) ? hour : 0 };
 }
 
 function toIsoDate(y: number, m: number, d: number) {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${y}-${pad(m)}-${pad(d)}`
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${y}-${pad(m)}-${pad(d)}`;
 }
 
 function compute7x24(points: TimeseriesPoint[], metric: MetricKey) {
   if (!points || points.length === 0) {
-    return { days: [] as string[], rows: [] as Cell[][], max: 0 }
+    return { days: [] as string[], rows: [] as Cell[][], max: 0 };
   }
 
-  const sorted = [...points].sort((a, b) => a.bucketStart.localeCompare(b.bucketStart))
-  const dates: string[] = []
+  const sorted = [...points].sort((a, b) => a.bucketStart.localeCompare(b.bucketStart));
+  const dates: string[] = [];
   for (const p of sorted) {
-    const { year, month, day } = parseDateTimeParts(p.bucketStart)
-    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) continue
-    const iso = toIsoDate(year, month, day)
+    const { year, month, day } = parseDateTimeParts(p.bucketStart);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) continue;
+    const iso = toIsoDate(year, month, day);
     if (!dates.includes(iso)) {
-      dates.push(iso)
+      dates.push(iso);
     }
   }
-  const last7 = dates.slice(-7)
-  const indexByDate = new Map<string, number>()
-  last7.forEach((d, idx) => indexByDate.set(d, idx))
+  const last7 = dates.slice(-7);
+  const indexByDate = new Map<string, number>();
+  last7.forEach((d, idx) => {
+    indexByDate.set(d, idx);
+  });
 
   const rows: Cell[][] = Array.from({ length: last7.length }, () =>
-    Array.from({ length: 24 }, (_, h) => ({ date: '', hour: h, value: 0 })),
-  )
+    Array.from({ length: 24 }, (_, h) => ({ date: "", hour: h, value: 0 })),
+  );
 
-  let max = 0
+  let max = 0;
   for (const p of sorted) {
-    const { year, month, day, hour } = parseDateTimeParts(p.bucketStart)
-    const iso = toIsoDate(year, month, day)
-    const rowIndex = indexByDate.get(iso)
-    if (rowIndex == null) continue
+    const { year, month, day, hour } = parseDateTimeParts(p.bucketStart);
+    const iso = toIsoDate(year, month, day);
+    const rowIndex = indexByDate.get(iso);
+    if (rowIndex == null) continue;
     const value =
-      metric === 'totalCount' ? p.totalCount ?? 0 : metric === 'totalCost' ? p.totalCost ?? 0 : p.totalTokens ?? 0
-    rows[rowIndex][hour] = { date: iso, hour, value }
-    if (value > max) max = value
+      metric === "totalCount"
+        ? (p.totalCount ?? 0)
+        : metric === "totalCost"
+          ? (p.totalCost ?? 0)
+          : (p.totalTokens ?? 0);
+    rows[rowIndex][hour] = { date: iso, hour, value };
+    if (value > max) max = value;
   }
 
-  return { days: last7, rows, max }
+  return { days: last7, rows, max };
 }
 
 function levelFor(value: number, max: number) {
-  if (max <= 0 || value <= 0) return 0
-  const ratio = value / max
-  if (ratio >= 0.85) return 4
-  if (ratio >= 0.55) return 3
-  if (ratio >= 0.25) return 2
-  return 1
+  if (max <= 0 || value <= 0) return 0;
+  const ratio = value / max;
+  if (ratio >= 0.85) return 4;
+  if (ratio >= 0.55) return 3;
+  if (ratio >= 0.25) return 2;
+  return 1;
 }
 
 export function WeeklyHourlyHeatmap({
@@ -101,56 +108,60 @@ export function WeeklyHourlyHeatmap({
   showSurface = true,
   upstreamAccountId,
 }: WeeklyHourlyHeatmapProps) {
-  const { t, locale } = useTranslation()
-  const { themeMode } = useTheme()
-  const [uncontrolledMetric, setUncontrolledMetric] = useState<MetricKey>('totalCount')
-  const metric = controlledMetric ?? uncontrolledMetric
+  const { t, locale } = useTranslation();
+  const { themeMode } = useTheme();
+  const [uncontrolledMetric, setUncontrolledMetric] = useState<MetricKey>("totalCount");
+  const metric = controlledMetric ?? uncontrolledMetric;
   const { data, isLoading, error } = useTimeseries(
-    '7d',
-    upstreamAccountId == null ? { bucket: '1h' } : { bucket: '1h', upstreamAccountId },
-  )
-  const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
-  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
+    "7d",
+    upstreamAccountId == null ? { bucket: "1h" } : { bucket: "1h", upstreamAccountId },
+  );
+  const localeTag = locale === "zh" ? "zh-CN" : "en-US";
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const currencyFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag, { style: 'currency', currency: 'USD' }),
+    () => new Intl.NumberFormat(localeTag, { style: "currency", currency: "USD" }),
     [localeTag],
-  )
-  const countUnit = t('unit.calls')
+  );
+  const countUnit = t("unit.calls");
 
   const metricOptions = useMemo(
     () => METRIC_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
     [t],
-  )
+  );
 
-  const grid = useMemo(() => compute7x24(data?.points ?? [], metric), [data?.points, metric])
-  const levelPalette = useMemo(() => heatmapLevels(metric, themeMode), [metric, themeMode])
+  const grid = useMemo(() => compute7x24(data?.points ?? [], metric), [data?.points, metric]);
+  const levelPalette = useMemo(() => heatmapLevels(metric, themeMode), [metric, themeMode]);
 
   const formatValue = (value: number) => {
-    if (metric === 'totalCost') return currencyFormatter.format(value)
-    if (metric === 'totalTokens') return formatTokensShort(value, localeTag)
-    if (metric === 'totalCount') {
-      const base = numberFormatter.format(value)
-      return `${base} ${countUnit}`
+    if (metric === "totalCost") return currencyFormatter.format(value);
+    if (metric === "totalTokens") return formatTokensShort(value, localeTag);
+    if (metric === "totalCount") {
+      const base = numberFormatter.format(value);
+      return `${base} ${countUnit}`;
     }
-    return numberFormatter.format(value)
-  }
+    return numberFormatter.format(value);
+  };
 
-  const noDataText = t('heatmap.noData')
+  const noDataText = t("heatmap.noData");
   const setMetric = (nextMetric: MetricKey) => {
-    if (onChangeMetric) onChangeMetric(nextMetric)
-    else setUncontrolledMetric(nextMetric)
-  }
+    if (onChangeMetric) onChangeMetric(nextMetric);
+    else setUncontrolledMetric(nextMetric);
+  };
 
   const content = (
     <>
       {showHeader && (
         <div className="flex items-center justify-between gap-3">
           <div className="section-heading">
-            <h2 className="section-title">{t('heatmap.title')}</h2>
+            <h2 className="section-title">{t("heatmap.title")}</h2>
           </div>
-          <SegmentedControl size="compact" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
+          <SegmentedControl
+            size="compact"
+            role="tablist"
+            aria-label={t("heatmap.metricsToggleAria")}
+          >
             {metricOptions.map((o) => {
-              const active = o.key === metric
+              const active = o.key === metric;
               return (
                 <SegmentedControlItem
                   key={o.key}
@@ -162,7 +173,7 @@ export function WeeklyHourlyHeatmap({
                 >
                   {o.label}
                 </SegmentedControlItem>
-              )
+              );
             })}
           </SegmentedControl>
         </div>
@@ -174,53 +185,71 @@ export function WeeklyHourlyHeatmap({
         <div className="w-full overflow-x-auto no-scrollbar">
           <div className="flex justify-center">
             <div className="inline-block">
-              <div className="ml-14 grid gap-[3px] pl-[3px]" style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}>
-                {Array.from({ length: 24 }, (_, h) => (
-                  <div key={`h-${h}`} className="text-center text-[10px] leading-3 text-base-content/60">
-                    {h}
+              <div
+                className="ml-14 grid gap-[3px] pl-[3px]"
+                style={{ gridTemplateColumns: "repeat(24, minmax(0, 1fr))" }}
+              >
+                {HOURS.map((hour) => (
+                  <div
+                    key={hour}
+                    className="text-center text-[10px] leading-3 text-base-content/60"
+                  >
+                    {hour}
                   </div>
                 ))}
               </div>
 
               <div className="mt-2 flex flex-col gap-[3px]">
                 {grid.rows.map((row, idx) => {
-                  const dateLabel = grid.days[idx]?.slice(5) ?? ''
+                  const day = grid.days[idx] ?? "";
+                  const dateLabel = day.slice(5);
                   // Treat the last two rows as bottom edge to avoid clipping by card border
-                  const isBottomBand = idx >= grid.rows.length - 2
+                  const isBottomBand = idx >= grid.rows.length - 2;
                   return (
-                    <div key={`r-${idx}`} className="flex items-center gap-3">
-                      <div className="w-14 shrink-0 text-right text-xs text-base-content/70">{dateLabel}</div>
-                      <div className="grid gap-[3px]" style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}>
-                        {row.map((cell, ci) => {
-                          const lvl = levelFor(cell.value, grid.max)
-                          const color = levelPalette[lvl] ?? levelPalette[0]
-                          const formatted = formatValue(cell.value)
-                          const hourLabel = String(ci).padStart(2, '0')
-                          const dateTimeLabel = `${cell.date || grid.days[idx]} ${hourLabel}:00`
-                          const title = `${dateTimeLabel} ${formatted}`
-                          const verticalClass = isBottomBand ? 'bottom-full mb-1' : 'top-full mt-1'
+                    <div key={day} className="flex items-center gap-3">
+                      <div className="w-14 shrink-0 text-right text-xs text-base-content/70">
+                        {dateLabel}
+                      </div>
+                      <div
+                        className="grid gap-[3px]"
+                        style={{ gridTemplateColumns: "repeat(24, minmax(0, 1fr))" }}
+                      >
+                        {row.map((cell) => {
+                          const lvl = levelFor(cell.value, grid.max);
+                          const color = levelPalette[lvl] ?? levelPalette[0];
+                          const formatted = formatValue(cell.value);
+                          const hourLabel = String(cell.hour).padStart(2, "0");
+                          const dateTimeLabel = `${cell.date || day} ${hourLabel}:00`;
+                          const title = `${dateTimeLabel} ${formatted}`;
+                          const verticalClass = isBottomBand ? "bottom-full mb-1" : "top-full mt-1";
                           return (
                             <div
-                              key={`c-${idx}-${ci}`}
+                              role="img"
+                              key={`${cell.date || day}:${cell.hour}`}
                               className="group relative"
                               aria-label={title}
                               title={title}
                             >
-                              <div className="h-5 w-5 rounded-sm sm:h-6 sm:w-6" style={{ backgroundColor: color }} />
+                              <div
+                                className="h-5 w-5 rounded-sm sm:h-6 sm:w-6"
+                                style={{ backgroundColor: color }}
+                              />
                               <div
                                 className={`pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] sm:text-xs leading-tight text-base-content shadow-md opacity-0 group-hover:opacity-100 ${verticalClass}`}
                               >
-                                <div className="text-[10px] sm:text-xs text-base-content/80">{dateTimeLabel}</div>
+                                <div className="text-[10px] sm:text-xs text-base-content/80">
+                                  {dateTimeLabel}
+                                </div>
                                 <div className="mt-0.5 font-mono font-semibold text-sm sm:text-base tracking-tight text-center">
                                   {formatted}
                                 </div>
                               </div>
                             </div>
-                          )
+                          );
                         })}
                       </div>
                     </div>
-                  )
+                  );
                 })}
               </div>
             </div>
@@ -232,21 +261,21 @@ export function WeeklyHourlyHeatmap({
         <div className="text-base-content/70">{noDataText}</div>
       )}
     </>
-  )
+  );
 
   if (!showSurface) {
     return (
       <div data-testid="weekly-hourly-heatmap" className="flex flex-col gap-4">
         {content}
       </div>
-    )
+    );
   }
 
   return (
     <section className="surface-panel overflow-visible" data-testid="weekly-hourly-heatmap">
       <div className="surface-panel-body gap-4">{content}</div>
     </section>
-  )
+  );
 }
 
-export default WeeklyHourlyHeatmap
+export default WeeklyHourlyHeatmap;

@@ -400,9 +400,7 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
 
 pub(crate) fn resolve_archive_batch_path(archive_dir: &Path, file_path: &str) -> PathBuf {
     let path = PathBuf::from(file_path);
-    if path.is_absolute() {
-        path
-    } else if path.starts_with(archive_dir) {
+    if path.is_absolute() || path.starts_with(archive_dir) {
         path
     } else {
         archive_dir.join(path)
@@ -665,10 +663,8 @@ pub(crate) fn filter_account_window_usage_rows_for_exact_fallback(
             true
         } else if partial_bucket_epochs.contains(&bucket_epoch) {
             !covered_hourly_keys.contains(&(row.upstream_account_id, bucket_epoch))
-        } else if missing_full_hour_bucket_epochs.contains(&bucket_epoch) {
-            true
         } else {
-            false
+            missing_full_hour_bucket_epochs.contains(&bucket_epoch)
         };
         if include {
             filtered_rows.push(row);
@@ -1871,24 +1867,23 @@ pub(crate) async fn resolve_group_forward_proxy_scope_for_provisioning(
         .unwrap_or_default();
     let reservation_snapshot = pool_routing_reservation_snapshot(state);
 
-    if let (Some(value), Some(account)) = (assignments, provisioning_account) {
-        if normalize_optional_text(account.group_name.clone()).as_deref()
+    if let (Some(value), Some(account)) = (assignments, provisioning_account)
+        && normalize_optional_text(account.group_name.clone()).as_deref()
             == Some(binding.group_name.as_str())
+    {
+        if let Some(proxy_key) = value.account_proxy_keys.get(&account.id) {
+            return Ok(ForwardProxyRouteScope::pinned(proxy_key.clone()));
+        }
+        if let Some(proxy_key) = reservation_snapshot
+            .pinned_proxy_keys_for_account(
+                account.id,
+                &valid_proxy_keys,
+                &globally_occupied_proxy_keys,
+            )
+            .into_iter()
+            .find(|proxy_key| !consumed_proxy_keys.contains(proxy_key))
         {
-            if let Some(proxy_key) = value.account_proxy_keys.get(&account.id) {
-                return Ok(ForwardProxyRouteScope::pinned(proxy_key.clone()));
-            }
-            if let Some(proxy_key) = reservation_snapshot
-                .pinned_proxy_keys_for_account(
-                    account.id,
-                    &valid_proxy_keys,
-                    &globally_occupied_proxy_keys,
-                )
-                .into_iter()
-                .find(|proxy_key| !consumed_proxy_keys.contains(proxy_key))
-            {
-                return Ok(ForwardProxyRouteScope::pinned(proxy_key));
-            }
+            return Ok(ForwardProxyRouteScope::pinned(proxy_key));
         }
     }
 

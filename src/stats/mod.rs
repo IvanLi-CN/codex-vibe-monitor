@@ -3173,9 +3173,7 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
                     continue;
                 }
                 let bucket_start_epoch = summary_rollup_bucket_start_epoch(&row.occurred_at)?;
-                let entry = archive_deltas
-                    .entry(bucket_start_epoch)
-                    .or_insert_with(UpstreamAccountStatsDelta::default);
+                let entry = archive_deltas.entry(bucket_start_epoch).or_default();
                 add_account_invocation_row_to_stats_delta(entry, &row);
             }
         }
@@ -3440,7 +3438,7 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
         if archive_row.historical_rollups_materialized_at.is_some() {
             accumulate_failure_rollup_row_counts(
                 &mut pending_state.materialized_row_counts,
-                batch_rows.into_iter(),
+                batch_rows,
             )?;
         } else {
             pending_state.unmaterialized_rows.extend(batch_rows);

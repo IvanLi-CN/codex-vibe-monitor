@@ -1,6 +1,6 @@
-import * as React from 'react'
-import * as SwitchPrimitives from '@radix-ui/react-switch'
-import { cn } from '../../lib/utils'
+import * as SwitchPrimitives from "@radix-ui/react-switch";
+import * as React from "react";
+import { cn } from "../../lib/utils";
 
 const Switch = React.forwardRef<
   React.ElementRef<typeof SwitchPrimitives.Root>,
@@ -8,7 +8,7 @@ const Switch = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <SwitchPrimitives.Root
     className={cn(
-      'peer inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border border-base-300/80 bg-base-300/65 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary/45 data-[state=checked]:bg-primary',
+      "peer inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border border-base-300/80 bg-base-300/65 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary/45 data-[state=checked]:bg-primary",
       className,
     )}
     {...props}
@@ -16,11 +16,11 @@ const Switch = React.forwardRef<
   >
     <SwitchPrimitives.Thumb
       className={cn(
-        'pointer-events-none block h-5 w-5 translate-x-[1px] rounded-full bg-base-100 shadow-lg ring-0 transition-transform data-[state=checked]:translate-x-[21px] data-[state=unchecked]:translate-x-[1px]',
+        "pointer-events-none block h-5 w-5 translate-x-[1px] rounded-full bg-base-100 shadow-lg ring-0 transition-transform data-[state=checked]:translate-x-[21px] data-[state=unchecked]:translate-x-[1px]",
       )}
     />
   </SwitchPrimitives.Root>
-))
-Switch.displayName = SwitchPrimitives.Root.displayName
+));
+Switch.displayName = SwitchPrimitives.Root.displayName;
 
-export { Switch }
+export { Switch };

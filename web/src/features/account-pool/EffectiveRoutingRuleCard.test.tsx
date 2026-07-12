@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import * as React from "react";
+import type * as React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -96,8 +96,7 @@ const labels = {
       upstream_server_overloaded: "Upstream overloaded",
       upstream_http_5xx: "Upstream 5xx",
     })[reason],
-  statusChangeReasonSummary: (enabled: number, total: number) =>
-    `${enabled}/${total} enabled`,
+  statusChangeReasonSummary: (enabled: number, total: number) => `${enabled}/${total} enabled`,
   statusChangeReasonEnabledValue: "Triggers status change",
   statusChangeReasonDisabledValue: "Evidence only",
   statusChangeReasonToggleEnabled: "On",
@@ -121,9 +120,7 @@ const labels = {
   availableModelsPlaceholder: "Model id",
 };
 
-function buildRule(
-  overrides: Partial<EffectiveRoutingRule> = {},
-): EffectiveRoutingRule {
+function buildRule(overrides: Partial<EffectiveRoutingRule> = {}): EffectiveRoutingRule {
   return {
     allowCutOut: true,
     allowCutIn: true,
@@ -136,8 +133,7 @@ function buildRule(
     availableModels: [],
     systemDeniedModels: [],
     statusChangeReasons: buildDefaultStatusChangeReasons(),
-    statusChangeReasonFieldSources:
-      buildDefaultStatusChangeReasonFieldSources(),
+    statusChangeReasonFieldSources: buildDefaultStatusChangeReasonFieldSources(),
     sourceTagIds: [],
     sourceTagNames: [],
     fieldSources: {
@@ -228,32 +224,26 @@ describe("EffectiveRoutingRuleCard", () => {
       />,
     );
 
-    const blockedValues = Array.from(
-      document.querySelectorAll('[class*="bg-warning"]'),
-    ).map((node) => node.textContent);
+    const blockedValues = Array.from(document.querySelectorAll('[class*="bg-warning"]')).map(
+      (node) => node.textContent,
+    );
     expect(blockedValues).toContain("No new");
     expect(blockedValues).toContain("Cut-out blocked");
     expect(blockedValues).toContain("Cut-in blocked");
     expect(blockedValues).toContain("No new");
 
-    const forceAddBadge = Array.from(
-      document.querySelectorAll('[class*="bg-primary"]'),
-    ).find((node) => node.textContent === "Force add");
-    expect(forceAddBadge).toBeTruthy();
-    expect(document.body.textContent?.match(/Cut-out blocked/g)).toHaveLength(
-      1,
+    const forceAddBadge = Array.from(document.querySelectorAll('[class*="bg-primary"]')).find(
+      (node) => node.textContent === "Force add",
     );
+    expect(forceAddBadge).toBeTruthy();
+    expect(document.body.textContent?.match(/Cut-out blocked/g)).toHaveLength(1);
     expect(document.body.textContent?.match(/Cut-in blocked/g)).toHaveLength(1);
   });
 
   it("expands the priority override and saves the no-new tier directly", () => {
     const onChange = vi.fn();
     render(
-      <EffectiveRoutingRuleCard
-        rule={buildRule()}
-        labels={labels}
-        editablePolicy={{ onChange }}
-      />,
+      <EffectiveRoutingRuleCard rule={buildRule()} labels={labels} editablePolicy={{ onChange }} />,
     );
 
     const editButton = document.querySelector<HTMLButtonElement>(
@@ -268,9 +258,9 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(document.body.textContent).not.toContain(
       "Default value starts from the inherited value.",
     );
-    const noNewButton = Array.from(
-      document.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((button) => button.textContent?.trim() === "No new");
+    const noNewButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "No new",
+    );
     expect(noNewButton).not.toBeNull();
 
     act(() => {
@@ -320,9 +310,7 @@ describe("EffectiveRoutingRuleCard", () => {
     );
 
     expect(
-      document.querySelector<HTMLInputElement>(
-        'input[name="responsesFirstByteTimeoutSecs"]',
-      ),
+      document.querySelector<HTMLInputElement>('input[name="responsesFirstByteTimeoutSecs"]'),
     ).toBeNull();
 
     const timeoutButton = document.querySelector<HTMLButtonElement>(
@@ -335,11 +323,7 @@ describe("EffectiveRoutingRuleCard", () => {
   it("expands an inherited timeout row instead of clearing it", () => {
     const onChange = vi.fn();
     render(
-      <EffectiveRoutingRuleCard
-        rule={buildRule()}
-        labels={labels}
-        editablePolicy={{ onChange }}
-      />,
+      <EffectiveRoutingRuleCard rule={buildRule()} labels={labels} editablePolicy={{ onChange }} />,
     );
 
     const timeoutButton = document.querySelector<HTMLButtonElement>(
@@ -352,9 +336,7 @@ describe("EffectiveRoutingRuleCard", () => {
 
     expect(onChange).not.toHaveBeenCalled();
     expect(
-      document.querySelector<HTMLInputElement>(
-        'input[name="responsesFirstByteTimeoutSecs"]',
-      ),
+      document.querySelector<HTMLInputElement>('input[name="responsesFirstByteTimeoutSecs"]'),
     ).not.toBeNull();
   });
 
@@ -414,16 +396,12 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(document.body.textContent).not.toContain(
       "Default value starts from the inherited value.",
     );
-    expect(document.body.textContent).toContain(
-      "FAST modeForce addAccountFAST mode",
-    );
+    expect(document.body.textContent).toContain("FAST modeForce addAccountFAST mode");
     const activeButton = document.querySelector<HTMLButtonElement>(
       'button[aria-label="Clear account override: FAST mode"]',
     );
     expect(activeButton?.getAttribute("aria-pressed")).toBe("true");
-    expect(
-      document.querySelector('[role="radiogroup"][aria-label="FAST mode"]'),
-    ).not.toBeNull();
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull();
   });
 
   it("expands every existing account override by default", () => {
@@ -452,27 +430,15 @@ describe("EffectiveRoutingRuleCard", () => {
       />,
     );
 
+    expect(document.querySelector('[role="switch"][aria-label="Cut out"]')).not.toBeNull();
+    expect(document.querySelector('[role="switch"][aria-label="Cut in"]')).not.toBeNull();
+    expect(document.querySelector('[role="radiogroup"][aria-label="Priority"]')).not.toBeNull();
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull();
     expect(
-      document.querySelector('[role="switch"][aria-label="Cut out"]'),
+      document.querySelector('[role="radiogroup"][aria-label="Upstream 429 retry"]'),
     ).not.toBeNull();
     expect(
-      document.querySelector('[role="switch"][aria-label="Cut in"]'),
-    ).not.toBeNull();
-    expect(
-      document.querySelector('[role="radiogroup"][aria-label="Priority"]'),
-    ).not.toBeNull();
-    expect(
-      document.querySelector('[role="radiogroup"][aria-label="FAST mode"]'),
-    ).not.toBeNull();
-    expect(
-      document.querySelector(
-        '[role="radiogroup"][aria-label="Upstream 429 retry"]',
-      ),
-    ).not.toBeNull();
-    expect(
-      document.querySelector(
-        'button[role="switch"][aria-label="Upstream 429 retry"]',
-      ),
+      document.querySelector('button[role="switch"][aria-label="Upstream 429 retry"]'),
     ).toBeNull();
     expect(document.body.textContent).toContain("Concurrency 3");
     expect(document.body.textContent).toContain("5");
@@ -480,12 +446,8 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(document.body.textContent).not.toContain(
       "Default value starts from the inherited value.",
     );
-    expect(document.body.textContent).toContain(
-      "Cut outCut-out blockedAccountCut out",
-    );
-    expect(document.body.textContent).toContain(
-      "FAST modeForce addAccountFAST mode",
-    );
+    expect(document.body.textContent).toContain("Cut outCut-out blockedAccountCut out");
+    expect(document.body.textContent).toContain("FAST modeForce addAccountFAST mode");
   });
 
   it("saves 429 retry as a single 0..5 count selector", () => {
@@ -564,9 +526,7 @@ describe("EffectiveRoutingRuleCard", () => {
       />,
     );
 
-    expect(document.body.textContent).toContain(
-      "Status change trigger reasons",
-    );
+    expect(document.body.textContent).toContain("Status change trigger reasons");
     expect(document.body.textContent).toContain("401 invalid credentials");
     expect(document.body.textContent).toContain("10/11 enabled");
   });
@@ -574,11 +534,7 @@ describe("EffectiveRoutingRuleCard", () => {
   it("saves an account status-change reason override through the nested reason payload", () => {
     const onChange = vi.fn();
     render(
-      <EffectiveRoutingRuleCard
-        rule={buildRule()}
-        labels={labels}
-        editablePolicy={{ onChange }}
-      />,
+      <EffectiveRoutingRuleCard rule={buildRule()} labels={labels} editablePolicy={{ onChange }} />,
     );
 
     const toggleButton = document.querySelector<HTMLButtonElement>(
@@ -590,14 +546,11 @@ describe("EffectiveRoutingRuleCard", () => {
       toggleButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(onChange).toHaveBeenCalledWith(
-      "statusChangeReason:upstream_http_401",
-      {
-        statusChangeReasons: {
-          upstream_http_401: false,
-        },
+    expect(onChange).toHaveBeenCalledWith("statusChangeReason:upstream_http_401", {
+      statusChangeReasons: {
+        upstream_http_401: false,
       },
-    );
+    });
   });
 
   it("resets account status-change reason overrides from the section header", () => {
@@ -623,9 +576,7 @@ describe("EffectiveRoutingRuleCard", () => {
       />,
     );
 
-    const resetButton = document.querySelector<HTMLButtonElement>(
-      'button[aria-label="Reset"]',
-    );
+    const resetButton = document.querySelector<HTMLButtonElement>('button[aria-label="Reset"]');
     expect(resetButton).not.toBeNull();
     expect(resetButton?.textContent).toContain("Reset");
 
@@ -633,15 +584,12 @@ describe("EffectiveRoutingRuleCard", () => {
       resetButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(onChange).toHaveBeenCalledWith(
-      "statusChangeReasons",
-      {
-        statusChangeReasons: {
-          upstream_http_401: null,
-          upstream_http_403: null,
-        },
+    expect(onChange).toHaveBeenCalledWith("statusChangeReasons", {
+      statusChangeReasons: {
+        upstream_http_401: null,
+        upstream_http_403: null,
       },
-    );
+    });
   });
 
   it("keeps a user-opened inherited field when editable policy identity changes", () => {
@@ -672,9 +620,7 @@ describe("EffectiveRoutingRuleCard", () => {
       cutOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(
-      document.querySelector('[role="switch"][aria-label="Cut out"]'),
-    ).not.toBeNull();
+    expect(document.querySelector('[role="switch"][aria-label="Cut out"]')).not.toBeNull();
 
     act(() => {
       root?.render(
@@ -692,12 +638,8 @@ describe("EffectiveRoutingRuleCard", () => {
       );
     });
 
-    expect(
-      document.querySelector('[role="switch"][aria-label="Cut out"]'),
-    ).not.toBeNull();
-    expect(
-      document.querySelector('[role="radiogroup"][aria-label="FAST mode"]'),
-    ).not.toBeNull();
+    expect(document.querySelector('[role="switch"][aria-label="Cut out"]')).not.toBeNull();
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull();
 
     act(() => {
       root?.render(
@@ -715,9 +657,7 @@ describe("EffectiveRoutingRuleCard", () => {
       );
     });
 
-    expect(
-      document.querySelector('[role="radiogroup"][aria-label="FAST mode"]'),
-    ).not.toBeNull();
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull();
   });
 
   it("keeps system denied models read-only even when account policy editing is enabled", () => {
@@ -737,9 +677,7 @@ describe("EffectiveRoutingRuleCard", () => {
 
     expect(document.body.textContent).toContain("gpt-5.5");
     expect(
-      document.querySelector(
-        'button[aria-label="Edit account override: System denied models"]',
-      ),
+      document.querySelector('button[aria-label="Edit account override: System denied models"]'),
     ).toBeNull();
   });
 });

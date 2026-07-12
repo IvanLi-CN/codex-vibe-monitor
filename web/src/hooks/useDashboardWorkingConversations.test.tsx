@@ -1,15 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ApiInvocation,
   BroadcastPayload,
@@ -23,28 +15,29 @@ import {
   resetDashboardPerformanceDiagnostics,
 } from "../lib/dashboardPerformanceDiagnostics";
 import {
-  DASHBOARD_WORKING_CONVERSATIONS_REFRESH_THROTTLE_MS,
   DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
   DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
+  DASHBOARD_WORKING_CONVERSATIONS_REFRESH_THROTTLE_MS,
   DASHBOARD_WORKING_CONVERSATIONS_VISIBLE_PATCH_BATCH_MS,
   resolveDashboardWorkingConversationsRecentPreviewLimit,
   useDashboardWorkingConversations,
 } from "./useDashboardWorkingConversations";
 
 const apiMocks = vi.hoisted(() => ({
-  fetchPromptCacheConversationsPage: vi.fn<
-    (
-      selection: { mode: "activityWindow"; activityMinutes: number },
-      options?: {
-        pageSize?: number;
-        cursor?: string | null;
-        snapshotAt?: string | null;
-        detail?: "compact" | "full";
-        recentInvocationLimit?: number;
-        signal?: AbortSignal;
-      },
-    ) => Promise<PromptCacheConversationsResponse>
-  >(),
+  fetchPromptCacheConversationsPage:
+    vi.fn<
+      (
+        selection: { mode: "activityWindow"; activityMinutes: number },
+        options?: {
+          pageSize?: number;
+          cursor?: string | null;
+          snapshotAt?: string | null;
+          detail?: "compact" | "full";
+          recentInvocationLimit?: number;
+          signal?: AbortSignal;
+        },
+      ) => Promise<PromptCacheConversationsResponse>
+    >(),
 }));
 
 const sseMocks = vi.hoisted(() => ({
@@ -53,12 +46,10 @@ const sseMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
-    fetchPromptCacheConversationsPage:
-      apiMocks.fetchPromptCacheConversationsPage,
+    fetchPromptCacheConversationsPage: apiMocks.fetchPromptCacheConversationsPage,
   };
 });
 
@@ -210,14 +201,8 @@ function createConversation(
   promptCacheKey: string,
   overrides: Partial<PromptCacheConversation> = {},
 ): PromptCacheConversation {
-  const hasLastTerminalAt = Object.prototype.hasOwnProperty.call(
-    overrides,
-    "lastTerminalAt",
-  );
-  const hasLastInFlightAt = Object.prototype.hasOwnProperty.call(
-    overrides,
-    "lastInFlightAt",
-  );
+  const hasLastTerminalAt = Object.hasOwn(overrides, "lastTerminalAt");
+  const hasLastInFlightAt = Object.hasOwn(overrides, "lastInFlightAt");
   return {
     promptCacheKey,
     requestCount: overrides.requestCount ?? 1,
@@ -225,12 +210,8 @@ function createConversation(
     totalCost: overrides.totalCost ?? 0.12,
     createdAt: overrides.createdAt ?? "2026-04-10T02:00:00Z",
     lastActivityAt: overrides.lastActivityAt ?? "2026-04-10T02:04:00Z",
-    lastTerminalAt: hasLastTerminalAt
-      ? (overrides.lastTerminalAt ?? null)
-      : "2026-04-10T02:04:00Z",
-    lastInFlightAt: hasLastInFlightAt
-      ? (overrides.lastInFlightAt ?? null)
-      : null,
+    lastTerminalAt: hasLastTerminalAt ? (overrides.lastTerminalAt ?? null) : "2026-04-10T02:04:00Z",
+    lastInFlightAt: hasLastInFlightAt ? (overrides.lastInFlightAt ?? null) : null,
     cursor: overrides.cursor ?? `${promptCacheKey}-cursor`,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations: overrides.recentInvocations ?? [
@@ -391,12 +372,9 @@ function Probe() {
         set refresh target 25
       </button>
       <div data-testid="cards-length">{String(cards.length)}</div>
-      <div data-testid="card-keys">
-        {cards.map((item) => item.promptCacheKey).join(",")}
-      </div>
+      <div data-testid="card-keys">{cards.map((item) => item.promptCacheKey).join(",")}</div>
       <div data-testid="conversation-keys">
-        {stats?.conversations.map((item) => item.promptCacheKey).join(",") ??
-          ""}
+        {stats?.conversations.map((item) => item.promptCacheKey).join(",") ?? ""}
       </div>
       <div data-testid="conversation-summary">
         {stats?.conversations
@@ -416,18 +394,10 @@ function Probe() {
         {String(stats?.conversations[0]?.recentInvocations.length ?? 0)}
       </div>
       <div data-testid="recent-preview-limit">{String(recentPreviewLimit)}</div>
-      <div data-testid="request-count">
-        {String(stats?.conversations[0]?.requestCount ?? 0)}
-      </div>
-      <div data-testid="total-tokens">
-        {String(stats?.conversations[0]?.totalTokens ?? 0)}
-      </div>
-      <div data-testid="last-terminal-at">
-        {stats?.conversations[0]?.lastTerminalAt ?? ""}
-      </div>
-      <div data-testid="last-in-flight-at">
-        {stats?.conversations[0]?.lastInFlightAt ?? ""}
-      </div>
+      <div data-testid="request-count">{String(stats?.conversations[0]?.requestCount ?? 0)}</div>
+      <div data-testid="total-tokens">{String(stats?.conversations[0]?.totalTokens ?? 0)}</div>
+      <div data-testid="last-terminal-at">{stats?.conversations[0]?.lastTerminalAt ?? ""}</div>
+      <div data-testid="last-in-flight-at">{stats?.conversations[0]?.lastInFlightAt ?? ""}</div>
       <div data-testid="total-matched">{String(totalMatched)}</div>
       <div data-testid="has-more">{hasMore ? "true" : "false"}</div>
       <div data-testid="next-cursor">{stats?.nextCursor ?? ""}</div>
@@ -450,9 +420,9 @@ describe("useDashboardWorkingConversations", () => {
       }),
     );
 
-    expect(
-      resolveDashboardWorkingConversationsRecentPreviewLimit([], referenceMs),
-    ).toBe(DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN);
+    expect(resolveDashboardWorkingConversationsRecentPreviewLimit([], referenceMs)).toBe(
+      DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
+    );
     expect(
       resolveDashboardWorkingConversationsRecentPreviewLimit(
         [
@@ -551,9 +521,7 @@ describe("useDashboardWorkingConversations", () => {
     expect(text("conversation-keys")).toBe(
       "pck-created-middle,pck-created-oldest,pck-created-newest",
     );
-    expect(text("card-keys")).toBe(
-      "pck-created-newest,pck-created-middle,pck-created-oldest",
-    );
+    expect(text("card-keys")).toBe("pck-created-newest,pck-created-middle,pck-created-oldest");
   });
 
   it("loads the head page with compact pagination defaults", async () => {
@@ -2049,10 +2017,7 @@ describe("useDashboardWorkingConversations", () => {
   });
 
   it("keeps patch diagnostics bounded to the current working set", async () => {
-    window.localStorage.setItem(
-      DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
-      "1",
-    );
+    window.localStorage.setItem(DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY, "1");
     resetDashboardPerformanceDiagnostics();
 
     apiMocks.fetchPromptCacheConversationsPage

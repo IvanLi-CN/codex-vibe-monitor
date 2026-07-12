@@ -1,5 +1,4 @@
 use super::*;
-use serde_json::json;
 
 #[tokio::test]
 async fn resolver_skips_no_new_priority_for_fresh_routing_without_sticky_key() {

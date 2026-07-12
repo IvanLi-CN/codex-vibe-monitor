@@ -1,24 +1,24 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
-import { AppIcon } from '../shared/AppIcon'
-import { Button } from '../../components/ui/button'
-import { OverlayHostProvider } from '../../components/ui/overlay-host'
-import { cn } from '../../lib/utils'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Button } from "../../components/ui/button";
+import { OverlayHostProvider } from "../../components/ui/overlay-host";
+import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
 
 interface AccountDetailDrawerShellProps {
-  open: boolean
-  labelledBy: string
-  closeLabel: string
-  onClose: () => void
-  header: ReactNode
-  children: ReactNode
-  presentation?: 'overlay' | 'page'
-  closeDisabled?: boolean
-  autoFocusCloseButton?: boolean
-  onPortalContainerChange?: (node: HTMLElement | null) => void
-  onBodyElementChange?: (node: HTMLDivElement | null) => void
-  shellClassName?: string
-  bodyClassName?: string
+  open: boolean;
+  labelledBy: string;
+  closeLabel: string;
+  onClose: () => void;
+  header: ReactNode;
+  children: ReactNode;
+  presentation?: "overlay" | "page";
+  closeDisabled?: boolean;
+  autoFocusCloseButton?: boolean;
+  onPortalContainerChange?: (node: HTMLElement | null) => void;
+  onBodyElementChange?: (node: HTMLDivElement | null) => void;
+  shellClassName?: string;
+  bodyClassName?: string;
 }
 
 export function AccountDetailDrawerShell({
@@ -28,7 +28,7 @@ export function AccountDetailDrawerShell({
   onClose,
   header,
   children,
-  presentation = 'overlay',
+  presentation = "overlay",
   closeDisabled = false,
   autoFocusCloseButton = true,
   onPortalContainerChange,
@@ -36,88 +36,92 @@ export function AccountDetailDrawerShell({
   shellClassName,
   bodyClassName,
 }: AccountDetailDrawerShellProps) {
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
-  const [sectionElement, setSectionElement] = useState<HTMLElement | null>(null)
-  const onCloseRef = useRef(onClose)
-  const closeDisabledRef = useRef(closeDisabled)
-  const hasAutofocusedForOpenRef = useRef(false)
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [sectionElement, setSectionElement] = useState<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  const closeDisabledRef = useRef(closeDisabled);
+  const hasAutofocusedForOpenRef = useRef(false);
 
   useEffect(() => {
-    onCloseRef.current = onClose
-  }, [onClose])
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
-    closeDisabledRef.current = closeDisabled
-  }, [closeDisabled])
+    closeDisabledRef.current = closeDisabled;
+  }, [closeDisabled]);
 
   const handleSectionRef = useCallback(
     (node: HTMLElement | null) => {
-      setSectionElement(node)
-      onPortalContainerChange?.(node)
+      setSectionElement(node);
+      onPortalContainerChange?.(node);
     },
     [onPortalContainerChange],
-  )
+  );
 
   const handleBodyRef = useCallback(
     (node: HTMLDivElement | null) => {
-      onBodyElementChange?.(node)
+      onBodyElementChange?.(node);
     },
     [onBodyElementChange],
-  )
+  );
 
   useEffect(() => {
-    if (!open || presentation === 'page' || typeof document === 'undefined') return undefined
+    if (!open || presentation === "page" || typeof document === "undefined") return undefined;
 
-    const previousOverflow = document.body.style.overflow
+    const previousOverflow = document.body.style.overflow;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !closeDisabledRef.current) {
-        onCloseRef.current()
+      if (event.key === "Escape" && !closeDisabledRef.current) {
+        onCloseRef.current();
       }
-    }
+    };
 
-    document.body.style.overflow = 'hidden'
-    document.addEventListener('keydown', handleKeyDown)
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", handleKeyDown);
 
     return () => {
-      document.body.style.overflow = previousOverflow
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [open, presentation])
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open, presentation]);
 
   useEffect(() => {
     if (!open) {
-      hasAutofocusedForOpenRef.current = false
-      return undefined
+      hasAutofocusedForOpenRef.current = false;
+      return undefined;
     }
 
-    if (!autoFocusCloseButton || hasAutofocusedForOpenRef.current || typeof window === 'undefined') {
-      return undefined
+    if (
+      !autoFocusCloseButton ||
+      hasAutofocusedForOpenRef.current ||
+      typeof window === "undefined"
+    ) {
+      return undefined;
     }
 
     const focusTimer = window.setTimeout(() => {
-      closeButtonRef.current?.focus()
-      hasAutofocusedForOpenRef.current = true
-    }, 0)
+      closeButtonRef.current?.focus();
+      hasAutofocusedForOpenRef.current = true;
+    }, 0);
 
     return () => {
-      window.clearTimeout(focusTimer)
-    }
-  }, [autoFocusCloseButton, open])
+      window.clearTimeout(focusTimer);
+    };
+  }, [autoFocusCloseButton, open]);
 
-  if (!open) return null
+  if (!open) return null;
 
   const shell = (
     <section
       ref={handleSectionRef}
-      role={presentation === 'page' ? 'region' : 'dialog'}
-      aria-modal={presentation === 'overlay' ? 'true' : undefined}
+      role={presentation === "page" ? "region" : "dialog"}
+      aria-modal={presentation === "overlay" ? "true" : undefined}
       aria-labelledby={labelledBy}
       className={cn(
-        'drawer-shell flex w-full flex-col overflow-hidden',
-        presentation === 'page'
-          ? 'min-h-[calc(100dvh-8.5rem)] bg-base-100'
-          : 'h-[min(100dvh-0.5rem,100dvh)]',
-        'desktop:h-full desktop:rounded-none desktop:border-0',
+        "drawer-shell flex w-full flex-col overflow-hidden",
+        presentation === "page"
+          ? "min-h-[calc(100dvh-8.5rem)] bg-base-100"
+          : "h-[min(100dvh-0.5rem,100dvh)]",
+        "desktop:h-full desktop:rounded-none desktop:border-0",
         shellClassName,
       )}
       onClick={(event) => event.stopPropagation()}
@@ -142,7 +146,7 @@ export function AccountDetailDrawerShell({
         <div
           ref={handleBodyRef}
           className={cn(
-            'drawer-body min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 desktop:px-6 desktop:py-6',
+            "drawer-body min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 desktop:px-6 desktop:py-6",
             bodyClassName,
           )}
         >
@@ -150,13 +154,13 @@ export function AccountDetailDrawerShell({
         </div>
       </OverlayHostProvider>
     </section>
-  )
+  );
 
-  if (presentation === 'page') {
-    return shell
+  if (presentation === "page") {
+    return shell;
   }
 
-  if (typeof document === 'undefined') return null
+  if (typeof document === "undefined") return null;
 
   return createPortal(
     <div className="fixed inset-0 z-[70]">
@@ -173,5 +177,5 @@ export function AccountDetailDrawerShell({
       </div>
     </div>,
     document.body,
-  )
+  );
 }

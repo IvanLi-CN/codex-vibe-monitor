@@ -1,41 +1,34 @@
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { Alert } from "../../components/ui/alert";
+import { Badge } from "../../components/ui/badge";
+import { useTranslation } from "../../i18n";
 import {
-  Fragment,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-import { AppIcon } from "../shared/AppIcon";
-import { ListBodyState } from "../shared/ListBodyState";
+  type ApiInvocation,
+  type ApiInvocationRecordDetailResponse,
+  type ApiInvocationResponseBodyResponse,
+  fetchInvocationRecordDetail,
+  fetchInvocationResponseBody,
+  type InvocationFocus,
+} from "../../lib/api";
+import { invocationStableDomKey, invocationStableKey } from "../../lib/invocation";
+import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
+import { cn } from "../../lib/utils";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import {
+  buildInvocationDetailViewModel,
   FALLBACK_CELL,
+  formatOptionalText,
   INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   InvocationExpandedDetails,
-  buildInvocationDetailViewModel,
-  formatOptionalText,
   renderEndpointSummary,
   renderFastIndicator,
   renderInvocationModelBadge,
   renderInvocationModelRoutingSummary,
   useInvocationPoolAttempts,
 } from "../invocations/invocation-details-shared";
-import {
-  fetchInvocationRecordDetail,
-  fetchInvocationResponseBody,
-  type ApiInvocation,
-  type ApiInvocationRecordDetailResponse,
-  type ApiInvocationResponseBodyResponse,
-  type InvocationFocus,
-} from "../../lib/api";
-import { invocationStableDomKey, invocationStableKey } from "../../lib/invocation";
-import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
-import { useTranslation } from "../../i18n";
-import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
-import { cn } from "../../lib/utils";
 import { renderInvocationTransportBadge } from "../invocations/invocation-transport-badge";
+import { AppIcon } from "../shared/AppIcon";
+import { ListBodyState } from "../shared/ListBodyState";
 
 interface InvocationRecordsTableProps {
   focus: InvocationFocus;
@@ -70,9 +63,7 @@ interface InvocationRecordsRowViewModel {
   requestedServiceTierValue: string;
   serviceTierValue: string;
   billingServiceTierValue: string;
-  fastIndicatorState: ReturnType<
-    typeof buildInvocationDetailViewModel
-  >["fastIndicatorState"];
+  fastIndicatorState: ReturnType<typeof buildInvocationDetailViewModel>["fastIndicatorState"];
   costValue: string;
   inputTokensValue: string;
   cacheWriteTokensValue: string;
@@ -83,9 +74,7 @@ interface InvocationRecordsRowViewModel {
   reasoningEffortValue: string;
   totalTokensValue: string;
   endpointValue: string;
-  endpointDisplay: ReturnType<
-    typeof buildInvocationDetailViewModel
-  >["endpointDisplay"];
+  endpointDisplay: ReturnType<typeof buildInvocationDetailViewModel>["endpointDisplay"];
   errorMessage: string;
   collapsedErrorSummary: string;
   totalLatencyValue: string;
@@ -97,10 +86,7 @@ interface InvocationRecordsRowViewModel {
   timingPairs: ReturnType<typeof buildInvocationDetailViewModel>["timingPairs"];
 }
 
-const STATUS_META: Record<
-  string,
-  { variant: StatusMeta["variant"]; labelKey: string }
-> = {
+const STATUS_META: Record<string, { variant: StatusMeta["variant"]; labelKey: string }> = {
   success: { variant: "success", labelKey: "table.status.success" },
   completed: { variant: "success", labelKey: "table.status.success" },
   failed: { variant: "error", labelKey: "table.status.failed" },
@@ -129,8 +115,7 @@ function resolveStatusMeta(status?: string | null): StatusMeta {
   if (!raw) return { variant: "secondary", labelKey: "table.status.unknown" };
   if (lower.startsWith("http_4"))
     return { variant: "warning", label: formatStatusLabel(raw) ?? raw };
-  if (lower.startsWith("http_5"))
-    return { variant: "error", label: formatStatusLabel(raw) ?? raw };
+  if (lower.startsWith("http_5")) return { variant: "error", label: formatStatusLabel(raw) ?? raw };
   if (lower.startsWith("http_"))
     return { variant: "secondary", label: formatStatusLabel(raw) ?? raw };
   return { variant: "secondary", label: raw };
@@ -145,10 +130,7 @@ function isAbnormalRecord(record: ApiInvocation) {
   ) {
     return true;
   }
-  return (
-    (resolveInvocationDisplayStatus(record) ?? "").trim().toLowerCase() ===
-    "failed"
-  );
+  return (resolveInvocationDisplayStatus(record) ?? "").trim().toLowerCase() === "failed";
 }
 
 function formatOccurredAt(occurredAt: string, formatter: Intl.DateTimeFormat) {
@@ -213,27 +195,17 @@ function renderFocusSummary(
     case "network":
       return (
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-          <dt className="text-base-content/60">
-            {t("records.table.network.endpoint")}
-          </dt>
+          <dt className="text-base-content/60">{t("records.table.network.endpoint")}</dt>
           <dd className="flex justify-end">
             {renderEndpointSummary(row.endpointDisplay, t, "text-[10px]")}
           </dd>
           <dt className="text-base-content/60">
             {t("records.table.network.firstResponseByteTotal")}
           </dt>
-          <dd className="truncate text-right font-mono">
-            {row.firstResponseByteTotalValue}
-          </dd>
-          <dt className="text-base-content/60">
-            {t("records.table.network.totalMs")}
-          </dt>
-          <dd className="truncate text-right font-mono">
-            {row.totalLatencyValue}
-          </dd>
-          <dt className="text-base-content/60">
-            {t("records.table.network.requesterIp")}
-          </dt>
+          <dd className="truncate text-right font-mono">{row.firstResponseByteTotalValue}</dd>
+          <dt className="text-base-content/60">{t("records.table.network.totalMs")}</dt>
+          <dd className="truncate text-right font-mono">{row.totalLatencyValue}</dd>
+          <dt className="text-base-content/60">{t("records.table.network.requesterIp")}</dt>
           <dd className="truncate text-right font-mono">
             {formatOptionalText(row.record.requesterIp)}
           </dd>
@@ -243,56 +215,35 @@ function renderFocusSummary(
       const failureClass = resolveFailureClassMeta(row.record.failureClass);
       return (
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-          <dt className="text-base-content/60">
-            {t("records.table.exception.failureKind")}
-          </dt>
+          <dt className="text-base-content/60">{t("records.table.exception.failureKind")}</dt>
           <dd className="truncate text-right font-mono">
             {formatOptionalText(row.record.failureKind)}
           </dd>
-          <dt className="text-base-content/60">
-            {t("records.table.exception.failureClass")}
-          </dt>
+          <dt className="text-base-content/60">{t("records.table.exception.failureClass")}</dt>
           <dd className="flex justify-end">
             <Badge variant={failureClass.variant}>
               {failureClass.labelKey ? t(failureClass.labelKey) : FALLBACK_CELL}
             </Badge>
           </dd>
-          <dt className="text-base-content/60">
-            {t("records.table.exception.actionable")}
-          </dt>
-          <dd className="flex justify-end">
-            {renderActionableBadge(row.record.isActionable, t)}
-          </dd>
-          <dt className="text-base-content/60">
-            {t("records.table.exception.error")}
-          </dt>
+          <dt className="text-base-content/60">{t("records.table.exception.actionable")}</dt>
+          <dd className="flex justify-end">{renderActionableBadge(row.record.isActionable, t)}</dd>
+          <dt className="text-base-content/60">{t("records.table.exception.error")}</dt>
           <dd className="truncate text-right font-mono">
             {row.collapsedErrorSummary || FALLBACK_CELL}
           </dd>
         </dl>
       );
     }
-    case "token":
     default:
       return (
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-          <dt className="text-base-content/60">
-            {t("records.table.token.inputCache")}
-          </dt>
+          <dt className="text-base-content/60">{t("records.table.token.inputCache")}</dt>
           <dd className="truncate text-right font-mono">{`IN ${row.inputTokensValue} / CW ${row.cacheWriteTokensValue} / C ${row.cacheInputTokensValue}`}</dd>
-          <dt className="text-base-content/60">
-            {t("records.table.token.outputReasoning")}
-          </dt>
+          <dt className="text-base-content/60">{t("records.table.token.outputReasoning")}</dt>
           <dd className="truncate text-right font-mono">{`${row.outputTokensValue} / ${row.reasoningTokensValue}`}</dd>
-          <dt className="text-base-content/60">
-            {t("records.table.token.totalTokens")}
-          </dt>
-          <dd className="truncate text-right font-mono">
-            {row.totalTokensValue}
-          </dd>
-          <dt className="text-base-content/60">
-            {t("records.table.token.cost")}
-          </dt>
+          <dt className="text-base-content/60">{t("records.table.token.totalTokens")}</dt>
+          <dd className="truncate text-right font-mono">{row.totalTokensValue}</dd>
+          <dt className="text-base-content/60">{t("records.table.token.cost")}</dt>
           <dd className="truncate text-right font-mono">{row.costValue}</dd>
         </dl>
       );
@@ -321,9 +272,7 @@ function renderDetailSummaryStrip(
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={row.statusMeta.variant}>{row.statusLabel}</Badge>
-          <span className="truncate text-xs text-base-content/70">
-            {row.occurredAtLabel}
-          </span>
+          <span className="truncate text-xs text-base-content/70">{row.occurredAtLabel}</span>
         </div>
         <div className="mt-2 text-sm font-medium">
           {renderAccountValue(
@@ -335,10 +284,7 @@ function renderDetailSummaryStrip(
               : undefined,
           )}
         </div>
-        <div
-          className="truncate text-xs text-base-content/70"
-          title={row.proxyDisplayName}
-        >
+        <div className="truncate text-xs text-base-content/70" title={row.proxyDisplayName}>
           {row.proxyDisplayName}
         </div>
       </div>
@@ -381,24 +327,14 @@ function renderDetailSummaryStrip(
           {t("table.latency.firstByteTotal")}
         </div>
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-          <dt className="text-base-content/60">
-            {t("records.table.network.totalMs")}
-          </dt>
-          <dd className="truncate text-right font-mono">
-            {row.totalLatencyValue}
-          </dd>
+          <dt className="text-base-content/60">{t("records.table.network.totalMs")}</dt>
+          <dd className="truncate text-right font-mono">{row.totalLatencyValue}</dd>
           <dt className="text-base-content/60">
             {t("records.table.network.firstResponseByteTotal")}
           </dt>
-          <dd className="truncate text-right font-mono">
-            {row.firstResponseByteTotalValue}
-          </dd>
-          <dt className="text-base-content/60">
-            {t("table.details.httpCompression")}
-          </dt>
-          <dd className="truncate text-right font-mono">
-            {row.responseContentEncodingValue}
-          </dd>
+          <dd className="truncate text-right font-mono">{row.firstResponseByteTotalValue}</dd>
+          <dt className="text-base-content/60">{t("table.details.httpCompression")}</dt>
+          <dd className="truncate text-right font-mono">{row.responseContentEncodingValue}</dd>
         </dl>
       </div>
 
@@ -436,15 +372,14 @@ export function InvocationRecordsTable({
   const [responseBodyByRecordId, setResponseBodyByRecordId] = useState<
     Record<number, ApiInvocationResponseBodyResponse | undefined>
   >({});
-  const [responseBodyLoadingByRecordId, setResponseBodyLoadingByRecordId] =
-    useState<Record<number, boolean | undefined>>({});
-  const [responseBodyErrorByRecordId, setResponseBodyErrorByRecordId] =
-    useState<Record<number, string | null | undefined>>({});
+  const [responseBodyLoadingByRecordId, setResponseBodyLoadingByRecordId] = useState<
+    Record<number, boolean | undefined>
+  >({});
+  const [responseBodyErrorByRecordId, setResponseBodyErrorByRecordId] = useState<
+    Record<number, string | null | undefined>
+  >({});
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag),
-    [localeTag],
-  );
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const costFormatter = useMemo(
     () =>
       new Intl.NumberFormat(localeTag, {
@@ -515,9 +450,7 @@ export function InvocationRecordsTable({
         const normalizedStatus = (
           resolveInvocationDisplayStatus(record) || "unknown"
         ).toLowerCase();
-        const statusMeta = resolveStatusMeta(
-          resolveInvocationDisplayStatus(record),
-        );
+        const statusMeta = resolveStatusMeta(resolveInvocationDisplayStatus(record));
         const detailView = buildInvocationDetailViewModel({
           record,
           normalizedStatus,
@@ -533,10 +466,7 @@ export function InvocationRecordsTable({
         return {
           record,
           rowKey,
-          occurredAtLabel: formatOccurredAt(
-            record.occurredAt,
-            dateTimeFormatter,
-          ),
+          occurredAtLabel: formatOccurredAt(record.occurredAt, dateTimeFormatter),
           statusMeta,
           statusLabel: statusMeta.labelKey
             ? t(statusMeta.labelKey)
@@ -606,18 +536,12 @@ export function InvocationRecordsTable({
     [drawerRecordId, rows],
   );
   const poolAttemptsState = useInvocationPoolAttempts(expandedRecord);
-  const drawerPoolAttemptsState = useInvocationPoolAttempts(
-    drawerRow?.record ?? null,
-  );
+  const drawerPoolAttemptsState = useInvocationPoolAttempts(drawerRow?.record ?? null);
 
   const ensureRecordDetail = useCallback(
     async (record: ApiInvocation) => {
       if (!isAbnormalRecord(record) || record.id <= 0) return;
-      if (
-        detailByRecordId[record.id] !== undefined ||
-        detailLoadingByRecordId[record.id]
-      )
-        return;
+      if (detailByRecordId[record.id] !== undefined || detailLoadingByRecordId[record.id]) return;
 
       setDetailLoadingByRecordId((current) => ({
         ...current,
@@ -748,7 +672,6 @@ export function InvocationRecordsTable({
           t("records.table.exception.actionable"),
           t("records.table.exception.error"),
         ];
-      case "token":
       default:
         return [
           t("records.table.token.inputCache"),
@@ -760,9 +683,7 @@ export function InvocationRecordsTable({
   })();
 
   const detailColSpan = headers.length + 5;
-  const drawerResponseBody = drawerRow
-    ? responseBodyByRecordId[drawerRow.record.id]
-    : undefined;
+  const drawerResponseBody = drawerRow ? responseBodyByRecordId[drawerRow.record.id] : undefined;
   const drawerResponseBodyError = drawerRow
     ? (responseBodyErrorByRecordId[drawerRow.record.id] ?? null)
     : null;
@@ -800,9 +721,7 @@ export function InvocationRecordsTable({
             </td>
             <td className="px-3 py-3 align-middle text-left text-xs">
               <Badge variant={failureClass.variant}>
-                {failureClass.labelKey
-                  ? t(failureClass.labelKey)
-                  : FALLBACK_CELL}
+                {failureClass.labelKey ? t(failureClass.labelKey) : FALLBACK_CELL}
               </Badge>
             </td>
             <td className="px-3 py-3 align-middle text-left text-xs">
@@ -817,29 +736,37 @@ export function InvocationRecordsTable({
           </>
         );
       }
-      case "token":
       default:
         return (
           <>
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">
-              <div aria-label={`Input tokens: ${row.inputTokensValue}`}>IN {row.inputTokensValue}</div>
-              <div title="Cache write tokens" aria-label={`Cache write tokens: ${row.cacheWriteTokensValue}`}>CW {row.cacheWriteTokensValue}</div>
-              <div className="text-base-content/60" title="Cache read tokens" aria-label={`Cache read tokens: ${row.cacheInputTokensValue}`}>
+              <div role="img" aria-label={`Input tokens: ${row.inputTokensValue}`}>
+                IN {row.inputTokensValue}
+              </div>
+              <div
+                role="img"
+                title="Cache write tokens"
+                aria-label={`Cache write tokens: ${row.cacheWriteTokensValue}`}
+              >
+                CW {row.cacheWriteTokensValue}
+              </div>
+              <div
+                role="img"
+                className="text-base-content/60"
+                title="Cache read tokens"
+                aria-label={`Cache read tokens: ${row.cacheInputTokensValue}`}
+              >
                 C {row.cacheInputTokensValue}
               </div>
             </td>
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">
               <div>{row.outputTokensValue}</div>
-              <div className="text-base-content/60">
-                {row.reasoningTokensValue}
-              </div>
+              <div className="text-base-content/60">{row.reasoningTokensValue}</div>
             </td>
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">
               {row.totalTokensValue}
             </td>
-            <td className="px-3 py-3 align-middle text-right font-mono text-xs">
-              {row.costValue}
-            </td>
+            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{row.costValue}</td>
           </>
         );
     }
@@ -864,15 +791,11 @@ export function InvocationRecordsTable({
             </div>
             <div className="grid min-w-0 grid-cols-[4rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.network.firstResponseByteTotal")}</dt>
-              <dd className="min-w-0 text-right font-mono">
-                {row.firstResponseByteTotalValue}
-              </dd>
+              <dd className="min-w-0 text-right font-mono">{row.firstResponseByteTotalValue}</dd>
             </div>
             <div className="grid min-w-0 grid-cols-[4rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.network.totalMs")}</dt>
-              <dd className="min-w-0 text-right font-mono">
-                {row.totalLatencyValue}
-              </dd>
+              <dd className="min-w-0 text-right font-mono">{row.totalLatencyValue}</dd>
             </div>
           </>
         );
@@ -882,16 +805,12 @@ export function InvocationRecordsTable({
           <>
             <div className="flex items-center justify-between gap-3">
               <dt>{t("records.table.exception.failureKind")}</dt>
-              <dd className="truncate font-mono">
-                {formatOptionalText(row.record.failureKind)}
-              </dd>
+              <dd className="truncate font-mono">{formatOptionalText(row.record.failureKind)}</dd>
             </div>
             <div className="flex items-center justify-between gap-3">
               <dt>{t("records.table.exception.failureClass")}</dt>
               <dd className="truncate">
-                {failureClass.labelKey
-                  ? t(failureClass.labelKey)
-                  : FALLBACK_CELL}
+                {failureClass.labelKey ? t(failureClass.labelKey) : FALLBACK_CELL}
               </dd>
             </div>
             <div className="flex items-center justify-between gap-3">
@@ -900,14 +819,11 @@ export function InvocationRecordsTable({
             </div>
             <div className="flex items-center justify-between gap-3">
               <dt>{t("records.table.exception.error")}</dt>
-              <dd className="truncate font-mono">
-                {row.collapsedErrorSummary || FALLBACK_CELL}
-              </dd>
+              <dd className="truncate font-mono">{row.collapsedErrorSummary || FALLBACK_CELL}</dd>
             </div>
           </>
         );
       }
-      case "token":
       default:
         return (
           <>
@@ -935,9 +851,7 @@ export function InvocationRecordsTable({
   return (
     <div className="space-y-3">
       {showInlineError ? (
-        <Alert variant="error">
-          {t("records.table.loadError", { error: error ?? "" })}
-        </Alert>
+        <Alert variant="error">{t("records.table.loadError", { error: error ?? "" })}</Alert>
       ) : null}
 
       <div className="space-y-3 md:hidden">
@@ -956,13 +870,9 @@ export function InvocationRecordsTable({
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold">
-                    {row.occurredAtLabel}
-                  </div>
+                  <div className="text-sm font-semibold">{row.occurredAtLabel}</div>
                   <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <Badge variant={row.statusMeta.variant}>
-                      {row.statusLabel}
-                    </Badge>
+                    <Badge variant={row.statusMeta.variant}>{row.statusLabel}</Badge>
                     <span className="truncate text-xs text-base-content/70">
                       {row.proxyDisplayName}
                     </span>
@@ -972,16 +882,12 @@ export function InvocationRecordsTable({
                   type="button"
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                   onClick={() =>
-                    setExpandedId((current) =>
-                      current === row.rowKey ? null : row.rowKey,
-                    )
+                    setExpandedId((current) => (current === row.rowKey ? null : row.rowKey))
                   }
                   aria-expanded={isExpanded}
                   aria-controls={detailId}
                   aria-label={
-                    isExpanded
-                      ? t("records.table.hideDetails")
-                      : t("records.table.showDetails")
+                    isExpanded ? t("records.table.hideDetails") : t("records.table.showDetails")
                   }
                 >
                   <AppIcon
@@ -1070,18 +976,10 @@ export function InvocationRecordsTable({
         <table className="min-w-full table-fixed border-separate border-spacing-0 text-sm">
           <thead className="bg-base-200/65 text-[11px] uppercase tracking-[0.08em] text-base-content/70">
             <tr>
-              <th className="px-3 py-3 text-left font-semibold">
-                {t("table.column.time")}
-              </th>
-              <th className="px-3 py-3 text-left font-semibold">
-                {t("table.column.proxy")}
-              </th>
-              <th className="px-3 py-3 text-left font-semibold">
-                {t("table.column.model")}
-              </th>
-              <th className="px-3 py-3 text-left font-semibold">
-                {t("table.column.status")}
-              </th>
+              <th className="px-3 py-3 text-left font-semibold">{t("table.column.time")}</th>
+              <th className="px-3 py-3 text-left font-semibold">{t("table.column.proxy")}</th>
+              <th className="px-3 py-3 text-left font-semibold">{t("table.column.model")}</th>
+              <th className="px-3 py-3 text-left font-semibold">{t("table.column.status")}</th>
               {headers.map((header) => (
                 <th key={header} className="px-3 py-3 text-left font-semibold">
                   {header}
@@ -1097,19 +995,13 @@ export function InvocationRecordsTable({
               const detailId = `records-table-details-${invocationStableDomKey(row.rowKey)}`;
               const isExpanded = expandedId === row.rowKey;
               const detail = detailByRecordId[row.record.id];
-              const detailLoading = Boolean(
-                detailLoadingByRecordId[row.record.id],
-              );
+              const detailLoading = Boolean(detailLoadingByRecordId[row.record.id]);
               const detailError = detailErrorByRecordId[row.record.id] ?? null;
               const abnormalResponseBody = detail?.abnormalResponseBody ?? null;
 
               return (
                 <Fragment key={row.rowKey}>
-                  <tr
-                    className={
-                      index % 2 === 0 ? "bg-base-100/30" : "bg-base-200/18"
-                    }
-                  >
+                  <tr className={index % 2 === 0 ? "bg-base-100/30" : "bg-base-200/18"}>
                     <td className="px-3 py-3 align-middle text-left text-xs font-medium">
                       {row.occurredAtLabel}
                     </td>
@@ -1120,10 +1012,7 @@ export function InvocationRecordsTable({
                       {row.proxyDisplayName}
                     </td>
                     <td className="max-w-[14rem] px-3 py-3 align-middle text-left text-xs">
-                      <div
-                        className="flex items-center gap-1"
-                        title={row.modelValue}
-                      >
+                      <div className="flex items-center gap-1" title={row.modelValue}>
                         {renderInvocationModelBadge(row.modelValue, {
                           t,
                           hasMismatch: row.modelHasMismatch,
@@ -1134,9 +1023,7 @@ export function InvocationRecordsTable({
                       </div>
                     </td>
                     <td className="px-3 py-3 align-middle text-left text-xs">
-                      <Badge variant={row.statusMeta.variant}>
-                        {row.statusLabel}
-                      </Badge>
+                      <Badge variant={row.statusMeta.variant}>{row.statusLabel}</Badge>
                     </td>
                     {renderFocusCells(row)}
                     <td className="px-3 py-3 align-middle text-right">
@@ -1144,9 +1031,7 @@ export function InvocationRecordsTable({
                         type="button"
                         className="inline-flex items-center justify-center rounded-md text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                         onClick={() =>
-                          setExpandedId((current) =>
-                            current === row.rowKey ? null : row.rowKey,
-                          )
+                          setExpandedId((current) => (current === row.rowKey ? null : row.rowKey))
                         }
                         aria-expanded={isExpanded}
                         aria-controls={detailId}
@@ -1171,12 +1056,7 @@ export function InvocationRecordsTable({
                           className="space-y-3 rounded-xl border border-base-300/70 bg-base-200/45 p-3"
                           data-testid="records-expanded-detail-panel"
                         >
-                          {renderDetailSummaryStrip(
-                            row,
-                            focus,
-                            t,
-                            renderAccountValue,
-                          )}
+                          {renderDetailSummaryStrip(row, focus, t, renderAccountValue)}
                           <InvocationExpandedDetails
                             record={row.record}
                             detailId={detailId}
@@ -1194,7 +1074,9 @@ export function InvocationRecordsTable({
                                 ? () => setDrawerRecordId(row.record.id)
                                 : null
                             }
-                            showFullDetailsAction={isAbnormalRecord(row.record) && row.record.id > 0}
+                            showFullDetailsAction={
+                              isAbnormalRecord(row.record) && row.record.id > 0
+                            }
                             t={t}
                           />
                         </div>
@@ -1219,12 +1101,8 @@ export function InvocationRecordsTable({
           header={
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={drawerRow.statusMeta.variant}>
-                  {drawerRow.statusLabel}
-                </Badge>
-                <span className="text-xs text-base-content/60">
-                  {drawerRow.occurredAtLabel}
-                </span>
+                <Badge variant={drawerRow.statusMeta.variant}>{drawerRow.statusLabel}</Badge>
+                <span className="text-xs text-base-content/60">{drawerRow.occurredAtLabel}</span>
               </div>
               <div>
                 <h2
@@ -1258,8 +1136,7 @@ export function InvocationRecordsTable({
                       available: drawerResponseBody.available,
                       previewText: drawerResponseBody.bodyText ?? null,
                       hasMore: false,
-                      unavailableReason:
-                        drawerResponseBody.unavailableReason ?? null,
+                      unavailableReason: drawerResponseBody.unavailableReason ?? null,
                     }
                   : null
               }

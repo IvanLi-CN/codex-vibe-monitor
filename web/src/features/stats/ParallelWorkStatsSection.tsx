@@ -4,29 +4,21 @@ import {
   useId,
   useMemo,
 } from "react";
+import { Area, AreaChart, CartesianGrid, Line, ResponsiveContainer, XAxis, YAxis } from "recharts";
+import { Alert } from "../../components/ui/alert";
+import { InfoTooltip } from "../../components/ui/info-tooltip";
 import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  Line,
-  ResponsiveContainer,
-  XAxis,
-  YAxis,
-} from "recharts";
+  type InlineChartTooltipData,
+  InlineChartTooltipSurface,
+} from "../../components/ui/inline-chart-tooltip";
+import { useTranslation } from "../../i18n";
 import type {
   ParallelWorkConversation,
   ParallelWorkStatsResponse,
   ParallelWorkWindowResponse,
 } from "../../lib/api";
-import { useTranslation } from "../../i18n";
 import { chartBaseTokens, metricAccent, withOpacity } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
-import { Alert } from "../../components/ui/alert";
-import {
-  InlineChartTooltipSurface,
-  type InlineChartTooltipData,
-} from "../../components/ui/inline-chart-tooltip";
-import { InfoTooltip } from "../../components/ui/info-tooltip";
 
 interface ParallelWorkStatsSectionProps {
   stats: ParallelWorkStatsResponse | null;
@@ -64,9 +56,7 @@ function buildParallelWorkXAxisTicks(
   const candidateIndexes = Array.from(
     new Set([0, Math.floor((window.points.length - 1) / 2), window.points.length - 1]),
   );
-  const years = new Set(
-    window.points.map((point) => new Date(point.bucketStart).getFullYear()),
-  );
+  const years = new Set(window.points.map((point) => new Date(point.bucketStart).getFullYear()));
   const showYear = years.size > 1;
   const baseLabels = candidateIndexes.map((index) =>
     formatParallelWorkAxisBucketLabel(
@@ -92,14 +82,9 @@ function buildParallelWorkXAxisTicks(
   }));
 }
 
-function buildParallelWorkChartData(
-  window: ParallelWorkWindowResponse,
-  localeTag: string,
-) {
+function buildParallelWorkChartData(window: ParallelWorkWindowResponse, localeTag: string) {
   const xAxisTicks = buildParallelWorkXAxisTicks(window, localeTag);
-  const labelsByIndex = new Map(
-    xAxisTicks.map((tick) => [tick.index, tick.label]),
-  );
+  const labelsByIndex = new Map(xAxisTicks.map((tick) => [tick.index, tick.label]));
 
   return window.points.map((point, index) => ({
     ...point,
@@ -119,9 +104,7 @@ function formatAverageCount(value: number | null, locale: string) {
 
 function formatWholeCount(value: number | null, locale: string) {
   if (value == null) return "—";
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(
-    value,
-  );
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value);
 }
 
 function formatParallelWorkBucketRange(
@@ -134,7 +117,7 @@ function formatParallelWorkBucketRange(
   const start = new Date(startRaw);
   const end = new Date(endRaw);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return startRaw + " → " + endRaw;
+    return `${startRaw} → ${endRaw}`;
   }
 
   const formatter = new Intl.DateTimeFormat(localeTag, {
@@ -147,7 +130,7 @@ function formatParallelWorkBucketRange(
     hour12: false,
   });
 
-  return formatter.format(start) + " → " + formatter.format(end);
+  return `${formatter.format(start)} → ${formatter.format(end)}`;
 }
 
 function formatParallelWorkTimeLabel(raw: string, localeTag: string, timeZone: string) {
@@ -213,9 +196,7 @@ function buildParallelWorkConversationTooltipData(
   }));
 }
 
-function resolveParallelWorkDefaultIndex(
-  points: ParallelWorkWindowResponse["points"],
-) {
+function resolveParallelWorkDefaultIndex(points: ParallelWorkWindowResponse["points"]) {
   for (let index = points.length - 1; index >= 0; index -= 1) {
     if ((points[index]?.parallelCount ?? 0) > 0) return index;
   }
@@ -254,18 +235,10 @@ function ParallelWorkXAxisTick({
   if (typeof x !== "number" || typeof y !== "number") return null;
   const index = Number(payload?.value ?? 0);
   const label = labelsByIndex.get(index) ?? "";
-  const textAnchor =
-    index <= 0 ? "start" : index >= maxIndex ? "end" : "middle";
+  const textAnchor = index <= 0 ? "start" : index >= maxIndex ? "end" : "middle";
 
   return (
-    <text
-      x={x}
-      y={y}
-      dy={13}
-      fill={fill}
-      fontSize={11}
-      textAnchor={textAnchor}
-    >
+    <text x={x} y={y} dy={13} fill={fill} fontSize={11} textAnchor={textAnchor}>
       {label}
     </text>
   );
@@ -340,18 +313,9 @@ function ParallelWorkSparkline({
   const { locale } = useTranslation();
   const { themeMode } = useTheme();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag),
-    [localeTag],
-  );
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const tooltipData = useMemo(
-    () =>
-      buildParallelWorkTooltipData(
-        window,
-        localeTag,
-        tooltipCountLabel,
-        numberFormatter,
-      ),
+    () => buildParallelWorkTooltipData(window, localeTag, tooltipCountLabel, numberFormatter),
     [localeTag, numberFormatter, tooltipCountLabel, window],
   );
   const defaultIndex = useMemo(
@@ -359,12 +323,7 @@ function ParallelWorkSparkline({
     [window.points],
   );
   const scaleMaxCount = useMemo(
-    () =>
-      Math.max(
-        window.maxCount ?? 0,
-        ...window.points.map((point) => point.parallelCount),
-        0,
-      ),
+    () => Math.max(window.maxCount ?? 0, ...window.points.map((point) => point.parallelCount), 0),
     [window.maxCount, window.points],
   );
   const chartData = useMemo(
@@ -413,30 +372,18 @@ function ParallelWorkSparkline({
       chartClassName="w-full"
     >
       {({ highlightedIndex, getItemProps }) => {
-        const resolveOverlayIndex = (
-          clientX: number,
-          currentTarget: HTMLElement,
-        ) => {
+        const resolveOverlayIndex = (clientX: number, currentTarget: HTMLElement) => {
           if (chartData.length <= 1) return 0;
           const rect = currentTarget.getBoundingClientRect();
           if (rect.width <= 0) return defaultIndex;
-          const ratio = Math.max(
-            0,
-            Math.min(1, (clientX - rect.left) / rect.width),
-          );
-          return Math.max(
-            0,
-            Math.min(chartData.length - 1, Math.round(ratio * xAxisDomainMax)),
-          );
+          const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+          return Math.max(0, Math.min(chartData.length - 1, Math.round(ratio * xAxisDomainMax)));
         };
         const resolveMarkerLeft = (index: number) =>
           chartData.length <= 1 ? 50 : (index / xAxisDomainMax) * 100;
         const handleOverlayPointer = (
           event: ReactPointerEvent<HTMLButtonElement>,
-          handler:
-            | "onPointerEnter"
-            | "onPointerMove"
-            | "onPointerDown",
+          handler: "onPointerEnter" | "onPointerMove" | "onPointerDown",
         ) => {
           const index = resolveOverlayIndex(event.clientX, event.currentTarget);
           getItemProps(index)[handler](event as never);
@@ -462,17 +409,11 @@ function ParallelWorkSparkline({
             data-chart-mode="recharts-area"
           >
             <ResponsiveContainer>
-              <AreaChart
-                data={chartData}
-                margin={{ top: 14, right: 16, left: -8, bottom: 8 }}
-              >
+              <AreaChart data={chartData} margin={{ top: 14, right: 16, left: -8, bottom: 8 }}>
                 <defs>
                   <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
                     <stop offset="0%" stopColor={chartColors.accentFill} />
-                    <stop
-                      offset="100%"
-                      stopColor={withOpacity(chartColors.accent, 0.03)}
-                    />
+                    <stop offset="100%" stopColor={withOpacity(chartColors.accent, 0.03)} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid
@@ -501,9 +442,7 @@ function ParallelWorkSparkline({
                   allowDecimals={false}
                   width={46}
                   tickCount={3}
-                  tickFormatter={(value) =>
-                    numberFormatter.format(Number(value))
-                  }
+                  tickFormatter={(value) => numberFormatter.format(Number(value))}
                   axisLine={{ stroke: chartColors.gridLine }}
                   tickLine={{ stroke: chartColors.gridLine }}
                   tick={{ fill: chartColors.axisText, fontSize: 11 }}
@@ -512,7 +451,7 @@ function ParallelWorkSparkline({
                   type="monotone"
                   dataKey="parallelCount"
                   stroke="none"
-                  fill={"url(#" + gradientId + ")"}
+                  fill={`url(#${gradientId})`}
                   fillOpacity={1}
                   dot={false}
                   activeDot={false}
@@ -542,7 +481,7 @@ function ParallelWorkSparkline({
                 const { ref } = getItemProps(index);
                 return (
                   <span
-                    key={point.bucketStart + "-" + point.bucketEnd}
+                    key={`${point.bucketStart}-${point.bucketEnd}`}
                     ref={ref}
                     aria-hidden="true"
                     className="pointer-events-none absolute top-1/2 h-px w-px -translate-x-1/2 -translate-y-1/2"
@@ -558,27 +497,16 @@ function ParallelWorkSparkline({
                 data-testid="parallel-work-interaction-overlay"
                 className="absolute inset-0 cursor-pointer rounded-sm bg-transparent p-0 text-transparent outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
                 aria-label={ariaLabel}
-                onPointerEnter={(event) =>
-                  handleOverlayPointer(event, "onPointerEnter")
-                }
-                onPointerMove={(event) =>
-                  handleOverlayPointer(event, "onPointerMove")
-                }
-                onPointerDown={(event) =>
-                  handleOverlayPointer(event, "onPointerDown")
-                }
-                onMouseEnter={(event) =>
-                  handleOverlayMouse(event, "onMouseEnter")
-                }
+                onPointerEnter={(event) => handleOverlayPointer(event, "onPointerEnter")}
+                onPointerMove={(event) => handleOverlayPointer(event, "onPointerMove")}
+                onPointerDown={(event) => handleOverlayPointer(event, "onPointerDown")}
+                onMouseEnter={(event) => handleOverlayMouse(event, "onMouseEnter")}
                 onMouseMove={(event) => handleOverlayMouse(event, "onMouseMove")}
                 onMouseDown={() => getItemProps(defaultIndex).onMouseDown()}
                 onTouchStart={(event) => {
                   const firstTouch = event.touches[0];
                   const index = firstTouch
-                    ? resolveOverlayIndex(
-                        firstTouch.clientX,
-                        event.currentTarget,
-                      )
+                    ? resolveOverlayIndex(firstTouch.clientX, event.currentTarget)
                     : defaultIndex;
                   getItemProps(index).onTouchStart();
                 }}
@@ -608,15 +536,10 @@ function ParallelWorkConversationGantt({
   const { locale } = useTranslation();
   const { themeMode } = useTheme();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag),
-    [localeTag],
-  );
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const conversations = useMemo(
     () =>
-      [...(window.conversations ?? [])].sort(
-        (a, b) => Date.parse(a.start) - Date.parse(b.start),
-      ),
+      [...(window.conversations ?? [])].sort((a, b) => Date.parse(a.start) - Date.parse(b.start)),
     [window.conversations],
   );
   const effectiveTimeZone = window.effectiveTimeZone ?? "Asia/Shanghai";
@@ -682,7 +605,7 @@ function ParallelWorkConversationGantt({
               <div className="sticky top-0 z-10 h-5 border-b border-base-300/70 bg-base-100/95">
                 {axisLabels.map((label, index) => (
                   <span
-                    key={label + index}
+                    key={label}
                     className="absolute top-0 -translate-x-1/2 text-[11px] text-base-content/50 first:translate-x-0 last:-translate-x-full"
                     style={{ left: `${index * 50}%` }}
                   >
@@ -701,7 +624,7 @@ function ParallelWorkConversationGantt({
                 return (
                   <div className="contents" key={conversation.conversationId}>
                     <div className="flex h-4 items-center truncate pr-2 text-[11px] font-medium text-base-content/62">
-                      {"#" + (index + 1)}
+                      {`#${index + 1}`}
                     </div>
                     <div className="relative h-4 border-l border-base-300/55">
                       <div
@@ -719,15 +642,25 @@ function ParallelWorkConversationGantt({
                           width: `${width}%`,
                           minWidth: 8,
                           backgroundColor: active ? chartColors.accent : chartColors.accentFill,
-                          boxShadow: active ? `0 0 0 2px ${withOpacity(chartColors.accent, 0.22)}` : "none",
+                          boxShadow: active
+                            ? `0 0 0 2px ${withOpacity(chartColors.accent, 0.22)}`
+                            : "none",
                         }}
                         aria-label={
                           "Conversation " +
                           (index + 1) +
                           " " +
-                          formatParallelWorkTimeLabel(conversation.start, localeTag, effectiveTimeZone) +
+                          formatParallelWorkTimeLabel(
+                            conversation.start,
+                            localeTag,
+                            effectiveTimeZone,
+                          ) +
                           " to " +
-                          formatParallelWorkTimeLabel(conversation.end, localeTag, effectiveTimeZone)
+                          formatParallelWorkTimeLabel(
+                            conversation.end,
+                            localeTag,
+                            effectiveTimeZone,
+                          )
                         }
                       />
                     </div>
@@ -847,9 +780,9 @@ function ParallelWorkLoadingCard() {
       data-testid="parallel-work-card-current"
     >
       <div className="grid grid-cols-3 gap-2.5">
-        {Array.from({ length: 3 }).map((_, index) => (
+        {["metric-1", "metric-2", "metric-3"].map((metricKey) => (
           <div
-            key={index}
+            key={metricKey}
             className="rounded-2xl border border-base-300/70 bg-base-200/35 px-3 py-2.5"
           >
             <div className="h-3 w-10 animate-pulse rounded-full bg-base-300/60" />
@@ -908,10 +841,7 @@ export function ParallelWorkStatsSection({
     <section className="surface-panel" data-testid="parallel-work-section">
       <div className="surface-panel-body gap-4">
         <div className="section-heading min-w-0">
-          <div
-            className="flex items-center gap-2"
-            data-testid="parallel-work-heading-current"
-          >
+          <div className="flex items-center gap-2" data-testid="parallel-work-heading-current">
             <h3 className="section-title">{t("stats.parallelWork.title")}</h3>
             <ParallelWorkWindowInfoTrigger
               tooltipContent={activeTooltipContent}
@@ -920,9 +850,7 @@ export function ParallelWorkStatsSection({
               })}
             />
           </div>
-          <p className="section-description">
-            {t("stats.parallelWork.description")}
-          </p>
+          <p className="section-description">{t("stats.parallelWork.description")}</p>
         </div>
         {error ? (
           <ParallelWorkErrorCard error={error} />

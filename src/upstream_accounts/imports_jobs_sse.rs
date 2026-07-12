@@ -121,10 +121,10 @@ pub(crate) async fn build_imported_oauth_validation_response(
         )
         .await;
         release_imported_oauth_node_shunt_scope(state, reservation_key);
-        if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope {
-            if validated_import.is_some() {
-                consumed_proxy_keys.insert(proxy_key.clone());
-            }
+        if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope
+            && validated_import.is_some()
+        {
+            consumed_proxy_keys.insert(proxy_key.clone());
         }
         rows.push(row);
     }
@@ -812,10 +812,10 @@ pub(crate) fn spawn_imported_oauth_validation_job(
                 )
                 .await;
                 release_imported_oauth_node_shunt_scope(state.as_ref(), reservation_key);
-                if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope {
-                    if validated_import.is_some() {
-                        consumed_proxy_keys.insert(proxy_key.clone());
-                    }
+                if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope
+                    && validated_import.is_some()
+                {
+                    consumed_proxy_keys.insert(proxy_key.clone());
                 }
                 update_imported_oauth_validation_job_row(&job, row_index, row, validated_import)
                     .await;

@@ -1,11 +1,14 @@
-import { useMemo, useState } from 'react'
-import { AppIcon } from '../shared/AppIcon'
-import { useTranslation } from '../../i18n'
-import { useExternalApiKeys } from '../../hooks/useExternalApiKeys'
-import { Alert } from '../../components/ui/alert'
-import { Badge } from '../../components/ui/badge'
-import { Button } from '../../components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
+import { useMemo, useState } from "react";
+import { Alert } from "../../components/ui/alert";
+import { Badge } from "../../components/ui/badge";
+import { Button } from "../../components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../../components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -13,37 +16,40 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '../../components/ui/dialog'
-import { Input } from '../../components/ui/input'
-import { Spinner } from '../../components/ui/spinner'
-import type { ExternalApiKeySummary } from '../../lib/api'
+} from "../../components/ui/dialog";
+import { Input } from "../../components/ui/input";
+import { Spinner } from "../../components/ui/spinner";
+import { useExternalApiKeys } from "../../hooks/useExternalApiKeys";
+import { useTranslation } from "../../i18n";
+import type { ExternalApiKeySummary } from "../../lib/api";
+import { AppIcon } from "../shared/AppIcon";
 
 function formatDateTime(value?: string) {
-  if (!value) return '—'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return value
-  return parsed.toLocaleString()
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
 }
 
-function statusVariant(status: string): 'success' | 'warning' | 'secondary' {
-  if (status === 'active') return 'success'
-  if (status === 'disabled') return 'warning'
-  return 'secondary'
+function statusVariant(status: string): "success" | "warning" | "secondary" {
+  if (status === "active") return "success";
+  if (status === "disabled") return "warning";
+  return "secondary";
 }
 
 function statusLabel(status: string, t: (key: string) => string) {
   switch (status) {
-    case 'active':
-      return t('settings.externalApiKeys.status.active')
-    case 'disabled':
-      return t('settings.externalApiKeys.status.disabled')
+    case "active":
+      return t("settings.externalApiKeys.status.active");
+    case "disabled":
+      return t("settings.externalApiKeys.status.disabled");
     default:
-      return status
+      return status;
   }
 }
 
 export function ExternalApiKeysSettingsCard() {
-  const { t } = useTranslation()
+  const { t } = useTranslation();
   const {
     items,
     activeCount,
@@ -55,50 +61,50 @@ export function ExternalApiKeysSettingsCard() {
     rotateKey,
     disableKey,
     clearRevealedSecret,
-  } = useExternalApiKeys()
+  } = useExternalApiKeys();
 
-  const [createOpen, setCreateOpen] = useState(false)
-  const [createName, setCreateName] = useState('')
-  const [createError, setCreateError] = useState<string | null>(null)
-  const [rotateTarget, setRotateTarget] = useState<ExternalApiKeySummary | null>(null)
-  const [disableTarget, setDisableTarget] = useState<ExternalApiKeySummary | null>(null)
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [rotateTarget, setRotateTarget] = useState<ExternalApiKeySummary | null>(null);
+  const [disableTarget, setDisableTarget] = useState<ExternalApiKeySummary | null>(null);
 
   const summaryText = useMemo(
-    () => t('settings.externalApiKeys.summary', { count: activeCount, total: items.length }),
+    () => t("settings.externalApiKeys.summary", { count: activeCount, total: items.length }),
     [activeCount, items.length, t],
-  )
+  );
 
   async function handleCreateSubmit() {
-    const normalized = createName.trim()
+    const normalized = createName.trim();
     if (!normalized) {
-      setCreateError(t('settings.externalApiKeys.validation.nameRequired'))
-      return
+      setCreateError(t("settings.externalApiKeys.validation.nameRequired"));
+      return;
     }
     try {
-      await createKey(normalized)
-      setCreateName('')
-      setCreateError(null)
-      setCreateOpen(false)
+      await createKey(normalized);
+      setCreateName("");
+      setCreateError(null);
+      setCreateOpen(false);
     } catch (err) {
-      setCreateError(err instanceof Error ? err.message : String(err))
+      setCreateError(err instanceof Error ? err.message : String(err));
     }
   }
 
   async function handleRotateConfirm() {
-    if (!rotateTarget) return
+    if (!rotateTarget) return;
     try {
-      await rotateKey(rotateTarget.id)
-      setRotateTarget(null)
+      await rotateKey(rotateTarget.id);
+      setRotateTarget(null);
     } catch {
       // hook-level error already surfaced
     }
   }
 
   async function handleDisableConfirm() {
-    if (!disableTarget) return
+    if (!disableTarget) return;
     try {
-      await disableKey(disableTarget.id)
-      setDisableTarget(null)
+      await disableKey(disableTarget.id);
+      setDisableTarget(null);
     } catch {
       // hook-level error already surfaced
     }
@@ -109,9 +115,9 @@ export function ExternalApiKeysSettingsCard() {
       <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
         <CardHeader className="mobile-flat-surface-header flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
           <div className="space-y-1.5">
-            <CardTitle>{t('settings.externalApiKeys.title')}</CardTitle>
+            <CardTitle>{t("settings.externalApiKeys.title")}</CardTitle>
             <div className="space-y-1">
-              <CardDescription>{t('settings.externalApiKeys.description')}</CardDescription>
+              <CardDescription>{t("settings.externalApiKeys.description")}</CardDescription>
               <p className="text-xs text-base-content/65">{summaryText}</p>
             </div>
           </div>
@@ -120,26 +126,30 @@ export function ExternalApiKeysSettingsCard() {
             size="sm"
             className="h-9 gap-1.5 px-3.5"
             onClick={() => {
-              setCreateError(null)
-              setCreateOpen(true)
+              setCreateError(null);
+              setCreateOpen(true);
             }}
           >
             <AppIcon name="plus" className="h-[18px] w-[18px]" aria-hidden />
-            {t('settings.externalApiKeys.create')}
+            {t("settings.externalApiKeys.create")}
           </Button>
         </CardHeader>
 
         <CardContent className="mobile-flat-surface-body space-y-4 pt-4">
           {revealedSecret && (
-            <Alert variant="success" className="flex-col gap-3" data-testid="external-api-key-secret-alert">
+            <Alert
+              variant="success"
+              className="flex-col gap-3"
+              data-testid="external-api-key-secret-alert"
+            >
               <div className="space-y-1">
                 <div className="font-medium">
-                  {revealedSecret.action === 'create'
-                    ? t('settings.externalApiKeys.secret.createdTitle')
-                    : t('settings.externalApiKeys.secret.rotatedTitle')}
+                  {revealedSecret.action === "create"
+                    ? t("settings.externalApiKeys.secret.createdTitle")
+                    : t("settings.externalApiKeys.secret.rotatedTitle")}
                 </div>
                 <div className="text-xs leading-6">
-                  {t('settings.externalApiKeys.secret.description')}
+                  {t("settings.externalApiKeys.secret.description")}
                 </div>
               </div>
               <div className="rounded-lg border border-success/30 bg-base-100/85 px-3 py-2 font-mono text-xs text-base-content">
@@ -147,7 +157,7 @@ export function ExternalApiKeysSettingsCard() {
               </div>
               <div className="flex justify-end">
                 <Button type="button" variant="ghost" size="sm" onClick={clearRevealedSecret}>
-                  {t('settings.externalApiKeys.secret.dismiss')}
+                  {t("settings.externalApiKeys.secret.dismiss")}
                 </Button>
               </div>
             </Alert>
@@ -155,24 +165,27 @@ export function ExternalApiKeysSettingsCard() {
 
           {error && (
             <Alert variant="error" data-testid="external-api-key-error">
-              {t('settings.externalApiKeys.error', { error })}
+              {t("settings.externalApiKeys.error", { error })}
             </Alert>
           )}
 
           {isLoading ? (
             <div className="flex items-center gap-2 rounded-xl border border-base-300/80 bg-base-100/72 px-4 py-6 text-sm text-base-content/72">
               <Spinner size="sm" />
-              {t('settings.externalApiKeys.loading')}
+              {t("settings.externalApiKeys.loading")}
             </div>
           ) : items.length === 0 ? (
             <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/72 px-4 py-8 text-center text-sm text-base-content/65">
-              {t('settings.externalApiKeys.empty')}
+              {t("settings.externalApiKeys.empty")}
             </div>
           ) : (
             <>
               <div className="space-y-3 desktop:hidden">
                 {items.map((item) => (
-                  <article key={`mobile-${item.id}`} className="rounded-xl border border-base-300/80 bg-base-100/72 p-4">
+                  <article
+                    key={`mobile-${item.id}`}
+                    className="rounded-xl border border-base-300/80 bg-base-100/72 p-4"
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 space-y-2">
                         <div className="font-medium text-base-content">{item.name}</div>
@@ -189,15 +202,19 @@ export function ExternalApiKeysSettingsCard() {
                     <dl className="mt-4 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
                       <div className="rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2.5">
                         <dt className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/58">
-                          {t('settings.externalApiKeys.columns.lastUsedAt')}
+                          {t("settings.externalApiKeys.columns.lastUsedAt")}
                         </dt>
-                        <dd className="mt-1 text-base-content/75">{formatDateTime(item.lastUsedAt)}</dd>
+                        <dd className="mt-1 text-base-content/75">
+                          {formatDateTime(item.lastUsedAt)}
+                        </dd>
                       </div>
                       <div className="rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2.5">
                         <dt className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/58">
-                          {t('settings.externalApiKeys.columns.createdAt')}
+                          {t("settings.externalApiKeys.columns.createdAt")}
                         </dt>
-                        <dd className="mt-1 text-base-content/75">{formatDateTime(item.createdAt)}</dd>
+                        <dd className="mt-1 text-base-content/75">
+                          {formatDateTime(item.createdAt)}
+                        </dd>
                       </div>
                     </dl>
                     <div className="mt-4 flex flex-col gap-2">
@@ -208,17 +225,17 @@ export function ExternalApiKeysSettingsCard() {
                         disabled={isMutating}
                         onClick={() => setRotateTarget(item)}
                       >
-                        {t('settings.externalApiKeys.rotate')}
+                        {t("settings.externalApiKeys.rotate")}
                       </Button>
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
                         className="text-error hover:bg-error/10 hover:text-error"
-                        disabled={isMutating || item.status === 'disabled'}
+                        disabled={isMutating || item.status === "disabled"}
                         onClick={() => setDisableTarget(item)}
                       >
-                        {t('settings.externalApiKeys.disable')}
+                        {t("settings.externalApiKeys.disable")}
                       </Button>
                     </div>
                   </article>
@@ -229,12 +246,24 @@ export function ExternalApiKeysSettingsCard() {
                 <table className="w-full min-w-[44rem] table-fixed text-sm">
                   <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
                     <tr>
-                      <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.name')}</th>
-                      <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.prefix')}</th>
-                      <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.status')}</th>
-                      <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.lastUsedAt')}</th>
-                      <th className="px-4 py-3 text-left font-semibold">{t('settings.externalApiKeys.columns.createdAt')}</th>
-                      <th className="px-4 py-3 text-right font-semibold">{t('settings.externalApiKeys.columns.actions')}</th>
+                      <th className="px-4 py-3 text-left font-semibold">
+                        {t("settings.externalApiKeys.columns.name")}
+                      </th>
+                      <th className="px-4 py-3 text-left font-semibold">
+                        {t("settings.externalApiKeys.columns.prefix")}
+                      </th>
+                      <th className="px-4 py-3 text-left font-semibold">
+                        {t("settings.externalApiKeys.columns.status")}
+                      </th>
+                      <th className="px-4 py-3 text-left font-semibold">
+                        {t("settings.externalApiKeys.columns.lastUsedAt")}
+                      </th>
+                      <th className="px-4 py-3 text-left font-semibold">
+                        {t("settings.externalApiKeys.columns.createdAt")}
+                      </th>
+                      <th className="px-4 py-3 text-right font-semibold">
+                        {t("settings.externalApiKeys.columns.actions")}
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-base-300/65">
@@ -243,8 +272,8 @@ export function ExternalApiKeysSettingsCard() {
                         key={item.id}
                         className={
                           index % 2 === 0
-                            ? 'bg-base-100/38 transition-colors hover:bg-primary/6'
-                            : 'bg-base-200/22 transition-colors hover:bg-primary/6'
+                            ? "bg-base-100/38 transition-colors hover:bg-primary/6"
+                            : "bg-base-200/22 transition-colors hover:bg-primary/6"
                         }
                       >
                         <td className="px-4 py-3 align-middle">
@@ -275,17 +304,17 @@ export function ExternalApiKeysSettingsCard() {
                               disabled={isMutating}
                               onClick={() => setRotateTarget(item)}
                             >
-                              {t('settings.externalApiKeys.rotate')}
+                              {t("settings.externalApiKeys.rotate")}
                             </Button>
                             <Button
                               type="button"
                               variant="ghost"
                               size="sm"
                               className="text-error hover:bg-error/10 hover:text-error"
-                              disabled={isMutating || item.status === 'disabled'}
+                              disabled={isMutating || item.status === "disabled"}
                               onClick={() => setDisableTarget(item)}
                             >
-                              {t('settings.externalApiKeys.disable')}
+                              {t("settings.externalApiKeys.disable")}
                             </Button>
                           </div>
                         </td>
@@ -303,26 +332,31 @@ export function ExternalApiKeysSettingsCard() {
         <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 desktop:max-h-[calc(100dvh-2rem)]">
           <div className="sticky top-0 z-10 border-b border-base-300/80 bg-base-100/94 px-5 py-4 backdrop-blur">
             <DialogHeader className="min-w-0">
-              <DialogTitle>{t('settings.externalApiKeys.createDialog.title')}</DialogTitle>
-              <DialogDescription>{t('settings.externalApiKeys.createDialog.description')}</DialogDescription>
+              <DialogTitle>{t("settings.externalApiKeys.createDialog.title")}</DialogTitle>
+              <DialogDescription>
+                {t("settings.externalApiKeys.createDialog.description")}
+              </DialogDescription>
             </DialogHeader>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-            <label htmlFor="external-api-key-name" className="block text-sm font-medium text-base-content/78">
-              {t('settings.externalApiKeys.createDialog.nameLabel')}
+            <label
+              htmlFor="external-api-key-name"
+              className="block text-sm font-medium text-base-content/78"
+            >
+              {t("settings.externalApiKeys.createDialog.nameLabel")}
             </label>
             <Input
               id="external-api-key-name"
               value={createName}
-              placeholder={t('settings.externalApiKeys.createDialog.namePlaceholder')}
+              placeholder={t("settings.externalApiKeys.createDialog.namePlaceholder")}
               onChange={(event) => {
-                setCreateName(event.target.value)
-                if (createError) setCreateError(null)
+                setCreateName(event.target.value);
+                if (createError) setCreateError(null);
               }}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  void handleCreateSubmit()
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void handleCreateSubmit();
                 }
               }}
             />
@@ -330,10 +364,12 @@ export function ExternalApiKeysSettingsCard() {
           </div>
           <DialogFooter className="sticky bottom-0 z-10 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur">
             <Button type="button" variant="ghost" onClick={() => setCreateOpen(false)}>
-              {t('settings.externalApiKeys.cancel')}
+              {t("settings.externalApiKeys.cancel")}
             </Button>
             <Button type="button" disabled={isMutating} onClick={() => void handleCreateSubmit()}>
-              {isMutating ? t('settings.saving') : t('settings.externalApiKeys.createDialog.confirm')}
+              {isMutating
+                ? t("settings.saving")
+                : t("settings.externalApiKeys.createDialog.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -343,20 +379,26 @@ export function ExternalApiKeysSettingsCard() {
         <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 desktop:max-h-[calc(100dvh-2rem)]">
           <div className="sticky top-0 z-10 border-b border-base-300/80 bg-base-100/94 px-5 py-4 backdrop-blur">
             <DialogHeader className="min-w-0">
-              <DialogTitle>{t('settings.externalApiKeys.rotateDialog.title')}</DialogTitle>
+              <DialogTitle>{t("settings.externalApiKeys.rotateDialog.title")}</DialogTitle>
               <DialogDescription>
-                {t('settings.externalApiKeys.rotateDialog.description', {
-                  name: rotateTarget?.name ?? '—',
+                {t("settings.externalApiKeys.rotateDialog.description", {
+                  name: rotateTarget?.name ?? "—",
                 })}
               </DialogDescription>
             </DialogHeader>
           </div>
           <DialogFooter className="sticky bottom-0 z-10 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur">
             <Button type="button" variant="ghost" onClick={() => setRotateTarget(null)}>
-              {t('settings.externalApiKeys.cancel')}
+              {t("settings.externalApiKeys.cancel")}
             </Button>
-            <Button type="button" disabled={isMutating || !rotateTarget} onClick={() => void handleRotateConfirm()}>
-              {isMutating ? t('settings.saving') : t('settings.externalApiKeys.rotateDialog.confirm')}
+            <Button
+              type="button"
+              disabled={isMutating || !rotateTarget}
+              onClick={() => void handleRotateConfirm()}
+            >
+              {isMutating
+                ? t("settings.saving")
+                : t("settings.externalApiKeys.rotateDialog.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -366,17 +408,17 @@ export function ExternalApiKeysSettingsCard() {
         <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 desktop:max-h-[calc(100dvh-2rem)]">
           <div className="sticky top-0 z-10 border-b border-base-300/80 bg-base-100/94 px-5 py-4 backdrop-blur">
             <DialogHeader className="min-w-0">
-              <DialogTitle>{t('settings.externalApiKeys.disableDialog.title')}</DialogTitle>
+              <DialogTitle>{t("settings.externalApiKeys.disableDialog.title")}</DialogTitle>
               <DialogDescription>
-                {t('settings.externalApiKeys.disableDialog.description', {
-                  name: disableTarget?.name ?? '—',
+                {t("settings.externalApiKeys.disableDialog.description", {
+                  name: disableTarget?.name ?? "—",
                 })}
               </DialogDescription>
             </DialogHeader>
           </div>
           <DialogFooter className="sticky bottom-0 z-10 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur">
             <Button type="button" variant="ghost" onClick={() => setDisableTarget(null)}>
-              {t('settings.externalApiKeys.cancel')}
+              {t("settings.externalApiKeys.cancel")}
             </Button>
             <Button
               type="button"
@@ -384,11 +426,13 @@ export function ExternalApiKeysSettingsCard() {
               disabled={isMutating || !disableTarget}
               onClick={() => void handleDisableConfirm()}
             >
-              {isMutating ? t('settings.saving') : t('settings.externalApiKeys.disableDialog.confirm')}
+              {isMutating
+                ? t("settings.saving")
+                : t("settings.externalApiKeys.disableDialog.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </>
-  )
+  );
 }

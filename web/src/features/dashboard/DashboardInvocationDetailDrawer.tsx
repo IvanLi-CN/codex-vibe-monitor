@@ -1,11 +1,8 @@
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Alert } from "../../components/ui/alert";
+import { Badge } from "../../components/ui/badge";
+import { Spinner } from "../../components/ui/spinner";
+import { useTranslation } from "../../i18n";
 import type {
   ApiInvocation,
   ApiInvocationRecordDetailResponse,
@@ -17,26 +14,22 @@ import {
   fetchInvocationResponseBody,
 } from "../../lib/api";
 import {
-  formatDashboardWorkingConversationSequenceId,
   type DashboardWorkingConversationInvocationSelection,
+  formatDashboardWorkingConversationSequenceId,
 } from "../../lib/dashboardWorkingConversations";
 import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
-import { useTranslation } from "../../i18n";
+import { cn } from "../../lib/utils";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
-import { AppIcon } from "../shared/AppIcon";
 import {
+  buildInvocationDetailViewModel,
   FALLBACK_CELL,
   INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   InvocationExpandedDetails,
-  buildInvocationDetailViewModel,
   renderEndpointSummary,
   renderInvocationModelBadge,
   useInvocationPoolAttempts,
 } from "../invocations/invocation-details-shared";
-import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
-import { Spinner } from "../../components/ui/spinner";
-import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
 
 interface DashboardInvocationDetailDrawerProps {
   open: boolean;
@@ -105,10 +98,7 @@ function isAbnormalRecord(record: ApiInvocation) {
   ) {
     return true;
   }
-  return (
-    (resolveInvocationDisplayStatus(record) ?? "").trim().toLowerCase() ===
-    "failed"
-  );
+  return (resolveInvocationDisplayStatus(record) ?? "").trim().toLowerCase() === "failed";
 }
 
 function formatOccurredAtLabel(value: string, formatter: Intl.DateTimeFormat) {
@@ -117,13 +107,7 @@ function formatOccurredAtLabel(value: string, formatter: Intl.DateTimeFormat) {
   return formatter.format(parsed);
 }
 
-function SummaryCard({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function SummaryCard({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-base-300/70 bg-base-100/65 p-3">
       <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
@@ -148,23 +132,14 @@ export function DashboardInvocationDetailDrawer({
   const [fullRecord, setFullRecord] = useState<ApiInvocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [recordDetail, setRecordDetail] =
-    useState<ApiInvocationRecordDetailResponse | null>(null);
+  const [recordDetail, setRecordDetail] = useState<ApiInvocationRecordDetailResponse | null>(null);
   const [recordDetailLoading, setRecordDetailLoading] = useState(false);
-  const [recordDetailError, setRecordDetailError] = useState<string | null>(
-    null,
-  );
-  const [responseBody, setResponseBody] =
-    useState<ApiInvocationResponseBodyResponse | null>(null);
+  const [recordDetailError, setRecordDetailError] = useState<string | null>(null);
+  const [responseBody, setResponseBody] = useState<ApiInvocationResponseBodyResponse | null>(null);
   const [responseBodyLoading, setResponseBodyLoading] = useState(false);
-  const [responseBodyError, setResponseBodyError] = useState<string | null>(
-    null,
-  );
+  const [responseBodyError, setResponseBodyError] = useState<string | null>(null);
 
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag),
-    [localeTag],
-  );
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat(localeTag, {
@@ -226,8 +201,7 @@ export function DashboardInvocationDetailDrawer({
         if (requestSeq !== requestSeqRef.current) return;
         const exactRecord =
           response.records.find(
-            (record) =>
-              record.invokeId === selection.invocation.record.invokeId,
+            (record) => record.invokeId === selection.invocation.record.invokeId,
           ) ?? null;
         setFullRecord(exactRecord);
       })
@@ -270,9 +244,7 @@ export function DashboardInvocationDetailDrawer({
       })
       .catch((error) => {
         if (abnormalSeq !== abnormalSeqRef.current) return;
-        setRecordDetailError(
-          error instanceof Error ? error.message : String(error),
-        );
+        setRecordDetailError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
         if (abnormalSeq === abnormalSeqRef.current) {
@@ -287,9 +259,7 @@ export function DashboardInvocationDetailDrawer({
       })
       .catch((error) => {
         if (abnormalSeq !== abnormalSeqRef.current) return;
-        setResponseBodyError(
-          error instanceof Error ? error.message : String(error),
-        );
+        setResponseBodyError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
         if (abnormalSeq === abnormalSeqRef.current) {
@@ -350,9 +320,7 @@ export function DashboardInvocationDetailDrawer({
     if (!fullRecord) return null;
     return buildInvocationDetailViewModel({
       record: fullRecord,
-      normalizedStatus: (
-        resolveInvocationDisplayStatus(fullRecord) || "unknown"
-      )
+      normalizedStatus: (resolveInvocationDisplayStatus(fullRecord) || "unknown")
         .trim()
         .toLowerCase(),
       t,
@@ -363,15 +331,7 @@ export function DashboardInvocationDetailDrawer({
       currencyFormatter,
       renderAccountValue,
     });
-  }, [
-    currencyFormatter,
-    fullRecord,
-    locale,
-    localeTag,
-    numberFormatter,
-    renderAccountValue,
-    t,
-  ]);
+  }, [currencyFormatter, fullRecord, locale, localeTag, numberFormatter, renderAccountValue, t]);
 
   const abnormalResponseBody = responseBody
     ? {
@@ -382,17 +342,12 @@ export function DashboardInvocationDetailDrawer({
       }
     : (recordDetail?.abnormalResponseBody ?? null);
   const displaySequenceId = selection
-    ? formatDashboardWorkingConversationSequenceId(
-        selection.conversationSequenceId,
-      )
+    ? formatDashboardWorkingConversationSequenceId(selection.conversationSequenceId)
     : null;
   const abnormalResponseBodyLoading =
-    (recordDetailLoading || responseBodyLoading) &&
-    abnormalResponseBody == null;
+    (recordDetailLoading || responseBodyLoading) && abnormalResponseBody == null;
   const abnormalResponseBodyError =
-    abnormalResponseBody != null
-      ? null
-      : (responseBodyError ?? recordDetailError);
+    abnormalResponseBody != null ? null : (responseBodyError ?? recordDetailError);
 
   return (
     <AccountDetailDrawerShell
@@ -402,16 +357,11 @@ export function DashboardInvocationDetailDrawer({
       onClose={onClose}
       shellClassName="max-w-[72rem]"
       header={
-        <div
-          className="space-y-3"
-          data-testid="dashboard-invocation-detail-drawer"
-        >
+        <div className="space-y-3" data-testid="dashboard-invocation-detail-drawer">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{slotLabel}</Badge>
             <Badge variant={statusMeta.variant}>{statusLabel}</Badge>
-            {displaySequenceId ? (
-              <Badge variant="secondary">{displaySequenceId}</Badge>
-            ) : null}
+            {displaySequenceId ? <Badge variant="secondary">{displaySequenceId}</Badge> : null}
           </div>
           <div className="section-heading">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
@@ -438,25 +388,16 @@ export function DashboardInvocationDetailDrawer({
           className="flex min-h-[18rem] items-center justify-center gap-3 rounded-2xl border border-dashed border-base-300/75 bg-base-100/45"
           data-testid="dashboard-invocation-detail-loading"
         >
-          <Spinner
-            size="sm"
-            aria-label={t("dashboard.workingConversations.drawer.loading")}
-          />
+          <Spinner size="sm" aria-label={t("dashboard.workingConversations.drawer.loading")} />
           <span className="text-sm text-base-content/70">
             {t("dashboard.workingConversations.drawer.loading")}
           </span>
         </div>
       ) : loadError ? (
         <Alert variant="error" data-testid="dashboard-invocation-detail-error">
-          <AppIcon
-            name="alert-circle-outline"
-            className="mt-0.5 h-4 w-4 shrink-0"
-            aria-hidden
-          />
+          <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           <div>
-            <p className="font-medium">
-              {t("dashboard.workingConversations.drawer.errorTitle")}
-            </p>
+            <p className="font-medium">{t("dashboard.workingConversations.drawer.errorTitle")}</p>
             <p className="mt-1 text-sm">{loadError}</p>
           </div>
         </Alert>
@@ -466,11 +407,7 @@ export function DashboardInvocationDetailDrawer({
           data-testid="dashboard-invocation-detail-empty"
         >
           <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <AppIcon
-              name="account-details-outline"
-              className="h-7 w-7"
-              aria-hidden
-            />
+            <AppIcon name="account-details-outline" className="h-7 w-7" aria-hidden />
           </div>
           <h3 className="text-lg font-semibold">
             {t("dashboard.workingConversations.drawer.emptyTitle")}
@@ -517,31 +454,21 @@ export function DashboardInvocationDetailDrawer({
                 })}
               </div>
               <div className="mt-2 w-fit max-w-full">
-                {renderEndpointSummary(
-                  detailView.endpointDisplay,
-                  t,
-                  "text-[10px]",
-                )}
+                {renderEndpointSummary(detailView.endpointDisplay, t, "text-[10px]")}
               </div>
             </SummaryCard>
 
             <SummaryCard label={t("table.latency.firstByteTotal")}>
               <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-                <dt className="text-base-content/60">
-                  {t("records.table.network.totalMs")}
-                </dt>
-                <dd className="truncate text-right font-mono">
-                  {detailView.totalLatencyValue}
-                </dd>
+                <dt className="text-base-content/60">{t("records.table.network.totalMs")}</dt>
+                <dd className="truncate text-right font-mono">{detailView.totalLatencyValue}</dd>
                 <dt className="text-base-content/60">
                   {t("records.table.network.firstResponseByteTotal")}
                 </dt>
                 <dd className="truncate text-right font-mono">
                   {detailView.firstResponseByteTotalValue}
                 </dd>
-                <dt className="text-base-content/60">
-                  {t("table.details.httpCompression")}
-                </dt>
+                <dt className="text-base-content/60">{t("table.details.httpCompression")}</dt>
                 <dd className="truncate text-right font-mono">
                   {detailView.responseContentEncodingValue}
                 </dd>

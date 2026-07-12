@@ -9,5 +9,5 @@ export function DemoBootstrapFailure() {
         </p>
       </section>
     </main>
-  )
+  );
 }

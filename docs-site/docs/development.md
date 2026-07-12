@@ -35,7 +35,7 @@ description: Codex Vibe Monitor 的仓库结构、本地命令与验收面。
 
 ```bash
 cargo fmt
-cargo check
+cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test
 cargo run
 ```
@@ -45,7 +45,7 @@ cargo run
 ```bash
 cd web
 bun install
-bun run lint
+bun run lint:web
 bun run dev -- --host 127.0.0.1 --port 60080
 bun run test
 bun run build
@@ -60,6 +60,7 @@ bun run storybook:build -- --quiet
 ```bash
 cd docs-site
 bun install
+bun run lint
 bun run dev
 bun run build
 ```

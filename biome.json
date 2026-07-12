@@ -1,0 +1,123 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.3/schema.json",
+  "files": {
+    "includes": [
+      "web/**",
+      "docs-site/**",
+      "!web/public/mockServiceWorker.js",
+      "!docs-site/doc_build/**",
+      "!!**/node_modules/**",
+      "!!**/dist/**",
+      "!!**/demo-dist/**",
+      "!!**/storybook-static/**",
+      "!!**/build/**",
+      "!!**/coverage/**"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "includes": [
+      "web/**/*.{js,cjs,mjs,jsx,ts,tsx,json,jsonc,css}",
+      "docs-site/**/*.{js,cjs,mjs,jsx,ts,tsx,json,jsonc,css}"
+    ],
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "linter": {
+    "enabled": true,
+    "includes": [
+      "web/**/*.{js,cjs,mjs,jsx,ts,tsx,json,jsonc,css}",
+      "docs-site/**/*.{js,cjs,mjs,jsx,ts,tsx,json,jsonc,css}"
+    ],
+    "rules": {
+      "preset": "recommended",
+      "suspicious": {
+        "noUnknownAtRules": {
+          "level": "on",
+          "options": {
+            "ignore": ["tailwind", "apply", "layer"]
+          }
+        }
+      },
+      "a11y": {
+        "noNoninteractiveElementToInteractiveRole": "warn",
+        "noStaticElementInteractions": "warn",
+        "noLabelWithoutControl": {
+          "level": "warn",
+          "options": {
+            "inputComponents": [
+              "Input",
+              "FilterableCombobox",
+              "MultiSelectFilterCombobox",
+              "AccountTagFilterCombobox",
+              "Select",
+              "SelectField",
+              "Switch",
+              "UpstreamAccountGroupCombobox"
+            ]
+          }
+        },
+        "noSvgWithoutTitle": "warn",
+        "useAriaPropsSupportedByRole": "warn",
+        "useKeyWithClickEvents": "warn",
+        "useSemanticElements": "warn"
+      },
+      "complexity": {
+        "noImportantStyles": "warn",
+        "noUselessSwitchCase": "warn",
+        "useOptionalChain": "warn"
+      },
+      "correctness": {
+        "noUnusedImports": "warn",
+        "noUnusedVariables": "warn",
+        "useExhaustiveDependencies": "warn",
+        "useHookAtTopLevel": "warn"
+      },
+      "style": {
+        "noNonNullAssertion": "warn"
+      },
+      "suspicious": {
+        "noArrayIndexKey": "warn",
+        "noPrototypeBuiltins": "warn",
+        "useIterableCallbackReturn": "warn",
+        "noUnknownAtRules": {
+          "level": "on",
+          "options": {
+            "ignore": ["tailwind", "apply", "layer"]
+          }
+        }
+      }
+    }
+  },
+  "assist": {
+    "enabled": true,
+    "includes": ["web/**/*.{js,cjs,mjs,jsx,ts,tsx}", "docs-site/**/*.{js,cjs,mjs,jsx,ts,tsx}"],
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "web/**/*.test.{js,jsx,ts,tsx}",
+        "web/**/*.stories.{js,jsx,ts,tsx}",
+        "web/tests/e2e/**/*.{js,jsx,ts,tsx}"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          }
+        }
+      }
+    }
+  ]
+}

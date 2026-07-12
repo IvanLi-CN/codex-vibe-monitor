@@ -19,10 +19,7 @@ function areAccountDraftTagIdsEqual(left: number[], right: number[]): boolean {
   return leftSorted.every((tagId, index) => tagId === rightSorted[index]);
 }
 
-export function areAccountDraftsEqual(
-  left: AccountDraft,
-  right: AccountDraft,
-): boolean {
+export function areAccountDraftsEqual(left: AccountDraft, right: AccountDraft): boolean {
   return (
     left.displayName === right.displayName &&
     left.email === right.email &&
@@ -48,22 +45,14 @@ export function mergeDraftAfterAccountSave(
       current.displayName === saveStartedDraft.displayName
         ? responseDraft.displayName
         : current.displayName,
-    email:
-      current.email === saveStartedDraft.email
-        ? responseDraft.email
-        : current.email,
+    email: current.email === saveStartedDraft.email ? responseDraft.email : current.email,
     groupName:
       current.groupName === saveStartedDraft.groupName
         ? responseDraft.groupName
         : current.groupName,
     isMother:
-      current.isMother === saveStartedDraft.isMother
-        ? responseDraft.isMother
-        : current.isMother,
-    note:
-      current.note === saveStartedDraft.note
-        ? responseDraft.note
-        : current.note,
+      current.isMother === saveStartedDraft.isMother ? responseDraft.isMother : current.isMother,
+    note: current.note === saveStartedDraft.note ? responseDraft.note : current.note,
     upstreamBaseUrl:
       current.upstreamBaseUrl === saveStartedDraft.upstreamBaseUrl
         ? responseDraft.upstreamBaseUrl
@@ -83,9 +72,6 @@ export function mergeDraftAfterAccountSave(
       current.localLimitUnit === saveStartedDraft.localLimitUnit
         ? responseDraft.localLimitUnit
         : current.localLimitUnit,
-    apiKey:
-      current.apiKey === saveStartedDraft.apiKey
-        ? responseDraft.apiKey
-        : current.apiKey,
+    apiKey: current.apiKey === saveStartedDraft.apiKey ? responseDraft.apiKey : current.apiKey,
   };
 }

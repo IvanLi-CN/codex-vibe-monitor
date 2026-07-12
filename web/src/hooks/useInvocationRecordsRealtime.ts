@@ -125,7 +125,9 @@ export function useInvocationRecordsRealtime({
       const incoming = allowVisibleInsertions
         ? payload.records
         : payload.records.filter((record) => currentKeySet.has(invocationStableKey(record)));
-      const mergedPayload = { ...payload, records: incoming } as BroadcastPayload & { type: "records" };
+      const mergedPayload = { ...payload, records: incoming } as BroadcastPayload & {
+        type: "records";
+      };
       const mergedNext = mergeInvocationWindowRecords(current, incoming, {
         filters,
         sortBy,

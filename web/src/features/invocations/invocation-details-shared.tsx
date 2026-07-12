@@ -1,50 +1,46 @@
-/* eslint-disable react-refresh/only-export-components */
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { AppIcon } from "../shared/AppIcon";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
+import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
+import type { TranslationKey } from "../../i18n";
 import {
-  fetchInvocationPoolAttempts,
   type ApiInvocation,
   type ApiInvocationAbnormalResponseBodyPreview,
   type ApiPoolUpstreamRequestAttempt,
   type ForwardProxyBindingNode,
+  fetchInvocationPoolAttempts,
 } from "../../lib/api";
-import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import {
+  type FastIndicatorState,
   formatProxyWeightDelta,
   formatResponseContentEncoding,
   formatServiceTier,
   getFastIndicatorState,
+  type InvocationCompactionKind,
+  type InvocationEndpointDisplay,
+  type InvocationImageIntentDisplay,
   isInvocationPoolAccountRoutingInProgress,
   isPoolRouteMode,
-  resolveInvocationModelDisplay,
   resolveFirstResponseByteTotalMs,
   resolveInvocationAccountLabel,
   resolveInvocationEndpointDisplay,
   resolveInvocationImageIntentDisplay,
-  type FastIndicatorState,
-  type InvocationCompactionKind,
-  type InvocationEndpointDisplay,
-  type InvocationImageIntentDisplay,
+  resolveInvocationModelDisplay,
 } from "../../lib/invocation";
-import type { TranslationKey } from "../../i18n";
+import { subscribeToSse } from "../../lib/sse";
 import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
 import {
   getReasoningEffortTone,
   REASONING_EFFORT_TONE_CLASSNAMES,
 } from "./invocation-table-reasoning";
-import { subscribeToSse } from "../../lib/sse";
 
 export const FALLBACK_CELL = "—";
 export const INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME =
   "invocation-account-routing-in-progress text-primary";
 
-type Translator = (
-  key: TranslationKey,
-  values?: Record<string, string | number>,
-) => string;
+type Translator = (key: TranslationKey, values?: Record<string, string | number>) => string;
 
 export type DetailPanelSize = "compact" | "default";
 
@@ -87,10 +83,7 @@ export interface InvocationDetailViewModel {
 }
 
 export interface InvocationPoolAttemptsState {
-  attemptsByInvokeId: Record<
-    string,
-    ApiPoolUpstreamRequestAttempt[] | undefined
-  >;
+  attemptsByInvokeId: Record<string, ApiPoolUpstreamRequestAttempt[] | undefined>;
   loadingByInvokeId: Record<string, boolean | undefined>;
   errorByInvokeId: Record<string, string | null | undefined>;
 }
@@ -138,8 +131,7 @@ function isZhLocale(locale: string) {
 }
 
 export function formatMilliseconds(value: number | null | undefined) {
-  if (typeof value !== "number" || !Number.isFinite(value))
-    return FALLBACK_CELL;
+  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
   return `${value.toFixed(1)} ms`;
 }
 
@@ -151,16 +143,11 @@ export function resolveInvocationCollapsedErrorSummary(
   return record.downstreamErrorMessage?.trim() ?? "";
 }
 
-export function formatSecondsFromMilliseconds(
-  value: number | null | undefined,
-  localeTag: string,
-) {
-  if (typeof value !== "number" || !Number.isFinite(value))
-    return FALLBACK_CELL;
+export function formatSecondsFromMilliseconds(value: number | null | undefined, localeTag: string) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
 
   const seconds = value / 1000;
-  const precision =
-    Math.abs(seconds) >= 100 ? 1 : Math.abs(seconds) >= 1 ? 2 : 3;
+  const precision = Math.abs(seconds) >= 100 ? 1 : Math.abs(seconds) >= 1 ? 2 : 3;
   const rounded = Number(seconds.toFixed(precision));
 
   return `${rounded.toLocaleString(localeTag, {
@@ -176,18 +163,14 @@ export function formatElapsedSecondsFromTimestamp(
 ) {
   const occurredMs = occurredAt ? Date.parse(occurredAt) : Number.NaN;
   if (!Number.isFinite(occurredMs)) return FALLBACK_CELL;
-  return formatSecondsFromMilliseconds(
-    Math.max(0, nowMs - occurredMs),
-    localeTag,
-  );
+  return formatSecondsFromMilliseconds(Math.max(0, nowMs - occurredMs), localeTag);
 }
 
 export function formatOptionalNumber(
   value: number | null | undefined,
   formatter: Intl.NumberFormat,
 ) {
-  if (typeof value !== "number" || !Number.isFinite(value))
-    return FALLBACK_CELL;
+  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
   return formatter.format(value);
 }
 
@@ -197,8 +180,7 @@ export function formatOptionalText(value: string | null | undefined) {
 }
 
 function formatOptionalStatusCode(value: number | null | undefined) {
-  if (typeof value !== "number" || !Number.isFinite(value))
-    return FALLBACK_CELL;
+  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
   return String(Math.trunc(value));
 }
 
@@ -226,11 +208,7 @@ export function formatDetailTimestamp(value: string | null | undefined) {
 
 export function renderReasoningEffortBadge(value: string) {
   if (value === FALLBACK_CELL) {
-    return (
-      <span className="font-mono text-sm text-base-content/70">
-        {FALLBACK_CELL}
-      </span>
-    );
+    return <span className="font-mono text-sm text-base-content/70">{FALLBACK_CELL}</span>;
   }
 
   const tone = getReasoningEffortTone(value);
@@ -245,9 +223,7 @@ export function renderReasoningEffortBadge(value: string) {
       title={value}
       data-reasoning-effort-tone={tone}
     >
-      <span className="block max-w-full truncate whitespace-nowrap">
-        {value}
-      </span>
+      <span className="block max-w-full truncate whitespace-nowrap">{value}</span>
     </Badge>
   );
 }
@@ -263,9 +239,7 @@ function compactProxyBindingKey(proxyBindingKey: string) {
   return `${proxyBindingKey.slice(0, 8)}...${proxyBindingKey.slice(-6)}`;
 }
 
-function collectPoolAttemptProxyBindingKeys(
-  attempts: ApiPoolUpstreamRequestAttempt[] | undefined,
-) {
+function collectPoolAttemptProxyBindingKeys(attempts: ApiPoolUpstreamRequestAttempt[] | undefined) {
   if (!attempts?.length) return [];
   return Array.from(
     new Set(
@@ -339,11 +313,7 @@ export function renderFastIndicator(state: FastIndicatorState, t: Translator) {
       data-fast-state={state}
       role="img"
     >
-      <AppIcon
-        name="lightning-bolt"
-        className="h-3.5 w-3.5 -translate-y-px"
-        aria-hidden
-      />
+      <AppIcon name="lightning-bolt" className="h-3.5 w-3.5 -translate-y-px" aria-hidden />
     </span>
   );
 }
@@ -369,9 +339,7 @@ export function renderInvocationModelBadge(
     title,
     testId,
   } = options;
-  const mismatchTitle = hasMismatch
-    ? t("table.model.routingMismatchTitle")
-    : null;
+  const mismatchTitle = hasMismatch ? t("table.model.routingMismatchTitle") : null;
   const resolvedTitle = title ?? value;
 
   return (
@@ -398,14 +366,7 @@ export function renderInvocationModelBadge(
           />
         </span>
       ) : null}
-      <span
-        className={cn(
-          "min-w-0 max-w-full truncate leading-none",
-          textClassName,
-        )}
-      >
-        {value}
-      </span>
+      <span className={cn("min-w-0 max-w-full truncate leading-none", textClassName)}>{value}</span>
     </div>
   );
 }
@@ -429,6 +390,7 @@ export function renderInvocationModelRoutingSummary({
 
   return (
     <div
+      role="img"
       className={cn("min-w-0", className)}
       data-testid="invocation-model-route-summary"
       title={`${t("table.details.requestModel")}: ${requestModelValue} · ${t(
@@ -457,9 +419,7 @@ export function renderInvocationModelRoutingSummary({
             {responseModelValue}
           </span>
         </div>
-        {adornments ? (
-          <div className="flex flex-none items-center gap-1">{adornments}</div>
-        ) : null}
+        {adornments ? <div className="flex flex-none items-center gap-1">{adornments}</div> : null}
       </div>
     </div>
   );
@@ -468,10 +428,7 @@ export function renderInvocationModelRoutingSummary({
 function renderEndpointRawPath(endpointValue: string, className?: string) {
   return (
     <span
-      className={cn(
-        "block max-w-full break-all font-mono text-base-content/70",
-        className,
-      )}
+      className={cn("block max-w-full break-all font-mono text-base-content/70", className)}
       title={endpointValue}
       data-testid="invocation-endpoint-path"
       data-endpoint-kind="raw"
@@ -523,38 +480,21 @@ function formatFailureClassValue(
 ): ReactNode {
   switch (failureClass) {
     case "service_failure":
-      return (
-        <Badge variant="error">
-          {t("records.filters.failureClass.service")}
-        </Badge>
-      );
+      return <Badge variant="error">{t("records.filters.failureClass.service")}</Badge>;
     case "client_failure":
-      return (
-        <Badge variant="warning">
-          {t("records.filters.failureClass.client")}
-        </Badge>
-      );
+      return <Badge variant="warning">{t("records.filters.failureClass.client")}</Badge>;
     case "client_abort":
-      return (
-        <Badge variant="secondary">
-          {t("records.filters.failureClass.abort")}
-        </Badge>
-      );
+      return <Badge variant="secondary">{t("records.filters.failureClass.abort")}</Badge>;
     default:
       return FALLBACK_CELL;
   }
 }
 
-function formatActionableValue(
-  value: ApiInvocation["isActionable"],
-  t: Translator,
-) {
+function formatActionableValue(value: ApiInvocation["isActionable"], t: Translator) {
   if (typeof value !== "boolean") return FALLBACK_CELL;
   return (
     <Badge variant={value ? "warning" : "secondary"}>
-      {value
-        ? t("table.details.actionableYes")
-        : t("table.details.actionableNo")}
+      {value ? t("table.details.actionableYes") : t("table.details.actionableNo")}
     </Badge>
   );
 }
@@ -568,8 +508,7 @@ function resolveDetailLabels(locale: string) {
       prunedAt: "精简时间",
       pruneReason: "精简原因",
       fullHint: "完整调试细节仍在当前在线保留窗口内。",
-      structuredHint:
-        "该记录仅保留结构化字段；离线归档保留归档行，超窗 raw file 不保证继续可用。",
+      structuredHint: "该记录仅保留结构化字段；离线归档保留归档行，超窗 raw file 不保证继续可用。",
       prunedPrefix: "精简于",
     };
   }
@@ -580,8 +519,7 @@ function resolveDetailLabels(locale: string) {
     level: "Detail level",
     prunedAt: "Detail pruned at",
     pruneReason: "Detail prune reason",
-    fullHint:
-      "Full troubleshooting detail is still available inside the online retention window.",
+    fullHint: "Full troubleshooting detail is still available inside the online retention window.",
     structuredHint:
       "Only structured fields remain online for this record. Offline archives keep the archived row, but aged raw files may no longer be available.",
     prunedPrefix: "Pruned at",
@@ -595,12 +533,8 @@ function renderDetailEndpointValue(
 ) {
   return (
     <div className="flex min-w-0 flex-col gap-1">
-      <div className="w-fit max-w-full">
-        {renderEndpointSummary(endpointDisplay, t)}
-      </div>
-      <span className="break-all font-mono text-xs text-base-content/70">
-        {endpointValue}
-      </span>
+      <div className="w-fit max-w-full">{renderEndpointSummary(endpointDisplay, t)}</div>
+      <span className="break-all font-mono text-xs text-base-content/70">{endpointValue}</span>
     </div>
   );
 }
@@ -648,10 +582,7 @@ export function renderImageIntentBadge(
   );
 }
 
-function renderImageIntentValue(
-  imageIntentDisplay: InvocationImageIntentDisplay,
-  t: Translator,
-) {
+function renderImageIntentValue(imageIntentDisplay: InvocationImageIntentDisplay, t: Translator) {
   if (imageIntentDisplay.detailLabelKey == null) {
     return FALLBACK_CELL;
   }
@@ -683,11 +614,9 @@ export function buildInvocationDetailViewModel({
 }: BuildInvocationDetailViewModelOptions): InvocationDetailViewModel {
   const proxyDisplayName = resolveProxyDisplayName(record);
   const modelDisplay = resolveInvocationModelDisplay(record);
-  const legacyModelValue =
-    record.model?.trim() || modelDisplay.primaryValue || FALLBACK_CELL;
+  const legacyModelValue = record.model?.trim() || modelDisplay.primaryValue || FALLBACK_CELL;
   const requestModelValue = modelDisplay.requestValue ?? FALLBACK_CELL;
-  const responseModelValue =
-    modelDisplay.responseValue ?? legacyModelValue ?? FALLBACK_CELL;
+  const responseModelValue = modelDisplay.responseValue ?? legacyModelValue ?? FALLBACK_CELL;
   const accountLabel = resolveInvocationAccountLabel(
     record.routeMode,
     normalizedStatus,
@@ -709,12 +638,9 @@ export function buildInvocationDetailViewModel({
   );
   const accountValueClassName = cn(
     "font-mono text-sm",
-    accountRoutingInProgress &&
-      INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+    accountRoutingInProgress && INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   );
-  const requestedServiceTierValue = formatServiceTier(
-    record.requestedServiceTier,
-  );
+  const requestedServiceTierValue = formatServiceTier(record.requestedServiceTier);
   const serviceTierValue = formatServiceTier(record.serviceTier);
   const billingServiceTierValue = formatServiceTier(
     record.billingServiceTier,
@@ -726,16 +652,12 @@ export function buildInvocationDetailViewModel({
     record.billingServiceTier,
   );
   const reasoningEffortValue = formatOptionalText(record.reasoningEffort);
-  const reasoningTokensValue = formatOptionalNumber(
-    record.reasoningTokens,
-    numberFormatter,
-  );
+  const reasoningTokensValue = formatOptionalNumber(record.reasoningTokens, numberFormatter);
   const cacheWriteTokensValue = formatOptionalNumber(
-    record.cacheWriteTokens ?? (
-      record.inputTokens == null
+    record.cacheWriteTokens ??
+      (record.inputTokens == null
         ? undefined
-        : Math.max(0, record.inputTokens - (record.cacheInputTokens ?? 0))
-    ),
+        : Math.max(0, record.inputTokens - (record.cacheInputTokens ?? 0))),
     numberFormatter,
   );
   const outputReasoningBreakdownValue = `${t("table.column.reasoningTokensShort")} ${reasoningTokensValue}`;
@@ -763,6 +685,7 @@ export function buildInvocationDetailViewModel({
       FALLBACK_CELL
     ) : (
       <span
+        role="img"
         className={`inline-flex items-center gap-1 font-mono ${
           proxyWeightDeltaView.direction === "up"
             ? "text-success"
@@ -804,13 +727,9 @@ export function buildInvocationDetailViewModel({
   const detailPrunedAtValue = formatDetailTimestamp(record.detailPrunedAt);
   const detailPruneReasonValue = formatOptionalText(record.detailPruneReason);
   const detailLevelBadgeLabel =
-    detailLevel === "structured_only"
-      ? detailLabels.structuredOnly
-      : detailLabels.full;
-  const detailLevelBadgeVariant =
-    detailLevel === "structured_only" ? "warning" : "secondary";
-  const detailNotice =
-    detailLevel === "structured_only" ? detailLabels.structuredHint : null;
+    detailLevel === "structured_only" ? detailLabels.structuredOnly : detailLabels.full;
+  const detailLevelBadgeVariant = detailLevel === "structured_only" ? "warning" : "secondary";
+  const detailNotice = detailLevel === "structured_only" ? detailLabels.structuredHint : null;
   const detailPrunedSummary =
     detailLevel === "structured_only" && detailPrunedAtValue !== FALLBACK_CELL
       ? `${detailLabels.prunedPrefix} ${detailPrunedAtValue}`
@@ -888,9 +807,7 @@ export function buildInvocationDetailViewModel({
       key: "poolAttemptCount",
       label: t("table.details.poolAttemptCount"),
       value: formatOptionalText(
-        record.poolAttemptCount != null
-          ? String(record.poolAttemptCount)
-          : undefined,
+        record.poolAttemptCount != null ? String(record.poolAttemptCount) : undefined,
       ),
     },
     {
@@ -1021,10 +938,7 @@ export function buildInvocationDetailViewModel({
     },
     {
       label: t("table.details.stage.upstreamConnect"),
-      value: formatSecondsFromMilliseconds(
-        record.tUpstreamConnectMs,
-        localeTag,
-      ),
+      value: formatSecondsFromMilliseconds(record.tUpstreamConnectMs, localeTag),
     },
     {
       label: t("table.details.stage.upstreamFirstByte"),
@@ -1051,8 +965,7 @@ export function buildInvocationDetailViewModel({
   return {
     accountLabel,
     accountId:
-      typeof record.upstreamAccountId === "number" &&
-      Number.isFinite(record.upstreamAccountId)
+      typeof record.upstreamAccountId === "number" && Number.isFinite(record.upstreamAccountId)
         ? Math.trunc(record.upstreamAccountId)
         : null,
     accountClickable,
@@ -1068,19 +981,11 @@ export function buildInvocationDetailViewModel({
     billingServiceTierValue,
     fastIndicatorState,
     costValue:
-      typeof record.cost === "number"
-        ? currencyFormatter.format(record.cost)
-        : FALLBACK_CELL,
+      typeof record.cost === "number" ? currencyFormatter.format(record.cost) : FALLBACK_CELL,
     inputTokensValue: formatOptionalNumber(record.inputTokens, numberFormatter),
     cacheWriteTokensValue,
-    cacheInputTokensValue: formatOptionalNumber(
-      record.cacheInputTokens,
-      numberFormatter,
-    ),
-    outputTokensValue: formatOptionalNumber(
-      record.outputTokens,
-      numberFormatter,
-    ),
+    cacheInputTokensValue: formatOptionalNumber(record.cacheInputTokens, numberFormatter),
+    outputTokensValue: formatOptionalNumber(record.outputTokens, numberFormatter),
     outputReasoningBreakdownValue,
     reasoningTokensValue,
     reasoningEffortValue,
@@ -1103,10 +1008,7 @@ export function buildInvocationDetailViewModel({
 function formatPoolAttemptAccountLabel(attempt: ApiPoolUpstreamRequestAttempt) {
   const accountName = attempt.upstreamAccountName?.trim();
   if (accountName) return accountName;
-  if (
-    typeof attempt.upstreamAccountId === "number" &&
-    Number.isFinite(attempt.upstreamAccountId)
-  ) {
+  if (typeof attempt.upstreamAccountId === "number" && Number.isFinite(attempt.upstreamAccountId)) {
     return `#${Math.trunc(attempt.upstreamAccountId)}`;
   }
   return FALLBACK_CELL;
@@ -1192,26 +1094,20 @@ function isPoolAttemptTerminal(attempt: ApiPoolUpstreamRequestAttempt) {
 
 function isSyntheticPoolTerminalAttempt(attempt: ApiPoolUpstreamRequestAttempt) {
   const normalizedStatus = attempt.status.trim().toLowerCase();
-  return (
-    normalizedStatus === "budget_exhausted_final" ||
-    attempt.sameAccountRetryIndex <= 0
-  );
+  return normalizedStatus === "budget_exhausted_final" || attempt.sameAccountRetryIndex <= 0;
 }
 
 function poolAttemptTerminalDescriptionKey(
   terminalReason: string | null | undefined,
 ): TranslationKey {
-  return terminalReason?.trim().toLowerCase() ===
-    "max_distinct_accounts_exhausted"
+  return terminalReason?.trim().toLowerCase() === "max_distinct_accounts_exhausted"
     ? "table.poolAttempts.terminal.budgetExhaustedDescription"
     : "table.poolAttempts.terminal.genericDescription";
 }
 
 function isInvocationDisplayTerminal(status: string | null | undefined) {
   const normalized = status?.trim().toLowerCase();
-  return Boolean(
-    normalized && normalized !== "running" && normalized !== "pending",
-  );
+  return Boolean(normalized && normalized !== "running" && normalized !== "pending");
 }
 
 function poolAttemptCompletenessScore(attempt: ApiPoolUpstreamRequestAttempt) {
@@ -1267,12 +1163,8 @@ function comparePoolAttemptRecency(
     return incomingPhaseRank > currentPhaseRank ? 1 : -1;
   }
 
-  const currentFinishedAt = current.finishedAt
-    ? Date.parse(current.finishedAt)
-    : Number.NaN;
-  const incomingFinishedAt = incoming.finishedAt
-    ? Date.parse(incoming.finishedAt)
-    : Number.NaN;
+  const currentFinishedAt = current.finishedAt ? Date.parse(current.finishedAt) : Number.NaN;
+  const incomingFinishedAt = incoming.finishedAt ? Date.parse(incoming.finishedAt) : Number.NaN;
   if (
     Number.isFinite(currentFinishedAt) &&
     Number.isFinite(incomingFinishedAt) &&
@@ -1301,10 +1193,7 @@ function shouldReplacePoolAttemptSnapshot(
   let sawNewer = false;
   let sawOlder = false;
   for (let index = 0; index < incoming.length; index += 1) {
-    const comparison = comparePoolAttemptRecency(
-      current[index],
-      incoming[index],
-    );
+    const comparison = comparePoolAttemptRecency(current[index], incoming[index]);
     if (comparison > 0) sawNewer = true;
     if (comparison < 0) sawOlder = true;
   }
@@ -1315,9 +1204,7 @@ function shouldReplacePoolAttemptSnapshot(
 
 const MAX_BUFFERED_POOL_ATTEMPT_SNAPSHOTS = 12;
 
-export function useInvocationPoolAttempts(
-  expandedRecord: ApiInvocation | null,
-) {
+export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) {
   const [attemptsByInvokeId, setPoolAttemptsByInvokeId] = useState<
     Record<string, ApiPoolUpstreamRequestAttempt[] | undefined>
   >({});
@@ -1334,9 +1221,9 @@ export function useInvocationPoolAttempts(
   const loadedKeyRef = useRef<Record<string, string | undefined>>({});
   const loadingKeyRef = useRef<Record<string, string | undefined>>({});
   const activeRequestIdRef = useRef<Record<string, number | undefined>>({});
-  const bufferedSnapshotsRef = useRef<
-    Record<string, ApiPoolUpstreamRequestAttempt[] | undefined>
-  >({});
+  const bufferedSnapshotsRef = useRef<Record<string, ApiPoolUpstreamRequestAttempt[] | undefined>>(
+    {},
+  );
   const bufferedSnapshotOrderRef = useRef<string[]>([]);
   const nextRequestIdRef = useRef(0);
 
@@ -1350,9 +1237,7 @@ export function useInvocationPoolAttempts(
 
   useEffect(() => {
     activeExpandedInvokeIdRef.current =
-      expandedRecord && isPoolRouteMode(expandedRecord.routeMode)
-        ? expandedRecord.invokeId
-        : null;
+      expandedRecord && isPoolRouteMode(expandedRecord.routeMode) ? expandedRecord.invokeId : null;
   }, [expandedRecord]);
 
   useEffect(() => {
@@ -1364,8 +1249,7 @@ export function useInvocationPoolAttempts(
         payload.invokeId === activeInvokeId
           ? attemptsRef.current[payload.invokeId]
           : currentBuffered;
-      if (!shouldReplacePoolAttemptSnapshot(currentVisible, payload.attempts))
-        return;
+      if (!shouldReplacePoolAttemptSnapshot(currentVisible, payload.attempts)) return;
 
       const nextBuffered = {
         ...bufferedSnapshotsRef.current,
@@ -1373,9 +1257,7 @@ export function useInvocationPoolAttempts(
       };
       const nextOrder = [
         payload.invokeId,
-        ...bufferedSnapshotOrderRef.current.filter(
-          (invokeId) => invokeId !== payload.invokeId,
-        ),
+        ...bufferedSnapshotOrderRef.current.filter((invokeId) => invokeId !== payload.invokeId),
       ];
       while (nextOrder.length > MAX_BUFFERED_POOL_ATTEMPT_SNAPSHOTS) {
         const evictedInvokeId = nextOrder.pop();
@@ -1415,43 +1297,27 @@ export function useInvocationPoolAttempts(
   const expandedPoolAttemptInvokeId = expandedRecord?.invokeId ?? null;
   const expandedPoolAttemptStatus = expandedRecord?.status ?? null;
   const expandedPoolAttemptCount = expandedRecord?.poolAttemptCount ?? null;
-  const expandedPoolDistinctAccountCount =
-    expandedRecord?.poolDistinctAccountCount ?? null;
-  const expandedPoolAttemptTerminalReason =
-    expandedRecord?.poolAttemptTerminalReason ?? null;
+  const expandedPoolDistinctAccountCount = expandedRecord?.poolDistinctAccountCount ?? null;
+  const expandedPoolAttemptTerminalReason = expandedRecord?.poolAttemptTerminalReason ?? null;
   const expandedPoolFailureKind = expandedRecord?.failureKind ?? null;
   const expandedPoolErrorMessage = expandedRecord?.errorMessage ?? null;
-  const expandedPoolDownstreamStatusCode =
-    expandedRecord?.downstreamStatusCode ?? null;
-  const expandedPoolDownstreamErrorMessage =
-    expandedRecord?.downstreamErrorMessage ?? null;
-  const expandedPoolUpstreamErrorCode =
-    expandedRecord?.upstreamErrorCode ?? null;
-  const expandedPoolUpstreamErrorMessage =
-    expandedRecord?.upstreamErrorMessage ?? null;
-  const expandedPoolUpstreamRequestId =
-    expandedRecord?.upstreamRequestId ?? null;
-  const expandedPoolUpstreamAccountId =
-    expandedRecord?.upstreamAccountId ?? null;
-  const expandedPoolUpstreamAccountName =
-    expandedRecord?.upstreamAccountName ?? null;
-  const expandedPoolTUpstreamConnectMs =
-    expandedRecord?.tUpstreamConnectMs ?? null;
-  const expandedPoolTUpstreamTtfbMs =
-    expandedRecord?.tUpstreamTtfbMs ?? null;
-  const expandedPoolTUpstreamStreamMs =
-    expandedRecord?.tUpstreamStreamMs ?? null;
+  const expandedPoolDownstreamStatusCode = expandedRecord?.downstreamStatusCode ?? null;
+  const expandedPoolDownstreamErrorMessage = expandedRecord?.downstreamErrorMessage ?? null;
+  const expandedPoolUpstreamErrorCode = expandedRecord?.upstreamErrorCode ?? null;
+  const expandedPoolUpstreamErrorMessage = expandedRecord?.upstreamErrorMessage ?? null;
+  const expandedPoolUpstreamRequestId = expandedRecord?.upstreamRequestId ?? null;
+  const expandedPoolUpstreamAccountId = expandedRecord?.upstreamAccountId ?? null;
+  const expandedPoolUpstreamAccountName = expandedRecord?.upstreamAccountName ?? null;
+  const expandedPoolTUpstreamConnectMs = expandedRecord?.tUpstreamConnectMs ?? null;
+  const expandedPoolTUpstreamTtfbMs = expandedRecord?.tUpstreamTtfbMs ?? null;
+  const expandedPoolTUpstreamStreamMs = expandedRecord?.tUpstreamStreamMs ?? null;
 
   useEffect(() => {
-    if (
-      !expandedPoolAttemptInvokeId ||
-      !isPoolRouteMode(expandedPoolAttemptRouteMode)
-    ) {
+    if (!expandedPoolAttemptInvokeId || !isPoolRouteMode(expandedPoolAttemptRouteMode)) {
       return;
     }
     const invokeId = expandedPoolAttemptInvokeId;
-    const normalizedStatus =
-      expandedPoolAttemptStatus?.trim().toLowerCase() ?? "";
+    const normalizedStatus = expandedPoolAttemptStatus?.trim().toLowerCase() ?? "";
     const requestKey = [
       normalizedStatus,
       expandedPoolAttemptCount ?? "",
@@ -1470,13 +1336,11 @@ export function useInvocationPoolAttempts(
       expandedPoolTUpstreamTtfbMs ?? "",
       expandedPoolTUpstreamStreamMs ?? "",
     ].join("|");
-    const isInFlight =
-      normalizedStatus === "running" || normalizedStatus === "pending";
+    const isInFlight = normalizedStatus === "running" || normalizedStatus === "pending";
     const bufferedAttempts = bufferedSnapshotsRef.current[invokeId];
     const stateAttempts = attemptsRef.current[invokeId];
     const cachedAttempts =
-      shouldReplacePoolAttemptSnapshot(stateAttempts, bufferedAttempts ?? []) &&
-      bufferedAttempts
+      shouldReplacePoolAttemptSnapshot(stateAttempts, bufferedAttempts ?? []) && bufferedAttempts
         ? bufferedAttempts
         : stateAttempts;
     if (cachedAttempts !== stateAttempts) {
@@ -1493,8 +1357,7 @@ export function useInvocationPoolAttempts(
     }
     const hasCachedAttempts = cachedAttempts !== undefined;
     const expectedAttemptCount =
-      typeof expandedPoolAttemptCount === "number" &&
-      Number.isFinite(expandedPoolAttemptCount)
+      typeof expandedPoolAttemptCount === "number" && Number.isFinite(expandedPoolAttemptCount)
         ? Math.max(Math.trunc(expandedPoolAttemptCount), 0)
         : null;
     const cachedAttemptCount = cachedAttempts?.length ?? 0;
@@ -1502,19 +1365,16 @@ export function useInvocationPoolAttempts(
     const loadingKey = loadingKeyRef.current[invokeId];
     const shouldRefreshPendingTerminalAttempt =
       isInvocationDisplayTerminal(expandedPoolAttemptStatus) &&
-      (cachedAttempts?.some((attempt) => !isPoolAttemptTerminal(attempt)) ??
-        false);
+      (cachedAttempts?.some((attempt) => !isPoolAttemptTerminal(attempt)) ?? false);
     const shouldRefreshInFlightKeyMismatch =
       isInFlight &&
       hasCachedAttempts &&
       loadedKey !== undefined &&
       loadedKey !== requestKey &&
-      (cachedAttempts?.some((attempt) => !isPoolAttemptTerminal(attempt)) ??
-        false);
+      (cachedAttempts?.some((attempt) => !isPoolAttemptTerminal(attempt)) ?? false);
     const shouldRefetch =
       cachedAttempts === undefined ||
-      (expectedAttemptCount != null &&
-        cachedAttemptCount < expectedAttemptCount) ||
+      (expectedAttemptCount != null && cachedAttemptCount < expectedAttemptCount) ||
       shouldRefreshPendingTerminalAttempt ||
       shouldRefreshInFlightKeyMismatch ||
       (hasCachedAttempts && loadedKey !== requestKey && !isInFlight);
@@ -1563,10 +1423,7 @@ export function useInvocationPoolAttempts(
         if (cancelled) return;
         const latestVersion = versionRef.current[invokeId] ?? 0;
         const existingAttempts = attemptsRef.current[invokeId];
-        if (
-          latestVersion !== fetchVersion ||
-          (existingAttempts?.length ?? 0) > 0
-        ) {
+        if (latestVersion !== fetchVersion || (existingAttempts?.length ?? 0) > 0) {
           return;
         }
         const message = error instanceof Error ? error.message : String(error);
@@ -1649,23 +1506,15 @@ function renderPoolAttemptsContent(
 
   const summaryParts = [
     `${t("table.details.poolAttemptCount")}: ${formatOptionalText(
-      record.poolAttemptCount != null
-        ? String(record.poolAttemptCount)
-        : undefined,
+      record.poolAttemptCount != null ? String(record.poolAttemptCount) : undefined,
     )}`,
     `${t("table.details.poolDistinctAccountCount")}: ${formatOptionalText(
-      record.poolDistinctAccountCount != null
-        ? String(record.poolDistinctAccountCount)
-        : undefined,
+      record.poolDistinctAccountCount != null ? String(record.poolDistinctAccountCount) : undefined,
     )}`,
     `${t("table.details.poolAttemptTerminalReason")}: ${formatOptionalText(record.poolAttemptTerminalReason)}`,
   ];
-  const realAttempts = attempts?.filter(
-    (attempt) => !isSyntheticPoolTerminalAttempt(attempt),
-  );
-  const syntheticTerminalAttempts = attempts?.filter(
-    isSyntheticPoolTerminalAttempt,
-  );
+  const realAttempts = attempts?.filter((attempt) => !isSyntheticPoolTerminalAttempt(attempt));
+  const syntheticTerminalAttempts = attempts?.filter(isSyntheticPoolTerminalAttempt);
   const loadedSummaryParts =
     attempts && attempts.length > 0
       ? [
@@ -1684,9 +1533,7 @@ function renderPoolAttemptsContent(
           <span className="text-xs font-semibold text-base-content/82">
             {t("table.poolAttempts.title")}
           </span>
-          <div className="text-xs leading-5 text-base-content/62">
-            {summaryParts.join(" · ")}
-          </div>
+          <div className="text-xs leading-5 text-base-content/62">{summaryParts.join(" · ")}</div>
         </div>
         {loadedSummaryParts.length > 0 ? (
           <div className="flex flex-wrap gap-1.5 md:justify-end">
@@ -1704,327 +1551,301 @@ function renderPoolAttemptsContent(
 
       <div className="mt-3">
         {attemptsError ? (
-        <div
-          className="rounded-lg border border-error/25 bg-error/8 px-3 py-2 text-sm text-error"
-          data-testid="pool-attempts-error"
-        >
-          {t("table.poolAttempts.loadError", { error: attemptsError })}
-        </div>
-      ) : attempts && attempts.length > 0 ? (
-        <div className="space-y-3">
-          {realAttempts && realAttempts.length > 0 ? (
-            <div className="space-y-2" data-testid="pool-attempts-list">
-              {realAttempts.map((attempt) => {
-            const statusMeta = poolAttemptStatusMeta(attempt.status);
-            const phase = resolvePoolAttemptPhase(attempt);
-            const phaseMeta = poolAttemptPhaseMeta(phase);
-            const accountLabel = formatPoolAttemptAccountLabel(attempt);
-            const httpStatusValue = formatOptionalStatusCode(
-              attempt.httpStatus,
-            );
-            const downstreamHttpStatusValue = formatOptionalStatusCode(
-              attempt.downstreamHttpStatus,
-            );
-            const proxyBindingDisplay = formatPoolAttemptProxyBindingDisplay(
-              attempt,
-              proxyBindingNodesByKey,
-            );
+          <div
+            className="rounded-lg border border-error/25 bg-error/8 px-3 py-2 text-sm text-error"
+            data-testid="pool-attempts-error"
+          >
+            {t("table.poolAttempts.loadError", { error: attemptsError })}
+          </div>
+        ) : attempts && attempts.length > 0 ? (
+          <div className="space-y-3">
+            {realAttempts && realAttempts.length > 0 ? (
+              <div className="space-y-2" data-testid="pool-attempts-list">
+                {realAttempts.map((attempt) => {
+                  const statusMeta = poolAttemptStatusMeta(attempt.status);
+                  const phase = resolvePoolAttemptPhase(attempt);
+                  const phaseMeta = poolAttemptPhaseMeta(phase);
+                  const accountLabel = formatPoolAttemptAccountLabel(attempt);
+                  const httpStatusValue = formatOptionalStatusCode(attempt.httpStatus);
+                  const downstreamHttpStatusValue = formatOptionalStatusCode(
+                    attempt.downstreamHttpStatus,
+                  );
+                  const proxyBindingDisplay = formatPoolAttemptProxyBindingDisplay(
+                    attempt,
+                    proxyBindingNodesByKey,
+                  );
 
-            return (
-              <div
-                key={`${attempt.id}-${attempt.attemptIndex}`}
-                className="rounded-lg border border-base-300/70 bg-base-100/70 p-3"
-                data-testid="pool-attempt-item"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant={statusMeta.variant}>
-                    {t(statusMeta.key)}
-                  </Badge>
-                  {!isPoolAttemptTerminal(attempt) ? (
-                    <Badge
-                      variant={phaseMeta.variant}
-                      data-testid="pool-attempt-phase-badge"
+                  return (
+                    <div
+                      key={`${attempt.id}-${attempt.attemptIndex}`}
+                      className="rounded-lg border border-base-300/70 bg-base-100/70 p-3"
+                      data-testid="pool-attempt-item"
                     >
-                      {t(phaseMeta.key)}
-                    </Badge>
-                  ) : null}
-                  <span className="font-mono text-xs text-base-content/70">
-                    #{attempt.attemptIndex}
-                  </span>
-                  <span className="text-sm font-medium">{accountLabel}</span>
-                </div>
-                <div className="mt-2 grid gap-2 text-sm md:grid-cols-2 xl:grid-cols-3">
-                  <div className="flex items-start gap-2">
-                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.retry")}
-                    </span>
-                    <span className="font-mono">
-                      {attempt.sameAccountRetryIndex}/
-                      {attempt.distinctAccountIndex}
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.proxy")}
-                    </span>
-                    <span
-                      className={cn(
-                        "min-w-0 truncate whitespace-nowrap",
-                        proxyBindingDisplay.resolved
-                          ? "font-medium"
-                          : "font-mono",
-                      )}
-                      title={proxyBindingDisplay.title}
-                      data-testid="pool-attempt-proxy-value"
-                    >
-                      {proxyBindingDisplay.value}
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.upstreamHttpStatus")}
-                    </span>
-                    <span className="font-mono">{httpStatusValue}</span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.downstreamHttpStatus")}
-                    </span>
-                    <span className="font-mono">
-                      {downstreamHttpStatusValue}
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.failureKind")}
-                    </span>
-                    <span className="break-all font-mono">
-                      {formatOptionalText(attempt.failureKind)}
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.connectLatency")}
-                    </span>
-                    <span className="font-mono">
-                      {formatMilliseconds(attempt.connectLatencyMs)}
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.firstByteLatency")}
-                    </span>
-                    <span className="font-mono">
-                      {formatMilliseconds(attempt.firstByteLatencyMs)}
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.streamLatency")}
-                    </span>
-                    <span className="font-mono">
-                      {formatMilliseconds(attempt.streamLatencyMs)}
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.startedAt")}
-                    </span>
-                    <span className="font-mono">
-                      {formatDetailTimestamp(attempt.startedAt)}
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.finishedAt")}
-                    </span>
-                    <span className="font-mono">
-                      {formatDetailTimestamp(attempt.finishedAt)}
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.upstreamRequestId")}
-                    </span>
-                    <span className="break-all font-mono">
-                      {formatOptionalText(attempt.upstreamRequestId)}
-                    </span>
-                  </div>
-                </div>
-                {attempt.errorMessage?.trim() ? (
-                  <div
-                    className="mt-2 flex flex-col gap-1"
-                    data-testid="pool-attempt-upstream-error"
-                  >
-                    <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.upstreamErrorMessage")}
-                    </span>
-                    <pre className="whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
-                      {attempt.errorMessage}
-                    </pre>
-                  </div>
-                ) : null}
-                {attempt.downstreamErrorMessage?.trim() ? (
-                  <div
-                    className="mt-2 flex flex-col gap-1"
-                    data-testid="pool-attempt-downstream-error"
-                  >
-                    <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.downstreamErrorMessage")}
-                    </span>
-                    <pre className="whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
-                      {attempt.downstreamErrorMessage}
-                    </pre>
-                  </div>
-                ) : null}
-              </div>
-            );
-              })}
-            </div>
-          ) : null}
-          {syntheticTerminalAttempts?.map((attempt) => {
-            const statusMeta = poolAttemptStatusMeta(attempt.status);
-            const accountLabel = formatPoolAttemptAccountLabel(attempt);
-            const httpStatusValue = formatOptionalStatusCode(
-              attempt.httpStatus,
-            );
-            const distinctAccountValue =
-              attempt.distinctAccountIndex > 0
-                ? String(attempt.distinctAccountIndex)
-                : record.poolDistinctAccountCount != null
-                  ? String(record.poolDistinctAccountCount)
-                  : undefined;
-
-            return (
-              <div
-                key={`terminal-${attempt.id}-${attempt.attemptIndex}`}
-                className="overflow-hidden rounded-xl border border-warning/40 bg-warning/10 shadow-sm"
-                data-testid="pool-attempt-terminal-record"
-              >
-                <div className="flex flex-col gap-3 border-b border-warning/25 bg-warning/12 px-3 py-3 md:flex-row md:items-start md:justify-between">
-                  <div className="flex min-w-0 items-start gap-3">
-                    <span
-                      className="mt-1 h-2.5 w-2.5 flex-none rounded-full bg-warning ring-4 ring-warning/20"
-                      aria-hidden="true"
-                    />
-                    <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-semibold">
-                          {t("table.poolAttempts.terminal.title")}
+                        <Badge variant={statusMeta.variant}>{t(statusMeta.key)}</Badge>
+                        {!isPoolAttemptTerminal(attempt) ? (
+                          <Badge variant={phaseMeta.variant} data-testid="pool-attempt-phase-badge">
+                            {t(phaseMeta.key)}
+                          </Badge>
+                        ) : null}
+                        <span className="font-mono text-xs text-base-content/70">
+                          #{attempt.attemptIndex}
                         </span>
-                        <Badge variant={statusMeta.variant}>
-                          {t(statusMeta.key)}
-                        </Badge>
+                        <span className="text-sm font-medium">{accountLabel}</span>
                       </div>
-                      <p className="mt-1 max-w-3xl text-sm text-base-content/75">
-                        {t(
-                          poolAttemptTerminalDescriptionKey(
-                            attempt.failureKind ??
-                              record.poolAttemptTerminalReason,
-                          ),
-                        )}
-                      </p>
+                      <div className="mt-2 grid gap-2 text-sm md:grid-cols-2 xl:grid-cols-3">
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.retry")}
+                          </span>
+                          <span className="font-mono">
+                            {attempt.sameAccountRetryIndex}/{attempt.distinctAccountIndex}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.proxy")}
+                          </span>
+                          <span
+                            className={cn(
+                              "min-w-0 truncate whitespace-nowrap",
+                              proxyBindingDisplay.resolved ? "font-medium" : "font-mono",
+                            )}
+                            title={proxyBindingDisplay.title}
+                            data-testid="pool-attempt-proxy-value"
+                          >
+                            {proxyBindingDisplay.value}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.upstreamHttpStatus")}
+                          </span>
+                          <span className="font-mono">{httpStatusValue}</span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.downstreamHttpStatus")}
+                          </span>
+                          <span className="font-mono">{downstreamHttpStatusValue}</span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.failureKind")}
+                          </span>
+                          <span className="break-all font-mono">
+                            {formatOptionalText(attempt.failureKind)}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.connectLatency")}
+                          </span>
+                          <span className="font-mono">
+                            {formatMilliseconds(attempt.connectLatencyMs)}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.firstByteLatency")}
+                          </span>
+                          <span className="font-mono">
+                            {formatMilliseconds(attempt.firstByteLatencyMs)}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.streamLatency")}
+                          </span>
+                          <span className="font-mono">
+                            {formatMilliseconds(attempt.streamLatencyMs)}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.startedAt")}
+                          </span>
+                          <span className="font-mono">
+                            {formatDetailTimestamp(attempt.startedAt)}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.finishedAt")}
+                          </span>
+                          <span className="font-mono">
+                            {formatDetailTimestamp(attempt.finishedAt)}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.upstreamRequestId")}
+                          </span>
+                          <span className="break-all font-mono">
+                            {formatOptionalText(attempt.upstreamRequestId)}
+                          </span>
+                        </div>
+                      </div>
+                      {attempt.errorMessage?.trim() ? (
+                        <div
+                          className="mt-2 flex flex-col gap-1"
+                          data-testid="pool-attempt-upstream-error"
+                        >
+                          <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.upstreamErrorMessage")}
+                          </span>
+                          <pre className="whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
+                            {attempt.errorMessage}
+                          </pre>
+                        </div>
+                      ) : null}
+                      {attempt.downstreamErrorMessage?.trim() ? (
+                        <div
+                          className="mt-2 flex flex-col gap-1"
+                          data-testid="pool-attempt-downstream-error"
+                        >
+                          <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
+                            {t("table.poolAttempts.downstreamErrorMessage")}
+                          </span>
+                          <pre className="whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
+                            {attempt.downstreamErrorMessage}
+                          </pre>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+            {syntheticTerminalAttempts?.map((attempt) => {
+              const statusMeta = poolAttemptStatusMeta(attempt.status);
+              const accountLabel = formatPoolAttemptAccountLabel(attempt);
+              const httpStatusValue = formatOptionalStatusCode(attempt.httpStatus);
+              const distinctAccountValue =
+                attempt.distinctAccountIndex > 0
+                  ? String(attempt.distinctAccountIndex)
+                  : record.poolDistinctAccountCount != null
+                    ? String(record.poolDistinctAccountCount)
+                    : undefined;
+
+              return (
+                <div
+                  key={`terminal-${attempt.id}-${attempt.attemptIndex}`}
+                  className="overflow-hidden rounded-xl border border-warning/40 bg-warning/10 shadow-sm"
+                  data-testid="pool-attempt-terminal-record"
+                >
+                  <div className="flex flex-col gap-3 border-b border-warning/25 bg-warning/12 px-3 py-3 md:flex-row md:items-start md:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <span
+                        className="mt-1 h-2.5 w-2.5 flex-none rounded-full bg-warning ring-4 ring-warning/20"
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-semibold">
+                            {t("table.poolAttempts.terminal.title")}
+                          </span>
+                          <Badge variant={statusMeta.variant}>{t(statusMeta.key)}</Badge>
+                        </div>
+                        <p className="mt-1 max-w-3xl text-sm text-base-content/75">
+                          {t(
+                            poolAttemptTerminalDescriptionKey(
+                              attempt.failureKind ?? record.poolAttemptTerminalReason,
+                            ),
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                    <Badge variant="secondary" className="w-fit">
+                      {t("table.poolAttempts.terminal.notDispatched")}
+                    </Badge>
+                  </div>
+                  <div className="grid gap-2 p-3 text-sm md:grid-cols-2 xl:grid-cols-3">
+                    <div className="rounded-lg border border-warning/20 bg-base-100/55 px-3 py-2">
+                      <span className="block text-xs uppercase tracking-wide text-base-content/60">
+                        {t("table.poolAttempts.terminal.realAttempts")}
+                      </span>
+                      <span className="mt-1 block font-mono text-base font-semibold">
+                        {String(realAttempts?.length ?? 0)}
+                      </span>
+                    </div>
+                    <div className="rounded-lg border border-warning/20 bg-base-100/55 px-3 py-2">
+                      <span className="block text-xs uppercase tracking-wide text-base-content/60">
+                        {t("table.poolAttempts.terminal.distinctAccounts")}
+                      </span>
+                      <span className="mt-1 block font-mono text-base font-semibold">
+                        {formatOptionalText(distinctAccountValue)}
+                      </span>
+                    </div>
+                    <div className="rounded-lg border border-base-300/70 bg-base-100/45 px-3 py-2">
+                      <span className="block text-xs uppercase tracking-wide text-base-content/60">
+                        {t("table.poolAttempts.terminal.previousAccount")}
+                      </span>
+                      <span className="mt-1 block break-all">{accountLabel}</span>
+                    </div>
+                    <div className="rounded-lg border border-base-300/70 bg-base-100/45 px-3 py-2">
+                      <span className="block text-xs uppercase tracking-wide text-base-content/60">
+                        {t("table.poolAttempts.terminal.previousHttpStatus")}
+                      </span>
+                      <span className="mt-1 block font-mono">{httpStatusValue}</span>
+                    </div>
+                    <div className="rounded-lg border border-base-300/70 bg-base-100/45 px-3 py-2 md:col-span-2 xl:col-span-1">
+                      <span className="block text-xs uppercase tracking-wide text-base-content/60">
+                        {t("table.poolAttempts.terminal.reason")}
+                      </span>
+                      <span className="mt-1 block break-all font-mono">
+                        {formatOptionalText(attempt.failureKind)}
+                      </span>
                     </div>
                   </div>
-                  <Badge variant="secondary" className="w-fit">
-                    {t("table.poolAttempts.terminal.notDispatched")}
-                  </Badge>
+                  {attempt.errorMessage?.trim() ? (
+                    <div
+                      className="border-t border-warning/20 bg-base-100/35 px-3 py-2"
+                      data-testid="pool-attempt-terminal-error"
+                    >
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
+                        {t("table.poolAttempts.terminal.previousError")}
+                      </span>
+                      <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
+                        {attempt.errorMessage}
+                      </pre>
+                    </div>
+                  ) : null}
                 </div>
-                <div className="grid gap-2 p-3 text-sm md:grid-cols-2 xl:grid-cols-3">
-                  <div className="rounded-lg border border-warning/20 bg-base-100/55 px-3 py-2">
-                    <span className="block text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.terminal.realAttempts")}
-                    </span>
-                    <span className="mt-1 block font-mono text-base font-semibold">
-                      {String(realAttempts?.length ?? 0)}
-                    </span>
-                  </div>
-                  <div className="rounded-lg border border-warning/20 bg-base-100/55 px-3 py-2">
-                    <span className="block text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.terminal.distinctAccounts")}
-                    </span>
-                    <span className="mt-1 block font-mono text-base font-semibold">
-                      {formatOptionalText(distinctAccountValue)}
-                    </span>
-                  </div>
-                  <div className="rounded-lg border border-base-300/70 bg-base-100/45 px-3 py-2">
-                    <span className="block text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.terminal.previousAccount")}
-                    </span>
-                    <span className="mt-1 block break-all">{accountLabel}</span>
-                  </div>
-                  <div className="rounded-lg border border-base-300/70 bg-base-100/45 px-3 py-2">
-                    <span className="block text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.terminal.previousHttpStatus")}
-                    </span>
-                    <span className="mt-1 block font-mono">
-                      {httpStatusValue}
-                    </span>
-                  </div>
-                  <div className="rounded-lg border border-base-300/70 bg-base-100/45 px-3 py-2 md:col-span-2 xl:col-span-1">
-                    <span className="block text-xs uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.terminal.reason")}
-                    </span>
-                    <span className="mt-1 block break-all font-mono">
-                      {formatOptionalText(attempt.failureKind)}
-                    </span>
-                  </div>
-                </div>
-                {attempt.errorMessage?.trim() ? (
-                  <div
-                    className="border-t border-warning/20 bg-base-100/35 px-3 py-2"
-                    data-testid="pool-attempt-terminal-error"
-                  >
-                    <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
-                      {t("table.poolAttempts.terminal.previousError")}
-                    </span>
-                    <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
-                      {attempt.errorMessage}
-                    </pre>
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      ) : isLoadingAttempts ? (
-        <div
-          className="inline-flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-200/45 px-3 py-2 text-sm text-base-content/70"
-          data-testid="pool-attempts-loading"
-        >
-          <Spinner size="sm" aria-label={t("table.poolAttempts.loading")} />
-          <span>{t("table.poolAttempts.loading")}</span>
-        </div>
-      ) : (
-        <div
-          className="rounded-lg border border-base-300/70 bg-base-200/45 px-3 py-2 text-sm text-base-content/70"
-          data-testid="pool-attempts-empty"
-        >
-          {t("table.poolAttempts.empty")}
-        </div>
-      )}
+              );
+            })}
+          </div>
+        ) : isLoadingAttempts ? (
+          <div
+            className="inline-flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-200/45 px-3 py-2 text-sm text-base-content/70"
+            data-testid="pool-attempts-loading"
+          >
+            <Spinner size="sm" aria-label={t("table.poolAttempts.loading")} />
+            <span>{t("table.poolAttempts.loading")}</span>
+          </div>
+        ) : (
+          <div
+            className="rounded-lg border border-base-300/70 bg-base-200/45 px-3 py-2 text-sm text-base-content/70"
+            data-testid="pool-attempts-empty"
+          >
+            {t("table.poolAttempts.empty")}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function resolveUnavailableResponseBodyMessage(
-  reason: string | null | undefined,
-  t: Translator,
-) {
+function resolveUnavailableResponseBodyMessage(reason: string | null | undefined, t: Translator) {
   const normalized = reason?.trim().toLowerCase() ?? "";
-  if (normalized === "not_abnormal")
-    return t("table.responseBody.unavailable.notAbnormal");
-  if (normalized === "detail_pruned")
-    return t("table.responseBody.unavailable.detailPruned");
+  if (normalized === "not_abnormal") return t("table.responseBody.unavailable.notAbnormal");
+  if (normalized === "detail_pruned") return t("table.responseBody.unavailable.detailPruned");
   if (normalized.startsWith("raw_file_missing"))
     return t("table.responseBody.unavailable.rawFileMissing");
   if (normalized.startsWith("raw_file_unreadable"))
     return t("table.responseBody.unavailable.rawFileUnreadable");
-  if (normalized.startsWith("preview_only"))
-    return t("table.responseBody.unavailable.previewOnly");
-  if (normalized.startsWith("missing_body"))
-    return t("table.responseBody.unavailable.missingBody");
+  if (normalized.startsWith("preview_only")) return t("table.responseBody.unavailable.previewOnly");
+  if (normalized.startsWith("missing_body")) return t("table.responseBody.unavailable.missingBody");
   return t("table.responseBody.unavailable.generic");
 }
 
@@ -2032,10 +1853,7 @@ function getDetailPair(pairByKey: Map<string, DetailPair>, key: string) {
   return pairByKey.get(key);
 }
 
-function collectDetailPairs(
-  pairByKey: Map<string, DetailPair>,
-  keys: string[],
-) {
+function collectDetailPairs(pairByKey: Map<string, DetailPair>, keys: string[]) {
   return keys
     .map((key) => getDetailPair(pairByKey, key))
     .filter((pair): pair is DetailPair => pair != null);
@@ -2054,10 +1872,7 @@ function DetailSection({
 }) {
   return (
     <section
-      className={cn(
-        "rounded-xl border border-base-300/70 bg-base-100/52 p-3",
-        className,
-      )}
+      className={cn("rounded-xl border border-base-300/70 bg-base-100/52 p-3", className)}
       data-testid={testId}
     >
       <h4 className="text-xs font-semibold text-base-content/82">{title}</h4>
@@ -2103,9 +1918,7 @@ function DetailHeroFields({ pairs }: { pairs: DetailPair[] }) {
           key={entry.key}
           className="min-w-0 rounded-lg border border-base-300/60 bg-base-200/42 px-3 py-2"
         >
-          <dt className="text-[11px] leading-4 text-base-content/58">
-            {entry.label}
-          </dt>
+          <dt className="text-[11px] leading-4 text-base-content/58">{entry.label}</dt>
           <dd className="mt-1 min-w-0 break-words font-mono text-sm font-semibold leading-5 text-base-content/90">
             {entry.value}
           </dd>
@@ -2115,11 +1928,7 @@ function DetailHeroFields({ pairs }: { pairs: DetailPair[] }) {
   );
 }
 
-function TimingRail({
-  timingPairs,
-}: {
-  timingPairs: Array<{ label: string; value: string }>;
-}) {
+function TimingRail({ timingPairs }: { timingPairs: Array<{ label: string; value: string }> }) {
   return (
     <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
       {timingPairs.map((entry, index) => {
@@ -2129,9 +1938,7 @@ function TimingRail({
             key={entry.label}
             className={cn(
               "rounded-lg border px-3 py-2",
-              isTotal
-                ? "border-primary/24 bg-primary/8"
-                : "border-base-300/60 bg-base-200/42",
+              isTotal ? "border-primary/24 bg-primary/8" : "border-base-300/60 bg-base-200/42",
             )}
           >
             <div className="flex items-center gap-2">
@@ -2142,16 +1949,12 @@ function TimingRail({
                 )}
                 aria-hidden
               />
-              <span className="min-w-0 truncate text-xs text-base-content/60">
-                {entry.label}
-              </span>
+              <span className="min-w-0 truncate text-xs text-base-content/60">{entry.label}</span>
             </div>
             <div
               className={cn(
                 "mt-1 font-mono text-sm leading-5",
-                isTotal
-                  ? "font-semibold text-primary"
-                  : "text-base-content/88",
+                isTotal ? "font-semibold text-primary" : "text-base-content/88",
               )}
             >
               {entry.value}
@@ -2178,9 +1981,7 @@ function ErrorDetailBlock({
     <section
       className={cn(
         "rounded-xl border p-3",
-        tone === "error"
-          ? "border-error/25 bg-error/8"
-          : "border-base-300/70 bg-base-100/52",
+        tone === "error" ? "border-error/25 bg-error/8" : "border-base-300/70 bg-base-100/52",
       )}
       data-testid={testId}
     >
@@ -2190,13 +1991,7 @@ function ErrorDetailBlock({
   );
 }
 
-function DetailErrorText({
-  label,
-  children,
-}: {
-  label: string;
-  children: string;
-}) {
+function DetailErrorText({ label, children }: { label: string; children: string }) {
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
@@ -2243,13 +2038,11 @@ export function InvocationExpandedDetails({
   const canonicalUpstreamError = errorMessage.trim();
   const upstreamRawError = record.upstreamErrorMessage?.trim() ?? "";
   const downstreamErrorMessage = record.downstreamErrorMessage?.trim() ?? "";
-  const showUpstreamErrorSection = Boolean(
-    canonicalUpstreamError || upstreamRawError,
-  );
+  const showUpstreamErrorSection = Boolean(canonicalUpstreamError || upstreamRawError);
   const showDownstreamErrorSection = Boolean(
     downstreamErrorMessage ||
-    (typeof record.downstreamStatusCode === "number" &&
-      Number.isFinite(record.downstreamStatusCode)),
+      (typeof record.downstreamStatusCode === "number" &&
+        Number.isFinite(record.downstreamStatusCode)),
   );
   const showResponseBodySection =
     abnormalResponseBody != null ||
@@ -2301,13 +2094,7 @@ export function InvocationExpandedDetails({
   ]);
 
   return (
-    <div
-      id={detailId}
-      className={cn(
-        "flex flex-col gap-3",
-        size === "compact" ? "p-3" : "p-4",
-      )}
-    >
+    <div id={detailId} className={cn("flex flex-col gap-3", size === "compact" ? "p-3" : "p-4")}>
       {detailNotice ? (
         <div
           className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning"
@@ -2338,10 +2125,7 @@ export function InvocationExpandedDetails({
       </DetailSection>
 
       {showUpstreamErrorSection ? (
-        <ErrorDetailBlock
-          title={t("table.upstreamErrorDetailsTitle")}
-          tone="error"
-        >
+        <ErrorDetailBlock title={t("table.upstreamErrorDetailsTitle")} tone="error">
           {canonicalUpstreamError ? (
             <div data-testid="invocation-upstream-error-section">
               <DetailErrorText label={t("table.upstreamCanonicalErrorLabel")}>
@@ -2386,16 +2170,9 @@ export function InvocationExpandedDetails({
           testId="invocation-response-body-section"
         >
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <span className="text-xs text-base-content/62">
-              {t("table.responseBody.title")}
-            </span>
+            <span className="text-xs text-base-content/62">{t("table.responseBody.title")}</span>
             {showFullDetailsAction && onOpenFullDetails ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={onOpenFullDetails}
-              >
+              <Button type="button" variant="outline" size="sm" onClick={onOpenFullDetails}>
                 {t("table.responseBody.openFullDetails")}
               </Button>
             ) : null}
@@ -2418,8 +2195,7 @@ export function InvocationExpandedDetails({
                 error: abnormalResponseBodyError,
               })}
             </div>
-          ) : abnormalResponseBody?.available &&
-            abnormalResponseBody.previewText ? (
+          ) : abnormalResponseBody?.available && abnormalResponseBody.previewText ? (
             <>
               <pre
                 className="max-h-72 overflow-auto rounded-lg border border-base-300/70 bg-base-100/70 p-3 whitespace-pre-wrap break-words font-mono text-sm"
@@ -2438,22 +2214,13 @@ export function InvocationExpandedDetails({
               className="rounded-lg border border-base-300/70 bg-base-200/45 px-3 py-2 text-sm text-base-content/70"
               data-testid="invocation-response-body-unavailable"
             >
-              {resolveUnavailableResponseBodyMessage(
-                abnormalResponseBody.unavailableReason,
-                t,
-              )}
+              {resolveUnavailableResponseBodyMessage(abnormalResponseBody.unavailableReason, t)}
             </div>
           ) : null}
         </DetailSection>
       ) : null}
 
-      {renderPoolAttemptsContent(
-        record,
-        poolAttemptsState,
-        poolAttemptProxyBindingNodesByKey,
-        t,
-      )}
-
+      {renderPoolAttemptsContent(record, poolAttemptsState, poolAttemptProxyBindingNodesByKey, t)}
     </div>
   );
 }

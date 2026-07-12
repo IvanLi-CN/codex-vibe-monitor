@@ -1,9 +1,6 @@
-import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type {
-  GroupAccountRoutingRule,
-  PoolRoutingTimeoutSettings,
-} from "../../lib/api";
+import { useState } from "react";
+import type { GroupAccountRoutingRule, PoolRoutingTimeoutSettings } from "../../lib/api";
 import {
   buildDefaultStatusChangeReasons,
   type StatusChangeReasonCode,
@@ -45,12 +42,9 @@ function DialogHarness({
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-base-content/45">
             Shared Routing Rules
           </p>
-          <h1 className="text-2xl font-semibold">
-            Group/account routing rule dialog
-          </h1>
+          <h1 className="text-2xl font-semibold">Group/account routing rule dialog</h1>
           <p className="max-w-2xl text-sm leading-6 text-base-content/70">
-            Stable preview for the policy editor shared by group and account
-            routing.
+            Stable preview for the policy editor shared by group and account routing.
           </p>
         </div>
         <GroupAccountRoutingRuleDialog
@@ -62,21 +56,13 @@ function DialogHarness({
           effectiveTimeouts={effectiveTimeouts}
           timeoutFieldSources={{
             responsesFirstByteTimeoutSecs:
-              rule?.timeouts?.responsesFirstByteTimeoutSecs != null
-                ? "group"
-                : "root",
+              rule?.timeouts?.responsesFirstByteTimeoutSecs != null ? "group" : "root",
             compactFirstByteTimeoutSecs:
-              rule?.timeouts?.compactFirstByteTimeoutSecs != null
-                ? "group"
-                : "root",
+              rule?.timeouts?.compactFirstByteTimeoutSecs != null ? "group" : "root",
             responsesStreamTimeoutSecs:
-              rule?.timeouts?.responsesStreamTimeoutSecs != null
-                ? "group"
-                : "root",
+              rule?.timeouts?.responsesStreamTimeoutSecs != null ? "group" : "root",
             compactStreamTimeoutSecs:
-              rule?.timeouts?.compactStreamTimeoutSecs != null
-                ? "group"
-                : "root",
+              rule?.timeouts?.compactStreamTimeoutSecs != null ? "group" : "root",
           }}
           onClose={() => setOpen(false)}
           onSubmit={() => undefined}
@@ -138,15 +124,13 @@ function DialogHarness({
             statusChangeReasonToggleEnabled: "On",
             statusChangeReasonToggleDisabled: "Off",
             upstream429Retry: "Upstream 429 retry",
-            upstream429RetryHint:
-              "Choose 0 to disable retries before cooldown and failover.",
+            upstream429RetryHint: "Choose 0 to disable retries before cooldown and failover.",
             upstream429RetryToggle: "Retry after upstream 429",
             upstream429RetryCount: "Retry count",
             upstream429RetryCountOnce: "1 retry",
             upstream429RetryCountMany: (count) => `${count} retries`,
             timeoutSectionTitle: "Request path timeouts",
-            timeoutSectionHint:
-              "Leave a field empty to inherit the current upstream default.",
+            timeoutSectionHint: "Leave a field empty to inherit the current upstream default.",
             timeoutResponsesFirstByte: "Standard response first byte timeout",
             timeoutCompactFirstByte: "Compact response first byte timeout",
             timeoutResponsesStream: "Standard stream completion timeout",

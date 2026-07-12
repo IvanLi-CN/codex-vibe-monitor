@@ -7,6 +7,10 @@ mod crud_group_notes;
 mod external_api_integration;
 mod imports_jobs_sse;
 mod maintenance_dispatch;
+#[expect(
+    clippy::too_many_arguments,
+    reason = "OAuth callback persistence adapters mirror session metadata fields."
+)]
 mod oauth_sessions_callbacks;
 mod routing;
 mod sync;

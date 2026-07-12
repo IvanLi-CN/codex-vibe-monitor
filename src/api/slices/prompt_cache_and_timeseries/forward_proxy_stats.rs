@@ -1,12 +1,6 @@
 use super::*;
 use anyhow::anyhow;
-use chrono::LocalResult;
 use chrono::Offset;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use sqlx::FromRow;
-use tokio::sync::{broadcast, watch};
-use tracing::{debug, warn};
 
 pub(crate) async fn fetch_forward_proxy_live_stats(
     State(state): State<Arc<AppState>>,

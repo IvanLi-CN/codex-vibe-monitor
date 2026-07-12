@@ -3,7 +3,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { DashboardWorkingConversationCardModel } from "../lib/dashboardWorkingConversations";
 import {
   DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
   getDashboardPerformanceDiagnosticsSnapshot,
@@ -12,6 +11,7 @@ import {
   recordTodaySummaryRefresh,
   resetDashboardPerformanceDiagnostics,
 } from "../lib/dashboardPerformanceDiagnostics";
+import type { DashboardWorkingConversationCardModel } from "../lib/dashboardWorkingConversations";
 import DashboardPage from "./Dashboard";
 
 const hookMocks = vi.hoisted(() => ({
@@ -90,23 +90,13 @@ vi.mock("../features/stats/StatsCards", () => ({
     error?: string | null;
   }) => (
     <div data-testid="stats-cards">
-      {loading
-        ? "loading"
-        : error
-          ? `error:${error}`
-          : `total:${stats?.totalCount ?? 0}`}
+      {loading ? "loading" : error ? `error:${error}` : `total:${stats?.totalCount ?? 0}`}
     </div>
   ),
 }));
 
 vi.mock("../features/dashboard/Last24hTenMinuteHeatmap", () => ({
-  Last24hTenMinuteHeatmap: ({
-    metric,
-    showHeader,
-  }: {
-    metric?: string;
-    showHeader?: boolean;
-  }) => (
+  Last24hTenMinuteHeatmap: ({ metric, showHeader }: { metric?: string; showHeader?: boolean }) => (
     <div data-testid="heatmap-24h">
       {`metric:${metric ?? "unset"};header:${String(showHeader)}`}
     </div>
@@ -158,9 +148,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
     <div data-testid="dashboard-working-conversations-section">
       {cards.map((card) => card.conversationSequenceId).join(",")}
       <span data-testid="dashboard-working-conversations-endpoints">
-        {cards
-          .map((card) => card.currentInvocation.preview.endpoint ?? "")
-          .join(",")}
+        {cards.map((card) => card.currentInvocation.preview.endpoint ?? "").join(",")}
       </span>
       {cards[0] ? (
         <>
@@ -200,9 +188,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
           <button
             type="button"
             data-testid="dashboard-open-account"
-            onClick={() =>
-              onOpenUpstreamAccount?.(77, "section-account@example.com")
-            }
+            onClick={() => onOpenUpstreamAccount?.(77, "section-account@example.com")}
           >
             open account
           </button>
@@ -243,25 +229,15 @@ vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
   }) =>
     open ? (
       <div data-testid="dashboard-conversation-history-drawer-mock">
-        <span data-testid="dashboard-conversation-drawer-key">
-          {conversationKey}
-        </span>
-        <span data-testid="dashboard-conversation-drawer-label">
-          {conversationLabel}
-        </span>
-        <button
-          type="button"
-          data-testid="dashboard-conversation-drawer-close"
-          onClick={onClose}
-        >
+        <span data-testid="dashboard-conversation-drawer-key">{conversationKey}</span>
+        <span data-testid="dashboard-conversation-drawer-label">{conversationLabel}</span>
+        <button type="button" data-testid="dashboard-conversation-drawer-close" onClick={onClose}>
           close conversation drawer
         </button>
         <button
           type="button"
           data-testid="dashboard-conversation-drawer-open-account"
-          onClick={() =>
-            onOpenUpstreamAccount?.(99, "conversation-account@example.com")
-          }
+          onClick={() => onOpenUpstreamAccount?.(99, "conversation-account@example.com")}
         >
           open account from conversation drawer
         </button>
@@ -290,19 +266,13 @@ vi.mock("../features/dashboard/DashboardInvocationDetailDrawer", () => ({
         <span data-testid="dashboard-invocation-drawer-selection">
           {selection?.invocation.record.invokeId ?? "none"}
         </span>
-        <button
-          type="button"
-          data-testid="dashboard-invocation-drawer-close"
-          onClick={onClose}
-        >
+        <button type="button" data-testid="dashboard-invocation-drawer-close" onClick={onClose}>
           close invocation drawer
         </button>
         <button
           type="button"
           data-testid="dashboard-invocation-drawer-open-account"
-          onClick={() =>
-            onOpenUpstreamAccount?.(88, "drawer-account@example.com")
-          }
+          onClick={() => onOpenUpstreamAccount?.(88, "drawer-account@example.com")}
         >
           open account from invocation drawer
         </button>
@@ -324,17 +294,9 @@ vi.mock("./account-pool/UpstreamAccounts", () => ({
   }) =>
     open ? (
       <div data-testid="shared-upstream-account-detail-drawer-mock">
-        <span data-testid="shared-upstream-account-drawer-account-id">
-          {accountId}
-        </span>
-        <span data-testid="shared-upstream-account-drawer-tab">
-          {initialTab ?? "overview"}
-        </span>
-        <button
-          type="button"
-          data-testid="shared-upstream-account-drawer-close"
-          onClick={onClose}
-        >
+        <span data-testid="shared-upstream-account-drawer-account-id">{accountId}</span>
+        <span data-testid="shared-upstream-account-drawer-tab">{initialTab ?? "overview"}</span>
+        <button type="button" data-testid="shared-upstream-account-drawer-close" onClick={onClose}>
           close account drawer
         </button>
       </div>
@@ -502,8 +464,7 @@ function createWorkingConversationCard(options?: {
         cost: 0.01,
         proxyDisplayName: "tokyo-edge-01",
         upstreamAccountId: 77,
-        upstreamAccountName:
-          options?.upstreamAccountName ?? "section-account@example.com",
+        upstreamAccountName: options?.upstreamAccountName ?? "section-account@example.com",
         endpoint: options?.endpoint ?? "/v1/responses",
       },
       record: {
@@ -554,37 +515,29 @@ describe("DashboardPage", () => {
     render(<DashboardPage />);
 
     expect(host?.textContent).toContain("活动总览");
-    expect(
-      host?.querySelectorAll('[data-testid="dashboard-activity-overview"]'),
-    ).toHaveLength(1);
+    expect(host?.querySelectorAll('[data-testid="dashboard-activity-overview"]')).toHaveLength(1);
     expect(
       host
         ?.querySelector('[data-testid="dashboard-activity-range-today"]')
         ?.getAttribute("data-active"),
     ).toBe("true");
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
+      "surface:false;header:false;badge:false",
+    );
     expect(
-      host?.querySelector('[data-testid="today-stats-overview-mock"]')
-        ?.textContent,
-    ).toBe("surface:false;header:false;badge:false");
-    expect(
-      host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')
-        ?.textContent,
+      host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,
     ).toBe("metric:totalCount");
     expect(host?.querySelector('[data-testid="stats-cards"]')).toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-working-conversations-section"]',
-      )?.textContent,
+      host?.querySelector('[data-testid="dashboard-working-conversations-section"]')?.textContent,
     ).toContain("WC-ABCD12");
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-working-conversations-endpoints"]',
-      )?.textContent,
+      host?.querySelector('[data-testid="dashboard-working-conversations-endpoints"]')?.textContent,
     ).toContain("/v1/responses");
 
-    const historyButton = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((button) => button.textContent === "历史");
+    const historyButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (button) => button.textContent === "历史",
+    );
     if (!(historyButton instanceof HTMLButtonElement)) {
       throw new Error("missing history range button");
     }
@@ -593,13 +546,13 @@ describe("DashboardPage", () => {
       historyButton.click();
     });
 
-    expect(
-      host?.querySelector('[data-testid="usage-calendar"]')?.textContent,
-    ).toBe("metric:totalCount;surface:false;toggle:false;meta:false");
+    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
+      "metric:totalCount;surface:false;toggle:false;meta:false",
+    );
 
-    const yesterdayButton = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((button) => button.textContent === "昨日");
+    const yesterdayButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (button) => button.textContent === "昨日",
+    );
     if (!(yesterdayButton instanceof HTMLButtonElement)) {
       throw new Error("missing yesterday range button");
     }
@@ -630,23 +583,16 @@ describe("DashboardPage", () => {
 
     render(<DashboardPage />);
 
-    expect(
-      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
-    ).toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-performance-diagnostics"]')).toBeNull();
 
     act(() => {
-      window.localStorage.setItem(
-        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
-        "1",
-      );
+      window.localStorage.setItem(DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY, "1");
       resetDashboardPerformanceDiagnostics();
       publishWorkingConversationPatchMetrics(
         new Map([
           [
             "pck-drawer-switch",
-            new Map([
-              ["invoke-dashboard-current", { totalTokens: 120, cost: 0.01 }],
-            ]),
+            new Map([["invoke-dashboard-current", { totalTokens: 120, cost: 0.01 }]]),
           ],
         ]),
       );
@@ -654,9 +600,7 @@ describe("DashboardPage", () => {
       recordTodayChartRender();
     });
 
-    expect(
-      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
-    ).not.toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-performance-diagnostics"]')).not.toBeNull();
     expect(
       host?.querySelector(
         '[data-testid="dashboard-performance-diagnostics-working-conversations-patch-bucket-count"]',
@@ -694,30 +638,19 @@ describe("DashboardPage", () => {
 
     render(<DashboardPage />);
 
-    expect(
-      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
-    ).toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-performance-diagnostics"]')).toBeNull();
 
     act(() => {
-      window.localStorage.setItem(
-        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
-        "1",
-      );
+      window.localStorage.setItem(DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY, "1");
     });
 
-    expect(
-      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
-    ).not.toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-performance-diagnostics"]')).not.toBeNull();
 
     act(() => {
-      window.localStorage.removeItem(
-        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
-      );
+      window.localStorage.removeItem(DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY);
     });
 
-    expect(
-      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
-    ).toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-performance-diagnostics"]')).toBeNull();
   });
 
   it("starts diagnostics counters from zero after enabling on a long-lived dashboard", () => {
@@ -737,22 +670,14 @@ describe("DashboardPage", () => {
 
     act(() => {
       publishWorkingConversationPatchMetrics(
-        new Map([
-          [
-            "stale-pck",
-            new Map([["stale-invoke", { totalTokens: 64, cost: 0.02 }]]),
-          ],
-        ]),
+        new Map([["stale-pck", new Map([["stale-invoke", { totalTokens: 64, cost: 0.02 }]])]]),
       );
       recordTodaySummaryRefresh("today");
       recordTodayChartRender("stale-chart");
     });
 
     act(() => {
-      window.localStorage.setItem(
-        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
-        "1",
-      );
+      window.localStorage.setItem(DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY, "1");
     });
 
     expect(
@@ -778,10 +703,7 @@ describe("DashboardPage", () => {
   });
 
   it("dedupes identical chart render signatures in diagnostics", () => {
-    window.localStorage.setItem(
-      DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
-      "1",
-    );
+    window.localStorage.setItem(DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY, "1");
     resetDashboardPerformanceDiagnostics();
 
     act(() => {
@@ -790,9 +712,7 @@ describe("DashboardPage", () => {
       recordTodayChartRender("today:updated");
     });
 
-    expect(
-      getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount,
-    ).toBe(2);
+    expect(getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount).toBe(2);
   });
 
   it("switches between conversation, invocation, and account drawers from dashboard interactions", () => {
@@ -823,27 +743,19 @@ describe("DashboardPage", () => {
     });
 
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-conversation-history-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
     ).not.toBeNull();
     expect(
-      host?.querySelector('[data-testid="dashboard-conversation-drawer-key"]')
-        ?.textContent,
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-key"]')?.textContent,
     ).toBe("pck-drawer-switch");
     expect(
-      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')
-        ?.textContent,
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
     ).toBe("ABCD12");
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-invocation-detail-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-invocation-detail-drawer-mock"]'),
     ).toBeNull();
 
-    const openInvocationButton = host?.querySelector(
-      '[data-testid="dashboard-open-invocation"]',
-    );
+    const openInvocationButton = host?.querySelector('[data-testid="dashboard-open-invocation"]');
     if (!(openInvocationButton instanceof HTMLButtonElement)) {
       throw new Error("missing invocation trigger");
     }
@@ -853,24 +765,16 @@ describe("DashboardPage", () => {
     });
 
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-conversation-history-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
     ).toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-invocation-detail-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-invocation-detail-drawer-mock"]'),
     ).not.toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-invocation-drawer-selection"]',
-      )?.textContent,
+      host?.querySelector('[data-testid="dashboard-invocation-drawer-selection"]')?.textContent,
     ).toBe("invoke-dashboard-current");
     expect(
-      host?.querySelector(
-        '[data-testid="shared-upstream-account-detail-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="shared-upstream-account-detail-drawer-mock"]'),
     ).toBeNull();
 
     const openAccountFromSectionButton = host?.querySelector(
@@ -885,23 +789,16 @@ describe("DashboardPage", () => {
     });
 
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-conversation-history-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
     ).toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-invocation-detail-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-invocation-detail-drawer-mock"]'),
     ).toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="shared-upstream-account-drawer-account-id"]',
-      )?.textContent,
+      host?.querySelector('[data-testid="shared-upstream-account-drawer-account-id"]')?.textContent,
     ).toBe("77");
     expect(
-      host?.querySelector('[data-testid="shared-upstream-account-drawer-tab"]')
-        ?.textContent,
+      host?.querySelector('[data-testid="shared-upstream-account-drawer-tab"]')?.textContent,
     ).toBe("overview");
 
     act(() => {
@@ -909,14 +806,10 @@ describe("DashboardPage", () => {
     });
 
     expect(
-      host?.querySelector(
-        '[data-testid="shared-upstream-account-detail-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="shared-upstream-account-detail-drawer-mock"]'),
     ).toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-invocation-detail-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-invocation-detail-drawer-mock"]'),
     ).not.toBeNull();
 
     act(() => {
@@ -924,22 +817,16 @@ describe("DashboardPage", () => {
     });
 
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-invocation-detail-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-invocation-detail-drawer-mock"]'),
     ).toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-conversation-history-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
     ).not.toBeNull();
 
     const openAccountFromConversationDrawerButton = host?.querySelector(
       '[data-testid="dashboard-conversation-drawer-open-account"]',
     );
-    if (
-      !(openAccountFromConversationDrawerButton instanceof HTMLButtonElement)
-    ) {
+    if (!(openAccountFromConversationDrawerButton instanceof HTMLButtonElement)) {
       throw new Error("missing conversation drawer account trigger");
     }
 
@@ -948,14 +835,10 @@ describe("DashboardPage", () => {
     });
 
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-conversation-history-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
     ).toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="shared-upstream-account-drawer-account-id"]',
-      )?.textContent,
+      host?.querySelector('[data-testid="shared-upstream-account-drawer-account-id"]')?.textContent,
     ).toBe("99");
 
     act(() => {
@@ -974,14 +857,10 @@ describe("DashboardPage", () => {
     });
 
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-invocation-detail-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-invocation-detail-drawer-mock"]'),
     ).toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="shared-upstream-account-drawer-account-id"]',
-      )?.textContent,
+      host?.querySelector('[data-testid="shared-upstream-account-drawer-account-id"]')?.textContent,
     ).toBe("88");
 
     act(() => {
@@ -1000,14 +879,10 @@ describe("DashboardPage", () => {
     });
 
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-conversation-history-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
     ).toBeNull();
     expect(
-      host?.querySelector(
-        '[data-testid="shared-upstream-account-drawer-account-id"]',
-      )?.textContent,
+      host?.querySelector('[data-testid="shared-upstream-account-drawer-account-id"]')?.textContent,
     ).toBe("99");
   });
 
@@ -1038,18 +913,14 @@ describe("DashboardPage", () => {
     });
 
     expect(
-      host?.querySelector(
-        '[data-testid="shared-upstream-account-drawer-account-id"]',
-      )?.textContent,
+      host?.querySelector('[data-testid="shared-upstream-account-drawer-account-id"]')?.textContent,
     ).toBe("77");
     expect(
-      host?.querySelector('[data-testid="shared-upstream-account-drawer-tab"]')
-        ?.textContent,
+      host?.querySelector('[data-testid="shared-upstream-account-drawer-tab"]')?.textContent,
     ).toBe("routing");
-    expect(
-      host?.querySelector('[data-testid="dashboard-location-search"]')
-        ?.textContent,
-    ).toBe("?upstreamAccountId=77&upstreamAccountTab=routing");
+    expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
+      "?upstreamAccountId=77&upstreamAccountTab=routing",
+    );
 
     const closeAccountDrawerButton = host?.querySelector(
       '[data-testid="shared-upstream-account-drawer-close"]',
@@ -1063,14 +934,9 @@ describe("DashboardPage", () => {
     });
 
     expect(
-      host?.querySelector(
-        '[data-testid="shared-upstream-account-detail-drawer-mock"]',
-      ),
+      host?.querySelector('[data-testid="shared-upstream-account-detail-drawer-mock"]'),
     ).toBeNull();
-    expect(
-      host?.querySelector('[data-testid="dashboard-location-search"]')
-        ?.textContent,
-    ).toBe("");
+    expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe("");
   });
 
   it("passes refresh target updates from the working conversations section back into the hook", () => {
@@ -1089,9 +955,7 @@ describe("DashboardPage", () => {
 
     render(<DashboardPage />);
 
-    const button = host?.querySelector(
-      '[data-testid="dashboard-set-refresh-target"]',
-    );
+    const button = host?.querySelector('[data-testid="dashboard-set-refresh-target"]');
     if (!(button instanceof HTMLButtonElement)) {
       throw new Error("missing refresh target trigger");
     }
@@ -1124,9 +988,7 @@ describe("DashboardPage", () => {
     render(<DashboardPage />);
 
     expect(
-      host?.querySelector(
-        '[data-testid="dashboard-working-conversations-endpoints"]',
-      )?.textContent,
+      host?.querySelector('[data-testid="dashboard-working-conversations-endpoints"]')?.textContent,
     ).toContain("/v1/responses/compact");
   });
 });

@@ -4,12 +4,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
 import {
   DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
   getDashboardPerformanceDiagnosticsSnapshot,
   resetDashboardPerformanceDiagnostics,
 } from "../../lib/dashboardPerformanceDiagnostics";
+import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
 import { buildTodayMinuteChartData } from "./dashboardTodayActivityChartData";
 
 let latestChartData: Array<Record<string, unknown>> = [];
@@ -35,10 +35,7 @@ vi.mock("recharts", () => ({
   ),
   CartesianGrid: () => <div data-testid="grid" />,
   XAxis: ({ domain }: { domain?: [number, number] }) => (
-    <div
-      data-testid="x-axis"
-      data-domain={domain == null ? "" : domain.join(":")}
-    />
+    <div data-testid="x-axis" data-domain={domain == null ? "" : domain.join(":")} />
   ),
   YAxis: ({
     yAxisId,
@@ -64,13 +61,8 @@ vi.mock("recharts", () => ({
   }) => {
     const point =
       latestChartData.find(
-        (item) =>
-          typeof item.inFlightCount === "number" &&
-          Number(item.inFlightCount) > 0,
-      ) ??
-      latestChartData.find(
-        (item) => typeof item.chartSuccessCount === "number",
-      );
+        (item) => typeof item.inFlightCount === "number" && Number(item.inFlightCount) > 0,
+      ) ?? latestChartData.find((item) => typeof item.chartSuccessCount === "number");
     return (
       <div data-testid="tooltip">
         {point
@@ -324,10 +316,7 @@ function setCompactViewport(matches: boolean) {
   };
 }
 
-function dispatchWheel(
-  element: HTMLElement,
-  init: WheelEventInit & { clientX?: number },
-) {
+function dispatchWheel(element: HTMLElement, init: WheelEventInit & { clientX?: number }) {
   const event = new WheelEvent("wheel", {
     bubbles: true,
     cancelable: true,
@@ -1040,11 +1029,19 @@ describe("DashboardTodayActivityChart", () => {
         />,
       );
 
-      expect(host?.querySelector('[data-testid="composed-chart"]')?.getAttribute("data-data-length")).toBe("72");
-      expect(host?.querySelectorAll('[data-testid="bar-series"][data-bar-size="4"]')).toHaveLength(4);
+      expect(
+        host?.querySelector('[data-testid="composed-chart"]')?.getAttribute("data-data-length"),
+      ).toBe("72");
+      expect(host?.querySelectorAll('[data-testid="bar-series"][data-bar-size="4"]')).toHaveLength(
+        4,
+      );
       expect(host?.querySelector('[data-testid="y-axis"][data-y-axis-id="latency"]')).toBeNull();
       expect(host?.querySelector('[data-testid="line-series"]')).toBeNull();
-      expect(host?.querySelector('[data-testid="y-axis"][data-y-axis-id="count"]')?.getAttribute("data-negative-tick")).toBe("-42");
+      expect(
+        host
+          ?.querySelector('[data-testid="y-axis"][data-y-axis-id="count"]')
+          ?.getAttribute("data-negative-tick"),
+      ).toBe("-42");
     } finally {
       restoreViewport();
     }
@@ -1069,7 +1066,9 @@ describe("DashboardTodayActivityChart", () => {
     expect(Number(section.dataset.visibleSpan)).toBeLessThan(1440);
     expect(Number(section.dataset.visibleStartIndex)).toBeGreaterThan(0);
     expect(Number(section.dataset.visibleEndIndex)).toBeLessThan(1439);
-    expect(Number(section.querySelector('[data-testid="bar-series"]')?.getAttribute("data-bar-size"))).toBeGreaterThan(1);
+    expect(
+      Number(section.querySelector('[data-testid="bar-series"]')?.getAttribute("data-bar-size")),
+    ).toBeGreaterThan(1);
     expect(latestChartData).toHaveLength(Number(section.dataset.visibleSpan));
 
     dispatchWheel(layer, { ctrlKey: true, deltaY: -5000, clientX: 500 });
@@ -1136,9 +1135,7 @@ describe("DashboardTodayActivityChart", () => {
       pointerId: 8,
     });
     await flushAnimationFrame();
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(
-      wheelPannedStart,
-    );
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(wheelPannedStart);
     expect(dragLayer().style.transform).toContain("translate3d");
 
     dispatchPointer(layer, "pointerup", {
@@ -1223,9 +1220,7 @@ describe("DashboardTodayActivityChart", () => {
       pointerId: 13,
     });
     await flushAnimationFrame();
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(
-      zoomedStart,
-    );
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(zoomedStart);
   });
 
   it("allows large diagonal pointer drags to pan with the horizontal component", async () => {
@@ -1265,9 +1260,7 @@ describe("DashboardTodayActivityChart", () => {
       pointerId: 14,
     });
     await flushAnimationFrame();
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(
-      zoomedStart,
-    );
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(zoomedStart);
   });
 
   it("pans when horizontal wheel intent dominates vertical drift", async () => {
@@ -1293,9 +1286,7 @@ describe("DashboardTodayActivityChart", () => {
 
     expect(event.defaultPrevented).toBe(true);
     await flushAnimationFrame();
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(
-      zoomedStart,
-    );
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(zoomedStart);
   });
 
   it("widens count bars as the viewport zooms in", async () => {
@@ -1352,9 +1343,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(
       latestChartData.every(
         (item) =>
-          typeof item.index === "number" &&
-          item.index >= visibleStart &&
-          item.index <= visibleEnd,
+          typeof item.index === "number" && item.index >= visibleStart && item.index <= visibleEnd,
       ),
     ).toBe(true);
   });
@@ -1382,14 +1371,8 @@ describe("DashboardTodayActivityChart", () => {
           rangeEnd: "2026-04-09 00:03:22",
           points: response.points.map((point) => ({
             ...point,
-            bucketStart: String(point.bucketStart).replace(
-              "2026-04-08",
-              "2026-04-09",
-            ),
-            bucketEnd: String(point.bucketEnd).replace(
-              "2026-04-08",
-              "2026-04-09",
-            ),
+            bucketStart: String(point.bucketStart).replace("2026-04-08", "2026-04-09"),
+            bucketEnd: String(point.bucketEnd).replace("2026-04-08", "2026-04-09"),
           })),
         }}
         loading={false}
@@ -1453,9 +1436,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-y-axis-id="spend"');
     expect(html).toContain('data-name="chart.tokensPerMinute"');
     expect(html).toContain('data-name="chart.spendRate"');
-    expect(html).not.toContain(
-      'data-testid="line-series" data-data-key="chartTokensPerMinute"',
-    );
+    expect(html).not.toContain('data-testid="line-series" data-data-key="chartTokensPerMinute"');
   });
 
   it("starts chart diagnostics immediately after toggling debug on in an open tab", () => {
@@ -1468,19 +1449,12 @@ describe("DashboardTodayActivityChart", () => {
       />,
     );
 
-    expect(getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount).toBe(
-      0,
-    );
+    expect(getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount).toBe(0);
 
     act(() => {
-      window.localStorage.setItem(
-        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
-        "1",
-      );
+      window.localStorage.setItem(DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY, "1");
     });
 
-    expect(getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount).toBe(
-      1,
-    );
+    expect(getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount).toBe(1);
   });
 });

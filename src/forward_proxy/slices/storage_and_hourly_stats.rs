@@ -720,9 +720,7 @@ pub(crate) fn record_pool_upstream_binding_window_stats(
     latency_sum_ms: Option<f64>,
     latency_sample_count: i64,
 ) {
-    let stats = grouped
-        .entry(proxy_key.clone())
-        .or_insert_with(ForwardProxyAttemptWindowStats::default);
+    let stats = grouped.entry(proxy_key.clone()).or_default();
     stats.attempts += attempts;
     stats.success_count += success_count;
     *latency_totals.entry(proxy_key.clone()).or_insert(0.0) += latency_sum_ms.unwrap_or(0.0);
@@ -2622,7 +2620,7 @@ pub(crate) fn resolve_forward_proxy_endpoint_for_test(
                 .runtime
                 .get(proxy_key)
                 .and_then(|runtime| runtime.endpoint_url.as_deref())
-                .and_then(|raw_url| parse_forward_proxy_entry(raw_url))
+                .and_then(parse_forward_proxy_entry)
                 .map(|parsed| ForwardProxyEndpoint {
                     key: proxy_key.to_string(),
                     source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
@@ -3145,7 +3143,7 @@ pub(crate) fn stream_forward_proxy_latency_tests(
         (
             state,
             endpoints,
-            vec![ForwardProxyLatencyAccumulator::default(); 0],
+            Vec::<ForwardProxyLatencyAccumulator>::new(),
             1usize,
             0usize,
             Vec::<Instant>::new(),

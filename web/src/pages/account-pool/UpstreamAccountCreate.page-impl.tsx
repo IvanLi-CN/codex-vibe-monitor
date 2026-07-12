@@ -1,10 +1,11 @@
-/* eslint-disable react-hooks/exhaustive-deps */
+// biome-ignore-all lint/correctness/useExhaustiveDependencies: pending OAuth synchronization intentionally coordinates mutable refs and stable callbacks
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
+import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
+import { useTranslation } from "../../i18n";
 import type {
   ImportOauthCredentialFilePayload,
   LoginSessionStatusResponse,
@@ -14,12 +15,8 @@ import type {
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
-import {
-  fetchUpstreamAccountDetail,
-  updateOauthLoginSessionKeepalive,
-} from "../../lib/api";
+import { fetchUpstreamAccountDetail, updateOauthLoginSessionKeepalive } from "../../lib/api";
 import { copyText, selectAllReadonlyText } from "../../lib/clipboard";
-import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import { apiConcurrencyLimitToSliderValue } from "../../lib/concurrencyLimit";
 import {
   buildGroupOptions,
@@ -31,10 +28,16 @@ import {
   resolveMostRecentlyUsedGroupName,
   writeUpstreamAccountGroupUsage,
 } from "../../lib/upstreamAccountGroups";
+import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
 import { applyMotherUpdateToItems } from "../../lib/upstreamMother";
 import { cn } from "../../lib/utils";
-import { useTranslation } from "../../i18n";
+import { useUpstreamAccountCreateActions } from "./UpstreamAccountCreate.actions";
+import { useUpstreamAccountCreateBatchOauth } from "./UpstreamAccountCreate.batch-oauth";
+import { UpstreamAccountCreateViewProvider } from "./UpstreamAccountCreate.controller-context";
+import { useUpstreamAccountCreateGroupDrafts } from "./UpstreamAccountCreate.group-drafts";
+import { useUpstreamAccountCreateImportedOauth } from "./UpstreamAccountCreate.imported-oauth";
+import { UpstreamAccountCreatePageSections } from "./UpstreamAccountCreate.sections";
 import type {
   BatchOauthRow,
   CreatePageLocationState,
@@ -47,52 +50,46 @@ import type {
   PendingOauthSessionSnapshot,
 } from "./UpstreamAccountCreate.shared";
 import {
-  GROUP_UPSTREAM_429_RETRY_OPTIONS,
-  MAILBOX_REFRESH_INTERVAL_MS,
-  MAILBOX_REFRESH_TICK_MS,
-  OAUTH_SESSION_SYNC_DEBOUNCE_MS,
-  OAUTH_SESSION_SYNC_RETRY_MS,
-  normalizeNumberInput,
-  normalizeGroupUpstream429MaxRetries,
-  normalizeEnabledGroupUpstream429MaxRetries,
-  formatDateTime,
-  isActivePendingOauthSession,
-  batchOauthSessionRemainingLabel,
-  batchOauthSessionExpiresAtLabel,
-  parseAccountId,
-  parseCreateMode,
-  createBatchOauthRow,
-  buildBatchOauthPersistedMetadata,
-  hydrateBatchOauthRow,
-  getNextBatchRowIndex,
-  normalizeDisplayNameKey,
-  mailboxInputMatchesSession,
-  isProbablyValidEmailAddress,
-  findDisplayNameConflict,
-  invalidatePendingSingleOauthSession,
-  buildOauthLoginSessionUpdatePayload,
-  buildPendingOauthSessionSnapshot,
-  shouldRetryPendingOauthSessionSync,
-  batchStatusVariant,
-  batchRowStatus,
-  batchRowStatusDetail,
-  batchMailboxCodeVariant,
   batchMailboxCodeLabel,
-  batchMailboxRefreshVariant,
-  isExpiredIso,
-  isRefreshableMailboxSession,
+  batchMailboxCodeVariant,
   batchMailboxRefreshLabel,
   batchMailboxRefreshTooltipDetail,
-  resolveMailboxIssue,
-  isSupportedMailboxSession,
+  batchMailboxRefreshVariant,
+  batchOauthSessionExpiresAtLabel,
+  batchOauthSessionRemainingLabel,
+  batchRowStatus,
+  batchRowStatusDetail,
+  batchStatusVariant,
   buildActionTooltip,
+  buildBatchOauthPersistedMetadata,
+  buildOauthLoginSessionUpdatePayload,
+  buildPendingOauthSessionSnapshot,
+  createBatchOauthRow,
+  findDisplayNameConflict,
+  formatDateTime,
+  GROUP_UPSTREAM_429_RETRY_OPTIONS,
+  getNextBatchRowIndex,
+  hydrateBatchOauthRow,
+  invalidatePendingSingleOauthSession,
+  isActivePendingOauthSession,
+  isExpiredIso,
+  isProbablyValidEmailAddress,
+  isRefreshableMailboxSession,
+  isSupportedMailboxSession,
+  MAILBOX_REFRESH_INTERVAL_MS,
+  MAILBOX_REFRESH_TICK_MS,
+  mailboxInputMatchesSession,
+  normalizeDisplayNameKey,
+  normalizeEnabledGroupUpstream429MaxRetries,
+  normalizeGroupUpstream429MaxRetries,
+  normalizeNumberInput,
+  OAUTH_SESSION_SYNC_DEBOUNCE_MS,
+  OAUTH_SESSION_SYNC_RETRY_MS,
+  parseAccountId,
+  parseCreateMode,
+  resolveMailboxIssue,
+  shouldRetryPendingOauthSessionSync,
 } from "./UpstreamAccountCreate.shared";
-import { UpstreamAccountCreateViewProvider } from "./UpstreamAccountCreate.controller-context";
-import { useUpstreamAccountCreateGroupDrafts } from "./UpstreamAccountCreate.group-drafts";
-import { useUpstreamAccountCreateBatchOauth } from "./UpstreamAccountCreate.batch-oauth";
-import { useUpstreamAccountCreateImportedOauth } from "./UpstreamAccountCreate.imported-oauth";
-import { useUpstreamAccountCreateActions } from "./UpstreamAccountCreate.actions";
-import { UpstreamAccountCreatePageSections } from "./UpstreamAccountCreate.sections";
 
 type PendingOauthSessionSyncRecord = {
   syncedSignature: string | null;
@@ -142,29 +139,19 @@ export default function UpstreamAccountCreatePage() {
   const availableModelOptions = useAvailableModelOptions(writesEnabled);
   const notifyMotherSwitches = useMotherSwitchNotifications();
 
-  const relinkAccountId = useMemo(
-    () => parseAccountId(location.search),
-    [location.search],
-  );
+  const relinkAccountId = useMemo(() => parseAccountId(location.search), [location.search]);
   const relinkSummary = useMemo(
     () =>
-      relinkAccountId == null
-        ? null
-        : (items.find((item) => item.id === relinkAccountId) ?? null),
+      relinkAccountId == null ? null : (items.find((item) => item.id === relinkAccountId) ?? null),
     [items, relinkAccountId],
   );
-  const [relinkDetail, setRelinkDetail] =
-    useState<UpstreamAccountDetail | null>(null);
+  const [relinkDetail, setRelinkDetail] = useState<UpstreamAccountDetail | null>(null);
   const [relinkDetailLoading, setRelinkDetailLoading] = useState(false);
-  const [relinkDetailError, setRelinkDetailError] = useState<string | null>(
-    null,
-  );
+  const [relinkDetailError, setRelinkDetailError] = useState<string | null>(null);
   const relinkMetadataDirtyRef = useRef(false);
   const isRelinking = relinkAccountId != null;
   const matchingRelinkDetail =
-    relinkDetail != null && relinkDetail.id === relinkAccountId
-      ? relinkDetail
-      : null;
+    relinkDetail != null && relinkDetail.id === relinkAccountId ? relinkDetail : null;
   const relinkAccount = matchingRelinkDetail ?? relinkSummary;
   const relinkReady =
     !isRelinking ||
@@ -187,75 +174,51 @@ export default function UpstreamAccountCreatePage() {
   const [activeTab, setActiveTab] = useState<CreateTab>(() =>
     isRelinking ? "oauth" : parseCreateMode(location.search),
   );
-  const [oauthDisplayName, setOauthDisplayName] = useState(
-    () => draft?.oauth?.displayName ?? "",
-  );
+  const [oauthDisplayName, setOauthDisplayName] = useState(() => draft?.oauth?.displayName ?? "");
   const [oauthEmail, setOauthEmail] = useState(
     () => draft?.oauth?.email ?? draft?.oauth?.session?.email ?? "",
   );
-  const [oauthGroupName, setOauthGroupName] = useState(
-    () => draft?.oauth?.groupName ?? "",
-  );
-  const [oauthIsMother, setOauthIsMother] = useState(
-    () => draft?.oauth?.isMother === true,
-  );
+  const [oauthGroupName, setOauthGroupName] = useState(() => draft?.oauth?.groupName ?? "");
+  const [oauthIsMother, setOauthIsMother] = useState(() => draft?.oauth?.isMother === true);
   const [oauthNote, setOauthNote] = useState(() => draft?.oauth?.note ?? "");
   const [oauthTagIds] = useState<number[]>([]);
-  const [oauthCallbackUrl, setOauthCallbackUrl] = useState(
-    () => draft?.oauth?.callbackUrl ?? "",
+  const [oauthCallbackUrl, setOauthCallbackUrl] = useState(() => draft?.oauth?.callbackUrl ?? "");
+  const [oauthMailboxSession, setOauthMailboxSession] = useState<OauthMailboxSession | null>(
+    () => draft?.oauth?.mailboxSession ?? null,
   );
-  const [oauthMailboxSession, setOauthMailboxSession] =
-    useState<OauthMailboxSession | null>(
-      () => draft?.oauth?.mailboxSession ?? null,
-    );
   const [oauthMailboxInput, setOauthMailboxInput] = useState(
-    () =>
-      draft?.oauth?.mailboxInput ??
-      draft?.oauth?.mailboxSession?.emailAddress ??
-      "",
+    () => draft?.oauth?.mailboxInput ?? draft?.oauth?.mailboxSession?.emailAddress ?? "",
   );
-  const [oauthMailboxStatus, setOauthMailboxStatus] =
-    useState<OauthMailboxStatus | null>(
-      () => draft?.oauth?.mailboxStatus ?? null,
-    );
+  const [oauthMailboxStatus, setOauthMailboxStatus] = useState<OauthMailboxStatus | null>(
+    () => draft?.oauth?.mailboxStatus ?? null,
+  );
   const [oauthMailboxError, setOauthMailboxError] = useState<string | null>(
     () => draft?.oauth?.mailboxError ?? null,
   );
-  const [oauthMailboxTone, setOauthMailboxTone] = useState<MailboxCopyTone>(
-    () =>
-      draft?.oauth?.mailboxTone === "copied" ||
-      draft?.oauth?.mailboxTone === "manual"
-        ? draft.oauth.mailboxTone
-        : "idle",
+  const [oauthMailboxTone, setOauthMailboxTone] = useState<MailboxCopyTone>(() =>
+    draft?.oauth?.mailboxTone === "copied" || draft?.oauth?.mailboxTone === "manual"
+      ? draft.oauth.mailboxTone
+      : "idle",
   );
-  const [oauthMailboxCodeTone, setOauthMailboxCodeTone] =
-    useState<MailboxCopyTone>(() => draft?.oauth?.mailboxCodeTone ?? "idle");
-  const [oauthMailboxBusyAction, setOauthMailboxBusyAction] =
-    useState<MailboxBusyAction>(() =>
-      draft?.oauth?.mailboxBusyAction === "attach" ||
-      draft?.oauth?.mailboxBusyAction === "generate"
-        ? draft.oauth.mailboxBusyAction
-        : null,
-    );
+  const [oauthMailboxCodeTone, setOauthMailboxCodeTone] = useState<MailboxCopyTone>(
+    () => draft?.oauth?.mailboxCodeTone ?? "idle",
+  );
+  const [oauthMailboxBusyAction, setOauthMailboxBusyAction] = useState<MailboxBusyAction>(() =>
+    draft?.oauth?.mailboxBusyAction === "attach" || draft?.oauth?.mailboxBusyAction === "generate"
+      ? draft.oauth.mailboxBusyAction
+      : null,
+  );
   const [oauthMailboxRefreshBusy, setOauthMailboxRefreshBusy] = useState(false);
   const [refreshClockMs, setRefreshClockMs] = useState(() => Date.now());
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState(
     () => draft?.apiKey?.displayName ?? "",
   );
-  const [apiKeyEmail, setApiKeyEmail] = useState(
-    () => draft?.apiKey?.email ?? "",
-  );
-  const [apiKeyGroupName, setApiKeyGroupName] = useState(
-    () => draft?.apiKey?.groupName ?? "",
-  );
-  const [apiKeyIsMother, setApiKeyIsMother] = useState(
-    () => draft?.apiKey?.isMother === true,
-  );
+  const [apiKeyEmail, setApiKeyEmail] = useState(() => draft?.apiKey?.email ?? "");
+  const [apiKeyGroupName, setApiKeyGroupName] = useState(() => draft?.apiKey?.groupName ?? "");
+  const [apiKeyIsMother, setApiKeyIsMother] = useState(() => draft?.apiKey?.isMother === true);
   const [apiKeyNote, setApiKeyNote] = useState(() => draft?.apiKey?.note ?? "");
   const [apiKeyTagIds] = useState<number[]>([]);
-  const [apiKeyValue, setApiKeyValue] = useState(
-    () => draft?.apiKey?.apiKeyValue ?? "",
-  );
+  const [apiKeyValue, setApiKeyValue] = useState(() => draft?.apiKey?.apiKeyValue ?? "");
   const [apiKeyUpstreamBaseUrl, setApiKeyUpstreamBaseUrl] = useState(
     () => draft?.apiKey?.upstreamBaseUrl ?? "",
   );
@@ -276,24 +239,21 @@ export default function UpstreamAccountCreatePage() {
   );
   const [oauthEmailResolution, setOauthEmailResolution] =
     useState<OauthEmailResolutionState | null>(null);
-  const [oauthCompletedDetail, setOauthCompletedDetail] =
-    useState<UpstreamAccountDetail | null>(null);
-  const [oauthDuplicateWarning, setOauthDuplicateWarning] =
-    useState<DuplicateWarningState | null>(
-      () => draft?.oauth?.duplicateWarning ?? null,
-    );
+  const [oauthCompletedDetail, setOauthCompletedDetail] = useState<UpstreamAccountDetail | null>(
+    null,
+  );
+  const [oauthDuplicateWarning, setOauthDuplicateWarning] = useState<DuplicateWarningState | null>(
+    () => draft?.oauth?.duplicateWarning ?? null,
+  );
   const [duplicateDetailOpen, setDuplicateDetailOpen] = useState(false);
   const [duplicateDetailLoading, setDuplicateDetailLoading] = useState(false);
-  const [duplicateDetail, setDuplicateDetail] =
-    useState<UpstreamAccountDetail | null>(null);
+  const [duplicateDetail, setDuplicateDetail] = useState<UpstreamAccountDetail | null>(null);
   const [actionError, setActionError] = useState<string | null>(
     () => draft?.oauth?.actionError ?? null,
   );
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [manualCopyOpen, setManualCopyOpen] = useState(false);
-  const [batchManualCopyRowId, setBatchManualCopyRowId] = useState<
-    string | null
-  >(null);
+  const [batchManualCopyRowId, setBatchManualCopyRowId] = useState<string | null>(null);
   const [batchDefaultGroupName, setBatchDefaultGroupName] = useState(
     () => draft?.batchOauth?.defaultGroupName ?? "",
   );
@@ -306,19 +266,14 @@ export default function UpstreamAccountCreatePage() {
   const [importPasteDraft, setImportPasteDraft] = useState("");
   const [importPasteError, setImportPasteError] = useState<string | null>(null);
   const [importPasteBusy, setImportPasteBusy] = useState(false);
-  const [importPasteDraftSerial, setImportPasteDraftSerial] = useState<
-    number | null
-  >(null);
-  const [importFiles, setImportFiles] = useState<
-    ImportOauthCredentialFilePayload[]
-  >([]);
+  const [importPasteDraftSerial, setImportPasteDraftSerial] = useState<number | null>(null);
+  const [importFiles, setImportFiles] = useState<ImportOauthCredentialFilePayload[]>([]);
   const importFilesRef = useRef<ImportOauthCredentialFilePayload[]>([]);
   const [importSelectionFeedback, setImportSelectionFeedback] = useState<{
     variant: "warning" | "error";
     messages: string[];
   } | null>(null);
-  const [importValidationDialogOpen, setImportValidationDialogOpen] =
-    useState(false);
+  const [importValidationDialogOpen, setImportValidationDialogOpen] = useState(false);
   const [importValidationState, setImportValidationState] =
     useState<ImportedOauthValidationDialogState | null>(null);
   const [importInputKey, setImportInputKey] = useState(0);
@@ -330,44 +285,36 @@ export default function UpstreamAccountCreatePage() {
   const importValidationEventSourceRef = useRef<EventSource | null>(null);
   const importValidationEventCleanupRef = useRef<(() => void) | null>(null);
   const importValidationJobIdRef = useRef<string | null>(null);
-  const [groupUsage, setGroupUsage] = useState(() =>
-    readUpstreamAccountGroupUsage(),
-  );
+  const [groupUsage, setGroupUsage] = useState(() => readUpstreamAccountGroupUsage());
   const initialApiKeyLastGroupNameRef = useRef(readApiKeyLastGroupName());
   const previousBatchTagIdsRef = useRef<number[] | null>(null);
   const previousCompletedSharedTagBaselineRef = useRef<string | null>(null);
-  const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(
-    () => initialBatchRows,
-  );
+  const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(() => initialBatchRows);
   const hasBatchMetadataBusy = useMemo(
     () => batchRows.some((row) => row.metadataBusy),
     [batchRows],
   );
-  const [groupDraftNotes, setGroupDraftNotes] = useState<
-    Record<string, string>
-  >({});
+  const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({});
   const [groupDraftBoundProxyKeys, setGroupDraftBoundProxyKeys] = useState<
     Record<string, string[]>
   >({});
-  const [groupDraftConcurrencyLimits, setGroupDraftConcurrencyLimits] =
-    useState<Record<string, number>>({});
+  const [groupDraftConcurrencyLimits, setGroupDraftConcurrencyLimits] = useState<
+    Record<string, number>
+  >({});
   const [groupDraftNodeShuntEnabled, setGroupDraftNodeShuntEnabled] = useState<
     Record<string, boolean>
   >({});
-  const [
-    groupDraftSingleAccountRotationEnabled,
-    setGroupDraftSingleAccountRotationEnabled,
-  ] = useState<Record<string, boolean>>({});
-  const [
-    groupDraftUpstream429RetryEnabled,
-    setGroupDraftUpstream429RetryEnabled,
-  ] = useState<Record<string, boolean>>({});
-  const [groupDraftUpstream429MaxRetries, setGroupDraftUpstream429MaxRetries] =
-    useState<Record<string, number>>({});
-  const [
-    persistedGroupNoteSyncDrafts,
-    setPersistedGroupNoteSyncDrafts,
-  ] = useState<Record<string, string>>({});
+  const [groupDraftSingleAccountRotationEnabled, setGroupDraftSingleAccountRotationEnabled] =
+    useState<Record<string, boolean>>({});
+  const [groupDraftUpstream429RetryEnabled, setGroupDraftUpstream429RetryEnabled] = useState<
+    Record<string, boolean>
+  >({});
+  const [groupDraftUpstream429MaxRetries, setGroupDraftUpstream429MaxRetries] = useState<
+    Record<string, number>
+  >({});
+  const [persistedGroupNoteSyncDrafts, setPersistedGroupNoteSyncDrafts] = useState<
+    Record<string, string>
+  >({});
   const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
     open: false,
     groupName: "",
@@ -397,10 +344,7 @@ export default function UpstreamAccountCreatePage() {
   const batchMailboxToneResetRef = useRef<Record<string, number>>({});
   const batchRowsRef = useRef<BatchOauthRow[]>(initialBatchRows);
   const batchSessionFeedbackStateByRowRef = useRef<
-    Record<
-      string,
-      Pick<LoginSessionStatusResponse, "loginId" | "status" | "authUrl"> | null
-    >
+    Record<string, Pick<LoginSessionStatusResponse, "loginId" | "status" | "authUrl"> | null>
   >(
     Object.fromEntries(
       initialBatchRows.map((row) => [
@@ -415,25 +359,14 @@ export default function UpstreamAccountCreatePage() {
       ]),
     ),
   );
-  const pendingOauthSessionSyncRef = useRef<
-    Record<string, PendingOauthSessionSyncRecord>
-  >({});
-  const singleOauthSessionSnapshotRef =
-    useRef<PendingOauthSessionSnapshot | null>(null);
-  const batchOauthSessionSnapshotsRef = useRef<
-    Record<string, PendingOauthSessionSnapshot>
-  >({});
-  const createdPendingOauthSessionSignaturesRef = useRef<
-    Record<string, string>
-  >({});
-  const dispatchAllPendingOauthSessionKeepaliveSyncRef = useRef<() => void>(
-    () => undefined,
-  );
+  const pendingOauthSessionSyncRef = useRef<Record<string, PendingOauthSessionSyncRecord>>({});
+  const singleOauthSessionSnapshotRef = useRef<PendingOauthSessionSnapshot | null>(null);
+  const batchOauthSessionSnapshotsRef = useRef<Record<string, PendingOauthSessionSnapshot>>({});
+  const createdPendingOauthSessionSignaturesRef = useRef<Record<string, string>>({});
+  const dispatchAllPendingOauthSessionKeepaliveSyncRef = useRef<() => void>(() => undefined);
   const restoredPendingOauthLoginIdsRef = useRef(
     new Set<string>([
-      ...(draft?.oauth?.session?.status === "pending"
-        ? [draft.oauth.session.loginId]
-        : []),
+      ...(draft?.oauth?.session?.status === "pending" ? [draft.oauth.session.loginId] : []),
       ...(draft?.batchOauth?.rows ?? []).flatMap((row) =>
         row.session?.status === "pending" ? [row.session.loginId] : [],
       ),
@@ -449,9 +382,7 @@ export default function UpstreamAccountCreatePage() {
   );
   const refreshableOauthMailboxSession = useMemo(
     () =>
-      isRefreshableMailboxSession(activeOauthMailboxSession)
-        ? activeOauthMailboxSession
-        : null,
+      isRefreshableMailboxSession(activeOauthMailboxSession) ? activeOauthMailboxSession : null,
     [activeOauthMailboxSession, refreshClockMs],
   );
   const resolvedOauthMailboxSession =
@@ -459,9 +390,7 @@ export default function UpstreamAccountCreatePage() {
     (oauthMailboxSession && !isSupportedMailboxSession(oauthMailboxSession)
       ? oauthMailboxSession
       : null);
-  const displayedOauthMailboxStatus = activeOauthMailboxSession
-    ? oauthMailboxStatus
-    : null;
+  const displayedOauthMailboxStatus = activeOauthMailboxSession ? oauthMailboxStatus : null;
   const oauthMailboxIssue = resolveMailboxIssue(
     resolvedOauthMailboxSession,
     displayedOauthMailboxStatus,
@@ -477,20 +406,13 @@ export default function UpstreamAccountCreatePage() {
     if (
       resolvedOauthMailboxSession &&
       oauthMailboxError &&
-      (oauthMailboxError ===
-        t("accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable") ||
-        oauthMailboxError ===
-          t("accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed"))
+      (oauthMailboxError === t("accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable") ||
+        oauthMailboxError === t("accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed"))
     ) {
       return "failed";
     }
     return null;
-  }, [
-    oauthMailboxError,
-    oauthMailboxRefreshBusy,
-    resolvedOauthMailboxSession,
-    t,
-  ]);
+  }, [oauthMailboxError, oauthMailboxRefreshBusy, resolvedOauthMailboxSession, t]);
   useEffect(() => {
     return () => {
       dispatchAllPendingOauthSessionKeepaliveSyncRef.current();
@@ -538,39 +460,22 @@ export default function UpstreamAccountCreatePage() {
         groups,
         {
           ...Object.fromEntries(
-            Object.keys(groupDraftBoundProxyKeys).map((groupName) => [
-              groupName,
-              "",
-            ]),
+            Object.keys(groupDraftBoundProxyKeys).map((groupName) => [groupName, ""]),
           ),
           ...Object.fromEntries(
-            Object.keys(groupDraftConcurrencyLimits).map((groupName) => [
-              groupName,
-              "",
-            ]),
+            Object.keys(groupDraftConcurrencyLimits).map((groupName) => [groupName, ""]),
           ),
           ...Object.fromEntries(
-            Object.keys(groupDraftNodeShuntEnabled).map((groupName) => [
-              groupName,
-              "",
-            ]),
+            Object.keys(groupDraftNodeShuntEnabled).map((groupName) => [groupName, ""]),
           ),
           ...Object.fromEntries(
-            Object.keys(groupDraftSingleAccountRotationEnabled).map(
-              (groupName) => [groupName, ""],
-            ),
+            Object.keys(groupDraftSingleAccountRotationEnabled).map((groupName) => [groupName, ""]),
           ),
           ...Object.fromEntries(
-            Object.keys(groupDraftUpstream429RetryEnabled).map((groupName) => [
-              groupName,
-              "",
-            ]),
+            Object.keys(groupDraftUpstream429RetryEnabled).map((groupName) => [groupName, ""]),
           ),
           ...Object.fromEntries(
-            Object.keys(groupDraftUpstream429MaxRetries).map((groupName) => [
-              groupName,
-              "",
-            ]),
+            Object.keys(groupDraftUpstream429MaxRetries).map((groupName) => [groupName, ""]),
           ),
           ...groupDraftNotes,
         },
@@ -609,10 +514,7 @@ export default function UpstreamAccountCreatePage() {
       rememberedBatchDefaultGroupAppliedRef.current = true;
       return;
     }
-    const rememberedGroupName = resolveMostRecentlyUsedGroupName(
-      groupOptions,
-      groupUsage,
-    );
+    const rememberedGroupName = resolveMostRecentlyUsedGroupName(groupOptions, groupUsage);
     if (!rememberedGroupName) return;
     rememberedBatchDefaultGroupAppliedRef.current = true;
     setBatchDefaultGroupName(rememberedGroupName);
@@ -626,12 +528,7 @@ export default function UpstreamAccountCreatePage() {
           : row,
       ),
     );
-  }, [
-    batchDefaultGroupName,
-    draft?.batchOauth?.defaultGroupName,
-    groupOptions,
-    groupUsage,
-  ]);
+  }, [batchDefaultGroupName, draft?.batchOauth?.defaultGroupName, groupOptions, groupUsage]);
   const rememberedApiKeyGroupAppliedRef = useRef(false);
   useEffect(() => {
     if (rememberedApiKeyGroupAppliedRef.current) return;
@@ -658,16 +555,13 @@ export default function UpstreamAccountCreatePage() {
     setApiKeyGroupName(rememberedGroupName);
   }, [apiKeyGroupName, draft?.apiKey?.groupName, groupOptions, isLoading]);
   const formatGroupAccountCountLabel = useCallback(
-    (count: number) =>
-      t("accountPool.upstreamAccounts.groupOptionCount", { count }),
+    (count: number) => t("accountPool.upstreamAccounts.groupOptionCount", { count }),
     [t],
   );
   const oauthConflictExcludeId =
-    relinkAccountId ??
-    (session?.status === "completed" ? (session.accountId ?? null) : null);
+    relinkAccountId ?? (session?.status === "completed" ? (session.accountId ?? null) : null);
   const oauthDisplayNameConflict = useMemo(
-    () =>
-      findDisplayNameConflict(items, oauthDisplayName, oauthConflictExcludeId),
+    () => findDisplayNameConflict(items, oauthDisplayName, oauthConflictExcludeId),
     [items, oauthConflictExcludeId, oauthDisplayName],
   );
   const apiKeyDisplayNameConflict = useMemo(
@@ -726,10 +620,7 @@ export default function UpstreamAccountCreatePage() {
   const invalidateSingleOauthSessionForMetadataEdit = useCallback(() => {
     invalidateRelinkPendingOauthSession();
     invalidateCompletedSingleOauthRetrySession();
-  }, [
-    invalidateCompletedSingleOauthRetrySession,
-    invalidateRelinkPendingOauthSession,
-  ]);
+  }, [invalidateCompletedSingleOauthRetrySession, invalidateRelinkPendingOauthSession]);
   const invalidateRelinkPendingOauthSessionForMailboxChange = useCallback(
     (nextInput: string) => {
       if (!isRelinking || !activeOauthMailboxSession) return;
@@ -738,11 +629,7 @@ export default function UpstreamAccountCreatePage() {
       }
       invalidateCurrentSingleOauthSession();
     },
-    [
-      activeOauthMailboxSession,
-      invalidateCurrentSingleOauthSession,
-      isRelinking,
-    ],
+    [activeOauthMailboxSession, invalidateCurrentSingleOauthSession, isRelinking],
   );
   const notifyMotherChange = (updated: UpstreamAccountSummary) => {
     const nextItems = applyMotherUpdateToItems(items, updated);
@@ -823,16 +710,13 @@ export default function UpstreamAccountCreatePage() {
         displayName: oauthDisplayName,
         email: oauthEmail,
         groupName: oauthGroupName,
-        groupBoundProxyKeys:
-          resolvePendingGroupBoundProxyKeysForName(oauthGroupName),
-        groupNodeShuntEnabled:
-          resolveGroupNodeShuntEnabledForName(oauthGroupName),
+        groupBoundProxyKeys: resolvePendingGroupBoundProxyKeysForName(oauthGroupName),
+        groupNodeShuntEnabled: resolveGroupNodeShuntEnabledForName(oauthGroupName),
         groupSingleAccountRotationEnabled:
           resolveGroupSingleAccountRotationEnabledForName(oauthGroupName),
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
-        groupConcurrencyLimit:
-          resolvePendingGroupConcurrencyLimitForName(oauthGroupName),
+        groupConcurrencyLimit: resolvePendingGroupConcurrencyLimitForName(oauthGroupName),
         includeGroupNote: shouldIncludePendingGroupNoteForName(oauthGroupName),
         tagIds: oauthTagIds,
         isMother: oauthIsMother,
@@ -869,22 +753,15 @@ export default function UpstreamAccountCreatePage() {
           displayName: row.displayName,
           email: row.email,
           groupName: row.groupName,
-          groupBoundProxyKeys: resolvePendingGroupBoundProxyKeysForName(
+          groupBoundProxyKeys: resolvePendingGroupBoundProxyKeysForName(row.groupName),
+          groupNodeShuntEnabled: resolveGroupNodeShuntEnabledForName(row.groupName),
+          groupSingleAccountRotationEnabled: resolveGroupSingleAccountRotationEnabledForName(
             row.groupName,
           ),
-          groupNodeShuntEnabled: resolveGroupNodeShuntEnabledForName(
-            row.groupName,
-          ),
-          groupSingleAccountRotationEnabled:
-            resolveGroupSingleAccountRotationEnabledForName(row.groupName),
           note: row.note,
           groupNote: resolvePendingGroupNoteForName(row.groupName),
-          groupConcurrencyLimit: resolvePendingGroupConcurrencyLimitForName(
-            row.groupName,
-          ),
-          includeGroupNote: shouldIncludePendingGroupNoteForName(
-            row.groupName,
-          ),
+          groupConcurrencyLimit: resolvePendingGroupConcurrencyLimitForName(row.groupName),
+          includeGroupNote: shouldIncludePendingGroupNoteForName(row.groupName),
           tagIds: batchTagIds,
           isMother: row.isMother,
           mailboxSession: row.mailboxSession,
@@ -929,25 +806,22 @@ export default function UpstreamAccountCreatePage() {
     },
     [session?.loginId],
   );
-  const setPendingOauthSessionSyncError = useCallback(
-    (loginId: string, message: string) => {
-      if (singleOauthSessionSnapshotRef.current?.loginId === loginId) {
-        setActionError(message);
-        return;
-      }
-      setBatchRows((current) =>
-        current.map((row) =>
-          row.session?.loginId === loginId
-            ? {
-                ...row,
-                actionError: message,
-              }
-            : row,
-        ),
-      );
-    },
-    [],
-  );
+  const setPendingOauthSessionSyncError = useCallback((loginId: string, message: string) => {
+    if (singleOauthSessionSnapshotRef.current?.loginId === loginId) {
+      setActionError(message);
+      return;
+    }
+    setBatchRows((current) =>
+      current.map((row) =>
+        row.session?.loginId === loginId
+          ? {
+              ...row,
+              actionError: message,
+            }
+          : row,
+      ),
+    );
+  }, []);
   const clearPendingOauthSessionSyncError = useCallback((loginId: string) => {
     if (singleOauthSessionSnapshotRef.current?.loginId === loginId) {
       setActionError(null);
@@ -977,11 +851,9 @@ export default function UpstreamAccountCreatePage() {
         ? typeof currentSnapshot.payload.email === "string"
           ? currentSnapshot.payload.email
           : ""
-        : nextSession.email ?? "";
+        : (nextSession.email ?? "");
       if (singleOauthSessionSnapshotRef.current?.loginId === loginId) {
-        setSession((current) =>
-          current?.loginId === loginId ? nextSession : current,
-        );
+        setSession((current) => (current?.loginId === loginId ? nextSession : current));
         setOauthEmail(nextDraftEmail);
         setOauthMailboxInput(nextDraftEmail);
         if (nextSession.status !== "pending") {
@@ -998,11 +870,9 @@ export default function UpstreamAccountCreatePage() {
                 session: nextSession,
                 email: shouldPreserveLocalEmailDraft
                   ? nextDraftEmail
-                  : nextSession.email ?? row.email,
-                sessionHint:
-                  nextSession.status === "pending" ? row.sessionHint : null,
-                actionError:
-                  nextSession.status === "pending" ? row.actionError : null,
+                  : (nextSession.email ?? row.email),
+                sessionHint: nextSession.status === "pending" ? row.sessionHint : null,
+                actionError: nextSession.status === "pending" ? row.actionError : null,
               }
             : row,
         ),
@@ -1090,8 +960,7 @@ export default function UpstreamAccountCreatePage() {
               } else {
                 setPendingOauthSessionSyncError(
                   loginId,
-                  latestSession.error ??
-                    (err instanceof Error ? err.message : String(err)),
+                  latestSession.error ?? (err instanceof Error ? err.message : String(err)),
                 );
               }
               return;
@@ -1100,8 +969,7 @@ export default function UpstreamAccountCreatePage() {
               const latestRecord = pendingOauthSessionSyncRef.current[loginId];
               if (latestRecord?.failedSignature === signature) {
                 latestRecord.timerId = window.setTimeout(() => {
-                  const retryRecord =
-                    pendingOauthSessionSyncRef.current[loginId];
+                  const retryRecord = pendingOauthSessionSyncRef.current[loginId];
                   if (!retryRecord) return;
                   retryRecord.timerId = null;
                   void runPendingOauthSessionSync(loginId, {
@@ -1112,8 +980,7 @@ export default function UpstreamAccountCreatePage() {
             }
             setPendingOauthSessionSyncError(
               loginId,
-              latestSession?.error ??
-                (err instanceof Error ? err.message : String(err)),
+              latestSession?.error ?? (err instanceof Error ? err.message : String(err)),
             );
             throw err;
           })
@@ -1182,17 +1049,10 @@ export default function UpstreamAccountCreatePage() {
         await runPendingOauthSessionSync(loginId, { force: true });
       }
     },
-    [
-      getPendingOauthSessionSnapshot,
-      runPendingOauthSessionSync,
-      storePendingOauthSessionSnapshot,
-    ],
+    [getPendingOauthSessionSnapshot, runPendingOauthSessionSync, storePendingOauthSessionSnapshot],
   );
   const dispatchPendingOauthSessionKeepaliveSync = useCallback(
-    (
-      loginId: string | null | undefined,
-      snapshotOverride?: PendingOauthSessionSnapshot | null,
-    ) => {
+    (loginId: string | null | undefined, snapshotOverride?: PendingOauthSessionSnapshot | null) => {
       if (!loginId || !writesEnabled) return;
       if (snapshotOverride && snapshotOverride.loginId === loginId) {
         storePendingOauthSessionSnapshot(snapshotOverride);
@@ -1223,38 +1083,24 @@ export default function UpstreamAccountCreatePage() {
         return;
       }
       const request = snapshot.baseUpdatedAt
-        ? updateOauthLoginSessionKeepalive(
-            loginId,
-            snapshot.payload,
-            snapshot.baseUpdatedAt,
-          )
+        ? updateOauthLoginSessionKeepalive(loginId, snapshot.payload, snapshot.baseUpdatedAt)
         : updateOauthLoginSessionKeepalive(loginId, snapshot.payload);
       void request.catch(() => undefined);
     },
-    [
-      getPendingOauthSessionSnapshot,
-      storePendingOauthSessionSnapshot,
-      writesEnabled,
-    ],
+    [getPendingOauthSessionSnapshot, storePendingOauthSessionSnapshot, writesEnabled],
   );
   const flushAllPendingOauthSessionSync = useCallback(() => {
     if (!writesEnabled) return;
     const seenLoginIds = new Set<string>();
     getActivePendingOauthSessionSnapshots().forEach((snapshot) => {
       seenLoginIds.add(snapshot.loginId);
-      void flushPendingOauthSessionSync(snapshot.loginId, snapshot).catch(
-        () => undefined,
-      );
+      void flushPendingOauthSessionSync(snapshot.loginId, snapshot).catch(() => undefined);
     });
     Object.keys(pendingOauthSessionSyncRef.current).forEach((loginId) => {
       if (seenLoginIds.has(loginId)) return;
       void flushPendingOauthSessionSync(loginId).catch(() => undefined);
     });
-  }, [
-    flushPendingOauthSessionSync,
-    getActivePendingOauthSessionSnapshots,
-    writesEnabled,
-  ]);
+  }, [flushPendingOauthSessionSync, getActivePendingOauthSessionSnapshots, writesEnabled]);
   const dispatchAllPendingOauthSessionKeepaliveSync = useCallback(() => {
     if (!writesEnabled) return;
     const seenLoginIds = new Set<string>();
@@ -1290,21 +1136,17 @@ export default function UpstreamAccountCreatePage() {
       ...(singleOauthSessionSnapshot ? [singleOauthSessionSnapshot] : []),
       ...Object.values(batchOauthSessionSnapshots),
     ];
-    const activeLoginIds = new Set(
-      activeSnapshots.map((snapshot) => snapshot.loginId),
-    );
+    const activeLoginIds = new Set(activeSnapshots.map((snapshot) => snapshot.loginId));
 
     for (const snapshot of activeSnapshots) {
       let existing = pendingOauthSessionSyncRef.current[snapshot.loginId];
       if (!existing) {
-        const shouldStartUnsynced =
-          restoredPendingOauthLoginIdsRef.current.delete(snapshot.loginId);
+        const shouldStartUnsynced = restoredPendingOauthLoginIdsRef.current.delete(
+          snapshot.loginId,
+        );
         const createdSyncedSignature =
-          createdPendingOauthSessionSignaturesRef.current[snapshot.loginId] ??
-          null;
-        delete createdPendingOauthSessionSignaturesRef.current[
-          snapshot.loginId
-        ];
+          createdPendingOauthSessionSignaturesRef.current[snapshot.loginId] ?? null;
+        delete createdPendingOauthSessionSignaturesRef.current[snapshot.loginId];
         existing = pendingOauthSessionSyncRef.current[snapshot.loginId] = {
           syncedSignature: shouldStartUnsynced
             ? null
@@ -1333,19 +1175,14 @@ export default function UpstreamAccountCreatePage() {
         existing.timerId = null;
       }
       existing.timerId = window.setTimeout(() => {
-        const currentRecord =
-          pendingOauthSessionSyncRef.current[snapshot.loginId];
+        const currentRecord = pendingOauthSessionSyncRef.current[snapshot.loginId];
         if (!currentRecord) return;
         currentRecord.timerId = null;
-        void runPendingOauthSessionSync(snapshot.loginId).catch(
-          () => undefined,
-        );
+        void runPendingOauthSessionSync(snapshot.loginId).catch(() => undefined);
       }, OAUTH_SESSION_SYNC_DEBOUNCE_MS);
     }
 
-    for (const [loginId, record] of Object.entries(
-      pendingOauthSessionSyncRef.current,
-    )) {
+    for (const [loginId, record] of Object.entries(pendingOauthSessionSyncRef.current)) {
       if (activeLoginIds.has(loginId)) continue;
       if (record.timerId != null) {
         window.clearTimeout(record.timerId);
@@ -1378,33 +1215,22 @@ export default function UpstreamAccountCreatePage() {
       window.removeEventListener("beforeunload", flushPendingSyncKeepalive);
       window.removeEventListener("pagehide", flushPendingSyncKeepalive);
     };
-  }, [
-    dispatchAllPendingOauthSessionKeepaliveSync,
-    flushAllPendingOauthSessionSync,
-    writesEnabled,
-  ]);
-  const formatDuplicateReasons = (
-    duplicateInfo?: UpstreamAccountDuplicateInfo | null,
-  ) => {
+  }, [dispatchAllPendingOauthSessionKeepaliveSync, flushAllPendingOauthSessionSync, writesEnabled]);
+  const formatDuplicateReasons = (duplicateInfo?: UpstreamAccountDuplicateInfo | null) => {
     const reasons = duplicateInfo?.reasons ?? [];
     return reasons
       .map((reason: string) => {
         if (reason === "sharedChatgptAccountId") {
-          return t(
-            "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId",
-          );
+          return t("accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId");
         }
         if (reason === "sharedChatgptUserId") {
-          return t(
-            "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId",
-          );
+          return t("accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId");
         }
         return reason;
       })
       .join(" / ");
   };
-  const accountStatusLabel = (status: string) =>
-    t(`accountPool.upstreamAccounts.status.${status}`);
+  const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`);
   const accountKindLabel = (kind: string) =>
     kind === "oauth_codex"
       ? t("accountPool.upstreamAccounts.kind.oauth")
@@ -1424,19 +1250,14 @@ export default function UpstreamAccountCreatePage() {
   const apiKeyUpstreamBaseUrlError = useMemo(() => {
     const code = validateUpstreamBaseUrl(apiKeyUpstreamBaseUrl);
     if (code === "invalid_absolute_url") {
-      return t(
-        "accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid",
-      );
+      return t("accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid");
     }
     if (code === "query_or_fragment_not_allowed") {
-      return t(
-        "accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment",
-      );
+      return t("accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment");
     }
     return null;
   }, [apiKeyUpstreamBaseUrl, t]);
-  const oauthMailboxAddress =
-    activeOauthMailboxSession?.emailAddress ?? oauthMailboxInput;
+  const oauthMailboxAddress = activeOauthMailboxSession?.emailAddress ?? oauthMailboxInput;
 
   useEffect(() => {
     if (isRelinking) {
@@ -1494,9 +1315,7 @@ export default function UpstreamAccountCreatePage() {
     setOauthIsMother((current) => current || relinkAccount.isMother);
     if ("note" in relinkAccount) {
       const relinkNote = relinkAccount.note;
-      setOauthNote((current) =>
-        current || (typeof relinkNote === "string" ? relinkNote : ""),
-      );
+      setOauthNote((current) => current || (typeof relinkNote === "string" ? relinkNote : ""));
     }
   }, [isRelinking, relinkAccount]);
 
@@ -1522,9 +1341,7 @@ export default function UpstreamAccountCreatePage() {
     const poll = async () => {
       setOauthMailboxRefreshBusy(true);
       try {
-        const [status] = await getOauthMailboxStatuses([
-          refreshableOauthMailboxSession.sessionId,
-        ]);
+        const [status] = await getOauthMailboxStatuses([refreshableOauthMailboxSession.sessionId]);
         if (cancelled) return;
         if (!status) {
           setOauthMailboxError((current) =>
@@ -1532,17 +1349,12 @@ export default function UpstreamAccountCreatePage() {
               ? current
               : isExpiredIso(refreshableOauthMailboxSession.expiresAt)
                 ? t("accountPool.upstreamAccounts.oauth.mailboxExpired")
-                : t(
-                    "accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable",
-                  ),
+                : t("accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable"),
           );
           return;
         }
         setOauthMailboxStatus((current) => {
-          if (
-            status.latestCode?.value &&
-            status.latestCode.value !== current?.latestCode?.value
-          ) {
+          if (status.latestCode?.value && status.latestCode.value !== current?.latestCode?.value) {
             setOauthMailboxCodeTone("idle");
           }
           return status;
@@ -1550,9 +1362,7 @@ export default function UpstreamAccountCreatePage() {
         setOauthMailboxError(status.error ?? null);
       } catch {
         if (!cancelled) {
-          setOauthMailboxError(
-            t("accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed"),
-          );
+          setOauthMailboxError(t("accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed"));
         }
       } finally {
         if (!cancelled) {
@@ -1585,9 +1395,7 @@ export default function UpstreamAccountCreatePage() {
 
   useEffect(() => {
     const sessionIds = activeBatchMailboxSessionIdsKey
-      ? activeBatchMailboxSessionIdsKey
-          .split("|")
-          .filter((value) => value.length > 0)
+      ? activeBatchMailboxSessionIdsKey.split("|").filter((value) => value.length > 0)
       : [];
     if (sessionIds.length === 0) {
       setBatchRows((current) =>
@@ -1611,9 +1419,7 @@ export default function UpstreamAccountCreatePage() {
       try {
         const statuses = await getOauthMailboxStatuses(sessionIds);
         if (cancelled) return;
-        const bySessionId = new Map(
-          statuses.map((status) => [status.sessionId, status]),
-        );
+        const bySessionId = new Map(statuses.map((status) => [status.sessionId, status]));
         setBatchRows((current) =>
           current.map((row) => {
             const sessionId = row.mailboxSession?.sessionId;
@@ -1627,15 +1433,10 @@ export default function UpstreamAccountCreatePage() {
                 ? row.mailboxError
                 : isExpiredIso(row.mailboxSession?.expiresAt)
                   ? t("accountPool.upstreamAccounts.oauth.mailboxExpired")
-                  : t(
-                      "accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable",
-                    );
+                  : t("accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable");
             const previousCode = row.mailboxStatus?.latestCode?.value ?? null;
             const nextCode = nextStatus?.latestCode?.value ?? null;
-            if (
-              row.mailboxStatus === (nextStatus ?? null) &&
-              row.mailboxError === nextError
-            ) {
+            if (row.mailboxStatus === (nextStatus ?? null) && row.mailboxError === nextError) {
               return row;
             }
             return {
@@ -1659,13 +1460,10 @@ export default function UpstreamAccountCreatePage() {
                 ? {
                     ...row,
                     mailboxRefreshBusy: false,
-                    mailboxNextRefreshAt:
-                      Date.now() + MAILBOX_REFRESH_INTERVAL_MS,
+                    mailboxNextRefreshAt: Date.now() + MAILBOX_REFRESH_INTERVAL_MS,
                     mailboxError: isExpiredIso(row.mailboxSession.expiresAt)
                       ? t("accountPool.upstreamAccounts.oauth.mailboxExpired")
-                      : t(
-                          "accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed",
-                        ),
+                      : t("accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed"),
                   }
                 : row,
             ),
@@ -1687,8 +1485,7 @@ export default function UpstreamAccountCreatePage() {
     async (rowId: string) => {
       const row = batchRows.find((item) => item.id === rowId);
       const sessionId = row?.mailboxSession?.sessionId;
-      if (!sessionId || !isRefreshableMailboxSession(row.mailboxSession))
-        return;
+      if (!sessionId || !isRefreshableMailboxSession(row.mailboxSession)) return;
       setBatchRows((current) =>
         current.map((item) =>
           item.id === rowId
@@ -1711,9 +1508,7 @@ export default function UpstreamAccountCreatePage() {
                     ? item.mailboxError
                     : isExpiredIso(item.mailboxSession.expiresAt)
                       ? t("accountPool.upstreamAccounts.oauth.mailboxExpired")
-                      : t(
-                          "accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable",
-                        ),
+                      : t("accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable"),
               };
             }
             const previousCode = item.mailboxStatus?.latestCode?.value ?? null;
@@ -1738,13 +1533,10 @@ export default function UpstreamAccountCreatePage() {
               ? {
                   ...item,
                   mailboxRefreshBusy: false,
-                  mailboxNextRefreshAt:
-                    Date.now() + MAILBOX_REFRESH_INTERVAL_MS,
+                  mailboxNextRefreshAt: Date.now() + MAILBOX_REFRESH_INTERVAL_MS,
                   mailboxError: isExpiredIso(item.mailboxSession.expiresAt)
                     ? t("accountPool.upstreamAccounts.oauth.mailboxExpired")
-                    : t(
-                        "accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed",
-                      ),
+                    : t("accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed"),
                 }
               : item,
           ),
@@ -1973,13 +1765,9 @@ export default function UpstreamAccountCreatePage() {
     [markGroupUsed],
   );
 
-  const setRememberingApiKeyGroupName = useCallback(
-    (value: string) => {
-      setApiKeyGroupName(value);
-    },
-    [],
-  );
-
+  const setRememberingApiKeyGroupName = useCallback((value: string) => {
+    setApiKeyGroupName(value);
+  }, []);
 
   const {
     handleImportedOauthPasteDraftChange,
@@ -2032,7 +1820,6 @@ export default function UpstreamAccountCreatePage() {
     t,
     writesEnabled,
   });
-
 
   const {
     clearOauthMailboxSession,
@@ -2167,8 +1954,7 @@ export default function UpstreamAccountCreatePage() {
       const status = batchRowStatus(row);
       accumulator.total += 1;
       if (status === "completed") accumulator.completed += 1;
-      else if (status === "pending" || status === "completedNeedsRefresh")
-        accumulator.pending += 1;
+      else if (status === "pending" || status === "completedNeedsRefresh") accumulator.pending += 1;
       else accumulator.draft += 1;
       return accumulator;
     },
@@ -2378,7 +2164,6 @@ export default function UpstreamAccountCreatePage() {
     toggleBatchNoteExpanded,
     writesEnabled,
   };
-
 
   return (
     <UpstreamAccountCreateViewProvider value={viewContext}>

@@ -1,20 +1,20 @@
-import { Link } from "react-router-dom";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
-import { AppIcon } from "../shared/AppIcon";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
+import { useTranslation } from "../../i18n";
 import {
-  fetchUpstreamAccountAttempts,
-  locateUpstreamAccountAttempt,
   type ApiPoolUpstreamRequestAttempt,
   type ForwardProxyBindingNode,
+  fetchUpstreamAccountAttempts,
+  locateUpstreamAccountAttempt,
   type UpstreamAccountAttemptListResponse,
 } from "../../lib/api";
-import { useTranslation } from "../../i18n";
+import { AppIcon } from "../shared/AppIcon";
 
 const PAGE_SIZE = 50;
 
@@ -28,22 +28,12 @@ function attemptVariant(status: string) {
 
 function formatLatency(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "-";
-  return value >= 1000
-    ? `${(value / 1000).toFixed(2)} s`
-    : `${Math.round(value)} ms`;
+  return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${Math.round(value)} ms`;
 }
 
 function statusLabel(status: string, t: Translator) {
-  const known = new Set([
-    "success",
-    "pending",
-    "http_failure",
-    "transport_failure",
-    "failed",
-  ]);
-  return known.has(status)
-    ? t(`accountPool.upstreamAttempts.status.${status}`)
-    : status;
+  const known = new Set(["success", "pending", "http_failure", "transport_failure", "failed"]);
+  return known.has(status) ? t(`accountPool.upstreamAttempts.status.${status}`) : status;
 }
 
 function pendingPhaseLabel(phase: string | null | undefined, t: Translator) {
@@ -66,9 +56,7 @@ function compactProxyBindingKey(value: string) {
   return `${value.slice(0, 8)}...${value.slice(-6)}`;
 }
 
-function collectProxyBindingKeys(
-  items: ApiPoolUpstreamRequestAttempt[] | undefined,
-) {
+function collectProxyBindingKeys(items: ApiPoolUpstreamRequestAttempt[] | undefined) {
   return Array.from(
     new Set(
       (items ?? [])
@@ -109,13 +97,7 @@ function formatProxyBinding(
   return { value: compactProxyBindingKey(key), title: key, resolved: false };
 }
 
-function ModelMapping({
-  attempt,
-  t,
-}: {
-  attempt: ApiPoolUpstreamRequestAttempt;
-  t: Translator;
-}) {
+function ModelMapping({ attempt, t }: { attempt: ApiPoolUpstreamRequestAttempt; t: Translator }) {
   const requestModel =
     attempt.requestModel?.trim() ||
     attempt.model?.trim() ||
@@ -139,20 +121,12 @@ function ModelMapping({
   );
 }
 
-function AttemptResult({
-  attempt,
-  t,
-}: {
-  attempt: ApiPoolUpstreamRequestAttempt;
-  t: Translator;
-}) {
+function AttemptResult({ attempt, t }: { attempt: ApiPoolUpstreamRequestAttempt; t: Translator }) {
   const isPending = attempt.status === "pending";
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-1.5">
-        <Badge variant={attemptVariant(attempt.status)}>
-          {statusLabel(attempt.status, t)}
-        </Badge>
+        <Badge variant={attemptVariant(attempt.status)}>{statusLabel(attempt.status, t)}</Badge>
         {attempt.httpStatus != null ? (
           <span className="font-mono text-xs text-base-content/70">
             {t("accountPool.upstreamAttempts.upstreamHttp", {
@@ -162,9 +136,7 @@ function AttemptResult({
         ) : null}
       </div>
       {isPending ? (
-        <p className="text-xs text-base-content/60">
-          {pendingPhaseLabel(attempt.phase, t)}
-        </p>
+        <p className="text-xs text-base-content/60">{pendingPhaseLabel(attempt.phase, t)}</p>
       ) : null}
     </div>
   );
@@ -228,8 +200,7 @@ function AttemptEvidenceDisclosure({
   const [isOpen, setIsOpen] = useState(isFocused);
   const errorMessage = attempt.errorMessage?.trim() || "";
   const downstreamDiffers =
-    attempt.downstreamHttpStatus != null &&
-    attempt.downstreamHttpStatus !== attempt.httpStatus;
+    attempt.downstreamHttpStatus != null && attempt.downstreamHttpStatus !== attempt.httpStatus;
   const metadataItemClass = "flex items-baseline gap-1.5";
   const copyError = async () => {
     if (!errorMessage || !navigator.clipboard?.writeText) return;
@@ -265,10 +236,7 @@ function AttemptEvidenceDisclosure({
             <dt className="text-base-content/55">
               {t("accountPool.upstreamAttempts.proxyBinding")}
             </dt>
-            <dd
-              className={proxy.resolved ? "font-medium" : "font-mono"}
-              title={proxy.title}
-            >
+            <dd className={proxy.resolved ? "font-medium" : "font-mono"} title={proxy.title}>
               {proxy.value}
             </dd>
           </div>
@@ -277,19 +245,13 @@ function AttemptEvidenceDisclosure({
               <dt className="text-base-content/55">
                 {t("accountPool.upstreamAttempts.upstreamRequestId")}
               </dt>
-              <dd className="break-all font-mono">
-                {attempt.upstreamRequestId}
-              </dd>
+              <dd className="break-all font-mono">{attempt.upstreamRequestId}</dd>
             </div>
           ) : null}
           {attempt.upstreamRouteKey?.trim() ? (
             <div className={metadataItemClass}>
-              <dt className="text-base-content/55">
-                {t("accountPool.upstreamAttempts.routeKey")}
-              </dt>
-              <dd className="break-all font-mono">
-                {attempt.upstreamRouteKey}
-              </dd>
+              <dt className="text-base-content/55">{t("accountPool.upstreamAttempts.routeKey")}</dt>
+              <dd className="break-all font-mono">{attempt.upstreamRouteKey}</dd>
             </div>
           ) : null}
           {downstreamDiffers ? (
@@ -320,9 +282,7 @@ function AttemptEvidenceDisclosure({
             }
           >
             <div className="flex shrink-0 items-center gap-1.5">
-              <p className="text-base-content/55">
-                {t("accountPool.upstreamAttempts.fullError")}
-              </p>
+              <p className="text-base-content/55">{t("accountPool.upstreamAttempts.fullError")}</p>
               <Tooltip
                 content={
                   copied
@@ -341,11 +301,7 @@ function AttemptEvidenceDisclosure({
                     void copyError();
                   }}
                 >
-                  <AppIcon
-                    aria-hidden
-                    className="h-4 w-4"
-                    name="content-copy"
-                  />
+                  <AppIcon aria-hidden className="h-4 w-4" name="content-copy" />
                 </Button>
               </Tooltip>
             </div>
@@ -365,16 +321,12 @@ function AttemptEvidenceDisclosure({
   );
 }
 
-function hasAttemptEvidence(
-  attempt: ApiPoolUpstreamRequestAttempt,
-  includeTimings: boolean,
-) {
+function hasAttemptEvidence(attempt: ApiPoolUpstreamRequestAttempt, includeTimings: boolean) {
   return Boolean(
     includeTimings ||
       attempt.failureKind ||
       attempt.errorMessage?.trim() ||
-      (attempt.downstreamHttpStatus != null &&
-        attempt.downstreamHttpStatus !== attempt.httpStatus),
+      (attempt.downstreamHttpStatus != null && attempt.downstreamHttpStatus !== attempt.httpStatus),
   );
 }
 
@@ -384,13 +336,9 @@ function AttemptError({ attempt }: { attempt: ApiPoolUpstreamRequestAttempt }) {
     <div className="min-w-0">
       <p className="line-clamp-2 break-words text-xs leading-5 text-base-content/75">
         {attempt.failureKind ? (
-          <span className="font-mono text-base-content/85">
-            {attempt.failureKind}
-          </span>
+          <span className="font-mono text-base-content/85">{attempt.failureKind}</span>
         ) : null}
-        {attempt.failureKind && message ? (
-          <span className="text-base-content/45"> · </span>
-        ) : null}
+        {attempt.failureKind && message ? <span className="text-base-content/45"> · </span> : null}
         {message || (attempt.failureKind ? null : "-")}
       </p>
     </div>
@@ -410,12 +358,8 @@ function AttemptTime({
   if (Number.isNaN(time.valueOf())) return <>{attempt.occurredAt}</>;
   return (
     <time dateTime={attempt.occurredAt}>
-      <span className="block whitespace-nowrap">
-        {dateFormatter.format(time)}
-      </span>
-      <span className="block whitespace-nowrap">
-        {timeFormatter.format(time)}
-      </span>
+      <span className="block whitespace-nowrap">{dateFormatter.format(time)}</span>
+      <span className="block whitespace-nowrap">{timeFormatter.format(time)}</span>
     </time>
   );
 }
@@ -428,15 +372,13 @@ export function UpstreamAccountAttemptTimeline({
   focusedAttemptId: number | null;
 }) {
   const { t, locale } = useTranslation();
-  const [response, setResponse] =
-    useState<UpstreamAccountAttemptListResponse | null>(null);
+  const [response, setResponse] = useState<UpstreamAccountAttemptListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const dateFormatter = useMemo(
-    () =>
-      new Intl.DateTimeFormat(localeTag, { month: "2-digit", day: "2-digit" }),
+    () => new Intl.DateTimeFormat(localeTag, { month: "2-digit", day: "2-digit" }),
     [localeTag],
   );
   const timeFormatter = useMemo(
@@ -453,10 +395,9 @@ export function UpstreamAccountAttemptTimeline({
     () => collectProxyBindingKeys(response?.items),
     [response?.items],
   );
-  const { nodes: proxyBindingNodes } = useForwardProxyBindingNodes(
-    proxyBindingKeys,
-    { enabled: proxyBindingKeys.length > 0 },
-  );
+  const { nodes: proxyBindingNodes } = useForwardProxyBindingNodes(proxyBindingKeys, {
+    enabled: proxyBindingKeys.length > 0,
+  });
   const proxyBindingNodesByKey = useMemo(
     () => buildProxyBindingNodeMap(proxyBindingNodes),
     [proxyBindingNodes],
@@ -481,13 +422,11 @@ export function UpstreamAccountAttemptTimeline({
           });
     void request
       .then((next) => {
-        if (controller.signal.aborted || requestSeq !== requestSeqRef.current)
-          return;
+        if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
         setResponse(next);
       })
       .catch((requestError) => {
-        if (controller.signal.aborted || requestSeq !== requestSeqRef.current)
-          return;
+        if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
         setResponse(null);
         setError(
           focusedAttemptId != null &&
@@ -500,8 +439,7 @@ export function UpstreamAccountAttemptTimeline({
         );
       })
       .finally(() => {
-        if (!controller.signal.aborted && requestSeq === requestSeqRef.current)
-          setLoading(false);
+        if (!controller.signal.aborted && requestSeq === requestSeqRef.current) setLoading(false);
       });
     return () => controller.abort();
   }, [accountId, focusedAttemptId, t]);
@@ -517,11 +455,7 @@ export function UpstreamAccountAttemptTimeline({
       })
       .catch((requestError) => {
         if (requestSeq === requestSeqRef.current)
-          setError(
-            requestError instanceof Error
-              ? requestError.message
-              : String(requestError),
-          );
+          setError(requestError instanceof Error ? requestError.message : String(requestError));
       })
       .finally(() => {
         if (requestSeq === requestSeqRef.current) setLoading(false);
@@ -537,9 +471,7 @@ export function UpstreamAccountAttemptTimeline({
   if (error) return <Alert variant="warning">{error}</Alert>;
   if (!response || response.items.length === 0)
     return (
-      <p className="text-sm text-base-content/68">
-        {t("accountPool.upstreamAttempts.empty")}
-      </p>
+      <p className="text-sm text-base-content/68">{t("accountPool.upstreamAttempts.empty")}</p>
     );
 
   return (
@@ -584,69 +516,59 @@ export function UpstreamAccountAttemptTimeline({
           </thead>
           <tbody className="divide-y divide-base-300/70">
             {response.items.map((attempt) => {
-              const proxy = formatProxyBinding(
-                attempt,
-                proxyBindingNodesByKey,
-                t,
-              );
+              const proxy = formatProxyBinding(attempt, proxyBindingNodesByKey, t);
               return (
                 <Fragment key={attempt.id}>
                   <tr
                     className={
-                      attempt.id === focusedAttemptId
-                        ? "bg-info/10"
-                        : "hover:bg-base-200/35"
+                      attempt.id === focusedAttemptId ? "bg-info/10" : "hover:bg-base-200/35"
                     }
                     data-attempt-id={attempt.id}
                     data-testid={`account-attempt-record-${attempt.id}`}
                   >
-                  <td className="min-w-24 px-3 py-3 align-top font-mono text-xs tabular-nums text-base-content/70">
-                    <AttemptTime
-                      attempt={attempt}
-                      dateFormatter={dateFormatter}
-                      timeFormatter={timeFormatter}
-                    />
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-3 align-top font-mono text-xs">
-                    <Link
-                      className="inline-block whitespace-nowrap text-info underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                      title={attempt.invokeId}
-                      to={`/records?requestId=${encodeURIComponent(attempt.invokeId)}&rangePreset=7d`}
-                    >
-                      {attempt.invokeId}
-                    </Link>
-                  </td>
-                  <td className="px-3 py-3 align-top">
-                    <ModelMapping attempt={attempt} t={t} />
-                  </td>
-                  <td className="px-3 py-3 align-top">
-                    <AttemptResult attempt={attempt} t={t} />
-                  </td>
-                  <td className="px-3 py-3 align-top">
-                    <span
-                      className={
-                        proxy.resolved
-                          ? "block max-w-40 truncate font-medium"
-                          : "block max-w-40 truncate font-mono text-xs"
-                      }
-                      title={proxy.title}
-                    >
-                      {proxy.value}
-                    </span>
-                  </td>
-                  <td className="px-3 py-3 align-top font-mono text-xs tabular-nums text-base-content/75">
-                    <AttemptTiming attempt={attempt} t={t} />
-                  </td>
+                    <td className="min-w-24 px-3 py-3 align-top font-mono text-xs tabular-nums text-base-content/70">
+                      <AttemptTime
+                        attempt={attempt}
+                        dateFormatter={dateFormatter}
+                        timeFormatter={timeFormatter}
+                      />
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-3 align-top font-mono text-xs">
+                      <Link
+                        className="inline-block whitespace-nowrap text-info underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                        title={attempt.invokeId}
+                        to={`/records?requestId=${encodeURIComponent(attempt.invokeId)}&rangePreset=7d`}
+                      >
+                        {attempt.invokeId}
+                      </Link>
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                      <ModelMapping attempt={attempt} t={t} />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                      <AttemptResult attempt={attempt} t={t} />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                      <span
+                        className={
+                          proxy.resolved
+                            ? "block max-w-40 truncate font-medium"
+                            : "block max-w-40 truncate font-mono text-xs"
+                        }
+                        title={proxy.title}
+                      >
+                        {proxy.value}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 align-top font-mono text-xs tabular-nums text-base-content/75">
+                      <AttemptTiming attempt={attempt} t={t} />
+                    </td>
                     <td className="px-3 py-3 align-top">
                       <AttemptError attempt={attempt} />
                     </td>
                   </tr>
                   {hasAttemptEvidence(attempt, false) ? (
-                    <tr
-                      className={
-                        attempt.id === focusedAttemptId ? "bg-info/10" : ""
-                      }
-                    >
+                    <tr className={attempt.id === focusedAttemptId ? "bg-info/10" : ""}>
                       <td className="px-3 pb-3 pt-0" colSpan={7}>
                         <AttemptEvidenceDisclosure
                           attempt={attempt}
@@ -671,33 +593,19 @@ export function UpstreamAccountAttemptTimeline({
         >
           <thead className="border-b border-base-300/70 bg-base-200/55 text-base-content/65">
             <tr>
-              <th className="w-16 px-2 py-2">
-                {t("accountPool.upstreamAttempts.columns.time")}
-              </th>
-              <th className="px-2 py-2">
-                {t("accountPool.upstreamAttempts.columns.call")}
-              </th>
-              <th className="w-20 px-2 py-2">
-                {t("accountPool.upstreamAttempts.columns.result")}
-              </th>
-              <th className="px-2 py-2">
-                {t("accountPool.upstreamAttempts.columns.error")}
-              </th>
+              <th className="w-16 px-2 py-2">{t("accountPool.upstreamAttempts.columns.time")}</th>
+              <th className="px-2 py-2">{t("accountPool.upstreamAttempts.columns.call")}</th>
+              <th className="w-20 px-2 py-2">{t("accountPool.upstreamAttempts.columns.result")}</th>
+              <th className="px-2 py-2">{t("accountPool.upstreamAttempts.columns.error")}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-base-300/70">
             {response.items.map((attempt) => {
-              const proxy = formatProxyBinding(
-                attempt,
-                proxyBindingNodesByKey,
-                t,
-              );
+              const proxy = formatProxyBinding(attempt, proxyBindingNodesByKey, t);
               return (
                 <Fragment key={attempt.id}>
                   <tr
-                    className={
-                      attempt.id === focusedAttemptId ? "bg-info/10" : ""
-                    }
+                    className={attempt.id === focusedAttemptId ? "bg-info/10" : ""}
                     data-attempt-id={attempt.id}
                   >
                     <td className="px-2 py-2 align-top font-mono tabular-nums text-base-content/70">
@@ -727,11 +635,7 @@ export function UpstreamAccountAttemptTimeline({
                     </td>
                   </tr>
                   {hasAttemptEvidence(attempt, true) ? (
-                    <tr
-                      className={
-                        attempt.id === focusedAttemptId ? "bg-info/10" : ""
-                      }
-                    >
+                    <tr className={attempt.id === focusedAttemptId ? "bg-info/10" : ""}>
                       <td className="px-2 pb-2 pt-0" colSpan={4}>
                         <AttemptEvidenceDisclosure
                           attempt={attempt}
@@ -761,9 +665,7 @@ export function UpstreamAccountAttemptTimeline({
         <Button
           variant="outline"
           size="sm"
-          disabled={
-            loading || response.page * response.pageSize >= response.total
-          }
+          disabled={loading || response.page * response.pageSize >= response.total}
           onClick={() => loadPage(response.page + 1)}
         >
           {t("accountPool.upstreamAttempts.next")}

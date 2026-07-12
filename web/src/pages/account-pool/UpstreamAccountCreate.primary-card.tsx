@@ -1,4 +1,3 @@
-import { AppIcon } from "../../features/shared/AppIcon";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -9,9 +8,10 @@ import {
 } from "../../components/ui/card";
 import { Tooltip } from "../../components/ui/tooltip";
 import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
-import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
+import { AppIcon } from "../../features/shared/AppIcon";
 import { UpstreamAccountCreateApiKeySection } from "./UpstreamAccountCreate.api-key-section";
 import { UpstreamAccountCreateBatchOauthSection } from "./UpstreamAccountCreate.batch-oauth-section";
+import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 import { UpstreamAccountCreateImportSection } from "./UpstreamAccountCreate.import-section";
 import { UpstreamAccountCreateOauthSection } from "./UpstreamAccountCreate.oauth-section";
 
@@ -46,23 +46,15 @@ export function UpstreamAccountCreatePrimaryCard() {
               <Tooltip
                 content={buildActionTooltip(
                   t("accountPool.upstreamAccounts.batchOauth.createTitle"),
-                  t(
-                    "accountPool.upstreamAccounts.batchOauth.createDescription",
-                  ),
+                  t("accountPool.upstreamAccounts.batchOauth.createDescription"),
                 )}
               >
                 <button
                   type="button"
                   className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-base-300/70 bg-base-100/72 text-base-content/55 transition hover:border-base-300 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  aria-label={t(
-                    "accountPool.upstreamAccounts.batchOauth.createDescription",
-                  )}
+                  aria-label={t("accountPool.upstreamAccounts.batchOauth.createDescription")}
                 >
-                  <AppIcon
-                    name="information-outline"
-                    className="h-4 w-4"
-                    aria-hidden
-                  />
+                  <AppIcon name="information-outline" className="h-4 w-4" aria-hidden />
                 </button>
               </Tooltip>
             </div>
@@ -72,27 +64,18 @@ export function UpstreamAccountCreatePrimaryCard() {
                   name="batchOauthDefaultGroupName"
                   value={batchDefaultGroupName}
                   options={groupOptions}
-                  placeholder={t(
-                    "accountPool.upstreamAccounts.batchOauth.defaultGroupPlaceholder",
-                  )}
+                  placeholder={t("accountPool.upstreamAccounts.batchOauth.defaultGroupPlaceholder")}
                   searchPlaceholder={t(
                     "accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder",
                   )}
-                  emptyLabel={t(
-                    "accountPool.upstreamAccounts.fields.groupNameEmpty",
-                  )}
+                  emptyLabel={t("accountPool.upstreamAccounts.fields.groupNameEmpty")}
                   createLabel={(value) =>
-                    t(
-                      "accountPool.upstreamAccounts.fields.groupNameConfigureValue",
-                      { value },
-                    )
+                    t("accountPool.upstreamAccounts.fields.groupNameConfigureValue", { value })
                   }
                   onCreateRequested={handleBatchDefaultGroupCreateRequest}
                   formatAccountCountLabel={formatGroupAccountCountLabel}
                   onValueChange={handleBatchDefaultGroupChange}
-                  ariaLabel={t(
-                    "accountPool.upstreamAccounts.batchOauth.defaultGroupLabel",
-                  )}
+                  ariaLabel={t("accountPool.upstreamAccounts.batchOauth.defaultGroupLabel")}
                   disabled={!writesEnabled || hasBatchMetadataBusy}
                   className="min-w-0 flex-1"
                   triggerClassName="h-10 min-w-0 whitespace-nowrap rounded-lg"
@@ -100,18 +83,10 @@ export function UpstreamAccountCreatePrimaryCard() {
                 <Button
                   type="button"
                   size="icon"
-                  variant={
-                    hasGroupSettings(batchDefaultGroupName)
-                      ? "secondary"
-                      : "outline"
-                  }
+                  variant={hasGroupSettings(batchDefaultGroupName) ? "secondary" : "outline"}
                   className="h-10 w-10 shrink-0 rounded-full"
-                  aria-label={t(
-                    "accountPool.upstreamAccounts.groupNotes.actions.edit",
-                  )}
-                  title={t(
-                    "accountPool.upstreamAccounts.groupNotes.actions.edit",
-                  )}
+                  aria-label={t("accountPool.upstreamAccounts.groupNotes.actions.edit")}
+                  title={t("accountPool.upstreamAccounts.groupNotes.actions.edit")}
                   onClick={() => openGroupNoteEditor(batchDefaultGroupName)}
                   disabled={
                     !writesEnabled ||
@@ -119,11 +94,7 @@ export function UpstreamAccountCreatePrimaryCard() {
                     !normalizeGroupName(batchDefaultGroupName)
                   }
                 >
-                  <AppIcon
-                    name="file-document-edit-outline"
-                    className="h-4 w-4"
-                    aria-hidden
-                  />
+                  <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
                 </Button>
               </div>
               <Button
@@ -133,11 +104,7 @@ export function UpstreamAccountCreatePrimaryCard() {
                 disabled={!writesEnabled || hasBatchMetadataBusy}
                 className="h-10 shrink-0 rounded-lg"
               >
-                <AppIcon
-                  name="playlist-plus"
-                  className="mr-2 h-4 w-4"
-                  aria-hidden
-                />
+                <AppIcon name="playlist-plus" className="mr-2 h-4 w-4" aria-hidden />
                 {t("accountPool.upstreamAccounts.batchOauth.actions.addRow")}
               </Button>
             </div>
@@ -150,30 +117,22 @@ export function UpstreamAccountCreatePrimaryCard() {
                 : activeTab === "import"
                   ? t("accountPool.upstreamAccounts.import.createTitle")
                   : activeTab === "importSession"
-                    ? t(
-                        "accountPool.upstreamAccounts.importSession.createTitle",
-                      )
-                  : t("accountPool.upstreamAccounts.apiKey.createTitle")}
+                    ? t("accountPool.upstreamAccounts.importSession.createTitle")
+                    : t("accountPool.upstreamAccounts.apiKey.createTitle")}
             </CardTitle>
             <CardDescription>
               {activeTab === "oauth"
                 ? t("accountPool.upstreamAccounts.oauth.createDescription")
                 : activeTab === "import"
-                  ? t(
-                      "accountPool.upstreamAccounts.import.createDescription",
-                    )
+                  ? t("accountPool.upstreamAccounts.import.createDescription")
                   : activeTab === "importSession"
-                    ? t(
-                        "accountPool.upstreamAccounts.importSession.createDescription",
-                      )
-                  : t("accountPool.upstreamAccounts.apiKey.createDescription")}
+                    ? t("accountPool.upstreamAccounts.importSession.createDescription")
+                    : t("accountPool.upstreamAccounts.apiKey.createDescription")}
             </CardDescription>
           </>
         )}
       </CardHeader>
-      <CardContent
-        className={cn("grid gap-4", activeTab === "apiKey" && "md:grid-cols-2")}
-      >
+      <CardContent className={cn("grid gap-4", activeTab === "apiKey" && "md:grid-cols-2")}>
         {activeTab === "oauth" ? (
           <UpstreamAccountCreateOauthSection />
         ) : activeTab === "batchOauth" ? (

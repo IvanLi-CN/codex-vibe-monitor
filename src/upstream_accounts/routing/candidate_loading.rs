@@ -185,7 +185,7 @@ pub(crate) async fn load_effective_routing_rule_for_group(
         return Ok(rule);
     };
     let mut group_policy_overrides =
-        load_group_routing_policy_override_map(pool, &[group_name.clone()]).await?;
+        load_group_routing_policy_override_map(pool, std::slice::from_ref(&group_name)).await?;
     if let Some(group_policy) = group_policy_overrides.remove(&group_name) {
         apply_group_routing_policy_override(&mut rule, &group_policy);
     }

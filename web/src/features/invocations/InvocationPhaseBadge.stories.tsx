@@ -1,10 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
-import {
-  InvocationPhaseBadge,
-  InvocationPhaseSegments,
-} from "./InvocationPhaseBadge";
+import { InvocationPhaseBadge, InvocationPhaseSegments } from "./InvocationPhaseBadge";
 
 const meta = {
   title: "Components/InvocationPhaseBadge",
@@ -62,23 +59,13 @@ export const RecordPhases: Story = {
     const badges = await canvas.findAllByTestId("invocation-phase-badge");
     expect(badges).toHaveLength(3);
     const icons = await canvas.findAllByTestId("invocation-phase-icon");
-    expect(icons[1]?.getAttribute("data-phase-icon-name")).toBe(
-      "navigation-variant",
-    );
-    expect(icons[1]?.className).toContain(
-      "animate-invocation-phase-requesting",
-    );
+    expect(icons[1]?.getAttribute("data-phase-icon-name")).toBe("navigation-variant");
+    expect(icons[1]?.className).toContain("animate-invocation-phase-requesting");
     expect(icons[2]?.className).toContain("animate-spin");
     expect(icons[2]?.getAttribute("data-phase-icon-name")).toBe("sync");
-    expect(icons[4]?.getAttribute("data-phase-icon-name")).toBe(
-      "navigation-variant",
-    );
-    expect(icons[5]?.getAttribute("data-phase-icon-name")).toBe(
-      "chat-processing-outline",
-    );
-    expect(icons[4]?.className).not.toContain(
-      "animate-invocation-phase-requesting",
-    );
+    expect(icons[4]?.getAttribute("data-phase-icon-name")).toBe("navigation-variant");
+    expect(icons[5]?.getAttribute("data-phase-icon-name")).toBe("chat-processing-outline");
+    expect(icons[4]?.className).not.toContain("animate-invocation-phase-requesting");
     expect(icons[5]?.className).not.toContain("animate-spin");
   },
 };
@@ -128,17 +115,11 @@ export const SummarySegments: Story = {
       expect(segment.getAttribute("data-phase-motion")).toBe("static");
     }
     for (const icon of icons) {
-      expect(icon.className).not.toContain(
-        "animate-invocation-phase-requesting",
-      );
+      expect(icon.className).not.toContain("animate-invocation-phase-requesting");
       expect(icon.className).not.toContain("animate-pulse");
       expect(icon.className).not.toContain("animate-spin");
     }
-    expect(icons[1]?.getAttribute("data-phase-icon-name")).toBe(
-      "navigation-variant",
-    );
-    expect(icons[2]?.getAttribute("data-phase-icon-name")).toBe(
-      "chat-processing-outline",
-    );
+    expect(icons[1]?.getAttribute("data-phase-icon-name")).toBe("navigation-variant");
+    expect(icons[2]?.getAttribute("data-phase-icon-name")).toBe("chat-processing-outline");
   },
 };

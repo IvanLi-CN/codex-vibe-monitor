@@ -1,5 +1,5 @@
 use super::*;
-use anyhow::{anyhow, bail};
+use anyhow::anyhow;
 use sqlx::FromRow;
 use tracing::warn;
 

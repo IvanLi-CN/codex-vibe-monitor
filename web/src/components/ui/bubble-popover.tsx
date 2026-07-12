@@ -1,17 +1,16 @@
 import * as React from "react";
+import { cn } from "../../lib/utils";
 import {
+  type BubbleVariant,
   bubbleArrowClassName,
   bubbleArrowStyle,
   bubbleContentClassName,
   bubbleSurfaceStyle,
-  type BubbleVariant,
 } from "./bubble";
 import { PopoverArrow, PopoverContent } from "./popover";
 import { usePortaledTheme } from "./use-portaled-theme";
-import { cn } from "../../lib/utils";
 
-interface BubblePopoverContentProps
-  extends React.ComponentPropsWithoutRef<typeof PopoverContent> {
+interface BubblePopoverContentProps extends React.ComponentPropsWithoutRef<typeof PopoverContent> {
   anchorElement?: HTMLElement | null;
   variant?: BubbleVariant;
   arrowWidth?: number;

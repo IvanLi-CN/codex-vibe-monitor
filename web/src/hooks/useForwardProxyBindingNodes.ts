@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  fetchForwardProxyBindingNodes,
-  type ForwardProxyBindingNode,
-} from "../lib/api";
+import { type ForwardProxyBindingNode, fetchForwardProxyBindingNodes } from "../lib/api";
 import type { ForwardProxyCatalogState } from "./useUpstreamAccounts";
 
 type UseForwardProxyBindingNodesOptions = {
@@ -13,9 +10,7 @@ type UseForwardProxyBindingNodesOptions = {
 function normalizeBindingNodeKeys(keys?: string[]) {
   if (!Array.isArray(keys)) return [];
   return Array.from(
-    new Set(
-      keys.map((value) => value.trim()).filter((value) => value.length > 0),
-    ),
+    new Set(keys.map((value) => value.trim()).filter((value) => value.length > 0)),
   ).sort((left, right) => left.localeCompare(right));
 }
 
@@ -24,10 +19,7 @@ function normalizeOptionalGroupName(groupName?: string) {
   return normalized ? normalized : null;
 }
 
-function buildForwardProxyBindingNodesQueryKey(
-  keys: string[],
-  groupName: string | null,
-) {
+function buildForwardProxyBindingNodesQueryKey(keys: string[], groupName: string | null) {
   return JSON.stringify({ keys, groupName });
 }
 
@@ -43,12 +35,7 @@ export function useForwardProxyBindingNodes(
   const normalizedKeys = useMemo(() => normalizeBindingNodeKeys(keys), [keys]);
   const currentQueryKey = useMemo(
     () =>
-      enabled
-        ? buildForwardProxyBindingNodesQueryKey(
-            normalizedKeys,
-            normalizedGroupName,
-          )
-        : null,
+      enabled ? buildForwardProxyBindingNodesQueryKey(normalizedKeys, normalizedGroupName) : null,
     [enabled, normalizedGroupName, normalizedKeys],
   );
   const [nodes, setNodes] = useState<ForwardProxyBindingNode[] | null>(null);
@@ -115,8 +102,7 @@ export function useForwardProxyBindingNodes(
     void refresh();
   }, [enabled, refresh]);
 
-  const hasCurrentQueryData =
-    currentQueryKey != null && dataQueryKey === currentQueryKey;
+  const hasCurrentQueryData = currentQueryKey != null && dataQueryKey === currentQueryKey;
   const freshness: ForwardProxyCatalogState["freshness"] = !enabled
     ? "deferred"
     : hasCurrentQueryData

@@ -22,21 +22,11 @@ vi.mock("recharts", () => ({
     </div>
   ),
   CartesianGrid: () => <div data-testid="parallel-work-grid" />,
-  XAxis: ({
-    ticks,
-  }: {
-    ticks?: number[];
-  }) => (
-    <div
-      data-testid="parallel-work-x-axis"
-      data-tick-count={ticks?.length ?? 0}
-    />
+  XAxis: ({ ticks }: { ticks?: number[] }) => (
+    <div data-testid="parallel-work-x-axis" data-tick-count={ticks?.length ?? 0} />
   ),
   YAxis: ({ tickCount }: { tickCount?: number }) => (
-    <div
-      data-testid="parallel-work-y-axis"
-      data-tick-count={tickCount ?? 0}
-    />
+    <div data-testid="parallel-work-y-axis" data-tick-count={tickCount ?? 0} />
   ),
   Area: ({ dot }: { dot?: false | ((props: Record<string, unknown>) => ReactNode) }) => (
     <div data-testid="parallel-work-area-series">
@@ -53,19 +43,14 @@ vi.mock("recharts", () => ({
 class MockPointerEvent extends MouseEvent {
   pointerType: string;
 
-  constructor(
-    type: string,
-    init: MouseEventInit & { pointerType?: string } = {},
-  ) {
+  constructor(type: string, init: MouseEventInit & { pointerType?: string } = {}) {
     super(type, init);
     this.pointerType = init.pointerType ?? "mouse";
   }
 }
 
 vi.mock("../../components/ui/alert", () => ({
-  Alert: ({ children }: { children: React.ReactNode }) => (
-    <div role="alert">{children}</div>
-  ),
+  Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
 }));
 
 vi.mock("../../i18n", () => ({
@@ -74,8 +59,7 @@ vi.mock("../../i18n", () => ({
     t: (key: string, values?: Record<string, string | number>) => {
       const map: Record<string, string> = {
         "stats.parallelWork.title": "Parallel work",
-        "stats.parallelWork.description":
-          "Track active prompt-cache conversations.",
+        "stats.parallelWork.description": "Track active prompt-cache conversations.",
         "stats.parallelWork.loading": "Loading parallel-work buckets…",
         "stats.parallelWork.empty": "No complete buckets yet.",
         "stats.parallelWork.chartAria": `${values?.title ?? ""} trend`,
@@ -280,33 +264,17 @@ const populatedStats: ParallelWorkStatsResponse = {
 
 describe("ParallelWorkStatsSection", () => {
   it("renders the current page-period card without internal window controls", () => {
-    render(
-      <ParallelWorkStatsSection
-        stats={populatedStats}
-        isLoading={false}
-        error={null}
-      />,
-    );
+    render(<ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />);
 
-    expect(
-      host?.querySelector('[data-testid="parallel-work-window-toggle"]'),
-    ).toBeNull();
-    expect(
-      host?.querySelectorAll('[data-testid^="parallel-work-card-"]'),
-    ).toHaveLength(1);
-    expect(
-      host?.querySelector('[data-testid="parallel-work-card-current"]'),
-    ).not.toBeNull();
-    expect(
-      host?.querySelector('[data-testid="parallel-work-card-minute7d"]'),
-    ).toBeNull();
+    expect(host?.querySelector('[data-testid="parallel-work-window-toggle"]')).toBeNull();
+    expect(host?.querySelectorAll('[data-testid^="parallel-work-card-"]')).toHaveLength(1);
+    expect(host?.querySelector('[data-testid="parallel-work-card-current"]')).not.toBeNull();
+    expect(host?.querySelector('[data-testid="parallel-work-card-minute7d"]')).toBeNull();
     expect(host?.textContent).toContain("Parallel work");
     expect(host?.textContent).toContain("4.67");
     expect(host?.textContent).not.toContain("Last 7 days · by minute");
     expect(host?.textContent).not.toContain("Minute buckets");
-    expect(host?.textContent).not.toContain(
-      "10080 complete buckets · 4132 active buckets",
-    );
+    expect(host?.textContent).not.toContain("10080 complete buckets · 4132 active buckets");
     const chart = host?.querySelector(
       '[data-chart-kind="parallel-work-sparkline"]',
     ) as HTMLElement | null;
@@ -325,18 +293,12 @@ describe("ParallelWorkStatsSection", () => {
     expect(
       chart?.querySelector('[data-testid="parallel-work-responsive-container"]'),
     ).not.toBeNull();
+    expect(chart?.querySelector('[data-testid="parallel-work-area-chart"]')).not.toBeNull();
     expect(
-      chart?.querySelector('[data-testid="parallel-work-area-chart"]'),
-    ).not.toBeNull();
-    expect(
-      chart
-        ?.querySelector('[data-testid="parallel-work-x-axis"]')
-        ?.getAttribute("data-tick-count"),
+      chart?.querySelector('[data-testid="parallel-work-x-axis"]')?.getAttribute("data-tick-count"),
     ).toBe("3");
     expect(
-      chart
-        ?.querySelector('[data-testid="parallel-work-y-axis"]')
-        ?.getAttribute("data-tick-count"),
+      chart?.querySelector('[data-testid="parallel-work-y-axis"]')?.getAttribute("data-tick-count"),
     ).toBe("3");
     expect(section).not.toBeNull();
     expect(heading).not.toBeNull();
@@ -345,13 +307,7 @@ describe("ParallelWorkStatsSection", () => {
   });
 
   it("collapses current period details into a question-mark tooltip", () => {
-    render(
-      <ParallelWorkStatsSection
-        stats={populatedStats}
-        isLoading={false}
-        error={null}
-      />,
-    );
+    render(<ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />);
 
     const trigger = document.querySelector(
       'button[aria-label="Explain Parallel work details"]',
@@ -367,19 +323,11 @@ describe("ParallelWorkStatsSection", () => {
     ) as HTMLElement;
     expect(tooltip.textContent).toContain("Parallel work");
     expect(tooltip.textContent).toContain("Track active prompt-cache conversations.");
-    expect(tooltip.textContent).toContain(
-      "10080 complete buckets · 4132 active buckets",
-    );
+    expect(tooltip.textContent).toContain("10080 complete buckets · 4132 active buckets");
   });
 
   it("shows inline tooltip details on click for the active window chart", () => {
-    render(
-      <ParallelWorkStatsSection
-        stats={populatedStats}
-        isLoading={false}
-        error={null}
-      />,
-    );
+    render(<ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />);
 
     const container = document.querySelector(
       '[aria-label="Parallel work trend"]',
@@ -404,9 +352,7 @@ describe("ParallelWorkStatsSection", () => {
       );
     });
 
-    const tooltip = document.body.querySelector(
-      '[role="tooltip"]',
-    ) as HTMLElement | null;
+    const tooltip = document.body.querySelector('[role="tooltip"]') as HTMLElement | null;
     expect(tooltip).not.toBeNull();
     expect(tooltip?.textContent).toContain("Parallel work");
     expect(tooltip?.textContent).toContain("4");
@@ -439,23 +385,13 @@ describe("ParallelWorkStatsSection", () => {
       },
     };
 
-    render(
-      <ParallelWorkStatsSection
-        stats={dayCurrent}
-        isLoading={false}
-        error={null}
-      />,
-    );
+    render(<ParallelWorkStatsSection stats={dayCurrent} isLoading={false} error={null} />);
 
-    expect(
-      host?.querySelector('[data-testid="parallel-work-conversation-gantt"]'),
-    ).not.toBeNull();
-    expect(
-      host?.querySelectorAll('[data-testid="parallel-work-conversation-bar"]'),
-    ).toHaveLength(2);
-    expect(
-      host?.querySelector('[data-chart-mode="conversation-gantt"]'),
-    ).not.toBeNull();
+    expect(host?.querySelector('[data-testid="parallel-work-conversation-gantt"]')).not.toBeNull();
+    expect(host?.querySelectorAll('[data-testid="parallel-work-conversation-bar"]')).toHaveLength(
+      2,
+    );
+    expect(host?.querySelector('[data-chart-mode="conversation-gantt"]')).not.toBeNull();
     expect(host?.textContent).toContain("#1");
     expect(host?.textContent).toContain("#2");
   });
@@ -478,27 +414,15 @@ describe("ParallelWorkStatsSection", () => {
       },
     };
 
-    render(
-      <ParallelWorkStatsSection
-        stats={longCurrent}
-        isLoading={false}
-        error={null}
-      />,
-    );
+    render(<ParallelWorkStatsSection stats={longCurrent} isLoading={false} error={null} />);
 
-    const chart = host?.querySelector(
-      '[data-chart-kind="parallel-work-sparkline"]',
-    );
-    expect(
-      chart?.querySelector('[data-testid="parallel-work-conversation-gantt"]'),
-    ).toBeNull();
+    const chart = host?.querySelector('[data-chart-kind="parallel-work-sparkline"]');
+    expect(chart?.querySelector('[data-testid="parallel-work-conversation-gantt"]')).toBeNull();
     expect(chart?.getAttribute("data-chart-mode")).toBe("recharts-area");
     expect(
       chart?.querySelector('[data-testid="parallel-work-responsive-container"]'),
     ).not.toBeNull();
-    expect(
-      chart?.querySelector('[data-testid="parallel-work-area-chart"]'),
-    ).not.toBeNull();
+    expect(chart?.querySelector('[data-testid="parallel-work-area-chart"]')).not.toBeNull();
   });
 
   it("uses the current window data supplied by the page", () => {
@@ -507,20 +431,10 @@ describe("ParallelWorkStatsSection", () => {
       current: populatedStats.hour30d,
     };
 
-    render(
-      <ParallelWorkStatsSection
-        stats={hourCurrent}
-        isLoading={false}
-        error={null}
-      />,
-    );
+    render(<ParallelWorkStatsSection stats={hourCurrent} isLoading={false} error={null} />);
 
-    expect(
-      host?.querySelector('[data-testid="parallel-work-card-minute7d"]'),
-    ).toBeNull();
-    expect(
-      host?.querySelector('[data-testid="parallel-work-card-current"]'),
-    ).not.toBeNull();
+    expect(host?.querySelector('[data-testid="parallel-work-card-minute7d"]')).toBeNull();
+    expect(host?.querySelector('[data-testid="parallel-work-card-current"]')).not.toBeNull();
     expect(host?.textContent).toContain("2.13");
   });
 
@@ -540,27 +454,15 @@ describe("ParallelWorkStatsSection", () => {
       },
     };
 
-    render(
-      <ParallelWorkStatsSection
-        stats={emptyCurrent}
-        isLoading={false}
-        error={null}
-      />,
-    );
+    render(<ParallelWorkStatsSection stats={emptyCurrent} isLoading={false} error={null} />);
 
-    const card = host?.querySelector(
-      '[data-testid="parallel-work-card-current"]',
-    );
+    const card = host?.querySelector('[data-testid="parallel-work-card-current"]');
     expect(card?.textContent).toContain("No complete buckets yet.");
     expect(card?.textContent).toContain("—");
   });
 
   it("renders a section-level error alert", () => {
-    render(
-      <ParallelWorkStatsSection stats={null} isLoading={false} error="boom" />,
-    );
-    expect(host?.querySelector('[role="alert"]')?.textContent).toContain(
-      "boom",
-    );
+    render(<ParallelWorkStatsSection stats={null} isLoading={false} error="boom" />);
+    expect(host?.querySelector('[role="alert"]')?.textContent).toContain("boom");
   });
 });

@@ -12,21 +12,20 @@ import type {
 import { clearTimeseriesRemountCache, useTimeseries } from "./useTimeseries";
 
 const apiMocks = vi.hoisted(() => ({
-  fetchTimeseries: vi.fn<
-    (
-      range: string,
-      params?: {
-        bucket?: string;
-        settlementHour?: number;
-        timeZone?: string;
-        signal?: AbortSignal;
-      },
-    ) => Promise<TimeseriesResponse>
-  >(),
-  fetchInvocationRecords:
+  fetchTimeseries:
     vi.fn<
-      (query: InvocationRecordsQuery) => Promise<InvocationRecordsResponse>
+      (
+        range: string,
+        params?: {
+          bucket?: string;
+          settlementHour?: number;
+          timeZone?: string;
+          signal?: AbortSignal;
+        },
+      ) => Promise<TimeseriesResponse>
     >(),
+  fetchInvocationRecords:
+    vi.fn<(query: InvocationRecordsQuery) => Promise<InvocationRecordsResponse>>(),
 }));
 
 const sseMocks = vi.hoisted(() => ({
@@ -35,8 +34,7 @@ const sseMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
     fetchTimeseries: apiMocks.fetchTimeseries,
@@ -125,9 +123,9 @@ function dispatchPageShow({ persisted }: { persisted: boolean }) {
 
 function emitRecords(records: ApiInvocation[]) {
   act(() => {
-    sseMocks.listeners.forEach((listener) =>
-      listener({ type: "records", records }),
-    );
+    sseMocks.listeners.forEach((listener) => {
+      listener({ type: "records", records });
+    });
   });
 }
 
@@ -179,9 +177,7 @@ function createSettledRecord(): ApiInvocation {
   };
 }
 
-function createRecordsPage(
-  records: ApiInvocation[],
-): InvocationRecordsResponse {
+function createRecordsPage(records: ApiInvocation[]): InvocationRecordsResponse {
   return {
     snapshotId: 1,
     total: records.length,
@@ -245,16 +241,12 @@ describe("useTimeseries remount cache hydration", () => {
       },
     };
 
-    apiMocks.fetchTimeseries
-      .mockResolvedValueOnce(response)
-      .mockImplementationOnce(
-        () =>
-          new Promise<TimeseriesResponse>((resolve) => {
-            silentRefresh.resolve = resolve as (
-              value: TimeseriesResponse,
-            ) => void;
-          }),
-      );
+    apiMocks.fetchTimeseries.mockResolvedValueOnce(response).mockImplementationOnce(
+      () =>
+        new Promise<TimeseriesResponse>((resolve) => {
+          silentRefresh.resolve = resolve as (value: TimeseriesResponse) => void;
+        }),
+    );
     apiMocks.fetchInvocationRecords.mockImplementation(async ({ status }) =>
       createRecordsPage(status === "running" ? [runningRecord] : []),
     );
@@ -405,16 +397,12 @@ describe("useTimeseries remount cache hydration", () => {
       },
     };
 
-    apiMocks.fetchTimeseries
-      .mockResolvedValueOnce(response)
-      .mockImplementationOnce(
-        () =>
-          new Promise<TimeseriesResponse>((resolve) => {
-            silentRefresh.resolve = resolve as (
-              value: TimeseriesResponse,
-            ) => void;
-          }),
-      );
+    apiMocks.fetchTimeseries.mockResolvedValueOnce(response).mockImplementationOnce(
+      () =>
+        new Promise<TimeseriesResponse>((resolve) => {
+          silentRefresh.resolve = resolve as (value: TimeseriesResponse) => void;
+        }),
+    );
     apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
 
     render(<Probe />);
@@ -475,16 +463,12 @@ describe("useTimeseries remount cache hydration", () => {
       },
     };
 
-    apiMocks.fetchTimeseries
-      .mockResolvedValueOnce(response)
-      .mockImplementationOnce(
-        () =>
-          new Promise<TimeseriesResponse>((resolve) => {
-            silentRefresh.resolve = resolve as (
-              value: TimeseriesResponse,
-            ) => void;
-          }),
-      );
+    apiMocks.fetchTimeseries.mockResolvedValueOnce(response).mockImplementationOnce(
+      () =>
+        new Promise<TimeseriesResponse>((resolve) => {
+          silentRefresh.resolve = resolve as (value: TimeseriesResponse) => void;
+        }),
+    );
     apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
 
     render(<Probe />);
@@ -539,9 +523,7 @@ describe("useTimeseries remount cache hydration", () => {
       .mockImplementationOnce(
         () =>
           new Promise<TimeseriesResponse>((resolve) => {
-            silentRefresh.resolve = resolve as (
-              value: TimeseriesResponse,
-            ) => void;
+            silentRefresh.resolve = resolve as (value: TimeseriesResponse) => void;
           }),
       )
       .mockResolvedValue(refreshedResponse);
@@ -584,9 +566,7 @@ describe("useTimeseries remount cache hydration", () => {
     const settledRecord = createSettledRecord();
 
     apiMocks.fetchTimeseries.mockResolvedValue(response);
-    apiMocks.fetchInvocationRecords.mockRejectedValue(
-      new Error("seed sync unavailable"),
-    );
+    apiMocks.fetchInvocationRecords.mockRejectedValue(new Error("seed sync unavailable"));
 
     render(<Probe />);
     await flushAsync();

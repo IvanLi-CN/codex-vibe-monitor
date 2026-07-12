@@ -1,11 +1,6 @@
 use super::*;
 use anyhow::anyhow;
-use chrono::LocalResult;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::FromRow;
-use tokio::sync::{broadcast, watch};
-use tracing::{debug, warn};
 
 pub(crate) fn split_exact_range_by_retention(
     live_ranges: &mut Vec<ExactUtcRange>,

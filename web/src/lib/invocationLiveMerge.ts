@@ -54,10 +54,7 @@ function recordCompletenessScore(record: ApiInvocation) {
   if (record.promptCacheKey?.trim()) score += 1;
   if (record.requesterIp?.trim()) score += 1;
   if (record.upstreamAccountName?.trim()) score += 1;
-  if (
-    typeof record.upstreamAccountId === "number" &&
-    Number.isFinite(record.upstreamAccountId)
-  ) {
+  if (typeof record.upstreamAccountId === "number" && Number.isFinite(record.upstreamAccountId)) {
     score += 1;
   }
   if (record.responseContentEncoding?.trim()) score += 1;
@@ -71,16 +68,10 @@ function recordCompletenessScore(record: ApiInvocation) {
   if (typeof record.outputTokens === "number" && Number.isFinite(record.outputTokens)) {
     score += 1;
   }
-  if (
-    typeof record.cacheInputTokens === "number" &&
-    Number.isFinite(record.cacheInputTokens)
-  ) {
+  if (typeof record.cacheInputTokens === "number" && Number.isFinite(record.cacheInputTokens)) {
     score += 1;
   }
-  if (
-    typeof record.reasoningTokens === "number" &&
-    Number.isFinite(record.reasoningTokens)
-  ) {
+  if (typeof record.reasoningTokens === "number" && Number.isFinite(record.reasoningTokens)) {
     score += 1;
   }
   if (
@@ -116,7 +107,10 @@ function recordCompletenessScore(record: ApiInvocation) {
   if (record.upstreamErrorCode?.trim()) score += 1;
   if (record.upstreamErrorMessage?.trim()) score += 1;
   if (record.errorMessage?.trim()) score += 2;
-  if (typeof record.downstreamStatusCode === "number" && Number.isFinite(record.downstreamStatusCode)) {
+  if (
+    typeof record.downstreamStatusCode === "number" &&
+    Number.isFinite(record.downstreamStatusCode)
+  ) {
     score += 1;
   }
   if (record.downstreamErrorMessage?.trim()) score += 1;
@@ -125,19 +119,13 @@ function recordCompletenessScore(record: ApiInvocation) {
 
 function compareRecordRuntimeProgress(current: ApiInvocation, next: ApiInvocation) {
   const fields: Array<[number | null, number | null]> = [
-    [
-      comparableNumber(current.poolAttemptCount),
-      comparableNumber(next.poolAttemptCount),
-    ],
+    [comparableNumber(current.poolAttemptCount), comparableNumber(next.poolAttemptCount)],
     [
       comparableNumber(current.poolDistinctAccountCount),
       comparableNumber(next.poolDistinctAccountCount),
     ],
     [comparableNumber(current.tUpstreamTtfbMs), comparableNumber(next.tUpstreamTtfbMs)],
-    [
-      comparableNumber(current.tUpstreamStreamMs),
-      comparableNumber(next.tUpstreamStreamMs),
-    ],
+    [comparableNumber(current.tUpstreamStreamMs), comparableNumber(next.tUpstreamStreamMs)],
     [comparableNumber(current.tRespParseMs), comparableNumber(next.tRespParseMs)],
     [comparableNumber(current.tPersistMs), comparableNumber(next.tPersistMs)],
     [comparableNumber(current.tTotalMs), comparableNumber(next.tTotalMs)],
@@ -240,9 +228,7 @@ export function mergeInvocationRecordDetails(
       const preferredValue = merged[field];
       const fallbackValue = fallback[field];
       if (
-        !hasMeaningfulString(
-          typeof preferredValue === "string" ? preferredValue : undefined,
-        ) &&
+        !hasMeaningfulString(typeof preferredValue === "string" ? preferredValue : undefined) &&
         hasMeaningfulString(typeof fallbackValue === "string" ? fallbackValue : undefined)
       ) {
         merged[field] = fallbackValue as never;
@@ -280,9 +266,7 @@ export function mergeInvocationRecordDetails(
     const preferredValue = merged[field];
     const fallbackValue = fallback[field];
     if (
-      !hasComparableNumber(
-        typeof preferredValue === "number" ? preferredValue : undefined,
-      ) &&
+      !hasComparableNumber(typeof preferredValue === "number" ? preferredValue : undefined) &&
       hasComparableNumber(typeof fallbackValue === "number" ? fallbackValue : undefined)
     ) {
       merged[field] = fallbackValue as never;
@@ -302,8 +286,7 @@ export function mergeInvocationRecordDetails(
 
 export function sortInvocationRecords(records: ApiInvocation[]) {
   return [...records].sort(
-    (left, right) =>
-      new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime(),
+    (left, right) => new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime(),
   );
 }
 
@@ -315,8 +298,7 @@ export function mergeInvocationRecordCollections(...collections: ApiInvocation[]
       const key = invocationStableKey(record);
       const current = dedupe.get(key);
       const comparison = compareInvocationRecordPreference(current, record);
-      const preferred =
-        current == null || comparison >= 0 ? record : current;
+      const preferred = current == null || comparison >= 0 ? record : current;
       const fallback = preferred === record ? current : record;
       dedupe.set(key, mergeInvocationRecordDetails(preferred, fallback));
     }

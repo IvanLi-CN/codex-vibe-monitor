@@ -20,8 +20,7 @@ const { apiMocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
+  const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
     fetchInvocationPoolAttempts: apiMocks.fetchInvocationPoolAttempts,
@@ -110,8 +109,7 @@ function createPreview(
     failureClass: overrides.failureClass ?? null,
     routeMode: overrides.routeMode ?? "forward_proxy",
     model: overrides.model ?? "gpt-5.4",
-    requestModel:
-      "requestModel" in overrides ? (overrides.requestModel ?? null) : "gpt-5.4",
+    requestModel: "requestModel" in overrides ? (overrides.requestModel ?? null) : "gpt-5.4",
     responseModel:
       "responseModel" in overrides
         ? (overrides.responseModel ?? null)
@@ -120,8 +118,7 @@ function createPreview(
     cost: overrides.cost ?? 0.0182,
     proxyDisplayName: overrides.proxyDisplayName ?? "tokyo-edge-01",
     upstreamAccountId: overrides.upstreamAccountId ?? 42,
-    upstreamAccountName:
-      overrides.upstreamAccountName ?? "pool-alpha@example.com",
+    upstreamAccountName: overrides.upstreamAccountName ?? "pool-alpha@example.com",
     endpoint: overrides.endpoint ?? "/v1/responses",
     source: overrides.source ?? "proxy",
     inputTokens: overrides.inputTokens ?? 148,
@@ -258,9 +255,7 @@ function createSelection(
   };
 }
 
-function createRecordsResponse(
-  records: ApiInvocation[],
-): InvocationRecordsResponse {
+function createRecordsResponse(records: ApiInvocation[]): InvocationRecordsResponse {
   return {
     snapshotId: 1,
     total: records.length,
@@ -282,13 +277,7 @@ describe("DashboardInvocationDetailDrawer model details", () => {
     );
     apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([]);
 
-    render(
-      <DashboardInvocationDetailDrawer
-        open
-        selection={selection}
-        onClose={() => {}}
-      />,
-    );
+    render(<DashboardInvocationDetailDrawer open selection={selection} onClose={() => {}} />);
 
     await waitFor(() =>
       Boolean(
@@ -324,9 +313,8 @@ describe("DashboardInvocationDetailDrawer", () => {
 
     await waitFor(
       () =>
-        document.body.querySelector(
-          'button[title="pool-alpha@example.com"]',
-        ) instanceof HTMLButtonElement,
+        document.body.querySelector('button[title="pool-alpha@example.com"]') instanceof
+        HTMLButtonElement,
     );
 
     expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
@@ -336,9 +324,7 @@ describe("DashboardInvocationDetailDrawer", () => {
       sortOrder: "desc",
     });
 
-    const accountButton = document.body.querySelector(
-      'button[title="pool-alpha@example.com"]',
-    );
+    const accountButton = document.body.querySelector('button[title="pool-alpha@example.com"]');
     if (!(accountButton instanceof HTMLButtonElement)) {
       throw new Error("missing account button");
     }
@@ -347,48 +333,36 @@ describe("DashboardInvocationDetailDrawer", () => {
       accountButton.click();
     });
 
-    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(
-      42,
-      "pool-alpha@example.com",
-    );
+    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "pool-alpha@example.com");
   });
 
-  it(
-    "shows the bare conversation hash in the drawer header while keeping prompt cache key visible",
-    async () => {
-      apiMocks.fetchInvocationRecords.mockResolvedValue(
-        createRecordsResponse([createRecord()]),
-      );
+  it("shows the bare conversation hash in the drawer header while keeping prompt cache key visible", async () => {
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([createRecord()]));
 
-      render(
-        <DashboardInvocationDetailDrawer
-          open
-          selection={createSelection()}
-          onClose={() => undefined}
-        />,
-      );
+    render(
+      <DashboardInvocationDetailDrawer
+        open
+        selection={createSelection()}
+        onClose={() => undefined}
+      />,
+    );
 
-      await waitFor(
-        () =>
-          document.body.querySelector(
-            '[data-testid="dashboard-invocation-detail-drawer"]',
-          ) != null,
-      );
+    await waitFor(
+      () =>
+        document.body.querySelector('[data-testid="dashboard-invocation-detail-drawer"]') != null,
+    );
 
-      const drawer = document.body.querySelector(
-        '[data-testid="dashboard-invocation-detail-drawer"]',
-      );
-      if (!(drawer instanceof HTMLElement)) {
-        throw new Error("missing invocation drawer header");
-      }
+    const drawer = document.body.querySelector(
+      '[data-testid="dashboard-invocation-detail-drawer"]',
+    );
+    if (!(drawer instanceof HTMLElement)) {
+      throw new Error("missing invocation drawer header");
+    }
 
-      expect(drawer.textContent ?? "").toContain("AB364A");
-      expect(drawer.textContent ?? "").not.toContain("WC-AB364A");
-      expect(drawer.textContent ?? "").toContain(
-        "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
-      );
-    },
-  );
+    expect(drawer.textContent ?? "").toContain("AB364A");
+    expect(drawer.textContent ?? "").not.toContain("WC-AB364A");
+    expect(drawer.textContent ?? "").toContain("019d5ea7-519d-7312-a2e8-ef07abb7c09f");
+  });
 
   it("renders interrupted status with the dedicated recovery badge", async () => {
     apiMocks.fetchInvocationRecords.mockResolvedValue(
@@ -425,9 +399,7 @@ describe("DashboardInvocationDetailDrawer", () => {
       />,
     );
 
-    await waitFor(() =>
-      (document.body.textContent ?? "").includes("table.status.interrupted"),
-    );
+    await waitFor(() => (document.body.textContent ?? "").includes("table.status.interrupted"));
 
     const text = document.body.textContent ?? "";
     expect(text).toContain("table.status.interrupted");
@@ -435,9 +407,7 @@ describe("DashboardInvocationDetailDrawer", () => {
   });
 
   it("shows the empty state inside the drawer when the full lookup returns no record", async () => {
-    apiMocks.fetchInvocationRecords.mockResolvedValue(
-      createRecordsResponse([]),
-    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([]));
 
     render(
       <DashboardInvocationDetailDrawer
@@ -449,22 +419,16 @@ describe("DashboardInvocationDetailDrawer", () => {
 
     await waitFor(
       () =>
-        document.body.querySelector(
-          '[data-testid="dashboard-invocation-detail-empty"]',
-        ) != null,
+        document.body.querySelector('[data-testid="dashboard-invocation-detail-empty"]') != null,
     );
 
     expect(
-      document.body.querySelector(
-        '[data-testid="dashboard-invocation-detail-error"]',
-      ),
+      document.body.querySelector('[data-testid="dashboard-invocation-detail-error"]'),
     ).toBeNull();
   });
 
   it("shows the lookup error inside the drawer when the full record request fails", async () => {
-    apiMocks.fetchInvocationRecords.mockRejectedValue(
-      new Error("lookup failed"),
-    );
+    apiMocks.fetchInvocationRecords.mockRejectedValue(new Error("lookup failed"));
 
     render(
       <DashboardInvocationDetailDrawer
@@ -476,9 +440,7 @@ describe("DashboardInvocationDetailDrawer", () => {
 
     await waitFor(
       () =>
-        document.body.querySelector(
-          '[data-testid="dashboard-invocation-detail-error"]',
-        ) != null,
+        document.body.querySelector('[data-testid="dashboard-invocation-detail-error"]') != null,
     );
 
     expect(document.body.textContent ?? "").toContain("lookup failed");
@@ -519,15 +481,11 @@ describe("DashboardInvocationDetailDrawer", () => {
       />,
     );
 
-    await waitFor(
-      () => apiMocks.fetchInvocationRecordDetail.mock.calls.length > 0,
-    );
+    await waitFor(() => apiMocks.fetchInvocationRecordDetail.mock.calls.length > 0);
 
     expect(apiMocks.fetchInvocationRecordDetail).toHaveBeenCalledWith(501);
     expect(apiMocks.fetchInvocationResponseBody).toHaveBeenCalledWith(501);
-    expect(document.body.textContent ?? "").toContain(
-      '{"error":"preview","trace":"full"}',
-    );
+    expect(document.body.textContent ?? "").toContain('{"error":"preview","trace":"full"}');
   });
 
   it("does not request DB-backed abnormal details for transient live records", async () => {
@@ -537,9 +495,7 @@ describe("DashboardInvocationDetailDrawer", () => {
       failureClass: "service_failure",
       errorMessage: "upstream exploded before placeholder flush",
     });
-    apiMocks.fetchInvocationRecords.mockResolvedValue(
-      createRecordsResponse([liveRecord]),
-    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([liveRecord]));
 
     render(
       <DashboardInvocationDetailDrawer

@@ -1,7 +1,5 @@
-import { useMemo, useState } from 'react'
-import { AppIcon } from '../shared/AppIcon'
-import { Button } from '../../components/ui/button'
-import { formControlSizeVariants, type FormControlSize } from '../../components/ui/form-control'
+import { useMemo, useState } from "react";
+import { Button } from "../../components/ui/button";
 import {
   Command,
   CommandEmpty,
@@ -10,54 +8,56 @@ import {
   CommandItem,
   CommandList,
   CommandSeparator,
-} from '../../components/ui/command'
-import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
-import type { UpstreamAccountGroupOption } from '../../lib/upstreamAccountGroups'
-import { cn } from '../../lib/utils'
+} from "../../components/ui/command";
+import { type FormControlSize, formControlSizeVariants } from "../../components/ui/form-control";
+import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
+import type { UpstreamAccountGroupOption } from "../../lib/upstreamAccountGroups";
+import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
 
 interface UpstreamAccountGroupComboboxProps {
-  value: string
-  onValueChange: (value: string) => void
-  suggestions?: string[]
-  options?: UpstreamAccountGroupOption[]
-  disabled?: boolean
-  name?: string
-  placeholder?: string
-  searchPlaceholder?: string
-  emptyLabel?: string
-  createLabel?: (value: string) => string
-  onCreateRequested?: (value: string) => void
-  formatAccountCountLabel?: (count: number) => string
-  ariaLabel?: string
-  className?: string
-  triggerClassName?: string
-  size?: FormControlSize
+  value: string;
+  onValueChange: (value: string) => void;
+  suggestions?: string[];
+  options?: UpstreamAccountGroupOption[];
+  disabled?: boolean;
+  name?: string;
+  placeholder?: string;
+  searchPlaceholder?: string;
+  emptyLabel?: string;
+  createLabel?: (value: string) => string;
+  onCreateRequested?: (value: string) => void;
+  formatAccountCountLabel?: (count: number) => string;
+  ariaLabel?: string;
+  className?: string;
+  triggerClassName?: string;
+  size?: FormControlSize;
 }
 
 function normalizeOptions(
   suggestions: string[] | undefined,
   options: UpstreamAccountGroupOption[] | undefined,
 ) {
-  const deduped = new Map<string, UpstreamAccountGroupOption>()
+  const deduped = new Map<string, UpstreamAccountGroupOption>();
   for (const option of options ?? []) {
-    const normalized = option.groupName.trim()
+    const normalized = option.groupName.trim();
     if (normalized) {
       deduped.set(normalized, {
         groupName: normalized,
         accountCount: option.accountCount,
         isPersisted: option.isPersisted,
-      })
+      });
     }
   }
   for (const suggestion of suggestions ?? []) {
-    const normalized = suggestion.trim()
+    const normalized = suggestion.trim();
     if (normalized && !deduped.has(normalized)) {
       deduped.set(normalized, {
         groupName: normalized,
-      })
+      });
     }
   }
-  return Array.from(deduped.values())
+  return Array.from(deduped.values());
 }
 
 export function UpstreamAccountGroupCombobox({
@@ -69,44 +69,41 @@ export function UpstreamAccountGroupCombobox({
   name,
   placeholder,
   searchPlaceholder,
-  emptyLabel = 'No groups found.',
+  emptyLabel = "No groups found.",
   createLabel = (nextValue) => `Use "${nextValue}"`,
   onCreateRequested,
   formatAccountCountLabel = (count) => String(count),
   ariaLabel,
   className,
   triggerClassName,
-  size = 'default',
+  size = "default",
 }: UpstreamAccountGroupComboboxProps) {
-  const [open, setOpen] = useState(false)
-  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const uniqueOptions = useMemo(
     () => normalizeOptions(suggestions, options),
     [options, suggestions],
-  )
-  const trimmedValue = value.trim()
-  const trimmedQuery = query.trim()
+  );
+  const trimmedValue = value.trim();
+  const trimmedQuery = query.trim();
   const showCreateOption =
-    trimmedQuery.length > 0
-    && !uniqueOptions.some(
-      (option) => option.groupName === trimmedQuery,
-    )
+    trimmedQuery.length > 0 && !uniqueOptions.some((option) => option.groupName === trimmedQuery);
 
   const commitValue = (nextValue: string) => {
-    onValueChange(nextValue)
-    setQuery('')
-    setOpen(false)
-  }
+    onValueChange(nextValue);
+    setQuery("");
+    setOpen(false);
+  };
 
   const handleCreate = () => {
-    setQuery('')
-    setOpen(false)
+    setQuery("");
+    setOpen(false);
     if (onCreateRequested) {
-      onCreateRequested(trimmedQuery)
-      return
+      onCreateRequested(trimmedQuery);
+      return;
     }
-    onValueChange(trimmedQuery)
-  }
+    onValueChange(trimmedQuery);
+  };
 
   return (
     <div className={className}>
@@ -115,12 +112,12 @@ export function UpstreamAccountGroupCombobox({
         open={disabled ? false : open}
         onOpenChange={(nextOpen) => {
           if (disabled) {
-            setOpen(false)
-            return
+            setOpen(false);
+            return;
           }
-          setOpen(nextOpen)
+          setOpen(nextOpen);
           if (!nextOpen) {
-            setQuery('')
+            setQuery("");
           }
         }}
       >
@@ -133,31 +130,35 @@ export function UpstreamAccountGroupCombobox({
             aria-label={ariaLabel}
             disabled={disabled}
             className={cn(
-              'w-full justify-between bg-base-100 text-left font-normal hover:bg-base-100',
-              'border-base-300 text-base-content shadow-sm',
+              "w-full justify-between bg-base-100 text-left font-normal hover:bg-base-100",
+              "border-base-300 text-base-content shadow-sm",
               formControlSizeVariants({ size }),
-              !trimmedValue && 'text-base-content/45',
+              !trimmedValue && "text-base-content/45",
               triggerClassName,
             )}
           >
             <span className="truncate">{trimmedValue || placeholder}</span>
-            <AppIcon name="chevron-down" className="ml-2 h-4 w-4 shrink-0 text-base-content/45" aria-hidden />
+            <AppIcon
+              name="chevron-down"
+              className="ml-2 h-4 w-4 shrink-0 text-base-content/45"
+              aria-hidden
+            />
           </Button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
           <Command shouldFilter>
-            <CommandInput
-              value={query}
-              placeholder={searchPlaceholder}
-              onValueChange={setQuery}
-            />
+            <CommandInput value={query} placeholder={searchPlaceholder} onValueChange={setQuery} />
             <CommandList>
               <CommandEmpty>{emptyLabel}</CommandEmpty>
               <CommandGroup>
                 {showCreateOption ? (
                   <>
                     <CommandItem value={trimmedQuery} onSelect={handleCreate}>
-                      <AppIcon name="plus-circle-outline" className="mr-2 h-4 w-4 text-primary" aria-hidden />
+                      <AppIcon
+                        name="plus-circle-outline"
+                        className="mr-2 h-4 w-4 text-primary"
+                        aria-hidden
+                      />
                       <span className="truncate">{createLabel(trimmedQuery)}</span>
                     </CommandItem>
                     <CommandSeparator />
@@ -172,14 +173,14 @@ export function UpstreamAccountGroupCombobox({
                     <AppIcon
                       name="check"
                       className={cn(
-                        'mr-2 h-4 w-4 text-primary transition-opacity',
-                        option.groupName === trimmedValue ? 'opacity-100' : 'opacity-0',
+                        "mr-2 h-4 w-4 text-primary transition-opacity",
+                        option.groupName === trimmedValue ? "opacity-100" : "opacity-0",
                       )}
                       aria-hidden
                     />
                     <div className="flex min-w-0 flex-1 items-center gap-2">
                       <span className="truncate">{option.groupName}</span>
-                      {typeof option.accountCount === 'number' ? (
+                      {typeof option.accountCount === "number" ? (
                         <span className="ml-auto shrink-0 rounded-full border border-base-300/80 bg-base-200/70 px-2 py-0.5 text-[11px] font-medium text-base-content/70">
                           {formatAccountCountLabel(option.accountCount)}
                         </span>
@@ -193,5 +194,5 @@ export function UpstreamAccountGroupCombobox({
         </PopoverContent>
       </Popover>
     </div>
-  )
+  );
 }

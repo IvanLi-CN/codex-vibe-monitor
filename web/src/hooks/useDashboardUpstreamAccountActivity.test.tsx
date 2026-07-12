@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
-import React, { act } from "react";
+import type React from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type {
@@ -7,14 +8,14 @@ import type {
   PromptCacheConversationInvocationPreview,
 } from "../lib/api";
 import {
-  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
-  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
-} from "./useDashboardWorkingConversations";
-import {
   resolveUpstreamAccountRecentPreviewLimit,
   useDashboardActivitySnapshot,
   useDashboardUpstreamAccountActivity,
 } from "./useDashboardUpstreamAccountActivity";
+import {
+  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
+} from "./useDashboardWorkingConversations";
 
 const apiMocks = vi.hoisted(() => ({
   fetchDashboardActivity:
@@ -32,8 +33,7 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
     fetchDashboardActivity: apiMocks.fetchDashboardActivity,
@@ -102,15 +102,13 @@ function createPreview(
   return {
     id: overrides.id,
     invokeId: overrides.invokeId,
-    promptCacheKey:
-      "promptCacheKey" in overrides ? (overrides.promptCacheKey ?? null) : null,
+    promptCacheKey: "promptCacheKey" in overrides ? (overrides.promptCacheKey ?? null) : null,
     occurredAt: overrides.occurredAt,
     status: overrides.status,
     failureClass: overrides.failureClass ?? "none",
     routeMode: overrides.routeMode ?? "pool",
     model: overrides.model ?? "gpt-5.4",
-    requestModel:
-      "requestModel" in overrides ? (overrides.requestModel ?? null) : "gpt-5.4",
+    requestModel: "requestModel" in overrides ? (overrides.requestModel ?? null) : "gpt-5.4",
     responseModel:
       "responseModel" in overrides
         ? (overrides.responseModel ?? null)
@@ -118,21 +116,13 @@ function createPreview(
     totalTokens: overrides.totalTokens ?? 120,
     cost: overrides.cost ?? 0.01,
     proxyDisplayName:
-      "proxyDisplayName" in overrides
-        ? (overrides.proxyDisplayName ?? null)
-        : "tokyo-edge-01",
+      "proxyDisplayName" in overrides ? (overrides.proxyDisplayName ?? null) : "tokyo-edge-01",
     upstreamAccountId:
-      "upstreamAccountId" in overrides
-        ? (overrides.upstreamAccountId ?? null)
-        : 42,
+      "upstreamAccountId" in overrides ? (overrides.upstreamAccountId ?? null) : 42,
     upstreamAccountName:
-      "upstreamAccountName" in overrides
-        ? (overrides.upstreamAccountName ?? null)
-        : "Pool Alpha",
+      "upstreamAccountName" in overrides ? (overrides.upstreamAccountName ?? null) : "Pool Alpha",
     upstreamAccountPlanType:
-      "upstreamAccountPlanType" in overrides
-        ? (overrides.upstreamAccountPlanType ?? null)
-        : null,
+      "upstreamAccountPlanType" in overrides ? (overrides.upstreamAccountPlanType ?? null) : null,
     endpoint: overrides.endpoint ?? "/v1/responses",
     compactionRequestKind: overrides.compactionRequestKind ?? null,
     compactionResponseKind: overrides.compactionResponseKind ?? null,
@@ -164,10 +154,7 @@ function createAccountResponse(
   inProgressInvocationCount: number,
   recentInvocations: PromptCacheConversationInvocationPreview[],
 ): DashboardActivityResponse {
-  const totalTokens = recentInvocations.reduce(
-    (sum, item) => sum + item.totalTokens,
-    0,
-  );
+  const totalTokens = recentInvocations.reduce((sum, item) => sum + item.totalTokens, 0);
   return {
     range: "today",
     rangeStart: "2026-04-04T10:00:00Z",
@@ -199,13 +186,9 @@ function createAccountResponse(
         groupName: "Primary",
         planType: "enterprise",
         requestCount: recentInvocations.length,
-        successCount: recentInvocations.filter((item) => item.status === "success")
-          .length,
-        failureCount: recentInvocations.filter((item) => item.status === "failed")
-          .length,
-        nonSuccessCount: recentInvocations.filter(
-          (item) => item.status === "failed",
-        ).length,
+        successCount: recentInvocations.filter((item) => item.status === "success").length,
+        failureCount: recentInvocations.filter((item) => item.status === "failed").length,
+        nonSuccessCount: recentInvocations.filter((item) => item.status === "failed").length,
         totalTokens,
         successTokens: 480,
         nonSuccessTokens: 120,
@@ -245,8 +228,12 @@ function Probe({
   range?: string;
   recentInvocationLimit?: number;
 }) {
-  const { data, isLoading, error, recentInvocationLimit: visibleLimit } =
-    useDashboardUpstreamAccountActivity(range, enabled, recentInvocationLimit);
+  const {
+    data,
+    isLoading,
+    error,
+    recentInvocationLimit: visibleLimit,
+  } = useDashboardUpstreamAccountActivity(range, enabled, recentInvocationLimit);
 
   return (
     <div>
@@ -271,11 +258,7 @@ function SnapshotProbe({
 }) {
   const { data } = useDashboardActivitySnapshot(range, enabled, includeAccounts);
 
-  return (
-    <div data-testid="snapshot-accounts">
-      {String(data?.accounts?.length ?? 0)}
-    </div>
-  );
+  return <div data-testid="snapshot-accounts">{String(data?.accounts?.length ?? 0)}</div>;
 }
 
 describe("resolveUpstreamAccountRecentPreviewLimit", () => {
@@ -299,11 +282,9 @@ describe("resolveUpstreamAccountRecentPreviewLimit", () => {
   });
 
   it("clamps to the configured maximum", () => {
-    expect(
-      resolveUpstreamAccountRecentPreviewLimit([
-        { inProgressInvocationCount: 18 },
-      ]),
-    ).toBe(DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX);
+    expect(resolveUpstreamAccountRecentPreviewLimit([{ inProgressInvocationCount: 18 }])).toBe(
+      DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+    );
   });
 });
 
@@ -348,9 +329,7 @@ describe("useDashboardUpstreamAccountActivity", () => {
       ),
     );
 
-    apiMocks.fetchDashboardActivity
-      .mockResolvedValueOnce(first)
-      .mockResolvedValueOnce(second);
+    apiMocks.fetchDashboardActivity.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
 
     render(<Probe />);
     await flushAsync();

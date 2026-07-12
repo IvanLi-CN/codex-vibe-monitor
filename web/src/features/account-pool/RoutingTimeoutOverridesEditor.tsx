@@ -1,4 +1,3 @@
-import { AppIcon } from "../shared/AppIcon";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -9,14 +8,15 @@ import type {
 } from "../../lib/api";
 import {
   DEFAULT_TIMEOUT_FIELD_SOURCES,
-  ROUTING_TIMEOUT_FIELD_ORDER,
   getRoutingTimeoutFieldSource,
-  sourceTokenToUiLabel,
+  ROUTING_TIMEOUT_FIELD_ORDER,
   type RoutingTimeoutFieldKey,
   type RoutingTimeoutOverrideDraft,
   type RoutingTimeoutOverrideEnabledState,
+  sourceTokenToUiLabel,
 } from "../../lib/poolRoutingTimeouts";
 import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
 
 export type RoutingTimeoutEditorLabels = {
   sectionTitle: string;
@@ -77,14 +77,10 @@ export function RoutingTimeoutOverridesEditor({
 }: RoutingTimeoutOverridesEditorProps) {
   const resolvedSources = sources ?? DEFAULT_TIMEOUT_FIELD_SOURCES;
   const resolvedEffective: PoolRoutingTimeoutSettings = {
-    responsesFirstByteTimeoutSecs:
-      effective?.responsesFirstByteTimeoutSecs ?? 120,
-    compactFirstByteTimeoutSecs:
-      effective?.compactFirstByteTimeoutSecs ?? 300,
-    responsesStreamTimeoutSecs:
-      effective?.responsesStreamTimeoutSecs ?? 300,
-    compactStreamTimeoutSecs:
-      effective?.compactStreamTimeoutSecs ?? 300,
+    responsesFirstByteTimeoutSecs: effective?.responsesFirstByteTimeoutSecs ?? 120,
+    compactFirstByteTimeoutSecs: effective?.compactFirstByteTimeoutSecs ?? 300,
+    responsesStreamTimeoutSecs: effective?.responsesStreamTimeoutSecs ?? 300,
+    compactStreamTimeoutSecs: effective?.compactStreamTimeoutSecs ?? 300,
   };
 
   return (
@@ -99,9 +95,7 @@ export function RoutingTimeoutOverridesEditor({
       <div className="space-y-1">
         <p className="font-medium text-base-content">{labels.sectionTitle}</p>
         {labels.sectionHint ? (
-          <p className="text-xs leading-5 text-base-content/65">
-            {labels.sectionHint}
-          </p>
+          <p className="text-xs leading-5 text-base-content/65">{labels.sectionHint}</p>
         ) : null}
       </div>
       <div className="mt-4 overflow-hidden rounded-xl border border-base-300/70">
@@ -119,14 +113,9 @@ export function RoutingTimeoutOverridesEditor({
               conversation: labels.sourceConversation,
             });
             return (
-              <div
-                key={field.key}
-                className="border-b border-base-300/60 last:border-b-0"
-              >
+              <div key={field.key} className="border-b border-base-300/60 last:border-b-0">
                 <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,1fr)_auto_auto_2rem] sm:items-center sm:gap-2">
-                  <span className="min-w-0 font-medium text-base-content/80">
-                    {field.label}
-                  </span>
+                  <span className="min-w-0 font-medium text-base-content/80">{field.label}</span>
                   <span className="whitespace-nowrap text-base-content">
                     {effectiveValue}
                     {labels.secondsSuffix ?? "s"}
@@ -135,10 +124,7 @@ export function RoutingTimeoutOverridesEditor({
                     <span className="text-xs text-base-content/65">
                       {expanded ? labels.overrideValue : labels.inheritedValue}
                     </span>
-                    <Badge
-                      className="w-fit"
-                      variant={sourceVariant(source)}
-                    >
+                    <Badge className="w-fit" variant={sourceVariant(source)}>
                       {sourceLabel}
                     </Badge>
                   </div>
@@ -157,11 +143,7 @@ export function RoutingTimeoutOverridesEditor({
                   >
                     <AppIcon
                       name={
-                        busy
-                          ? "loading"
-                          : expanded
-                            ? "check-decagram-outline"
-                            : "pencil-outline"
+                        busy ? "loading" : expanded ? "check-decagram-outline" : "pencil-outline"
                       }
                       className={cn("h-4 w-4", busy ? "animate-spin" : "")}
                       aria-hidden
@@ -181,9 +163,7 @@ export function RoutingTimeoutOverridesEditor({
                           min="1"
                           step="1"
                           value={rawOverride}
-                          onChange={(event) =>
-                            onDraftChange(field.key, event.target.value)
-                          }
+                          onChange={(event) => onDraftChange(field.key, event.target.value)}
                           disabled={busy || disabled}
                           className="h-11 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
                         />

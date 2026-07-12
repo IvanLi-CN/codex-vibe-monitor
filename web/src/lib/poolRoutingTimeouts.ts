@@ -8,13 +8,9 @@ export type RoutingTimeoutFieldKey = keyof PoolRoutingTimeoutSettings;
 
 export type RoutingTimeoutOverrideDraft = Partial<Record<RoutingTimeoutFieldKey, string>>;
 
-export type RoutingTimeoutOverridePatch = Partial<
-  Record<RoutingTimeoutFieldKey, number | null>
->;
+export type RoutingTimeoutOverridePatch = Partial<Record<RoutingTimeoutFieldKey, number | null>>;
 
-export type RoutingTimeoutOverrideEnabledState = Partial<
-  Record<RoutingTimeoutFieldKey, boolean>
->;
+export type RoutingTimeoutOverrideEnabledState = Partial<Record<RoutingTimeoutFieldKey, boolean>>;
 
 export const ROUTING_TIMEOUT_FIELD_ORDER: RoutingTimeoutFieldKey[] = [
   "responsesFirstByteTimeoutSecs",
@@ -47,9 +43,7 @@ export function buildRoutingTimeoutOverrideDraft(
         ? String(override.responsesStreamTimeoutSecs)
         : "",
     compactStreamTimeoutSecs:
-      override?.compactStreamTimeoutSecs != null
-        ? String(override.compactStreamTimeoutSecs)
-        : "",
+      override?.compactStreamTimeoutSecs != null ? String(override.compactStreamTimeoutSecs) : "",
   };
 }
 
@@ -61,8 +55,7 @@ export function buildRoutingTimeoutOverrideDraftForSource(
   return Object.fromEntries(
     ROUTING_TIMEOUT_FIELD_ORDER.map((key) => [
       key,
-      getRoutingTimeoutFieldSource(sources, key) === targetSource &&
-      effective?.[key] != null
+      getRoutingTimeoutFieldSource(sources, key) === targetSource && effective?.[key] != null
         ? String(effective[key])
         : "",
     ]),
@@ -173,7 +166,7 @@ export function diffRoutingTimeoutOverrideDraft(
     if ((trimmedDraft[key] ?? "") === (trimmedBase[key] ?? "")) {
       continue;
     }
-    patch[key] = trimmedDraft[key] ? parsed.patch[key] ?? null : null;
+    patch[key] = trimmedDraft[key] ? (parsed.patch[key] ?? null) : null;
   }
   return {
     ok: true,
@@ -201,12 +194,12 @@ export function diffRoutingTimeoutOverrideDraftWithEnabledState(
   for (const key of ROUTING_TIMEOUT_FIELD_ORDER) {
     const nextEnabled = enabled[key] === true;
     const previousEnabled = baseEnabled[key] === true;
-    const nextValue = nextEnabled ? trimmedDraft[key] ?? "" : "";
-    const previousValue = previousEnabled ? trimmedBase[key] ?? "" : "";
+    const nextValue = nextEnabled ? (trimmedDraft[key] ?? "") : "";
+    const previousValue = previousEnabled ? (trimmedBase[key] ?? "") : "";
     if (nextEnabled === previousEnabled && nextValue === previousValue) {
       continue;
     }
-    patch[key] = nextEnabled ? parsed.patch[key] ?? null : null;
+    patch[key] = nextEnabled ? (parsed.patch[key] ?? null) : null;
   }
   return {
     ok: true,

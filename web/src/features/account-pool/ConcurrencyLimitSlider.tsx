@@ -4,16 +4,16 @@ import {
   CONCURRENCY_LIMIT_UNLIMITED_SLIDER_VALUE,
   formatConcurrencyLimitValue,
   sliderConcurrencyLimitToApiValue,
-} from '../../lib/concurrencyLimit'
+} from "../../lib/concurrencyLimit";
 
 interface ConcurrencyLimitSliderProps {
-  value: number
-  disabled?: boolean
-  title: string
-  description: string
-  currentLabel: string
-  unlimitedLabel: string
-  onChange: (value: number) => void
+  value: number;
+  disabled?: boolean;
+  title: string;
+  description: string;
+  currentLabel: string;
+  unlimitedLabel: string;
+  onChange: (value: number) => void;
 }
 
 export function ConcurrencyLimitSlider({
@@ -25,8 +25,8 @@ export function ConcurrencyLimitSlider({
   unlimitedLabel,
   onChange,
 }: ConcurrencyLimitSliderProps) {
-  const storedValue = sliderConcurrencyLimitToApiValue(value)
-  const displayValue = formatConcurrencyLimitValue(storedValue, unlimitedLabel)
+  const storedValue = sliderConcurrencyLimitToApiValue(value);
+  const displayValue = formatConcurrencyLimitValue(storedValue, unlimitedLabel);
 
   return (
     <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
@@ -36,7 +36,9 @@ export function ConcurrencyLimitSlider({
           <p className="text-sm leading-6 text-base-content/68">{description}</p>
         </div>
         <div className="rounded-full border border-base-300/80 bg-base-200/80 px-3 py-1 text-sm font-semibold text-base-content">
-          <span className="mr-2 text-xs uppercase tracking-[0.12em] text-base-content/55">{currentLabel}</span>
+          <span className="mr-2 text-xs uppercase tracking-[0.12em] text-base-content/55">
+            {currentLabel}
+          </span>
           <span>{displayValue}</span>
         </div>
       </div>
@@ -68,6 +70,7 @@ export function ConcurrencyLimitSlider({
             {CONCURRENCY_LIMIT_MAX}
           </span>
           <span
+            role="img"
             className="justify-self-end pl-2"
             style={{ gridColumn: `${CONCURRENCY_LIMIT_MAX + 1} / span 1` }}
             aria-label={unlimitedLabel}
@@ -78,5 +81,5 @@ export function ConcurrencyLimitSlider({
         </div>
       </div>
     </div>
-  )
+  );
 }

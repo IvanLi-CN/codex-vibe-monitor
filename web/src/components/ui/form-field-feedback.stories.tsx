@@ -1,9 +1,9 @@
-import type { ReactNode } from 'react'
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { Stories } from '@storybook/addon-docs/blocks'
-import type { BubbleVariant } from './bubble'
-import { Input } from './input'
-import { FormFieldFeedback } from './form-field-feedback'
+import { Stories } from "@storybook/addon-docs/blocks";
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import type { ReactNode } from "react";
+import type { BubbleVariant } from "./bubble";
+import { FormFieldFeedback } from "./form-field-feedback";
+import { Input } from "./input";
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
@@ -12,28 +12,29 @@ function StorySurface({ children }: { children: ReactNode }) {
         {children}
       </div>
     </div>
-  )
+  );
 }
 
 function FieldHarness({
   label,
   message,
-  variant = 'error',
+  variant = "error",
   placeholder,
 }: {
-  label: string
-  message?: string | null
-  variant?: BubbleVariant
-  placeholder?: string
+  label: string;
+  message?: string | null;
+  variant?: BubbleVariant;
+  placeholder?: string;
 }) {
-  const isError = variant === 'error'
-  const inputToneClass = variant === 'success'
-    ? 'border-success/70 focus-visible:ring-success'
-    : variant === 'warning'
-      ? 'border-warning/70 focus-visible:ring-warning'
-      : isError
-        ? 'border-error/70 focus-visible:ring-error'
-        : ''
+  const isError = variant === "error";
+  const inputToneClass =
+    variant === "success"
+      ? "border-success/70 focus-visible:ring-success"
+      : variant === "warning"
+        ? "border-warning/70 focus-visible:ring-warning"
+        : isError
+          ? "border-error/70 focus-visible:ring-error"
+          : "";
 
   return (
     <label className="field">
@@ -44,26 +45,26 @@ function FieldHarness({
         messageClassName="md:max-w-[min(30rem,calc(100%-9rem))]"
       />
       <Input
-        value={placeholder ?? ''}
+        value={placeholder ?? ""}
         placeholder={placeholder}
         readOnly
-        aria-invalid={isError ? 'true' : 'false'}
-        className={message ? inputToneClass : ''}
+        aria-invalid={isError ? "true" : "false"}
+        className={message ? inputToneClass : ""}
       />
     </label>
-  )
+  );
 }
 
 const meta = {
-  title: 'UI/FormFieldFeedback',
+  title: "UI/FormFieldFeedback",
   component: FormFieldFeedback,
-  tags: ['autodocs'],
+  tags: ["autodocs"],
   parameters: {
-    layout: 'padded',
+    layout: "padded",
     docs: {
       page: () => <Stories title="" includePrimary={true} />,
       canvas: {
-        sourceState: 'hidden',
+        sourceState: "hidden",
       },
       controls: {
         hideNoControlsWarning: true,
@@ -79,14 +80,14 @@ const meta = {
   ],
   argTypes: {
     variant: {
-      control: 'radio',
-      options: ['error', 'warning', 'success', 'info', 'neutral'],
+      control: "radio",
+      options: ["error", "warning", "success", "info", "neutral"],
     },
     label: {
-      control: 'text',
+      control: "text",
     },
     message: {
-      control: 'text',
+      control: "text",
     },
     className: {
       control: false,
@@ -98,71 +99,75 @@ const meta = {
       control: false,
     },
   },
-} satisfies Meta<typeof FormFieldFeedback>
+} satisfies Meta<typeof FormFieldFeedback>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   args: {
-    label: '上游地址',
-    message: '请填写 http(s) 的绝对 URL，例如 https://proxy.example.com/gateway',
-    variant: 'error',
+    label: "上游地址",
+    message: "请填写 http(s) 的绝对 URL，例如 https://proxy.example.com/gateway",
+    variant: "error",
   },
   render: (args) => (
     <FieldHarness
       label={String(args.label)}
-      message={typeof args.message === 'string' ? args.message : undefined}
+      message={typeof args.message === "string" ? args.message : undefined}
       variant={args.variant}
       placeholder="proxy.example.com/gateway"
     />
   ),
-}
+};
 
 export const QuietField: Story = {
   args: {
-    label: '上游地址',
+    label: "上游地址",
     message: null,
-    variant: 'error',
+    variant: "error",
   },
   render: (args) => (
     <FieldHarness
       label={String(args.label)}
-      message={typeof args.message === 'string' ? args.message : undefined}
+      message={typeof args.message === "string" ? args.message : undefined}
       variant={args.variant}
       placeholder="https://proxy.example.com/gateway"
     />
   ),
-}
+};
 
 export const SuccessField: Story = {
   args: {
-    label: '回调地址',
-    message: '地址格式正确，授权完成后即可继续下一步。',
-    variant: 'success',
+    label: "回调地址",
+    message: "地址格式正确，授权完成后即可继续下一步。",
+    variant: "success",
   },
   render: (args) => (
     <FieldHarness
       label={String(args.label)}
-      message={typeof args.message === 'string' ? args.message : undefined}
+      message={typeof args.message === "string" ? args.message : undefined}
       variant={args.variant}
       placeholder="https://proxy.example.com/oauth/callback"
     />
   ),
-}
+};
 
 export const DenseTwoColumnLayout: Story = {
   args: {
-    label: '上游地址',
+    label: "上游地址",
     message: null,
   },
   render: () => (
     <div className="grid gap-4 md:grid-cols-2">
-      <FieldHarness label="上游地址" message="请填写 http(s) 的绝对 URL，例如 https://proxy.example.com/gateway" placeholder="proxy.example.com/gateway" />
+      <FieldHarness
+        label="上游地址"
+        message="请填写 http(s) 的绝对 URL，例如 https://proxy.example.com/gateway"
+        placeholder="proxy.example.com/gateway"
+      />
       <FieldHarness label="限额单位" message={null} placeholder="tokens" />
       <FieldHarness label="5 小时本地限额" message={null} placeholder="" />
       <FieldHarness label="7 天本地限额" message={null} placeholder="" />
     </div>
   ),
-}
+};

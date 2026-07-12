@@ -13,9 +13,7 @@ export function bulkSyncRowStatusVariant(
   return "secondary";
 }
 
-function computeBulkSyncCounts(
-  rows: BulkUpstreamAccountSyncRow[],
-): BulkUpstreamAccountSyncCounts {
+function computeBulkSyncCounts(rows: BulkUpstreamAccountSyncRow[]): BulkUpstreamAccountSyncCounts {
   return rows.reduce<BulkUpstreamAccountSyncCounts>(
     (counts, row) => {
       counts.total += 1;
@@ -63,9 +61,5 @@ export function shouldAutoHideBulkSyncProgress(
   snapshot: BulkUpstreamAccountSyncSnapshot,
   counts: BulkUpstreamAccountSyncCounts,
 ): boolean {
-  return (
-    snapshot.status === "completed" &&
-    counts.failed === 0 &&
-    counts.skipped === 0
-  );
+  return snapshot.status === "completed" && counts.failed === 0 && counts.skipped === 0;
 }

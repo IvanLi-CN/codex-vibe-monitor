@@ -1,17 +1,17 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
-import { AppIcon } from "../../features/shared/AppIcon";
-import { ListBodyState } from "../../features/shared/ListBodyState";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { SelectField } from "../../components/ui/select-field";
 import { Tooltip } from "../../components/ui/tooltip";
+import { AppIcon } from "../../features/shared/AppIcon";
+import { ListBodyState } from "../../features/shared/ListBodyState";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import { useTranslation } from "../../i18n";
 import {
-  fetchUpstreamAccountActionEvents,
   type FetchUpstreamAccountActionEventsQuery,
+  fetchUpstreamAccountActionEvents,
   type UpstreamAccountActionEvent,
 } from "../../lib/api";
 import { cn } from "../../lib/utils";
@@ -227,10 +227,13 @@ export default function MaintenanceRecordsPage() {
         event.forwardProxyKey ??
         t("accountPool.upstreamAccounts.maintenanceEvents.unknownProxy");
       return retryAfter
-        ? t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottledWithSeconds", {
-            proxy: proxyName,
-            seconds: retryAfter,
-          })
+        ? t(
+            "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottledWithSeconds",
+            {
+              proxy: proxyName,
+              seconds: retryAfter,
+            },
+          )
         : t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottled", {
             proxy: proxyName,
           });
@@ -247,9 +250,7 @@ export default function MaintenanceRecordsPage() {
     if (event.action === "status_change_suppressed") {
       const parts = [
         reasonLabel(event.reasonCode) ?? event.reasonCode,
-        Number.isFinite(event.httpStatus ?? NaN)
-          ? `HTTP ${event.httpStatus}`
-          : null,
+        Number.isFinite(event.httpStatus ?? NaN) ? `HTTP ${event.httpStatus}` : null,
         event.reasonMessage ?? event.resultDescription,
       ].filter((value): value is string => Boolean(value));
       return parts.join(" · ") || t("accountPool.upstreamAccounts.maintenanceEvents.noDescription");
@@ -315,7 +316,9 @@ export default function MaintenanceRecordsPage() {
                 setAccountFilter(event.target.value);
                 setPage(1);
               }}
-              placeholder={t("accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder")}
+              placeholder={t(
+                "accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder",
+              )}
               className="h-11 border-base-300/90 bg-base-100 lg:h-10"
             />
           </label>
@@ -329,7 +332,9 @@ export default function MaintenanceRecordsPage() {
                 setGroupFilter(event.target.value);
                 setPage(1);
               }}
-              placeholder={t("accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder")}
+              placeholder={t(
+                "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder",
+              )}
               className="h-11 border-base-300/90 bg-base-100 lg:h-10"
             />
           </label>
@@ -392,16 +397,21 @@ export default function MaintenanceRecordsPage() {
             </div>
           ) : null}
           {loading && events.length > 0 ? (
-            <Alert
-              variant="info"
-              className="m-4"
-              data-testid="maintenance-records-refreshing"
-            >
-              <AppIcon name="loading" className="mt-0.5 h-4 w-4 shrink-0 animate-spin" aria-hidden />
+            <Alert variant="info" className="m-4" data-testid="maintenance-records-refreshing">
+              <AppIcon
+                name="loading"
+                className="mt-0.5 h-4 w-4 shrink-0 animate-spin"
+                aria-hidden
+              />
               <div>{t("accountPool.upstreamAccounts.loadingTitle")}</div>
             </Alert>
           ) : null}
-          <div className={cn("space-y-3 min-[769px]:hidden", isInitialLoading || isInitialError ? "hidden" : null)}>
+          <div
+            className={cn(
+              "space-y-3 min-[769px]:hidden",
+              isInitialLoading || isInitialError ? "hidden" : null,
+            )}
+          >
             {events.length === 0 ? (
               <div className="rounded-xl border border-base-300/80 bg-base-100/72 px-4 py-8 text-center text-sm text-base-content/60">
                 <ListBodyState
@@ -439,7 +449,9 @@ export default function MaintenanceRecordsPage() {
                         <div className="mt-1 text-xs text-base-content/65">{groupLabel}</div>
                       </div>
                       <div className="text-right">
-                        <div className="font-mono text-sm font-semibold text-base-content">{occurredAt.time}</div>
+                        <div className="font-mono text-sm font-semibold text-base-content">
+                          {occurredAt.time}
+                        </div>
                         <div className="mt-1 text-xs text-base-content/60">{occurredAt.date}</div>
                       </div>
                     </div>
@@ -470,7 +482,13 @@ export default function MaintenanceRecordsPage() {
             )}
           </div>
 
-          <div className={cn(isInitialLoading || isInitialError ? "hidden" : "hidden overflow-x-auto min-[769px]:block")}>
+          <div
+            className={cn(
+              isInitialLoading || isInitialError
+                ? "hidden"
+                : "hidden overflow-x-auto min-[769px]:block",
+            )}
+          >
             <table className="min-w-[60rem] table-fixed divide-y divide-base-300/70 text-sm lg:min-w-full">
               <thead className="bg-base-100/80">
                 <tr className="text-left text-xs font-semibold uppercase tracking-[0.12em] text-base-content/55">
@@ -587,7 +605,11 @@ export default function MaintenanceRecordsPage() {
                             )}
                           </td>
                           <td className="min-w-0 px-3 pb-3 pt-0 align-baseline">
-                            {renderTruncatedValue(groupLabel, groupLabel, "text-xs leading-4 text-base-content/60")}
+                            {renderTruncatedValue(
+                              groupLabel,
+                              groupLabel,
+                              "text-xs leading-4 text-base-content/60",
+                            )}
                           </td>
                           <td className="min-w-0 px-3 pb-3 pt-0 align-baseline">
                             {renderTruncatedValue(
@@ -596,7 +618,10 @@ export default function MaintenanceRecordsPage() {
                               "font-mono text-xs leading-4 tabular-nums text-base-content/60",
                             )}
                           </td>
-                          <td className="min-w-0 px-3 pb-3 pt-0 align-baseline text-xs leading-4 text-base-content/65" colSpan={2}>
+                          <td
+                            className="min-w-0 px-3 pb-3 pt-0 align-baseline text-xs leading-4 text-base-content/65"
+                            colSpan={2}
+                          >
                             {renderTruncatedValue(
                               eventDescriptionLabel,
                               eventDescriptionLabel,
@@ -613,14 +638,14 @@ export default function MaintenanceRecordsPage() {
           </div>
         </div>
 
-          <div className="flex flex-col gap-3 border-t border-base-300/70 pt-4 sm:flex-row sm:items-end sm:justify-between">
-            <div className="text-sm text-base-content/70">
-              {t("accountPool.upstreamAccounts.pagination.summary", {
-                page,
-                pageCount,
-                total,
-              })}
-            </div>
+        <div className="flex flex-col gap-3 border-t border-base-300/70 pt-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="text-sm text-base-content/70">
+            {t("accountPool.upstreamAccounts.pagination.summary", {
+              page,
+              pageCount,
+              total,
+            })}
+          </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
             <div className="flex items-center justify-between gap-2 rounded-xl border border-base-300/70 bg-base-100/55 px-3 py-2 sm:justify-start">
               <span className="text-sm font-medium text-base-content/65">

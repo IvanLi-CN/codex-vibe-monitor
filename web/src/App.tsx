@@ -1,20 +1,20 @@
-import { Navigate, Route, Routes } from 'react-router-dom'
-import { AppLayout } from './features/app-shell/AppLayout'
-import DashboardPage from './pages/Dashboard'
-import LivePage from './pages/Live'
-import RecordsPage from './pages/Records'
-import SettingsPage from './pages/Settings'
-import StatsPage from './pages/Stats'
-import AccountPoolLayout from './pages/account-pool/AccountPoolLayout'
-import SystemLayout from './pages/system/SystemLayout'
-import SystemProxyPage from './pages/system/SystemProxyPage'
-import SystemSettingsPage from './pages/system/SystemSettingsPage'
-import SystemStatusPage from './pages/system/SystemStatusPage'
-import SystemTasksPage from './pages/system/SystemTasksPage'
-import GroupsPage from './pages/account-pool/Groups'
-import MaintenanceRecordsPage from './pages/account-pool/MaintenanceRecords'
-import UpstreamAccountsPage from './pages/account-pool/UpstreamAccounts'
-import UpstreamAccountCreatePage from './pages/account-pool/UpstreamAccountCreate'
+import { Navigate, Route, Routes } from "react-router-dom";
+import { AppLayout } from "./features/app-shell/AppLayout";
+import AccountPoolLayout from "./pages/account-pool/AccountPoolLayout";
+import GroupsPage from "./pages/account-pool/Groups";
+import MaintenanceRecordsPage from "./pages/account-pool/MaintenanceRecords";
+import UpstreamAccountCreatePage from "./pages/account-pool/UpstreamAccountCreate";
+import UpstreamAccountsPage from "./pages/account-pool/UpstreamAccounts";
+import DashboardPage from "./pages/Dashboard";
+import LivePage from "./pages/Live";
+import RecordsPage from "./pages/Records";
+import SettingsPage from "./pages/Settings";
+import StatsPage from "./pages/Stats";
+import SystemLayout from "./pages/system/SystemLayout";
+import SystemProxyPage from "./pages/system/SystemProxyPage";
+import SystemSettingsPage from "./pages/system/SystemSettingsPage";
+import SystemStatusPage from "./pages/system/SystemStatusPage";
+import SystemTasksPage from "./pages/system/SystemTasksPage";
 
 function App() {
   return (
@@ -44,7 +44,7 @@ function App() {
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>
-  )
+  );
 }
 
-export default App
+export default App;

@@ -1,48 +1,48 @@
 /** @vitest-environment jsdom */
-import { act } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { InvocationRecordsSummaryCards } from './InvocationRecordsSummaryCards'
-import { InvocationRecordsTable } from './InvocationRecordsTable'
-import type { ApiInvocation, InvocationRecordsSummaryResponse } from '../../lib/api'
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { ApiInvocation, InvocationRecordsSummaryResponse } from "../../lib/api";
+import { InvocationRecordsSummaryCards } from "./InvocationRecordsSummaryCards";
+import { InvocationRecordsTable } from "./InvocationRecordsTable";
 
-vi.mock('../../i18n', () => ({
+vi.mock("../../i18n", () => ({
   useTranslation: () => ({
-    locale: 'zh',
+    locale: "zh",
     t: (key: string, params?: Record<string, string>) => {
-      if (params?.error) return `${key}: ${params.error}`
-      return key
+      if (params?.error) return `${key}: ${params.error}`;
+      return key;
     },
   }),
-}))
+}));
 
-let host: HTMLDivElement | null = null
-let root: Root | null = null
+let host: HTMLDivElement | null = null;
+let root: Root | null = null;
 
 beforeAll(() => {
-  Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
     writable: true,
     value: true,
-  })
-})
+  });
+});
 
 afterEach(() => {
   act(() => {
-    root?.unmount()
-  })
-  host?.remove()
-  host = null
-  root = null
-})
+    root?.unmount();
+  });
+  host?.remove();
+  host = null;
+  root = null;
+});
 
 function render(ui: React.ReactNode) {
-  host = document.createElement('div')
-  document.body.appendChild(host)
-  root = createRoot(host)
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
   act(() => {
-    root?.render(ui)
-  })
+    root?.render(ui);
+  });
 }
 
 function createSummary(): InvocationRecordsSummaryResponse {
@@ -74,49 +74,58 @@ function createSummary(): InvocationRecordsSummaryResponse {
       clientAbortCount: 0,
       actionableFailureCount: 0,
     },
-  }
+  };
 }
 
 function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
   return {
     id: 1,
-    invokeId: 'invoke-1',
-    occurredAt: '2026-03-10T00:00:00Z',
-    createdAt: '2026-03-10T00:00:00Z',
-    status: 'success',
-    model: 'gpt-4.1',
-    source: 'proxy-a',
+    invokeId: "invoke-1",
+    occurredAt: "2026-03-10T00:00:00Z",
+    createdAt: "2026-03-10T00:00:00Z",
+    status: "success",
+    model: "gpt-4.1",
+    source: "proxy-a",
     ...overrides,
-  }
+  };
 }
 
-describe('records stale-data rendering', () => {
-  it('keeps summary metrics visible when a refresh error arrives', () => {
-    render(<InvocationRecordsSummaryCards focus="token" summary={createSummary()} isLoading error="boom" />)
+describe("records stale-data rendering", () => {
+  it("keeps summary metrics visible when a refresh error arrives", () => {
+    render(
+      <InvocationRecordsSummaryCards
+        focus="token"
+        summary={createSummary()}
+        isLoading
+        error="boom"
+      />,
+    );
 
-    const text = host?.textContent ?? ''
-    expect(text).toContain('records.summary.loadError: boom')
-    expect(text).toContain('records.summary.token.requests')
-  })
+    const text = host?.textContent ?? "";
+    expect(text).toContain("records.summary.loadError: boom");
+    expect(text).toContain("records.summary.token.requests");
+  });
 
-  it('renders network summary totals in seconds while keeping ttfb in milliseconds', () => {
-    render(<InvocationRecordsSummaryCards focus="network" summary={createSummary()} isLoading={false} />)
+  it("renders network summary totals in seconds while keeping ttfb in milliseconds", () => {
+    render(
+      <InvocationRecordsSummaryCards focus="network" summary={createSummary()} isLoading={false} />,
+    );
 
-    const text = host?.textContent ?? ''
-    expect(text).toContain('10 ms')
-    expect(text).toContain('12 ms')
-    expect(text).toContain('0.02 s')
-    expect(text).toContain('0.025 s')
-  })
+    const text = host?.textContent ?? "";
+    expect(text).toContain("10 ms");
+    expect(text).toContain("12 ms");
+    expect(text).toContain("0.02 s");
+    expect(text).toContain("0.025 s");
+  });
 
-  it('renders network record first-response-byte totals in seconds', () => {
+  it("renders network record first-response-byte totals in seconds", () => {
     render(
       <InvocationRecordsTable
         focus="network"
         records={[
           createRecord({
-            endpoint: '/v1/responses',
-            requesterIp: '127.0.0.1',
+            endpoint: "/v1/responses",
+            requesterIp: "127.0.0.1",
             tReqReadMs: 200,
             tReqParseMs: 100,
             tUpstreamConnectMs: 100,
@@ -126,51 +135,53 @@ describe('records stale-data rendering', () => {
         ]}
         isLoading={false}
       />,
-    )
+    );
 
-    const text = host?.textContent ?? ''
-    expect(text).toContain('0.518 s')
-    expect(text).toContain('0.91 s')
-  })
+    const text = host?.textContent ?? "";
+    expect(text).toContain("0.518 s");
+    expect(text).toContain("0.91 s");
+  });
 
-  it('keeps table rows visible when a refresh error arrives', () => {
-    render(<InvocationRecordsTable focus="token" records={[createRecord()]} isLoading error="boom" />)
+  it("keeps table rows visible when a refresh error arrives", () => {
+    render(
+      <InvocationRecordsTable focus="token" records={[createRecord()]} isLoading error="boom" />,
+    );
 
-    const text = host?.textContent ?? ''
-    expect(text).toContain('records.table.loadError: boom')
-    expect(text).toContain('gpt-4.1')
-  })
+    const text = host?.textContent ?? "";
+    expect(text).toContain("records.table.loadError: boom");
+    expect(text).toContain("gpt-4.1");
+  });
 
-  it('renders legacy success rows with a failure badge once failureClass marks them as failed', () => {
+  it("renders legacy success rows with a failure badge once failureClass marks them as failed", () => {
     render(
       <InvocationRecordsTable
         focus="token"
         records={[
           createRecord({
-            status: 'success',
-            failureClass: 'service_failure',
-            errorMessage: '[upstream_response_failed] server_error',
+            status: "success",
+            failureClass: "service_failure",
+            errorMessage: "[upstream_response_failed] server_error",
           }),
         ]}
         isLoading={false}
       />,
-    )
+    );
 
-    const text = host?.textContent ?? ''
-    expect(text).toContain('table.status.failed')
-    expect(text).not.toContain('table.status.success')
-  })
+    const text = host?.textContent ?? "";
+    expect(text).toContain("table.status.failed");
+    expect(text).not.toContain("table.status.success");
+  });
 
-  it('falls back to the raw occurredAt string when a record timestamp is invalid', () => {
+  it("falls back to the raw occurredAt string when a record timestamp is invalid", () => {
     render(
       <InvocationRecordsTable
         focus="token"
-        records={[createRecord({ occurredAt: 'not-a-date' })]}
+        records={[createRecord({ occurredAt: "not-a-date" })]}
         isLoading={false}
       />,
-    )
+    );
 
-    const text = host?.textContent ?? ''
-    expect(text).toContain('not-a-date')
-  })
-})
+    const text = host?.textContent ?? "";
+    expect(text).toContain("not-a-date");
+  });
+});

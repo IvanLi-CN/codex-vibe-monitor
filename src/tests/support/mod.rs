@@ -1,7 +1,7 @@
 pub(crate) use aes_gcm::Aes256Gcm;
 pub(crate) use aes_gcm::aead::{Aead, KeyInit};
 pub(crate) use axum::body::to_bytes;
-pub(crate) use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
+pub(crate) use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 pub(crate) use brotli::CompressorWriter;
 pub(crate) use chrono::Timelike;
 pub(crate) use flate2::write::{DeflateEncoder, ZlibEncoder};

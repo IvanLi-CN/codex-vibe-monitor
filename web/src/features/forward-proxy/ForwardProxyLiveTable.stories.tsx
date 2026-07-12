@@ -1,36 +1,40 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, within } from 'storybook/test'
-import { I18nProvider } from '../../i18n'
-import type { ForwardProxyHourlyBucket, ForwardProxyLiveStatsResponse, ForwardProxyWeightBucket } from '../../lib/api'
-import { ForwardProxyLiveTable } from './ForwardProxyLiveTable'
-import { parityLiveStats } from './storybookForwardProxyNodeHealth'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, within } from "storybook/test";
+import { I18nProvider } from "../../i18n";
+import type {
+  ForwardProxyHourlyBucket,
+  ForwardProxyLiveStatsResponse,
+  ForwardProxyWeightBucket,
+} from "../../lib/api";
+import { ForwardProxyLiveTable } from "./ForwardProxyLiveTable";
+import { parityLiveStats } from "./storybookForwardProxyNodeHealth";
 
 function buildRequestBuckets(seed: number): ForwardProxyHourlyBucket[] {
-  const start = Date.parse('2026-03-01T00:00:00.000Z')
+  const start = Date.parse("2026-03-01T00:00:00.000Z");
   return Array.from({ length: 24 }, (_, index) => {
-    const bucketStart = new Date(start + index * 3600_000).toISOString()
-    const bucketEnd = new Date(start + (index + 1) * 3600_000).toISOString()
-    const successCount = Math.max(0, Math.round(10 + Math.sin((index + seed) / 2) * 7))
-    const failureCount = Math.max(0, Math.round(2 + Math.cos((index + seed) / 3) * 3))
+    const bucketStart = new Date(start + index * 3600_000).toISOString();
+    const bucketEnd = new Date(start + (index + 1) * 3600_000).toISOString();
+    const successCount = Math.max(0, Math.round(10 + Math.sin((index + seed) / 2) * 7));
+    const failureCount = Math.max(0, Math.round(2 + Math.cos((index + seed) / 3) * 3));
     return {
       bucketStart,
       bucketEnd,
       successCount,
       failureCount,
-    }
-  })
+    };
+  });
 }
 
 function buildWeightBuckets(seed: number, base: number): ForwardProxyWeightBucket[] {
-  const start = Date.parse('2026-03-01T00:00:00.000Z')
+  const start = Date.parse("2026-03-01T00:00:00.000Z");
   return Array.from({ length: 24 }, (_, index) => {
-    const bucketStart = new Date(start + index * 3600_000).toISOString()
-    const bucketEnd = new Date(start + (index + 1) * 3600_000).toISOString()
-    const drift = Math.sin((index + seed) / 4) * 0.18 + Math.cos((index + seed) / 7) * 0.06
-    const lastWeight = Number((base + drift).toFixed(3))
-    const minWeight = Number((lastWeight - 0.08).toFixed(3))
-    const maxWeight = Number((lastWeight + 0.07).toFixed(3))
-    const avgWeight = Number(((minWeight + maxWeight + lastWeight) / 3).toFixed(3))
+    const bucketStart = new Date(start + index * 3600_000).toISOString();
+    const bucketEnd = new Date(start + (index + 1) * 3600_000).toISOString();
+    const drift = Math.sin((index + seed) / 4) * 0.18 + Math.cos((index + seed) / 7) * 0.06;
+    const lastWeight = Number((base + drift).toFixed(3));
+    const minWeight = Number((lastWeight - 0.08).toFixed(3));
+    const maxWeight = Number((lastWeight + 0.07).toFixed(3));
+    const avgWeight = Number(((minWeight + maxWeight + lastWeight) / 3).toFixed(3));
     return {
       bucketStart,
       bucketEnd,
@@ -39,20 +43,20 @@ function buildWeightBuckets(seed: number, base: number): ForwardProxyWeightBucke
       maxWeight,
       avgWeight,
       lastWeight,
-    }
-  })
+    };
+  });
 }
 
 const stats: ForwardProxyLiveStatsResponse = {
-  rangeStart: '2026-03-01T00:00:00.000Z',
-  rangeEnd: '2026-03-02T00:00:00.000Z',
+  rangeStart: "2026-03-01T00:00:00.000Z",
+  rangeEnd: "2026-03-02T00:00:00.000Z",
   bucketSeconds: 3600,
   nodes: [
     {
-      key: 'manual-sg-01',
-      source: 'manual',
-      displayName: 'sg-relay-edge-01',
-      endpointUrl: 'socks5://203.0.113.41:1080',
+      key: "manual-sg-01",
+      source: "manual",
+      displayName: "sg-relay-edge-01",
+      endpointUrl: "socks5://203.0.113.41:1080",
       weight: 0.86,
       penalized: false,
       stats: {
@@ -66,10 +70,10 @@ const stats: ForwardProxyLiveStatsResponse = {
       weight24h: buildWeightBuckets(1, 0.82),
     },
     {
-      key: 'sub-tokyo-02',
-      source: 'subscription',
-      displayName: 'tokyo-relay-02',
-      endpointUrl: 'vless://example-uuid@tokyo.example.com:443#tokyo-02',
+      key: "sub-tokyo-02",
+      source: "subscription",
+      displayName: "tokyo-relay-02",
+      endpointUrl: "vless://example-uuid@tokyo.example.com:443#tokyo-02",
       weight: -0.12,
       penalized: true,
       stats: {
@@ -83,9 +87,9 @@ const stats: ForwardProxyLiveStatsResponse = {
       weight24h: buildWeightBuckets(9, -0.08),
     },
     {
-      key: '__direct__',
-      source: 'direct',
-      displayName: 'Direct',
+      key: "__direct__",
+      source: "direct",
+      displayName: "Direct",
       weight: 1.03,
       penalized: false,
       stats: {
@@ -99,19 +103,17 @@ const stats: ForwardProxyLiveStatsResponse = {
       weight24h: buildWeightBuckets(15, 1.01),
     },
   ],
-}
-
-
+};
 
 const sharedScaleStats: ForwardProxyLiveStatsResponse = {
-  rangeStart: '2026-03-01T00:00:00.000Z',
-  rangeEnd: '2026-03-02T00:00:00.000Z',
+  rangeStart: "2026-03-01T00:00:00.000Z",
+  rangeEnd: "2026-03-02T00:00:00.000Z",
   bucketSeconds: 3600,
   nodes: [
     {
-      key: 'tiny-traffic',
-      source: 'manual',
-      displayName: 'tiny-traffic',
+      key: "tiny-traffic",
+      source: "manual",
+      displayName: "tiny-traffic",
       weight: 0.4,
       penalized: false,
       stats: {
@@ -122,18 +124,36 @@ const sharedScaleStats: ForwardProxyLiveStatsResponse = {
         sevenDays: { attempts: 180, successRate: 0.96, avgLatencyMs: 160 },
       },
       last24h: [
-        { bucketStart: '2026-03-01T00:00:00.000Z', bucketEnd: '2026-03-01T01:00:00.000Z', successCount: 2, failureCount: 0 },
-        { bucketStart: '2026-03-01T01:00:00.000Z', bucketEnd: '2026-03-01T02:00:00.000Z', successCount: 1, failureCount: 0 },
+        {
+          bucketStart: "2026-03-01T00:00:00.000Z",
+          bucketEnd: "2026-03-01T01:00:00.000Z",
+          successCount: 2,
+          failureCount: 0,
+        },
+        {
+          bucketStart: "2026-03-01T01:00:00.000Z",
+          bucketEnd: "2026-03-01T02:00:00.000Z",
+          successCount: 1,
+          failureCount: 0,
+        },
         ...Array.from({ length: 22 }, (_, index) => ({
-          bucketStart: new Date(Date.parse('2026-03-01T02:00:00.000Z') + index * 3600_000).toISOString(),
-          bucketEnd: new Date(Date.parse('2026-03-01T03:00:00.000Z') + index * 3600_000).toISOString(),
+          bucketStart: new Date(
+            Date.parse("2026-03-01T02:00:00.000Z") + index * 3600_000,
+          ).toISOString(),
+          bucketEnd: new Date(
+            Date.parse("2026-03-01T03:00:00.000Z") + index * 3600_000,
+          ).toISOString(),
           successCount: 0,
           failureCount: 0,
         })),
       ],
       weight24h: Array.from({ length: 24 }, (_, index) => ({
-        bucketStart: new Date(Date.parse('2026-03-01T00:00:00.000Z') + index * 3600_000).toISOString(),
-        bucketEnd: new Date(Date.parse('2026-03-01T01:00:00.000Z') + index * 3600_000).toISOString(),
+        bucketStart: new Date(
+          Date.parse("2026-03-01T00:00:00.000Z") + index * 3600_000,
+        ).toISOString(),
+        bucketEnd: new Date(
+          Date.parse("2026-03-01T01:00:00.000Z") + index * 3600_000,
+        ).toISOString(),
         sampleCount: 1,
         minWeight: 0.35,
         maxWeight: 0.45,
@@ -142,9 +162,9 @@ const sharedScaleStats: ForwardProxyLiveStatsResponse = {
       })),
     },
     {
-      key: 'burst-traffic',
-      source: 'manual',
-      displayName: 'burst-traffic',
+      key: "burst-traffic",
+      source: "manual",
+      displayName: "burst-traffic",
       weight: 2.4,
       penalized: false,
       stats: {
@@ -155,19 +175,42 @@ const sharedScaleStats: ForwardProxyLiveStatsResponse = {
         sevenDays: { attempts: 32000, successRate: 0.9, avgLatencyMs: 280 },
       },
       last24h: [
-        { bucketStart: '2026-03-01T00:00:00.000Z', bucketEnd: '2026-03-01T01:00:00.000Z', successCount: 22, failureCount: 1 },
-        { bucketStart: '2026-03-01T01:00:00.000Z', bucketEnd: '2026-03-01T02:00:00.000Z', successCount: 18, failureCount: 2 },
-        { bucketStart: '2026-03-01T02:00:00.000Z', bucketEnd: '2026-03-01T03:00:00.000Z', successCount: 30, failureCount: 4 },
+        {
+          bucketStart: "2026-03-01T00:00:00.000Z",
+          bucketEnd: "2026-03-01T01:00:00.000Z",
+          successCount: 22,
+          failureCount: 1,
+        },
+        {
+          bucketStart: "2026-03-01T01:00:00.000Z",
+          bucketEnd: "2026-03-01T02:00:00.000Z",
+          successCount: 18,
+          failureCount: 2,
+        },
+        {
+          bucketStart: "2026-03-01T02:00:00.000Z",
+          bucketEnd: "2026-03-01T03:00:00.000Z",
+          successCount: 30,
+          failureCount: 4,
+        },
         ...Array.from({ length: 21 }, (_, index) => ({
-          bucketStart: new Date(Date.parse('2026-03-01T03:00:00.000Z') + index * 3600_000).toISOString(),
-          bucketEnd: new Date(Date.parse('2026-03-01T04:00:00.000Z') + index * 3600_000).toISOString(),
+          bucketStart: new Date(
+            Date.parse("2026-03-01T03:00:00.000Z") + index * 3600_000,
+          ).toISOString(),
+          bucketEnd: new Date(
+            Date.parse("2026-03-01T04:00:00.000Z") + index * 3600_000,
+          ).toISOString(),
           successCount: index % 4 === 0 ? 12 : 4,
           failureCount: index % 6 === 0 ? 2 : 0,
         })),
       ],
       weight24h: Array.from({ length: 24 }, (_, index) => ({
-        bucketStart: new Date(Date.parse('2026-03-01T00:00:00.000Z') + index * 3600_000).toISOString(),
-        bucketEnd: new Date(Date.parse('2026-03-01T01:00:00.000Z') + index * 3600_000).toISOString(),
+        bucketStart: new Date(
+          Date.parse("2026-03-01T00:00:00.000Z") + index * 3600_000,
+        ).toISOString(),
+        bucketEnd: new Date(
+          Date.parse("2026-03-01T01:00:00.000Z") + index * 3600_000,
+        ).toISOString(),
         sampleCount: 3,
         minWeight: 1.8,
         maxWeight: 2.4,
@@ -176,13 +219,13 @@ const sharedScaleStats: ForwardProxyLiveStatsResponse = {
       })),
     },
   ],
-}
+};
 
 const meta = {
-  title: 'Monitoring/ForwardProxyLiveTable',
+  title: "Monitoring/ForwardProxyLiveTable",
   component: ForwardProxyLiveTable,
   parameters: {
-    layout: 'fullscreen',
+    layout: "fullscreen",
   },
   decorators: [
     (Story) => (
@@ -196,11 +239,11 @@ const meta = {
       </I18nProvider>
     ),
   ],
-} satisfies Meta<typeof ForwardProxyLiveTable>
+} satisfies Meta<typeof ForwardProxyLiveTable>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const Populated: Story = {
   args: {
@@ -209,11 +252,17 @@ export const Populated: Story = {
     error: null,
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const headers = canvas.getAllByRole('columnheader').map((header) => header.textContent ?? '')
-    expect(headers.slice(1, 6)).toEqual(['7 天统计', '1 天统计', '1 小时统计', '15 分钟统计', '1 分钟统计'])
+    const canvas = within(canvasElement);
+    const headers = canvas.getAllByRole("columnheader").map((header) => header.textContent ?? "");
+    expect(headers.slice(1, 6)).toEqual([
+      "7 天统计",
+      "1 天统计",
+      "1 小时统计",
+      "15 分钟统计",
+      "1 分钟统计",
+    ]);
   },
-}
+};
 
 export const Empty: Story = {
   args: {
@@ -226,7 +275,7 @@ export const Empty: Story = {
     isLoading: false,
     error: null,
   },
-}
+};
 
 export const SharedScaleComparison: Story = {
   args: {
@@ -234,7 +283,7 @@ export const SharedScaleComparison: Story = {
     isLoading: false,
     error: null,
   },
-}
+};
 
 export const RealNodeHealthParity: Story = {
   args: {
@@ -246,11 +295,11 @@ export const RealNodeHealthParity: Story = {
     docs: {
       description: {
         story:
-          'Uses the same real pool node-attempt counts as the Settings and binding-node dialog stories: Direct shows 2/0, JP Edge 01 shows 4/2, and the penalized standby node stays at 0/0 because health-check noise is excluded.',
+          "Uses the same real pool node-attempt counts as the Settings and binding-node dialog stories: Direct shows 2/0, JP Edge 01 shows 4/2, and the penalized standby node stays at 0/0 because health-check noise is excluded.",
       },
     },
   },
-}
+};
 
 export const TooltipEdgeDensity: Story = {
   args: {
@@ -262,8 +311,8 @@ export const TooltipEdgeDensity: Story = {
     docs: {
       description: {
         story:
-          'Use the rightmost request bucket and weight point to verify tooltip flip positioning against the table edge and dense hover targets.',
+          "Use the rightmost request bucket and weight point to verify tooltip flip positioning against the table edge and dense hover targets.",
       },
     },
   },
-}
+};

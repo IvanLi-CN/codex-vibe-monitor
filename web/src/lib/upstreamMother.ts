@@ -1,74 +1,76 @@
-import type { UpstreamAccountSummary } from './api'
+import type { UpstreamAccountSummary } from "./api";
 
 export interface MotherSwitchSnapshot {
-  groupKey: string
-  groupName: string | null
-  newMotherAccountId: number | null
-  newMotherDisplayName: string | null
-  previousMotherAccountId: number | null
-  previousMotherDisplayName: string | null
-  hadNoMotherBefore: boolean
+  groupKey: string;
+  groupName: string | null;
+  newMotherAccountId: number | null;
+  newMotherDisplayName: string | null;
+  previousMotherAccountId: number | null;
+  previousMotherDisplayName: string | null;
+  hadNoMotherBefore: boolean;
 }
 
 function normalizeGroupName(groupName?: string | null): string | null {
-  const trimmed = groupName?.trim() ?? ''
-  return trimmed ? trimmed : null
+  const trimmed = groupName?.trim() ?? "";
+  return trimmed ? trimmed : null;
 }
 
 export function normalizeMotherGroupKey(groupName?: string | null): string {
-  return normalizeGroupName(groupName) ?? ''
+  return normalizeGroupName(groupName) ?? "";
 }
 
 export function applyMotherUpdateToItems(
   items: UpstreamAccountSummary[],
   updated: UpstreamAccountSummary,
 ): UpstreamAccountSummary[] {
-  const nextItems = items.map((item) => (item.id === updated.id ? updated : item))
+  const nextItems = items.map((item) => (item.id === updated.id ? updated : item));
   if (!nextItems.some((item) => item.id === updated.id)) {
-    nextItems.unshift(updated)
+    nextItems.unshift(updated);
   }
 
   if (!updated.isMother) {
-    return nextItems
+    return nextItems;
   }
 
-  const groupKey = normalizeMotherGroupKey(updated.groupName)
+  const groupKey = normalizeMotherGroupKey(updated.groupName);
   return nextItems.map((item) => {
-    if (item.id === updated.id) return updated
-    if (!item.isMother) return item
-    return normalizeMotherGroupKey(item.groupName) === groupKey ? { ...item, isMother: false } : item
-  })
+    if (item.id === updated.id) return updated;
+    if (!item.isMother) return item;
+    return normalizeMotherGroupKey(item.groupName) === groupKey
+      ? { ...item, isMother: false }
+      : item;
+  });
 }
 
 function buildMotherMap(items: UpstreamAccountSummary[]) {
   const byGroup = new Map<
     string,
     { accountId: number; displayName: string; groupName: string | null }
-  >()
+  >();
   for (const item of items) {
-    if (!item.isMother) continue
+    if (!item.isMother) continue;
     byGroup.set(normalizeMotherGroupKey(item.groupName), {
       accountId: item.id,
       displayName: item.displayName,
       groupName: normalizeGroupName(item.groupName),
-    })
+    });
   }
-  return byGroup
+  return byGroup;
 }
 
 export function detectMotherSwitches(
   previousItems: UpstreamAccountSummary[],
   nextItems: UpstreamAccountSummary[],
 ): MotherSwitchSnapshot[] {
-  const previous = buildMotherMap(previousItems)
-  const next = buildMotherMap(nextItems)
-  const groupKeys = new Set<string>([...previous.keys(), ...next.keys()])
-  const changes: MotherSwitchSnapshot[] = []
+  const previous = buildMotherMap(previousItems);
+  const next = buildMotherMap(nextItems);
+  const groupKeys = new Set<string>([...previous.keys(), ...next.keys()]);
+  const changes: MotherSwitchSnapshot[] = [];
 
   for (const groupKey of groupKeys) {
-    const previousMother = previous.get(groupKey)
-    const nextMother = next.get(groupKey)
-    if (previousMother?.accountId === nextMother?.accountId) continue
+    const previousMother = previous.get(groupKey);
+    const nextMother = next.get(groupKey);
+    if (previousMother?.accountId === nextMother?.accountId) continue;
 
     changes.push({
       groupKey,
@@ -78,8 +80,8 @@ export function detectMotherSwitches(
       previousMotherAccountId: previousMother?.accountId ?? null,
       previousMotherDisplayName: previousMother?.displayName ?? null,
       hadNoMotherBefore: previousMother == null,
-    })
+    });
   }
 
-  return changes
+  return changes;
 }

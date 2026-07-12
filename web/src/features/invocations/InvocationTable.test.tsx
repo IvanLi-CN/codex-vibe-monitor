@@ -1,22 +1,17 @@
 /** @vitest-environment jsdom */
-import { renderToStaticMarkup } from "react-dom/server";
+
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider, useTranslation } from "../../i18n";
-import type { ApiInvocation } from "../../lib/api";
-import type { UpstreamAccountDetail } from "../../lib/api";
-import type { BroadcastPayload } from "../../lib/api";
-import type { ForwardProxyBindingNode } from "../../lib/api";
+import type {
+  ApiInvocation,
+  BroadcastPayload,
+  ForwardProxyBindingNode,
+  UpstreamAccountDetail,
+} from "../../lib/api";
 import {
   areInvocationModelsEquivalent,
   formatProxyWeightDelta,
@@ -24,27 +19,27 @@ import {
   getFastIndicatorState,
   isInvocationPoolAccountRoutingInProgress,
   isPriorityServiceTier,
-  resolveInvocationModelDisplay,
   resolveInvocationEndpointDisplay,
   resolveInvocationImageIntentDisplay,
+  resolveInvocationModelDisplay,
 } from "../../lib/invocation";
 import { InvocationTable } from "./InvocationTable";
-import { getReasoningEffortTone } from "./invocation-table-reasoning";
 import {
   buildInvocationDetailViewModel,
   InvocationExpandedDetails,
 } from "./invocation-details-shared";
+import { getReasoningEffortTone } from "./invocation-table-reasoning";
 
 const apiMocks = vi.hoisted(() => ({
-  fetchUpstreamAccountDetail:
-    vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
+  fetchUpstreamAccountDetail: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   fetchInvocationPoolAttempts: vi.fn(),
-  fetchForwardProxyBindingNodes: vi.fn<
-    (
-      keys?: string[],
-      options?: { includeCurrent?: boolean; groupName?: string },
-    ) => Promise<ForwardProxyBindingNode[]>
-  >(),
+  fetchForwardProxyBindingNodes:
+    vi.fn<
+      (
+        keys?: string[],
+        options?: { includeCurrent?: boolean; groupName?: string },
+      ) => Promise<ForwardProxyBindingNode[]>
+    >(),
 }));
 
 const sseMocks = vi.hoisted(() => ({
@@ -52,8 +47,7 @@ const sseMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
+  const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
@@ -135,9 +129,7 @@ function renderTable(records: ApiInvocation[]) {
 }
 
 function createInvocationRecord(index: number): ApiInvocation {
-  const occurredAt = new Date(
-    Date.parse("2026-03-07T03:13:51Z") - index * 1_000,
-  ).toISOString();
+  const occurredAt = new Date(Date.parse("2026-03-07T03:13:51Z") - index * 1_000).toISOString();
   return {
     id: index + 1,
     invokeId: `virtual-row-${index + 1}`,
@@ -165,12 +157,7 @@ async function renderInteractiveTable(
     root?.render(
       <MemoryRouter>
         <I18nProvider>
-          <InvocationTable
-            records={records}
-            isLoading={false}
-            error={null}
-            {...props}
-          />
+          <InvocationTable records={records} isLoading={false} error={null} {...props} />
         </I18nProvider>
       </MemoryRouter>,
     );
@@ -340,14 +327,7 @@ describe("pool account routing display", () => {
       accountLabel: "Pool Alpha",
       accountRoutingInProgress: false,
     });
-    expect(
-      isInvocationPoolAccountRoutingInProgress(
-        "pool",
-        "running",
-        null,
-        42,
-      ),
-    ).toBe(true);
+    expect(isInvocationPoolAccountRoutingInProgress("pool", "running", null, 42)).toBe(true);
   });
 });
 
@@ -370,12 +350,8 @@ describe("service tier helpers", () => {
   });
 
   it("resolves fast indicator states from requested and billing tiers", () => {
-    expect(getFastIndicatorState("priority", "priority", "priority")).toBe(
-      "effective",
-    );
-    expect(getFastIndicatorState("priority", "default", "priority")).toBe(
-      "effective",
-    );
+    expect(getFastIndicatorState("priority", "priority", "priority")).toBe("effective");
+    expect(getFastIndicatorState("priority", "default", "priority")).toBe("effective");
     expect(getFastIndicatorState("priority", "auto")).toBe("requested_only");
     expect(getFastIndicatorState("priority", undefined)).toBe("requested_only");
     expect(getFastIndicatorState("auto", "priority")).toBe("none");
@@ -410,9 +386,7 @@ describe("invocation model display helpers", () => {
 
   it("treats case-only and dated-alias differences as equivalent", () => {
     expect(areInvocationModelsEquivalent(" GPT-5.4 ", "gpt-5.4")).toBe(true);
-    expect(
-      areInvocationModelsEquivalent("gpt-5.4-2026-02-25", "gpt-5.4"),
-    ).toBe(true);
+    expect(areInvocationModelsEquivalent("gpt-5.4-2026-02-25", "gpt-5.4")).toBe(true);
     expect(
       resolveInvocationModelDisplay({
         requestModel: "gpt-5.4-2026-02-25",
@@ -439,9 +413,7 @@ describe("invocation model display helpers", () => {
 
 describe("resolveInvocationEndpointDisplay", () => {
   it("maps the recognized invocation endpoints onto badge metadata", () => {
-    expect(
-      resolveInvocationEndpointDisplay({ endpoint: " /v1/responses " }),
-    ).toEqual({
+    expect(resolveInvocationEndpointDisplay({ endpoint: " /v1/responses " })).toEqual({
       kind: "responses",
       endpointValue: "/v1/responses",
       badgeVariant: "default",
@@ -504,9 +476,7 @@ describe("resolveInvocationEndpointDisplay", () => {
   });
 
   it("keeps unknown or missing endpoints on the raw fallback path", () => {
-    expect(
-      resolveInvocationEndpointDisplay("/v1/responses/experimental"),
-    ).toEqual({
+    expect(resolveInvocationEndpointDisplay("/v1/responses/experimental")).toEqual({
       kind: "raw",
       endpointValue: "/v1/responses/experimental",
       badgeVariant: null,
@@ -595,9 +565,7 @@ describe("InvocationTable", () => {
     const records = [createInvocationRecord(0)];
     await renderInteractiveTable(records);
     expect(document.querySelector('[data-testid="invocation-id"]')).toBeNull();
-    expect(document.querySelector("thead th")?.className).toContain(
-      "xl:w-[10%]",
-    );
+    expect(document.querySelector("thead th")?.className).toContain("xl:w-[10%]");
 
     await renderInteractiveTable(records, { showInvokeId: true });
     const invokeId = document.querySelector('[data-testid="invocation-id"]');
@@ -608,9 +576,7 @@ describe("InvocationTable", () => {
     expect(invokeId?.className).not.toContain("truncate");
     expect(invokeId?.className).not.toContain("break-all");
     expect(invokeId?.getAttribute("title")).toBe(invokeId?.textContent);
-    expect(document.querySelector("thead th")?.className).toContain(
-      "xl:w-[16%]",
-    );
+    expect(document.querySelector("thead th")?.className).toContain("xl:w-[16%]");
   });
 
   it("virtualizes large desktop datasets without mounting every row", async () => {
@@ -619,9 +585,7 @@ describe("InvocationTable", () => {
     );
 
     const mountedRows = Array.from(document.querySelectorAll("tbody tr"));
-    const mountedText = mountedRows
-      .map((row) => row.textContent ?? "")
-      .join(" ");
+    const mountedText = mountedRows.map((row) => row.textContent ?? "").join(" ");
 
     expect(mountedRows.length).toBeGreaterThan(0);
     expect(mountedRows.length).toBeLessThan(80);
@@ -1052,8 +1016,7 @@ describe("InvocationTable", () => {
         status: "failed",
         failureClass: "service_failure",
         failureKind: "pool_no_available_account",
-        errorMessage:
-          "[pool_no_available_account] no assignable upstream account remains",
+        errorMessage: "[pool_no_available_account] no assignable upstream account remains",
       },
       {
         id: 41,
@@ -1100,8 +1063,7 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    const beforeExpandMatches =
-      document.body.textContent?.match(/codex-relay-01/g) ?? [];
+    const beforeExpandMatches = document.body.textContent?.match(/codex-relay-01/g) ?? [];
     expect(beforeExpandMatches.length).toBeGreaterThanOrEqual(1);
 
     const toggle = document.querySelector(
@@ -1116,8 +1078,7 @@ describe("InvocationTable", () => {
     });
 
     expect(document.body.textContent).toContain("请求详情");
-    const afterExpandMatches =
-      document.body.textContent?.match(/codex-relay-01/g) ?? [];
+    const afterExpandMatches = document.body.textContent?.match(/codex-relay-01/g) ?? [];
     expect(afterExpandMatches.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -1230,17 +1191,13 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    const modelCell = host?.querySelector(
-      'td:nth-child(4) [title="gpt-image-1"]',
-    )?.parentElement;
+    const modelCell = host?.querySelector('td:nth-child(4) [title="gpt-image-1"]')?.parentElement;
     const endpointCell = host?.querySelector(
       '[data-testid="invocation-image-tool-badge"]',
     )?.parentElement;
 
     expect(modelCell?.textContent).toContain("gpt-image-1");
-    expect(
-      modelCell?.querySelector('[data-testid="invocation-image-tool-badge"]'),
-    ).toBeNull();
+    expect(modelCell?.querySelector('[data-testid="invocation-image-tool-badge"]')).toBeNull();
     expect(endpointCell?.textContent).toMatch(/图片工具|Image tool/);
   });
 
@@ -1384,26 +1341,20 @@ describe("InvocationTable", () => {
     expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledWith(
       "invocation-pool-attempts-visible",
     );
-    await waitForCondition(
-      () => apiMocks.fetchForwardProxyBindingNodes.mock.calls.length > 0,
-    );
+    await waitForCondition(() => apiMocks.fetchForwardProxyBindingNodes.mock.calls.length > 0);
     expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenCalledWith(
       ["fpb_pool_attempt_visible"],
       { includeCurrent: true, groupName: undefined },
     );
 
-    await waitForCondition(
-      () => document.body.textContent?.includes("Dallas Egress 01") ?? false,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("Dallas Egress 01") ?? false);
 
     expect(document.body.textContent).toContain("号池尝试明细");
     expect(document.body.textContent).toContain("代理");
     expect(document.body.textContent).toContain("Dallas Egress 01");
     expect(document.body.textContent).not.toContain("fpb_pool_attempt_visible");
     expect(
-      document
-        .querySelector('[data-testid="pool-attempt-proxy-value"]')
-        ?.getAttribute("title"),
+      document.querySelector('[data-testid="pool-attempt-proxy-value"]')?.getAttribute("title"),
     ).toBe("Dallas Egress 01 (fpb_pool_attempt_visible)");
     expect(document.body.textContent).toContain("pool-account-a");
     expect(document.body.textContent).toContain("成功");
@@ -1475,9 +1426,7 @@ describe("InvocationTable", () => {
       await Promise.resolve();
     });
 
-    await waitForCondition(
-      () => document.body.textContent?.includes("进行中") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("进行中") === true);
 
     expect(document.body.textContent).toContain("pool-account-a");
     expect(document.body.textContent).toContain("进行中");
@@ -1545,9 +1494,7 @@ describe("InvocationTable", () => {
       await Promise.resolve();
     });
 
-    await waitForCondition(
-      () => document.body.textContent?.includes("接收中") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("接收中") === true);
 
     await act(async () => {
       sseMocks.onMessage?.({
@@ -1585,28 +1532,29 @@ describe("InvocationTable", () => {
   });
 
   it("keeps newer SSE pool attempts when an older fetch resolves later", async () => {
-    const deferred = createDeferredPromise<
-      Array<{
-        id: number;
-        invokeId: string;
-        occurredAt: string;
-        endpoint: string;
-        upstreamAccountId: number;
-        upstreamAccountName: string;
-        attemptIndex: number;
-        distinctAccountIndex: number;
-        sameAccountRetryIndex: number;
-        startedAt: string;
-        finishedAt: string | null;
-        status: string;
-        httpStatus: number | null;
-        connectLatencyMs: number | null;
-        firstByteLatencyMs: number | null;
-        streamLatencyMs: number | null;
-        upstreamRequestId: string | null;
-        createdAt: string;
-      }>
-    >();
+    const deferred =
+      createDeferredPromise<
+        Array<{
+          id: number;
+          invokeId: string;
+          occurredAt: string;
+          endpoint: string;
+          upstreamAccountId: number;
+          upstreamAccountName: string;
+          attemptIndex: number;
+          distinctAccountIndex: number;
+          sameAccountRetryIndex: number;
+          startedAt: string;
+          finishedAt: string | null;
+          status: string;
+          httpStatus: number | null;
+          connectLatencyMs: number | null;
+          firstByteLatencyMs: number | null;
+          streamLatencyMs: number | null;
+          upstreamRequestId: string | null;
+          createdAt: string;
+        }>
+      >();
     apiMocks.fetchInvocationPoolAttempts.mockReturnValue(deferred.promise);
 
     await renderInteractiveTable([
@@ -1668,9 +1616,7 @@ describe("InvocationTable", () => {
       await Promise.resolve();
     });
 
-    await waitForCondition(
-      () => document.body.textContent?.includes("req_live_newer") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("req_live_newer") === true);
 
     await act(async () => {
       deferred.resolve([
@@ -1704,28 +1650,29 @@ describe("InvocationTable", () => {
   });
 
   it("accepts a newer fetch result after an earlier pending SSE snapshot", async () => {
-    const deferred = createDeferredPromise<
-      Array<{
-        id: number;
-        invokeId: string;
-        occurredAt: string;
-        endpoint: string;
-        upstreamAccountId: number;
-        upstreamAccountName: string;
-        attemptIndex: number;
-        distinctAccountIndex: number;
-        sameAccountRetryIndex: number;
-        startedAt: string;
-        finishedAt: string | null;
-        status: string;
-        httpStatus: number | null;
-        connectLatencyMs: number | null;
-        firstByteLatencyMs: number | null;
-        streamLatencyMs: number | null;
-        upstreamRequestId: string | null;
-        createdAt: string;
-      }>
-    >();
+    const deferred =
+      createDeferredPromise<
+        Array<{
+          id: number;
+          invokeId: string;
+          occurredAt: string;
+          endpoint: string;
+          upstreamAccountId: number;
+          upstreamAccountName: string;
+          attemptIndex: number;
+          distinctAccountIndex: number;
+          sameAccountRetryIndex: number;
+          startedAt: string;
+          finishedAt: string | null;
+          status: string;
+          httpStatus: number | null;
+          connectLatencyMs: number | null;
+          firstByteLatencyMs: number | null;
+          streamLatencyMs: number | null;
+          upstreamRequestId: string | null;
+          createdAt: string;
+        }>
+      >();
     apiMocks.fetchInvocationPoolAttempts.mockReturnValue(deferred.promise);
 
     await renderInteractiveTable([
@@ -1785,9 +1732,7 @@ describe("InvocationTable", () => {
       await Promise.resolve();
     });
 
-    await waitForCondition(
-      () => document.body.textContent?.includes("进行中") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("进行中") === true);
 
     await act(async () => {
       deferred.resolve([
@@ -1815,9 +1760,7 @@ describe("InvocationTable", () => {
       await Promise.resolve();
     });
 
-    await waitForCondition(
-      () => document.body.textContent?.includes("req_fetch_newer") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("req_fetch_newer") === true);
     expect(document.body.textContent).toContain("成功");
     expect(document.body.textContent).not.toContain("进行中");
   });
@@ -1896,9 +1839,7 @@ describe("InvocationTable", () => {
       await Promise.resolve();
     });
 
-    await waitForCondition(
-      () => document.body.textContent?.includes("进行中") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("进行中") === true);
     expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(
       1,
       "invocation-pool-attempts-terminal-refresh",
@@ -1921,16 +1862,13 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    await waitForCondition(
-      () => apiMocks.fetchInvocationPoolAttempts.mock.calls.length >= 2,
-    );
+    await waitForCondition(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length >= 2);
     expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(
       2,
       "invocation-pool-attempts-terminal-refresh",
     );
     await waitForCondition(
-      () =>
-        document.body.textContent?.includes("req_terminal_refresh") === true,
+      () => document.body.textContent?.includes("req_terminal_refresh") === true,
     );
     expect(document.body.textContent).toContain("成功");
     expect(document.body.textContent).not.toContain("进行中");
@@ -1996,9 +1934,7 @@ describe("InvocationTable", () => {
       await Promise.resolve();
     });
 
-    await waitForCondition(
-      () => document.body.textContent?.includes("req_sse_terminal") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("req_sse_terminal") === true);
 
     await act(async () => {
       sseMocks.onMessage?.({
@@ -2102,9 +2038,7 @@ describe("InvocationTable", () => {
       await Promise.resolve();
     });
 
-    await waitForCondition(
-      () => document.body.textContent?.includes("pool-account-a") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("pool-account-a") === true);
 
     await act(async () => {
       sseMocks.onMessage?.({
@@ -2142,9 +2076,7 @@ describe("InvocationTable", () => {
     });
 
     expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledTimes(1);
-    await waitForCondition(
-      () => document.body.textContent?.includes("req_ignored") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("req_ignored") === true);
     expect(document.body.textContent).toContain("req_ignored");
     expect(document.body.textContent).not.toContain("未找到号池尝试记录");
   });
@@ -2216,9 +2148,7 @@ describe("InvocationTable", () => {
       await Promise.resolve();
     });
 
-    await waitForCondition(
-      () => document.body.textContent?.includes("等待首字节") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("等待首字节") === true);
 
     await act(async () => {
       rejectFetch?.(new Error("network down"));
@@ -2227,9 +2157,7 @@ describe("InvocationTable", () => {
     });
 
     expect(document.body.textContent).toContain("等待首字节");
-    expect(
-      document.querySelector('[data-testid="pool-attempts-error"]'),
-    ).toBeNull();
+    expect(document.querySelector('[data-testid="pool-attempts-error"]')).toBeNull();
   });
 
   it("re-fetches running pool attempts when the parent invocation summary changes", async () => {
@@ -2312,9 +2240,7 @@ describe("InvocationTable", () => {
       1,
       "invocation-refetch-running-attempts",
     );
-    await waitForCondition(
-      () => document.body.textContent?.includes("连接中") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("连接中") === true);
 
     await renderInteractiveTable([
       {
@@ -2334,16 +2260,12 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    await waitForCondition(
-      () => apiMocks.fetchInvocationPoolAttempts.mock.calls.length >= 2,
-    );
+    await waitForCondition(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length >= 2);
     expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(
       2,
       "invocation-refetch-running-attempts",
     );
-    await waitForCondition(
-      () => document.body.textContent?.includes("等待首字节") === true,
-    );
+    await waitForCondition(() => document.body.textContent?.includes("等待首字节") === true);
   });
 
   it("shows a clear non-pool empty state without fetching attempts", async () => {
@@ -2424,7 +2346,7 @@ describe("InvocationTable", () => {
         createdAt: "2026-03-07T03:13:50Z",
         source: "proxy",
         proxyDisplayName: "codex-raw-edge",
-        endpoint: "/v1/responses/" + "very-long-segment-".repeat(4),
+        endpoint: `/v1/responses/${"very-long-segment-".repeat(4)}`,
         model: "gpt-5.3-codex",
         status: "success",
         totalTokens: 256,
@@ -2475,24 +2397,16 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    expect(
-      html.match(/data-testid="invocation-endpoint-badge"/g)?.length ?? 0,
-    ).toBe(6);
-    expect(
-      html.match(/data-testid="invocation-endpoint-path"/g)?.length ?? 0,
-    ).toBe(1);
-    expect(
-      html.match(/data-testid="invocation-image-tool-badge"/g)?.length ?? 0,
-    ).toBe(2);
+    expect(html.match(/data-testid="invocation-endpoint-badge"/g)?.length ?? 0).toBe(6);
+    expect(html.match(/data-testid="invocation-endpoint-path"/g)?.length ?? 0).toBe(1);
+    expect(html.match(/data-testid="invocation-image-tool-badge"/g)?.length ?? 0).toBe(2);
     expect(html.match(/data-endpoint-kind="responses"/g)?.length ?? 0).toBe(3);
     expect(html.match(/data-endpoint-kind="chat"/g)?.length ?? 0).toBe(1);
     expect(html.match(/data-endpoint-kind="compact"/g)?.length ?? 0).toBe(1);
     expect(html.match(/data-endpoint-kind="remote_v2"/g)?.length ?? 0).toBe(1);
     expect(html.match(/data-endpoint-kind="raw"/g)?.length ?? 0).toBe(1);
     expect(html.match(/data-image-intent-kind="yes"/g)?.length ?? 0).toBe(1);
-    expect(
-      html.match(/data-image-intent-kind="direct_image"/g)?.length ?? 0,
-    ).toBe(1);
+    expect(html.match(/data-image-intent-kind="direct_image"/g)?.length ?? 0).toBe(1);
     expect(html).toContain("Responses");
     expect(html).toContain("Chat");
     expect(html).toMatch(/图片工具|Image tool/);
@@ -2518,12 +2432,8 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    expect(
-      html.match(/data-testid="invocation-proxy-name"/g)?.length ?? 0,
-    ).toBe(1);
-    expect(
-      html.match(/data-testid="invocation-proxy-badge"/g)?.length ?? 0,
-    ).toBe(1);
+    expect(html.match(/data-testid="invocation-proxy-name"/g)?.length ?? 0).toBe(1);
+    expect(html.match(/data-testid="invocation-proxy-badge"/g)?.length ?? 0).toBe(1);
     expect(html).toContain(`title="${LONG_PROXY_NAME}"`);
   });
 
@@ -2632,9 +2542,7 @@ describe("InvocationTable", () => {
     ]);
 
     expect(html.match(/data-fast-state="effective"/g)?.length ?? 0).toBe(3);
-    expect(html.match(/data-fast-state="requested_only"/g)?.length ?? 0).toBe(
-      1,
-    );
+    expect(html.match(/data-fast-state="requested_only"/g)?.length ?? 0).toBe(1);
     expect(html).toContain("Fast 模式（Priority processing）");
     expect(html).toContain("请求想要 Fast，但实际未命中 Priority processing");
   });
@@ -2663,12 +2571,10 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    const trigger = Array.from(document.querySelectorAll("button")).find(
-      (button) => {
-        const label = button.getAttribute("aria-label");
-        return label === "展开详情" || label === "Show details";
-      },
-    );
+    const trigger = Array.from(document.querySelectorAll("button")).find((button) => {
+      const label = button.getAttribute("aria-label");
+      return label === "展开详情" || label === "Show details";
+    });
     expect(trigger).toBeTruthy();
 
     await act(async () => {
@@ -2712,12 +2618,10 @@ describe("InvocationTable", () => {
 
     expect(document.body.textContent).toContain("9.36 s ·");
 
-    const trigger = Array.from(document.querySelectorAll("button")).find(
-      (button) => {
-        const label = button.getAttribute("aria-label");
-        return label === "展开详情" || label === "Show details";
-      },
-    );
+    const trigger = Array.from(document.querySelectorAll("button")).find((button) => {
+      const label = button.getAttribute("aria-label");
+      return label === "展开详情" || label === "Show details";
+    });
     expect(trigger).toBeTruthy();
 
     await act(async () => {
@@ -2790,8 +2694,8 @@ describe("InvocationTable", () => {
       { onOpenUpstreamAccount },
     );
 
-    const trigger = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Pool Alpha"),
+    const trigger = Array.from(document.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Pool Alpha"),
     );
     expect(trigger).toBeTruthy();
 
@@ -2822,8 +2726,8 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    const trigger = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Pool Alpha"),
+    const trigger = Array.from(document.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Pool Alpha"),
     );
     expect(trigger).toBeTruthy();
 
@@ -2859,9 +2763,7 @@ describe("InvocationTable", () => {
     ];
 
     const summaryHtml = renderTable(records);
-    expect(summaryHtml).not.toContain(
-      'data-testid="invocation-detail-level-badge"',
-    );
+    expect(summaryHtml).not.toContain('data-testid="invocation-detail-level-badge"');
     expect(summaryHtml).not.toContain("Structured only");
     expect(summaryHtml).not.toContain("精简于 2026-02-01 12:34:56Z");
   });
@@ -2882,9 +2784,7 @@ describe("InvocationTable", () => {
     ];
 
     const summaryHtml = renderTable(records);
-    expect(summaryHtml).not.toContain(
-      'data-testid="invocation-detail-level-badge"',
-    );
+    expect(summaryHtml).not.toContain('data-testid="invocation-detail-level-badge"');
     expect(summaryHtml).not.toContain("Full");
     expect(summaryHtml).not.toContain("Structured only");
     expect(summaryHtml).not.toContain("精简于");

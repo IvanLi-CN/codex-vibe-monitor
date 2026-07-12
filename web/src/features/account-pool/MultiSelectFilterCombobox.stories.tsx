@@ -1,15 +1,15 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { useState } from 'react'
-import { MultiSelectFilterCombobox } from './MultiSelectFilterCombobox'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useState } from "react";
+import { MultiSelectFilterCombobox } from "./MultiSelectFilterCombobox";
 
 const options = [
-  { value: 'working', label: 'Working' },
-  { value: 'idle', label: 'Idle' },
-  { value: 'rate_limited', label: 'Rate limited' },
-]
+  { value: "working", label: "Working" },
+  { value: "idle", label: "Idle" },
+  { value: "rate_limited", label: "Rate limited" },
+];
 
 function StoryHarness() {
-  const [value, setValue] = useState<string[]>(['working', 'rate_limited'])
+  const [value, setValue] = useState<string[]>(["working", "rate_limited"]);
 
   return (
     <div className="w-full max-w-sm p-6">
@@ -25,17 +25,17 @@ function StoryHarness() {
         onValueChange={setValue}
       />
     </div>
-  )
+  );
 }
 
 const meta = {
-  title: 'Account Pool/Multi Select Filter Combobox',
+  title: "Account Pool/Multi Select Filter Combobox",
   component: StoryHarness,
-  tags: ['autodocs'],
-} satisfies Meta<typeof StoryHarness>
+  tags: ["autodocs"],
+} satisfies Meta<typeof StoryHarness>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {}
+export const Default: Story = {};

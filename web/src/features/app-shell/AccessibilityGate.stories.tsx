@@ -1,8 +1,14 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { Button } from '../../components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
-import { Input } from '../../components/ui/input'
-import { SelectField } from '../../components/ui/select-field'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { Button } from "../../components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../../components/ui/card";
+import { Input } from "../../components/ui/input";
+import { SelectField } from "../../components/ui/select-field";
 
 function AccessibilityGateFixture() {
   return (
@@ -11,7 +17,8 @@ function AccessibilityGateFixture() {
         <CardHeader>
           <CardTitle>Storybook accessibility gate fixture</CardTitle>
           <CardDescription>
-            A stable opt-in Storybook surface used by CI to prove the axe integration fails on accessibility regressions.
+            A stable opt-in Storybook surface used by CI to prove the axe integration fails on
+            accessibility regressions.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -21,7 +28,9 @@ function AccessibilityGateFixture() {
             </h2>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <label htmlFor="gate-name" className="text-sm font-medium text-base-content">Display name</label>
+                <label htmlFor="gate-name" className="text-sm font-medium text-base-content">
+                  Display name
+                </label>
                 <Input id="gate-name" defaultValue="Koha monitor" />
               </div>
               <SelectField
@@ -30,8 +39,8 @@ function AccessibilityGateFixture() {
                 value="stable"
                 onValueChange={() => undefined}
                 options={[
-                  { value: 'stable', label: 'Stable' },
-                  { value: 'rc', label: 'Release candidate' },
+                  { value: "stable", label: "Stable" },
+                  { value: "rc", label: "Release candidate" },
                 ]}
               />
             </div>
@@ -62,20 +71,20 @@ function AccessibilityGateFixture() {
         </CardContent>
       </Card>
     </main>
-  )
+  );
 }
 
 const meta = {
-  title: 'Quality Gates/Accessibility Gate',
+  title: "Quality Gates/Accessibility Gate",
   component: AccessibilityGateFixture,
-  tags: ['test'],
+  tags: ["test"],
   parameters: {
-    layout: 'fullscreen',
+    layout: "fullscreen",
   },
-} satisfies Meta<typeof AccessibilityGateFixture>
+} satisfies Meta<typeof AccessibilityGateFixture>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
-export const SemanticFixture: Story = {}
+export const SemanticFixture: Story = {};

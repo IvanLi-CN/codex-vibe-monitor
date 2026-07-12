@@ -1,5 +1,4 @@
 use super::*;
-use serde_json::json;
 
 #[tokio::test]
 async fn refresh_forward_proxy_subscriptions_triggers_bootstrap_probe_for_added_nodes() {
@@ -457,7 +456,7 @@ fn legacy_vless_bound_proxy_keys_still_match_when_query_param_names_change() {
     }
 
     assert!(
-        manager.has_selectable_bound_proxy_keys(&[legacy_bound_proxy_key.clone()]),
+        manager.has_selectable_bound_proxy_keys(std::slice::from_ref(&legacy_bound_proxy_key)),
         "legacy key with synonymous query params should remain selectable"
     );
 

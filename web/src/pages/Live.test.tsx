@@ -5,8 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import LivePage from "./Live";
 
-const PROMPT_CACHE_SELECTION_STORAGE_KEY =
-  "codex-vibe-monitor.live.prompt-cache-selection";
+const PROMPT_CACHE_SELECTION_STORAGE_KEY = "codex-vibe-monitor.live.prompt-cache-selection";
 const hookMocks = vi.hoisted(() => ({
   useForwardProxyLiveStats: vi.fn(),
   useInvocationStream: vi.fn(),
@@ -251,9 +250,7 @@ function setupLivePageHooks() {
 }
 
 function getPromptCacheSelectionTrigger() {
-  const select = host?.querySelector(
-    '[data-testid="live-prompt-cache-selection"]',
-  );
+  const select = host?.querySelector('[data-testid="live-prompt-cache-selection"]');
   if (!(select instanceof HTMLButtonElement)) {
     throw new Error("missing prompt cache selection");
   }
@@ -293,9 +290,7 @@ function buildConversationStats(promptCacheKeys: string[]) {
 }
 
 function getPromptCacheExpandAllButton() {
-  const button = host?.querySelector(
-    '[data-testid="live-prompt-cache-expand-all"]',
-  );
+  const button = host?.querySelector('[data-testid="live-prompt-cache-expand-all"]');
   if (!(button instanceof HTMLButtonElement)) {
     throw new Error("missing expand-all button");
   }
@@ -303,9 +298,7 @@ function getPromptCacheExpandAllButton() {
 }
 
 function getPromptCacheExpandAllButtonIcon() {
-  const icon = host?.querySelector(
-    '[data-testid="live-prompt-cache-expand-all-icon"]',
-  );
+  const icon = host?.querySelector('[data-testid="live-prompt-cache-expand-all-icon"]');
   if (!(icon instanceof HTMLElement)) {
     throw new Error("missing expand-all icon");
   }
@@ -328,9 +321,7 @@ describe("LivePage", () => {
 
     const select = getPromptCacheSelectionTrigger();
 
-    expect(window.localStorage.getItem).toHaveBeenCalledWith(
-      PROMPT_CACHE_SELECTION_STORAGE_KEY,
-    );
+    expect(window.localStorage.getItem).toHaveBeenCalledWith(PROMPT_CACHE_SELECTION_STORAGE_KEY);
     expect(select.textContent).toContain("50 个对话");
     expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
       mode: "count",
@@ -363,12 +354,9 @@ describe("LivePage", () => {
     expect(host?.querySelector("select")).toBeNull();
 
     pressElement(select);
-    const option = Array.from(
-      document.body.querySelectorAll("[role='option']"),
-    ).find(
+    const option = Array.from(document.body.querySelectorAll("[role='option']")).find(
       (candidate) =>
-        candidate instanceof HTMLElement &&
-        candidate.textContent?.includes("20 个对话"),
+        candidate instanceof HTMLElement && candidate.textContent?.includes("20 个对话"),
     );
     if (!(option instanceof HTMLElement)) {
       throw new Error("missing count option");
@@ -416,12 +404,9 @@ describe("LivePage", () => {
     const select = getPromptCacheSelectionTrigger();
 
     pressElement(select);
-    const option = Array.from(
-      document.body.querySelectorAll("[role='option']"),
-    ).find(
+    const option = Array.from(document.body.querySelectorAll("[role='option']")).find(
       (candidate) =>
-        candidate instanceof HTMLElement &&
-        candidate.textContent?.includes("近 6 小时活动"),
+        candidate instanceof HTMLElement && candidate.textContent?.includes("近 6 小时活动"),
     );
     if (!(option instanceof HTMLElement)) {
       throw new Error("missing activity window option");

@@ -1,6 +1,6 @@
-import { AppIcon, type AppIconName } from "./AppIcon";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
+import { AppIcon, type AppIconName } from "./AppIcon";
 
 type ListBodyStateVariant = "loading" | "error" | "empty";
 
@@ -69,9 +69,7 @@ export function ListBodyState({
       </div>
       <h3 className="text-base font-semibold text-base-content">{title}</h3>
       {description ? (
-        <p className="mt-2 max-w-md text-sm leading-6 text-base-content/70">
-          {description}
-        </p>
+        <p className="mt-2 max-w-md text-sm leading-6 text-base-content/70">{description}</p>
       ) : null}
       {showSkeleton ? (
         <div className="mt-6 w-full max-w-2xl space-y-3" aria-hidden>
