@@ -647,7 +647,7 @@ export function TodayStatsOverview({
         <div
           data-testid="today-stats-metrics-grid"
           className={cn(
-            'grid grid-cols-1 gap-3 sm:grid-cols-2',
+            'grid grid-cols-1 gap-3 min-[400px]:grid-cols-2',
             showLivePhaseSplit
               ? 'lg:grid-cols-4 xl:grid-cols-7'
               : showInProgressConversations ? 'lg:grid-cols-4 xl:grid-cols-7' : 'lg:grid-cols-3 xl:grid-cols-6',
@@ -931,6 +931,7 @@ export function TodayStatsOverview({
             iconName="database-outline"
             toneClass="text-secondary"
             valueTestId="today-stats-value-total-tokens"
+            className="min-[400px]:col-span-2 lg:col-span-1"
             metricTooltipContent={stats?.usageBreakdown ? (
               <UsageBreakdownTooltip
                 title={tokensLabel}
