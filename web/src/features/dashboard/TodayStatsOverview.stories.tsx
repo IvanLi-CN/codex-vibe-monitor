@@ -331,12 +331,12 @@ export const UsageBreakdownDetails: Story = {
     await userEvent.click(canvas.getByTestId('today-stats-label-total-tokens'))
     await waitFor(() => {
       const tooltip = within(document.body).getByRole('tooltip')
-      expect(tooltip).toHaveTextContent(/Cache read tokens|缓存读取 Token/)
+      expect(tooltip).toHaveTextContent(/Cache read|缓存读取/)
       expect(within(tooltip).getByRole('columnheader', { name: /Cache hit rate|缓存命中率/ })).toBeInTheDocument()
       expect(within(tooltip).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
         '模型',
         '缓存写入',
-        '缓存读取 Token',
+        '缓存读取',
         '缓存命中率',
         '输出',
       ])
