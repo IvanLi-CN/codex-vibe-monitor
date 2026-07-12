@@ -14,6 +14,7 @@ Proxy usage responses expose cache-read Token counts but not a separate cache-wr
 ## Aggregation Contract
 
 - Token detail presents cache write, cache-hit Tokens (the upstream cache-read count), and output so the categories do not overlap.
+- Cache hit rate is `cache-hit Tokens / (cache write + cache-hit Tokens + output)` for each total or model row; a zero denominator is unavailable rather than reported as zero percent.
 - Cost detail presents input, cache write, cache read, output, reasoning, and a dynamic unknown amount.
 - A record contributes either all five exact buckets or its full known total to `unknown`; partial buckets are not mixed with unknown for the same record.
 - Total and model rows reconcile as `input + cache write + cache read + output + reasoning + unknown = total cost` within floating-point tolerance.
