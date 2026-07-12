@@ -5,6 +5,7 @@ import {
 } from "./useDashboardWorkingConversations";
 import {
   fetchDashboardActivity,
+  type DashboardActivityLiveSnapshot,
   type DashboardActivityResponse,
   type UpstreamAccountActivityAccount,
 } from "../lib/api";
@@ -19,6 +20,39 @@ export const DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_OPEN_RESYNC_COOLDOWN_MS = 5_000
 
 interface LoadOptions {
   silent?: boolean;
+}
+
+export function mergeDashboardActivityLiveSnapshot(
+  response: DashboardActivityResponse,
+  live: DashboardActivityLiveSnapshot,
+): DashboardActivityResponse {
+  const liveAccounts = new Map(live.accounts.map((account) => [account.accountKey, account]));
+  return {
+    ...response,
+    liveRevision: live.revision,
+    summary: {
+      ...response.summary,
+      stats: {
+        ...response.summary.stats,
+        inProgressConversationCount: live.inProgressInvocationCount,
+        inProgressRetryConversationCount: live.retryInvocationCount,
+        inProgressPhaseCounts: live.inProgressPhaseCounts,
+      },
+    },
+    accounts: response.accounts?.map((account) => {
+      const liveAccount = liveAccounts.get(account.accountKey ?? (account.upstreamAccountId == null ? "unassigned" : `upstream:${account.upstreamAccountId}`));
+      return {
+        ...account,
+        inProgressInvocationCount: liveAccount?.inProgressInvocationCount ?? 0,
+        inProgressPhaseCounts: liveAccount?.inProgressPhaseCounts ?? {
+          queued: 0,
+          requesting: 0,
+          responding: 0,
+        },
+        retryInvocationCount: liveAccount?.retryInvocationCount ?? 0,
+      };
+    }),
+  };
 }
 
 function isAbortError(error: unknown) {
@@ -104,6 +138,7 @@ export function useDashboardActivitySnapshot(
   const lastRefreshAtRef = useRef(0);
   const lastOpenResyncAtRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const latestLiveSnapshotRef = useRef<DashboardActivityLiveSnapshot | null>(null);
 
   useEffect(() => {
     enabledRef.current = enabled;
@@ -195,7 +230,12 @@ export function useDashboardActivitySnapshot(
           ? requestedRecentLimit
           : nextRecentInvocationLimit,
       );
-      setData(response);
+      const latestLiveSnapshot = latestLiveSnapshotRef.current;
+      setData(
+        latestLiveSnapshot && latestLiveSnapshot.revision > (response.liveRevision ?? 0)
+          ? mergeDashboardActivityLiveSnapshot(response, latestLiveSnapshot)
+          : response,
+      );
       recordUpstreamAccountActivityRefresh();
       hasHydratedRef.current = true;
       setError(null);
@@ -260,6 +300,15 @@ export function useDashboardActivitySnapshot(
   useEffect(() => {
     if (!enabled) return;
     const unsubscribe = subscribeToSse((payload) => {
+      if (payload.type === "dashboardActivityLive") {
+        const current = latestLiveSnapshotRef.current;
+        if (current && payload.snapshot.revision <= current.revision) return;
+        latestLiveSnapshotRef.current = payload.snapshot;
+        setData((currentData) =>
+          currentData ? mergeDashboardActivityLiveSnapshot(currentData, payload.snapshot) : currentData,
+        );
+        return;
+      }
       if (payload.type !== "records") return;
       const now = Date.now();
       const delay = Math.max(

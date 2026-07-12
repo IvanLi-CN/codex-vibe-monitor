@@ -101,7 +101,8 @@
 
 ### SHOULD
 
-- 账号视图的刷新应沿用现有 Dashboard reconcile budget，在 tab 激活时才对 `records` / SSE open 做节流 refresh，不增加逐条本地 SSE patch。
+- 当前进行中、重试和阶段计数必须由后端基于一次 runtime store 读取生成版本化 `dashboardActivityLive` SSE 快照；前端不得从 recent/records 自行推导。历史聚合、recent 与账号元数据继续沿用 5 秒 HTTP reconcile budget。
+- `dashboardActivityLive.revision` 必须单调递增；`GET /api/stats/dashboard-activity.liveRevision` 标识 HTTP 读取时的实时版本。前端不得用较旧 HTTP 或 SSE revision 覆盖较新的实时字段，SSE 重连必须立即下发当前快照。
 - 当前实现中，账号视图与 current summary 一样统一收口到 `5s` reconcile/open-resync 预算；任何更激进的 cadence 变更都必须先补充 slow-path 证据。
 - 共享 range 状态应继续使用现有 localStorage key，避免打断用户已保存的 Dashboard 偏好。
 - 账号卡内的最近调用记录应复用已有 invocation 语义 helper，保证状态、模型、耗时与账号 badge 文案一致。
@@ -161,6 +162,7 @@
 - `GET /api/stats/upstream-account-activity.accounts[]` 与 `GET /api/stats/dashboard-activity.accounts[]` 的状态字段复用账号池状态模型：`enabled/displayStatus/enableStatus/workStatus/healthStatus/syncState/lastError/lastActionReasonMessage`，前端只把异常/注意态渲染为状态 badge。
 - Dashboard 快捷策略写入复用 `PATCH /api/pool/upstream-accounts/:id`，payload 仅包含 `routingRule` 中被触碰过的账号级覆盖字段；该入口不支持恢复继承。
 - `GET /api/stats/dashboard-activity.summary` 复用 `StatsResponse` wire shape，并额外返回 `tokensPerMinute` / `spendRate`；`accounts[]` 复用账号活动卡片所需字段，并允许 `upstreamAccountId: null` 的 `isUnassigned` 聚合项。
+- SSE `dashboardActivityLive` 返回 `revision/generatedAt`、总览进行中/重试/阶段计数和按 `accountKey` 分组的相同计数；账号无 live 项时其实时字段归零。
 - `GET /api/stats/dashboard-activity.rateWindow.mode` 固定描述当前速率算法来源；当前值为账号活跃尾段求和，不代表 timeseries 图上任一 bucket 的事实。
 - 前端共享 `PromptCacheConversationInvocationPreview` 合同同步包含 `promptCacheKey?: string | null`；`DashboardWorkingConversationInvocationSelection.promptCacheKey` 语义不变，仍表示真实对话键。
 
@@ -196,6 +198,7 @@
 - Given Dashboard 顶部 KPI 使用 `StatsResponse.inProgressConversationCount` / `inProgressRetryConversationCount`，When 显示 owner-facing 文案，Then 标签为“进行中调用 / 重试调用”，并按 invocation-based 计数，而不是按 prompt-cache 对话去重。
 - Given 后端账号活动接口需要账号摘要与最近 4 条记录，When 发起请求，Then 响应来自单个 batch endpoint，不依赖前端 fanout `upstream-account detail` 或 `window-usage`。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.inProgressInvocationCount === sum(accounts.inProgressInvocationCount)`。
+- Given 已收到 revision 更高的 `dashboardActivityLive`，When 较旧 HTTP reconcile 或乱序 SSE 到达，Then 顶部与账号卡保持较新 live 数值且不会回退为 0。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.tokensPerMinute === sum(accounts.tokensPerMinute)`，允许仅因小数格式化产生显示级差异。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.spendRate === sum(accounts.spendRate)`，允许仅因货币格式化产生显示级差异。
 - Given 账号 tab 尚未打开，When Dashboard 顶部需要当前活动 KPI，Then 前端只请求 `includeAccounts=false` 的 summary-only 快照，不请求账号明细。
@@ -235,6 +238,14 @@
 - `cd web && bun run build-storybook`
 
 ## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: `pages-dashboardpage--unified-activity-snapshot`
+  scenario: `CIII account live invocation counts`
+  evidence_note: 验证 Dashboard 上游账号视图中 CIII 的进行中调用计数与顶部实时 KPI 同屏渲染；账号卡直接消费后端权威 live snapshot，而不是等待完整历史聚合 HTTP 重查。
+  image:
+  PR: include
+  ![Dashboard CIII 实时账号调用快照](./assets/dashboard-live-account-snapshot.jpg)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--error-summary-tooltips`

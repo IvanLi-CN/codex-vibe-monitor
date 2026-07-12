@@ -28,6 +28,8 @@ export type {
   UsageBreakdown,
   DashboardActivityRateWindow,
   DashboardActivitySummary,
+  DashboardActivityLiveAccount,
+  DashboardActivityLiveSnapshot,
   DashboardActivityResponse,
   UpstreamAccountActivityAccount,
   UpstreamAccountActivityResponse,

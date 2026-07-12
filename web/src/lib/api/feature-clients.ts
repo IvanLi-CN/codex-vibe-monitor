@@ -90,5 +90,7 @@ export type {
   UpstreamAccountActivityResponse,
   DashboardActivityRateWindow,
   DashboardActivitySummary,
+  DashboardActivityLiveAccount,
+  DashboardActivityLiveSnapshot,
   DashboardActivityResponse,
 } from "./core";

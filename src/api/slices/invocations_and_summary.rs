@@ -5525,6 +5525,7 @@ pub(crate) async fn fetch_dashboard_activity(
     State(state): State<Arc<AppState>>,
     Query(params): Query<DashboardActivityQuery>,
 ) -> Result<Json<DashboardActivityResponse>, ApiError> {
+    let live_revision = current_dashboard_activity_live_revision();
     let recent_limit = validate_dashboard_activity_params(
         "dashboard-activity",
         params.range.as_str(),
@@ -5551,6 +5552,7 @@ pub(crate) async fn fetch_dashboard_activity(
         range_start,
         range_end: range_end.clone(),
         snapshot_id: snapshot.range_end.timestamp_millis(),
+        live_revision,
         rate_window: DashboardActivityRateWindowResponse {
             start: format_utc_iso(rate_window_start),
             end: range_end,

@@ -4,6 +4,8 @@
 
 ## Decision Trace
 
+- 2026-07-13：生产诊断确认账号卡把 records SSE 降级成重型 `dashboard-activity` HTTP 重查通知，慢查询叠加 5 秒节流可造成超过 10 秒的过时状态；改为后端内存运行态生成版本化 `dashboardActivityLive` 快照，前端只合并权威结果，HTTP 保留历史校准职责。
+
 - 2026-06-26：创建 active spec，冻结 Dashboard 工作区双 tabs、账号活动跟随总览 range、以及 `usage` 下 disabled 回退的交互边界。
 - 2026-06-26：明确账号视图不是折叠卡、不是四小格，而是单张放大账号卡，上半部摘要、下半部最近 4 条调用记录。
 - 2026-06-26：锁定 summary `inProgressConversationCount` / `inProgressRetryConversationCount` 保留 wire name 但改为 invocation-based 语义，owner-facing 文案同步改成“进行中调用 / 重试调用”。

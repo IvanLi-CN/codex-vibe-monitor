@@ -3,6 +3,7 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type {
+  BroadcastPayload,
   DashboardActivityResponse,
   PromptCacheConversationInvocationPreview,
 } from "../lib/api";
@@ -31,6 +32,10 @@ const apiMocks = vi.hoisted(() => ({
     >(),
 }));
 
+const sseMocks = vi.hoisted(() => ({
+  listener: null as null | ((payload: BroadcastPayload) => void),
+}));
+
 vi.mock("../lib/api", async () => {
   const actual =
     await vi.importActual<typeof import("../lib/api")>("../lib/api");
@@ -41,7 +46,12 @@ vi.mock("../lib/api", async () => {
 });
 
 vi.mock("../lib/sse", () => ({
-  subscribeToSse: () => () => {},
+  subscribeToSse: (listener: (payload: BroadcastPayload) => void) => {
+    sseMocks.listener = listener;
+    return () => {
+      sseMocks.listener = null;
+    };
+  },
   subscribeToSseOpen: () => () => {},
 }));
 
@@ -256,6 +266,12 @@ function Probe({
       <div data-testid="recent-count">
         {String(data?.accounts[0]?.recentInvocations.length ?? 0)}
       </div>
+      <div data-testid="live-count">
+        {String(data?.accounts[0]?.inProgressInvocationCount ?? 0)}
+      </div>
+      <div data-testid="summary-live-count">
+        {String(data?.summary?.stats.inProgressConversationCount ?? 0)}
+      </div>
     </div>
   );
 }
@@ -271,11 +287,11 @@ function SnapshotProbe({
 }) {
   const { data } = useDashboardActivitySnapshot(range, enabled, includeAccounts);
 
-  return (
-    <div data-testid="snapshot-accounts">
-      {String(data?.accounts?.length ?? 0)}
-    </div>
-  );
+  return <>
+    <div data-testid="snapshot-accounts">{String(data?.accounts?.length ?? 0)}</div>
+    <div data-testid="live-count">{String(data?.accounts?.[0]?.inProgressInvocationCount ?? 0)}</div>
+    <div data-testid="summary-live-count">{String(data?.summary.stats.inProgressConversationCount ?? 0)}</div>
+  </>;
 }
 
 describe("resolveUpstreamAccountRecentPreviewLimit", () => {
@@ -308,6 +324,53 @@ describe("resolveUpstreamAccountRecentPreviewLimit", () => {
 });
 
 describe("useDashboardUpstreamAccountActivity", () => {
+  it("applies a newer dashboard live snapshot without waiting for the HTTP refresh budget", async () => {
+    apiMocks.fetchDashboardActivity.mockResolvedValue(createAccountResponse(0, []));
+    render(<SnapshotProbe includeAccounts />);
+    await flushAsync();
+
+    act(() => {
+      sseMocks.listener?.({
+        type: "dashboardActivityLive",
+        snapshot: {
+          revision: 7,
+          generatedAt: "2026-04-04T10:05:01Z",
+          inProgressInvocationCount: 2,
+          inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
+          retryInvocationCount: 1,
+          accounts: [
+            {
+              accountKey: "upstream:42",
+              upstreamAccountId: 42,
+              inProgressInvocationCount: 2,
+              inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
+              retryInvocationCount: 1,
+            },
+          ],
+        },
+      });
+    });
+
+    expect(text("live-count")).toBe("2");
+    expect(text("summary-live-count")).toBe("2");
+    expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      sseMocks.listener?.({
+        type: "dashboardActivityLive",
+        snapshot: {
+          revision: 6,
+          generatedAt: "2026-04-04T10:05:02Z",
+          inProgressInvocationCount: 0,
+          inProgressPhaseCounts: { queued: 0, requesting: 0, responding: 0 },
+          retryInvocationCount: 0,
+          accounts: [],
+        },
+      });
+    });
+    expect(text("live-count")).toBe("2");
+  });
+
   it("can fetch a summary-only dashboard snapshot without account details", async () => {
     apiMocks.fetchDashboardActivity.mockResolvedValue({
       ...createAccountResponse(0, []),

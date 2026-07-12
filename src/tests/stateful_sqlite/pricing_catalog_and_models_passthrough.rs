@@ -1381,7 +1381,9 @@ async fn proxy_capture_persist_and_broadcast_emits_records_summary_and_quota() {
                 saw_quota = true;
                 assert_eq!(snapshot.total_requests, 9);
             }
-            BroadcastPayload::Version { .. } | BroadcastPayload::PoolAttempts { .. } => {}
+            BroadcastPayload::Version { .. }
+            | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::DashboardActivityLive { .. } => {}
         }
 
         if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {
