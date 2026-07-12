@@ -333,6 +333,13 @@ export const UsageBreakdownDetails: Story = {
       const tooltip = within(document.body).getByRole('tooltip')
       expect(tooltip).toHaveTextContent(/Cache hit tokens|缓存命中 Token/)
       expect(within(tooltip).getByRole('columnheader', { name: /Cache hit rate|缓存命中率/ })).toBeInTheDocument()
+      expect(within(tooltip).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+        'Model',
+        'Cache write',
+        'Cache hit tokens',
+        'Cache hit rate',
+        'Output',
+      ])
       expect(tooltip).toHaveTextContent('23.3%')
       expect(tooltip).toHaveTextContent(/Reasoning effort|思考等级/)
       expect(tooltip).toHaveTextContent(/Unspecified|未指定/)

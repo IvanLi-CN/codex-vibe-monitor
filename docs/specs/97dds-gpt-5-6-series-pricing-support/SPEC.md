@@ -130,7 +130,7 @@ PR: include
 - submission_gate: approved
 - story_id_or_title: Dashboard/TodayStatsOverview Usage Breakdown Details
 - state: Token detail open with cache hit rate column
-- evidence_note: Verifies the five-column Token detail shows cache write, cache-hit Tokens, output, and cache hit rate for total and model rows without an internal scrollbar.
+- evidence_note: Verifies the five-column Token detail puts cache hit rate immediately after cache-hit Tokens, followed by output, for total and model rows without an internal scrollbar.
 
 ![Mixed realtime and historical cost breakdown on desktop](./assets/dashboard-mixed-cost-unknown-desktop.png)
 
