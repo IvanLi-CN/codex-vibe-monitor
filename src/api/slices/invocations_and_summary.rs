@@ -5531,7 +5531,7 @@ pub(crate) async fn fetch_dashboard_activity(
         params.recent_limit,
     )?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    let snapshot = load_dashboard_activity_snapshot(
+    let mut snapshot = load_dashboard_activity_snapshot(
         state.as_ref(),
         params.range.as_str(),
         reporting_tz,
@@ -5539,7 +5539,32 @@ pub(crate) async fn fetch_dashboard_activity(
         params.include_accounts,
     )
     .await?;
-    let live_revision = current_dashboard_activity_live_revision();
+    let live = capture_dashboard_activity_live_snapshot(state.as_ref());
+    let live_revision = live.revision;
+    if snapshot.range != "yesterday" {
+        snapshot.summary.stats.in_progress_conversation_count =
+            Some(live.in_progress_invocation_count);
+        snapshot.summary.stats.in_progress_retry_conversation_count =
+            Some(live.retry_invocation_count);
+        snapshot.summary.stats.in_progress_phase_counts = Some(live.in_progress_phase_counts);
+        let live_accounts = live
+            .accounts
+            .into_iter()
+            .map(|account| (account.account_key.clone(), account))
+            .collect::<HashMap<_, _>>();
+        for account in &mut snapshot.accounts {
+            let live_account = live_accounts.get(&account.account_key);
+            account.in_progress_invocation_count =
+                Some(live_account.map_or(0, |row| row.in_progress_invocation_count));
+            account.in_progress_phase_counts = Some(
+                live_account
+                    .map(|row| row.in_progress_phase_counts)
+                    .unwrap_or_default(),
+            );
+            account.retry_invocation_count =
+                Some(live_account.map_or(0, |row| row.retry_invocation_count));
+        }
+    }
     let rate_window_start = snapshot
         .range_start
         .max(snapshot.range_end - ChronoDuration::minutes(DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES));

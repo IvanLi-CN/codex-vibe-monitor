@@ -2064,6 +2064,13 @@ pub(crate) fn current_dashboard_activity_live_revision() -> u64 {
     DASHBOARD_ACTIVITY_LIVE_REVISION.load(Ordering::Acquire)
 }
 
+pub(crate) fn capture_dashboard_activity_live_snapshot(
+    state: &AppState,
+) -> DashboardActivityLiveSnapshot {
+    let revision = DASHBOARD_ACTIVITY_LIVE_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
+    build_dashboard_activity_live_snapshot(revision, state.proxy_runtime_invocations.snapshot())
+}
+
 pub(crate) fn build_dashboard_activity_live_snapshot(
     revision: u64,
     records: impl IntoIterator<Item = ApiInvocation>,
@@ -2123,14 +2130,11 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
 }
 
 pub(crate) fn broadcast_dashboard_activity_live_snapshot(state: &AppState) {
-    let revision = DASHBOARD_ACTIVITY_LIVE_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
+    let snapshot = capture_dashboard_activity_live_snapshot(state);
+    let revision = snapshot.revision;
     if state.broadcaster.receiver_count() == 0 {
         return;
     }
-    let snapshot = build_dashboard_activity_live_snapshot(
-        revision,
-        state.proxy_runtime_invocations.snapshot(),
-    );
     if let Err(err) = state
         .broadcaster
         .send(BroadcastPayload::DashboardActivityLive { snapshot })
