@@ -568,6 +568,14 @@ describe('DashboardActivityOverview', () => {
     )
     expect(host?.querySelector('[data-testid="stats-cards"]')).toBeNull()
 
+    const mobileSelects = host?.querySelector('[data-testid="dashboard-activity-mobile-selects"]')
+    const rangeSelect = host?.querySelector('[data-testid="dashboard-activity-range-select"]')
+    const metricSelect = host?.querySelector('[data-testid="dashboard-activity-metric-select"]')
+    expect(mobileSelects?.className).toContain('grid-cols-2')
+    expect(mobileSelects?.className).toContain('min-[769px]:hidden')
+    expect(rangeSelect?.getAttribute('aria-label')).toBe('Switch activity range')
+    expect(metricSelect?.getAttribute('aria-label')).toBe('Switch metric')
+
     clickTab('Cost')
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalCost',

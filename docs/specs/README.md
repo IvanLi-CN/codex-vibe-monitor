@@ -33,6 +33,7 @@
 | q7yt7 | 后端测试资源分层模块化与运行时预算                                        | active    | `q7yt7-backend-test-resource-profiles/SPEC.md`             | `q7yt7-backend-test-resource-profiles/IMPLEMENTATION.md`             | topic anchor: backend tests / ci profiles / runtime budget  |
 | 97dds | GPT-5.6 系列定价、缓存写入计费与模型入口支持                              | active    | `97dds-gpt-5-6-series-pricing-support/SPEC.md`             | `97dds-gpt-5-6-series-pricing-support/IMPLEMENTATION.md`             | topic anchor: pricing / proxy models / cache billing        |
 | ykhfu | 全产品路由 Web Demo                                                       | active    | `ykhfu-web-demo/SPEC.md`                                   | `ykhfu-web-demo/IMPLEMENTATION.md`                                   | topic anchor: mock runtime / Pages / UI evidence            |
+| hnu7b | 移动优先导航与浮层收口                                                    | active    | `hnu7b-mobile-first-navigation-and-overlays/SPEC.md`       | `hnu7b-mobile-first-navigation-and-overlays/IMPLEMENTATION.md`       | topic anchor: mobile navigation / responsive overlays       |
 
 ## Archived Sources
 

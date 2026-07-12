@@ -339,6 +339,20 @@ export const Default: Story = {
   },
 }
 
+export const MobileFullWidthSurface: Story = {
+  name: 'Mobile / Full-width working surface',
+  parameters: {
+    viewport: { defaultViewport: 'mobile390' },
+  },
+  render: () => <StatsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('统计')).toBeVisible()
+    await expect(canvas.getByTestId('stats-range-select-trigger')).toBeVisible()
+    await expect(canvas.getByTestId('stats-bucket-select-trigger')).toBeVisible()
+  },
+}
+
 export const MinuteBucketOptions: Story = {
   render: () => <StatsPage />,
   play: async ({ canvasElement }) => {

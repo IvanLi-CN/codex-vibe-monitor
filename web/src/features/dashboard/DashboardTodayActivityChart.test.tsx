@@ -40,7 +40,19 @@ vi.mock("recharts", () => ({
       data-domain={domain == null ? "" : domain.join(":")}
     />
   ),
-  YAxis: () => <div data-testid="y-axis" />,
+  YAxis: ({
+    yAxisId,
+    tickFormatter,
+  }: {
+    yAxisId?: string;
+    tickFormatter?: (value: number) => string;
+  }) => (
+    <div
+      data-testid="y-axis"
+      data-y-axis-id={yAxisId ?? ""}
+      data-negative-tick={tickFormatter?.(-42) ?? ""}
+    />
+  ),
   Tooltip: ({
     content,
   }: {
@@ -290,6 +302,26 @@ function dragLayer() {
   ) as HTMLElement | null;
   if (!layer) throw new Error("missing chart drag layer");
   return layer;
+}
+
+function setCompactViewport(matches: boolean) {
+  const originalMatchMedia = window.matchMedia;
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: vi.fn(() => ({
+      matches,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+    })),
+  });
+  return () => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: originalMatchMedia,
+    });
+  };
 }
 
 function dispatchWheel(
@@ -994,6 +1026,28 @@ describe("DashboardTodayActivityChart", () => {
     );
     expect(html.match(/data-stack-id="positive"/g)).toHaveLength(4);
     expect(html.match(/data-has-shape="true"/g)).toHaveLength(1);
+  });
+
+  it("aggregates dense count data for compact viewports and frees chart width from the latency axis", () => {
+    const restoreViewport = setCompactViewport(true);
+    try {
+      render(
+        <DashboardTodayActivityChart
+          response={response}
+          loading={false}
+          error={null}
+          metric="totalCount"
+        />,
+      );
+
+      expect(host?.querySelector('[data-testid="composed-chart"]')?.getAttribute("data-data-length")).toBe("72");
+      expect(host?.querySelectorAll('[data-testid="bar-series"][data-bar-size="4"]')).toHaveLength(4);
+      expect(host?.querySelector('[data-testid="y-axis"][data-y-axis-id="latency"]')).toBeNull();
+      expect(host?.querySelector('[data-testid="line-series"]')).toBeNull();
+      expect(host?.querySelector('[data-testid="y-axis"][data-y-axis-id="count"]')?.getAttribute("data-negative-tick")).toBe("-42");
+    } finally {
+      restoreViewport();
+    }
   });
 
   it("zooms horizontally around the wheel pointer and keeps the view clamped", async () => {

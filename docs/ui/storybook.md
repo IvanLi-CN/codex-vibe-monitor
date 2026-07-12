@@ -1,6 +1,9 @@
-# Storybook
+# Storybook 与 Web Demo
 
 ## 当前真相源
+
+- 完整产品路由、跨页面工作流与最终整页视觉证据使用 mock-only Web Demo：`cd web && bun run demo:dev`。它以 `VITE_APP_RUNTIME=demo` 启动，不连接真实后端。
+- Storybook 继续作为组件、页面状态、局部浮层与 `play` 交互回归面；它不替代 Web Demo 的整页产品证据。
 
 ### 全局运行约束
 
@@ -29,9 +32,9 @@
 
 ### 证据采集口径
 
-- 页面级视觉确认优先从 Storybook 或浏览器 smoke 里拿证据，而不是从实现截图中二次猜测布局。
+- 完整路由的页面级视觉确认优先从 Web Demo 采集；只有 demo 尚不能构造的独立组件状态才使用 Storybook canvas，并明确标注来源。
 - public docs 层通过 `docs-site/docs/storybook.mdx` 提供 Storybook 入口；当入口口径变化时要同步回写这个页面。
-- 采集证据时至少覆盖一个桌面 viewport；涉及移动端差异时，再补 `mobile390` 或 `mobile430`。
+- 采集证据时至少覆盖一个桌面 viewport；涉及移动端差异时，再补 `mobile390` 或 `mobile430`，必要时补 `tablet768`。
 - 有主题差异的组件，默认要在 light/dark 两种主题下都能复核。
 
 ## 后续新增规则

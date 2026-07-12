@@ -1,17 +1,13 @@
 import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useTranslation } from '../../i18n'
+import { useCompactViewport } from '../../hooks/useCompactViewport'
 import { cn } from '../../lib/utils'
-
-const items = [
-  { to: '/system/status', key: 'system.nav.status' },
-  { to: '/system/tasks', key: 'system.nav.tasks' },
-  { to: '/system/settings', key: 'system.nav.settings' },
-  { to: '/system/proxy', key: 'system.nav.proxy' },
-] as const
+import { matchesNavigationPath, systemNavItems } from '../../features/app-shell/navigation'
 
 export default function SystemLayout() {
   const { t } = useTranslation()
   const location = useLocation()
+  const isCompactViewport = useCompactViewport()
 
   if (location.pathname === '/system') {
     return <Navigate to="/system/status" replace />
@@ -31,36 +27,40 @@ export default function SystemLayout() {
         </div>
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-[15rem_minmax(0,1fr)] lg:items-start">
-        <aside className="surface-panel overflow-hidden">
-          <div className="surface-panel-body gap-3">
-            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/55">
-              {t('system.nav.label')}
-            </div>
-            <nav className="-mx-2 flex gap-2 overflow-x-auto px-2 no-scrollbar lg:mx-0 lg:flex-col lg:overflow-visible lg:px-0">
-              {items.map((item) => {
-                const active = location.pathname.startsWith(item.to)
-                return (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    className={cn(
-                      'min-w-max rounded-xl border px-3.5 py-3 text-sm transition-colors lg:min-w-0',
-                      active
-                        ? 'border-primary/45 bg-primary/10 text-primary'
-                        : 'border-base-300/70 bg-base-100/72 text-base-content/78 hover:border-primary/30 hover:text-base-content',
-                    )}
-                  >
-                    {t(item.key)}
-                  </NavLink>
-                )
-              })}
-            </nav>
-          </div>
-        </aside>
-
+      {isCompactViewport ? (
         <Outlet />
-      </div>
+      ) : (
+        <div className="grid gap-6 lg:grid-cols-[15rem_minmax(0,1fr)] lg:items-start">
+          <aside className="surface-panel overflow-hidden">
+            <div className="surface-panel-body gap-3">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/55">
+                {t('system.nav.label')}
+              </div>
+              <nav className="-mx-2 flex gap-2 overflow-x-auto px-2 no-scrollbar lg:mx-0 lg:flex-col lg:overflow-visible lg:px-0">
+                {systemNavItems.map((item) => {
+                  const active = matchesNavigationPath(location.pathname, item)
+                  return (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      className={cn(
+                        'min-w-max rounded-xl border px-3.5 py-3 text-sm transition-colors lg:min-w-0',
+                        active
+                          ? 'border-primary/45 bg-primary/10 text-primary'
+                          : 'border-base-300/70 bg-base-100/72 text-base-content/78 hover:border-primary/30 hover:text-base-content',
+                      )}
+                    >
+                      {t(item.labelKey)}
+                    </NavLink>
+                  )
+                })}
+              </nav>
+            </div>
+          </aside>
+
+          <Outlet />
+        </div>
+      )}
     </div>
   )
 }

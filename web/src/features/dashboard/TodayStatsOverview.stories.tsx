@@ -532,6 +532,37 @@ export const EmbeddedTodayTab: Story = {
   },
 }
 
+export const Mobile430TwoColumnMetrics: Story = {
+  args: {
+    stats: sampleStats,
+    rate: sampleRate,
+    ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
+    loading: false,
+    error: null,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'mobile430',
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const grid = canvas.getByTestId('today-stats-metrics-grid')
+    const tokenTile = canvas
+      .getByTestId('today-stats-value-total-tokens')
+      .closest('[data-testid="today-stats-metric-tile"]')
+
+    await expect(grid).toHaveClass(/min-\[400px\]:grid-cols-2/)
+    await expect(tokenTile).toHaveClass(/min-\[400px\]:col-span-2/)
+    await expect(tokenTile).toHaveClass(/lg:col-span-1/)
+  },
+}
+
 export const ScopedAccountEmbedded: Story = {
   args: {
     stats: sampleStats,

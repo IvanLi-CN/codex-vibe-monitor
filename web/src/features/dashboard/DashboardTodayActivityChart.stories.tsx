@@ -232,6 +232,19 @@ export const CountBars: Story = {
   },
 };
 
+export const MobileCountBars: Story = {
+  args: {
+    response: buildFullNaturalDayResponse(1.18),
+    loading: false,
+    error: null,
+    metric: "totalCount",
+    closedNaturalDay: true,
+  },
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+};
+
 export const CostCumulative: Story = {
   args: {
     response: sampleResponse,

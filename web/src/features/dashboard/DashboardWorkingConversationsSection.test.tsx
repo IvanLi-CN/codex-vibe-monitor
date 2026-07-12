@@ -636,6 +636,33 @@ function rerenderSectionWithCards(
 }
 
 describe("DashboardWorkingConversationsSection", () => {
+  it("stacks workspace controls below the description on compact screens", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-compact-header", [
+          createPreview({
+            id: 70,
+            invokeId: "invoke-compact-header",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const controls = host?.querySelector(
+      '[data-testid="dashboard-working-conversations-controls"]',
+    );
+    if (!(controls instanceof HTMLElement)) {
+      throw new Error("missing workspace controls");
+    }
+    expect(controls.className).toContain("flex-col");
+    expect(controls.className).toContain("items-stretch");
+    expect(controls.querySelector('[role="tablist"]')?.className).toContain("w-full");
+    expect(controls.querySelectorAll('[role="tab"]')[0]?.className).toContain("flex-1");
+    expect(controls.querySelectorAll('[role="tab"]')[1]?.className).toContain("flex-1");
+  });
+
   it("lazy-loads upstream account activity only after the account tab is opened", () => {
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
 

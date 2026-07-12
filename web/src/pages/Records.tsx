@@ -10,6 +10,9 @@ import {
 import { SelectField } from "../components/ui/select-field";
 import { InvocationRecordsSummaryCards } from "../features/records/InvocationRecordsSummaryCards";
 import { InvocationRecordsTable } from "../features/records/InvocationRecordsTable";
+import { AccountDetailDrawerShell } from "../features/account-pool/AccountDetailDrawerShell";
+import { AppIcon } from "../features/shared/AppIcon";
+import { useCompactViewport } from "../hooks/useCompactViewport";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useInvocationRecords } from "../hooks/useInvocationRecords";
 import { useTranslation } from "../i18n";
@@ -27,6 +30,7 @@ import {
   buildInvocationSuggestionsQuery,
   createDefaultCustomRange,
   RECORDS_PAGE_SIZE_OPTIONS,
+  type InvocationRecordsDraftFilters,
 } from "../lib/invocationRecords";
 import { cn } from "../lib/utils";
 import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
@@ -36,6 +40,24 @@ const inputClassName =
 
 const SUGGESTION_DEBOUNCE_MS = 250;
 const NEW_DATA_REFRESH_MIN_LOADING_MS = 600;
+
+type RemovableRecordFilterKey = Exclude<
+  keyof InvocationRecordsDraftFilters,
+  "rangePreset" | "customFrom" | "customTo"
+>;
+
+interface ActiveFilterChip {
+  id: string;
+  label: string;
+  draftKey?: RemovableRecordFilterKey;
+}
+
+function formatCustomRange(from: string, to: string) {
+  const values = [from, to]
+    .filter(Boolean)
+    .map((value) => value.replace("T", " "));
+  return values.join(" - ");
+}
 
 function getVisiblePages(currentPage: number, totalPages: number) {
   if (totalPages <= 1) return [1];
@@ -55,10 +77,12 @@ export default function RecordsPage() {
   const requestedRangePreset =
     searchParams.get("rangePreset") === "7d" ? "7d" : null;
   const appliedRequestIdRef = useRef<string | null>(null);
+  const isCompactViewport = useCompactViewport();
   const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
   const {
     draft,
+    appliedDraft,
     focus,
     page,
     pageSize,
@@ -73,6 +97,7 @@ export default function RecordsPage() {
     isSummaryLoading,
     updateDraft,
     resetDraft,
+    applyDraft,
     setFocus,
     search,
     setPage,
@@ -88,6 +113,7 @@ export default function RecordsPage() {
     useState<InvocationSuggestionField | null>(null);
   const [isNewDataRefreshPending, setIsNewDataRefreshPending] = useState(false);
   const [cachedNewDataCount, setCachedNewDataCount] = useState(0);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const newDataRefreshSeqRef = useRef(0);
   const suggestionQuery = useMemo(
     () =>
@@ -240,6 +266,82 @@ export default function RecordsPage() {
   const promptCacheKeyBucket = suggestions?.promptCacheKey;
   const requesterIpBucket = suggestions?.requesterIp;
 
+  const activeFilterChips = useMemo<ActiveFilterChip[]>(() => {
+    if (!appliedDraft) return [];
+
+    const rangeLabel =
+      appliedDraft.rangePreset === "custom"
+        ? formatCustomRange(appliedDraft.customFrom, appliedDraft.customTo) ||
+          t("records.filters.rangePreset.custom")
+        :
+          rangeOptions.find((option) => option.value === appliedDraft.rangePreset)
+            ?.label ?? t("records.filters.rangePreset");
+    const chips: ActiveFilterChip[] = [
+      {
+        id: "range",
+        label: `${t("records.filters.rangePreset")}: ${rangeLabel}`,
+      },
+    ];
+    const add = (
+      draftKey: RemovableRecordFilterKey,
+      label: string,
+      value: string,
+    ) => {
+      const normalized = value.trim();
+      if (!normalized) return;
+      chips.push({ id: draftKey, draftKey, label: `${label}: ${normalized}` });
+    };
+
+    const statusLabels: Record<string, string> = {
+      success: t("records.filters.status.success"),
+      failed: t("records.filters.status.failed"),
+      interrupted: t("records.filters.status.interrupted"),
+      running: t("records.filters.status.running"),
+      pending: t("records.filters.status.pending"),
+    };
+    const failureClassLabels: Record<string, string> = {
+      service_failure: t("records.filters.failureClass.service"),
+      client_failure: t("records.filters.failureClass.client"),
+      client_abort: t("records.filters.failureClass.abort"),
+    };
+
+    add(
+      "status",
+      t("records.filters.status"),
+      statusLabels[appliedDraft.status] ?? appliedDraft.status,
+    );
+    add("model", t("records.filters.model"), appliedDraft.model);
+    add("endpoint", t("records.filters.endpoint"), appliedDraft.endpoint);
+    add(
+      "failureClass",
+      t("records.filters.failureClass"),
+      failureClassLabels[appliedDraft.failureClass] ?? appliedDraft.failureClass,
+    );
+    add("requestId", t("records.filters.requestId"), appliedDraft.requestId);
+    add("failureKind", t("records.filters.failureKind"), appliedDraft.failureKind);
+    add(
+      "promptCacheKey",
+      t("records.filters.promptCacheKey"),
+      appliedDraft.promptCacheKey,
+    );
+    add("requesterIp", t("records.filters.requesterIp"), appliedDraft.requesterIp);
+    add("keyword", t("records.filters.keyword"), appliedDraft.keyword);
+    add(
+      "minTotalTokens",
+      t("records.filters.minTotalTokens"),
+      appliedDraft.minTotalTokens,
+    );
+    add(
+      "maxTotalTokens",
+      t("records.filters.maxTotalTokens"),
+      appliedDraft.maxTotalTokens,
+    );
+    add("minTotalMs", t("records.filters.minTotalMs"), appliedDraft.minTotalMs);
+    add("maxTotalMs", t("records.filters.maxTotalMs"), appliedDraft.maxTotalMs);
+
+    return chips;
+  }, [appliedDraft, rangeOptions, t]);
+
   const handleClearDraft = () => {
     customRangeTouchedRef.current = false;
     resetDraft();
@@ -269,6 +371,23 @@ export default function RecordsPage() {
     newDataRefreshSeqRef.current += 1;
     setIsNewDataRefreshPending(false);
     void search();
+  };
+
+  const closeFilters = () => {
+    setIsFiltersOpen(false);
+    setActiveSuggestionField(null);
+  };
+
+  const handleApplyFilters = () => {
+    closeFilters();
+    handleSearch();
+  };
+
+  const handleRemoveActiveFilter = (key: RemovableRecordFilterKey) => {
+    const nextDraft = { ...(appliedDraft ?? draft), [key]: "" };
+    newDataRefreshSeqRef.current += 1;
+    setIsNewDataRefreshPending(false);
+    void applyDraft(nextDraft);
   };
 
   const handleRefreshNewData = () => {
@@ -306,54 +425,99 @@ export default function RecordsPage() {
     void setSort(sortBy, value);
   };
 
+  if (isCompactViewport && upstreamAccountId != null) {
+    return (
+      <div className="mx-auto flex w-full max-w-full flex-col gap-6">
+        <SharedUpstreamAccountDetailDrawer
+          open
+          presentation="page"
+          accountId={upstreamAccountId}
+          onClose={closeUpstreamAccount}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
-      <section
-        className={cn(
-          "surface-panel",
-          hasOpenSuggestion && "relative z-10 overflow-visible",
-        )}
-        data-testid="records-filters-panel"
-        data-suggestions-open={hasOpenSuggestion ? "true" : "false"}
-      >
-        <div className="surface-panel-body gap-5">
-          <div className="section-heading">
-            <h1 className="section-title">{t("records.title")}</h1>
-            <p className="section-description">{t("records.subtitle")}</p>
+      <section className="surface-panel" data-testid="records-filters-panel">
+        <div className="surface-panel-body gap-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="section-heading">
+              <h1 className="section-title">{t("records.title")}</h1>
+              <p className="section-description">{t("records.subtitle")}</p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsFiltersOpen(true)}
+              data-testid="records-open-filters"
+              aria-label={t("records.filters.openAria")}
+            >
+              <AppIcon name="tag-outline" className="h-4 w-4" aria-hidden />
+              <span>{t("records.filters.open")}</span>
+              <span className="min-w-5 rounded-full bg-base-200 px-1.5 py-0.5 text-center text-xs tabular-nums text-base-content/70">
+                {activeFilterChips.length}
+              </span>
+            </Button>
           </div>
 
-          <div className="rounded-2xl border border-base-300/70 bg-base-100/45 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="section-heading">
-                <h2 className="section-title text-base">
-                  {t("records.filters.title")}
-                </h2>
-                <p className="section-description">
-                  {t("records.filters.description")}
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
+          <div
+            className="flex flex-wrap gap-2"
+            data-testid="records-active-filters"
+            aria-label={t("records.filters.active")}
+          >
+            {activeFilterChips.map((chip) =>
+              chip.draftKey ? (
+                <button
+                  key={chip.id}
                   type="button"
-                  variant="ghost"
-                  onClick={handleClearDraft}
-                  disabled={isSearching}
+                  onClick={() => handleRemoveActiveFilter(chip.draftKey!)}
+                  data-testid={`records-active-filter-${chip.id}`}
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-base-300/80 bg-base-100 px-2.5 py-1 text-left text-xs font-medium text-base-content transition hover:border-primary/45 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  aria-label={t("records.filters.remove", { label: chip.label })}
                 >
-                  {t("records.filters.clearDraft")}
-                </Button>
-                <Button
+                  <span className="truncate">{chip.label}</span>
+                  <AppIcon name="close" className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                </button>
+              ) : (
+                <button
+                  key={chip.id}
                   type="button"
-                  onClick={handleSearch}
-                  disabled={isSearching}
+                  onClick={() => setIsFiltersOpen(true)}
+                  data-testid={`records-active-filter-${chip.id}`}
+                  className="inline-flex max-w-full items-center rounded-full border border-base-300/80 bg-base-100 px-2.5 py-1 text-left text-xs font-medium text-base-content transition hover:border-primary/45 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
-                  {isSearching
-                    ? t("records.filters.searching")
-                    : t("records.filters.search")}
-                </Button>
-              </div>
-            </div>
+                  <span className="truncate">{chip.label}</span>
+                </button>
+              ),
+            )}
+          </div>
+        </div>
+      </section>
 
-            <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <AccountDetailDrawerShell
+        open={isFiltersOpen}
+        labelledBy="records-filters-drawer-title"
+        closeLabel={t("records.filters.close")}
+        onClose={closeFilters}
+        shellClassName="desktop:w-[min(34rem,42vw)]"
+        bodyClassName={cn(hasOpenSuggestion && "overflow-visible")}
+        header={
+          <div className="section-heading">
+            <h2 id="records-filters-drawer-title" className="section-title text-base">
+              {t("records.filters.title")}
+            </h2>
+            <p className="section-description">{t("records.filters.description")}</p>
+          </div>
+        }
+      >
+        <div
+          className="flex min-h-full flex-col gap-5"
+          data-testid="records-filters-drawer"
+          data-suggestions-open={hasOpenSuggestion ? "true" : "false"}
+        >
+          <div className="grid gap-4 min-[769px]:grid-cols-2">
               <SelectField
                 className="field"
                 label={t("records.filters.rangePreset")}
@@ -661,9 +825,27 @@ export default function RecordsPage() {
                 />
               </label>
             </div>
+          <div className="sticky bottom-[-1rem] -mx-4 mt-auto flex flex-col-reverse gap-2 border-t border-base-300/70 bg-base-100 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 sm:flex-row sm:justify-end desktop:bottom-[-1.5rem] desktop:-mx-6 desktop:px-6">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={handleClearDraft}
+              disabled={isSearching}
+            >
+              {t("records.filters.clearDraft")}
+            </Button>
+            <Button
+              type="button"
+              onClick={handleApplyFilters}
+              disabled={isSearching}
+            >
+              {isSearching
+                ? t("records.filters.searching")
+                : t("records.filters.apply")}
+            </Button>
           </div>
         </div>
-      </section>
+      </AccountDetailDrawerShell>
 
       <section className="surface-panel" data-testid="records-summary-panel">
         <div className="surface-panel-body gap-4">
