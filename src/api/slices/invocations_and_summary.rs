@@ -4074,6 +4074,15 @@ struct UpstreamAccountUsageBreakdownAggregateRow {
     has_cost: i64,
 }
 
+#[derive(Debug, FromRow)]
+struct RuntimeRecentAccountFallbackRow {
+    invoke_id: String,
+    occurred_at: String,
+    upstream_account_id: Option<i64>,
+    upstream_account_name: Option<String>,
+    upstream_account_plan_type: Option<String>,
+}
+
 async fn query_live_upstream_account_activity_aggregate_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
@@ -4492,17 +4501,83 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
     Ok(rows)
 }
 
+async fn query_runtime_recent_account_fallback_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    keys: &HashSet<(String, String)>,
+) -> Result<Vec<RuntimeRecentAccountFallbackRow>, ApiError> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let keys_json = serde_json::Value::Array(
+        keys.iter()
+            .map(|(invoke_id, occurred_at)| json!([invoke_id, occurred_at]))
+            .collect(),
+    )
+    .to_string();
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "WITH runtime_keys AS (\
+           SELECT CAST(json_extract(value, '$[0]') AS TEXT) AS invoke_id, \
+                  CAST(json_extract(value, '$[1]') AS TEXT) AS occurred_at \
+             FROM json_each(",
+    );
+    query
+        .push_bind(keys_json)
+        .push(
+            ")\
+         ) \
+         SELECT codex_invocations.invoke_id, codex_invocations.occurred_at, ",
+        )
+        .push(resolved_upstream_account_id_sql.as_str())
+        .push(" AS upstream_account_id, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
+        .push(" AS upstream_account_name, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL)
+        .push(
+            " AS upstream_account_plan_type \
+             FROM codex_invocations \
+             JOIN runtime_keys \
+               ON runtime_keys.invoke_id = codex_invocations.invoke_id \
+              AND runtime_keys.occurred_at = codex_invocations.occurred_at \
+             WHERE 1 = 1",
+        );
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query
+            .push(" AND codex_invocations.source = ")
+            .push_bind(SOURCE_PROXY);
+    }
+
+    query
+        .build_query_as::<RuntimeRecentAccountFallbackRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) fn runtime_upstream_account_activity_preview_row(
     record: ApiInvocation,
     source_scope: InvocationSourceScope,
 ) -> Option<UpstreamAccountInvocationPreviewRow> {
+    runtime_upstream_account_activity_preview_row_with_terminal(record, source_scope, false)
+}
+
+fn runtime_upstream_account_activity_preview_row_with_terminal(
+    record: ApiInvocation,
+    source_scope: InvocationSourceScope,
+    include_terminal: bool,
+) -> Option<UpstreamAccountInvocationPreviewRow> {
     if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
         return None;
     }
-    if !matches!(
-        normalized_runtime_text(record.status.as_deref()).as_str(),
-        "running" | "pending"
-    ) {
+    if !include_terminal
+        && !matches!(
+            normalized_runtime_text(record.status.as_deref()).as_str(),
+            "running" | "pending"
+        )
+    {
         return None;
     }
     let live_phase = record
@@ -5321,6 +5396,113 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         source_scope,
         range,
     );
+    let mut runtime_recent_rows =
+        HashMap::<Option<i64>, Vec<UpstreamAccountInvocationPreviewRow>>::new();
+    if include_accounts {
+        let mut runtime_recent_by_key =
+            HashMap::<(String, String), UpstreamAccountInvocationPreviewRow>::new();
+        for row in &runtime_rows {
+            runtime_recent_by_key.insert(
+                (row.invoke_id.clone(), row.occurred_at.clone()),
+                row.clone(),
+            );
+        }
+        let mut terminal_rows = Vec::new();
+        for record in state.proxy_runtime_invocations.snapshot() {
+            if matches!(
+                normalized_runtime_text(record.status.as_deref()).as_str(),
+                "running" | "pending"
+            ) {
+                continue;
+            }
+            let Some(row) = runtime_upstream_account_activity_preview_row_with_terminal(
+                record,
+                source_scope,
+                true,
+            ) else {
+                continue;
+            };
+            let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+                continue;
+            };
+            if occurred_at < range.start || occurred_at >= range.end {
+                continue;
+            }
+            terminal_rows.push(((row.invoke_id.clone(), row.occurred_at.clone()), row));
+        }
+        let fallback_keys = terminal_rows
+            .iter()
+            .filter(|(_, row)| row.upstream_account_id.is_none())
+            .map(|(key, _)| key.clone())
+            .collect::<HashSet<_>>();
+        let fallback_rows =
+            query_runtime_recent_account_fallback_rows(&state.pool, source_scope, &fallback_keys)
+                .await?
+                .into_iter()
+                .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
+                .collect::<HashMap<_, _>>();
+        for (key, mut row) in terminal_rows {
+            if let Some(existing) = runtime_recent_by_key.get(&key) {
+                if row.upstream_account_id.is_none() {
+                    row.upstream_account_id = existing.upstream_account_id;
+                }
+                if row.upstream_account_name.is_none() {
+                    row.upstream_account_name = existing.upstream_account_name.clone();
+                }
+                if row.upstream_account_plan_type.is_none() {
+                    row.upstream_account_plan_type = existing.upstream_account_plan_type.clone();
+                }
+            }
+            if let Some(fallback) = fallback_rows.get(&key) {
+                if row.upstream_account_id.is_none() {
+                    row.upstream_account_id = fallback.upstream_account_id;
+                }
+                if row.upstream_account_name.is_none() {
+                    row.upstream_account_name = fallback.upstream_account_name.clone();
+                }
+                if row.upstream_account_plan_type.is_none() {
+                    row.upstream_account_plan_type = fallback.upstream_account_plan_type.clone();
+                }
+            }
+            runtime_recent_by_key.insert(key, row);
+        }
+        for row in runtime_recent_by_key.into_values() {
+            runtime_recent_rows
+                .entry(row.upstream_account_id)
+                .or_default()
+                .push(row);
+        }
+        for rows in runtime_recent_rows.values_mut() {
+            rows.sort_by(|left, right| {
+                right
+                    .occurred_at
+                    .cmp(&left.occurred_at)
+                    .then_with(|| right.id.cmp(&left.id))
+            });
+        }
+        for (account_id, rows) in &runtime_recent_rows {
+            let entry = account_activity.entry(*account_id).or_default();
+            if let Some(row) = rows.first() {
+                entry.last_occurred_at_epoch_ms = parse_to_utc_datetime(&row.occurred_at).map_or(
+                    entry.last_occurred_at_epoch_ms,
+                    |occurred_at| {
+                        entry
+                            .last_occurred_at_epoch_ms
+                            .max(occurred_at.timestamp_millis())
+                    },
+                );
+                if entry.display_name_hint.is_none() {
+                    entry.display_name_hint =
+                        normalize_trimmed_optional_string_local(row.upstream_account_name.clone());
+                }
+                if entry.plan_type_hint.is_none() {
+                    entry.plan_type_hint = normalize_trimmed_optional_string_local(
+                        row.upstream_account_plan_type.clone(),
+                    );
+                }
+            }
+        }
+    }
     let live_ids = runtime_rows
         .iter()
         .map(|row| row.id)
@@ -5356,7 +5538,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     if include_accounts {
         let account_keys = account_activity.keys().copied().collect::<Vec<_>>();
         for account_id in account_keys {
-            let rows = query_live_upstream_account_activity_preview_rows_with_limit(
+            let persisted_rows = query_live_upstream_account_activity_preview_rows_with_limit(
                 &state.pool,
                 source_scope,
                 range,
@@ -5365,12 +5547,42 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 false,
             )
             .await?;
+            let mut rows = runtime_recent_rows.remove(&account_id).unwrap_or_default();
+            let runtime_keys = rows
+                .iter()
+                .map(|row| (row.invoke_id.clone(), row.occurred_at.clone()))
+                .collect::<HashSet<_>>();
+            rows.extend(persisted_rows.into_iter().filter(|row| {
+                !runtime_keys.contains(&(row.invoke_id.clone(), row.occurred_at.clone()))
+            }));
+            rows.sort_by(|left, right| {
+                right
+                    .occurred_at
+                    .cmp(&left.occurred_at)
+                    .then_with(|| right.id.cmp(&left.id))
+            });
+            rows.truncate(recent_limit);
             let mut recent_invocations = rows
                 .into_iter()
                 .map(upstream_account_invocation_preview_from_row)
                 .collect::<Vec<_>>();
             let entry = account_activity.entry(account_id).or_default();
-            recent_invocations.append(&mut entry.recent_invocations);
+            let mut recent_by_key = recent_invocations
+                .drain(..)
+                .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
+                .collect::<HashMap<_, _>>();
+            for row in entry.recent_invocations.drain(..) {
+                recent_by_key
+                    .entry((row.invoke_id.clone(), row.occurred_at.clone()))
+                    .or_insert(row);
+            }
+            recent_invocations = recent_by_key.into_values().collect();
+            recent_invocations.sort_by(|left, right| {
+                right
+                    .occurred_at
+                    .cmp(&left.occurred_at)
+                    .then_with(|| right.id.cmp(&left.id))
+            });
             recent_invocations.truncate(recent_limit);
             entry.recent_invocations = recent_invocations;
         }

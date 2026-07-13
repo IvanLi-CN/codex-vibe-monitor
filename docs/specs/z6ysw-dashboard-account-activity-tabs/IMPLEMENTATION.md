@@ -47,7 +47,7 @@
 - 已实现：上游账号宽屏双列 grid 使用 `minmax(0, 1fr)` track，账号卡、recent 行和共享错误 trigger 均显式允许收缩；错误摘要无法再通过 intrinsic width 撑开调用行或父账号卡。现役 feature 的 unit、Storybook play 契约与 Playwright 几何回归共同覆盖该链路。
 - 已实现：Dashboard 相关的 working-set / account-activity 派生维护继续遵守 `<=5s` bounded freshness；proxy capture 请求尾的 rollup/live progress、upstream account touch 与 attempt 中间进度已迁入 SQLite batch writer，避免 Dashboard reconcile 与请求收尾派生写在 SQLite 单写者上持续争用。
 - 已实现：Dashboard current records、summary/timeseries、上游账号活动与工作区 `对话` tab 的 running 视图统一 overlay 进程内 runtime invocation store。SSE 仍即时广播 `running/pending` 记录，HTTP open-resync/current reconcile 即使 DB 不再刷新 running 行也不会短暂丢行；terminal DB 事实优先并会移除对应内存记录。
-- 已实现：terminal invocation 记录进入 SQLite write controller，代理业务响应不等待落库。Dashboard 继续先消费 SSE/runtime overlay，随后由 HTTP reconcile 读取最终一致的 DB terminal 行；running snapshot 不再产生 DB/batch 写入。
+- 已实现：terminal invocation 记录进入 SQLite write controller，代理业务响应不等待落库。Dashboard 账号 recent reconcile 会先合并 runtime running / pending / terminal 候选，并与 SQLite 行按稳定调用键去重；统计聚合仍以持久化 terminal 事实为准，running snapshot 不再产生 DB/batch 写入。
 - 已实现：新增 `GET /api/stats/dashboard-activity` 活动快照读路径；请求开始时固定 `rangeEnd`，一次读取 runtime overlay，并返回 summary-only 或 summary + accounts 两种形态。
 - 已实现：Dashboard 顶部当前 `TPM / 消费速率 / 进行中调用` 改读 `dashboard-activity.summary`；账号 tab 打开后升级为 `includeAccounts=true`，顶部 KPI 与账号卡片共享同一个 `snapshotId/rangeEnd` 响应。
 - 已实现：Dashboard 当前进行中、重试与阶段计数改由后端 SQLite live read model 加 runtime overlay 的统一算法生成版本化 `dashboardActivityLive` SSE 快照；前端按 revision 覆盖顶部与账号卡 live 字段，旧 HTTP reconcile 不再把新状态回写为 0，重连时服务端立即种入当前快照。
@@ -57,6 +57,7 @@
 - 已实现：timeseries 继续只服务趋势图与兼容回退，不再作为 Dashboard 顶部当前速率类 KPI 的事实来源。
 - 已实现：账号活动快照的终态 live 数据改为账号级窄聚合与按模型用量分组，避免为整个 range 传输完整 invocation preview 行；运行态 runtime overlay、归档折叠、四个时间范围和公开响应字段保持原有语义。
 - 已实现：账号卡 recent 调用改为每个候选账号按时间倒序的受限读取，数量仍严格受请求 `recentLimit` 限制。
+- 已实现：账号卡 recent 调用在 SQLite batch flush 前也会读取同一 runtime store；同键 runtime 行覆盖非终态 DB shell，短暂 terminal overlay 立即可见，落库后不会形成重复行。
 
 ## Remaining Gaps
 

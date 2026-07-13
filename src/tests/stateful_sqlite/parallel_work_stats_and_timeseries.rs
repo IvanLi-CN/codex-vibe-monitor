@@ -12464,6 +12464,44 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     runtime_before_today.prompt_cache_key =
         Some("pck-dashboard-activity-runtime-before-today-running".to_string());
     state.proxy_runtime_invocations.upsert(runtime_before_today);
+    let mut runtime_terminal = runtime_today.clone();
+    runtime_terminal.id = 0;
+    runtime_terminal.invoke_id = "dashboard-activity-runtime-terminal".to_string();
+    runtime_terminal.occurred_at = format_naive(
+        base_local
+            .checked_sub_signed(ChronoDuration::seconds(1))
+            .expect("valid runtime terminal time"),
+    );
+    runtime_terminal.status = Some("success".to_string());
+    runtime_terminal.live_phase = None;
+    runtime_terminal.upstream_account_id = Some(42);
+    runtime_terminal.upstream_account_name = Some("Pool Alpha".to_string());
+    runtime_terminal.prompt_cache_key = Some("pck-dashboard-activity-runtime-terminal".to_string());
+    runtime_terminal.total_tokens = Some(0);
+    runtime_terminal.cost = Some(0.0);
+    state
+        .proxy_runtime_invocations
+        .upsert_terminal(runtime_terminal);
+    let mut terminal_only_account = runtime_today.clone();
+    terminal_only_account.id = 0;
+    terminal_only_account.invoke_id =
+        "dashboard-activity-runtime-terminal-only-account".to_string();
+    terminal_only_account.occurred_at = format_naive(
+        base_local
+            .checked_sub_signed(ChronoDuration::seconds(2))
+            .expect("valid terminal-only account time"),
+    );
+    terminal_only_account.status = Some("success".to_string());
+    terminal_only_account.live_phase = None;
+    terminal_only_account.upstream_account_id = Some(88);
+    terminal_only_account.upstream_account_name = Some("Runtime Only".to_string());
+    terminal_only_account.prompt_cache_key =
+        Some("pck-dashboard-activity-runtime-terminal-only-account".to_string());
+    terminal_only_account.total_tokens = Some(0);
+    terminal_only_account.cost = Some(0.0);
+    state
+        .proxy_runtime_invocations
+        .upsert_terminal(terminal_only_account);
 
     let activity =
         load_dashboard_activity_snapshot(state.as_ref(), "today", Shanghai, 4, true, None)
@@ -12471,13 +12509,107 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .expect("load dashboard activity snapshot");
 
     let accounts = activity.accounts();
-    assert_eq!(accounts.len(), 3);
+    assert_eq!(accounts.len(), 4);
     assert!(accounts.iter().any(|account| account.is_unassigned));
     let unassigned = accounts
         .iter()
         .find(|account| account.is_unassigned)
         .expect("unassigned account bucket");
     assert_eq!(unassigned.retry_invocation_count, Some(1));
+    let runtime_recent = unassigned
+        .recent_invocations
+        .iter()
+        .find(|row| row.invoke_id == "dashboard-activity-runtime-today-running")
+        .expect("runtime overlay should hydrate the dashboard recent invocation");
+    assert_eq!(runtime_recent.total_tokens, 9_999);
+    assert_eq!(runtime_recent.input_tokens, Some(10));
+    assert_eq!(runtime_recent.output_tokens, Some(20));
+    assert_eq!(runtime_recent.t_upstream_ttfb_ms, Some(999.0));
+    assert_eq!(
+        unassigned
+            .recent_invocations
+            .iter()
+            .filter(|row| row.invoke_id == "dashboard-activity-runtime-today-running")
+            .count(),
+        1
+    );
+    let alpha = accounts
+        .iter()
+        .find(|account| account.upstream_account_id == Some(42))
+        .expect("alpha account bucket");
+    assert_eq!(
+        alpha.recent_invocations[0].invoke_id,
+        "dashboard-activity-runtime-terminal"
+    );
+    assert_eq!(alpha.recent_invocations[0].status, "success");
+    let runtime_only = accounts
+        .iter()
+        .find(|account| account.upstream_account_id == Some(88))
+        .expect("terminal-only runtime account bucket");
+    assert_eq!(runtime_only.display_name, "Runtime Only");
+    assert_eq!(runtime_only.request_count, 0);
+    assert_eq!(
+        runtime_only.recent_invocations[0].invoke_id,
+        "dashboard-activity-runtime-terminal-only-account"
+    );
+    assert!(
+        accounts
+            .iter()
+            .all(|account| account.recent_invocations.len() <= 4)
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("dashboard-activity-runtime-terminal")
+    .bind(format_naive(
+        base_local
+            .checked_sub_signed(ChronoDuration::seconds(1))
+            .expect("valid persisted runtime terminal time"),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(0_i64)
+    .bind(0.0_f64)
+    .bind(
+        json!({
+            "promptCacheKey": "pck-dashboard-activity-runtime-terminal",
+            "upstreamAccountId": 42_i64,
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("persist runtime terminal after initial dashboard reconcile");
+    let persisted_activity =
+        load_dashboard_activity_snapshot(state.as_ref(), "today", Shanghai, 4, true, None)
+            .await
+            .expect("reload dashboard activity after terminal persistence");
+    let persisted_alpha = persisted_activity
+        .accounts()
+        .iter()
+        .find(|account| account.upstream_account_id == Some(42))
+        .expect("persisted alpha account bucket");
+    assert_eq!(
+        persisted_alpha
+            .recent_invocations
+            .iter()
+            .filter(|row| row.invoke_id == "dashboard-activity-runtime-terminal")
+            .count(),
+        1
+    );
     assert_eq!(
         activity.summary().stats.total_count,
         accounts
@@ -12918,6 +13050,40 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
     );
     assert_eq!(recent_invocation.live_phase.as_deref(), Some("responding"));
 
+    let mut runtime_terminal = state
+        .proxy_runtime_invocations
+        .snapshot()
+        .into_iter()
+        .find(|record| record.invoke_id == "pool-running-selected-before-payload-update")
+        .expect("running fallback runtime record");
+    runtime_terminal.status = Some("success".to_string());
+    runtime_terminal.live_phase = None;
+    state
+        .proxy_runtime_invocations
+        .upsert_terminal(runtime_terminal);
+    let Json(terminal_activity) = fetch_upstream_account_activity(
+        State(state.clone()),
+        Query(UpstreamAccountActivityQuery {
+            range: "today".to_string(),
+            recent_limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch upstream activity with terminal fallback");
+    let terminal_account = terminal_activity
+        .accounts
+        .iter()
+        .find(|account| account.upstream_account_id == 77)
+        .expect("terminal fallback activity account");
+    let terminal_recent = terminal_account
+        .recent_invocations
+        .iter()
+        .filter(|row| row.invoke_id == "pool-running-selected-before-payload-update")
+        .collect::<Vec<_>>();
+    assert_eq!(terminal_recent.len(), 1);
+    assert_eq!(terminal_recent[0].status, "success");
+
     let Json(account_summary) = fetch_summary(
         State(state),
         Query(SummaryQuery {
@@ -12929,17 +13095,17 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
     )
     .await
     .expect("fetch fallback account summary");
-    assert_eq!(account_summary.in_progress_conversation_count, Some(1));
+    assert_eq!(account_summary.in_progress_conversation_count, Some(0));
     assert_eq!(
         account_summary.in_progress_retry_conversation_count,
-        Some(1)
+        Some(0)
     );
     let account_summary_phase_counts = account_summary
         .in_progress_phase_counts
         .expect("account summary should include live phase counts");
     assert_eq!(account_summary_phase_counts.queued, 0);
     assert_eq!(account_summary_phase_counts.requesting, 0);
-    assert_eq!(account_summary_phase_counts.responding, 1);
+    assert_eq!(account_summary_phase_counts.responding, 0);
 }
 
 #[tokio::test]
