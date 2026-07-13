@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.28.2",
+  "base_stable_version": "2.28.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-13T16:04:13Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.28.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1bac06a461db3f89fc2d09d8a81f0bb0043cb9e5",
+  "pr_number": 600,
+  "pr_title": "fix(web): stabilize account detail drawer width",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.28.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.28.2",
+  "target_sha": "5b193f32d014c422c0cb2173bcc04d21cfba38e8",
+  "type_label": "type:patch"
+}
