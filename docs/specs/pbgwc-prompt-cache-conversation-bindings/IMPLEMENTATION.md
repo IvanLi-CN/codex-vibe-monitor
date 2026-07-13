@@ -19,6 +19,7 @@
 - [x] Upstream account binding writes the corresponding sticky route immediately.
 - [x] Prompt Cache conversation detail drawer controls.
 - [x] Prompt Cache conversation detail drawer title and Settings tab policy controls with effective-value rows, source badges, and field-level edit/clear behavior.
+- [x] FAST mode and image tool editors expose only concrete rewrite choices and remain expanded after a successful choice save.
 - [x] Prompt Cache conversation timeout editor with source badges, collapsed inherited rows, and field-level expand/clear behavior aligned with the effective routing rule card.
 - [x] Prompt Cache conversation history drawer loads retained invocation records in 50-row scroll pages instead of hydrating all pages on open.
 - [x] `InvocationTable` virtualizes desktop table rows and mobile cards, mounting only the active breakpoint layout.
