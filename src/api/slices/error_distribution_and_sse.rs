@@ -2138,6 +2138,9 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
 }
 
 pub(crate) async fn broadcast_dashboard_activity_live_snapshot(state: &AppState) {
+    if state.broadcaster.receiver_count() == 0 {
+        return;
+    }
     let snapshot = match capture_dashboard_activity_live_snapshot(state).await {
         Ok(snapshot) => snapshot,
         Err(err) => {
@@ -2146,9 +2149,6 @@ pub(crate) async fn broadcast_dashboard_activity_live_snapshot(state: &AppState)
         }
     };
     let revision = snapshot.revision;
-    if state.broadcaster.receiver_count() == 0 {
-        return;
-    }
     if let Err(err) = state
         .broadcaster
         .send(BroadcastPayload::DashboardActivityLive { snapshot })
