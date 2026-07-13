@@ -1865,6 +1865,14 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_activity_live_revision_reservation_is_monotonic() {
+        let first = reserve_dashboard_activity_live_revision();
+        let second = reserve_dashboard_activity_live_revision();
+
+        assert_eq!(second, first + 1);
+    }
+
+    #[test]
     fn build_invocation_filters_normalizes_request_id() {
         let params = ListQuery {
             request_id: Some(" invoke-123 ".to_string()),
@@ -2070,6 +2078,10 @@ pub(crate) fn current_dashboard_activity_live_revision() -> u64 {
     DASHBOARD_ACTIVITY_LIVE_REVISION.load(Ordering::Acquire)
 }
 
+fn reserve_dashboard_activity_live_revision() -> u64 {
+    DASHBOARD_ACTIVITY_LIVE_REVISION.fetch_add(1, Ordering::AcqRel) + 1
+}
+
 pub(crate) async fn capture_dashboard_activity_live_snapshot(
     state: &AppState,
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
@@ -2084,11 +2096,10 @@ async fn capture_dashboard_activity_live_snapshot_from_runtime(
     pool: &Pool<Sqlite>,
     proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
-    let mut snapshot =
-        query_dashboard_activity_live_snapshot_from_runtime(pool, proxy_runtime_invocations, 0)
-            .await?;
-    snapshot.revision = DASHBOARD_ACTIVITY_LIVE_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
-    Ok(snapshot)
+    // Reserve before awaiting so concurrent captures cannot label an older read as newer.
+    let revision = reserve_dashboard_activity_live_revision();
+    query_dashboard_activity_live_snapshot_from_runtime(pool, proxy_runtime_invocations, revision)
+        .await
 }
 
 pub(crate) fn build_dashboard_activity_live_snapshot(
