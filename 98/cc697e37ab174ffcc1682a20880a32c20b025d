@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.27.3",
+  "base_stable_version": "2.27.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-13T09:36:03Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.27.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "de82bd6c59d9748fbe96e8f5689c9b272a60f42e",
+  "pr_number": 598,
+  "pr_title": "fix(account-pool): restore attempt record compatibility",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.27.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.27.3",
+  "target_sha": "98cc697e37ab174ffcc1682a20880a32c20b025d",
+  "type_label": "type:patch"
+}
