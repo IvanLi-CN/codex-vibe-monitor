@@ -208,6 +208,7 @@ export const DetailDrawerRecordsPopulated: Story = {
 };
 
 export const DetailDrawerEventLocatesAttempt: Story = {
+  tags: ["test"],
   render: () => <AccountPoolStoryRouter initialEntry={detailRouteEntry(101)} />,
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body);
@@ -223,6 +224,10 @@ export const DetailDrawerEventLocatesAttempt: Story = {
     await expect(disclosure).toHaveAttribute("open");
     await expect(within(disclosure).getByText("upstream-story-500")).toBeInTheDocument();
   },
+};
+
+export const DetailDrawerHealthEventAttemptLink: Story = {
+  render: () => <DetailDrawerStorySurface initialTab="healthEvents" />,
 };
 
 export const DetailDrawerRecordsMobile: Story = {

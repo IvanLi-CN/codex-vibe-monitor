@@ -54,6 +54,7 @@ related_specs:
 - 任何 startup / maintenance backfill 只要要扫 `codex_invocations` 或 `pool_upstream_request_attempts` 大表，都必须先证明有 cursor 或 partial index；后台慢查询同样会把详情页 SLA 拖垮。
 - 前端详情页的重型统计 hydrate 必须绑定“当前选中账号 + 当前 query key”；列表刷新不能把整个当前页账号重新拉一遍。
 - 默认详情首屏如果只需要概览信息，接口必须把非首屏字段拆成显式 opt-in 参数或 follow-up fetch；不要把事件流、审计流或其他历史列表默默塞回默认 detail 响应。
+- 账号作用域的近期尝试列表可以按 `(upstream_account_id, occurred_at)` 索引读取并只在 `SELECT` 中从 invocation JSON payload 投影展示字段；对旧 SQLite 数据库，不能把尚未存在的可选列放进查询，即使该列只用于显示模型名称。
 - 若某条 SSE 只携带 invocation records，它最多只能更新 records/live 表层；不能反向触发 roster、summary、timeseries 或 `window-usage` 这类重型面。
 - 若 roster 仍需展示最新 usage/plan 快照，优先复用主表或按账号索引直取最新样本；不要再回到 `pool_upstream_account_limit_samples` 的窗口函数全表排名路径。
 

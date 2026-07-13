@@ -1690,7 +1690,6 @@ export default function UpstreamAccountsPage() {
                       type="button"
                       role="tab"
                       aria-selected={rosterViewMode === "grid"}
-                      aria-pressed={rosterViewMode === "grid"}
                       active={rosterViewMode === "grid"}
                       onClick={() => setRosterViewMode("grid")}
                     >
@@ -1700,7 +1699,6 @@ export default function UpstreamAccountsPage() {
                       type="button"
                       role="tab"
                       aria-selected={rosterViewMode === "grouped"}
-                      aria-pressed={rosterViewMode === "grouped"}
                       active={rosterViewMode === "grouped"}
                       onClick={() => setRosterViewMode("grouped")}
                     >
@@ -1710,7 +1708,6 @@ export default function UpstreamAccountsPage() {
                       type="button"
                       role="tab"
                       aria-selected={rosterViewMode === "flat"}
-                      aria-pressed={rosterViewMode === "flat"}
                       active={rosterViewMode === "flat"}
                       onClick={() => setRosterViewMode("flat")}
                     >
